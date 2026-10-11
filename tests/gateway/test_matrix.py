@@ -10,6 +10,15 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageType
 
 
+def _client_factory(client):
+    class Client:
+        def __new__(cls, **kwargs):
+            client.api = kwargs["api"]
+            return client
+
+    return Client
+
+
 def _make_fake_mautrix():
     """Create a lightweight set of fake ``mautrix`` modules.
 
@@ -30,8 +39,10 @@ def _make_fake_mautrix():
         def __init__(self, base_url="", token="", **kwargs):
             self.base_url = base_url
             self.token = token
-            self.session = MagicMock()
-            self.session.close = AsyncMock()
+            self.session = kwargs.get("client_session")
+            if self.session is None:
+                self.session = MagicMock()
+                self.session.close = AsyncMock()
 
     mautrix_api.HTTPAPI = HTTPAPI
     mautrix.api = mautrix_api
@@ -78,6 +89,9 @@ def _make_fake_mautrix():
         BACKWARD = "b"
         FORWARD = "f"
 
+    class Membership:
+        JOIN = "join"
+
     mautrix_types.EventType = EventType
     mautrix_types.UserID = UserID
     mautrix_types.RoomID = RoomID
@@ -88,6 +102,7 @@ def _make_fake_mautrix():
     mautrix_types.PresenceState = PresenceState
     mautrix_types.TrustState = TrustState
     mautrix_types.PaginationDirection = PaginationDirection
+    setattr(mautrix_types, "Membership", Membership)
     mautrix.types = mautrix_types
 
     # --- mautrix.client ---
@@ -185,7 +200,8 @@ def _make_fake_mautrix():
 
     def encrypt_attachment(data):
         encrypted_file = MagicMock()
-        encrypted_file.serialize.return_value = {
+        encrypted_file.serialize.side_effect = lambda: {
+            "url": str(encrypted_file.url),
             "key": {"k": "testkey"}, "iv": "testiv",
             "hashes": {"sha256": "testhash"}, "v": "v2",
         }
@@ -243,6 +259,19 @@ def _make_fake_mautrix():
         "mautrix.util": mautrix_util,
         "mautrix.util.async_db": mautrix_util_async_db,
     }
+
+
+@pytest.mark.parametrize(
+    "url", ["mxc://example.org/first", "mxc://other.example/second"]
+)
+def test_fake_encrypted_file_serializes_assigned_url(url):
+    modules = _make_fake_mautrix()
+    encrypt_attachment = modules["mautrix.crypto.attachments"].encrypt_attachment
+    _, encrypted_file = encrypt_attachment(b"secret")
+    before = encrypted_file.serialize()
+    encrypted_file.url = url
+
+    assert encrypted_file.serialize() == {**before, "url": url}
 
 
 # ---------------------------------------------------------------------------
@@ -843,7 +872,7 @@ class TestMatrixAccessTokenAuth:
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         # Patch Client constructor to return our mock
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -923,7 +952,7 @@ class TestMatrixE2EEHardFail:
         mock_client.device_id = None
         mock_client.crypto = None
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
@@ -970,7 +999,7 @@ class TestMatrixE2EEHardFail:
         mock_client.add_event_handler = MagicMock()
         mock_client.handle_sync = MagicMock(return_value=[])
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
@@ -1060,7 +1089,7 @@ class TestMatrixDeviceId:
         mock_olm.account = MagicMock()
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -1113,7 +1142,7 @@ class TestMatrixPasswordLoginDeviceId:
         mock_client.api.session = MagicMock()
         mock_client.api.session.close = AsyncMock()
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
 
         with patch.dict("sys.modules", fake_mautrix_mods):
             with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -1210,6 +1239,8 @@ class TestMatrixSyncLoop:
         fake_client.state_store = MagicMock()
         fake_client.state_store.get_members = AsyncMock(return_value=["@bot:example.org", "@alice:example.org"])
         fake_client.state_store.get_member = AsyncMock(return_value=None)
+        fake_client.state_store.get_power_levels = AsyncMock(return_value=None)
+        fake_client.state_store.get_create = AsyncMock(return_value=None)
 
         def handle_sync(sync_data):
             return [asyncio.create_task(adapter._on_room_message(event))]
@@ -1338,6 +1369,8 @@ class TestMatrixSyncLoop:
         mock_client.state_store = MagicMock()
         mock_client.state_store.get_members = AsyncMock(return_value=["@bot:example.org", "@alice:example.org"])
         mock_client.state_store.get_member = AsyncMock(return_value=None)
+        mock_client.state_store.get_power_levels = AsyncMock(return_value=None)
+        mock_client.state_store.get_create = AsyncMock(return_value=None)
         mock_client.add_event_handler = MagicMock()
         mock_client.add_dispatcher = MagicMock()
         mock_client.api = MagicMock()
@@ -1357,7 +1390,7 @@ class TestMatrixSyncLoop:
             return [asyncio.create_task(adapter._on_room_message(event))]
 
         mock_client.handle_sync = MagicMock(side_effect=handle_sync)
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.dict("sys.modules", fake_mautrix_mods):
@@ -1514,7 +1547,7 @@ class TestMatrixDiagnostics:
         mock_olm.account = MagicMock()
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -1636,7 +1669,7 @@ class TestMatrixEncryptedEventHandler:
         mock_olm.account = MagicMock()
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -1889,7 +1922,7 @@ class TestMatrixReadReceipts:
 class TestMatrixImageOnlyMediaNormalization:
     def setup_method(self):
         self.adapter = _make_adapter()
-        self.adapter._client = MagicMock()
+        self.adapter._client = MagicMock(state_store=None)
         self.adapter._client.download_media = AsyncMock(return_value=None)
         self.adapter._is_dm_room = AsyncMock(return_value=True)
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
@@ -2429,6 +2462,194 @@ class TestMatrixDmAutoThread:
 
 
 # ---------------------------------------------------------------------------
+# Source permalink (matrix.to)
+# ---------------------------------------------------------------------------
+
+class TestMatrixSourcePermalink:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._is_dm_room = AsyncMock(return_value=False)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._require_mention = False
+        self.adapter._matrix_session_scope = "room"
+
+    async def _source(self, room_id="!room:example.org", event_id="$msg", relates_to=None):
+        ctx = await self.adapter._resolve_message_context(
+            room_id=room_id,
+            sender="@alice:example.org",
+            event_id=event_id,
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to=relates_to or {},
+        )
+        assert ctx is not None
+        return ctx[5]
+
+    @pytest.mark.parametrize(
+        ("room_id", "event_id", "via", "expected"),
+        [
+            pytest.param(
+                "!room:example.org", "$ev", ["example.org"],
+                "https://matrix.to/#/!room:example.org/$ev?via=example.org",
+                id="one-server",
+            ),
+            pytest.param(
+                "!room:example.org", "$ev", ["a.example", "b.example:8448"],
+                "https://matrix.to/#/!room:example.org/$ev?via=a.example&via=b.example%3A8448",
+                id="one-parameter-per-server",
+            ),
+            pytest.param("!room", "$ev", [], "https://matrix.to/#/!room/$ev", id="no-server"),
+            pytest.param(
+                "!room/part:example.org", "$event?part#1", ["example.org:8448"],
+                "https://matrix.to/#/!room%2Fpart:example.org/$event%3Fpart%231?via=example.org%3A8448",
+                id="delimiters-encoded",
+            ),
+            pytest.param("!room:example.org", "", ["example.org"], None, id="no-event"),
+        ],
+    )
+    def test_event_permalink(self, room_id, event_id, via, expected):
+        from plugins.platforms.matrix.permalinks import event_permalink
+
+        assert event_permalink(room_id, event_id, via) == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("relates_to", "thread_id"),
+        [
+            pytest.param({"rel_type": "m.thread", "event_id": "$root"}, "$root", id="thread-reply"),
+            pytest.param({}, None, id="room-message"),
+        ],
+    )
+    async def test_permalink_links_the_triggering_event(self, relates_to, thread_id):
+        source = await self._source(event_id="$msg", relates_to=relates_to)
+
+        assert (source.thread_id, source.source_permalink) == (
+            thread_id,
+            "https://matrix.to/#/!room:example.org/$msg?via=example.org",
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("user_id", "room_id", "permalink", "scope_id"),
+        [
+            pytest.param(
+                "@hermes:example.org", "!opaquehash",
+                "https://matrix.to/#/!opaquehash/$msg?via=example.org", None,
+                id="domainless-room",
+            ),
+            pytest.param(
+                "@hermes:joined.example.org", "!room:old.example.org:8448",
+                "https://matrix.to/#/!room:old.example.org:8448/$msg"
+                "?via=joined.example.org&via=old.example.org%3A8448",
+                "old.example.org:8448",
+                id="bot-server-then-room-server",
+            ),
+            pytest.param(
+                "@hermes:example.org", "!room:example.org",
+                "https://matrix.to/#/!room:example.org/$msg?via=example.org", "example.org",
+                id="same-server-once",
+            ),
+            pytest.param(
+                "@hermes:example.org", "!room:[2001:db8::1]:8448",
+                "https://matrix.to/#/!room:%5B2001:db8::1%5D:8448/$msg?via=example.org",
+                "[2001:db8::1]:8448",
+                id="ip-literal-room-server",
+            ),
+            pytest.param(
+                "@hermes:192.0.2.1:8448", "!room:example.org",
+                "https://matrix.to/#/!room:example.org/$msg?via=example.org", "example.org",
+                id="ip-literal-bot-server",
+            ),
+        ],
+    )
+    async def test_via_falls_back_without_room_state(self, user_id, room_id, permalink, scope_id):
+        self.adapter._user_id = user_id
+
+        source = await self._source(room_id=room_id)
+
+        assert (source.source_permalink, source.scope_id) == (permalink, scope_id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("members", "room_version", "via"),
+        [
+            pytest.param(
+                {
+                    "@admin:admin.example": 100, "@a:big.example": 0, "@b:big.example": 0,
+                    "@c:big.example": 0, "@d:mid.example": 0, "@e:mid.example": 0,
+                    "@f:small.example": 0,
+                },
+                "10", "via=admin.example&via=big.example&via=mid.example",
+                id="highest-power-then-population",
+            ),
+            pytest.param(
+                {
+                    "@helper:small.example": 49, "@a:big.example": 0, "@b:big.example": 0,
+                    "@c:mid.example": 0,
+                },
+                "10", "via=big.example&via=mid.example&via=small.example",
+                id="below-moderator-power-uses-population",
+            ),
+            pytest.param(
+                {
+                    "@admin:192.0.2.1:8448": 100, "@a:[2001:db8::1]": 0,
+                    "@b:[2001:db8::1]": 0, "@c:named.example": 0,
+                },
+                "10", "via=named.example",
+                id="ip-literals-excluded",
+            ),
+            pytest.param(
+                {"@creator:creator.example": 0, "@a:big.example": 0, "@b:big.example": 0},
+                "12", "via=creator.example&via=big.example",
+                id="room-creator-has-highest-power",
+            ),
+        ],
+    )
+    async def test_via_follows_matrix_routing_recommendation(self, members, room_version, via):
+        from mautrix.client.state_store import MemoryStateStore
+        from mautrix.types import (
+            Member,
+            Membership,
+            StateEvent,
+            RoomID,
+            UserID,
+            EventID,
+            EventType,
+            RoomCreateStateEventContent,
+        )
+
+        room_id = RoomID("!room:example.org")
+        store = MemoryStateStore()
+        await store.set_members(
+            room_id,
+            {UserID(user_id): Member(membership=Membership.JOIN) for user_id in members}
+            | {UserID("@gone:gone.example"): Member(membership=Membership.LEAVE)},
+        )
+        await store.set_power_levels(
+            room_id,
+            {"users": {user_id: level for user_id, level in members.items() if level}
+             | {"@gone:gone.example": 100}},
+        )
+        await store.set_create(
+            StateEvent(
+                type=EventType.ROOM_CREATE,
+                room_id=room_id,
+                event_id=EventID("$create"),
+                sender=UserID("@creator:creator.example"),
+                state_key="",
+                timestamp=0,
+                content=RoomCreateStateEventContent(room_version=room_version),
+            )
+        )
+        self.adapter._client = types.SimpleNamespace(state_store=store)
+
+        source = await self._source(room_id=room_id)
+
+        assert source.source_permalink == f"https://matrix.to/#/{room_id}/$msg?{via}"
+
+
+# ---------------------------------------------------------------------------
 # Proxy configuration
 # ---------------------------------------------------------------------------
 
@@ -2582,7 +2803,7 @@ class TestDeviceIdNoneResolution:
         mock_olm.account = MagicMock()
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -2649,7 +2870,7 @@ class TestMatrixReconnectDisconnect:
         adapter._client.api.session.close = AsyncMock()
         adapter._client.whoami = AsyncMock()
 
-        adapter.disconnect = AsyncMock()
+        adapter.disconnect = AsyncMock(wraps=adapter.disconnect)
 
         fake_mautrix_mods = _make_fake_mautrix()
 
@@ -2671,7 +2892,7 @@ class TestMatrixReconnectDisconnect:
         mock_client.api.session = MagicMock()
         mock_client.api.session.close = AsyncMock()
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
 
         with patch.dict("sys.modules", fake_mautrix_mods):
             with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -2679,6 +2900,7 @@ class TestMatrixReconnectDisconnect:
                     await adapter.connect()
 
         adapter.disconnect.assert_awaited_once()
+        await adapter.disconnect()
 
 
 class TestDeviceIdRecoveryOnReconnect:
@@ -2735,7 +2957,7 @@ class TestDeviceIdRecoveryOnReconnect:
         mock_olm1.account = MagicMock()
         mock_olm1.account.identity_keys = {"ed25519": "fake_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client1)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client1)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm1)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -2784,7 +3006,7 @@ class TestDeviceIdRecoveryOnReconnect:
         mock_olm2.account = MagicMock()
         mock_olm2.account.identity_keys = {"ed25519": "fake_ed25519_key2"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client2)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client2)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm2)
 
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
@@ -2975,9 +3197,7 @@ class TestCryptoStoreResetOnDeviceChange:
         mock_olm.account = MagicMock()
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(
-            return_value=mock_client
-        )
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(
             return_value=mock_olm
         )

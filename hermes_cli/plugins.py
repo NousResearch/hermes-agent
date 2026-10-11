@@ -48,7 +48,8 @@ from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
     _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
 )
-from hermes_cli.plugins_dispatch import (
+from hermes_cli.plugins_skill_lifecycle import (SKILL_MUTATION_ACTIONS, SKILL_MUTATION_GUARD_HOOKS, SKILL_MUTATION_HOOKS, SKILL_MUTATION_POST_HOOKS, SKILL_MUTATION_PRE_HOOKS, SKILL_MUTATION_SHELL_UNSUPPORTED_HOOKS)
+from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
     DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
     MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
     SYSTEM_PROMPT_SECTION_POSITIONS, _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
@@ -105,17 +106,6 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
 
 
 _install_plugin_debug_handler()
-
-SKILL_MUTATION_ACTIONS = ("create", "edit", "patch", "write_file", "remove_file", "delete")
-SKILL_MUTATION_GUARD_HOOKS = frozenset(
-    f"pre_skill_{action}:guard" for action in SKILL_MUTATION_ACTIONS)
-SKILL_MUTATION_PRE_HOOKS = frozenset(
-    f"pre_skill_{action}" for action in SKILL_MUTATION_ACTIONS)
-SKILL_MUTATION_POST_HOOKS = frozenset(
-    f"post_skill_{action}" for action in SKILL_MUTATION_ACTIONS)
-SKILL_MUTATION_HOOKS = (
-    SKILL_MUTATION_GUARD_HOOKS | SKILL_MUTATION_PRE_HOOKS | SKILL_MUTATION_POST_HOOKS)
-
 
 VALID_HOOKS: set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
@@ -223,12 +213,7 @@ VALID_HOOKS: set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: set[str] = {
-    "transform_api_error_classification",
-    *SKILL_MUTATION_GUARD_HOOKS,
-    *SKILL_MUTATION_PRE_HOOKS,
-}
-
+SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification", *SKILL_MUTATION_SHELL_UNSUPPORTED_HOOKS}
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()
 

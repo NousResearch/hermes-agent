@@ -26,7 +26,7 @@ from hermes_state_holders import read_only_db_uri
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
-from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
+from hermes_cli.backup_sqlite import _close_quietly, _integrity_check_rows, _safe_copy_db
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
@@ -443,8 +443,7 @@ def verify_sqlite_integrity(
             "skipped PRAGMA integrity_check (header + schema probe passed)",
             valid=True, size=size)
     if run_pragma:
-        rows, exc = _query_ro_sqlite(
-            path, lambda c: [str(r[0]) for r in c.execute("PRAGMA integrity_check")])
+        rows, exc = _query_ro_sqlite(path, _integrity_check_rows)
         if exc is not None:
             kind = "cannot open database" if isinstance(exc, sqlite3.DatabaseError) else "integrity check error"
             return _done(f"{kind}: {exc}", size=size)

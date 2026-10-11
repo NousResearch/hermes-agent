@@ -1,0 +1,24 @@
+name: account-pool-tracker
+repo: https://github.com/roqianjas/hermes-account-pool
+sha: 0d7f0dea98c2eaa35fcf8d008cc867ef5db99952
+subdir: plugins/account-pool-tracker
+version: "1.5.0"
+title: Account Pool Tracker
+description: "Session tracker for account-pool: one post_api_request hook records which credential-pool account each session is on and the tokens each account, profile, model and session used, for `hermes account <provider> who`, `report`, `sessions`, the bot alert and the Accounts page. No commands, no tools, no network. Disclosure — reads the running agent's credential pool entry (label and id only) by scanning thread frames, and writes account-pool-sessions.json and account-pool-tokens.json (mode 600, labels, ids and numbers only) in the default Hermes home; every error is swallowed so it cannot break a turn."
+maintainer: roqianjas
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/roqianjas/hermes-account-pool/blob/0d7f0dea98c2eaa35fcf8d008cc867ef5db99952/plugins/account-pool-tracker/README.md
+platforms: [linux]
+screenshots:
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/0d7f0dea98c2eaa35fcf8d008cc867ef5db99952/docs/screenshots/report.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/0d7f0dea98c2eaa35fcf8d008cc867ef5db99952/docs/screenshots/sessions.png
+known_issues:
+  - "Install account-pool too and run `hermes account <provider> setup`: it links this tracker into every profile, because Hermes loads plugins per profile. On its own the tracker shows nothing."
+  - "Records nothing under plugins.isolation: host: the hook does not say which pool entry a call used, so the tracker finds it in-process."
+capabilities:
+  provides_tools: []
+  provides_hooks: [post_api_request]
+  provides_middleware: []
+  requires_env: []

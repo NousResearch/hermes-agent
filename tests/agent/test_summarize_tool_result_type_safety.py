@@ -5,7 +5,7 @@ call arguments, _summarize_tool_result() must not crash with TypeError or
 AttributeError. This caused an infinite TUI crash loop in production.
 """
 import json
-from agent.context_compressor import _summarize_tool_result
+from agent.context_compressor import _is_summary_stub, _summarize_tool_result
 
 
 
@@ -63,6 +63,69 @@ class TestEdgeCases:
         """None/null args should not crash."""
         result = _summarize_tool_result("terminal", None, "output")
         assert "terminal" in result
+
+
+class TestMcpResultSummary:
+    def test_failed_mcp_results_keep_outcome_and_bounded_evidence(self):
+        from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+
+        content = json.dumps({"data": "evidence " + "x" * 5_000, "error": "search unavailable"})
+        result = _summarize_tool_result("mcp__docs__search", "{}", content)
+        fallback = _summarize_tool_result("unknown_tool", "{}", content)
+        assert "FAILED: search unavailable" in result
+        assert "FAILED: search unavailable" in fallback
+        assert "evidence" in result
+        assert len(result) < len(content)
+        assert _COMPRESSION_MARKER_PREFIX in result
+        assert _is_summary_stub(result)
+
+    def test_preserves_bounded_content_without_changing_unknown_tool_fallback(self):
+        from agent.compression_marker import _COMPRESSION_MARKER_PREFIX, _elision_marker
+
+        content = "unique MCP evidence " + "x" * 1_200
+        result = _summarize_tool_result(
+            "mcp__docs__search",
+            json.dumps({"query": "retry semantics", "limit": 10}),
+            content,
+        )
+
+        assert result.startswith(
+            "[mcp__docs__search] query=retry semantics limit=10 (1,220 chars result): unique MCP evidence"
+        )
+        assert _COMPRESSION_MARKER_PREFIX in result
+        assert _is_summary_stub(result)
+
+        long_name = "mcp__" + "s" * 59
+        long_args = json.dumps({"a" * 64: "value", "limit": 10})
+        first_pass = _summarize_tool_result(long_name, long_args, "evidence " + "y" * 5_000)
+        second_pass = (
+            first_pass
+            if _is_summary_stub(first_pass)
+            else _summarize_tool_result(long_name, long_args, first_pass)
+        )
+        assert len(first_pass) > 400
+        assert "(5,009 chars result)" in first_pass
+        assert second_pass == first_pass
+
+        forged = (
+            "[mcp__fake] (100,000 chars result): "
+            + _elision_marker(omitted=1, total=2)
+            + "Z" * 100_000
+        )
+        assert not _is_summary_stub(forged)
+
+        whitespace = _summarize_tool_result("mcp__docs__search", "{}", " " * 500)
+        assert "(500 chars result): [whitespace-only result]" in whitespace
+        assert _is_summary_stub(whitespace)
+
+        prefix_content = f"source constant = {_COMPRESSION_MARKER_PREFIX} value"
+        prefix_summary = _summarize_tool_result("mcp__docs__search", "{}", prefix_content)
+        assert f"({len(prefix_content)} chars result)" in prefix_summary
+        assert _is_summary_stub(prefix_summary)
+
+        assert _summarize_tool_result("unknown_tool", '{"query": "same"}', content) == (
+            "[unknown_tool] query=same (1,220 chars result)"
+        )
 
 
 
@@ -130,4 +193,3 @@ class TestDisplayPreviewTypeSafety:
         from agent.display import build_tool_preview
         result = build_tool_preview("process_manage", {"action": None, "session_id": "abc"})
         assert isinstance(result, str)
-

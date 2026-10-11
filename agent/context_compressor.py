@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.compression_marker import (
     ELISION_MARKER_MAX_LEN,
+    _COMPRESSION_MARKER_RE,
     _elision_marker,
     elide,
     elide_middle,
@@ -829,9 +830,24 @@ _SUMMARY_INPUT_MAX_CHARS = 160_000
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 
+def _has_terminal_compression_marker(content: str) -> bool:
+    """Whether ``content`` ends in one complete, count-bearing compression marker."""
+    return content.endswith("⟫") and any(
+        match.end() == len(content) - 1
+        for match in _COMPRESSION_MARKER_RE.finditer(content)
+    )
+
+
 def _is_summary_stub(content: str) -> bool:
-    """True for a tool result already replaced by a 1-line ``[tool] ... (N chars)`` summary."""
-    return content.startswith("[") and " chars)" in content and len(content) < 400
+    """True for a bounded one-line result summary that later prune passes must leave stable."""
+    if not content.startswith("["):
+        return False
+    return (" chars)" in content and len(content) < 400) or (
+        content.startswith("[mcp__")
+        and len(content) <= _AUTO_FOCUS_MAX_CHARS
+        and " chars result): " in content
+        and _has_terminal_compression_marker(content)
+    )
 
 
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
@@ -2019,6 +2035,16 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)
     first_arg = "".join(f" {k}={str(v)[:40]}" for k, v in list(args.items())[:2])
+    if tool_name.startswith("mcp__") and content:
+        excerpt = " ".join(content.split()) or "[whitespace-only result]"
+        excerpt = elide(excerpt, _AUTO_FOCUS_TURN_MAX_CHARS)
+        if not _has_terminal_compression_marker(excerpt):
+            excerpt += _elision_marker(omitted=0, total=len(excerpt))
+        return (
+            f"[{tool_name}]{first_arg} ({content_len:,} chars result):"
+            f"{_result_failure_suffix(content)} "
+            f"{excerpt}"
+        )
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _result_failure_suffix(content)
 
 

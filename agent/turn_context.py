@@ -41,15 +41,17 @@ def _str_attr(agent: Any, name: str) -> str:
     return getattr(agent, name, "") or ""
 
 
-def _preflight_request_tokens(
+def _rough_request_tokens(
     agent: Any, messages: list[dict[str, Any]], system_prompt: str
 ) -> int:
-    """Token estimate for automatic preflight compression: a valid provider usage anchor,
-    else the checkpoint-pruned native wire payload, else the generic estimator."""
-    anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
-    agent._request_pressure_anchored = anchored is not None
-    if anchored is not None:
-        return anchored
+    """The unanchored estimate for one request: the checkpoint-pruned native wire payload
+    when the route has one, else the generic transcript estimate.
+
+    Same estimator class the post-compression preflight figure uses, so pre/post figures can
+    be compared like-for-like inside ``_run_preflight_passes`` (#135992). Unlike
+    ``_preflight_request_tokens`` it never touches ``_request_pressure_anchored``: that flag
+    records whether the LAST estimate was anchored, and a rough figure is not real-usage
+    pressure."""
     tools = getattr(agent, "tools", None) or None
     try:
         from agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
@@ -90,6 +92,42 @@ def _preflight_request_tokens(
         estimate_messages, system_prompt=system_prompt or "", tools=tools,
         charge_stale_thinking=charge_stale_thinking,
     )
+
+
+def _preflight_request_tokens(
+    agent: Any, messages: list[dict[str, Any]], system_prompt: str
+) -> int:
+    """Token estimate for automatic preflight compression: a valid provider usage anchor,
+    else the rough whole-request estimate (``_rough_request_tokens``)."""
+    anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    agent._request_pressure_anchored = anchored is not None
+    if anchored is not None:
+        return anchored
+    return _rough_request_tokens(agent, messages, system_prompt)
+
+
+def project_rough_onto_anchored(
+    anchored_tokens: int, rough_before: int, rough_after: int
+) -> Optional[int]:
+    """Scale a post-pass rough figure onto the anchored pre-pass scale, or ``None``.
+
+    A committed compression pass clears the usage anchor, so the post-pass figure is a rough
+    whole-request estimate (messages + system prompt + tool schemas) while the pre-pass figure
+    was provider usage plus a rough delta for the new rows. The two are different units:
+    comparing them directly can read a real cut as growth and fail a turn closed that would
+    have fit (#135992). When the pass input and the pass output are both priced by the same
+    estimator, their ratio carries the shrinkage; applying that ratio to the anchored figure
+    puts the comparison back on one scale.
+
+    ``None`` when there is nothing sound to project with (non-int, zero, or negative inputs),
+    so callers keep the raw post-pass figure. The result is an ESTIMATE of the anchored scale
+    — never provider usage."""
+    for value in (anchored_tokens, rough_before, rough_after):
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+    if anchored_tokens <= 0 or rough_before <= 0:
+        return None
+    return round(anchored_tokens * rough_after / rough_before)
 
 
 def _agent_stale_thinking_on_wire(agent: Any) -> bool:

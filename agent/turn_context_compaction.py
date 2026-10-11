@@ -379,6 +379,17 @@ def _run_preflight_passes(
         _preflight_input = out.messages
         _orig_len = len(_preflight_input)
         _orig_tokens = _preflight_tokens
+        # The pre-pass figure may be usage-anchored (last real usage + a rough delta for the new
+        # rows). A pass that commits clears that anchor, so the post-pass figure comes from a
+        # different estimator class — a rough whole-request estimate including system prompt and
+        # tool schemas. Price this pass's input the same way so the two are comparable (#135992);
+        # nothing is needed unless the pre-pass figure was actually anchored.
+        _orig_anchored = bool(getattr(agent, "_request_pressure_anchored", False))
+        _rough_before = (
+            _tc._rough_request_tokens(agent, _preflight_input, out.active_system_prompt or "")
+            if _orig_anchored
+            else 0
+        )
         out.messages, out.active_system_prompt = agent._compress_context(
             _preflight_input, system_message, approx_tokens=_preflight_tokens,
             task_id=effective_task_id, trigger="turn_start_threshold",
@@ -398,33 +409,50 @@ def _run_preflight_passes(
             break
         # Re-estimate so size-only compression (same rows, fewer tokens) counts as
         # progress.
-        _preflight_tokens = _tc._preflight_request_tokens(
+        _raw_after = _tc._preflight_request_tokens(
             agent, out.messages, out.active_system_prompt or ""
         )
+        # Diagnostics: the raw post-pass figure this pass actually measured. ``_compress_context``
+        # returns the input list on every skip path, so an unchanged object is not a commit.
+        _preflight_tokens = _raw_after
+        _projected = (
+            _tc.project_rough_onto_anchored(_orig_tokens, _rough_before, _raw_after)
+            if (
+                _orig_anchored
+                and out.messages is not _preflight_input
+                and not getattr(agent, "_request_pressure_anchored", False)
+            )
+            else None
+        )
+        # Anchored -> rough after a committed pass: judge progress, the next-pass decision, both
+        # fail-close calls and the post-pass threshold test on the like-for-like figure. It is an
+        # ESTIMATE of the anchored scale, not provider usage; the raw figure stays for diagnostics.
+        _effective_tokens = _raw_after if _projected is None else _projected
         if not _tc.compression_made_progress(
-            _orig_len, len(out.messages), _orig_tokens, _preflight_tokens
+            _orig_len, len(out.messages), _orig_tokens, _effective_tokens
         ):
-            _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
-            _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
+            _tc._fail_closed_after_preflight_timeout(agent, _effective_tokens)
+            _tc._fail_closed_on_insufficient_progress(agent, _effective_tokens)
             out.blocked = True
             break  # Cannot compress further: neither rows nor tokens moved
         out.conversation_history = conversation_history_after_compression(
             agent, out.messages, out.conversation_history
         )
         _reset_retry_state_after_compaction(agent)
-        if not _compressor.should_compress(_preflight_tokens):
+        if not _compressor.should_compress(_effective_tokens):
             break
         if not _tc._compression_warrants_another_preflight_pass(
-            _orig_tokens, _preflight_tokens, _compressor.threshold_tokens
+            _orig_tokens, _effective_tokens, _compressor.threshold_tokens
         ):
             out.blocked = True
             logger.warning(
                 "Preflight compression made insufficient progress: "
-                "~%s -> ~%s request tokens; skipping additional passes",
-                f"{_orig_tokens:,}", f"{_preflight_tokens:,}",
+                "~%s -> ~%s request tokens%s; skipping additional passes",
+                f"{_orig_tokens:,}", f"{_effective_tokens:,}",
+                "" if _projected is None else f" (projected from rough ~{_raw_after:,})",
             )
             # Sub-5% progress on a request still above the window: no further pass will get under it.
-            _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
+            _tc._fail_closed_on_insufficient_progress(agent, _effective_tokens)
             break
 
 

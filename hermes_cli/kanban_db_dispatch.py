@@ -25,6 +25,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli import kanban_crash_sweep_guard as _crash_guard
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -131,6 +132,20 @@ class DispatchResult:
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
+    crash_sweep_refused: dict = field(default_factory=dict)
+    """The R4 refusal this tick, as a plain dict (``signature``/``count``/``threshold``/
+    ``ended_at``/``task_ids``), or ``{}``. Non-empty means the reclaim wrote NOTHING: a sweep that
+    would close ``>= kanban_crash_sweep_guard.mass_crash_threshold()`` runs in one tick is
+    host-systemic, not N card failures (ruling ``t_63a20c59`` R4)."""
+    crash_sweep_held: list[str] = field(default_factory=list)
+    """Task ids the reclaim HELD because their recorded identity fingerprint is not comparable with
+    the shape this dispatcher would write (R2 ``UNKNOWN -> HOLD`` at row granularity, R6). They were
+    neither reclaimed nor counted; their claims are untouched."""
+    identity_generation_alerts: list[str] = field(default_factory=list)
+    """R6 divergence reasons for this tick (``identity-shape-changed:…``, ``psutil-lost``,
+    ``witness-bytes-lost:…``); empty when the deployed identity generation is unchanged. Non-empty
+    means the shape the dispatcher WRITES is no longer the one recorded, so a liveness comparison is
+    meaningless until the witness bytes are re-landed."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
@@ -1141,11 +1156,23 @@ class _CrashSweep:
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
+    # The guard's whole decision for this sweep (the R4 count verdict and the R6 held rows), or
+    # ``None`` when the sweep was never assessed.
+    assessment: Optional[_crash_guard.SweepAssessment] = None
 
 
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
-    """Release every host-local ``running`` task whose worker PID is dead."""
+    """Release every host-local ``running`` task whose worker PID is dead.
+
+    The write is DECIDED before it is made (:mod:`hermes_cli.kanban_crash_sweep_guard`): every
+    candidate is classified first, rows whose recorded fingerprint was built by a different identity
+    generation than this dispatcher's are HELD (R6/R2), and a sweep that would close
+    ``>= mass_crash_threshold()`` runs in one tick is refused IN FULL (R4) -- no run ended, no claim
+    released, nothing counted. The caller (:func:`detect_crashed_workers`) fires the loud path. A
+    wrong refusal is a loud card; a silent board mutation is not.
+    """
     sweep = _CrashSweep()
+    write_shape = _crash_guard.identity_shape(_process_fingerprint(os.getpid()))
     with _kb.write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
@@ -1153,6 +1180,9 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = _kb._host_prefix()
+        # PASS 1 -- classify every candidate. NO writes: the verdict is a decision about the WHOLE
+        # sweep, so it cannot be reached one row at a time.
+        pending: list[tuple[Any, int, _DeadWorker, str]] = []
         for row in rows:
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
@@ -1168,6 +1198,35 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             pid = int(row["worker_pid"])
             dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
+            pending.append((row, pid, dead, retry_status))
+
+        # THE GUARD (R4 + R6). Reached before a single write: an incomparable fingerprint is HELD,
+        # and a sweep that would close too many runs at one instant is refused in full.
+        assessment = _crash_guard.assess_sweep(
+            [
+                _crash_guard.SweepClosure(
+                    task_id=row["id"],
+                    pid=pid,
+                    kind=dead.kind,
+                    shape=_crash_guard.identity_shape(_kb._row_get(row, "worker_started_at")),
+                    protocol_violation=dead.protocol_violation,
+                    terminal_provider=dead.terminal_provider,
+                    rate_limited=dead.rate_limited,
+                    claim_lock=row["claim_lock"],
+                )
+                for row, pid, dead, _ in pending
+            ],
+            write_shape=write_shape,
+        )
+        sweep.assessment = assessment
+        if assessment.refusal_needed:
+            # REFUSE the whole write. Nothing above wrote; nothing below runs.
+            return sweep
+        held = frozenset(assessment.held)
+        # PASS 2 -- book the survivors.
+        for row, pid, dead, retry_status in pending:
+            if row["id"] in held:
+                continue
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
@@ -1304,6 +1363,25 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
     sweep = _reclaim_dead_workers(conn, board=board)
+    if sweep.assessment is not None and sweep.assessment.alerting:
+        # LOUD, never silent: the refusal (R4) and the held rows (R6) both go to the log, to the
+        # board as per-card evidence, and to the design authority as one idempotent acting card.
+        _crash_guard.alert_sweep_guard(
+            conn, sweep.assessment, board=board, tree=_crash_guard.dispatching_tree(),
+        )
+    detect_crashed_workers._last_crash_sweep_abort = (  # type: ignore[attr-defined]
+        sweep.assessment.verdict if sweep.assessment is not None and sweep.assessment.refusal_needed
+        else None
+    )
+    detect_crashed_workers._last_crash_sweep_held = (  # type: ignore[attr-defined]
+        list(sweep.assessment.held) if sweep.assessment is not None else []
+    )
+    if sweep.assessment is not None and sweep.assessment.refusal_needed:
+        # The sweep refused itself: NOTHING was closed, so the returned list is empty and the
+        # crash accounting below must not run.
+        detect_crashed_workers._last_auto_blocked = []  # type: ignore[attr-defined]
+        detect_crashed_workers._last_rate_limited = []  # type: ignore[attr-defined]
+        return []
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
@@ -2180,6 +2258,38 @@ def _apply_default_assignee(
     return True
 
 
+def _check_identity_generation(conn: sqlite3.Connection, board: Optional[str] = None) -> list[str]:
+    """R6: stamp the deployed identity generation and alert on a one-tick divergence.
+
+    The shape this dispatcher WRITES is stamped on disk on the first tick and compared on every
+    later tick, so a tree write that drops the witness bytes or an interpreter change that moves the
+    shape is detected in ONE tick and alerted -- instead of being discovered by a false crash sweep
+    hours later (the recurring class: t_1e6a58c3, 2026-09-26, 2026-09-29, t_ae80d242, 2026-10-10).
+
+    Best-effort by design: a guard that cannot read its own record, or a board that refuses the
+    acting card, must never take the dispatcher tick down. Returns the divergence reasons (empty
+    when the generation is unchanged), so ``DispatchResult`` carries the alert as well as the log.
+    """
+    try:
+        tick = _crash_guard.check_deployed_generation(
+            sample=_process_fingerprint(os.getpid()),
+            tree=_crash_guard.dispatching_tree(),
+            witness_symbols=_crash_guard.witness_symbols_present(sys.modules[__name__]),
+        )
+    except Exception:
+        _kb._log.debug("kanban dispatch: identity-generation check failed", exc_info=True)
+        return []
+    if not tick.alerting:
+        return []
+    try:
+        _crash_guard.alert_generation_divergence(
+            conn, tick, board=board, tree=_crash_guard.dispatching_tree(),
+        )
+    except Exception:
+        _kb._log.debug("kanban dispatch: identity-generation alert failed", exc_info=True)
+    return list(tick.reasons)
+
+
 def _run_reclaim_phase(
     conn: sqlite3.Connection,
     result: DispatchResult,
@@ -2196,7 +2306,20 @@ def _run_reclaim_phase(
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
+    # R6 BEFORE the sweep: the deployed identity generation is stamped and compared first, so a
+    # regression is on record in ONE tick instead of being discovered by a false crash sweep later.
+    result.identity_generation_alerts = _check_identity_generation(conn, board=board)
     result.crashed = detect_crashed_workers(conn, board=board)
+    _refused = getattr(detect_crashed_workers, "_last_crash_sweep_abort", None)
+    if _refused is not None:
+        result.crash_sweep_refused = {
+            "signature": _refused.signature,
+            "count": _refused.count,
+            "threshold": _refused.threshold,
+            "ended_at": _refused.ended_at,
+            "task_ids": list(_refused.task_ids),
+        }
+    result.crash_sweep_held = list(getattr(detect_crashed_workers, "_last_crash_sweep_held", []) or [])
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))

@@ -513,6 +513,26 @@ plugins/memory/my-provider/
 
 Only **one** external memory provider can be active at a time. If a user tries to register a second, the MemoryManager rejects it with a warning. This prevents tool schema bloat and conflicting backends.
 
+## Choosing between an MCP server and a memory provider
+
+Only one external memory provider is active at a time. An MCP memory server
+exposes a separate tool surface and does not acquire the memory-provider
+lifecycle merely by being configured under `mcp_servers`. Choose the
+integration according to the lifecycle you need; configuring both against the
+same backend may duplicate recall, writes, and cost.
+Lifecycle behavior depends on the provider implementation.
+
+| | Memory provider (`memory.provider`) | MCP server (`mcp_servers`) |
+|---|---|---|
+| Recall | A provider can supply recalled context with `prefetch()` before an API call. | Tools only; recall happens when the model calls a tool. |
+| Turn handling | A provider can participate in `sync_turn()` after a completed turn. | No memory-provider turn hook. |
+| Pre-compression | A provider can participate in `on_pre_compress()` before a lossy rewrite. | No memory-provider pre-compression hook. |
+| Built-in memory writes | A provider can participate in `on_memory_write()` when Hermes writes built-in memory. | No built-in-memory mirroring hook. |
+| Tool loading | An active provider can contribute its own tools. | Hermes discovers the server's MCP tools. |
+
+A provider reaches its backend through its own API (HTTP, stdio, or a CLI), not
+through the MCP session: the host owns MCP connections.
+
 ## `HERMES_HOME` survival contract (what wrappers can rely on)
 
 For wrapper-style providers that keep their runtime in a sidecar venv outside Hermes-managed Python (no dependency surface — no `pyproject.toml`, `pip_dependencies`, or `python_dependencies` — at the scanned plugin root; a `pyproject.toml` belonging solely to an external or nested sidecar is not scanned):
@@ -521,4 +541,3 @@ For wrapper-style providers that keep their runtime in a sidecar venv outside He
 - **Survival.** Ordinary Hermes updates — including managed-venv rebuild/replacement by pm — do not delete or rewrite `$HERMES_HOME/plugins/**`. An installed wrapper directory and its marker file (e.g. `mnemosyne-wrapper.json`) survive. Explicit plugin updates and deletion flows (`hermes uninstall`, `hermes plugins remove`, profile deletion, user deletion) are excluded from this guarantee.
 - **Sidecar isolation.** A plugin root with no dependency surface never joins the pm workspace dependency union; a resync or venv rebuild neither provisions deps for it nor touches its tree.
 - **Conflicts.** For native shared-venv plugins, an unsatisfiable dependency union fails loudly: the candidate plugin stays unenabled and unimported (the admission authority refuses before publishing config, reporting the plugin identity plus the resolver's reason, with a re-enable/retry path and a machine-readable pm receipt). Dependency resolution does not automatically disable other plugins or run a bisect. Explicit plugin updates, removal, and independent security gates are separate operations.
-

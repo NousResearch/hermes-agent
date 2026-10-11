@@ -104,7 +104,9 @@ export function NotificationStack() {
 }
 
 // Portaled to <body> on the over-modal rung so a toast clears an open dialog —
-// see the top-center variant below for why.
+// see the top-center variant below for why. Each region carries
+// `data-dialog-passthrough` (DIALOG_PASSTHROUGH_ATTR in ui/dialog.tsx) so a
+// press on a toast is not read as an outside click that closes that dialog.
 const REGION_BASE = 'pointer-events-none fixed z-(--z-over-modal) flex gap-2'
 
 // Primary stack: top-center, collapsed to the latest toast with a "+N more"
@@ -133,6 +135,7 @@ function TopCenterStack({
         'left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 flex-col p-1',
         expanded && 'max-h-[70vh] overflow-y-auto overscroll-contain'
       )}
+      data-dialog-passthrough=""
       role="region"
     >
       <NotificationDeck expanded={expanded} notifications={notifications} />
@@ -185,6 +188,7 @@ function BottomRightStack({
         'right-4 bottom-4 w-[min(24rem,calc(100%-2rem))] flex-col-reverse p-1',
         expanded && 'max-h-[70vh] overflow-y-auto overscroll-contain'
       )}
+      data-dialog-passthrough=""
       role="region"
     >
       {older.length > 0 && (

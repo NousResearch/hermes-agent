@@ -202,3 +202,56 @@ def test_build_history_injects_only_when_enabled():
     assert agent_history[0]["content"].endswith("hello")
     # Assistant message is never timestamped.
     assert agent_history[1]["content"] == "hi"
+
+
+def test_compaction_summary_replays_without_timestamp():
+    from gateway.run import _build_gateway_agent_history
+
+    summary = {
+        "role": "user",
+        "content": "[CONTEXT COMPACTION] prior turns",
+        "timestamp": 1.0,
+        "_compressed_summary": True,
+    }
+    history, _ = _build_gateway_agent_history([summary], inject_timestamps=True)
+    assert history[0]["content"] == summary["content"]
+
+
+def test_inflight_task_restatement_replays_without_timestamp():
+    from agent.context_compressor import (
+        INFLIGHT_TASK_REPLAY_METADATA_KEY,
+        _INFLIGHT_TASK_REPLAY_HEADER,
+    )
+    from gateway.run import _build_gateway_agent_history
+
+    message = {
+        "role": "user",
+        "content": f"{_INFLIGHT_TASK_REPLAY_HEADER}\nfinish the deployment",
+        "timestamp": _epoch(2026, 4, 28, 13, 40, 53),
+        "display_metadata": {INFLIGHT_TASK_REPLAY_METADATA_KEY: True},
+    }
+    history, _ = _build_gateway_agent_history([message], inject_timestamps=True)
+    assert history[0]["content"] == message["content"]
+
+
+def test_user_authored_inflight_header_copy_still_replays_with_timestamp():
+    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER
+    from gateway.run import _build_gateway_agent_history
+
+    message = {
+        "role": "user",
+        "content": f"{_INFLIGHT_TASK_REPLAY_HEADER}\nthis is a pasted log",
+        "timestamp": _epoch(2026, 4, 28, 13, 40, 53),
+    }
+    history, _ = _build_gateway_agent_history([message], inject_timestamps=True)
+    assert history[0]["content"].startswith("[")
+    assert history[0]["content"].endswith("this is a pasted log")
+
+
+def test_regular_user_message_still_replays_with_timestamp():
+    from gateway.run import _build_gateway_agent_history
+
+    message = {"role": "user", "content": "what is next?", "timestamp": 1_000_000_000.0}
+    history, _ = _build_gateway_agent_history([message], inject_timestamps=True)
+    assert history[0]["content"].endswith(message["content"])
+    assert history[0]["content"] != message["content"]

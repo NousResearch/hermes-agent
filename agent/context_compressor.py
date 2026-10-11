@@ -295,6 +295,10 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # reject unknown keys, so a bare key would poison every request in the session.
 COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
+# Durable producer-owned provenance for standalone in-flight-task restatements.
+# This lives in display_metadata because SessionDB persists that field while
+# provider request builders strip it from outgoing messages.
+INFLIGHT_TASK_REPLAY_METADATA_KEY = "compaction_inflight_task_restatement"
 # Only micro markers may be superseded/defragged/rehydrated: a batch marker's
 # content is NOT in the rolling micro summary, so rewriting one destroys history.
 MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
@@ -4926,6 +4930,12 @@ Write only the summary body. Do not include any preamble or prefix."""
             replay = {"role": "user", "content": task_text}
         else:
             replay = _fresh_compaction_message_copy(inflight)
+        replay_metadata = replay.get("display_metadata")
+        replay_metadata = {
+            **(replay_metadata if isinstance(replay_metadata, dict) else {}),
+            INFLIGHT_TASK_REPLAY_METADATA_KEY: True,
+        }
+        replay["display_metadata"] = replay_metadata
         replay.pop(_COMPACTION_TAIL_MARKER, None)
         # A restated row is NEW at the compaction boundary: never persist the
         # in-flight turn's original timestamp, or timestamp-ordered views show
@@ -4998,6 +5008,11 @@ Write only the summary body. Do not include any preamble or prefix."""
                 carrier.get("content"),
                 "\n\n" + _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text,
             )
+            carrier_metadata = carrier.get("display_metadata")
+            carrier["display_metadata"] = {
+                **(carrier_metadata if isinstance(carrier_metadata, dict) else {}),
+                INFLIGHT_TASK_REPLAY_METADATA_KEY: True,
+            }
             drop_stale_api_content(carrier)
             # The carrier absorbed a durable user turn: record its uid (merge witness).
             record_absorbed_message(carrier, inflight)

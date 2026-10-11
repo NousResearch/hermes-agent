@@ -1142,6 +1142,19 @@ def _build_replay_entry(
             entry[_rkey] = _rval
     if preserve_timestamp and msg.get("timestamp"):
         entry["timestamp"] = msg["timestamp"]
+    # Shared expiry needs the producer-owned reference/live distinction too,
+    # not just the timestamp-rendering guard below.
+    if msg.get("_compressed_summary"):
+        entry["_compressed_summary"] = True
+    # Proactive pruning can persist this projected history again. Keep the
+    # producer-owned restatement flag until the provider boundary strips it.
+    from agent.context_compressor import INFLIGHT_TASK_REPLAY_METADATA_KEY
+
+    metadata = msg.get("display_metadata")
+    if isinstance(metadata, dict) and metadata.get(INFLIGHT_TASK_REPLAY_METADATA_KEY):
+        entry["display_metadata"] = {
+            INFLIGHT_TASK_REPLAY_METADATA_KEY: metadata[INFLIGHT_TASK_REPLAY_METADATA_KEY],
+        }
     # Replay rebuilds the SAME conversation for its next turn: every role keeps its uid and merge witness, so a
     # context engine sees the uids the store holds. Tool-call uid maps stay with the rows that still carry
     # their calls (those pass through whole); on a plain row a leftover map would name calls it no longer has.
@@ -1249,6 +1262,7 @@ def _build_gateway_agent_history(
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
     from hermes_time import get_timezone as _get_msg_tz
+    from agent.context_compressor import INFLIGHT_TASK_REPLAY_METADATA_KEY
     from gateway.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
         strip_leading_message_timestamps as _strip_msg_ts,
@@ -1258,6 +1272,10 @@ def _build_gateway_agent_history(
     agent_history: list[dict[str, Any]] = []
     observed_group_context: list[str] = []
     separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
+
+    def _is_generated_inflight_restatement(msg: Dict[str, Any]) -> bool:
+        metadata = msg.get("display_metadata")
+        return isinstance(metadata, dict) and bool(metadata.get(INFLIGHT_TASK_REPLAY_METADATA_KEY))
 
     for msg in history or []:
         role = msg.get("role")
@@ -1292,7 +1310,14 @@ def _build_gateway_agent_history(
                     continue
             # Keep user timestamps for the stale-dangerous-confirmation stripper in agent/replay_cleanup.py.
             entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
-            if inject_timestamps and role == "user" and isinstance(content, str):
+            # Compaction sent summaries unstamped; stamping them on replay breaks the cached prefix.
+            if (
+                inject_timestamps
+                and role == "user"
+                and isinstance(content, str)
+                and not msg.get("_compressed_summary")
+                and not _is_generated_inflight_restatement(msg)
+            ):
                 rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
                 # Preserve only a sidecar matching the complete rendered message,
                 # optionally followed by the normal context separator. Cleanup

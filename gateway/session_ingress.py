@@ -31,6 +31,18 @@ async def admit_message(authority, event):
         # The adapter lifecycle that sends this reply releases the turn's crash marker only once
         # the reply is in the delivery ledger; the drain hands its marker to this event.
         adopters[receipt.admission_id] = event
+    # A drain already running can claim, run and settle the row before this caller resumes; one
+    # that settled it already sent (or owes) the reply itself and resolves no waiter registered now.
+    from hermes_state_runtime import get_session_admission
+    row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+    status = 'terminal' if row is None else row['status']  # None: deleted with its chat, nothing owed
+    if status in ('terminal', 'unknown'):
+        authority.native_waiters.discard(receipt.admission_id)
+        if authority.waiters.get(receipt.admission_id) is waiter:
+            del authority.waiters[receipt.admission_id]
+        if adopters.get(receipt.admission_id) is event:
+            del adopters[receipt.admission_id]
+        return None if status == 'terminal' else pause_notice(authority, receipt.ref, 'unknown_execution')
     if accepted is not None and not accepted.done():
         accepted.set_result(None)
     try:
@@ -281,6 +293,16 @@ async def deliver_settled(authority, admission_id):
     failure cannot rewrite that outcome; it is logged, and inference never runs again."""
     held = _held_markers(authority).pop(admission_id, None)
     delivery = authority.pending_deliveries.get(admission_id)
+    if delivery is not None and admission_id in authority.native_waiters:
+        # ``admit_message`` registered its delivery waiter after this turn started: the drain
+        # hands that waiter the reply and its adapter lifecycle sends it, so this send is not owed.
+        authority.native_waiters.discard(admission_id)
+        authority.pending_deliveries.pop(admission_id)
+        adopter = _marker_adopters(authority).get(admission_id)
+        if held is not None and adopter is not None:
+            _move_marker(held, adopter)
+            held = None
+        delivery = None
     if delivery is None:
         if held is not None:
             # Fenced unknown: no answer is owed, so no later boot may deliver one either.

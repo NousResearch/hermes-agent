@@ -298,6 +298,30 @@ async def test_short_tagged_bot_chunk_waits_for_followup_window(adapter, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_batched_thread_messages_include_the_history_backfill_once(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["history_backfill"] = True
+    adapter._text_batch_delay_seconds = 0.6
+    backfill = "[Recent channel messages]\n[Alice] earlier"
+    # The second message's backfill scans back to the bot's last reply, so it repeats the first
+    # message's backfill and then the first message itself.
+    adapter._fetch_channel_context = AsyncMock(side_effect=[backfill, f"{backfill}\n[Jezza] first"])
+    thread = FakeThread(channel_id=456, parent=FakeTextChannel(channel_id=321))
+    first = make_message(channel=thread, content="first")
+    second = make_message(channel=thread, content="second")
+    second.id = 124
+
+    with patch.object(discord_platform.asyncio, "sleep", new_callable=AsyncMock):
+        await adapter._handle_message(first)
+        await adapter._handle_message(second)
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+
+    event = adapter.handle_message.await_args.args[0]
+    assert (event.text, event.channel_context) == ("first\nsecond", backfill)
+
+
+@pytest.mark.asyncio
 async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
     """Quote-replies should stay in-channel instead of trying to create a thread."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)

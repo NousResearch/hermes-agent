@@ -1751,6 +1751,15 @@ DEFAULT_CONFIG = {
     # Custom personalities: {"name": "system prompt"} or {"name": {"description", "system_prompt",
     # "tone", "style"}}.
     "personalities": {},
+    # Profile-scoped filesystem allowlist (hard rule, enforced in tools/profile_fs_guard.py before any
+    # file I/O). Each key is a profile name; its value is the list of directory roots that profile
+    # may read/write/search/patch. A listed profile is refused anything outside its roots (symlink
+    # escapes resolved via realpath on local backends). Unlisted profiles, the default included,
+    # are unrestricted, so the empty default changes nothing.
+    # Example:
+    #   profile_fs_allowlist:
+    #     clientbot: [/srv/projects/client-a, /tmp]
+    "profile_fs_allowlist": {},
     "auth": {  # Login policy (credentials themselves live in auth.json / .env).
         # Borrow and refresh the Codex CLI (~/.codex/auth.json) and Claude Code (~/.claude/.credentials.json)
         # logins automatically when Hermes has no usable login of its own. Their refresh tokens are single-use

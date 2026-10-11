@@ -45,6 +45,13 @@ from tools.file_tools_read_tracking import (
 logger = logging.getLogger(__name__)
 
 
+def _profile_allowlist_error(path: str, task_id: str) -> str | None:
+    """Hard per-profile filesystem allowlist (config ``profile_fs_allowlist``); None when allowed."""
+    from tools.profile_fs_guard import check_path_allowed
+    base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+    return check_path_allowed(path, base_dir=base, task_id=task_id)
+
+
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
@@ -629,6 +636,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 f"Cannot read '{path}': this is a device file that would "
                 "block or produce infinite output.")
 
+        # Restricted profiles may only touch whitelisted roots; enforced before any read I/O.
+        allow_err = _profile_allowlist_error(path, task_id)
+        if allow_err:
+            return tool_error(allow_err)
+
         _resolved = _resolve_path_for_task(path, task_id)
 
         # A read on a FIFO/socket blocks until the exec timeout: a self-shipped DoS.
@@ -777,7 +789,7 @@ def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: s
     prompt covers every path of a multi-file patch.
     """
     for p in paths:
-        err = _check_sensitive_path(p, task_id) or (
+        err = _check_sensitive_path(p, task_id) or _profile_allowlist_error(p, task_id) or (
             None if cross_profile else _check_cross_profile_path(p, task_id))
         if err:
             return err
@@ -870,7 +882,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     cross-PROFILE guard it was named for no longer exists).
     """
     # write_file checks the binary-document guard before the mirror guard.
+    # The allowlist is a hard boundary: refuse a denied path before a later guard's error can
+    # disclose anything about it.
     err = (_check_sensitive_path(path, task_id)
+           or _profile_allowlist_error(path, task_id)
            or _check_binary_document_write(path, task_id)
            or _check_protected_instruction_write([path], task_id)
            or _check_approval_required_write([path], task_id)
@@ -1058,6 +1073,11 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
+
+        # grep/glob outside a restricted profile's roots would expose denied names and contents.
+        allow_err = _profile_allowlist_error(path, task_id)
+        if allow_err:
+            return tool_error(allow_err)
 
         # Pagination args (and order) are part of the key so paging through truncated
         # results doesn't trip the repeated-search guard.

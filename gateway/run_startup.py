@@ -786,12 +786,13 @@ class GatewayStartupMixin:
     def _crash_left_reply(self, history: list, started: float, origin) -> Optional[str]:
         """What a crash-left turn owes, judged as live delivery would have: ``None`` when it never
         persisted a final reply after *started*; ``""`` when nothing would have been presented (a
-        silence marker on a machinery turn or on a turn the adapter reported as not addressed to the
-        bot, a muted diagnostic wake); else the text to send, with any other bare silence marker
+        permitted silence marker, format-only output on an opted-in human turn, or a muted
+        diagnostic wake); else the text to send, with any other bare silence marker
         replaced by the same notice the live path sends."""
         from gateway.platforms.base import _strip_media_directives
         from gateway.response_filters import (
-            is_intentional_silence_response, is_machinery_display_kind, silence_allowed,
+            is_intentional_silence_response, is_invisible_only_response,
+            is_machinery_display_kind, silence_allowed,
         )
         from gateway.run import _sanitize_gateway_final_response
         from gateway.run_turn import _unexpected_silence_reply
@@ -812,9 +813,16 @@ class GatewayStartupMixin:
             with scope:
                 if diagnostic_turn_muted(prompt.get("display_metadata"), origin.platform):
                     return ""
-        if is_intentional_silence_response(last["content"]):
+        allow_human_silence = self._allows_human_silence_markers(origin)
+        # Format-only output qualifies only for the human opt-in, as on the live path.
+        if is_intentional_silence_response(last["content"]) or (
+            allow_human_silence and not is_machinery_display_kind(prompt.get("display_kind"))
+            and is_invisible_only_response(last["content"])
+        ):
             silent_ok = silence_allowed(
-                prompt.get("display_kind"), (prompt.get("display_metadata") or {}).get("reply_expected"))
+                prompt.get("display_kind"), (prompt.get("display_metadata") or {}).get("reply_expected"),
+                allow_human_silence_markers=allow_human_silence,
+            )
             return "" if silent_ok else _unexpected_silence_reply()
         return _strip_media_directives(_sanitize_gateway_final_response(origin.platform, last["content"])).strip() or None
 

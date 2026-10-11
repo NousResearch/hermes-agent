@@ -162,3 +162,25 @@ class TestThreadReplyAlwaysScopesByThread:
             f"thread reply dropped with reply_in_thread={reply_in_thread}"
         )
         assert captured[0].source.thread_id == "1700000000.000009"
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_source_keeps_child_message_id_and_parent_thread_id(
+        self, adapter
+    ):
+        event = _channel_event(
+            "<@U_BOT> thread reply",
+            ts="1700000000.000011",
+            thread_ts="1700000000.000009",
+        )
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")
+        ):
+            await adapter._handle_slack_message(event)
+
+        assert len(captured) == 1
+        source = captured[0].source
+        assert source.message_id == "1700000000.000011"
+        assert source.thread_id == "1700000000.000009"

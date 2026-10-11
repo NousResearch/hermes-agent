@@ -88,6 +88,9 @@ _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.
 
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+# Auto-thread creation: when Discord 429s, wait out the Retry-After (capped) instead of burning
+# the 0.75s transient-error retries — the thread-create bucket refills on the order of minutes.
+_DISCORD_AUTO_THREAD_MAX_RATE_LIMIT_SLEEP_SECONDS = 90.0
 # Discord caps global slash commands at 100/app; exceeding it fails the ENTIRE sync (error 30032).
 _DISCORD_MAX_APP_COMMANDS = 100
 # Native slash commands (registered before COMMAND_REGISTRY/plugins so they survive the 100 cap):
@@ -5531,18 +5534,38 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
 
         ``Cannot connect to host discord.com:443``) don't immediately burn through to the caller's failure
         path (#20243).
+
+        Rate limits get special handling: the thread-create bucket refills on the order of
+        minutes, so the 0.75s transient backoff can never clear it. On a 429 we wait out the
+        server's Retry-After hint once (capped) and retry the direct path; the seed-message
+        fallback is skipped — it doubles the API load while rate-limited and leaves an orphan
+        seed message in the channel when the create also fails.
         """
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
+        rate_limit_waited = False
         for attempt in range(2):
             try:
                 thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
                 return self._stamp_auto_thread_name(thread, thread_name)
             except Exception as direct_error:
                 last_direct_error = direct_error
+                if self._is_discord_rate_limit(direct_error) and not rate_limit_waited:
+                    # 429s need minutes, not milliseconds: honor Retry-After once (capped), retry direct.
+                    rate_limit_waited = True
+                    retry_after = self._extract_discord_retry_after(direct_error)
+                    if retry_after is None:
+                        retry_after = _DISCORD_AUTO_THREAD_MAX_RATE_LIMIT_SLEEP_SECONDS
+                    retry_after = min(retry_after, _DISCORD_AUTO_THREAD_MAX_RATE_LIMIT_SLEEP_SECONDS)
+                    logger.warning(
+                        "[%s] Auto-thread creation rate-limited; waiting %.0fs before one direct retry",
+                        self.name, retry_after,
+                    )
+                    await asyncio.sleep(retry_after)
+                    continue
                 try:
                     seed_msg = await message.channel.send(t("platform.discord.thread.seed_message", name=thread_name))
                     thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)

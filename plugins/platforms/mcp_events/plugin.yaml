@@ -1,0 +1,42 @@
+name: mcp-events
+label: MCP Events
+kind: platform
+version: 0.1.0
+description: >
+  MCP Events receiver for Hermes Agent — subscribe to event streams exposed by
+  MCP event emitters (the proposed MCP Events extension, protocol 2026-07-28)
+  and wake the agent on signed deliveries, with no cron and no human in the loop.
+
+  INBOUND (platform adapter): a stdlib HTTP receiver for Standard Webhooks
+  (HMAC-SHA256) event deliveries. Verified deliveries are defanged, framed as
+  untrusted external input, and routed into the agent's live gateway session —
+  so the agent that wakes is the same one serving the user, with full memory
+  and context. Per-emitter rate limits, per-subscription storm guards, delivery
+  idempotency, and an append-only audit log are on by default.
+
+  OUTBOUND (client tools): mcp_events_list, mcp_events_subscribe,
+  mcp_events_unsubscribe, mcp_events_subscriptions let the agent discover an
+  emitter's event catalog and manage its own subscriptions.
+
+  Security is on by default: no webhook secret configured => localhost-only bind.
+  Behavioral settings live in config.yaml under `mcp_events:` (.env is secrets only).
+
+  Pure stdlib transport (http.server + urllib + hmac) — no MCP SDK dependency required.
+author: aska team (draft contribution)
+# The outbound client tools. Declaring them here is what asks discovery to
+# import `tools.py` in CLI/TUI processes, where the plugin is otherwise
+# deferred and the tools would never register at all (a2a #78050).
+provides_tools:
+  - mcp_events_list
+  - mcp_events_subscribe
+  - mcp_events_unsubscribe
+  - mcp_events_subscriptions
+# requires_env / optional_env are surfaced in the `hermes config` UI via the
+# platform-plugin env var injector in hermes_cli/config.py. Only the secret
+# lives in env — every behavioral setting is config.yaml `mcp_events:`.
+requires_env: []
+optional_env:
+  - name: MCP_EVENTS_WEBHOOK_SECRET
+    description: "Signing secret for webhook deliveries ('whsec_' + base64, 24-64 bytes raw). The subscriber supplies it to each emitter at subscribe time; emitters HMAC-sign deliveries with it. With no secret => bind to 127.0.0.1 only."
+    prompt: "MCP Events webhook secret (blank = localhost-only)"
+    password: true

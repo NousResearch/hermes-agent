@@ -10,6 +10,22 @@ Plugins can launch and supervise fresh Hermes child sessions without importing
 The service resolves its parent from the current agent turn, so it works in
 CLI, gateway, non-interactive, and kanban-worker sessions. Launching outside an
 active agent turn fails closed with `No active Hermes parent session`.
+The facade also works when a plugin runs under `plugins.isolation: host`.
+
+Requests accept `goal`, `context`, `role`, `model`, `provider`, `allowed_toolsets`,
+`blocked_tools`, `working_directory`, `parent_session_id`, `correlation_id`,
+`metadata`, and `timeout_seconds`, subject to the restrictions below.
+
+## Routing
+
+Children follow the `delegation` config (provider, model, base_url,
+request_overrides, and ACP command) exactly as `delegate_task` children do.
+The request's `model` overrides the configured model. Its optional `provider`
+names a configured provider for this launch, with precedence request >
+delegation config > parent; the selected provider supplies its own credential
+bundle. An unresolvable provider raises `SubagentLifecycleError` before launch.
+Core does not expose `provider` to the model: the plugin chooses it, for example
+from operator config.
 
 ```python
 from agent.subagent_lifecycle import SubagentLaunchRequest
@@ -31,8 +47,14 @@ def launch_review(ctx):
 ```
 
 `SubagentHandle` is serializable and carries a versioned, opaque capability.
-Pass it back to `status`, `wait`, `cancel`, `result`, or `reconnect`; malformed
+Requests and handles may also arrive as mappings, including plugin-host wire records.
+Pass a handle back to `status`, `wait`, `cancel`, `steer`, `result`, or `reconnect`; malformed
 or forged handles return `UNKNOWN`/`UNKNOWN_HANDLE` and cannot access a child.
+
+`steer(handle, text)` queues text for the child's next iteration boundary and
+returns `True` while the child accepts steering. It returns `False` for empty
+text, unknown or forged handles, handles owned by another parent session, or a
+child that has finished or stopped accepting steering.
 
 The stable states are `PENDING`, `STARTING`, `RUNNING`, `SUCCEEDED`, `FAILED`,
 `INTERRUPTED`, `CANCEL_REQUESTED`, `CANCELLED`, and `UNKNOWN`.

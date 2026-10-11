@@ -34,6 +34,17 @@ def config_fingerprint(config: dict) -> str:
         "transport": config.get("transport"),
         "tools_include": sorted(tools_filter.get("include") or []),
         "tools_exclude": sorted(tools_filter.get("exclude") or [])}
+    # Bind the cache to the validated allowed_tools policy (#106983):
+    # whitelist → sorted names; empty list → []; present-but-invalid → null
+    # (refuse-all, distinct from an absent key so a pre-filter all-tools
+    # manifest cannot be reused). Absent key is omitted (compat with pre-key configs).
+    allowed = config.get("allowed_tools")
+    if isinstance(allowed, str):
+        payload["allowed_tools"] = [allowed]
+    elif isinstance(allowed, (list, tuple, set)):
+        payload["allowed_tools"] = sorted(str(item) for item in allowed)
+    elif "allowed_tools" in config:
+        payload["allowed_tools"] = None
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -107,3 +118,20 @@ def tools_from_cache_entry(entry: dict) -> list[dict]:
 def utility_tools_from_cache_entry(entry: dict) -> list[dict]:
     """Return cached ``{schema, handler_key}`` utility rows."""
     return _list_field(entry, "utility_tools")
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+def clear_cache_entry(server_name: str) -> None:
+    with _cache_lock:
+        data = _load_all()
+        if server_name in data:
+            del data[server_name]
+            _save_all(data)
+
+def has_cached_entry(server_name: str, fingerprint: str) -> bool:
+    return get_cached_entry(server_name, fingerprint) is not None
+# ---- END PLUGIN-COMPAT ----

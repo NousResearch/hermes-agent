@@ -414,6 +414,35 @@ def _plural(n: int) -> str:
     return "vulnerability" if n == 1 else "vulnerabilities"
 
 
+def _audit_affected_packages(audit_data: dict, limit: int = 5) -> tuple[list[str], int]:
+    """Per-vulnerable-package lines (worst severity first) + the total package count.
+
+    The counts-only row names neither the package nor the advisory, so users cannot
+    tell which finding — or even which dependency tree — the numbers refer to (#126882).
+    The advisory title/id only exists in npm's per-package ``vulnerabilities`` map.
+    """
+    order = {"critical": 0, "high": 1, "moderate": 2, "low": 3, "info": 4}
+    rows = []
+    for name, v in (audit_data.get("vulnerabilities") or {}).items():
+        if not isinstance(v, dict):
+            continue
+        sev = v.get("severity") or "unknown"
+        # npm's package severity is the max over advisories (arborist Vuln.addAdvisory),
+        # while via is sorted by advisory source id — the first titled entry is not
+        # necessarily the one carrying that severity. Print the advisory matching the
+        # package's severity, else the first titled one (a metavuln can raise the
+        # package severity without any via advisory of its own).
+        titled = [x for x in (v.get("via") or []) if isinstance(x, dict) and x.get("title")]
+        advisory = next((x["title"] for x in titled if x.get("severity") == sev), "")
+        if not advisory and titled:
+            advisory = titled[0]["title"]
+        rows.append((order.get(sev, 99), name, sev, advisory))
+    rows.sort()
+    lines = [f"{name} ({sev} — {advisory})" if advisory else f"{name} ({sev})"
+             for _, name, sev, advisory in rows[:limit]]
+    return lines, len(rows)
+
+
 def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues: list[str]) -> None:
     """Run one `npm audit --json` and report; any failure is silently skipped.
 
@@ -444,11 +473,17 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
             remedy = ("fix is an upstream lockfile bump — a local manual fix does not persist"
                       " (the next `hermes update` reinstalls from the committed lockfile)")
             check_warn(f"{label} deps", f"({critical} critical, {high} high, {moderate} moderate — {remedy})")
+            affected, total_pkgs = _audit_affected_packages(audit_data)
+            remaining = total_pkgs - len(affected)
             if workspace_scoped:
                 check_info("  ^ build-time tooling (not runtime); if manual npm remediation "
                            "errors with an arborist crash it's a known npm bug — clears via a lockfile bump")
             else:
                 check_info(f"  ^ {detail}; report/pin the fix in package-lock.json — see #116774")
+            for line in affected:
+                check_info(f"  ^ affected: {line}")
+            if remaining > 0:
+                check_info(f"  ^ affected: +{remaining} more package(s); run `npm audit` in that tree for the full list")
             issues.append(f"{label} has {total} npm {_plural(total)}")
         else:
             check_ok(f"{label} deps", f"({moderate} moderate {_plural(moderate)})")

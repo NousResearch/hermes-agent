@@ -858,6 +858,13 @@ def _dispatch_browser_command(
     # Engine injection keys off the resolved session backend, not global provider
     # state: hybrid routing can create a local sidecar while a cloud provider stays configured.
     engine = _engine_override or _cloud._get_browser_engine()
+    # Real-profile lane: the daemon attaches to the SHARED copy-Chrome, whose
+    # currently-active tab can be a rival task's. Re-pin this task's own bound
+    # tab first so the command lands on the owner's tab, never the browser's
+    # current one (per-task tab ownership; see browser_tool_real_profile).
+    if (session_info.get("features") or {}).get("real_profile") and command != "close":
+        if (pin_err := _real_profile._pin_task_tab(session_info)):
+            return engine, {"success": False, "error": pin_err}
     backend_args = ["--session", session_info["session_name"]]
     if session_info.get("cdp_url"):
         backend_args += ["--cdp", session_info["cdp_url"]]

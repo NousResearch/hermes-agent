@@ -6,6 +6,7 @@ State (``_REAL_PROFILE_SESSION``, ``_real_profile_cdp_lock``, ``_real_profile_cd
 through ``_bt`` (resolved per call — never import ``tools.browser_tool`` at import time).
 """
 
+import json
 import os
 import re
 import subprocess
@@ -140,6 +141,158 @@ def _cdp_on_data_dir(http_cdp: str, data_dir: str) -> bool:
 def _agent_browser_close_session(session_name: str) -> None:
     """Best-effort close of an agent-browser session (stale/wrong-dir cleanup)."""
     _agent_browser_session_cmd(session_name, "close", log_label="session close")
+
+
+# ── Per-task tab ownership in the shared real-profile browser ──────────────
+# The real-profile lane is ONE shared Chromium reused by concurrent tasks (the
+# copy dir must never be double-snapshotted, so rival browsers are forbidden).
+# Every task still gets its own agent-browser daemon (``--session rp_<hex>``),
+# but all of them attach to the same Chrome via ``--cdp``, so a daemon's
+# "active tab" follows whatever target was last touched in the shared browser:
+# task B's new tab steals task A's next snapshot/eval (2026-10-11 diagnosis).
+# Fix: each task BINDS one tab (opened once, labeled with its session name)
+# and every command re-pins the daemon's active tab to that bound tab first —
+# commands always land on the owner's tab, never the browser's current one.
+
+_RP_TAB_MARKER = "hermes-rp-tab="
+
+
+def _rp_tab_label(session_info: dict) -> str:
+    """The bound tab's label: the task's own unique agent-browser session name."""
+    return str(session_info.get("session_name") or "")
+
+
+def _rp_tab_marker_url(session_info: dict) -> str:
+    """URL the bound tab is born on; lets /json/list identify the new target."""
+    return f"about:blank#{_RP_TAB_MARKER}{_rp_tab_label(session_info)}"
+
+
+def _rp_http_cdp_root(session_info: dict) -> Optional[str]:
+    """HTTP discovery root for the shared Chrome, from the session's ws:// CDP URL."""
+    m = re.search(r"ws://127\.0\.0\.1:(\d+)/", str(session_info.get("cdp_url") or ""))
+    return f"http://127.0.0.1:{m.group(1)}" if m else None
+
+
+def _cdp_target_for_marker(http_cdp: Optional[str], url: str) -> Optional[str]:
+    """Chrome targetId of the page sitting on ``url`` (the freshly bound tab), or None."""
+    if not http_cdp:
+        return None
+    try:
+        import requests
+        targets = requests.get(f"{http_cdp}/json/list", timeout=2,
+                               **loopback_request_kwargs(http_cdp)).json()
+    except Exception:
+        return None
+    for t in (targets if isinstance(targets, list) else []):
+        if isinstance(t, dict) and t.get("type") == "page" and t.get("url") == url:
+            return t.get("id")
+    return None
+
+
+def _cdp_close_target(http_cdp: Optional[str], target_id: str) -> bool:
+    """Best-effort ``/json/close`` of one tab in the shared Chrome."""
+    if not http_cdp or not target_id:
+        return False
+    try:
+        import requests
+        return requests.get(f"{http_cdp}/json/close/{target_id}", timeout=2,
+                            **loopback_request_kwargs(http_cdp)).status_code == 200
+    except Exception:
+        return False
+
+
+def _task_session_cmd(session_name: str, socket_dir: str, *cmd: str,
+                      timeout: float = 15.0) -> Optional[subprocess.CompletedProcess]:
+    """One ``--json`` agent-browser command on a TASK's own daemon (same temp-file
+    capture pattern as ``_capture_agent_browser_cli``, but in the task's socket
+    dir — the shared real-profile daemon's dir would cross tasks)."""
+    try:
+        browser_cmd = _install._find_agent_browser()
+    except FileNotFoundError:
+        return None
+    env = _session._agent_browser_command_env(socket_dir)
+    argv = [*_session._agent_browser_argv(browser_cmd), "--session", session_name, "--json", *cmd]
+    tag = f"rp-tab-{cmd[0]}"
+    try:
+        proc = _session._popen_agent_browser(argv, env, socket_dir, tag)
+        proc.wait(timeout=timeout)
+        stdout, stderr = _session._read_command_output_files(
+            os.path.join(socket_dir, f"_stdout_{tag}"), os.path.join(socket_dir, f"_stderr_{tag}"))
+        _session._unlink_command_output_files(os.path.join(socket_dir, f"_stdout_{tag}"),
+                                              os.path.join(socket_dir, f"_stderr_{tag}"))
+        return subprocess.CompletedProcess(argv, proc.returncode, stdout=stdout, stderr=stderr)
+    except (subprocess.SubprocessError, OSError) as e:
+        _origin().logger.debug("real-profile task tab cmd %s failed: %s", cmd[0], e)
+        return None
+
+
+def _tab_cmd_ok(proc: Optional[subprocess.CompletedProcess]) -> bool:
+    """True when a ``--json`` tab command reports success."""
+    if proc is None or proc.returncode != 0:
+        return False
+    try:
+        return bool(json.loads((proc.stdout or "").strip()).get("success"))
+    except (json.JSONDecodeError, AttributeError):
+        return False
+
+
+def _pin_task_tab(session_info: dict) -> Optional[str]:
+    """Route this task's next command to its OWN bound tab; error message or None.
+
+    Re-pins the daemon's active tab to the bound tab before every real-profile
+    command (a rival task's tab in the shared Chrome must never become our
+    target). Fallback: when the bound tab is gone (closed externally, or the
+    daemon was recycled under a new name), reopen a fresh tab and rebind.
+    """
+    session_name = _rp_tab_label(session_info)
+    if not session_name:
+        return "real-profile session has no session name; cannot bind a tab"
+    socket_dir = _session._prepare_session_socket_dir(session_name)
+    if session_info.get("rp_tab_bound"):
+        proc = _task_session_cmd(session_name, socket_dir, "tab", session_name)
+        if proc is not None and _tab_cmd_ok(proc):
+            return None
+        detail_text = (proc.stderr or proc.stdout or "") if proc is not None else ""
+        lowered = detail_text.lower()
+        missing = proc is None or any(m in lowered for m in
+                                      ("not found", "no such tab", "unknown tab", "no tab"))
+        if not missing:
+            # A live binding plus a non-"gone" failure: fail the command rather
+            # than silently opening a SECOND bound tab next to the live one.
+            detail = (detail_text.strip().splitlines() or ["tab re-pin failed"])[-1]
+            return f"the real-profile browser could not re-pin this task's tab: {detail}"
+        _origin().logger.info("real-profile: bound tab for %s is gone; rebinding", session_name)
+        # The daemon lost the tab (closed externally / recycled): drop the stale
+        # binding and open a fresh one. Close the old Chrome target best-effort
+        # so a rebind never leaks a tab in the shared browser.
+        _cdp_close_target(_rp_http_cdp_root(session_info), str(session_info.get("rp_tab_target") or ""))
+        session_info.pop("rp_tab_bound", None)
+        session_info.pop("rp_tab_target", None)
+    proc = _task_session_cmd(session_name, socket_dir, "tab", "new",
+                             "--label", session_name, _rp_tab_marker_url(session_info))
+    if not _tab_cmd_ok(proc):
+        detail = ((proc.stderr or proc.stdout or "").strip().splitlines() or ["no output"])[-1] if proc else "agent-browser CLI unavailable"
+        return f"the real-profile browser could not open this task's own tab: {detail}"
+    session_info["rp_tab_bound"] = True
+    if (tid := _cdp_target_for_marker(_rp_http_cdp_root(session_info), _rp_tab_marker_url(session_info))):
+        session_info["rp_tab_target"] = tid
+    return None
+
+
+def close_task_tab(session_info: dict) -> None:
+    """Best-effort close of a real-profile session's bound tab (janitor/teardown).
+
+    The tab lives in the SHARED Chrome, so closing the task's daemon is not
+    enough: try the daemon's ``tab close`` first, and when the daemon is already
+    gone (crashed task), fall back to Chrome's HTTP CDP endpoint with the
+    targetId recorded at bind time."""
+    session_name = _rp_tab_label(session_info)
+    if not session_name:
+        return
+    socket_dir = _session._prepare_session_socket_dir(session_name)
+    if _tab_cmd_ok(_task_session_cmd(session_name, socket_dir, "tab", "close", session_name, timeout=10.0)):
+        return
+    _cdp_close_target(_rp_http_cdp_root(session_info), str(session_info.get("rp_tab_target") or ""))
 
 
 _REAL_PROFILE_CHROME_FLAGS = (

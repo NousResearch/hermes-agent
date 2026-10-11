@@ -672,6 +672,13 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> No
                 _bt.logger.warning("Could not close cloud browser session: %s", e)
 
     session_name = session_info.get("session_name", "")
+    # Real-profile sessions share ONE Chrome: the daemon's death does not close
+    # this task's bound tab, so the janitor reaps it (daemon ``tab close``, or
+    # HTTP CDP ``/json/close`` with the recorded targetId when the daemon is
+    # already gone) BEFORE its daemon is killed.
+    if (session_info.get("features") or {}).get("real_profile"):
+        _best_effort(f"Real-profile bound-tab close for task {task_id}",
+                     lambda: _real_profile.close_task_tab(session_info))
     if session_name:
         socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
         if os.path.exists(socket_dir):

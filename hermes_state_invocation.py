@@ -84,6 +84,10 @@ class SessionInvocationBindingMixin:
             record = self._bound_invocation_record(config, invocation_id)
             ordinal = int(record.get("request_count") or 0) + 1
             record["request_count"] = ordinal
+            pending = record.setdefault("pending_ordinals", [])
+            if not isinstance(pending, list):
+                raise InvocationBindingError("native_record_failed")
+            pending.append(ordinal)
             record["last_request"] = {**snapshot, "ordinal": ordinal, "state": "prepared"}
             return ordinal
         return self._invocation_txn(session_id, _request)
@@ -98,6 +102,10 @@ class SessionInvocationBindingMixin:
 
         def _settle(conn, config):
             record = self._bound_invocation_record(config, invocation_id)
+            pending = record.get("pending_ordinals")
+            if type(ordinal) is not int or not isinstance(pending, list) or ordinal not in pending:
+                raise InvocationBindingError("request_not_pending")
+            pending.remove(ordinal)
             record[counter] = int(record.get(counter) or 0) + 1
             last = record.get("last_request")
             if isinstance(last, dict) and last.get("ordinal") == ordinal and last.get("state") == "prepared":

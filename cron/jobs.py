@@ -2391,9 +2391,58 @@ def _record_run_outcome(
     job["last_delivery_error"] = delivery_error
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None
-    job.pop("pending_slot", None)
+    # ``pending_slot`` is NOT dropped here: _advance_after_run() decides whether the occurrence it
+    # records was ever claimed (see _restore_refused_slot_after_run).
     if job.get("run_claim") is not None:  # keep key absence for legacy records
         job["run_claim"] = None
+
+
+def _restore_refused_slot_after_run(job: dict[str, Any], now: str) -> None:
+    """Re-arm the occurrence a dispatch tick took off the schedule but never ran.
+
+    The tick advances ``next_run_at`` before dispatch (at-most-once) and stamps ``pending_slot`` for
+    the occurrence it is handing to the dispatcher. When a PREVIOUS run is still in flight the
+    in-flight guard refuses that dispatch (``scheduler._submit_with_guard`` -> None), so the
+    occurrence is never claimed and never gets an execution row — while the re-anchor in
+    :func:`_advance_after_run` computes ``next_run_at`` from the COMPLETION time and therefore lands
+    PAST it. A job whose run outlives its own period (a slow agent turn, a retrying delivery) lost
+    every slot it overran: no run, no output, no ledger row — and invisible to
+    ``_restore_unclaimed_slot`` (this function consumed its input) and to the missed-fire watchdog
+    (``last_run_at`` looked like it covered the schedule). Restore the stamp as the due instant
+    instead, so the occurrence flows through the ordinary late / fast-forward /
+    ``cron.catch_up_missed`` policy: it fires ONCE, late, never a replay.
+
+    Conservative on every axis. A stamp that is not strictly behind the recomputed instant was not
+    refused (nothing to restore); an uncomputable schedule keeps its own error path; another
+    process's live stamp means it may be mid-dispatch for this very occurrence; and an occurrence
+    the ledger already completed is skipped, so a restored slot can never double-fire.
+    """
+    pending = job.get("pending_slot")
+    # Consumed either way: a dispatch stamp never outlives the run that was owed it.
+    job.pop("pending_slot", None)
+    if not isinstance(pending, dict):
+        return
+    slot = pending.get("scheduled_at")
+    if not isinstance(slot, str) or job.get("schedule", {}).get("kind") not in {"cron", "interval"}:
+        return
+    next_run = job.get("next_run_at")
+    slot_dt = _parse_aware(slot)
+    next_dt = _parse_aware(next_run) if isinstance(next_run, str) else None
+    if slot_dt is None or next_dt is None or slot_dt >= next_dt:
+        return
+    now_dt = _parse_aware(now) or _hermes_now()
+    if pending.get("by") != _machine_id() and _claim_is_live(pending, now_dt, FIRE_CLAIM_TTL_SECONDS):
+        return  # another process may still be dispatching this occurrence
+    from cron.occurrences import completed_occurrence
+
+    if completed_occurrence(job, slot):
+        return  # already run elsewhere: one occurrence, one fire
+    logger.warning(
+        "Job '%s' (%s): occurrence %s was taken off the schedule but never claimed (the previous "
+        "run was still in flight, so dispatch was refused). Restoring it as the due instant "
+        "(was %s).",
+        job.get("name", job.get("id")), job.get("id"), slot, next_run)
+    job["next_run_at"] = slot
 
 
 def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = False) -> None:
@@ -2445,6 +2494,10 @@ def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = Fal
             job.get("name", job.get("id", "?")), kind)
     else:
         _complete_job_record(job)  # one-shot: terminal completion
+        return
+    # Re-anchor ABOVE may have jumped past an occurrence this job's own dispatch tick took off the
+    # schedule and refused (see _restore_refused_slot_after_run); the occurrence is still owed.
+    _restore_refused_slot_after_run(job, now)
 
 
 def mark_job_run(

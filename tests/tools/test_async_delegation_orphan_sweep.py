@@ -256,7 +256,7 @@ def test_offer_dropped_by_a_session_that_cannot_own_it_is_re_offered_to_the_owne
     registry = type("Registry", (), {"completion_queue": q, "is_completion_consumed": lambda self, sid: False})()
     started = []
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_run_prompt_submit", lambda rid, sid, session, text, **kw: started.append(sid))
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda rid, sid, session, text, **kw: started.append(sid) or True)
 
     def drain(sid, session):
         server._notif_handle_ready(sid, session, _drain(q), session["_notification_emitted"], registry,
@@ -295,8 +295,8 @@ def test_offer_released_after_a_failed_tui_turn_is_re_offered(tmp_path, monkeypa
     with _Home(home):
         assert ad.sweep_orphaned_completions(q, now=later) == 1
         (evt,) = _drain(q)
-        assert server._notif_claim_turn(owner)
-        server._notif_dispatch_event("sid-owner", owner, evt, "text")
+        claim = server._notif_claim_turn(owner)
+        server._notif_dispatch_event("sid-owner", owner, evt, "text", claim)
         row = _row(home, delegation_id)
         assert (row["delivery_state"], row["delivery_claim"], row["delivery_attempts"]) == ("pending", None, 1)
         assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + ad._ORPHAN_STALE_S + 1) == 1

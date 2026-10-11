@@ -2,7 +2,7 @@ import { useIsMutating } from '@tanstack/react-query'
 import { type ReactElement, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { CheckCircle2, Download, Loader2, Pause, StopFilled, Zap } from '@/lib/icons'
+import { Download, Loader2, Pause, StopFilled, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { localModelsKey, runningRuntimeInstall, startLocalRuntimeInstall } from '@/store/local-runtime-jobs'
 import type { LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
@@ -23,10 +23,6 @@ export function LocalModelsRuntimeSection({ status, jobs, lastError }: LocalMode
   const installStarting: boolean = useIsMutating({ mutationKey: localModelsKey(owner, 'install') }) > 0
   const [serverBusy, setServerBusy] = useState<boolean>(false)
   const rJob: LocalRuntimeJob | null = runningRuntimeInstall(jobs)
-
-  // Up to date = the authority (status) says the configured tag is what's
-  // serving. Shown whenever true — not only right after an update.
-  const updateApplied = status.runtime_installed && !status.update_available && status.tag === status.configured_tag
 
   async function handleServer(action: 'start' | 'stop'): Promise<void> {
     setServerBusy(true)
@@ -140,18 +136,6 @@ export function LocalModelsRuntimeSection({ status, jobs, lastError }: LocalMode
                 <Loader2 className="size-3.5 animate-spin" />
               )}
               {copy.updating}
-            </span>
-          }
-        />
-      )}
-
-      {updateApplied && (
-        <ListRow
-          description={copy.upToDateDetail(status.tag, status.runtime_backend ?? 'cpu')}
-          title={
-            <span className="inline-flex items-center gap-2">
-              <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-400" />
-              {copy.upToDateTitle}
             </span>
           }
         />

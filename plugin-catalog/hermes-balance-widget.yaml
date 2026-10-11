@@ -1,0 +1,26 @@
+# Community catalog entry — hermes-balance-widget
+#
+# Owner-submitted: the PR author (`OMOX563`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the desktop half ships as static
+# files under `desktop/plugin.js` and never fetches, downloads, or replaces itself.
+name: hermes-balance-widget
+repo: https://github.com/OMOX563/hermes-balance-widget
+sha: "3767dfa08bca76225a5aa534ace79edf47fbfe90"
+title: "Nine-Balance Whale Widget"
+description: >-
+  Nine AI provider balances in one desktop widget — live balance/usage and quota
+  reads, token-based spend estimates with off-peak price windows, and an anime
+  mascot per provider with rotating flavour lines (DeepSeek, MiniMax, GLM, Kimi,
+  MiMo, ChatGPT, Claude, Gemini, Grok). Desktop-only: desktop/plugin.js inside
+  the plugin SDK surface; no agent tools, hooks, middleware or env vars. Keys are
+  entered in the widget's settings page and stored in plugin-scoped storage; the
+  widget only calls those providers' official APIs. Ported from
+  MeteorNOX/DeepSeek-Balance-Whale-Widget (MIT).
+maintainer: OMOX563
+tier: community
+category: desktop
+version: "1.1.4"
+screenshots:
+  - "https://raw.githubusercontent.com/OMOX563/hermes-balance-widget/3767dfa08bca76225a5aa534ace79edf47fbfe90/assets/preview.png"
+  - "https://raw.githubusercontent.com/OMOX563/hermes-balance-widget/3767dfa08bca76225a5aa534ace79edf47fbfe90/assets/grid-light.jpg"
+readme: true

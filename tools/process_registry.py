@@ -522,7 +522,7 @@ def _output_tail(session: "ProcessSession", n: int) -> str:
     """Last *n* chars of the session output with ANSI sequences stripped."""
     from tools.ansi_strip import strip_ansi
 
-    return strip_ansi(session.output_buffer[-n:])
+    return strip_ansi(session.output_buffer)[-n:]
 
 
 def _completion_output(session: "ProcessSession") -> dict:
@@ -2432,7 +2432,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
-                "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
+                "output_preview": _output_tail(s, 200),
             }
             # Flag processes surfaced only because they share the gateway session (not the current task) —
             # these are the long-lived background processes a user may have forgotten about (#29177).

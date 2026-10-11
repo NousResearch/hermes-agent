@@ -341,6 +341,16 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           const busy = Boolean(payload!.running)
 
           if (state.busy === busy && (busy || !state.awaitingResponse)) {
+            // Same-busy heartbeat: no turn edge. But cancelRun already set
+            // busy=false and awaitingResponse=false client-side, so the turn's
+            // authoritative running=false exit lands HERE (not in the settle
+            // branch below) — and it must still release the interrupt latch,
+            // because this is the backend's proof the cancelled turn exited
+            // (the edge a backend-chained turn's message.start follows, #122723).
+            if (state.interrupted) {
+              return { ...state, interrupted: false }
+            }
+
             return state
           }
 
@@ -432,6 +442,12 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
             ...state,
             awaitingResponse: false,
             busy,
+            // The backend's turn-exit confirmation doubles as the interrupt
+            // latch's release edge (#122723): this settle branch runs when the
+            // state still said busy — the cancelRun writes landed after it —
+            // so release the latch alongside the settle, with the same
+            // reasoning as the same-busy branch above.
+            interrupted: false,
             // The turn is over but its streaming bubble may still say
             // pending — running=false from the agent loop's finally block
             // is the ONLY settle signal when message.complete never

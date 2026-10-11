@@ -639,6 +639,19 @@ def _print_billing_or_entitlement_guidance(
     ))
 
 
+def _resolved_session_title(agent) -> str:
+    """The session's own title: the gateway's build-time hint, else the DB row ("" when
+    neither resolves). Shared by the staleness probe and the rebuild it triggers, so both
+    agree on WHICH eternal-session shape (Bot Chat vs hosted room member) they handle."""
+    title = str(getattr(agent, "_session_title_hint", "") or "").strip()
+    if not title and agent._session_db and agent.session_id:
+        try:
+            title = str(agent._session_db.get_session_title(agent.session_id) or "").strip()
+        except Exception:  # health: allow BLE001 -- moved verbatim from _bot_chat_prompt_stale; a DB read failure degrades to "no title", never blocks the restore path
+            title = ""
+    return title
+
+
 def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
     """Bot Chat capability epoch check for a stored prompt.
 
@@ -646,16 +659,20 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
     once-per-change rebuild. Unstamped prompts never match; probe failures fail closed
     to "reuse" so the cache is kept. Legacy upgrade: a Bot Chat prompt predating the
     epoch mechanism gets ONE title-gated migration rebuild; the stamped result cannot
-    re-fire. A NULL or empty stored prompt already rebuilds every turn, so this probe
-    is not a gate there and must not run.
+    re-fire. A hosted room member session ("Group: <room_id>") is equally eternal, so
+    an unstamped member prompt gets the same one-time migration. A NULL or empty stored
+    prompt already rebuilds every turn, so this probe is not a gate there and must not
+    run.
     """
     if not stored_prompt:
         return False
     try:
         from tools.bot_mode_probe import (
             BOT_CHAT_TITLE,
+            is_hosted_room_session_title,
             stored_bot_chat_prompt_needs_upgrade,
             stored_prompt_capability_stale,
+            stored_room_member_prompt_needs_epoch,
         )
         home = None
         try:
@@ -667,13 +684,10 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
             return True
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
-        title = str(getattr(agent, "_session_title_hint", "") or "").strip()
-        if not title and agent._session_db and agent.session_id:
-            try:
-                title = str(agent._session_db.get_session_title(agent.session_id) or "").strip()
-            except Exception:
-                title = ""
-        return title == BOT_CHAT_TITLE and bool(stored_bot_chat_prompt_needs_upgrade(stored_prompt, home))
+        title = _resolved_session_title(agent)
+        if title == BOT_CHAT_TITLE:
+            return bool(stored_bot_chat_prompt_needs_upgrade(stored_prompt, home))
+        return is_hosted_room_session_title(title) and bool(stored_room_member_prompt_needs_epoch(stored_prompt))
     except Exception:
         return False
 
@@ -769,7 +783,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "adopt the new capability surface (one-time prefix-cache break).",
                 agent.session_id,
             )
-            agent._session_title_hint = "Bot Chat"
+            # A Bot Chat's DB title lands post-first-turn, so its rebuild needs the
+            # explicit hint; a hosted room member session must rebuild under its OWN
+            # "Group: <room_id>" title or the rebuilt prompt would adopt the Bot-to-Bot
+            # protocol section it must not carry.
+            agent._session_title_hint = _resolved_session_title(agent) or "Bot Chat"
             # The skills index cache (LRU + disk snapshot) does not watch the skills
             # dir; a capability refresh must rebuild THROUGH it or new skills are lost.
             try:

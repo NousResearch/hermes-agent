@@ -904,7 +904,9 @@ class HostedRoomRuntime:
 
 def room_session_title(room_id: str) -> str:
     """Return the canonical hidden session title for one hosted room."""
-    return f"Group: {room_id}"
+    from tools.bot_mode_probe import HOSTED_ROOM_TITLE_PREFIX
+
+    return f"{HOSTED_ROOM_TITLE_PREFIX}{room_id}"
 
 
 def _member_id(task: Mapping[str, Any]) -> str:

@@ -347,7 +347,12 @@ def _bot_mode_parts(agent: Any) -> list[str]:
     date pinned in a months-long session is misinformation."""
     parts: list[str] = []
     try:
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, epoch_line, get_bot_mode_protocol_section
+        from tools.bot_mode_probe import (
+            BOT_CHAT_TITLE,
+            epoch_line,
+            get_bot_mode_protocol_section,
+            is_hosted_room_session_title,
+        )
         _title = str(getattr(agent, "_session_title_hint", "") or "").strip()
         if not _title:
             _sdb = getattr(agent, "_session_db", None)
@@ -360,6 +365,12 @@ def _bot_mode_parts(agent: Any) -> list[str]:
             # user-initiated capability change in an eternal session.
             parts.append(epoch_line(_agent_home(agent)))
             agent._bot_chat_timeless_prompt = True
+        elif is_hosted_room_session_title(_title):
+            # A hosted room member session ("Group: <room_id>") is reused for the
+            # room's lifetime, so it is as eternal as a Bot Chat: it carries the
+            # capability epoch stamp too, but NOT the Bot-to-Bot protocol section
+            # above — that describes only a canonical Bot Chat prompt.
+            parts.append(epoch_line(_agent_home(agent)))
     except Exception:
         pass
     return parts

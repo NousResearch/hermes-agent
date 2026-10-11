@@ -165,9 +165,9 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
     return f"{_DECLARED_SCOPE_PREFIX}{digest}"
 
 
-def resolve_prompt_cache_scope(agent: Any) -> str:
+def resolve_prompt_cache_scope(agent: Any, *, include_cli_scope: bool = True) -> str:
     """Rotation-stable cache-scope id: the inherited parent scope of a same-model cache-parity
-    fork, else the declared scope, else the compression-lineage root of ``agent.session_id``
+    fork, else an explicit fresh CLI scope, else the declared scope or compression-lineage root
     (the physical id without ancestry/DB). Memoized on the agent."""
     inherited = getattr(agent, "_inherited_cache_scope", None)
     # Two sibling streams under one key evict each other on a slot-keyed route. Read per call:
@@ -178,6 +178,9 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
         inherited = None
     if isinstance(inherited, str) and inherited:
         return _apply_fork_tag(agent, inherited)
+    explicit = getattr(agent, "_cli_prompt_cache_scope", None)
+    if include_cli_scope and isinstance(explicit, str) and explicit:
+        return explicit
     sid = str(getattr(agent, "session_id", None) or "")
     if not sid:
         return ""
@@ -208,7 +211,9 @@ def sibling_cache_scope(parent: Any) -> Optional[str]:
     parent's own, so a delegation tree adds one bucket rather than joining its parent's.
     ``resolve_prompt_cache_scope`` ignores it while the child is on a slot-keyed route.
     """
-    parent_scope = resolve_prompt_cache_scope_safe(parent)
+    # An explicit CLI label may span independent parent sessions. Keep sibling
+    # groups tied to the owning conversation even when the parents share a bucket.
+    parent_scope = resolve_prompt_cache_scope_safe(parent, include_cli_scope=False)
     if not parent_scope:
         return None
     return _SIBLING_SCOPE_PREFIX + hashlib.sha256(parent_scope.encode("utf-8", errors="replace")).hexdigest()[:24]
@@ -274,7 +279,7 @@ def declared_conversation_scope_safe(agent: Any) -> Optional[str]:
         return None
 
 
-def resolve_prompt_cache_scope_safe(agent: Any) -> Optional[str]:
+def resolve_prompt_cache_scope_safe(agent: Any, *, include_cli_scope: bool = True) -> Optional[str]:
     """Never-raising variant of :func:`resolve_prompt_cache_scope` (None = use the physical id).
     At turn_context an exception inside ``set_runtime_main(...)`` would skip the whole binding.
 
@@ -285,7 +290,7 @@ def resolve_prompt_cache_scope_safe(agent: Any) -> Optional[str]:
     cache scope.
     """
     try:
-        return resolve_prompt_cache_scope(agent) or None
+        return resolve_prompt_cache_scope(agent, include_cli_scope=include_cli_scope) or None
     except Exception:
         logger.debug("prompt-cache scope resolution failed", exc_info=True)
         return None

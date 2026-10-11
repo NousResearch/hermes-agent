@@ -1700,7 +1700,7 @@ class CLITuiMixin:
         for image-only/empty gestures (so text pastes and dictation never attach stale images),
         and collapse large pastes to a file-reference placeholder, preserving existing text."""
         from cli import (
-            _should_auto_attach_clipboard_image_on_paste,
+            _decode_csi_u_in_paste, _should_auto_attach_clipboard_image_on_paste,
             _strip_leaked_bracketed_paste_wrappers,
             _strip_leaked_terminal_responses_with_meta,
             logger)
@@ -1710,7 +1710,7 @@ class CLITuiMixin:
         _paste_raw_size = len(event.data or "")
         # Normalise line endings so the collapse threshold and display are consistent.
         pasted_text = (event.data or "").replace('\r\n', '\n').replace('\r', '\n')
-        pasted_text = _strip_leaked_bracketed_paste_wrappers(pasted_text)
+        pasted_text = _strip_leaked_bracketed_paste_wrappers(_decode_csi_u_in_paste(pasted_text))
         pasted_text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(pasted_text)
         if _had_mouse_reports:
             self._recover_terminal_input_modes(reason="mouse reports leaked into bracketed paste payload")

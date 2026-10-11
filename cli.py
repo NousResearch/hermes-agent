@@ -717,6 +717,9 @@ def _replay_output_history(fit=None, output=None) -> None:
 _strip_leaked_bracketed_paste_wrappers = _lazy_shim(
     "hermes_cli.input_sanitize", "strip_leaked_bracketed_paste_wrappers", "_strip_leaked_bracketed_paste_wrappers"
 )
+_decode_csi_u_in_paste = _lazy_shim(
+    "hermes_cli.input_sanitize", "decode_csi_u_in_paste", "_decode_csi_u_in_paste"
+)
 
 
 # OSC sequences (e.g. OSC-8 links): pt's ANSI parser strips the ESC but leaks the payload as text.

@@ -647,6 +647,27 @@ async function remoteProcessCreationTime(ssh, pid) {
   }
 }
 
+// Parses a KERN_PROCARGS2 payload (macOS sysctl; the probe reads it via
+// ctypes) into the exact argv list, so ownership tokens are compared without
+// re-tokenizing the lossy `ps -o command=` join. Kept as a standalone
+// fragment so tests can drive it with synthetic buffers on every platform.
+const KERN_PROCARGS2_ARGV_PY =
+  'def _procargs2_argv(raw):\n' +
+  ' import struct\n' +
+  ' if len(raw)<4:return None\n' +
+  ' argc=struct.unpack("=i",raw[:4])[0]\n' +
+  ' if argc<0:return None\n' +
+  ' rest=raw[4:]\n' +
+  ' nul=rest.find(b"\\0")\n' +
+  ' if nul<0:return None\n' +
+  ' rest=rest[nul+1:].lstrip(b"\\0")\n' +
+  ' out=[]\n' +
+  ' for _ in range(argc):\n' +
+  '  nul=rest.find(b"\\0")\n' +
+  '  if nul<0:return None\n' +
+  '  out.append(rest[:nul].decode("utf-8","surrogateescape"));rest=rest[nul+1:]\n' +
+  ' return out\n'
+
 // A pid is "provably ours" only if its remote cmdline carries our dashboard
 // args — never kill a pid we can't positively identify as our dashboard.
 async function pidIsOurDashboard(
@@ -677,16 +698,38 @@ async function pidIsOurDashboard(
     `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
     `expected_profile=${shq(profile)}\n` +
     `nonce=${shq(spawnNonce)}\n` +
+    KERN_PROCARGS2_ARGV_PY +
     'try:\n' +
     ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
     ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
     'except OSError:\n' +
+    // No /proc (e.g. macOS): prefer exact argv sources over the lossy
+    // `ps -ww -o command=` join - psutil when importable, then Darwin's
+    // KERN_PROCARGS2 sysctl via ctypes. The proof stays equality-based.
+    ' args=None\n' +
     ' try:\n' +
-    '  line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
-    ' except subprocess.CalledProcessError:\n' +
-    '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
-    '  print("FOREIGN");sys.exit(0)\n' +
-    ' args=shlex.split(line)\n' +
+    '  import psutil\n' +
+    '  c=psutil.Process(pid).cmdline()\n' +
+    '  args=c if isinstance(c,list) else None\n' +
+    ' except Exception:args=None\n' +
+    ' if args is None and sys.platform=="darwin":\n' +
+    '  try:\n' +
+    '   import ctypes,ctypes.util\n' +
+    '   libc=ctypes.CDLL(ctypes.util.find_library("c") or "/usr/lib/libSystem.B.dylib")\n' +
+    '   mib=(ctypes.c_int*3)(1,49,pid)\n' +
+    '   size=ctypes.c_size_t(0)\n' +
+    '   if libc.sysctl(mib,3,None,ctypes.byref(size),None,0)==0 and size.value>=4:\n' +
+    '    buf=ctypes.create_string_buffer(size.value)\n' +
+    '    if libc.sysctl(mib,3,buf,ctypes.byref(size),None,0)==0:\n' +
+    '     args=_procargs2_argv(buf.raw[:size.value])\n' +
+    '  except Exception:args=None\n' +
+    ' if args is None:\n' +
+    '  try:\n' +
+    '   line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
+    '  except subprocess.CalledProcessError:\n' +
+    '   # pid already gone — a dead process is FOREIGN, not a transport error\n' +
+    '   print("FOREIGN");sys.exit(0)\n' +
+    '  args=shlex.split(line)\n' +
     'ok=False\n' +
     'try:\n' +
     // A profile literally named "serve" puts the value token before the
@@ -897,6 +940,9 @@ def argv():
   raw=open(f"/proc/{pid}/cmdline","rb").read()
   return [part.decode("utf-8","surrogateescape") for part in raw.split(b"\\0") if part]
  except OSError:
+  # Left lossy on purpose (unlike pidIsOurDashboard): on Darwin this read only
+  # feeds the refusal verdict - DARWIN_UNAVAILABLE fires below before any
+  # signal - so fragmented argv changes the refusal text, never a kill.
   try:return shlex.split(subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip())
   except (OSError,subprocess.CalledProcessError,ValueError):return []
 
@@ -1810,6 +1856,7 @@ export {
   fingerprintToken,
   isForwardBindCollision,
   isLockfileSkew,
+  KERN_PROCARGS2_ARGV_PY,
   listRemoteHermesProfiles,
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,

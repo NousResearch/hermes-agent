@@ -362,6 +362,14 @@ def _(rid, params: dict) -> dict:
                 str(params.get("session_id") or ""), request_id=f"reload-mcp-{rid}")
         except Exception as exc:
             return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
+        if not isinstance(ack, dict):
+            return _err(rid, 5019, "compute-host reload_mcp failed: malformed host acknowledgement")
+        response = ack.get("response")
+        result = response.get("result") if isinstance(response, dict) else None
+        if ack.get("type") != "reload_mcp.ack" or not isinstance(result, dict) or result.get("status") != "reloaded":
+            error = response.get("error") if isinstance(response, dict) else None
+            message = (error.get("message") if isinstance(error, dict) else None) or ack.get("message")
+            return _err(rid, 5019, f"compute-host reload_mcp failed: {message or 'no successful host acknowledgement'}")
         return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
     _mcp_agent, _mcp_lifecycle, _mcp_discovery = (
         _tools_mod("tools.mcp_tool_agent"), _tools_mod("tools.mcp_tool_lifecycle"), _tools_mod("tools.mcp_tool_discovery"))

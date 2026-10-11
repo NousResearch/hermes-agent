@@ -49,6 +49,15 @@ export const esOverrides = {
   },
   connectorsPage: {
     title: 'Conectores',
+    manualReload: {
+      action: 'Recargar herramientas MCP',
+      title: '¿Recargar herramientas MCP en todas las sesiones abiertas?',
+      warning: 'Esto recarga el grupo de conexiones MCP compartido y actualiza las herramientas de todas las sesiones abiertas, no solo de este chat. Comprueba si hay turnos o traspasos pendientes en las sesiones afectadas antes de continuar. El siguiente mensaje puede reenviar toda la caché del prompt. La aplicación no se reinicia y la configuración de servidores no cambia.',
+      confirm: 'Recargar ahora',
+      success: 'Herramientas MCP recargadas',
+      noSession: 'Se necesita una sesión activa y una conexión al gateway de Hermes',
+      failed: 'Las herramientas MCP no se recargaron'
+    },
     searchPlaceholder: (count: number) => `Buscar entre ${count} apps`,
     filterCategory: 'Categoría',
     categoryAll: 'Todas las categorías',

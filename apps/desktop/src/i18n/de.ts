@@ -49,6 +49,15 @@ export const deOverrides = {
   },
   connectorsPage: {
     title: 'Konnektoren',
+    manualReload: {
+      action: 'MCP-Tools neu laden',
+      title: 'MCP-Tools in allen offenen Sitzungen neu laden?',
+      warning: 'Dies lädt den gemeinsamen MCP-Verbindungspool neu und aktualisiert Tools in allen offenen Sitzungen, nicht nur in diesem Chat. Prüfen Sie vorher laufende Anfragen und ausstehende Übergaben in den betroffenen Sitzungen. Die nächste Nachricht kann den vollständigen Prompt-Cache erneut senden. Die App wird nicht neu gestartet; Servereinstellungen bleiben unverändert.',
+      confirm: 'Jetzt neu laden',
+      success: 'MCP-Tools neu geladen',
+      noSession: 'Eine aktive Sitzung und eine Hermes-Gateway-Verbindung sind erforderlich',
+      failed: 'MCP-Tools wurden nicht neu geladen'
+    },
     searchPlaceholder: (count: number) => `${count} Apps durchsuchen`,
     filterCategory: 'Kategorie',
     categoryAll: 'Alle Kategorien',

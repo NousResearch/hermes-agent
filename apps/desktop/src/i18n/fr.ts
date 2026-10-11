@@ -49,6 +49,15 @@ export const frOverrides = {
   },
   connectorsPage: {
     title: 'Connecteurs',
+    manualReload: {
+      action: 'Recharger les outils MCP',
+      title: 'Recharger les outils MCP dans toutes les sessions ouvertes ?',
+      warning: 'Cette action recharge le pool MCP partagé et actualise les outils de toutes les sessions ouvertes, pas seulement ce chat. Vérifiez les tours et transferts en attente dans les sessions concernées avant de continuer. Le prochain message peut renvoyer tout le cache du prompt. L’application ne redémarre pas et les paramètres des serveurs ne changent pas.',
+      confirm: 'Recharger maintenant',
+      success: 'Outils MCP rechargés',
+      noSession: 'Une session active et une connexion à la passerelle Hermes sont nécessaires',
+      failed: 'Les outils MCP n’ont pas été rechargés'
+    },
     searchPlaceholder: (count: number) => `Rechercher parmi ${count} applications`,
     filterCategory: 'Catégorie',
     categoryAll: 'Toutes les catégories',

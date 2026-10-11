@@ -66,6 +66,15 @@ export const en: Translations = {
   // `connectors.*` above stays the onboarding and chat vocabulary; these are the page's own, and the two are not shared.
   connectorsPage: {
     title: 'Connectors',
+    manualReload: {
+      action: 'Reload MCP tools',
+      title: 'Reload MCP tools across open sessions?',
+      warning: 'This reloads the shared MCP connection pool and refreshes tools in all open sessions, not just this chat. Check that there are no pending turns or handoffs in affected sessions before proceeding. The next message may re-send the full prompt cache. This does not restart the app or change server settings.',
+      confirm: 'Reload now',
+      success: 'MCP tools reloaded',
+      noSession: 'A live session and Hermes gateway are required',
+      failed: 'MCP tools were not reloaded'
+    },
     searchPlaceholder: (count: number) => `Search ${count} apps`,
     filterCategory: 'Category',
     categoryAll: 'All categories',

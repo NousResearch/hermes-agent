@@ -998,7 +998,7 @@ const PLATFORM_INTRO: Record<string, string> = {
     'On your Mattermost server, create a bot account or personal access token, then paste the server URL and token here.',
   matrix: 'Sign in to your homeserver with the bot account, then copy the access token, user ID, and homeserver URL.',
   signal:
-    'Run a signal-cli REST bridge somewhere reachable, then point Hermes at the URL and the registered phone number.',
+    'Run signal-cli daemon --http somewhere reachable, then point Hermes at the URL and the registered phone number.',
   whatsapp:
     'Start the WhatsApp bridge that ships with Hermes, scan the QR code on first run, then enable the platform.',
   bluebubbles:

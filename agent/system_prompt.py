@@ -442,6 +442,9 @@ def _cron_delivery_hint(agent: Any) -> str:
     return f"Delivery destination ({deliver_key}): {hint}" if hint else ""
 
 
+PLATFORM_HINT_HEADING = "# Platform notes"
+
+
 def platform_hint(agent: Any) -> str:
     """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
     override + desktop TUI clarifier; cron agents also carry their delivery channel's hint."""
@@ -706,7 +709,10 @@ def _post_workspace_parts(agent: Any) -> list[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts.append(platform_hint(agent))
+    # Own heading so the hint stops continuing whatever section precedes it; _join_tier puts
+    # a blank line before every part, so the heading always starts its own line.
+    _hint = platform_hint(agent)
+    parts.append(f"{PLATFORM_HINT_HEADING}\n{_hint}" if _hint else "")
     return parts
 
 

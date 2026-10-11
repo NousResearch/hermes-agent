@@ -614,7 +614,8 @@ def test_secondary_picker_policy_follows_canonical_runtime_route(work_profile_ho
     # must never borrow authority from only one side of the route.
     shared_admin = "333"
     for cfg in (runner.config, runner._secondary_config):
-        cfg.platforms[Platform.TELEGRAM].extra["group_allow_admin_from"].append(shared_admin)
+        extra = cfg.platforms[Platform.TELEGRAM].extra
+        extra["group_allow_admin_from"] = [*extra["group_allow_admin_from"], shared_admin]
     for chat_id, runtime, allowed, denied in [
         ("own", PROFILE_NAME, SECONDARY_ADMIN, PRIMARY_ADMIN),
         ("routed", "default", shared_admin, SECONDARY_ADMIN),

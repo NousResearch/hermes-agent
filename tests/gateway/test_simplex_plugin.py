@@ -11,6 +11,8 @@ import asyncio
 import base64
 import io
 import json
+from copy import deepcopy
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -412,6 +414,329 @@ def _make_file_chat_item(file_path: str, file_name: str) -> dict:
     }
 
 
+def _native_reply_item(chat_type: str, item_id: int, quote: dict | None) -> dict:
+    if chat_type == "direct":
+        chat_info = {
+            "type": "direct",
+            "contact": {"contactId": 42, "profile": {"displayName": "Contact"}},
+        }
+        direction = {"type": "directRcv"}
+    else:
+        chat_info = {
+            "type": "group",
+            "groupInfo": {"groupId": 12, "groupProfile": {"displayName": "Group"}},
+        }
+        direction = {
+            "type": "groupRcv",
+            "groupMember": {
+                "memberId": "sender",
+                "memberProfile": {"displayName": "Sender"},
+            },
+        }
+    return {
+        "chatInfo": chat_info,
+        "chatItem": {
+            "chatDir": direction,
+            "meta": {"itemId": item_id, "itemTs": "2026-01-01T00:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "text", "text": f"reply {item_id}"},
+            },
+            "quotedItem": deepcopy(quote),
+        },
+    }
+
+
+def _native_quote(
+    direction: str | None,
+    *,
+    item_id: int | None = 501,
+    shared_id: str | None = "shared-501",
+) -> dict:
+    quote: dict[str, object] = {
+        "content": {"type": "text", "text": "quoted\ncomplete text"},
+        "sentAt": "2025-12-31T00:00:00Z",
+    }
+    if direction is not None:
+        chat_direction: dict[str, object] = {"type": direction}
+        if direction == "groupRcv":
+            chat_direction["groupMember"] = {
+                "memberId": "quoted-author",
+                "memberProfile": {"displayName": "Quoted author"},
+            }
+        quote["chatDir"] = chat_direction
+    if item_id is not None:
+        quote["itemId"] = item_id
+    if shared_id is not None:
+        quote["sharedMsgId"] = shared_id
+    return quote
+
+
+def _native_envelope(item: dict, nested: bool, plural: bool) -> dict:
+    response = (
+        {"type": "newChatItems", "chatItems": [item]}
+        if plural
+        else {"type": "newChatItem", **item}
+    )
+    return {"resp": response} if nested else response
+
+
+def _native_reply_adapter():
+    from gateway.config import PlatformConfig
+
+    adapter = SimplexAdapter(
+        PlatformConfig(
+            enabled=True,
+            typing_indicator=False,
+            extra={"ws_url": "ws://localhost:5225", "group_allowed": "12"},
+        )
+    )
+    adapter._text_batch_delay_seconds = 3600
+    adapter._text_batch_split_delay_seconds = 3600
+    return adapter
+
+
+def _expected_native_reply(
+    adapter, item: dict, context: tuple, *, deferred=False, plural=True
+):
+    from gateway.platforms.event import MessageEvent, MessageType
+
+    is_group = item["chatInfo"]["type"] == "group"
+    return MessageEvent(
+        text=item["chatItem"]["content"]["msgContent"]["text"],
+        source=adapter.build_source(
+            chat_id="group:12" if is_group else "42",
+            chat_name="Group" if is_group else "Contact",
+            chat_type="group" if is_group else "dm",
+            user_id="sender" if is_group else "42",
+            user_name="Sender" if is_group else "Contact",
+        ),
+        message_type=MessageType.VOICE if deferred else MessageType.TEXT,
+        media_urls=["/tmp/native-voice.ogg"] if deferred else [],
+        media_types=["audio/ogg"] if deferred else [],
+        raw_message=item if plural else {"type": "newChatItem", **item},
+        message_id=str(item["chatItem"]["meta"]["itemId"]),
+        reply_to_message_id=context[0],
+        reply_to_text=context[1],
+        reply_to_author_id=context[2],
+        reply_to_author_name=context[3],
+        reply_to_is_own_message=context[4],
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chat_type", "quote", "context", "deferred"),
+    [
+        (
+            "direct",
+            _native_quote("directSnd"),
+            ("501", "quoted\ncomplete text", None, None, True),
+            False,
+        ),
+        (
+            "direct",
+            _native_quote("directRcv"),
+            ("501", "quoted\ncomplete text", "42", "Contact", False),
+            False,
+        ),
+        (
+            "group",
+            _native_quote("groupSnd"),
+            ("501", "quoted\ncomplete text", None, None, True),
+            False,
+        ),
+        (
+            "group",
+            _native_quote("groupRcv"),
+            ("501", "quoted\ncomplete text", "quoted-author", "Quoted author", False),
+            False,
+        ),
+        (
+            "group",
+            _native_quote("channelRcv"),
+            ("501", "quoted\ncomplete text", None, None, False),
+            False,
+        ),
+        (
+            "direct",
+            _native_quote(None),
+            ("501", "quoted\ncomplete text", None, None, False),
+            False,
+        ),
+        (
+            "direct",
+            _native_quote("directRcv", item_id=None),
+            (
+                "simplex:quote:shared:shared-501",
+                "quoted\ncomplete text",
+                "42",
+                "Contact",
+                False,
+            ),
+            False,
+        ),
+        (
+            "direct",
+            _native_quote("directRcv", item_id=None, shared_id=None),
+            (
+                "simplex:quote:item:1001",
+                "quoted\ncomplete text",
+                "42",
+                "Contact",
+                False,
+            ),
+            False,
+        ),
+        ("direct", None, (None, None, None, None, False), False),
+        (
+            "group",
+            _native_quote("groupRcv"),
+            ("501", "quoted\ncomplete text", "quoted-author", "Quoted author", False),
+            True,
+        ),
+    ],
+)
+async def test_native_reply_metadata_reaches_message_event(
+    monkeypatch,
+    chat_type,
+    quote,
+    context,
+    deferred,
+):
+    adapter = _native_reply_adapter()
+    received = []
+    monkeypatch.setattr(adapter, "_enqueue_text_event", received.append)
+    adapter.handle_message = AsyncMock(side_effect=received.append)
+    adapter._send_fire_and_forget = AsyncMock()
+    item = _native_reply_item(chat_type, 1001, quote)
+    if deferred:
+        item["chatItem"]["content"]["msgContent"] = {
+            "type": "voice",
+            "text": "voice reply",
+        }
+        item["chatItem"]["file"] = {"fileId": 7, "fileName": "native-voice.ogg"}
+    await adapter._handle_event(_native_envelope(item, nested=True, plural=True))
+    if deferred:
+        assert received == []
+        adapter._send_fire_and_forget.assert_awaited_once_with("/freceive 7")
+        await adapter._handle_event({
+            "resp": {
+                "type": "rcvFileComplete",
+                "chatItem": {
+                    "chatItem": {
+                        "file": {
+                            "fileId": 7,
+                            "fileSource": {"filePath": "/tmp/native-voice.ogg"},
+                        }
+                    }
+                },
+            }
+        })
+    assert received == [
+        _expected_native_reply(adapter, item, context, deferred=deferred)
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_type", ["direct", "group"])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("plural", [False, True])
+@pytest.mark.parametrize(
+    "relationship",
+    [
+        "plain_then_quote",
+        "matching",
+        "conflicting",
+        "shared_matching",
+        "missing_ids",
+    ],
+)
+async def test_native_reply_context_survives_batching_and_prompt(
+    chat_type,
+    nested,
+    plural,
+    relationship,
+):
+    from gateway.run_inbound import GatewayInboundMixin
+
+    adapter = _native_reply_adapter()
+    dispatched = []
+    adapter.handle_message = AsyncMock(side_effect=dispatched.append)
+    quote = _native_quote("groupSnd" if chat_type == "group" else "directSnd")
+    if relationship in {"shared_matching", "missing_ids"}:
+        quote.pop("itemId")
+    if relationship == "missing_ids":
+        quote.pop("sharedMsgId")
+    first = _native_reply_item(
+        chat_type, 1001, None if relationship == "plain_then_quote" else quote
+    )
+    second_quote = deepcopy(quote)
+    if relationship == "conflicting":
+        second_quote["itemId"] = 502
+        second_quote["content"]["text"] = "different quote"
+    second = _native_reply_item(chat_type, 1002, second_quote)
+    try:
+        await adapter._handle_event(_native_envelope(first, nested, plural))
+        await adapter._handle_event(_native_envelope(second, nested, plural))
+        if adapter._background_tasks:
+            await asyncio.wait_for(
+                asyncio.gather(*tuple(adapter._background_tasks)), timeout=5
+            )
+        for key in tuple(adapter._pending_text_batches):
+            await adapter._flush_text_batch_now(key)
+        quote_id = {
+            "shared_matching": "simplex:quote:shared:shared-501",
+            "missing_ids": "simplex:quote:item:1001",
+        }.get(relationship, "501")
+        first_context = (quote_id, "quoted\ncomplete text", None, None, True)
+        expected = _expected_native_reply(adapter, first, first_context, plural=plural)
+        if relationship in {"conflicting", "missing_ids"}:
+            second_context = (
+                ("502", "different quote", None, None, True)
+                if relationship == "conflicting"
+                else (
+                    "simplex:quote:item:1002",
+                    "quoted\ncomplete text",
+                    None,
+                    None,
+                    True,
+                )
+            )
+            expected_events = [
+                expected,
+                _expected_native_reply(
+                    adapter,
+                    second,
+                    second_context,
+                    plural=plural,
+                ),
+            ]
+        else:
+            expected.text = "reply 1001\nreply 1002"
+            expected.merged_message_ids = ["1002"]
+            expected_events = [expected]
+        assert dispatched == expected_events
+        rendered = [
+            GatewayInboundMixin._prepend_inbound_reply_context(
+                event,
+                event.source,
+                event.text,
+            )
+            for event in dispatched
+        ]
+        assert rendered == [
+            f"[Replying to your previous message: {json.dumps(event.reply_to_text, ensure_ascii=False)}]\n\n{event.text}"
+            for event in expected_events
+        ]
+    finally:
+        tasks = tuple(adapter._pending_text_batch_tasks.values()) + tuple(
+            adapter._background_tasks
+        )
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

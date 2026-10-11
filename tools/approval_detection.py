@@ -1376,11 +1376,25 @@ def _env_split_payload(tokens: list[str]) -> str | None:
             payload = (value if option == "--split-string" else token[2:]) if attached else (
                 tokens[index] if index < len(tokens) else "")
             args = _split_env_string(payload)
+            if args is None:
+                # Unresolvable split string (e.g. ${NAME} expansion): project the raw
+                # payload text so deny rules still see the command env would run.
+                return " ".join([payload, *map(shlex.quote, tokens[index + 1:])])
             # Protect literal separators when reusing command-position detection;
             # only a real shell -c carrier may turn these argv bytes into code.
-            return shlex.join(args + tokens[index + 1:]) if args is not None else None
+            return shlex.join(args + tokens[index + 1:])
         index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
     return None
+
+
+def _eval_payload(args: list[str]) -> str | None:
+    """Return the shell code eval would run: its arguments joined by spaces."""
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        index += 1
+        if args[index - 1] == "--":
+            break
+    return " ".join(args[index:]) or None
 
 
 def _deny_command_variants(command: str):
@@ -1416,10 +1430,16 @@ def _deny_command_variants(command: str):
                 # Apply the existing text matching semantics only AFTER locating
                 # executable positions; never parse its rewritten quotes again.
                 yield _normalize_command_for_detection(candidate)
-            if os.path.basename(executable) == "env":
+            carrier = os.path.basename(executable)
+            if "$" in carrier and tail.strip():
+                # An unresolved expansion as the command name may run its argument
+                # tail (`$SUDO rm ...`): project the tail so deny rules still apply.
+                pending.append(tail.strip())
+            if carrier in ("env", "eval"):
                 tokens = _shell_segment_tokens(segment, 0)
                 if tokens:
-                    payload = _env_split_payload(tokens)
+                    # eval parses its joined arguments as shell code, like `sh -c`.
+                    payload = _env_split_payload(tokens) if carrier == "env" else _eval_payload(tokens[1:])
                     if payload:
                         pending.append(payload)
         for _, payload in _execution_flag_findings(source):

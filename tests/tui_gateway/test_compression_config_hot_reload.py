@@ -258,6 +258,10 @@ def test_boolean_prune_trigger_matches_fresh_build(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"proactive_prune_min_reclaim_tokens": True}})
     server._sync_agent_compression_with_config("sid-bool", session)
     assert compressor.proactive_prune_min_reclaim_tokens == 64_000
+    # Non-prune keys keep their existing reload coercion (protect_last_n: false -> 0, as agent_init's int()).
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"protect_last_n": False}})
+    server._sync_agent_compression_with_config("sid-bool", session)
+    assert compressor.protect_last_n == 0
 
 
 def test_removing_threshold_restores_derived_default(monkeypatch):

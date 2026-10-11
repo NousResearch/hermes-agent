@@ -89,7 +89,14 @@ class GatewayKanbanWatchersMixin:
 
         sub_fail_counts: dict[tuple, int] = getattr(self, "_kanban_sub_fail_counts", {})
         self._kanban_sub_fail_counts = sub_fail_counts
-        notifier_profile = getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name()
+        notifier_profile = getattr(self, "_kanban_notifier_profile", None)
+        if not notifier_profile:
+            # The watcher owns subscriptions stamped by the runtime profile. In
+            # standalone containers get_active_profile_name() can describe the
+            # mounted default home even when the launcher pinned HERMES_PROFILE.
+            from hermes_cli.profiles import current_profile_name
+
+            notifier_profile = current_profile_name("default")
         self._kanban_notifier_profile = notifier_profile
 
         # Initial delay so the gateway can finish wiring adapters.
@@ -311,7 +318,8 @@ class GatewayKanbanWatchersMixin:
                     bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
-                    held = _kbd.describe_suppression(res for _slug, res in (results or []))
+                    from hermes_cli.kanban_dispatch_reporting import describe_suppression
+                    held = describe_suppression(res for _slug, res in (results or []))
                     logger.warning(
                         "kanban dispatcher stuck: ready queue non-empty for "
                         "%d consecutive ticks but 0 workers spawned.%s Check "

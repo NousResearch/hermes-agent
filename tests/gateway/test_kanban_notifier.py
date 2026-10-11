@@ -159,7 +159,8 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
 
     adapter = RecordingAdapter()
     runner = _make_runner(adapter)
-    runner._active_profile_name = lambda: "main"
+    runner._kanban_notifier_profile = "main"
+    runner._primary_profile_name = "main"
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
@@ -167,6 +168,47 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     message = adapter.sent[0]["text"]
     assert tid in message
     assert "blocked" in message
+
+
+def test_runtime_profile_env_selects_standalone_notifier_owner(tmp_path, monkeypatch):
+    """Standalone notifier follows the stamped runtime profile, not mounted default identity."""
+    from hermes_cli import profiles
+
+    db_path = tmp_path / "runtime-profile-notifier.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_PROFILE", "finn")
+    # Exercise the real resolver: the bound harness home is ignored in favor
+    # of the standalone launcher profile pin.
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="actionable capability blocker", assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            chat_type="dm", delivery_mode="notify+wake", notifier_profile="finn",
+        )
+        kb.block_task(conn, tid, reason="Install the required browser capability", kind="needs_input")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._primary_profile_name = "finn"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert "Install the required browser capability" in adapter.sent[0]["text"]
+    wake = _wake_text(adapter)
+    assert tid in wake
+    assert "blocked" in wake
+    # Retry the same watcher tick: the real cursor deduplicates both legs.
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
+
 
 
 def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(
@@ -206,7 +248,8 @@ def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(
 
     adapter = RecordingAdapter()
     runner = _make_runner(adapter)
-    runner._active_profile_name = lambda: "writer"
+    runner._kanban_notifier_profile = "writer"
+    runner._primary_profile_name = "writer"
     runner._kanban_dispatcher_lock_handle = None
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
@@ -388,7 +431,8 @@ def test_notifier_subscription_survives_done_reopen_until_archive(
 
     adapter = RecordingAdapter()
     runner = _make_runner(adapter)
-    runner._active_profile_name = lambda: "reviewer"
+    runner._kanban_notifier_profile = "reviewer"
+    runner._primary_profile_name = "reviewer"
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
@@ -409,7 +453,8 @@ def test_notifier_subscription_survives_done_reopen_until_archive(
     # A quiet tick proves the completed event cannot replay after its cursor
     # was advanced, even though the subscription now remains present.
     runner = _make_runner(adapter)
-    runner._active_profile_name = lambda: "reviewer"
+    runner._kanban_notifier_profile = "reviewer"
+    runner._primary_profile_name = "reviewer"
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
     assert len(adapter.sent) == 1
     assert len(adapter.handled) == 1
@@ -424,7 +469,8 @@ def test_notifier_subscription_survives_done_reopen_until_archive(
         conn.close()
 
     runner = _make_runner(adapter)
-    runner._active_profile_name = lambda: "reviewer"
+    runner._kanban_notifier_profile = "reviewer"
+    runner._primary_profile_name = "reviewer"
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     # The reopen status and second completion each deliver once, while only
@@ -445,7 +491,8 @@ def test_notifier_subscription_survives_done_reopen_until_archive(
         conn.close()
 
     runner = _make_runner(adapter)
-    runner._active_profile_name = lambda: "reviewer"
+    runner._kanban_notifier_profile = "reviewer"
+    runner._primary_profile_name = "reviewer"
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     # Archive itself is intentionally silent, but consumes its event and

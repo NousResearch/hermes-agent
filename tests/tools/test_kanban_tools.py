@@ -533,24 +533,92 @@ def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
-    """`capability` / `transient` are valid kinds in general but must not
-    let a goal_mode worker exit the loop without going through the judge."""
+@pytest.mark.parametrize("kind", ["capability", "transient"])
+def test_block_goal_mode_records_only_judge_confirmed_block(monkeypatch, tmp_path, kind):
+    """A goal worker can truthfully record a capability/transient blocker only
+    after the existing goal judge independently confirms it is blocked."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
 
     tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
-    for kind in ("capability", "transient"):
-        out = kt._handle_block({"reason": "blocked", "kind": kind})
-        d = json.loads(out)
-        assert "error" in d, f"kind={kind} should be rejected for goal_mode"
+    observed = {}
 
-    conn = kbc.connect()
-    try:
+    def judge(goal, last_response, *, timeout=30.0, subgoals=None):
+        observed.update(goal=goal, evidence=last_response)
+        return "blocked", "required capability unavailable", False, None, False
+
+    monkeypatch.setattr(kt, "judge_goal", judge)
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+    evidence = "Cannot access the required deployment capability."
+    out = json.loads(kt._handle_block({"reason": evidence, "kind": kind}))
+    assert out["ok"] is True and out["status"] == "blocked"
+    assert out["block_kind"] == kind
+    assert evidence in observed["evidence"]
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        assert task.status == "blocked"
+        assert run.outcome == "blocked"
+        assert any(e.kind == "blocked" for e in kb.list_events(conn, tid))
+
+
+@pytest.mark.parametrize("verdict", ["continue", "done"])
+def test_block_goal_mode_capability_refused_without_block_verdict(monkeypatch, tmp_path, verdict):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(kt, "judge_goal", lambda *a, **kw: (verdict, "not blocked", False, None, False))
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+    with kbc.connect() as conn:
+        before_events = kb.list_events(conn, tid)
+    out = json.loads(kt._handle_block({"reason": "unavailable", "kind": "capability"}))
+    assert "error" in out and "judge" in out["error"].lower()
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "running"
-    finally:
-        conn.close()
+        assert kb.list_events(conn, tid) == before_events
+
+
+def test_block_goal_mode_capability_fails_closed_when_judge_unavailable(monkeypatch, tmp_path):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: False)
+    out = json.loads(kt._handle_block({"reason": "unavailable", "kind": "transient"}))
+    assert "error" in out and "judge" in out["error"].lower()
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+
+
+@pytest.mark.parametrize("failure", ["transport", "exception"])
+def test_block_goal_mode_judge_failure_preserves_task_and_run(monkeypatch, tmp_path, failure):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+
+    def judge(*args, **kwargs):
+        if failure == "exception":
+            raise RuntimeError("judge unavailable")
+        return "blocked", "transport unavailable", False, None, True
+
+    monkeypatch.setattr(kt, "judge_goal", judge)
+    with kbc.connect() as conn:
+        before_events = kb.list_events(conn, tid)
+        before_run = kb.latest_run(conn, tid)
+    result = json.loads(kt._handle_block({"reason": "runtime unavailable", "kind": "capability"}))
+    assert "error" in result
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.latest_run(conn, tid) == before_run
+        assert kb.list_events(conn, tid) == before_events
 
 
 def test_schedule_goal_mode_refused(monkeypatch, tmp_path):

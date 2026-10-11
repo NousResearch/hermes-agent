@@ -205,6 +205,12 @@ export const de: Translations = {
     perDayAvg: "/Tag Ø",
     acrossModels: "über {count} Modelle",
     inOut: "{input} ein / {output} aus",
+    inputPerDay: "Eingabe-Tokens / Tag",
+    outputPerDay: "Ausgabe-Tokens / Tag",
+    ioRatio: "Verhältnis Eingabe / Ausgabe",
+    ratioAverage: "{ratio} Durchschnitt im Zeitraum",
+    tokensByModel: "Tokens pro Modell / Tag",
+    otherModels: "Andere Modelle",
   },
 
   models: {

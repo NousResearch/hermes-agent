@@ -33,6 +33,14 @@ OAUTH_URL = (
     "&access_token=opaque-token-456&state=keep"
 )
 
+ARRAY_OAUTH_URLS = (
+    ("https://localhost/callback?access_token[]=array-token-123", "array-token-123"),
+    (
+        "https://localhost/callback?access_token%5B%5D=encoded-array-token-456",
+        "encoded-array-token-456",
+    ),
+)
+
 
 @pytest.fixture(autouse=True)
 def _redaction_globally_disabled(monkeypatch):
@@ -70,6 +78,15 @@ def test_helper_is_strict_even_when_redaction_disabled():
     _assert_clean(result)
     # None-safety: helper is used on optional fields.
     assert _redact_compaction_text(None) == ""
+
+
+@pytest.mark.parametrize(("url", "secret"), ARRAY_OAUTH_URLS)
+def test_helper_redacts_array_style_url_credentials(url, secret):
+    result = _redact_compaction_text(url)
+
+    assert secret not in result
+    assert "access_token" in result
+    assert "=***" in result
 
 
 def test_serializer_input_redacts_content_and_tool_args():

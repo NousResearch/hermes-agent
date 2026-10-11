@@ -314,6 +314,11 @@ class SessionAuthority:
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
+        from gateway.session_ingress_media import capture_lease
+        with capture_lease():  # captured bytes are held from capture until commit or refusal
+            return await self._admit_native(event)
+
+    async def _admit_native(self, event):
         import json
         from gateway.session_envelope import prepare_native, restore_native
         self._require_admission_open()
@@ -334,11 +339,18 @@ class SessionAuthority:
     def _admit_native_write(self, *, principal_id, session_id, request_id, payload, authorize):
         # Off the loop and in admission order: the redelivery reconcile reads the ledger it decides
         # against, so a concurrent first delivery of the same message cannot slip between them.
-        from gateway.session_ingress_media import reconcile_native_retry
-        payload = reconcile_native_retry(self.db, principal_id=principal_id, session_id=session_id,
-                                         request_id=request_id, payload=payload)
-        return admit_session_input(self.db, epoch=self.epoch, principal_id=principal_id, session_id=session_id,
-                                   request_id=request_id, payload=payload, _authorize_write=authorize)
+        from gateway.session_ingress_media import drop_capture_lease, reconcile_native_retry, release_unheld_media
+        fresh = payload.get('native_text_v1', {}).get('media', [])
+        try:
+            payload = reconcile_native_retry(self.db, principal_id=principal_id, session_id=session_id,
+                                             request_id=request_id, payload=payload)
+            return admit_session_input(self.db, epoch=self.epoch, principal_id=principal_id, session_id=session_id,
+                                       request_id=request_id, payload=payload, _authorize_write=authorize)
+        except Exception:
+            # A refused admission owns nothing it captured (unless another admission holds the same bytes).
+            drop_capture_lease()
+            release_unheld_media(self.db, fresh, retain_history=False)
+            raise
 
     def _admitted(self, ref, event, row):
         if event is not None:
@@ -396,7 +408,9 @@ class SessionAuthority:
         async with self.sessions[request.ref.session_id].mutation_lock:
             # Deletion can retire this session while the caller waits on its writer.
             self.authorize(actor, request.ref, 'session:submit')
-            return await self._submit(actor, request, _authorize_write=_authorize_write)
+            from gateway.session_ingress_media import capture_lease
+            with capture_lease():  # captured bytes are held from capture until commit or refusal
+                return await self._submit(actor, request, _authorize_write=_authorize_write)
 
     async def _submit(self, actor, request, *, _authorize_write=None):
         self._require_admission_open()
@@ -452,6 +466,8 @@ class SessionAuthority:
         media = payload.get('attachments_v1', {}).get('media', [])
         if not media:
             return
+        from gateway.session_ingress_media import drop_capture_lease
+        drop_capture_lease()  # its own lease must not keep the refused bytes from collection
         from hermes_state_media import collect_retired_media, retire_media
         try:
             self.db._execute_write(lambda conn: retire_media(conn, {'attachments_v1': {'media': media}}))

@@ -5,6 +5,9 @@ and upload limits. Its flat age-based cleanup skips this retained subdirectory:
 native bytes are released by ``release_admission_media`` once their row is
 terminal and no live native input or retained API image context still holds them.
 """
+from collections import Counter
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -12,6 +15,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
+import threading
 
 from hermes_state_runtime import RuntimeStoreError
 from utils import fsync_directory
@@ -19,6 +23,41 @@ from utils import fsync_directory
 
 _API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}\.(png|jpg|gif|webp)')
 _SHA256_NAME = re.compile(r'[0-9a-f]{64}')
+
+
+# Retained paths a capture published or reused whose admission has not committed or been refused
+# yet: no committed row holds them, so ``release_unheld_media`` must treat them as held. The lock
+# orders a capture's lease-then-publish against a release's lease-check-then-unlink, per path.
+_leases = Counter()
+_lease_lock = threading.Lock()
+_lease_scope = ContextVar('native_media_lease_scope', default=None)
+
+
+@contextmanager
+def capture_lease():
+    """Hold every path captured inside this block (capture through admission commit or refusal)
+    against a concurrent release: an older turn's settlement or cancellation that names the same
+    content-addressed bytes would otherwise unlink them before the new admission holds them."""
+    token = _lease_scope.set([])
+    try:
+        yield
+    finally:
+        drop_capture_lease()
+        _lease_scope.reset(token)
+
+
+def drop_capture_lease(paths=None):
+    """End this scope's lease on *paths* (default: all) early, e.g. before a refused admission
+    releases its own fresh capture, which its lease would otherwise keep from collection."""
+    held = _lease_scope.get()
+    if not held:
+        return
+    with _lease_lock:
+        for path in [path for path in held if paths is None or path in paths]:
+            held.remove(path)
+            _leases[path] -= 1
+            if _leases[path] <= 0:
+                del _leases[path]
 
 
 def _media_root():
@@ -113,7 +152,9 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload)
         # A live row still executes these bytes, so they must verify (a terminal one is digest evidence).
         restore_native_media(committed)
     kept = {reference['path'] for reference in committed}
-    release_unheld_media(db, [reference for reference in fresh if reference['path'] not in kept], retain_history=False)
+    unowned = [reference for reference in fresh if reference['path'] not in kept]
+    drop_capture_lease({reference['path'] for reference in unowned})
+    release_unheld_media(db, unowned, retain_history=False)
     return {**payload, 'native_text_v1': {**payload['native_text_v1'], 'media': committed}}
 
 
@@ -174,10 +215,15 @@ def capture_native_media(paths):
             if target.parent.resolve() != target.parent:
                 raise RuntimeStoreError('invalid_params')
             target.parent.mkdir(mode=0o700, exist_ok=True)
-            if target.exists() or target.is_symlink():
-                restore_native_media([reference])
-            else:
-                os.replace(temporary, target)
+            with _lease_lock:
+                scope = _lease_scope.get()
+                if scope is not None:
+                    scope.append(str(target))
+                    _leases[str(target)] += 1
+                if target.exists() or target.is_symlink():
+                    restore_native_media([reference])
+                else:
+                    os.replace(temporary, target)
             for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
                 fsync_directory(directory)
     finally:
@@ -411,9 +457,11 @@ def release_unheld_media(db, references, *, retain_history=True):
             if reference['path'] in held:
                 continue
             try:
-                if path.parent.resolve() != path.parent or _file_identity(path) in identities:
-                    continue
-                path.unlink()
+                with _lease_lock:
+                    if (reference['path'] in _leases or path.parent.resolve() != path.parent
+                            or _file_identity(path) in identities):
+                        continue
+                    path.unlink()
                 released += 1
                 path.parent.rmdir()
             except (OSError, ValueError):

@@ -1998,13 +1998,22 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._set_fatal_error("telegram_network_error", message, retryable=True)
         await self._handoff_polling_fatal_error()
 
-    async def _stop_updater_or_go_fatal(self, app, what: str) -> bool:
+    async def _stop_updater_or_go_fatal(self, app, what: str, *, skip_read_receipt_cleanup: bool = False) -> bool:
         """Bounded ``updater.stop()`` before a recovery restart; False = went fatal, caller returns.
 
         Wall-clock deadline, not asyncio.wait_for: a CLOSE-WAIT socket wedges stop() on epoll and PTB/AnyIO shielded cleanup
         hangs wait_for. On timeout the Updater's lifecycle lock may still be held, so rebuild the adapter instead."""
         try:
             if app and app.updater and app.updater.running:
+                if skip_read_receipt_cleanup:
+                    # PTB's stop() finishes with a read-receipt getUpdates(timeout=0) that re-uses the very
+                    # pool the network error just broke; its getUpdates read timeout outlives the stop
+                    # deadline, so every transient error wedges stop() for the whole budget and escalates
+                    # to a full adapter rebuild (#131783). A same-Updater restart resumes from
+                    # _last_update_id, and admission receipts (#120257) dedupe the at-most-one unconfirmed
+                    # batch, so dropping this receipt costs no redelivery.
+                    if getattr(app.updater, "_Updater__polling_cleanup_cb", None) is not None:
+                        setattr(app.updater, "_Updater__polling_cleanup_cb", None)
                 try:
                     await _await_with_thread_deadline(app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
                 except TimeoutError:
@@ -2062,7 +2071,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         app = self._app
         # Unguarded stop() on a CLOSE-WAIT socket would leave _polling_error_task perpetually
         # "in-flight" so every probe skips reconnect for hours.
-        if not await self._stop_updater_or_go_fatal(app, "network-recovery") or self._teardown_started:
+        if not await self._stop_updater_or_go_fatal(app, "network-recovery", skip_read_receipt_cleanup=True) or self._teardown_started:
             return
         # start_polling() bootstraps through the *general* pool before getUpdates; a confirmed pool timeout means the request
         # was never sent, so rebuilding that pool is safe. Generic network errors stay polling-only (sends untouched).

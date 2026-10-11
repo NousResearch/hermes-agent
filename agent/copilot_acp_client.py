@@ -72,6 +72,23 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
     return any(req in lower for req in _DEPRECATION_REQUIRED) and any(m in lower for m in _DEPRECATION_MARKERS)
 
 
+# How long a request keeps consuming queued stdout after the CLI's exit is observed. Descendants
+# can inherit the pipe and keep it open, so EOF is not guaranteed; this bound keeps a dead CLI's
+# error prompt instead of hanging until the session deadline.
+_EXIT_DRAIN_SECONDS = 0.25
+
+
+def _exited_early(proc: subprocess.Popen[str], stderr_pump: threading.Thread, stderr_tail: deque[str]) -> RuntimeError:
+    """Crash error for a CLI that exited without answering the outstanding request."""
+    # The pump can still hold the crash text when poll() first sees the exit; reading it too early
+    # turned a dead CLI into a TimeoutError, which retries differently.
+    stderr_pump.join(timeout=1.0)
+    stderr_text = "\n".join(stderr_tail).strip()
+    if _is_gh_copilot_deprecation_message(stderr_text):
+        return RuntimeError(_DEPRECATED_CLI_ERROR + stderr_text)
+    return RuntimeError(f"Copilot ACP process exited early: {stderr_text or f'exit code {proc.returncode}'}")
+
+
 def _resolve_command() -> str:
     return os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip() or os.getenv("COPILOT_CLI_PATH", "").strip() or "copilot"
 
@@ -398,7 +415,9 @@ class CopilotACPClient:
             for line in stream or ():
                 sink(line)
 
-        threading.Thread(target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True).start()
+        stdout_pump = threading.Thread(
+            target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True)
+        stdout_pump.start()
         stderr_pump = threading.Thread(
             target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True)
         stderr_pump.start()
@@ -410,13 +429,28 @@ class CopilotACPClient:
         def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None,
                      reasoning_parts: list[str] | None = None) -> Any:
             request_id = next(request_ids)
-            proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
-            proc.stdin.flush()
+            try:
+                proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
+                proc.stdin.flush()
+            except OSError as exc:  # BrokenPipe: the CLI is already gone; report the crash, not the pipe
+                if proc.poll() is None:
+                    raise
+                raise _exited_early(proc, stderr_pump, stderr_tail) from exc
             deadline = session_deadline
-            while time.monotonic() < deadline and proc.poll() is None:
+            # Exit is not the end of the conversation: the final updates and the response itself
+            # can still sit in the pipe / inbox when poll() first reports the exit (an agent that
+            # answers and quits; a burst of chunks the loop has not consumed yet). Keep consuming
+            # until stdout hits EOF and the inbox is empty, bounded so a descendant that inherited
+            # the pipe cannot hold exit reporting open.
+            drain_deadline: float | None = None
+            while time.monotonic() < deadline:
+                if drain_deadline is None and proc.poll() is not None:
+                    drain_deadline = time.monotonic() + _EXIT_DRAIN_SECONDS
                 try:
-                    msg = inbox.get(timeout=0.1)
+                    msg = inbox.get(timeout=0.05)
                 except queue.Empty:
+                    if drain_deadline is not None and (not stdout_pump.is_alive() or time.monotonic() >= drain_deadline):
+                        break
                     continue
                 if self._handle_server_message(
                     msg, process=proc, cwd=self._acp_cwd, text_parts=text_parts,
@@ -428,13 +462,7 @@ class CopilotACPClient:
                     raise RuntimeError(f"Copilot ACP {method} failed: {err.get('message') or err}")
                 return msg.get("result")
             if proc.poll() is not None:
-                # The pump can still hold the crash text when poll() first sees the exit; reading
-                # it too early turned a dead CLI into a TimeoutError, which retries differently.
-                stderr_pump.join(timeout=1.0)
-                stderr_text = "\n".join(stderr_tail).strip()
-                if _is_gh_copilot_deprecation_message(stderr_text):
-                    raise RuntimeError(_DEPRECATED_CLI_ERROR + stderr_text)
-                raise RuntimeError(f"Copilot ACP process exited early: {stderr_text or f'exit code {proc.returncode}'}")
+                raise _exited_early(proc, stderr_pump, stderr_tail)
             raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
 
         try:

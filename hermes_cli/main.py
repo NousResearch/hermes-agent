@@ -3406,13 +3406,17 @@ def _attach_plugin_cli_command(subparsers, cmd_info) -> None:
             cmd_info.get("plugin"), name,
         )
         return
-    plugin_parser = subparsers.add_parser(
-        name,
-        help=cmd_info["help"],
-        description=cmd_info.get("description", ""),
-        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-    )
     try:
+        plugin_parser = subparsers.add_parser(
+            name,
+            help=cmd_info["help"],
+            description=cmd_info.get("description", ""),
+            formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+        )
+        # Python < 3.14 accepts a malformed help (a bare "%") here, then every
+        # `hermes --help` crashes formatting it; 3.14 raises from add_parser.
+        if cmd_info["help"]:
+            plugin_parser._get_formatter()._expand_help(subparsers._choices_actions[-1])
         cmd_info["setup_fn"](plugin_parser)
         if cmd_info.get("handler_fn") is not None:
             plugin_parser.set_defaults(func=cmd_info["handler_fn"])

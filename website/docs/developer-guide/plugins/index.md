@@ -1335,7 +1335,7 @@ def register(ctx):
 
 After registration, users can run `hermes my-plugin status`, `hermes my-plugin config`, etc.
 
-**Name collisions:** built-in commands always win. A plugin command whose name is already taken (by a built-in command or alias, or by another plugin) is skipped with a warning naming the plugin. So is a command whose `setup_fn` raises. The plugin's other commands, and every other plugin's commands, still load. Pick a distinctive name, because a later Hermes release may add a built-in with the name you chose.
+**Name collisions:** built-in commands always win. A plugin command whose name is already taken (by a built-in command or alias, or by another plugin, where the first plugin to register the name keeps it) is skipped with a warning naming the plugin. So is a command whose `setup_fn` raises, or whose `help` is not a valid argparse help string (a bare `%` must be written `%%`). The plugin's other commands, and every other plugin's commands, still load. Pick a distinctive name, because a later Hermes release may add a built-in with the name you chose.
 
 **Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](../memory-provider-plugin.md#adding-cli-commands) for details.
 

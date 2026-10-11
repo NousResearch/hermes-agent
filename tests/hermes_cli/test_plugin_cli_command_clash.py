@@ -47,9 +47,9 @@ def build_with_plugins(monkeypatch):
 
     def build(registrations):
         mgr = PluginManager()
-        for plugin, name, setup_fn in registrations:
+        for plugin, name, setup_fn, *help_text in registrations:
             PluginContext(PluginManifest(name=plugin), mgr).register_cli_command(
-                name, help=name, setup_fn=setup_fn, handler_fn=_ran,
+                name, help=help_text[0] if help_text else name, setup_fn=setup_fn, handler_fn=_ran,
             )
         monkeypatch.setattr(sys, "argv", ["hermes", "plugcmd"])
         monkeypatch.setattr(memory_plugins, "discover_plugin_cli_commands", lambda: [])
@@ -81,12 +81,16 @@ def test_failing_or_colliding_plugin_does_not_drop_another_plugins_command(
         parser, subparsers = build_with_plugins([
             ("aaa-clash", builtin_names[0], _setup),
             ("aab-broken", "brokencmd", _boom),
+            # A bare ``%`` is a malformed argparse help string.
+            ("aac-badhelp", "badhelpcmd", _setup, "cuts memory by 30%"),
             ("zzz-good", "plugcmd", _setup),
         ])
 
     args = parser.parse_args(["plugcmd", "--x", "2"])
     assert args.func(args) == "ran:2"
-    # No half-built parser left behind to parse ``hermes brokencmd`` or list it in --help.
-    assert "brokencmd" not in subparsers.choices
-    assert "brokencmd" not in parser.format_help()
-    assert "aaa-clash" in caplog.text and "aab-broken" in caplog.text
+    # No half-built parser left behind to parse ``hermes brokencmd`` or break ``hermes --help``.
+    help_text = parser.format_help()
+    for skipped in ("brokencmd", "badhelpcmd"):
+        assert skipped not in subparsers.choices
+        assert skipped not in help_text
+    assert all(p in caplog.text for p in ("aaa-clash", "aab-broken", "aac-badhelp"))

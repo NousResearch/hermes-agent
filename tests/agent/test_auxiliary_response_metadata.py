@@ -361,7 +361,11 @@ def test_native_usage_requires_measured_primary_counts(provider, primary):
         if primary != "missing":
             usage["promptTokenCount"] = primary
         response = translate_gemini_response(
-            {"usageMetadata": usage, "candidates": []}, "served-model"
+            {
+                "usageMetadata": usage,
+                "candidates": [{"finishReason": "STOP"}],
+            },
+            "served-model",
         )
     elif provider == "codex":
         usage = {"output_tokens": 0, "input_tokens_details": {"cached_tokens": None}}

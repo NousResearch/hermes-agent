@@ -7105,6 +7105,7 @@ class _ChatStreamAccumulator:
         self.finish_reason = self.usage = None
         self.resp_id = None
         self.resp_model = None
+        self.native = None
 
     def _check_deadlines(self) -> None:
         """Raise TimeoutError past the total ceiling or the host deadline."""
@@ -7162,6 +7163,7 @@ class _ChatStreamAccumulator:
         self._check_deadlines()
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
         self.resp_model = getattr(chunk, "model", None) or self.resp_model
+        self.native = getattr(chunk, "native", None) or self.native
         chunk_usage = getattr(chunk, "usage", None)
         if chunk_usage:
             self.usage = chunk_usage
@@ -7208,7 +7210,7 @@ class _ChatStreamAccumulator:
         )
         choice = SimpleNamespace(index=0, message=message, finish_reason=self.finish_reason or "stop")
         return SimpleNamespace(id=self.resp_id, model=self.resp_model, object="chat.completion",
-                               choices=[choice], usage=self.usage)
+                               choices=[choice], usage=self.usage, **({"native": self.native} if self.native is not None else {}))
 
 
 async def _aggregate_chat_stream_async(

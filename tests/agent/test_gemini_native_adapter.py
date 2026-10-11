@@ -1029,3 +1029,206 @@ def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keep
         tool_choice="auto", model=model, response_format={"type": "json_object"}, tools_as_json_schema=True,
     )["generationConfig"]
     assert ("responseMimeType" in generation) is keeps_json
+
+
+@pytest.mark.parametrize(
+    "streamed,metadata_first", [(False, False), (True, False), (True, True)]
+)
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "IMAGE_SAFETY",
+        "MALFORMED_FUNCTION_CALL",
+        "UNEXPECTED_TOOL_CALL",
+    ],
+)
+def test_native_candidate_failure_is_not_success(
+    streamed, metadata_first, reason, monkeypatch
+):
+    import httpx
+    from agent.auxiliary_client import _aggregate_chat_stream
+    from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient
+
+    native = {
+        "responseId": "reported-id",
+        "modelVersion": "served-model",
+        "candidates": [{"finishReason": reason, "content": {"parts": []}}],
+        "usageMetadata": {
+            "promptTokenCount": 12,
+            "candidatesTokenCount": 0,
+            "totalTokenCount": 12,
+        },
+    }
+    monkeypatch.setattr("agent.gemini_native_adapter.time.time", lambda: 100)
+    tail = {key: native[key] for key in ("responseId", "modelVersion", "usageMetadata")}
+    body = (
+        "data: "
+        + json.dumps(native)
+        + "\n\ndata: "
+        + json.dumps(tail)
+        + "\n\ndata: [DONE]\n\n"
+    )
+    if metadata_first:
+        body = (
+            "data: "
+            + json.dumps(tail)
+            + "\n\ndata: "
+            + json.dumps({"candidates": native["candidates"]})
+            + "\n\ndata: "
+            + json.dumps(tail)
+            + "\n\ndata: [DONE]\n\n"
+        )
+    with GeminiNativeClient(
+        api_key="fixture",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: (
+                    httpx.Response(200, text=body)
+                    if streamed
+                    else httpx.Response(200, json=native)
+                )
+            )
+        ),
+    ) as client:
+
+        def invoke():
+            response = client.chat.completions.create(
+                model="requested",
+                messages=[{"role": "user", "content": "Answer."}],
+                stream=streamed,
+            )
+            return _aggregate_chat_stream(response) if streamed else response
+
+        if reason in ("MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL"):
+            with pytest.raises(GeminiAPIError) as error:
+                invoke()
+            assert (error.value.code, error.value.details) == (
+                "gemini_invalid_tool_call",
+                {
+                    "finishReason": reason,
+                    "responseId": "reported-id",
+                    "modelVersion": "served-model",
+                    "usageMetadata": native["usageMetadata"],
+                },
+            )
+            return
+        response = invoke()
+    expected = (
+        SimpleNamespace(
+            id="reported-id",
+            object="chat.completion",
+            created=100 if not streamed else None,
+            model="served-model",
+            choices=[
+                SimpleNamespace(
+                    index=0,
+                    message=SimpleNamespace(
+                        role="assistant",
+                        content=None if not streamed else "",
+                        tool_calls=None,
+                        reasoning=None,
+                        **(
+                            {"reasoning_content": None, "extra_content": None}
+                            if not streamed
+                            else {}
+                        ),
+                        reasoning_details=None,
+                    ),
+                    finish_reason="content_filter",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=12,
+                completion_tokens=0,
+                total_tokens=12,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=0),
+            ),
+            native=SimpleNamespace(finish_reason=reason),
+        )
+        if not streamed
+        else SimpleNamespace(
+            id="reported-id",
+            object="chat.completion",
+            model="served-model",
+            choices=[
+                SimpleNamespace(
+                    index=0,
+                    message=SimpleNamespace(
+                        role="assistant",
+                        content="",
+                        tool_calls=None,
+                        reasoning=None,
+                        reasoning_details=None,
+                    ),
+                    finish_reason="content_filter",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=12,
+                completion_tokens=0,
+                total_tokens=12,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=0),
+            ),
+            native=SimpleNamespace(finish_reason=reason),
+        )
+    )
+    assert response == expected
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize(
+    "native",
+    [
+        {},
+        {"candidates": []},
+        {
+            "responseId": "id",
+            "modelVersion": "served",
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 0},
+        },
+        {"candidates": [{}]},
+        {"promptFeedback": {"blockReason": "BLOCK_REASON_UNSPECIFIED"}},
+        {"promptFeedback": {"blockReason": "unknown"}},
+        {"candidates": None},
+        {"candidates": [None]},
+        {"candidates": [{"content": {"parts": [{"text": "partial"}]}}]},
+        {"candidates": [{"finishReason": "UNKNOWN"}]},
+        {"promptFeedback": None},
+        {"promptFeedback": {"blockReason": False}},
+        {"promptFeedback": []},
+    ],
+)
+def test_native_empty_response_is_not_completion(streamed, native):
+    import httpx
+    from agent.auxiliary_client import _aggregate_chat_stream
+    from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient
+
+    body = "data: " + json.dumps(native) + "\n\ndata: [DONE]\n\n"
+    with (
+        GeminiNativeClient(
+            api_key="fixture",
+            http_client=httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda request: (
+                        httpx.Response(200, text=body)
+                        if streamed
+                        else httpx.Response(200, json=native)
+                    )
+                )
+            ),
+        ) as client,
+        pytest.raises(GeminiAPIError) as error,
+    ):
+        response = client.chat.completions.create(
+            model="requested",
+            messages=[{"role": "user", "content": "Answer."}],
+            stream=streamed,
+        )
+        if streamed:
+            _aggregate_chat_stream(response)
+    assert error.value.code == "gemini_invalid_response"

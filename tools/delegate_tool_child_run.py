@@ -83,6 +83,7 @@ def _attach_child(parent_agent: Any, child: Any) -> None:
 
 def _detach_child(parent_agent: Any, child: Any) -> None:
     """Remove the child from parent interrupt propagation (no-op if absent)."""
+    setattr(child, "_background_admission_pending", False)
     if not hasattr(parent_agent, "_active_children"):
         return
     try:

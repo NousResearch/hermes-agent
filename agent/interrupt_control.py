@@ -218,12 +218,17 @@ class InterruptControlMixin:
         # Only an explicit stop (hard_cancel) tears down the child tree; a soft
         # interrupt (typing while busy, a new message, voice) means "also consider
         # this" and must not silently cancel delegated work (#136087).
-        if hard_cancel:
+        if hard_cancel or any(getattr(child, "_background_admission_pending", False) is True
+                              for child in getattr(self, "_active_children", ())):
             with self._active_children_lock:
                 children_copy = list(self._active_children)
             for child in children_copy:
                 try:
-                    request_hard_interrupt(child, message, tool_reason=tool_interrupt_reason)
+                    if hard_cancel or getattr(child, "_background_admission_pending", False) is True:
+                        if hard_cancel:
+                            request_hard_interrupt(child, message, tool_reason=tool_interrupt_reason)
+                        else:
+                            child.interrupt(message)
                 except Exception as e:
                     logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:

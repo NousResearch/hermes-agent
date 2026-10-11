@@ -412,7 +412,11 @@ def _restore_parent_cancellation(unit: _Batch) -> None:
     """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that
     arrived while async admission had them detached)."""
     for _, _, child in unit.children:
+        setattr(child, "_background_admission_pending", True)
         _attach_child(unit.parent_agent, child)
+        if getattr(unit.parent_agent, "_interrupt_requested", False) is True:
+            with _quiet("Failed to replay parent interrupt to rejected child: %s"):
+                child.interrupt(getattr(unit.parent_agent, "_interrupt_message", None))
 
 def _dispatch_background(batch: _Batch) -> str:
     """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit
@@ -436,6 +440,11 @@ def _dispatch_background(batch: _Batch) -> str:
     dispatched: list[tuple[_Batch, str]] = []
     inline_results: list[dict] = []
     slot_key: Optional[str] = None
+    # Children remain parent-owned until their unit is admitted. This lets a soft
+    # interrupt cancel only units still waiting for admission, without touching
+    # detached background units that are already running.
+    for _, _, child in batch.children:
+        setattr(child, "_background_admission_pending", True)
     for k, unit in enumerate(units):
         # One unit keeps the live-transcript directory's id so the returned delegation_id matches
         # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.

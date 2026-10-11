@@ -227,6 +227,86 @@ async def test_a_recall_notice_with_a_partial_source_keeps_its_slot_key(tmp_path
     recovered = recover_pending_to_db(db, session_resolver=store.resolve_session_id_for_key)
     assert recovered == 1
     assert [call["session_id"] for call in db.appended] == ["sid-recall"]
+
+
+# --- The two directions the keying rule must not get wrong --------------------------------
+#
+# A key the store can resolve is not by itself proof that the payload belongs to that session,
+# and a lookup the store cannot answer is not proof that the key is wrong. Both directions are
+# covered here as the paired regressions of the rule in ``_recoverable_key``.
+SHARED_SLOT_KEY = "agent:main:telegram:group:900"
+SENDER_KEY = "agent:main:telegram:group:900:u1"
+
+
+def _group_event() -> MessageEvent:
+    """A turn in a group chat, no thread: only the per-user flag separates the two keys."""
+    return MessageEvent(
+        text="queued while busy",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="900", chat_type="group"),
+        message_id="queued-2",
+    )
+
+
+def _wire_shared_slot(tmp_path, db):
+    """The inverse override: the platform shares group keys, the store isolates them."""
+    runner, adapter = make_restart_runner()
+    store = _store(tmp_path, db)
+    runner.session_store = store
+    adapter.set_session_store(store)
+    adapter.config.extra["group_sessions_per_user"] = False
+    return runner, adapter, store
+
+
+@pytest.mark.asyncio
+async def test_a_resolvable_slot_key_naming_another_session_does_not_capture_the_payload(
+        tmp_path, flush_dir):
+    """The payload is recorded under its own sender's key, not the userless session's.
+
+    Both keys have a session behind them here: a callback-shaped turn already created one under
+    the shared slot key, and the payload's sender has their own. Resolving the slot key then
+    says only that *a* session exists under that string — the payload's source carries the
+    participant, so the store's own derivation is the session its turn is admitted in.
+    """
+    db = _FakeGatewayDB({SHARED_SLOT_KEY: {"id": "sid-userless", "started_at": 0.0},
+                         SENDER_KEY: {"id": "sid-sender", "started_at": 0.0}})
+    _runner, adapter, store = _wire_shared_slot(tmp_path, db)
+    event = _group_event()
+    assert adapter._event_session_key(event) == SHARED_SLOT_KEY
+    assert store._generate_session_key(event.source) == SENDER_KEY
+    adapter._pending_messages[SHARED_SLOT_KEY] = event
+
+    await adapter.cancel_background_tasks()
+
+    assert _payload_keys(flush_dir) == [SENDER_KEY]
+    recovered = recover_pending_to_db(db, session_resolver=store.resolve_session_id_for_key)
+    assert recovered == 1
+    assert [call["session_id"] for call in db.appended] == ["sid-sender"]
+    assert _spooled_files(flush_dir) == []
+
+
+@pytest.mark.asyncio
+async def test_an_unavailable_lookup_does_not_move_the_notice_off_its_slot_key(
+        tmp_path, flush_dir):
+    """A store that cannot answer for a key leaves the notice where its producer queued it.
+
+    ``SessionStore._db_for_key`` fails closed (no reachable home for the key), and the resolver
+    then answers ``None`` for both keys — a miss it never reported. Reading that as "the slot key
+    is wrong" re-keys the notice onto a derivation the store cannot land either, and the notice
+    strands with the spool file kept. The lookup comes back before recovery runs, which is the
+    state the flush must not destroy.
+    """
+    db = _FakeGatewayDB({RECALL_SLOT_KEY: {"id": "sid-recall", "started_at": 0.0}})
+    _runner, adapter, store = _wire_aligned(tmp_path, db)
+    notice = _queue_recall_notice(adapter)
+
+    with patch.object(store, "_db_for_key", lambda *_args, **_kwargs: None):
+        await adapter.cancel_background_tasks()
+
+    assert _payload_keys(flush_dir) == [RECALL_SLOT_KEY]
+    recovered = recover_pending_to_db(db, session_resolver=store.resolve_session_id_for_key)
+    assert recovered == 1
+    assert [call["session_id"] for call in db.appended] == ["sid-recall"]
     assert [call["content"] for call in db.appended] == [notice.text]
     assert _spooled_files(flush_dir) == []
 

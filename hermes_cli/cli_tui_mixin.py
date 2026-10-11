@@ -129,6 +129,150 @@ def _prefix_wrapped_rows(wrap, label, width, first_prefix, indent) -> list[str]:
     return [(first_prefix if i == 0 else indent) + row for i, row in enumerate(rows)]
 
 
+# ── Live todo board ───────────────────────────────────────────────────────────────────────────
+# Row budget when expanded: ``terminal_rows // 2`` bounded to [MIN, MAX] so a short terminal
+# still shows something useful and a huge plan can't eat the whole screen. Collapsed (the
+# default view) shows at most _TODO_BOARD_COLLAPSED_ROWS item rows; the header's Ctrl+O hint
+# expands to the full budget and collapses back.
+_TODO_BOARD_MIN_ROWS = 8
+_TODO_BOARD_MAX_ROWS = 30
+_TODO_BOARD_CONTENT_CHARS = 70
+_TODO_BOARD_COLLAPSED_ROWS = 5
+_TODO_BOARD_TOGGLE_LABEL = "Ctrl+O"
+
+
+def _todo_board_markers() -> dict:
+    """Status → marker for the board (the same markers the todo tool shows the model)."""
+    from tools.todo_tool import _STATUS_MARKERS
+    return dict(_STATUS_MARKERS)
+
+
+def _todo_board_max_rows(term_rows: Optional[int] = None) -> int:
+    """Full (expanded) row budget for board items: ``term_rows // 2`` clamped to [MIN, MAX]."""
+    if term_rows is None:
+        try:
+            term_rows = _term_rows()
+        except Exception:
+            term_rows = 24
+    return max(_TODO_BOARD_MIN_ROWS, min(_TODO_BOARD_MAX_ROWS, term_rows // 2))
+
+
+def _select_todo_display_items(items: list, max_rows: int):
+    """Pick which items to show when the list won't fit ``max_rows``.
+
+    Priority: in_progress (never hidden, may exceed the cap) → pending (trimmed from the tail,
+    priority order kept) → completed/cancelled (dropped first; the header's done/total count
+    already preserves that progress). Shown items keep their original list order.
+
+    Returns ``(shown_items, hidden_done_count, hidden_active_count)`` so the footer reports what
+    was actually hidden instead of unconditionally blaming "completed".
+    """
+    if len(items) <= max_rows:
+        return items, 0, 0
+    in_progress = [i for i in items if i.get("status") == "in_progress"]
+    pending = [i for i in items if i.get("status") == "pending"]
+    done = [i for i in items if i.get("status") in ("completed", "cancelled")]
+
+    budget = max_rows - len(in_progress)
+    if budget > 0:
+        shown_pending = pending[:budget]
+        budget -= len(shown_pending)
+    else:
+        shown_pending, budget = [], 0
+    hidden_active = len(pending) - len(shown_pending)
+    shown_done = done[:budget] if budget > 0 else []
+    hidden_done = len(done) - len(shown_done)
+
+    kept = {id(i) for i in in_progress + shown_pending + shown_done}
+    return [i for i in items if id(i) in kept], hidden_done, hidden_active
+
+
+def _todo_board_rows(items: list, max_rows: int, expanded: bool = False) -> list[str]:
+    """Raw (unpadded) rows: header + one per shown item + optional overflow footer.
+
+    Collapsed is the default: the item budget shrinks to ``_TODO_BOARD_COLLAPSED_ROWS`` so a
+    big plan doesn't own the screen, and the header carries the ``_TODO_BOARD_TOGGLE_LABEL``
+    expand hint. ``expanded=True`` restores the full terminal-proportional budget
+    (``max_rows``); the same in_progress → pending → done priority applies either way.
+    """
+    if not items:
+        return []
+    from agent.display import _oneline, _tail_trunc
+    from hermes_cli.cli_render import _panel_cwidth
+
+    markers = _todo_board_markers()
+    # Markers are all "[ ]"-shaped (3 cells); pad to the widest so content columns align.
+    marker_width = max(_panel_cwidth(m) for m in markers.values())
+    done = sum(1 for i in items if i.get("status") in ("completed", "cancelled"))
+    budget = max_rows if expanded else min(max_rows, _TODO_BOARD_COLLAPSED_ROWS)
+    toggle_hint = (
+        f" · {_TODO_BOARD_TOGGLE_LABEL} {'collapse' if expanded else 'expand'}"
+        if len(items) > _TODO_BOARD_COLLAPSED_ROWS else ""
+    )
+    rows = [f"📋 tasks {done}/{len(items)}{toggle_hint}"]
+    shown, hidden_done, hidden_active = _select_todo_display_items(items, budget)
+    for item in shown:
+        marker = markers.get(item.get("status"), "[?]")
+        pad = " " * max(0, marker_width - _panel_cwidth(marker))
+        content = _tail_trunc(
+            _oneline(str(item.get("content", ""))), _TODO_BOARD_CONTENT_CHARS)
+        rows.append(f"{marker}{pad} {content}")
+    bits = []
+    if hidden_active > 0:
+        bits.append(f"{hidden_active} pending")
+    if hidden_done > 0:
+        bits.append(f"{hidden_done} completed")
+    if bits:
+        rows.append(f"… +{' / '.join(bits)} hidden")
+    return rows
+
+
+def get_todo_board_text(items: list, term_cols: int = 100, term_rows: Optional[int] = None,
+                        expanded: bool = False) -> list:
+    """Bordered ``(style, text)`` fragments for the board; ``[]`` when there are no items.
+
+    ``expanded`` (default False = collapsed) picks the item budget; the widget passes the
+    session's live toggle state set by ``toggle_todo_board``.
+    """
+    from hermes_cli.cli_render import _panel_cwidth, _panel_ljust
+    from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
+
+    rows = _todo_board_rows(items, _todo_board_max_rows(term_rows), expanded=expanded)
+    if not rows:
+        return []
+    longest = max([_panel_cwidth(r) for r in rows] + [20])
+    box_width = min(longest + 4, max(24, term_cols - 6)) + 2
+    inner_width = max(0, box_width - 2)
+    frags = [('class:todo-border', '╭' + ('─' * box_width) + '╮\n')]
+    for row in rows:
+        # Trim BEFORE padding: on a narrow terminal inner_width can be below a row's natural
+        # width and _panel_ljust never shrinks, so an untrimmed row would push the right border out.
+        text = CLIStatusBarMixin._trim_status_bar_text(row, inner_width)
+        frags.append(('class:todo-border', '│ '))
+        frags.append(('class:hint', _panel_ljust(text, inner_width)))
+        frags.append(('class:todo-border', ' │\n'))
+    frags.append(('class:todo-border', '╰' + ('─' * box_width) + '╯\n'))
+    return frags
+
+
+def get_todo_board_height(items: list, term_rows: Optional[int] = None, expanded: bool = False) -> int:
+    """Rows the board occupies: its text rows + 2 border lines (0 when empty)."""
+    rows = _todo_board_rows(items, _todo_board_max_rows(term_rows), expanded=expanded)
+    return len(rows) + 2 if rows else 0
+
+
+def toggle_todo_board(cli) -> None:
+    """Flip the live board between collapsed (default) and expanded budgets.
+
+    Bound to ``_TODO_BOARD_TOGGLE_LABEL`` in the TUI keybindings; state lives on the CLI
+    instance (``_todo_board_expanded``) so it survives re-renders but resets per session.
+    """
+    cli._todo_board_expanded = not getattr(cli, "_todo_board_expanded", False)
+    invalidate = getattr(cli, "_invalidate", None)
+    if callable(invalidate):
+        invalidate()
+
+
 class CLITuiMixin:
     """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments."""
 
@@ -393,6 +537,17 @@ class CLITuiMixin:
     def _register_extra_tui_keybindings(self, kb, *, input_area) -> None:
         """Extension hook: wrapper CLIs add bindings to ``kb`` (``input_area`` is the main TextArea)."""
 
+    def _todo_board_items(self) -> list:
+        """Current agent's todo items for the live board (``[]`` with no agent/store or on error)."""
+        agent = getattr(self, "agent", None)
+        store = getattr(agent, "_todo_store", None) if agent is not None else None
+        if store is None:
+            return []
+        try:
+            return list(store.read() or [])
+        except Exception:
+            return []
+
     def _build_tui_layout_children(
         self,
         *,
@@ -404,6 +559,7 @@ class CLITuiMixin:
         clarify_widget,
         model_picker_widget=None,
         command_palette_widget=None,
+        todo_board_widget=None,
         spinner_widget=None,
         spacer,
         status_bar,
@@ -414,7 +570,8 @@ class CLITuiMixin:
         voice_status_bar,
         completions_menu) -> list:
         """Ordered children of the root ``HSplit``; override only for full control over ordering
-        (wrappers normally override ``_get_extra_tui_widgets`` instead)."""
+        (wrappers normally override ``_get_extra_tui_widgets`` instead). ``todo_board_widget``
+        (when given) renders the live todo list above the spinner."""
         ordered = [
             Window(height=0),
             sudo_widget,
@@ -425,6 +582,7 @@ class CLITuiMixin:
             clarify_widget,
             model_picker_widget,
             command_palette_widget,
+            todo_board_widget,
             spinner_widget,
             spacer,
             *self._get_extra_tui_widgets(),
@@ -1975,6 +2133,17 @@ class CLITuiMixin:
             lambda event: toggle_dock(self))
         kb.add('f7', filter=Condition(lambda: not modal_prompt_active(self)))(
             lambda event: toggle_dock(self))
+        # Ctrl+O collapses/expands the live todo board (same affordance pattern as the dock's
+        # Ctrl+R, its own key so the two panels expand independently). Deliberately NOT Ctrl+E:
+        # app-level bindings are merged last in ``Application._CombinedRegistry`` and
+        # ``KeyProcessor`` fires ``matches[-1]``, so a binding registered here shadows
+        # prompt_toolkit's own default for that key — Ctrl+E would silently replace emacs
+        # end-of-line in the composer (and Cmd+Right on Apple Terminal, which sends 0x05).
+        # Ctrl+O's emacs default is ``operate-and-get-next`` (accept + clear the buffer), so
+        # nothing usable is given up. The hint lives in the board header
+        # (``_TODO_BOARD_TOGGLE_LABEL``).
+        kb.add('c-o', filter=Condition(lambda: not modal_prompt_active(self)))(
+            lambda event: toggle_todo_board(self))
         return kb
 
     def _tui_bind_editor_and_stash(self, kb) -> None:
@@ -2184,6 +2353,20 @@ class CLITuiMixin:
             Window(FormattedTextControl(self._get_stash_panel_display_fragments), wrap_lines=False),
             filter=Condition(lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))),
         )
+        # Live todo board — collapsed by default to _TODO_BOARD_COLLAPSED_ROWS item rows; Ctrl+O
+        # expands to the full row cap (terminal_rows // 2 clamped to [_TODO_BOARD_MIN_ROWS,
+        # _TODO_BOARD_MAX_ROWS]) and collapses back. Hidden whenever the agent has no todos.
+        todo_board_widget = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(
+                    lambda: get_todo_board_text(
+                        cli_ref._todo_board_items(), cli_ref._get_tui_terminal_width(),
+                        expanded=getattr(cli_ref, "_todo_board_expanded", False))),
+                height=lambda: get_todo_board_height(
+                    cli_ref._todo_board_items(),
+                    expanded=getattr(cli_ref, "_todo_board_expanded", False)),
+                wrap_lines=False),
+            filter=Condition(lambda: bool(cli_ref._todo_board_items())))
         self._register_extra_tui_keybindings(kb, input_area=input_area)
         layout = Layout(FooterSplit(self._build_tui_layout_children(
             sudo_widget=sudo_widget,
@@ -2194,6 +2377,7 @@ class CLITuiMixin:
             clarify_widget=clarify_widget,
             model_picker_widget=model_picker_widget,
             command_palette_widget=command_palette_widget,
+            todo_board_widget=todo_board_widget,
             spinner_widget=spinner_widget,
             spacer=spacer,
             status_bar=status_bar,
@@ -2308,6 +2492,7 @@ class CLITuiMixin:
             'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
             'status-bar-session-title': 'bg:#FFD700 #1a1a2e bold',
             'input-rule': '#CD7F32',
+            'todo-border': '#CD7F32',
             'image-badge': '#87CEEB bold',
             'completion-menu': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion': 'bg:#1a1a2e #FFF8DC',

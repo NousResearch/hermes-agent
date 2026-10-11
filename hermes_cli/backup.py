@@ -26,6 +26,7 @@ from hermes_state_holders import read_only_db_uri
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
+from hermes_cli.backup_snapshot_files import iter_quick_snapshot_files
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
@@ -1293,15 +1294,10 @@ def _create_quick_snapshot_locked(
             # Walk the directory and record each file individually in the
             # manifest so restore can treat them uniformly.  Empty dirs are
             # skipped (nothing to snapshot).
-            for sub in src.rglob("*"):
+            for sub in iter_quick_snapshot_files(src):
                 if not sub.is_file():
                     continue
                 sub_rel = sub.relative_to(home).as_posix()
-                # Skip heavy, regenerable per-board subtrees (scratch
-                # workspaces and task attachments can be large); we only need
-                # the board databases + their metadata to restore a board.
-                if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
-                    continue
                 if _too_large(sub, sub_rel):
                     if sub.suffix == ".db":
                         oversized_skipped.append(sub_rel)

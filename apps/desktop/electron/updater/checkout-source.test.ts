@@ -12,7 +12,20 @@ import { markerPath } from '../update-marker'
 import * as updaterProcess from '../updater-process'
 
 import { type CheckoutStrategyDeps, createCheckoutStrategy } from './checkout'
-import { readSourceUpdate, type SourceUpdate } from './checkout-source'
+import { readSourceUpdate, type SourceUpdate, sourceUpdateEnvironment } from './checkout-source'
+
+it.skipIf(process.platform !== 'darwin')('does not inherit a stale SDKROOT into the macOS updater', (): void => {
+  vi.stubEnv('SDKROOT', '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk')
+
+  try {
+    const env = sourceUpdateEnvironment('/source', '/hermes-home')
+    expect(env.SDKROOT).toBeUndefined()
+    expect(env.HERMES_INSTALL_ROOT).toBe('/source')
+    expect(env.HERMES_HOME).toBe('/hermes-home')
+  } finally {
+    vi.unstubAllEnvs()
+  }
+})
 
 const execute: typeof execFile.__promisify__ = promisify(execFile)
 const repository: string = path.resolve(import.meta.dirname, '../../../..')

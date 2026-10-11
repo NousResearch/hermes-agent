@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 TOUCH_PROMPT = "Reply with exactly one word: the capital of France."
 TOUCH_EXPECT = "paris"
 _RESTART_BACKOFF_S = (1, 5, 15, 60)
+# A router that can never come back (port taken, model files gone) was respawned once a minute for
+# the life of the process. Give up after this many restarts; one that then stays up for
+# _RESTART_RESET_S earns a fresh budget.
+_MAX_RESTARTS = 5
+_RESTART_RESET_S = 10 * 60
 _RESIDENT = ("loaded", "ready")
 
 # Chosen once and reused across restarts: sessions persist the resolved base_url as a snapshot, and
@@ -57,6 +62,14 @@ def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _port_in_use(port: int) -> bool:
+    """Something accepts connections on our port. A connect probe, not a bind probe: a bind can
+    fail on the dead router's own TIME_WAIT connections."""
+    with socket.socket() as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", port)) == 0
 
 
 def _stable_port() -> int:
@@ -136,6 +149,7 @@ class LlamaServerSupervisor:
         self._job = None
         self.primary_model: str | None = None
         self._restarts = 0
+        self._spawned_at = 0.0
         self._stopping = False
         self._stop_event = threading.Event()
         self._lifecycle_lock = threading.RLock()
@@ -205,6 +219,7 @@ class LlamaServerSupervisor:
         # list-args, never a shell: spaced paths (user homes) must survive.
         self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
                                              cwd=str(exe.parent), env=server_child_env(os.environ))
+        self._spawned_at = time.monotonic()
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a
@@ -254,17 +269,42 @@ class LlamaServerSupervisor:
             time.sleep(1)
         raise TimeoutError(f"llama-server not healthy after {timeout_s}s (log: {self.log_path})")
 
+    def watching(self) -> bool:
+        """The watchdog still owns the router: serving, or between a crash and its restart."""
+        return self._watchdog is not None and self._watchdog.is_alive()
+
+    def _restart_blocker(self) -> str | None:
+        """Why the router must stay down, or None. Checked before every respawn: the runtime may
+        have been switched off since boot, and a respawn onto a port another process serves can
+        only fail to bind."""
+        with suppress(Exception):  # an unreadable config never blocks a restart
+            from hermes_cli.config import load_config_readonly
+
+            if not ((load_config_readonly() or {}).get("local_runtime") or {}).get("enabled"):
+                return "local_runtime.enabled is off"
+        if _port_in_use(self.port):
+            return f"port {self.port} is in use by another process"
+        return None
+
     def _watch(self) -> None:
-        """Restart the router (not its children) on crash, with backoff."""
+        """Restart the router (not its children) on crash, with backoff. Gives up after
+        _MAX_RESTARTS restarts without a stable run, or when _restart_blocker() says the router
+        must stay down; the next ensure_local_runtime() then boots a fresh supervisor."""
         while not self._stopping:
             proc = self.proc
             if proc is None:
                 return
             rc = proc.poll()
             if rc is None:
+                if self._restarts and time.monotonic() - self._spawned_at >= _RESTART_RESET_S:
+                    self._restarts = 0
                 time.sleep(2)
                 continue
             if self._stopping:
+                return
+            if self._restarts >= _MAX_RESTARTS:
+                logger.error("llama-server exited rc=%s; giving up after %s restarts (log: %s)",
+                             rc, self._restarts, self.log_path)
                 return
             backoff = _RESTART_BACKOFF_S[min(self._restarts, len(_RESTART_BACKOFF_S) - 1)]
             logger.warning("llama-server exited rc=%s; restart #%s in %ss", rc, self._restarts + 1, backoff)
@@ -276,6 +316,10 @@ class LlamaServerSupervisor:
                     if self._stopping:
                         return
                     self._reap_orphaned_children()
+                    blocker = self._restart_blocker()
+                    if blocker:
+                        logger.warning("not restarting llama-server: %s", blocker)
+                        return
                     self._spawn()
                 self._wait_health(120)
                 if self.primary_model:

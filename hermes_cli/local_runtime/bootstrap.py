@@ -408,7 +408,11 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     if not force and not section.get("enabled"):
         return None
     if _SUPERVISOR is not None:
-        return _SUPERVISOR
+        if _SUPERVISOR.watching():
+            return _SUPERVISOR
+        # Its watchdog gave up on a dead router (restart cap, runtime switched off, port taken):
+        # boot a fresh one rather than hand back a supervisor with nothing behind it.
+        shutdown_local_runtime()
 
     try:
         adopt_legacy_models()

@@ -219,6 +219,11 @@ DEFAULT_CONFIG = {
         # force on everywhere; "auto" = on for interactive coding surfaces and programmatic callers,
         # off for messaging surfaces. Doc/markdown/skill-only edits never fire.
         "verify_on_stop": False,
+        # Outgoing-claim evidence gate (chat surfaces): when the final message asserts an
+        # outcome ("verified", "fixed", "tested", ...) but the turn produced no tool
+        # results, annotate it with a visible unverified caveat instead of letting an
+        # unbacked claim read as proven. "annotate" (default) | "off".
+        "claim_gate": "annotate",
         # Inactivity warning (seconds), once per run before gateway_timeout; no interrupt. 0 = off.
         "gateway_timeout_warning": 900,
         # Max seconds any surface (CLI, TUI/Desktop, messaging gateway) blocks an agent awaiting a

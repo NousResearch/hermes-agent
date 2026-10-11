@@ -122,6 +122,7 @@ class CLIChatTurnMixin:
                 return None
             finally:
                 self._chat_release_turn_audio(turn)
+                self._requeue_undelivered_delegation_results(agent)
 
     def _chat_release_turn_audio(self, turn):
         """Every exit path: stop the thinking sound, send the TTS sentinel, cut TTS only if abnormal."""
@@ -385,7 +386,15 @@ class CLIChatTurnMixin:
                 turn.thinking_started = False
 
         interrupt_msg = None
+        steer_results = self._delegation_busy_result_mode() == "steer"
+        next_result_check = 0.0
         while agent_thread.is_alive():
+            if steer_results and time.monotonic() >= next_result_check:
+                next_result_check = time.monotonic() + 1.0
+                try:
+                    self._offer_delegation_results_to_running_turn(self.agent)
+                except Exception:  # health: allow BLE001 -- the monitor loop must keep running; a failed offer leaves the result queued for the next turn
+                    logger.warning("Could not offer finished subagent results to the running turn", exc_info=True)
             try:
                 interrupt_msg = self._interrupt_queue.get(timeout=0.1)
             except queue.Empty:

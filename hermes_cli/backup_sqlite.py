@@ -32,6 +32,7 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
     """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
 
     Fails closed when no consistent snapshot can be made: copying only the main file loses WAL data.
+    A pinned WAL snapshot can delay checkpoint truncation until the copy finishes.
     """
     conn = backup_conn = None
     try:
@@ -54,6 +55,43 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
         # full locked-source deadline instead of adding the default timeout before each callback.
         conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0)
         backup_conn = sqlite3.connect(str(dst))
+        busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
+
+        def _retry_locked(operation):
+            while True:
+                try:
+                    return operation()
+                except sqlite3.OperationalError as exc:
+                    code = getattr(exc, "sqlite_errorcode", None)
+                    if code is not None:
+                        locked = (code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                    else:
+                        locked = "busy" in str(exc).lower() or "locked" in str(exc).lower()
+                    if not locked:
+                        raise
+                    now = time.monotonic()
+                    if now >= busy_deadline:
+                        raise _SQLiteBackupTimeout(
+                            f"database remained locked for {timeout_seconds:g} seconds"
+                        ) from exc
+                    time.sleep(min(0.1, busy_deadline - now))
+
+        journal_mode = _retry_locked(
+            lambda: conn.execute("PRAGMA journal_mode").fetchone()[0]
+        )
+        if journal_mode.lower() == "wal":
+            # WAL commits otherwise restart sqlite3_backup from its first page.
+            def _pin_wal_snapshot() -> None:
+                try:
+                    conn.execute("BEGIN")
+                    conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+                except Exception:
+                    if conn.in_transaction:
+                        conn.rollback()
+                    raise
+
+            _retry_locked(_pin_wal_snapshot)
+
         busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
 
         def _check_backup_progress(status: int, _remaining: int, _total: int) -> None:

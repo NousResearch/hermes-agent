@@ -77,11 +77,21 @@ def _hold_typing():
 
 
 @pytest.mark.parametrize(
-    "platform", [Platform.DISCORD, Platform.SLACK, "irc", None]
+    "platform", [Platform.SLACK, "irc", None]
 )
 def test_output_path_is_mp3_for_non_opus_platforms(platform):
     path = build_auto_tts_output_path(platform)
     assert path.endswith(".mp3"), path
+
+
+@pytest.mark.parametrize(
+    "platform", [Platform.TELEGRAM, Platform.DISCORD]
+)
+def test_output_path_is_ogg_for_opus_platforms(platform):
+    """Discord requires real Ogg/Opus too (#123680): its send_voice uploads with a hard-coded
+    ``voice-message.ogg`` name and ``audio/ogg`` content type and never transcodes."""
+    path = build_auto_tts_output_path(platform)
+    assert path.endswith(".ogg"), path
 
 
 # ---------------------------------------------------------------------------

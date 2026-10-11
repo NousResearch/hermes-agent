@@ -203,10 +203,29 @@ def _verification_evidence(command, cwd, session_id, returncode, output) -> Opti
     return None
 
 
+def _cwd_fallback_note(stale_cwd: Optional[str], command_cwd: Optional[str]) -> Optional[str]:
+    """Say out loud that the session's own directory was gone.
+
+    The command still ran (that is the fix), but it ran somewhere the caller did
+    not name: a relative path would resolve against the fallback without the
+    model ever being told. The ``cwd`` echo cannot cover this — it fires only
+    when the command CHANGED directory, and a command that starts and ends in
+    the fallback changes nothing.
+    """
+    if not stale_cwd or not command_cwd:
+        return None
+    return (
+        f"This session's recorded working directory {stale_cwd!r} no longer exists, "
+        f"so the command ran in {command_cwd!r}. Relative paths resolve there; pass "
+        f"workdir to target another directory."
+    )
+
+
 def finalize_foreground_result(
     *, command: str, result: dict, env: Any, env_type: str, effective_task_id: str,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
     workdir: Optional[str], command_cwd: Optional[str], approval_note: Optional[str],
+    cwd_fallback_from: Optional[str] = None,
 ) -> str:
     """Turn a raw ``env.execute`` result into the tool's JSON result string."""
     from tools.terminal_tool import record_session_cwd
@@ -260,6 +279,7 @@ def finalize_foreground_result(
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
+        ("cwd_fallback", _cwd_fallback_note(cwd_fallback_from, command_cwd)),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
         *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
         ("verification_evidence", _verification_evidence(

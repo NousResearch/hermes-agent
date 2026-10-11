@@ -919,8 +919,9 @@ class AIAgent(
 
     def release_clients(self) -> None:
         """Release LLM clients and child agents WITHOUT tearing down session tool state (gateway cache
-        eviction: the session may resume on the same task_id, so processes, sandbox, browser, computer-use and
-        memory provider are kept). Idempotent; distinct from ``close()``."""
+        eviction: the session may resume on the same task_id, so processes, sandbox, browser and
+        computer-use are kept). The memory manager is drained + shut down WITHOUT ``on_session_end()``
+        so evicted provider writer threads don't leak. Idempotent; distinct from ``close()``."""
         self._close_active_children(soft=True)
         # Retire (don't hard-close) the shared client: eviction runs on the gateway memory-manager thread,
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
@@ -929,6 +930,42 @@ class AIAgent(
         # The Codex app-server child is an LLM client, not session tool state: the evicted instance is popped
         # from the cache and a rebuilt agent spawns its own child, so an unclosed one leaks for the gateway's life.
         _quietly(self._close_codex_session)
+        # Drain + shut down memory providers WITHOUT on_session_end().
+        #
+        # Each memory provider instance spawns its own background writer thread
+        # (retaindb-writer, openviking-sync, ...). Soft eviction never terminated
+        # them: one zombie daemon per evicted agent, each holding stack memory and
+        # references to provider clients/queues that block GC. Under a 128-entry
+        # cache with heavy turnover (e.g. concurrent 429 retry storms) this piles
+        # up dozens of leaked threads and drove the 2026-07-30 gateway liveness
+        # crash (exit 75).
+        #
+        # shutdown_memory_provider() calls on_session_end() first — too heavy for
+        # soft eviction: it triggers end-of-session extraction, which a resumed
+        # session would duplicate. Instead call shutdown_all() directly: it
+        # bounded-drains the sync executor (giving any queued extraction its ~5s)
+        # and calls provider shutdown(), which sends each writer its sentinel and
+        # joins the thread — no extraction side-effect.
+        #
+        # Extraction-commit coverage varies by eviction path: the sweep paths
+        # (LRU cap, idle TTL, RSS pressure) commit via _commit_then_release_soft()
+        # before soft release; direct eviction paths (/new, /model, /login,
+        # cross-process) release without a pre-commit, so on those the manager's
+        # queue still drains but the final turn's extraction is not committed —
+        # pre-existing behavior, unchanged by this fix (before this PR those
+        # paths ALSO leaked the writer threads).
+        #
+        # Safe for resume: an evicted agent is popped from the cache and never
+        # re-added, and the resumed session's freshly-built AIAgent creates a new
+        # MemoryManager with fresh provider instances. api_server's parked managers
+        # are checked out exclusively, so a live shared manager is never reachable
+        # here; delegation/review children run skip_memory=True (manager is None).
+        try:
+            _mm = getattr(self, "_memory_manager", None)
+            if _mm is not None and not getattr(_mm, "_shutting_down", False):
+                _quietly(_mm.shutdown_all)
+        except Exception:
+            pass
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never

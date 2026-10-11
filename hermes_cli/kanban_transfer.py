@@ -31,8 +31,9 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_backend as _kanban_backend
+kb = _kanban_backend.lazy_kanban_db()
+kbc = _kanban_backend.lazy_kanban_db_connect()
 from hermes_cli.archive_safe import (
     archive_root_dirs,
     copy_regular_files,

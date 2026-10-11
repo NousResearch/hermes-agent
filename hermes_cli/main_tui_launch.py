@@ -485,8 +485,8 @@ def _pin_kanban_board_env() -> None:
     if os.environ.get("HERMES_KANBAN_BOARD"):
         return
     with contextlib.suppress(Exception):
-        from hermes_cli.kanban_db import get_current_board
-        os.environ["HERMES_KANBAN_BOARD"] = get_current_board()
+        from hermes_cli.kanban_backend import get_kanban_db as _get_kb
+        os.environ["HERMES_KANBAN_BOARD"] = _get_kb().get_current_board()
 
 
 def _sync_bundled_skills_quietly() -> None:

@@ -8,8 +8,9 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_backend as _kanban_backend
+kb = _kanban_backend.lazy_kanban_db()
+kbc = _kanban_backend.lazy_kanban_db_connect()
 from hermes_cli.kanban_output import _err, _fmt_counts, _json_out
 
 

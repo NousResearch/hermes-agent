@@ -1593,14 +1593,24 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     @staticmethod
     def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
+        reply_text = getattr(event, "reply_to_text", None)
+        if event.reply_to_message_id and (
+            reply_text or getattr(source, "platform", None) == Platform.WHATSAPP_CLOUD
+        ):
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
-            reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            if reply_text:
+                _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
+                message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            else:
+                _who = (
+                    "your previous message"
+                    if getattr(event, "reply_to_is_own_message", False)
+                    else "an earlier message"
+                )
+                message_text = f"[Replying to {_who} (content unavailable)]\n\n{message_text}"
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is

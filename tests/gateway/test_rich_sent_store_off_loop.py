@@ -56,3 +56,20 @@ def test_concurrent_record_async_calls_lose_no_entry(isolated_store, monkeypatch
     asyncio.run(go())
     assert rich_sent_store.lookup("chat", "1") == "one"
     assert rich_sent_store.lookup("chat", "2") == "two"
+
+
+def test_busy_chat_cannot_evict_another_chats_recent_entry(isolated_store, monkeypatch):
+    monkeypatch.setattr(rich_sent_store, "_MAX_ENTRIES", 3)
+    monkeypatch.setattr(rich_sent_store, "_MAX_ENTRIES_PER_CHAT", 2, raising=False)
+    timestamps = iter(range(1, 5))
+    monkeypatch.setattr(rich_sent_store.time, "time", lambda: next(timestamps))
+
+    rich_sent_store.record("quiet", "1", "keep me")
+    rich_sent_store.record("busy", "1", "one")
+    rich_sent_store.record("busy", "2", "two")
+    rich_sent_store.record("busy", "3", "three")
+
+    assert rich_sent_store.lookup("quiet", "1") == "keep me"
+    assert rich_sent_store.lookup("busy", "1") is None
+    assert rich_sent_store.lookup("busy", "2") == "two"
+    assert rich_sent_store.lookup("busy", "3") == "three"

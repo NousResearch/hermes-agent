@@ -496,7 +496,7 @@ ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 # uv's environment locks are build-only and may be world-writable. Remove
 # them after all builds; never relax permissions on mutable PM/home state.
 RUN mkdir -p /opt/data && chmod 0644 /opt/hermes/tools/facts.json && \
-    rm -f /opt/hermes/.venv/.lock /opt/hermes/pm-runtime/.lock
+    rm -f /opt/hermes/.venv/.lock /opt/hermes/pm-runtime/.lock /opt/hermes/tools/.install.lock
 # Build helpers use system Python above; TUI gateway children need the sealed runtime.
 ENV HERMES_PYTHON=/opt/hermes/.venv/bin/python
 VOLUME [ "/opt/data" ]

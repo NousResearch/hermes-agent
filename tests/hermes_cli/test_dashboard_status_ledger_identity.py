@@ -30,7 +30,7 @@ def test_status_lists_a_ledger_backend_whose_recorded_argv_has_no_entry_token(ca
         listener.bind(("127.0.0.1", 0))
         listener.listen()
         port = listener.getsockname()[1]
-        monkeypatch.setattr(dashboard_procs, "_iter_process_table", lambda: [])
+        monkeypatch.setattr(dashboard_procs, "_iter_process_table", list)
         monkeypatch.setattr(process_identity, "ledger_entries", lambda *a, **k: [
             {"pid": pid, "purpose": "dashboard", "argv": "-c dashboard --no-open --skip-build",
              "host": "127.0.0.1", "port": port}])

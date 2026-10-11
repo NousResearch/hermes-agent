@@ -76,7 +76,6 @@ def _tool_call_logger() -> logging.Logger:
     return tool_logger
 
 
-
 _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "context length", "context size", "context window",
     "maximum context", "token limit", "too many tokens",

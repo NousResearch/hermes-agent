@@ -456,6 +456,7 @@ class GatewayStaleOverrideMixin:
         try:
             recovered = self._recover_telegram_topic_thread_id(source)
         except Exception:
+            logger.debug("Telegram topic recovery failed; retaining original source", exc_info=True)
             return source
         return source if recovered is None else replace_source(source, thread_id=recovered)
 

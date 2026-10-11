@@ -247,3 +247,59 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+# ── Container-shaped unparseable strings are not wrapped (#132942) ─────────
+
+class TestUnparseableContainerStringNotWrapped:
+    """A string that looks like a JSON container but fails to parse is a malformed
+    emission, not a scalar — wrapping it as [value] hands the tool a valid one-element
+    list and smuggles the payload past the tool's own guards (#132942)."""
+
+    def _todos_schema(self):
+        return {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "properties": {"todos": {"type": "array", "items": {"type": "object"}}},
+            },
+        }
+
+    def test_unparseable_array_shaped_string_kept_as_is(self):
+        # Missing opening quote on the first value — the observed GLM emission.
+        raw = '[{"content":Read config and pins","id":"1","status":"completed"}]'
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._todos_schema()):
+            result = coerce_tool_args("test_tool", {"todos": raw})
+        assert result["todos"] is raw
+
+    def test_unparseable_object_shaped_string_kept_as_is(self):
+        raw = '{"content":Read config'
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._todos_schema()):
+            result = coerce_tool_args("test_tool", {"todos": raw})
+        assert result["todos"] is raw
+
+    def test_bare_scalar_string_still_wrapped(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._todos_schema()):
+            result = coerce_tool_args("test_tool", {"todos": "single task"})
+        assert result["todos"] == ["single task"]
+
+    def test_parseable_object_string_for_array_schema_still_wrapped(self):
+        """Kind mismatch (dict JSON for an array slot) keeps the legacy wrap."""
+        raw = '{"a": 1}'
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._todos_schema()):
+            result = coerce_tool_args("test_tool", {"todos": raw})
+        assert result["todos"] == [raw]
+
+    def test_todo_list_rejects_unparseable_string_and_keeps_state(self):
+        """End-to-end: after coercion the tool's str guard rejects the write, so the
+        prior list is not silently replaced by a placeholder row."""
+        import json as _json
+        from tools.todo_tool import TodoStore, todo_tool
+        store = TodoStore()
+        store.write([{"id": "1", "content": "real task", "status": "in_progress"}])
+        raw = '[{"content":Read config and pins","id":"1","status":"completed"}]'
+        args = coerce_tool_args("todo_list", {"todos": raw})
+        out = _json.loads(todo_tool(todos=args.get("todos"), store=store))
+        assert "error" in out
+        assert store.read() == [{"id": "1", "content": "real task", "status": "in_progress"}]

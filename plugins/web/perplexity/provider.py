@@ -241,8 +241,9 @@ class PerplexityWebSearchProvider(WebSearchProvider):
             from tools.web_tools import _managed_web_search
 
             direct = bool(get_provider_env("PERPLEXITY_API_KEY"))
-            gateway = None if direct else _managed_gateway()
-            if gateway is None and not direct and _managed_web_search():
+            managed = not direct and _managed_web_search()
+            gateway = resolve_free_search_gateway() if managed else None
+            if gateway is None and managed:
                 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_error
 
                 return {

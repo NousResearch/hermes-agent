@@ -97,3 +97,45 @@ def test_extract_dispatch_snippets_per_url_and_missing_key():
         docs = p.extract(["https://example.com"])
         assert "PERPLEXITY_API_KEY" in docs[0]["error"]
         post.assert_not_called()
+
+
+def test_unconfigured_search_resolves_managed_route_once():
+    from agent.web_acquisition_errors import WebCredentialsMissingError
+    from plugins.web.perplexity.provider import PerplexityWebSearchProvider
+    from tools import managed_tool_gateway as gateway
+    import tools.web_tools as web_tools
+
+    with (
+        patch("agent.web_search_provider.get_provider_env", return_value=""),
+        patch.object(web_tools, "_configured_backend", return_value=""),
+        patch.object(web_tools, "read_selection", return_value=None),
+        patch.object(web_tools, "_has_env", return_value=False),
+        patch.object(web_tools, "_is_tool_gateway_ready", return_value=False),
+        patch.object(web_tools, "_ddgs_package_importable", return_value=False),
+        patch.object(web_tools, "_list_registered_web_providers", return_value=[]),
+        patch.object(
+            web_tools, "_autodetect_backend", wraps=web_tools._autodetect_backend
+        ) as autodetect,
+        patch.object(
+            gateway, "resolve_free_search_gateway", return_value=None
+        ) as resolve,
+        patch("plugins.web.perplexity.provider.httpx.post") as post,
+    ):
+        result = PerplexityWebSearchProvider().search("unconfigured route")
+
+    missing = WebCredentialsMissingError("PERPLEXITY_API_KEY")
+    assert {
+        "result": result,
+        "autodetect_calls": autodetect.call_count,
+        "free_gateway_calls": resolve.call_count,
+        "http_calls": post.call_args_list,
+    } == {
+        "result": {
+            "success": False,
+            "error": f"Perplexity search failed: {missing}",
+            "failure": missing.to_failure(),
+        },
+        "autodetect_calls": 1,
+        "free_gateway_calls": 1,
+        "http_calls": [],
+    }

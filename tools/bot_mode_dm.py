@@ -81,7 +81,7 @@ def message_agent_tool_schema() -> dict:
                 "not wait or poll for one — send it, finish your turn, and that process's "
                 "completion notification wakes you with the outcome: their reply, or the "
                 "delivery failure — unless the ack returns reply_delivery=\"poll\", in which case "
-                "follow its process(action=\"wait\") instruction before ending the turn. COMPOSE the message yourself: write what YOU want to say to "
+                "follow its process_manage(action=\"wait\") instruction before ending the turn. COMPOSE the message yourself: write what YOU want to say to "
                 "that agent (lead with the point; include the concrete ask or result). "
                 "Never paste the user's words verbatim — paraphrase the actionable "
                 "substance, and keep private 1:1 chat content private. Message one "
@@ -732,7 +732,7 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
             # be injected here (#101142). Say so and name the return path the surface supports.
             detail = (f"Message handed to a background delivery process for {label}, but THIS session "
                       "cannot receive completion notifications, so the reply will NOT arrive on its own. "
-                      f"Before ending your turn, retrieve the outcome with process(action='wait', "
+                      f"Before ending your turn, retrieve the outcome with process_manage(action='wait', "
                       f"session_id='{proc_id}') — its output is the reply (relay it, attributed to that "
                       "agent) or the delivery failure (report it; the message was NOT delivered); "
                       "if wait returns status=timeout, call wait again until the process exits.")
@@ -768,7 +768,7 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
     delivery failure — is appended to the sender's session transcript as a DELIVERY row
     (``display_kind="process_complete"``, the shape push surfaces persist for the same
     completion; mirrors gateway.wake.persist_delegation_delivery). A sender that already read
-    the outcome via process(action='wait'/'log') is not told twice. Returns False (nothing
+    the outcome via process_manage(action='wait'/'log') is not told twice. Returns False (nothing
     armed) when the sender has no session transcript or the process is not tracked here."""
     from tools.process_registry import process_registry
 

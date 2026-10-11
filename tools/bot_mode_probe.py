@@ -284,7 +284,7 @@ def _build_section(home: Path) -> str:
         "the reply arrives later as a background-process completion notification "
         "that wakes you; relay it to the user then, attributed to that agent — unless "
         "the ack returns reply_delivery=\"poll\", in which case follow its "
-        "process(action=\"wait\") instruction before ending the turn. "
+        "process_manage(action=\"wait\") instruction before ending the turn. "
         "COMPOSE every message yourself — say what YOU need from that agent; never "
         "forward the user's words verbatim, and never reveal private 1:1 chat "
         "content. When the user says \"ask <name>\" or \"tell <name> ...\", that is "

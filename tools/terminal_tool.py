@@ -163,9 +163,9 @@ Do NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), se
 Environment state persists: activate a virtualenv or export variables once per session, not before every command.
 
 Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds and fixed waits.
-Background: set background=true (returns a session_id) only for commands that must keep running independently after this tool call returns; add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. Do not start sleep, timers, cooldowns, delays, or polling loops with background=true — to wait a fixed time, run the wait as a normal foreground command with a high enough timeout. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action="poll"/"wait").
+Background: set background=true (returns a session_id) only for commands that must keep running independently after this tool call returns; add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. Do not start sleep, timers, cooldowns, delays, or polling loops with background=true — to wait a fixed time, run the wait as a normal foreground command with a high enough timeout. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process_manage(action="poll"/"wait").
 Working directory: use 'workdir' for per-command cwd; when a command changes the session cwd (cd, pushd), trust the result's "cwd" field instead of prefixing every command with 'cd'.
-PTY: pty=true + background=true for interactive CLIs (they hang without a terminal); drive them with process(action="write"/"submit"). Local backend only.
+PTY: pty=true + background=true for interactive CLIs (they hang without a terminal); drive them with process_manage(action="write"/"submit"). Local backend only.
 Persist: background=true, persist_on_release=true keeps the job alive across agent lifecycle cleanup (session end, /new, compression, error recovery, stop-on-max-iterations). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation; the user can still stop it on purpose.
 """
 
@@ -1070,7 +1070,7 @@ _PROMOTED_NOTE = (
     "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
     "tracked background process with notify_on_complete=true instead of being refused. Do NOT re-run it. "
     "Its completion (exit code + output tail) arrives as a notification; poll with "
-    "process(action=\"poll\", session_id=...) if you need it sooner."
+    "process_manage(action=\"poll\", session_id=...) if you need it sooner."
 )
 
 
@@ -1162,7 +1162,7 @@ def _plan_execution(
 _PROMOTED_NOTE_POLL_ONLY = (
     "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
     "tracked background process instead of being refused. Do NOT re-run it. This session cannot receive "
-    "completion notifications, so poll it with process(action=\"poll\", session_id=...) until it exits."
+    "completion notifications, so poll it with process_manage(action=\"poll\", session_id=...) until it exits."
 )
 
 
@@ -1340,7 +1340,7 @@ def _pre_exec_block(
 _PTY_DISABLED_REASON = (
     "PTY disabled for this command because it expects piped stdin/EOF "
     "(for example gh auth login --with-token). For local background "
-    "processes, call process(action='close') after writing so it receives "
+    "processes, call process_manage(action='close') after writing so it receives "
     "EOF."
 )
 
@@ -1597,7 +1597,7 @@ def _handle_terminal(args, **kw):
         if args.get("pty", False):
             return tool_error(
                 "pty requires background=true (a PTY session is interacted "
-                "with via process(action='write'/'submit'), which needs a "
+                "with via process_manage(action='write'/'submit'), which needs a "
                 "tracked background process). Retry as terminal(command=..., "
                 "background=true, pty=true)."
             )

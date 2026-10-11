@@ -932,7 +932,7 @@ _WINDOWS_BASH_SHELL_HINT = (
     "found' even though `cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style forward-slash native paths to "
     # no-tmp: ok — tells the model what NOT to use
     "native tools, and prefer `$LOCALAPPDATA/Temp` (or `$TMPDIR`, which Hermes points at its own scratch dir) for scratch files a native tool must read — never a bare `/tmp`. When "
-    "answering prompts in a pty background process, use process(submit) — never process(write) with a bare trailing "
+    "answering prompts in a pty background process, use process_manage(action='submit') — never process_manage(action='write') with a bare trailing "
     "newline: Enter on a Windows PTY is a carriage return, and a lone `\\n"
     "` is not delivered as a line terminator, so the child's prompt silently never returns. When a CLI offers a "
     "non-interactive path (flags, `--with-token`, config files, an OAuth device flow polled with curl), prefer it over "

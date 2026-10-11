@@ -103,7 +103,7 @@ _GATEWAY_CMDLINE_TOKEN_RE = re.compile(r"(?i)hermes_cli|\bhermes\b[^\n]*\bgatewa
 HOST_INTERPRETER_KILL_REJECTION = (
     "Blocked: this command kills every process whose image/name matches the Python "
     "interpreter, which is the process hosting this gateway (and this command). "
-    "Stop only the process you own instead: process(action=\"kill\", session_id=\"proc_…\") "
+    "Stop only the process you own instead: process_manage(action=\"kill\", session_id=\"proc_…\") "
     "for a background job Hermes started, or kill/taskkill by its explicit PID."
 )
 

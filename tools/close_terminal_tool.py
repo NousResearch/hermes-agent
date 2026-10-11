@@ -25,7 +25,7 @@ CLOSE_TERMINAL_SCHEMA = {
         "This does NOT kill the process — it only drops the tab/view; the output "
         "keeps buffering and the user can reopen it from the status stack. Use it "
         "to tidy up when a background process's live terminal is no longer worth "
-        "showing. To actually stop the process, use process(action='kill') instead."
+        "showing. To actually stop the process, use process_manage(action='kill') instead."
     ),
     "parameters": {
         "type": "object",
@@ -34,7 +34,7 @@ CLOSE_TERMINAL_SCHEMA = {
                 "type": "string",
                 "description": (
                     "The background process's session id (from terminal(background=true) "
-                    "output or process(action='list')) whose tab should be closed."
+                    "output or process_manage(action='list')) whose tab should be closed."
                 ),
             },
         },

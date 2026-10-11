@@ -139,7 +139,7 @@ def _local_delivery_notice(job: dict[str, Any], user_deliver: Optional[str]) -> 
             return None
     return (
         "This is a local-only cron job: its output is saved (view it with "
-        "cronjob(action='list')) but will NOT be delivered back into this "
+        "cronjob_manage(action='list')) but will NOT be delivered back into this "
         "session — CLI/TUI and stateless HTTP API sessions have no live-delivery channel. To be "
         "notified when it runs, recreate or update the job with deliver set to "
         "a gateway-connected platform, e.g. deliver='telegram' or deliver='all'.")
@@ -463,7 +463,7 @@ def _validate_context_from_refs(refs: list[Any]) -> Optional[str]:
         if not _get_job(ref_id):
             return (
                 f"context_from job '{ref_id}' not found. "
-                "Use cronjob(action='list') to see available jobs.")
+                "Use cronjob_manage(action='list') to see available jobs.")
     return None
 
 

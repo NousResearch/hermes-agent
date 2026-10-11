@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: carbon-design
+description: IBM Carbon Design System docs, components, icons, and code.
+source: https://www.carbondesignsystem.com/getting-started/carbon-mcp/overview
+
+# Official IBM-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry; Public Preview). Native OAuth 2.1 + Dynamic Client
+# Registration against IBMid (verified live: 401 → RFC 9728 protected-resource
+# metadata → AS metadata with registration_endpoint; DCR accepts client_name
+# "Hermes Agent" with a loopback redirect, public client, PKCE S256).
+# Five read-only tools per the vendor's tool reference: docs_search,
+# code_search, get_charts, labs_search, code_audit. No write surface.
+
+transport:
+  type: http
+  url: https://mcp.carbondesignsystem.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - carbon design system
+    - carbon react
+    - "@carbon/react"
+  hosts:
+    - carbondesignsystem.com
+
+post_install: |
+  On first connection Hermes opens a browser to sign in with your
+  IBMid (free to create; or run `hermes mcp login carbon-design`). Approve
+  access, then restart the session so tools load.
+
+  Carbon MCP is an IBM Public Preview. IBM collects de-identified
+  usage telemetry (request type, latency, session UUID); opt out by
+  emailing Carbon.MCP@ibm.com with your session ID.

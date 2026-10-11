@@ -615,9 +615,16 @@ def _run_after_agent_ready(
     if err:
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
+        err_obj = err.get("error") or {}
+        err_msg = err_obj.get("message", "agent initialization failed")
+        is_skew = ((err_obj.get("data") or {}).get("kind") == "code_skew")
         _emit_terminal_turn_error(
-            sid, session, (err.get("error") or {}).get("message", "agent initialization failed"),
-            error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
+            sid, session, err_msg,
+            error_surface={
+                "layer": "runtime",
+                "code": "code_skew_detected" if is_skew else "agent_init_failed",
+                "retryable": not is_skew,
+            })
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()

@@ -4378,12 +4378,12 @@ class BasePlatformAdapter(ABC):
         return result, delivery_adapter
 
     async def _release_turn_marker(self, event: MessageEvent) -> None:
-        """Clear the crash-recovery marker the runner handed to this delivery lifecycle
-        (``_turn_marker_handoff``): only once the final reply is ledgered or nothing more is owed,
-        so no kill leaves a persisted reply with neither marker nor ledger row. Idempotent."""
+        """Clear the crash marker handed to this delivery lifecycle only once the final reply is ledgered or
+        nothing more is owed (no kill leaves a persisted reply with neither), then wake the drain. Idempotent."""
         if (getattr(event, "_turn_marker_handoff", False) and getattr(event, "_gateway_active_turn_token", None)
                 and self.gateway_runner is not None):
             await self.gateway_runner._clear_durable_active_turn(event)
+        getattr(event, "_gateway_marker_released", asyncio.Event()).set()
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any],

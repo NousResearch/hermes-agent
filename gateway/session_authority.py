@@ -6,6 +6,7 @@ Transport attachment never constructs an agent or takes a turn lease.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import asdict, dataclass, field
 from functools import partial
 import sqlite3
@@ -25,6 +26,8 @@ from hermes_state_runtime import (
 
 # Capped backoff for a claim refused by transient storage (writer lock, full disk).
 _CLAIM_RETRY_MIN_S, _CLAIM_RETRY_MAX_S = 0.25, 5.0
+# Longest a settled turn's adapter may hold its adopted crash marker before the follower is claimed.
+_MARKER_RELEASE_WAIT_S = 60.0
 
 
 @dataclass
@@ -853,9 +856,24 @@ class SessionAuthority:
                 waiter_replies(self).pop(admission_id, None)
             from gateway.session_ingress import deliver_settled
             await deliver_settled(self, admission_id)
-            waiter = self.waiters.pop(admission_id, None)
-            if waiter is not None and not waiter.done():
-                waiter.set_result(response)
+            await self._resolve_settled_waiter(admission_id, response)
+
+    async def _resolve_settled_waiter(self, admission_id, response):
+        """Hand the settled reply to its waiter. The adapter sending it adopted the turn's crash marker
+        and releases it once the reply is ledgered (seconds with auto-TTS); a follower claimed before
+        that replaces the one-slot marker, so a kill in between would lose the persisted reply: the
+        drain waits for that release (bounded; never while draining or retiring)."""
+        adopter = getattr(self, 'marker_adopters', {}).get(admission_id)
+        released = None
+        if adopter is not None and getattr(adopter, '_gateway_active_turn_token', None):
+            released = adopter._gateway_marker_released = asyncio.Event()
+        waiter = self.waiters.pop(admission_id, None)
+        if waiter is None or waiter.done():
+            return
+        waiter.set_result(response)
+        if released is not None and not (self.runner._draining or self.retiring):
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(released.wait(), _MARKER_RELEASE_WAIT_S)
 
 
 async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True):

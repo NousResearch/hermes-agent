@@ -11,7 +11,7 @@ reconciler rather than a model of them.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -22,7 +22,7 @@ from hermes_cli.observability.shared_metrics_sender import (
 )
 from hermes_cli.sqlite_util import write_txn
 
-T0 = datetime(2026, 8, 1, tzinfo=timezone.utc)
+T0 = datetime(2026, 8, 1, tzinfo=UTC)
 
 
 def ts(days=0, hours=0):
@@ -142,7 +142,7 @@ class TestClockAdversaries:
         the window back to the true revoke moment.
         """
         _observe(store, True, dt(0))
-        _observe(store, True, datetime(2099, 1, 1, tzinfo=timezone.utc))
+        _observe(store, True, datetime(2099, 1, 1, tzinfo=UTC))
         _observe(store, False, dt(1))            # honest clock at revoke
         for n in range(2, 10):
             _add(store, f"REFUSED-{n}", ts(days=n), ts(days=n, hours=2))
@@ -163,7 +163,7 @@ class TestClockAdversaries:
         )
 
         _observe(store, True, dt(0))
-        _observe(store, True, datetime(2099, 1, 1, tzinfo=timezone.utc))
+        _observe(store, True, datetime(2099, 1, 1, tzinfo=UTC))
         with store._connection() as connection:
             stamp = connection.execute(
                 "SELECT stamp FROM consent_marks WHERE name = 'obs'"

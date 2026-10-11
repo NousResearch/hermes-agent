@@ -13,11 +13,12 @@ import type {
   SpawnTreeLoadResponse,
   ToolsConfigureResponse
 } from '../../../gatewayTypes.js'
+import { t } from '../../../i18n/runtime.js'
 import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
-import { NO_SKILLS_INSTALLED } from '../../userMessages.js'
+import { noSkillsInstalled } from '../../userMessages.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {
@@ -72,8 +73,9 @@ export const opsCommands: SlashCommand[] = [
         .then(
           ctx.guarded<ProcessStopResponse>(r => {
             const killed = Number(r.killed ?? 0)
-            const noun = killed === 1 ? 'process' : 'processes'
-            ctx.transcript.sys(`stopped ${killed} background ${noun}`)
+            ctx.transcript.sys(
+              t(killed === 1 ? 'slashCmd.ops.stop.stoppedOne' : 'slashCmd.ops.stop.stoppedOther', String(killed))
+            )
           })
         )
         .catch(ctx.guardedErr)
@@ -105,22 +107,20 @@ export const opsCommands: SlashCommand[] = [
         .then(
           ctx.guarded<ReloadMcpResponse>(r => {
             if (r.status === 'confirm_required') {
-              ctx.transcript.sys(r.message || '/reload-mcp requires confirmation')
+              ctx.transcript.sys(r.message || t('slashCmd.ops.reloadMcp.confirmRequired'))
 
               return
             }
 
             if (r.status === 'reloaded') {
               ctx.transcript.sys(
-                params.always
-                  ? 'MCP servers reloaded · future /reload-mcp will run without confirmation'
-                  : 'MCP servers reloaded'
+                params.always ? t('slashCmd.ops.reloadMcp.reloadedAlways') : t('slashCmd.ops.reloadMcp.reloaded')
               )
 
               return
             }
 
-            ctx.transcript.sys('reload complete')
+            ctx.transcript.sys(t('slashCmd.ops.reloadMcp.complete'))
           })
         )
         .catch(ctx.guardedErr)
@@ -136,9 +136,10 @@ export const opsCommands: SlashCommand[] = [
         .then(
           ctx.guarded<ReloadEnvResponse>(r => {
             const n = Number(r.updated ?? 0)
-            const noun = n === 1 ? 'var' : 'vars'
 
-            ctx.transcript.sys(`reloaded .env (${n} ${noun} updated)`)
+            ctx.transcript.sys(
+              t(n === 1 ? 'slashCmd.ops.reloadEnv.reloadedOne' : 'slashCmd.ops.reloadEnv.reloadedOther', String(n))
+            )
           })
         )
         .catch(ctx.guardedErr)
@@ -146,27 +147,37 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'manage browser CDP connection [connect|disconnect|status]',
+    help: 'manage the agent browser [connect|disconnect|status|use]',
     name: 'browser',
     run: (arg, ctx) => {
       const [rawAction = 'status', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
       const action = rawAction.toLowerCase()
 
-      if (!['connect', 'disconnect', 'status'].includes(action)) {
-        return ctx.transcript.sys(
-          'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
-        )
+      if (!['connect', 'disconnect', 'status', 'use'].includes(action)) {
+        return ctx.transcript.sys(t('slashCmd.ops.browser.usage'))
+      }
+
+      // `/browser use [on|off]` — same arguments as the classic CLI.
+      const mode = action === 'use' ? (rest[0] ?? 'on').toLowerCase() : undefined
+
+      if (mode && mode !== 'on' && mode !== 'off') {
+        return ctx.transcript.sys(t('slashCmd.ops.browser.useUsage'))
       }
 
       const sid = ctx.sid ?? null
       const url = action === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
 
       if (url) {
-        ctx.transcript.sys(`checking Chromium-family browser remote debugging at ${url}...`)
+        ctx.transcript.sys(t('slashCmd.ops.browser.checking', url))
       }
 
       ctx.gateway
-        .rpc<BrowserManageResponse>('browser.manage', { action, session_id: sid, ...(url && { url }) })
+        .rpc<BrowserManageResponse>('browser.manage', {
+          action,
+          session_id: sid,
+          ...(url && { url }),
+          ...(mode && { enabled: mode === 'on' })
+        })
         .then(
           ctx.guarded<BrowserManageResponse>(r => {
             // Without a session we can't subscribe to streamed
@@ -175,22 +186,32 @@ export const opsCommands: SlashCommand[] = [
               r.messages?.forEach(message => ctx.transcript.sys(message))
             }
 
-            if (action === 'status') {
-              return ctx.transcript.sys(
-                r.connected
-                  ? `browser connected: ${r.url || '(url unavailable)'}`
-                  : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
+            if (action === 'use') {
+              ctx.transcript.sys(
+                t(mode === 'on' ? 'slashCmd.ops.browser.useEnabled' : 'slashCmd.ops.browser.useDisabled')
               )
+
+              return ctx.transcript.sys(t('slashCmd.ops.browser.newSessionsOnly'))
+            }
+
+            if (action === 'status') {
+              ctx.transcript.sys(
+                r.connected
+                  ? t('slashCmd.ops.browser.connected', r.url || t('slashCmd.ops.browser.urlUnavailable'))
+                  : t('slashCmd.ops.browser.notConnected')
+              )
+
+              return r.browser_use ? ctx.transcript.sys(t('slashCmd.ops.browser.modeBrowserUse')) : undefined
             }
 
             if (action === 'disconnect') {
-              return ctx.transcript.sys('browser disconnected')
+              return ctx.transcript.sys(t('slashCmd.ops.browser.disconnected'))
             }
 
             if (r.connected) {
-              ctx.transcript.sys('Browser connected to live Chromium-family browser via CDP')
-              ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
-              ctx.transcript.sys('next browser tool call will use this CDP endpoint')
+              ctx.transcript.sys(t('slashCmd.ops.browser.connectedLive'))
+              ctx.transcript.sys(t('slashCmd.ops.browser.endpoint', r.url || t('slashCmd.ops.browser.urlUnavailable')))
+              ctx.transcript.sys(t('slashCmd.ops.browser.nextCallUsesEndpoint'))
             }
           })
         )
@@ -203,7 +224,7 @@ export const opsCommands: SlashCommand[] = [
     name: 'rollback',
     run: (arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys('no active session — nothing to rollback')
+        return ctx.transcript.sys(t('slashCmd.ops.rollback.noSession'))
       }
 
       const trimmed = arg.trim()
@@ -216,20 +237,20 @@ export const opsCommands: SlashCommand[] = [
           .then(
             ctx.guarded<RollbackListResponse>(r => {
               if (!r.enabled) {
-                return ctx.transcript.sys('checkpoints are not enabled')
+                return ctx.transcript.sys(t('slashCmd.ops.rollback.notEnabled'))
               }
 
               const checkpoints = r.checkpoints ?? []
 
               if (!checkpoints.length) {
-                return ctx.transcript.sys('no checkpoints found')
+                return ctx.transcript.sys(t('slashCmd.ops.rollback.noneFound'))
               }
 
-              ctx.transcript.panel('Rollback checkpoints', [
+              ctx.transcript.panel(t('slashCmd.ops.rollback.listTitle'), [
                 {
                   rows: checkpoints.map((c, idx) => [
                     `${idx + 1}. ${c.hash.slice(0, 10)}`,
-                    [c.timestamp, c.message].filter(Boolean).join(' · ') || '(no metadata)'
+                    [c.timestamp, c.message].filter(Boolean).join(' · ') || t('slashCmd.ops.rollback.noMetadata')
                   ])
                 }
               ])
@@ -242,7 +263,7 @@ export const opsCommands: SlashCommand[] = [
         const hash = rest[0]
 
         if (!hash) {
-          return ctx.transcript.sys('usage: /rollback diff <checkpoint>')
+          return ctx.transcript.sys(t('slashCmd.ops.rollback.usageDiff'))
         }
 
         return ctx.gateway
@@ -252,11 +273,11 @@ export const opsCommands: SlashCommand[] = [
               const body = (r.rendered || r.diff || '').trim()
 
               if (!body && !r.stat) {
-                return ctx.transcript.sys('no changes since this checkpoint')
+                return ctx.transcript.sys(t('slashCmd.ops.rollback.noChanges'))
               }
 
               const text = [r.stat || '', body].filter(Boolean).join('\n\n')
-              ctx.transcript.page(text, 'Rollback diff')
+              ctx.transcript.page(text, t('slashCmd.ops.rollback.diffTitle'))
             })
           )
           .catch(ctx.guardedErr)
@@ -274,12 +295,14 @@ export const opsCommands: SlashCommand[] = [
         .then(
           ctx.guarded<RollbackRestoreResponse>(r => {
             if (!r.success) {
-              return ctx.transcript.sys(`rollback failed: ${r.error || r.message || 'unknown error'}`)
+              return ctx.transcript.sys(
+                t('slashCmd.ops.rollback.failed', r.error || r.message || t('slashCmd.ops.rollback.unknownError'))
+              )
             }
 
-            const target = filePath || 'workspace'
-            const detail = r.reason || r.message || r.restored_to || 'restored'
-            ctx.transcript.sys(`rollback restored ${target}: ${detail}`)
+            const target = filePath || t('slashCmd.ops.rollback.workspaceTarget')
+            const detail = r.reason || r.message || r.restored_to || t('slashCmd.ops.rollback.restoredDetail')
+            ctx.transcript.sys(t('slashCmd.ops.rollback.restored', target, detail))
 
             if ((r.history_removed ?? 0) > 0) {
               ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
@@ -306,7 +329,7 @@ export const opsCommands: SlashCommand[] = [
           .request<DelegationPauseResponse>('delegation.pause', { paused })
           .then(r => {
             applyDelegationStatus({ paused: r?.paused })
-            ctx.transcript.sys(`delegation · ${r?.paused ? 'paused' : 'resumed'}`)
+            ctx.transcript.sys(t(r?.paused ? 'slashCmd.ops.agents.paused' : 'slashCmd.ops.agents.resumed'))
           })
           .catch(ctx.guardedErr)
 
@@ -316,7 +339,12 @@ export const opsCommands: SlashCommand[] = [
       if (sub === 'status') {
         const d = getDelegationState()
         ctx.transcript.sys(
-          `delegation · ${d.paused ? 'paused' : 'active'} · caps d${d.maxSpawnDepth ?? '?'}/${d.maxConcurrentChildren ?? '?'}`
+          t(
+            'slashCmd.ops.agents.status',
+            t(d.paused ? 'slashCmd.ops.agents.statePaused' : 'slashCmd.ops.agents.stateActive'),
+            String(d.maxSpawnDepth ?? '?'),
+            String(d.maxConcurrentChildren ?? '?')
+          )
         )
 
         return
@@ -356,17 +384,17 @@ export const opsCommands: SlashCommand[] = [
               const entries = r.entries ?? []
 
               if (!entries.length) {
-                return ctx.transcript.sys('no archived spawn trees on disk for this session')
+                return ctx.transcript.sys(t('slashCmd.ops.replay.noneOnDisk'))
               }
 
               const rows: [string, string][] = entries.map(e => {
                 const ts = e.finished_at ? new Date(e.finished_at * 1000).toLocaleString() : '?'
-                const label = e.label || `${e.count} subagents`
+                const label = e.label || t('slashCmd.ops.replay.subagentsLabel', String(e.count))
 
                 return [`${ts} · ${e.count}×`, `${label}\n  ${e.path}`]
               })
 
-              ctx.transcript.panel('Archived spawn trees', [{ rows }])
+              ctx.transcript.panel(t('slashCmd.ops.replay.archivedTitle'), [{ rows }])
             })
           )
           .catch(ctx.guardedErr)
@@ -379,7 +407,7 @@ export const opsCommands: SlashCommand[] = [
         const path = raw.slice(5).trim()
 
         if (!path) {
-          return ctx.transcript.sys('usage: /replay load <path>')
+          return ctx.transcript.sys(t('slashCmd.ops.replay.usageLoad'))
         }
 
         ctx.gateway
@@ -387,7 +415,7 @@ export const opsCommands: SlashCommand[] = [
           .then(
             ctx.guarded<SpawnTreeLoadResponse>(r => {
               if (!r.subagents?.length) {
-                return ctx.transcript.sys('snapshot empty or unreadable')
+                return ctx.transcript.sys(t('slashCmd.ops.replay.snapshotEmpty'))
               }
 
               // Push onto the in-memory history so the overlay picks it up
@@ -403,7 +431,7 @@ export const opsCommands: SlashCommand[] = [
 
       // ── In-memory nav (same-session) ─────────────────────────────
       if (!history.length) {
-        return ctx.transcript.sys('no completed spawn trees this session · try /replay list')
+        return ctx.transcript.sys(t('slashCmd.ops.replay.noneThisSession'))
       }
 
       let index = 1
@@ -412,7 +440,7 @@ export const opsCommands: SlashCommand[] = [
         const parsed = parseInt(raw, 10)
 
         if (Number.isNaN(parsed) || parsed < 1 || parsed > history.length) {
-          return ctx.transcript.sys(`replay: index out of range 1..${history.length} · use /replay list for disk`)
+          return ctx.transcript.sys(t('slashCmd.ops.replay.indexOutOfRange', String(history.length)))
         }
 
         index = parsed
@@ -429,7 +457,7 @@ export const opsCommands: SlashCommand[] = [
       const parts = arg.trim().split(/\s+/).filter(Boolean)
 
       if (parts.length !== 2) {
-        return ctx.transcript.sys('usage: /replay-diff <a> <b>  (e.g. /replay-diff 1 2 for last two)')
+        return ctx.transcript.sys(t('slashCmd.ops.replayDiff.usage'))
       }
 
       const [a, b] = parts
@@ -449,7 +477,7 @@ export const opsCommands: SlashCommand[] = [
       const candidate = resolve(b!)
 
       if (!baseline || !candidate) {
-        return ctx.transcript.sys(`replay-diff: could not resolve indices · history has ${history.length} entries`)
+        return ctx.transcript.sys(t('slashCmd.ops.replayDiff.unresolved', String(history.length)))
       }
 
       setDiffPair({ baseline, candidate })
@@ -462,13 +490,20 @@ export const opsCommands: SlashCommand[] = [
     help: 're-scan installed skills in the live TUI gateway',
     name: 'reload-skills',
     run: (_arg, ctx) => {
+      // Bound to the session so the rescan and the refreshed catalog see its
+      // repo's project-local skills, not the launch environment's.
+      const params = ctx.sid ? { session_id: ctx.sid } : {}
+
       ctx.gateway
-        .rpc<SkillsReloadResponse>('skills.reload', {})
+        .rpc<SkillsReloadResponse>('skills.reload', params)
         .then(
           ctx.guarded<SkillsReloadResponse>(r => {
-            ctx.transcript.page(r.output || 'skills reloaded', 'Reload Skills')
+            ctx.transcript.page(
+              r.output || t('slashCmd.ops.reloadSkills.reloaded'),
+              t('slashCmd.ops.reloadSkills.pageTitle')
+            )
             ctx.gateway
-              .rpc<CommandsCatalogResponse>('commands.catalog', {})
+              .rpc<CommandsCatalogResponse>('commands.catalog', params)
               .then(
                 ctx.guarded<CommandsCatalogResponse>(catalog => {
                   if (!catalog?.pairs) {
@@ -514,11 +549,13 @@ export const opsCommands: SlashCommand[] = [
               return
             }
 
-            const body = r?.output || '/skills: no output'
-            const formatted = r?.warning ? `warning: ${r.warning}\n${body}` : body
+            const body = r?.output || t('slashCmd.ops.slashWorker.skillsNoOutput')
+            const formatted = r?.warning ? `${t('slashCmd.ops.slashWorker.warning', r.warning)}\n${body}` : body
             const long = formatted.length > 180 || formatted.split('\n').filter(Boolean).length > 2
 
-            long ? ctx.transcript.page(formatted, 'Skills') : ctx.transcript.sys(formatted)
+            long
+              ? ctx.transcript.page(formatted, t('slashCmd.ops.slashWorker.skillsTitle'))
+              : ctx.transcript.sys(formatted)
           })
           .catch(ctx.guardedErr)
       }
@@ -530,11 +567,11 @@ export const opsCommands: SlashCommand[] = [
               const cats = Object.entries(r.skills ?? {}).sort()
 
               if (!cats.length) {
-                return sys(NO_SKILLS_INSTALLED)
+                return sys(noSkillsInstalled())
               }
 
               panel(
-                'Skills',
+                t('slashCmd.ops.skills.listTitle'),
                 cats.map<PanelSection>(([title, items]) => ({ items, title }))
               )
             })
@@ -546,7 +583,7 @@ export const opsCommands: SlashCommand[] = [
 
       if (sub === 'inspect') {
         if (!query) {
-          return sys('usage: /skills inspect <name>')
+          return sys(t('slashCmd.ops.skills.usageInspect'))
         }
 
         rpc<SkillsInspectResponse>('skills.manage', { action: 'inspect', query })
@@ -555,13 +592,13 @@ export const opsCommands: SlashCommand[] = [
               const info = r.info ?? {}
 
               if (!info.name) {
-                return sys(`unknown skill: ${query}`)
+                return sys(t('slashCmd.ops.skills.unknownSkill', query))
               }
 
               const rows: [string, string][] = [
-                ['Name', String(info.name)],
-                ['Category', String(info.category ?? '')],
-                ['Path', String(info.path ?? '')]
+                [t('slashCmd.ops.skills.rowName'), String(info.name)],
+                [t('slashCmd.ops.skills.rowCategory'), String(info.category ?? '')],
+                [t('slashCmd.ops.skills.rowPath'), String(info.path ?? '')]
               ]
 
               const sections: PanelSection[] = [{ rows }]
@@ -570,7 +607,7 @@ export const opsCommands: SlashCommand[] = [
                 sections.push({ text: String(info.description) })
               }
 
-              panel('Skill', sections)
+              panel(t('slashCmd.ops.skills.inspectTitle'), sections)
             })
           )
           .catch(ctx.guardedErr)
@@ -580,7 +617,7 @@ export const opsCommands: SlashCommand[] = [
 
       if (sub === 'search') {
         if (!query) {
-          return sys('usage: /skills search <query>')
+          return sys(t('slashCmd.ops.skills.usageSearch'))
         }
 
         rpc<SkillsSearchResponse>('skills.manage', { action: 'search', query })
@@ -589,10 +626,12 @@ export const opsCommands: SlashCommand[] = [
               const results = r.results ?? []
 
               if (!results.length) {
-                return sys(`no results for: ${query}`)
+                return sys(t('slashCmd.ops.skills.noResults', query))
               }
 
-              panel(`Search: ${query}`, [{ rows: results.map(s => [s.name, s.description ?? '']) }])
+              panel(t('slashCmd.ops.skills.searchTitle', query), [
+                { rows: results.map(s => [s.name, s.description ?? '']) }
+              ])
             })
           )
           .catch(ctx.guardedErr)
@@ -602,15 +641,19 @@ export const opsCommands: SlashCommand[] = [
 
       if (sub === 'install') {
         if (!query) {
-          return sys('usage: /skills install <name or url>')
+          return sys(t('slashCmd.ops.skills.usageInstall'))
         }
 
-        sys(`installing ${query}…`)
+        sys(t('slashCmd.ops.skills.installing', query))
 
         rpc<SkillsInstallResponse>('skills.manage', { action: 'install', query })
           .then(
             ctx.guarded<SkillsInstallResponse>(r =>
-              sys(r.installed ? `installed ${r.name ?? query}` : 'install failed')
+              sys(
+                r.installed
+                  ? t('slashCmd.ops.skills.installed', r.name ?? query)
+                  : t('slashCmd.ops.skills.installFailed')
+              )
             )
           )
           .catch(ctx.guardedErr)
@@ -622,10 +665,10 @@ export const opsCommands: SlashCommand[] = [
         const pageNum = query ? parseInt(query, 10) : 1
 
         if (Number.isNaN(pageNum) || pageNum < 1) {
-          return sys('usage: /skills browse [page]  (page must be a positive number)')
+          return sys(t('slashCmd.ops.skills.usageBrowse'))
         }
 
-        sys('fetching community skills (scans 6 sources, may take ~15s)…')
+        sys(t('slashCmd.ops.skills.fetching'))
 
         rpc<SkillsBrowseResponse>('skills.manage', { action: 'browse', page: pageNum })
           .then(
@@ -633,7 +676,11 @@ export const opsCommands: SlashCommand[] = [
               const items = r.items ?? []
 
               if (!items.length) {
-                return sys(`no skills on page ${pageNum}${r.total ? ` (total ${r.total})` : ''}`)
+                return sys(
+                  r.total
+                    ? t('slashCmd.ops.skills.noneOnPageWithTotal', String(pageNum), String(r.total))
+                    : t('slashCmd.ops.skills.noneOnPage', String(pageNum))
+                )
               }
 
               const rows: [string, string][] = items.map(s => [
@@ -644,21 +691,23 @@ export const opsCommands: SlashCommand[] = [
               const footer: string[] = []
 
               if (r.page && r.total_pages) {
-                footer.push(`page ${r.page} of ${r.total_pages}`)
+                footer.push(t('slashCmd.ops.skills.pageOf', String(r.page), String(r.total_pages)))
               }
 
               if (r.total) {
-                footer.push(`${r.total} skills total`)
+                footer.push(t('slashCmd.ops.skills.skillsTotal', String(r.total)))
               }
 
               if (r.page && r.total_pages && r.page < r.total_pages) {
-                footer.push(`/skills browse ${r.page + 1} for more`)
+                footer.push(t('slashCmd.ops.skills.browseMore', String(r.page + 1)))
               }
 
-              panel(`Browse Skills${pageNum > 1 ? ` — p${pageNum}` : ''}`, [
-                { rows },
-                ...(footer.length ? [{ text: footer.join(' · ') }] : [])
-              ])
+              panel(
+                pageNum > 1
+                  ? t('slashCmd.ops.skills.browseTitlePage', String(pageNum))
+                  : t('slashCmd.ops.skills.browseTitle'),
+                [{ rows }, ...(footer.length ? [{ text: footer.join(' · ') }] : [])]
+              )
             })
           )
           .catch(ctx.guardedErr)
@@ -688,11 +737,11 @@ export const opsCommands: SlashCommand[] = [
             return
           }
 
-          const body = r?.output || '/plugins: no output'
-          const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+          const body = r?.output || t('slashCmd.ops.slashWorker.pluginsNoOutput')
+          const text = r?.warning ? `${t('slashCmd.ops.slashWorker.warning', r.warning)}\n${body}` : body
           const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
-          long ? ctx.transcript.page(text, 'Plugins') : ctx.transcript.sys(text)
+          long ? ctx.transcript.page(text, t('slashCmd.ops.slashWorker.pluginsTitle')) : ctx.transcript.sys(text)
         })
         .catch(ctx.guardedErr)
     }
@@ -712,11 +761,11 @@ export const opsCommands: SlashCommand[] = [
               return
             }
 
-            const body = r?.output || '/tools: no output'
-            const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+            const body = r?.output || t('slashCmd.ops.slashWorker.toolsNoOutput')
+            const text = r?.warning ? `${t('slashCmd.ops.slashWorker.warning', r.warning)}\n${body}` : body
             const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
-            long ? ctx.transcript.page(text, 'Tools') : ctx.transcript.sys(text)
+            long ? ctx.transcript.page(text, t('slashCmd.ops.slashWorker.toolsTitle')) : ctx.transcript.sys(text)
           })
           .catch(ctx.guardedErr)
 
@@ -724,9 +773,9 @@ export const opsCommands: SlashCommand[] = [
       }
 
       if (!names.length) {
-        ctx.transcript.sys(`usage: /tools ${subcommand} <name> [name ...]`)
-        ctx.transcript.sys(`built-in toolset: /tools ${subcommand} web`)
-        ctx.transcript.sys(`MCP tool: /tools ${subcommand} github:create_issue`)
+        ctx.transcript.sys(t('slashCmd.ops.tools.usage', subcommand))
+        ctx.transcript.sys(t('slashCmd.ops.tools.builtinExample', subcommand))
+        ctx.transcript.sys(t('slashCmd.ops.tools.mcpExample', subcommand))
 
         return
       }
@@ -741,19 +790,24 @@ export const opsCommands: SlashCommand[] = [
             }
 
             if (r.changed?.length) {
-              ctx.transcript.sys(`${subcommand === 'disable' ? 'disabled' : 'enabled'}: ${r.changed.join(', ')}`)
+              ctx.transcript.sys(
+                t(
+                  subcommand === 'disable' ? 'slashCmd.ops.tools.disabled' : 'slashCmd.ops.tools.enabled',
+                  r.changed.join(', ')
+                )
+              )
             }
 
             if (r.unknown?.length) {
-              ctx.transcript.sys(`unknown toolsets: ${r.unknown.join(', ')}`)
+              ctx.transcript.sys(t('slashCmd.ops.tools.unknownToolsets', r.unknown.join(', ')))
             }
 
             if (r.missing_servers?.length) {
-              ctx.transcript.sys(`missing MCP servers: ${r.missing_servers.join(', ')}`)
+              ctx.transcript.sys(t('slashCmd.ops.tools.missingServers', r.missing_servers.join(', ')))
             }
 
             if (r.reset) {
-              ctx.transcript.sys('session reset. new tool configuration is active.')
+              ctx.transcript.sys(t('slashCmd.ops.tools.sessionReset'))
             }
           })
         )

@@ -84,7 +84,9 @@ export interface Translations {
     activeSessionsLabel: string;
     gatewayStatusLabel: string;
     gatewayStrip: {
+      degraded?: string;
       failed: string;
+      heartbeatStale?: string;
       off: string;
       running: string;
       starting: string;
@@ -125,13 +127,25 @@ export interface Translations {
     /** NS-656 disk-usage banner — optional, English fallback. */
     diskCriticalBanner?: string;
     diskElevatedBanner?: string;
+    /** Multi-profile host whose gateway boots standalone on a guard — optional, English fallback. */
+    multiplexStandaloneBanner?: string;
     dismiss?: string;
+    /** First-run shared-metrics offer — optional, English fallback. */
+    sharedMetricsTitle?: string;
+    sharedMetricsBody?: string;
+    sharedMetricsReaskBody?: string;
+    sharedMetricsShare?: string;
+    sharedMetricsLocal?: string;
+    sharedMetricsOff?: string;
+    sharedMetricsDetails?: string;
+    sharedMetricsSaveFailed?: string;
   };
 
   // ── Status page ──
   status: {
     actionFailed: string;
     actionFinished: string;
+    actionFinishedOwed: string;
     actions: string;
     agent: string;
     connected: string;
@@ -203,9 +217,14 @@ export interface Translations {
     deleteSelectedConfirmTitle: string;
     deleteSelectedConfirmMessage: string;
     selectedSessionsDeleted: string;
+    selectedSessionsSkippedActive: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
     newChat: string;
+    workspace: string;
+    workspaceDefault: string;
+    workspaceRescan: string;
+    workspaceCustom: string;
     previousPage: string;
     nextPage: string;
     roles: {
@@ -320,6 +339,8 @@ export interface Translations {
     noJobs: string;
     last: string;
     next: string;
+    overdueSince?: string;
+    schedulerLastTicked?: string;
     pause: string;
     resume: string;
     triggerNow: string;
@@ -341,6 +362,7 @@ export interface Translations {
     disableRuntime: string;
     enableAfterInstall: string;
     enableRuntime: string;
+    toggleTakesEffectAfterRestart: string;
     forceReinstall: string;
     headline: string;
     identifierLabel: string;
@@ -369,6 +391,8 @@ export interface Translations {
     authRequired: string;
     authRequiredHint: string;
     updateGit: string;
+    /** Optional: locales without it fall back to the English body at the call site. */
+    updateConsentBody?: (name: string, sha: string) => string;
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;

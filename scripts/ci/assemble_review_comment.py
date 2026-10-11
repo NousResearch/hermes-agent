@@ -8,7 +8,7 @@ result objects::
 
     [
       {
-        "source": "review-label-gate",
+        "source": "supply chain",
         "results": [
           {"kind": "action_required", "title": "...", "summary": "...",
            "how_to_fix": "..."},
@@ -170,7 +170,7 @@ def collect_failed_jobs(
         return []
 
     # Pre-normalize exclude sources once: lowercase + hyphens→spaces, so
-    # "review-label-gate" matches "Review label gate / Review label gate".
+    # "supply-chain" matches "Supply-chain scan / ...".
     norm_sources = {
         src.lower().replace("-", " ") for src in (exclude_sources or set())
     }
@@ -291,7 +291,6 @@ def render_comment(
 
     info = by_severity.get("info", [])
     debug = by_severity.get("debug", [])
-    has_blocking = any(by_severity.get(s) for s in _BLOCKING_SEVERITIES)
 
     body = f"{MARKER}\n# ૮ >ﻌ< ა ci review\n\n"
 
@@ -378,7 +377,7 @@ def assemble(
     """Assemble the full comment body from all available inputs."""
     items: list[ReviewItem] = []
 
-    # 1. Structured statuses from workflow_call jobs (review-labels, etc.)
+    # 1. Structured statuses from workflow_call jobs (supply-chain, etc.)
     status_items, sources = collect_from_statuses(review_statuses_json)
     items.extend(status_items)
 

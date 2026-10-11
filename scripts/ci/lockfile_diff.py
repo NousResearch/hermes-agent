@@ -117,6 +117,7 @@ def _git_show(ref: str, path: str, repo_root: str) -> str | None:
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
         cwd=repo_root,
+        check=False,
     )
     return proc.stdout if proc.returncode == 0 else None
 

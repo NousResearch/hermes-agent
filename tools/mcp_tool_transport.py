@@ -13,8 +13,9 @@ from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
-from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
+from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from tools.mcp_tool_common import _core
+from tools.mcp_tool_node_abi import node_abi_error
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
@@ -231,7 +232,7 @@ class MCPServerTransportMixin:
         keeps later requests legacy-shaped (envelope and MCP-Protocol-Version header), the form the
         handshake itself just proved the server accepts. The returned result keeps the server's own
         version for logging/diagnostics."""
-        import mcp.types as types  # late: keeps the SDK import lazy
+        from mcp import types  # late: keeps the SDK import lazy
         offered = _core.LATEST_HANDSHAKE_VERSION
         build_caps = getattr(session, "_build_capabilities", None)
         capabilities = build_caps(offered) if callable(build_caps) else types.ClientCapabilities()
@@ -290,10 +291,11 @@ class MCPServerTransportMixin:
 
     # ------------------------------------------------------------------ stdio
 
-    def _track_spawned_children(self, new_pids: Set[int]) -> None:
+    def _track_spawned_children(self, new_pids: set[int]) -> None:
         """Ledger the freshly spawned stdio children (pids, pgids, machine spawn ledger). pgids are
         captured while alive (getpgid fails after exit; the sweep needs them for reparented descendants)."""
-        new_pgids: Dict[int, int] = {}
+        new_pgids: dict[int, int] = {}
+        new_starts: dict[int, int] = {}
         for pid in new_pids:
             try:
                 new_pgids[pid] = os.getpgid(pid)
@@ -305,9 +307,15 @@ class MCPServerTransportMixin:
                 new_pgids[pid] = pid
             except (AttributeError, OSError):  # Windows (os.getpgid is POSIX-only)
                 pass
+            # Record the leader's start time so a later sweep can detect PID/PGID
+            # recycling before signalling (see _stdio_starttimes, #43044).
+            start = _leader_start_time(pid)
+            if start is not None:
+                new_starts[pid] = start
         with _core._lock:
             _stdio_pids.update(dict.fromkeys(new_pids, self.name))
             _stdio_pgids.update(new_pgids)
+            _stdio_starttimes.update(new_starts)
         # Machine spawn ledger (startup sweeps reap orphans after an unclean exit); best-effort.
         for _pid in new_pids:
             try:
@@ -321,7 +329,7 @@ class MCPServerTransportMixin:
         # _kill_orphaned_mcp_children) still reap as before; this only covers when they never run.
         _core._update_death_supervisor("register", new_pgids.values())
 
-    def _release_spawned_children(self, new_pids: Set[int]) -> None:
+    def _release_spawned_children(self, new_pids: set[int]) -> None:
         """Drop the ledger entries; a child (or its pgroup) still alive means SDK teardown failed
         (common on mid-way cancel on Linux: setsid() children escape) — mark it orphaned for the sweep."""
         from gateway.status import _pid_exists
@@ -340,6 +348,7 @@ class MCPServerTransportMixin:
                     dropped = _stdio_pgids.pop(pid, None)
                     if dropped is not None:
                         released_pgids.append(dropped)
+                    _stdio_starttimes.pop(pid, None)
         _core._update_death_supervisor("unregister", released_pgids)
 
     async def _run_stdio(self, config: dict):
@@ -363,6 +372,18 @@ class MCPServerTransportMixin:
             command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.
             encoding_error_handler="replace")
+        # Windows has no POSIX parent-death supervisor / killpg safety net (#61059): when this
+        # process dies ungracefully (crash, force-quit), the stdio child trees — npx.cmd →
+        # node.exe — survive as orphans with ParentId=null and pile up across restarts. Attaching
+        # THIS process to a KILL_ON_JOB_CLOSE job before the spawn makes every child (and
+        # grandchild) created after it die with the parent at the kernel level, so no orphan can
+        # outlive us. Idempotent; BREAKAWAY_OK keeps deliberate breakaway children escaping.
+        # Self-guards: a cheap no-op returning False on non-Windows.
+        try:
+            from hermes_cli.process_identity import attach_self_to_kill_on_close_job
+            attach_self_to_kill_on_close_job()
+        except Exception:
+            logger.debug("job-object self-attach failed before stdio spawn", exc_info=True)
         # Reap orphans of prior attempts first (else retries pile up zombie pairs); unscoped on purpose;
         # off-loop because the reaper blocks up to 2s.
         await asyncio.to_thread(_lifecycle._kill_orphaned_mcp_children)
@@ -377,9 +398,9 @@ class MCPServerTransportMixin:
         new_pids: set = set()
         # Subprocess stderr goes to ~/.hermes/logs/mcp-stderr.log so banners can't corrupt the TUI.
         _config._write_stderr_log_header(self.name)
+        stderr = _config._StderrTee(_config._get_mcp_stderr_log())
         try:
-            errlog = _config._get_mcp_stderr_log()
-            async with _core.stdio_client(server_params, errlog=errlog) as (read_stream, write_stream):
+            async with _core.stdio_client(server_params, errlog=stderr.sink) as (read_stream, write_stream):
                 # New PIDs for force-kill cleanup, minus non-MCP children (slash_worker, LSP) racing
                 # into the window: they share the TUI's pgid — leaking them would killpg() the TUI.
                 new_pids = _filter_mcp_children(_lifecycle._snapshot_child_pids() - pids_before)
@@ -391,7 +412,14 @@ class MCPServerTransportMixin:
                     # a server that never answers ``initialize`` would leak child + pipes per retry until EMFILE.
                     connect_timeout = float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
                     return await self._serve_session(session, connect_timeout, mark_lifecycle=True)
+        except Exception as exc:
+            # The SDK only sees "Connection closed"; the child's stderr says why (#124264).
+            abi_error = node_abi_error(self.name, await asyncio.to_thread(stderr.close))
+            if abi_error is not None:
+                raise abi_error from exc
+            raise
         finally:  # clean exit, exceptions AND cancellation
+            stderr.close(timeout=0)
             if new_pids:
                 self._release_spawned_children(new_pids)
 

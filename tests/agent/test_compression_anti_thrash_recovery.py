@@ -3,7 +3,7 @@
 When two consecutive compactions each fail to clear the threshold, the
 anti-thrashing breaker blocks automatic compaction. Before this fix the block
 was permanent for the life of the session: nothing ever decremented
-``_ineffective_compression_count`` (or ``_fallback_compression_streak``)
+``_ineffective_compression_count``
 while blocked, so a session whose middle region was briefly too small to
 compact never auto-compacted again — it grew unbounded until the provider's
 hard context limit, and only ``/new`` or ``/reset`` recovered it.
@@ -11,12 +11,12 @@ hard context limit, and only ``/new`` or ``/reset`` recovered it.
 The recovery contract pinned here:
 
 * After ``_ANTI_THRASH_RECOVERY_SECONDS`` of continuous block, the gate
-  grants exactly ONE probation probe: tripped counters drop to 1 strike
+  grants exactly ONE probation probe: the tripped count drops to 1 strike
   (persisted) and the gate reports unblocked once.
 * An ineffective probe re-trips the guard on the very next verdict, and the
   next recovery waits a FULL fresh window (no immediate re-probe loop).
 * An effective probe (or any fitting real-usage reading) fully clears the
-  counters through the existing ``update_from_response`` path.
+  count through the existing ``update_from_response`` path.
 * The recovery clock is armed lazily on the first blocked evaluation and
   persisted on the session row as a wall-clock deadline (#100185): a fresh
   compressor that loads a durable tripped counter (#69872) with NO stored
@@ -72,18 +72,20 @@ class TestRecoveryWindow:
         assert cc._ineffective_compression_count == 0
         assert cc._anti_thrash_recovery_deadline == 0.0
 
-    def test_fallback_streak_breaker_recovers_too(self):
+    def test_fallback_boundaries_wait_for_real_effectiveness_verdict(self):
         cc = _compressor()
-        cc._fallback_compression_streak = 2
-        base = 1000.0
-        with patch("agent.context_compressor.time.time", return_value=base):
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        with patch(
-            "agent.context_compressor.time.time",
-            return_value=base + cc._ANTI_THRASH_RECOVERY_SECONDS + 1,
-        ):
+        for prompt_tokens in (4_000, 5_000):
+            cc.record_completed_compaction(used_fallback=True)
+            cc.update_from_response({"prompt_tokens": prompt_tokens})
             assert cc.should_compress(cc.threshold_tokens + 1) is True
-        assert cc._fallback_compression_streak == 1
+        assert cc._fallback_compression_streak == 2
+        assert cc._ineffective_compression_count == 0
+
+        for _ in range(2):
+            cc.record_completed_compaction(used_fallback=True)
+            cc.update_from_response({"prompt_tokens": cc.threshold_tokens + 1})
+        assert cc.should_compress(cc.threshold_tokens + 1) is False
+        assert cc._ineffective_compression_count == 2
 
 
 

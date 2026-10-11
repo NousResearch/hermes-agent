@@ -47,4 +47,33 @@ describe('composer pop-out preference', () => {
       position: { bottom: 48, right: 64 }
     })
   })
+
+  // #101318: drag-to-float was on by default and a short brush undocked it.
+  it('locks a fresh install to the dock', async () => {
+    const store = await loadStore()
+
+    expect(store.$composerPopoutGesturesEnabled.get()).toBe(false)
+    expect(store.$composerPopout.get().poppedOut).toBe(false)
+  })
+
+  it('keeps gestures for a composer that was already floating before the default flipped', async () => {
+    window.localStorage.setItem(
+      ZONES_KEY,
+      JSON.stringify({ main: { poppedOut: true, position: { bottom: 48, right: 64 } } })
+    )
+
+    const store = await loadStore()
+
+    expect(store.$composerPopoutGesturesEnabled.get()).toBe(true)
+    expect(store.$composerPopout.get()).toEqual({ poppedOut: true, position: { bottom: 48, right: 64 } })
+  })
+
+  it('honours a stored choice either way', async () => {
+    window.localStorage.setItem(GESTURES_KEY, 'true')
+    expect((await loadStore()).$composerPopoutGesturesEnabled.get()).toBe(true)
+
+    vi.resetModules()
+    window.localStorage.setItem(GESTURES_KEY, 'false')
+    expect((await loadStore()).$composerPopoutGesturesEnabled.get()).toBe(false)
+  })
 })

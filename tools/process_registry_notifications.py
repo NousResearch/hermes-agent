@@ -67,7 +67,7 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" + (f"{m}m" if m else "")
 
 
-def _model_not_found_patterns() -> "list[str]":
+def _model_not_found_patterns() -> list[str]:
     """Model-not-found phrases from ``agent.error_classifier`` (the failover path's
     own list, so nothing drifts); a minimal built-in set if the import fails.
 
@@ -103,7 +103,7 @@ def _delegation_model_not_found(results, config) -> bool:
     return any(model in text and any(p in text for p in patterns) for text in texts)
 
 
-def _delegation_model_not_found_notice(results) -> "list[str] | None":
+def _delegation_model_not_found_notice(results) -> list[str] | None:
     """Config-level model_not_found notice lines, or None (fail-open) — once per batch."""
     config = _delegation_config()
     if not _delegation_model_not_found(results, config):
@@ -133,13 +133,13 @@ def _is_truncated(entry: dict) -> bool:
     return bool(entry.get("truncated") or entry.get("exit_reason") == "max_iterations")
 
 
-def _notice_lines(results) -> "list[str]":
+def _notice_lines(results) -> list[str]:
     """Blank + model_not_found notice block, or [] when the notice does not apply."""
     notice = _delegation_model_not_found_notice(results)
     return ["", *notice] if notice else []
 
 
-def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> "list[str]":
+def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> list[str]:
     """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model."""
     lines = [title, intro, ""]
     dispatched_at = evt.get("dispatched_at")
@@ -175,7 +175,7 @@ def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def _recovery_lines(evt: dict) -> "list[str]":
+def _recovery_lines(evt: dict) -> list[str]:
     """Owner-died recovery diagnostics (``recover_abandoned_delegations``): last persisted
     status, per-task transcript paths, their verbatim tails and the owner's git state."""
     if not evt.get("last_known_status"):
@@ -349,6 +349,16 @@ def process_completion_display_text(events: list) -> str:
     return f"Background Process {outcome}{detail}: {cmd}" if cmd else f"Background Process {outcome}{detail}"
 
 
+HEARTBEAT_DISPLAY_KIND = "hidden"  # a wake, not a message: no surface paints the row
+
+
+def heartbeat_display_text(evt: dict) -> str:
+    """One-line CLI receipt for a heartbeat wake; the row itself is hidden (``HEARTBEAT_DISPLAY_KIND``)."""
+    cmd = _short_command(evt.get("command"))
+    age = _format_age(float(evt.get("elapsed") or 0))
+    return f"Background Process Output after {age}: {cmd}" if cmd else f"Background Process Output after {age}"
+
+
 class TimelineNotification(str):
     """Queued model text that stays string-compatible, plus the display kind and compact human
     title the surface paints instead of the raw notification wall."""
@@ -371,7 +381,7 @@ class TimelineNotification(str):
                    "diagnostic" if diagnostic_process_event(event) else "result")
 
 
-def _delegation_attribution_line(evt: dict) -> "str | None":
+def _delegation_attribution_line(evt: dict) -> str | None:
     """One-line provenance for a subagent-owned process event, else None. Such a process
     outlives the child and lands in the PARENT conversation, which would otherwise see an
     anonymous output wall. Keyed on ``owner_task_id`` — ``task_id`` may be the session key."""
@@ -398,7 +408,7 @@ def _completion_status(evt: dict) -> str:
     return _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
 
 
-def format_process_notification(evt: dict) -> "str | None":
+def format_process_notification(evt: dict) -> str | None:
     """Format a completion_queue event into an ``[IMPORTANT: ...]`` message."""
     evt_type = evt.get("type", "completion")
     # watch_disabled and overflow events carry their own human-readable `message`;
@@ -414,12 +424,11 @@ def format_process_notification(evt: dict) -> "str | None":
         _attribution = f"Handed off to you by a subagent before it finished. Purpose: {evt['handoff_note']}"
     attribution = f"{_attribution}\n" if _attribution else ""
     if evt_type == "heartbeat":
-        _out = evt.get("output") or "(no new output since the last heartbeat)"
         return (
             f"[Background process {_sid} heartbeat #{evt.get('seq', '?')} — still running after "
-            f"{_format_age(float(evt.get('elapsed') or 0))} (next in {evt.get('interval', '?')}s; "
-            f"you will also be told when it exits).\n"
-            f"{attribution}Command: {_cmd}\nOutput since last heartbeat:\n{_out}]")
+            f"{_format_age(float(evt.get('elapsed') or 0))} (next in {evt.get('interval', '?')}s when there "
+            f"is new output; you will also be told when it exits).\n"
+            f"{attribution}Command: {_cmd}\nOutput since last heartbeat:\n{evt.get('output', '')}]")
     if evt_type == "watch_match":
         _sup = evt.get("suppressed", 0)
         return (

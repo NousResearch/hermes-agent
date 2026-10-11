@@ -1,0 +1,25 @@
+name: homeassistant
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: 682b22d019a1109421faa62efe43e16b23c2ebef
+subdir: homeassistant
+description: 'Home Assistant gateway platform (state-change events in, persistent notifications and cron notify
+  delivery out) plus the homeassistant toolset (ha_list_entities, ha_get_state, ha_list_services, ha_call_service).
+  Formerly built into Hermes core; existing users are migrated automatically.'
+maintainer: NousResearch
+tier: official
+category: platform
+requires_hermes: ">=0.21.5"
+version: "2.0.1"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/682b22d019a1109421faa62efe43e16b23c2ebef/assets/homeassistant.jpg
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/homeassistant
+platforms: []
+capabilities:
+  provides_tools:
+    - ha_list_entities
+    - ha_get_state
+    - ha_list_services
+    - ha_call_service
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - HASS_TOKEN

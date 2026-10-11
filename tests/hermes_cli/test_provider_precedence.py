@@ -82,7 +82,7 @@ class TestProviderPrecedence:
 
 
 def _logged_out(monkeypatch):
-    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", dict)
     monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda p: {"logged_in": False})
 
 

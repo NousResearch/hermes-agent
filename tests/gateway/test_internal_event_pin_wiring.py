@@ -11,6 +11,8 @@ reaches ``_run_agent`` is byte-identical on all three turns.
 
 from __future__ import annotations
 
+import sys
+import types
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -47,7 +49,9 @@ def _wake_source() -> SessionSource:
     return SessionSource(**_ORIGIN)
 
 
-def _make_runner(monkeypatch, config: GatewayConfig | None = None):
+def _make_runner(
+    monkeypatch, config: GatewayConfig | None = None, *, durable_prompt_pin: dict | None = None,
+):
     import agent.model_metadata as mm
     import gateway.run as gr
     import gateway.session as gs
@@ -90,6 +94,20 @@ def _make_runner(monkeypatch, config: GatewayConfig | None = None):
     )
     store.load_transcript.return_value = []
     store.has_platform_message_id.return_value = False
+    if durable_prompt_pin is not None:
+        def _get_prompt_pin(_key, *, expected_session_id=None):
+            if expected_session_id is not None:
+                assert expected_session_id == "sess-wiring"
+            value = durable_prompt_pin.get("value")
+            return dict(value) if isinstance(value, dict) else None
+
+        def _set_prompt_pin(_key, value, *, expected_session_id=None):
+            assert expected_session_id == "sess-wiring"
+            durable_prompt_pin["value"] = dict(value) if isinstance(value, dict) else None
+            return True
+
+        store.get_prompt_pin.side_effect = _get_prompt_pin
+        store.set_prompt_pin.side_effect = _set_prompt_pin
     r.session_store = store
     return r
 
@@ -207,3 +225,279 @@ async def test_internal_event_keeps_channel_prompt_and_parent_override(monkeypat
     eph = [_effective_ephemeral(runner, kw) for kw in calls]
     assert "Channel hint." in eph[0] and "Parent persona." in eph[0]
     assert eph[0] == eph[1] == eph[2], "internal event toggled the channel ephemeral components"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result_key", "interrupted"),
+    (("pending_steer", False), ("interrupt_message", True)),
+    ids=("leftover-steer", "interrupt-text"),
+)
+@pytest.mark.parametrize("channel_prompt", ["Channel hint.", "", None], ids=("hint", "empty", "none"))
+async def test_eventless_followup_keeps_effective_prompt_through_next_human(
+    monkeypatch, result_key, interrupted, channel_prompt
+):
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._refresh_agent_cache_message_count = AsyncMock()
+
+    adapter = MagicMock()
+    adapter.get_pending_message.return_value = None
+    adapter._active_sessions = {}
+    source = _human_thread_source()
+
+    await _drive(runner, ((False, source),), channel_prompt=channel_prompt)
+    first = calls[0]
+    turn_ctx = TurnContext(
+        source=first["source"],
+        context_prompt=first["context_prompt"],
+        channel_prompt=first["channel_prompt"],
+        session_key=first["session_key"],
+        session_id=first["session_id"],
+        run_generation=1,
+        history=[],
+    )
+    result = {
+        "final_response": "done",
+        "messages": [],
+        result_key: "follow up",
+        "interrupted": interrupted,
+    }
+
+    pending_event, pending = await runner._run_agent_drain_pending(result, adapter, source, KEY)
+    assert pending_event is None
+    assert pending == "follow up"
+    await runner._run_agent_queued_followup(
+        turn_ctx, adapter, pending, pending_event, "done", result, None
+    )
+    await _drive(runner, ((False, source),), channel_prompt=channel_prompt)
+
+    assert [call["channel_prompt"] for call in calls] == [channel_prompt] * 3
+    ephemeral = [_effective_ephemeral(runner, call) for call in calls]
+    assert "Parent persona." in ephemeral[0]
+    assert ephemeral[0] == ephemeral[1] == ephemeral[2]
+
+
+@pytest.mark.asyncio
+async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypatch):
+    runner = _make_runner(monkeypatch)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="queued")
+    runner._session_key_for_source = lambda source: KEY
+
+    source = _human_source()
+    adapter = MagicMock()
+    adapter._active_sessions = {}
+    pending_event = MessageEvent(
+        text="queued",
+        source=source,
+        message_id="queued-message-1",
+        channel_prompt="Queued event prompt.",
+    )
+    turn_ctx = TurnContext(
+        source=source,
+        context_prompt="ctx",
+        channel_prompt="Inherited prompt.",
+        session_key=KEY,
+        session_id="sess-wiring",
+        run_generation=1,
+        history=[],
+    )
+    result = {"final_response": "done", "messages": []}
+
+    await runner._run_agent_queued_followup(
+        turn_ctx, adapter, "queued", pending_event, "done", result, None
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["channel_prompt"] == "Queued event prompt.", "event prompt must win over the inherited one"
+
+@pytest.mark.asyncio
+async def test_first_internal_event_after_restart_rehydrates_durable_prompt_pins(monkeypatch):
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    durable: dict = {}
+
+    before = _make_runner(monkeypatch, config, durable_prompt_pin=durable)
+    calls_before: list[dict] = []
+    _capture(before, calls_before)
+    await _drive(before, ((False, _human_thread_source()),), channel_prompt="Channel hint.")
+
+    persisted = durable.get("value")
+    assert isinstance(persisted, dict)
+    assert persisted["channel_prompt"] == "Channel hint."
+    assert persisted["parent_chat_id"] == PARENT_ID
+
+    # A brand-new runner has no ConversationState. The first post-restart event is internal.
+    after = _make_runner(monkeypatch, config, durable_prompt_pin=durable)
+    calls_after: list[dict] = []
+    _capture(after, calls_after)
+    await _drive(
+        after,
+        ((True, _wake_thread_source()), (False, _human_thread_source())),
+        channel_prompt="Channel hint.",
+    )
+
+    human, first_internal, next_human = calls_before[0], calls_after[0], calls_after[1]
+    assert after._peek_session_state(KEY).conversation.ephemeral_pin is not None
+    assert after._peek_session_state(KEY).conversation.channel_pin is not None
+    assert first_internal["context_prompt"] == human["context_prompt"] == next_human["context_prompt"]
+    assert first_internal["channel_prompt"] == human["channel_prompt"] == next_human["channel_prompt"]
+    assert (
+        first_internal["source"].parent_chat_id
+        == human["source"].parent_chat_id
+        == next_human["source"].parent_chat_id
+    )
+    assert _effective_ephemeral(after, first_internal) == _effective_ephemeral(before, human)
+
+
+@pytest.mark.asyncio
+async def test_human_first_after_restart_ignores_stale_durable_prompt_pin(monkeypatch):
+    durable = {
+        "value": {
+            "version": 1,
+            "context_key": "stale-key",
+            "context_prompt": "STALE CONTEXT",
+            "redact_pii": False,
+            "channel_prompt": "Stale channel prompt.",
+            "parent_chat_id": "stale-parent",
+        }
+    }
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config, durable_prompt_pin=durable)
+    calls: list[dict] = []
+    _capture(runner, calls)
+
+    await _drive(runner, ((False, _human_thread_source()),), channel_prompt="Fresh channel prompt.")
+
+    assert len(calls) == 1
+    assert calls[0]["context_prompt"] != "STALE CONTEXT"
+    assert calls[0]["channel_prompt"] == "Fresh channel prompt."
+    assert calls[0]["source"].parent_chat_id == PARENT_ID
+    assert durable["value"]["context_prompt"] == calls[0]["context_prompt"]
+    assert durable["value"]["channel_prompt"] == "Fresh channel prompt."
+    assert durable["value"]["parent_chat_id"] == PARENT_ID
+
+
+@pytest.mark.asyncio
+async def test_internal_event_never_reuses_prompt_pin_from_another_privacy_policy(monkeypatch):
+    """A pin rendered with redact_pii off must not reach the model once redaction is on, not even
+    through the internal-event reuse path after a restart."""
+    import gateway.run as gr
+
+    monkeypatch.setattr(gr, "_load_gateway_config", lambda: {"privacy": {"redact_pii": True}})
+    durable = {
+        "value": {
+            "version": 1,
+            "context_key": "unredacted-key",
+            "context_prompt": "UNREDACTED CONTEXT",
+            "redact_pii": False,
+            "channel_prompt": "Channel hint.",
+            "parent_chat_id": None,
+        }
+    }
+    runner = _make_runner(monkeypatch, durable_prompt_pin=durable)
+    calls: list[dict] = []
+    _capture(runner, calls)
+
+    await _drive(runner, ((True, _wake_source()),))
+
+    assert calls[0]["context_prompt"] != "UNREDACTED CONTEXT"
+    assert calls[0]["channel_prompt"] == "Channel hint."
+
+
+# ---------------------------------------------------------------------------
+# #131294 — a channel_overrides model is the session's CONFIGURED model, not a
+# fallback.  The post-turn ``_run_agent_evict_on_fallback`` check baselined
+# against the global model only, so every successful turn in an overridden chat
+# evicted the cached agent (and cleared its ephemeral pin).  These drive the
+# REAL ``_run_agent`` / ``TurnRunner.run_sync`` path (only the AIAgent class and
+# config reads are substituted), not the ``_capture`` stub above.
+# ---------------------------------------------------------------------------
+
+_WELCOME = "https://welcome-api.nousresearch.com/v1"
+
+
+class _TurnAgent:
+    """AIAgent stand-in: keeps the resolved route, answers without an API call."""
+
+    instances = 0
+
+    def __init__(self, *args, **kwargs):
+        type(self).instances += 1
+        self.model = kwargs.get("model")
+        self.provider = kwargs.get("provider")
+        self.base_url = kwargs.get("base_url")
+        self.session_id = kwargs.get("session_id")
+        self.tools = []
+        self.request_overrides = dict(kwargs.get("request_overrides") or {})
+        # Mirror AIAgent.__init__: the welcome host pins its one model, and the primary
+        # route is snapshotted for the post-turn fallback classifier.
+        from hermes_cli.anon_auth import pin_model_for_route
+        self.model = pin_model_for_route(self.provider, self.base_url, self.model)
+        self._primary_runtime = {"model": self.model, "provider": self.provider, "base_url": self.base_url}
+
+    def run_conversation(self, user_message, conversation_history=None, task_id=None, **kwargs):
+        return {
+            "final_response": "ok",
+            "messages": (conversation_history or []) + [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "api_calls": 1,
+        }
+
+
+@pytest.mark.parametrize(
+    "runtime, global_model, expected_model",
+    [
+        ({"api_key": "fake", "provider": "openrouter"}, "default/model", "chan/model"),
+        ({"api_key": "fake", "provider": "nous", "base_url": _WELCOME}, "nous/welcome", "nous/welcome"),
+    ],
+    ids=["named-channel-model", "welcome-host-pins-over-channel-model"],
+)
+@pytest.mark.asyncio
+async def test_channel_override_turns_keep_one_cached_agent_and_the_pin(
+    monkeypatch, runtime, global_model, expected_model,
+):
+    import gateway.run as gr
+
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True, channel_overrides={_ORIGIN["chat_id"]: ChannelOverride(model="chan/model")},
+    )
+    monkeypatch.setattr(gr, "_load_gateway_config", lambda: {"model": {"default": global_model}})
+    monkeypatch.setattr(gr, "_resolve_gateway_model", lambda config=None: global_model)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _TurnAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    _TurnAgent.instances = 0
+
+    runner = _make_runner(monkeypatch, config)
+    monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: dict(runtime))
+    runner.session_store._entries = {}
+
+    await _drive(runner, ((False, _human_source()), (True, _wake_source()), (False, _human_source())))
+
+    entry = runner._agent_cache.get(KEY)
+    assert entry is not None, "channel-override turn evicted the session's cached agent"
+    assert entry[0].model == expected_model
+    assert _TurnAgent.instances == 1, f"agent rebuilt {_TurnAgent.instances - 1}x across 3 turns"
+    assert runner._peek_session_state(KEY).conversation.ephemeral_pin is not None, "context pin cleared"

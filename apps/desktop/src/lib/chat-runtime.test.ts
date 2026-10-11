@@ -10,8 +10,11 @@ import {
   coerceThinkingText,
   createClientSessionState,
   createToolMergeCache,
+  isSlashCommandText,
   messageCreatedAt,
   optimisticAttachmentRef,
+  personalityNamesFromConfig,
+  stripAttachmentRefs,
   toRuntimeMessage
 } from './chat-runtime'
 
@@ -96,6 +99,18 @@ describe('optimisticAttachmentRef', () => {
     )
 
     expect(ref).toBe(`![Lattice.png](${blobUrl})`)
+  })
+
+  it('percent-encodes a blob ref alt so brackets in a filename cannot break it', () => {
+    const blobUrl = 'blob:file:///07aa165b-55f6-4167-96c0-68f45ce7de27'
+
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', label: 'shot[1].png', detail: '/tmp/shot[1].png', previewUrl: blobUrl })
+    )
+
+    // `]` in the raw label would end the alt span in the Markdown-image form
+    // the directive parser matches, leaking the raw expression into text.
+    expect(ref).toBe(`![shot%5B1%5D.png](${blobUrl})`)
   })
 
   it('passes non-image attachments straight through to attachmentDisplayText', () => {
@@ -248,5 +263,100 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
       .map(part => (part as { toolCallId: string }).toolCallId)
 
     expect(ids).toEqual(['call-a', 'call-b'])
+  })
+})
+
+describe('personalityNamesFromConfig', () => {
+  it('reads root-level personalities the runtime honours (#123297)', () => {
+    expect(personalityNamesFromConfig({ personalities: { root_persona: '...' } })).toEqual(['root_persona'])
+  })
+
+  it('merges root and agent blocks, deduping name clashes', () => {
+    const names = personalityNamesFromConfig({
+      personalities: { root_persona: 'r', shared: 'root' },
+      agent: { personalities: { agent_persona: 'a', shared: 'agent' } }
+    })
+
+    // Direct array equality pins membership, dedupe, AND order in one assertion:
+    // `available_personalities()` inserts the root block before `agent.personalities`,
+    // and a clashing name keeps its first-insert (root) position, so the GUI listing
+    // must match that exact order.
+    expect(names).toEqual(['root_persona', 'shared', 'agent_persona'])
+  })
+
+  it('ignores non-object or array blocks', () => {
+    expect(personalityNamesFromConfig({ personalities: ['nope'], agent: { personalities: 'nope' } })).toEqual([])
+    expect(personalityNamesFromConfig(null)).toEqual([])
+  })
+
+  it('folds keys like the runtime: case/whitespace fold and dedupe, neutral names dropped', () => {
+    // The runtime (`available_personalities`) folds each key `str(name).strip().lower()`
+    // and skips the neutral spellings, so the dropdown must not offer a row the runtime
+    // never resolves. `Catgirl` and `catgirl` are one personality; `  Spaced  ` resolves
+    // to `spaced`; `none`/`default`/`neutral` resolve to nothing.
+    const names = personalityNamesFromConfig({
+      personalities: { Catgirl: 'r', '  Spaced  ': 'r', none: 'r', Default: 'r', NEUTRAL: 'r' },
+      agent: { personalities: { catgirl: 'a' } }
+    })
+
+    expect(names).toEqual(['catgirl', 'spaced'])
+  })
+})
+
+describe('stripAttachmentRefs', () => {
+  it('strips a single leading image ref line', () => {
+    expect(stripAttachmentRefs('@image:/tmp/screenshot.png\n\n/moa what is this?')).toBe('\n/moa what is this?')
+  })
+
+  it('strips multiple ref lines joined by a single newline (producer format)', () => {
+    expect(stripAttachmentRefs('@image:a.png\n@file:b.pdf\n\n/moa hi')).toBe('\n/moa hi')
+  })
+
+  it('strips backtick-quoted ref values (formatRefValue output for spaced paths)', () => {
+    expect(stripAttachmentRefs('@image:`C:\\Users\\John Doe\\photo.png`\n\n/moa hi')).toBe('\n/moa hi')
+  })
+
+  it('strips folder/terminal/line refs from the inline palette', () => {
+    expect(stripAttachmentRefs('@folder:`apps/desktop/`\n\n/moa hi')).toBe('\n/moa hi')
+    expect(stripAttachmentRefs('@terminal:main\n\n/status')).toBe('\n/status')
+    expect(stripAttachmentRefs('@line:src/a.ts:12\n\n/moa')).toBe('\n/moa')
+  })
+
+  it('does not strip a ref-looking token in the middle of the text', () => {
+    expect(stripAttachmentRefs('look at @image:x /moa hi')).toBe('look at @image:x /moa hi')
+  })
+
+  it('leaves plain text untouched', () => {
+    expect(stripAttachmentRefs('hello world')).toBe('hello world')
+  })
+
+  it('handles an empty string', () => {
+    expect(stripAttachmentRefs('')).toBe('')
+  })
+})
+
+describe('isSlashCommandText', () => {
+  it('detects a plain slash command', () => {
+    expect(isSlashCommandText('/new')).toBe(true)
+  })
+
+  it('detects a command after an image ref (composer wire format)', () => {
+    expect(isSlashCommandText('@image:/tmp/foo.png\n\n/moa something')).toBe(true)
+  })
+
+  it('detects a command after a folder ref from the inline palette', () => {
+    expect(isSlashCommandText('@folder:`apps/desktop/`\n\n/moa hi')).toBe(true)
+  })
+
+  it('detects a command after multiple refs with one newline each', () => {
+    expect(isSlashCommandText('@image:a.png\n@file:b.pdf\n\n/compress')).toBe(true)
+  })
+
+  it('rejects plain text that merely contains a slash later', () => {
+    expect(isSlashCommandText('what is this?')).toBe(false)
+  })
+
+  it('rejects a ref-only message (no command)', () => {
+    expect(isSlashCommandText('@image:/tmp/foo.png')).toBe(false)
   })
 })

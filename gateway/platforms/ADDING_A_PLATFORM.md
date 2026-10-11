@@ -64,7 +64,7 @@ orphans) and the developer-guide page for the prose walkthrough.
 two transport modes the user picks between — unofficial vs official
 APIs, polling vs websocket, library A vs library B — the right
 structure is two adapters that share a behavior mixin. WhatsApp does
-this: `gateway/platforms/whatsapp.py` (Baileys bridge) and
+this: `plugins/platforms/whatsapp/adapter.py` (Baileys bridge) and
 `gateway/platforms/whatsapp_cloud.py` (Meta Cloud API) both inherit
 from `WhatsAppBehaviorMixin` in `gateway/platforms/whatsapp_common.py`.
 The mixin owns gating, allow-lists, mention parsing, broadcast
@@ -137,7 +137,7 @@ If your platform supports interactive button/menu messages, implement these for 
 | `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram, Discord, and Slack (Socket Mode). |
 | `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Telegram (inline keyboard), Discord (select menu), and Matrix (reactions). Platforms without it fall back to the text status card automatically. |
 
-See `gateway/platforms/telegram.py`, `discord.py`, and `whatsapp_cloud.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
+See `plugins/platforms/telegram/adapter.py`, `plugins/platforms/discord/adapter.py`, and `gateway/platforms/whatsapp_cloud.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
 
 ### Required function
 

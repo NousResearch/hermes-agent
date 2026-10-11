@@ -181,6 +181,39 @@ class GatewayStartupMixin:
         overrides the warm-up resolves, so it takes the same launch-profile binding."""
         await self._run_boot_probe_in_launch_scope(self._start_free_tier_bootstrap)
 
+    async def _warm_picker_cache(self) -> None:
+        """Warm the Nous catalog the ``/model`` picker reads before the first picker open.
+
+        ``_nous_picker_model_ids`` and ``inventory._apply_pricing`` both read the Nous catalog with
+        ``cached_only=True`` — the salvage of #102099, where a live fetch held the picker open for
+        1-2s — so they only ever see whatever a background prewarm already put in the process cache.
+
+        Only ``inventory.build_picker_inventory`` triggers that prewarm (``_prewarm_pricing_async``).
+        The messaging gateway renders ``/model`` through ``list_authenticated_providers``, which skips
+        it, so on Telegram ``_pricing_cache`` stayed empty for the whole process lifetime. The Nous
+        picker then fell back to the Portal-recommendation shortlist alone: free-tier users lost the
+        zero-priced models the Portal recommends (and, with #133971's fix, everything the catalog
+        prices at zero), and paid-tier users lost on-sale rows, because
+        ``partition_nous_models_by_tier`` had no pricing to partition against. The TUI entrypoints
+        (``cli_tui_runtime_mixin``, ``tui_gateway/entry.py``) warm this at startup; this brings the
+        messaging gateway in line.
+
+        Nous only, and with synthetic rows: ``_prewarm_pricing_async`` reads just ``slug`` and
+        ``api_url``, and Nous is the only picker path whose rows are built from this cache. Probing
+        every provider here would put catalog discovery on the boot path for no gain.
+
+        The rows are synthetic and throwaway: ``_apply_pricing`` fetches the provider catalog itself
+        and only walks ``row["models"]`` to attach prices to that copy, so a single placeholder id is
+        enough to make it do the fetch (``_prewarm_pricing_async`` deep-copies the rows for its
+        worker). The ids never reach a real payload.
+
+        Fire-and-forget on the boot probe executor under the launch profile's scope (the fetch reads
+        profile-scoped credentials), and never blocks or fails startup.
+        """
+        from hermes_cli.inventory import _prewarm_pricing_async
+
+        _prewarm_pricing_async([{"slug": "nous", "models": ["hermes-picker-pricing-prewarm"]}])
+
     async def _warm_turn_prerequisites(self) -> None:
         """Initialize turn machinery on an executor thread before the gate opens. Never raises: a
         failed warm-up degrades to lazy init and must not block startup."""
@@ -1638,6 +1671,10 @@ class GatewayStartupMixin:
         # Fresh boot: the gate opens while the turn machinery is still cold (skeleton prompts). Warm NOW
         # to overlap the connects; _finish_startup_restore awaits it (bounded).
         self._start_startup_warmup()
+        # Same idea for the /model picker's catalog caches, but deliberately NOT gated on the
+        # turn-warmup timeout: that knob (<=0 disables it) is about turn machinery, and a picker with
+        # an empty cache is a permanently degraded /model rather than a slow first turn. Fire-and-forget.
+        asyncio.ensure_future(self._run_boot_probe_in_launch_scope(self._warm_picker_cache))
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
         self._startup_parked_platforms = False  # fresh boot: no platform has failed yet

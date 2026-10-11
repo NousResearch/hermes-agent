@@ -206,6 +206,24 @@ def _cmd_boards_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_boards_set_orchestrator(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-orchestrator", must_exist=True)
+    if rc:
+        return rc
+    profile = (args.profile or "").strip()
+    if profile:
+        from hermes_cli import profiles as profiles_mod
+        if not profiles_mod.profile_exists(profile):
+            return _err(f"kanban: profile {profile!r} does not exist.", 2)
+    meta = kb.write_board_metadata(normed, orchestrator_profile=profile)
+    if meta.get("orchestrator_profile"):
+        print(f"Board {normed!r} orchestrator set to {meta['orchestrator_profile']!r}.")
+    else:
+        print(f"Board {normed!r} orchestrator cleared — using the global "
+              f"kanban.orchestrator_profile.")
+    return 0
+
+
 _BOARD_HANDLERS = {
     "list": _cmd_boards_list, "ls": _cmd_boards_list,
     "create": _cmd_boards_create, "new": _cmd_boards_create,
@@ -214,6 +232,7 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "set-orchestrator": _cmd_boards_set_orchestrator,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

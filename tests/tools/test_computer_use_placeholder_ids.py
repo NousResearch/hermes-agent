@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-def _backend_with_windows(windows: List[Dict[str, Any]]):
+def _backend_with_windows(windows: list[dict[str, Any]]):
     from tools.computer_use.cua_backend import CuaDriverBackend
 
     backend = CuaDriverBackend()
@@ -91,7 +91,7 @@ def test_malformed_ids_are_not_treated_as_placeholders():
 
 
 def test_placeholder_predicate():
-    from tools.computer_use.cua_backend import _is_placeholder_id
+    from tools.computer_use.cua_backend_parse import _is_placeholder_id
 
     assert _is_placeholder_id(0) is True
     assert _is_placeholder_id("0") is True

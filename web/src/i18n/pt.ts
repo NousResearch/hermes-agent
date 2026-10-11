@@ -95,6 +95,7 @@ export const pt: Translations = {
   status: {
     actionFailed: "Ação falhou",
     actionFinished: "Concluído",
+    actionFinishedOwed: "Atualizado, mas ainda pendente (execute `hermes update` novamente para concluir)",
     actions: "Ações",
     agent: "Agente",
     activeSessions: "Sessões ativas",
@@ -162,9 +163,14 @@ export const pt: Translations = {
     deleteSelectedConfirmMessage:
       "Isto remove permanentemente {count} sessões selecionadas e todas as suas mensagens. Não pode ser desfeito.",
     selectedSessionsDeleted: "{count} sessões eliminadas",
+    selectedSessionsSkippedActive: "{deleted} eliminadas; {count} mantidas porque há um turno em curso",
     failedToDeleteSelected: "Falha ao eliminar as sessões selecionadas",
     resumeInChat: "Retomar no Chat",
     newChat: "Novo chat",
+    workspace: "área de trabalho",
+    workspaceDefault: "Padrão",
+    workspaceRescan: "Reexaminar repositórios",
+    workspaceCustom: "Outro caminho…",
     previousPage: "Página anterior",
     nextPage: "Página seguinte",
     roles: {
@@ -325,6 +331,8 @@ export const pt: Translations = {
     disableRuntime: "Desativar",
     enableAfterInstall: "Ativar após instalação",
     enableRuntime: "Ativar",
+    toggleTakesEffectAfterRestart:
+      "Salvo — reinicie o gateway para aplicar a alteração.",
     forceReinstall: "Forçar reinstalação (eliminar pasta existente primeiro)",
     headline:
       "Descobrir, instalar, ativar e atualizar plugins Hermes (paridade com `hermes plugins`).",
@@ -470,6 +478,8 @@ export const pt: Translations = {
     copyCliCommand: "Copiar comando CLI (para externo / fallback)",
     connect: "Ligar",
     sessionExpires: "A sessão expira em {time}",
+    sessionExpiredNoError:
+      "O login expirou sem alcançar o provedor. Isso geralmente significa que a página de login travou na aba aberta (problema do lado do servidor) — conclua o login lá e clique em Tentar novamente. Se continuar falhando, use uma chave de API ou a CLI.",
     initiatingLogin: "A iniciar fluxo de início de sessão…",
     exchangingCode: "A trocar código por tokens…",
     connectedClosing: "Ligado! A fechar…",

@@ -10,8 +10,8 @@ Green run — ``python -m scripts.releases.store submit <package>`` (Windows
 runner, ``msstore`` CLI configured beforehand by
 ``microsoft/microsoft-store-apppublisher`` + ``msstore reconfigure``):
 
-1. ``msstore submission status <productId>`` — a submission is in flight when
-   its status is not one of the terminal/failure states
+1. ``msstore submission get <productId>`` — the current submission as JSON; it is
+   in flight when its status is not one of the terminal/failure states
    (``None, Published, PublishFailed, Canceled, CertificationFailed,
    PreProcessingFailed, CommitFailed``).
 2. ``msstore submission delete <productId> --no-confirm`` — only when one is
@@ -97,19 +97,27 @@ def _cli_run(argv: list[str]) -> str:
     return result.stdout
 
 
-def _has_in_flight(status_output: str) -> bool:
+def _has_in_flight(submission_output: str) -> bool:
+    """Whether ``msstore submission get`` names a submission that is not yet decided.
+
+    ``submission status`` is no use here: for a packaged (MSIX) app it prints a Spectre
+    markup line (``Submission Status = ...``) and status tables, never JSON, and prints
+    nothing at all when the app has no pending submission (msstore-cli
+    Commands/Submission/StatusCommand.cs). ``submission get`` serializes the submission
+    as JSON (GetCommand.cs), and it is what ``submit`` already reads below.
+    """
     try:
-        status = json.loads(status_output)
+        submission = json.loads(submission_output)
     except json.JSONDecodeError:
-        raise StoreError(f"unreadable submission status: {status_output!r}")
-    if not isinstance(status, dict) or "status" not in status:
-        raise StoreError(f"unreadable submission status: {status_output!r}")
-    return status["status"] not in _NOT_IN_FLIGHT
+        raise StoreError(f"unreadable submission: {submission_output[:200]!r}")
+    if not isinstance(submission, dict) or "status" not in submission:
+        raise StoreError(f"unreadable submission: {submission_output[:200]!r}")
+    return submission["status"] not in _NOT_IN_FLIGHT
 
 
 def submit(package: str, *, product_id: str, run=_cli_run) -> dict:
     """Submit ``package`` with auto-publish off, clearing any in-flight one."""
-    if _has_in_flight(run(["msstore", "submission", "status", product_id])):
+    if _has_in_flight(run(["msstore", "submission", "get", product_id])):
         run(["msstore", "submission", "delete", product_id, "--no-confirm"])
     run(["msstore", "publish", package, "--appId", product_id, "--noCommit"])
     submission = json.loads(run(["msstore", "submission", "get", product_id]))

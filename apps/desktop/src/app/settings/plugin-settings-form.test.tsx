@@ -207,6 +207,20 @@ describe('plugin settings section grouping', () => {
     expect(groups[0].section).toBeUndefined()
   })
 
+  it('renders an OLDER backend payload (no section key at all) as one flat group', () => {
+    // The Desktop and its runtime update on separate clocks, so this build must
+    // meet a backend that predates `section`. Such a payload omits the key
+    // entirely rather than sending null, and must render exactly as before.
+    const legacy = [field('api_url'), field('retries'), field('verbose')].map(
+      ({ section: _dropped, ...rest }) => rest
+    )
+    const groups = groupFieldsBySection(legacy)
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].section).toBeUndefined()
+    expect(groups[0].fields.map(f => f.key)).toEqual(['api_url', 'retries', 'verbose'])
+  })
+
   it('preserves order and loses no field', () => {
     const fields = [field('a'), field('b', 'S'), field('c', 'S'), field('d'), field('e', 'T')]
     const flattened = groupFieldsBySection(fields).flatMap(g => g.fields)

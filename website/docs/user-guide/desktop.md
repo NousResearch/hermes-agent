@@ -238,6 +238,17 @@ desktop:
 
 The pre-window reader is a small YAML subset, not the full parser the rest of Hermes uses, because it has to run before the app loads anything. Other indentations are valid YAML but are ignored here; when that happens the app logs `desktop.electron_flags / desktop.renderer_max_old_space_mb were ignored` at startup and launches with Chromium's defaults.
 
+#### Allowing custom URL schemes in desktop links
+
+The desktop app only opens links with a built-in web scheme (`http`, `https`, `mailto`) by default; custom schemes such as `obsidian://`, `linear://`, `vscode://` or `things:///` are treated as blocked (`invalid`). To make a deep link to an app you actually use clickable in chat, opt into the scheme with `desktop.allowed_link_schemes` — it is read at launch and kept additive, so the built-in allowlist stays in force and `javascript:`/`data:`-style schemes are still never opened:
+
+```yaml
+desktop:
+  allowed_link_schemes: [obsidian, linear]
+```
+
+Flow (`[obsidian, linear]`), block (`- obsidian`), and a single bare value are all supported. Schemes are matched case-insensitively, with or without the trailing colon.
+
 ### Settings & onboarding
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.

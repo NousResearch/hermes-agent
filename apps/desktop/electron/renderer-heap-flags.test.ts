@@ -24,7 +24,8 @@ describe('renderer heap flags', () => {
 
     expect(cfg).toEqual({
       electronFlags: ['--ozone-platform=x11', '--js-flags=--expose-gc'],
-      rendererMaxOldSpaceMb: 2048
+      rendererMaxOldSpaceMb: 2048,
+      allowedLinkSchemes: []
     })
     expect(planLaunchSwitches(cfg)).toEqual([
       { name: 'ozone-platform', value: 'x11' },
@@ -79,7 +80,8 @@ describe('renderer heap flags', () => {
     // Valid YAML, unsupported subset (four-space keys / two-space list items).
     expect(readDesktopLaunchConfig('desktop:\n    renderer_max_old_space_mb: 2048\n')).toEqual({
       electronFlags: [],
-      rendererMaxOldSpaceMb: 0
+      rendererMaxOldSpaceMb: 0,
+      allowedLinkSchemes: []
     })
     expect(warn).toHaveBeenCalledTimes(1)
 
@@ -88,6 +90,21 @@ describe('renderer heap flags', () => {
     expect(warn).toHaveBeenCalledTimes(1)
 
     warn.mockRestore()
+  })
+
+  it('#129813: reads desktop.allowed_link_schemes as flow, block, and single values', () => {
+    const flow = readDesktopLaunchConfig('desktop:\n  allowed_link_schemes: [obsidian, linear]\n')
+    expect(flow.allowedLinkSchemes).toEqual(['obsidian', 'linear'])
+
+    const block = readDesktopLaunchConfig('desktop:\n  allowed_link_schemes:\n    - obsidian\n    - vscode\n')
+    expect(block.allowedLinkSchemes).toEqual(['obsidian', 'vscode'])
+
+    const single = readDesktopLaunchConfig('desktop:\n  allowed_link_schemes: things\n')
+    expect(single.allowedLinkSchemes).toEqual(['things'])
+
+    // Absent → empty; a scheme under a different top-level key is ignored.
+    expect(readDesktopLaunchConfig('model:\n  default: x\n').allowedLinkSchemes).toEqual([])
+    expect(readDesktopLaunchConfig('desktop:\n  font_family: ""\n').allowedLinkSchemes).toEqual([])
   })
 
   it('#103288: reads desktop.ssh_path as plain, single-quoted, and YAML double-quoted scalars', () => {

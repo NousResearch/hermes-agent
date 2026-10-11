@@ -254,16 +254,16 @@ def _maybe_mirror_cron_delivery(
 _THREAD_REPLY_CHAT_TYPE = {"slack": "group", "matrix": "group", "telegram": "group"}
 
 
-def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Optional[str]:
-    """Open a thread for a continuable cron job via ``adapter.create_handoff_thread``. Returns the
-    thread_id, or ``None`` (no thread primitive / failed) = caller falls back to the DM mirror."""
+def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop, *, platform_name: Optional[str] = None) -> Optional[str]:
+    """Open a continuable cron thread; None leaves delivery on its configured target."""
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
     thread_name = f"Hermes — {_cron_display_name(job)}"
     try:
         from agent.async_utils import safe_schedule_threadsafe
-        coro = create_thread(str(chat_id), thread_name)
+        from cron.scheduler_handoff import create_cron_handoff_thread
+        coro = create_cron_handoff_thread(job, adapter, str(chat_id), thread_name, platform_name)
         future = safe_schedule_threadsafe(coro, loop)  # type: ignore[arg-type]
         if future is None:
             return None
@@ -1934,7 +1934,7 @@ def _prepare_target_delivery(
         and not thread_id  # never override an explicit origin thread/topic
     ):
         opened_thread_id = _open_continuable_cron_thread(
-            job, runtime_adapter, chat_id, loop) or None
+            job, runtime_adapter, chat_id, loop, platform_name=platform_name) or None
         if opened_thread_id:
             thread_id = opened_thread_id
     return _TargetDelivery(

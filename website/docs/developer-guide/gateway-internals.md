@@ -194,6 +194,15 @@ not equate a consumed/dropped callback with acceptance. This receipt is separate
 from heartbeat execution accounting and does not bypass authorization, emergency
 stop, or later turn-preparation gates.
 
+Native Discord `create_handoff_thread(parent_chat_id, name, *, recipient_user_id=None)`
+accepts the optional keyword-only `recipient_user_id`; legacy two-argument callers
+are unchanged. Continuable Discord cron delivery uses only the persisted Discord
+origin user, not authorization allowlists, and adds that recipient then reads back
+thread membership before delivering into the thread. A missing origin recipient or
+failed membership verification leaves delivery on the configured channel. This
+recipient extension is native-only: relay adapters do not claim support and safely
+fall back to channel delivery when they cannot accept the keyword.
+
 ### Token Locks
 
 Adapters that connect with unique credentials call `acquire_scoped_lock()` in `connect()` and `release_scoped_lock()` in `disconnect()`. This prevents two profiles from using the same bot token simultaneously.

@@ -86,7 +86,7 @@ else:
         calls.unlink(missing_ok=True)
         result = subprocess.run([sys.executable, '-I', '-S', str(driver), str(repo), *args],
                                 cwd=repo, env={**env, **(extra or {})}, capture_output=True,
-                                text=True, encoding='utf-8', timeout=45)
+                                text=True, encoding='utf-8', timeout=45, check=False)
         recorded = [json.loads(line) for line in calls.read_text(encoding='utf-8').splitlines()] if calls.exists() else []
         return result, recorded
 
@@ -148,14 +148,15 @@ def test_commit_bundle_environment_is_literal_and_validated(fixture_repo):
     repo, _, invoke = fixture_repo
     tip = git(repo, 'rev-parse', 'HEAD')
     values = {'HERMES_GUEST_ONBOARDING': '1', 'HERMES_DATA_DIR_SUFFIX': 'magic-test',
-              'HERMES_SKIP_INTRO': '', 'HERMES_SHARED_AUTH_DIR': 'a=b "quote"\n$(not-a-command)'}
+              'HERMES_DESKTOP_USER_DATA_DIR': '', 'HERMES_SHARED_AUTH_DIR': 'a=b "quote"\n$(not-a-command)'}
     flags = [part for key, value in values.items() for part in ('--bundle-env', f'{key}={value}')]
     result, calls = invoke('--build-commit', tip, '--publish', *flags)
     assert result.returncode == 0, result.stderr
     dispatch = next(call for call in calls if call[1:3] == ['workflow', 'run'])
     assert json.loads(next(field.split('=', 1)[1] for field in dispatch if field.startswith('bundle_env='))) == values
     for invalid in (['--bundle-env', 'MISSING'], ['--bundle-env', 'BAD-NAME=x'],
-                    ['--bundle-env', 'NODE_OPTIONS=--require=evil'], ['--bundle-unset', 'PATH'],
+                    ['--bundle-env', 'NODE_OPTIONS=--require=evil'], ['--bundle-env', 'HERMES_SKIP_INTRO=1'],
+                    ['--bundle-unset', 'PATH'],
                     ['--bundle-env', 'HERMES_HOME=x', '--bundle-env', 'HERMES_HOME=y']):
         result, calls = invoke('--build-commit', tip, '--publish', *invalid)
         assert result.returncode != 0 and not calls

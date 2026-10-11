@@ -97,7 +97,7 @@ def test_native_projection_has_required_update_contract(tmp_path):
         "del c; uninit_apartment(); print('store projection ready')"
     )
     result = subprocess.run([sys.executable, "-I", "-c", code], cwd=tmp_path,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "store projection ready"
 
@@ -108,7 +108,7 @@ def test_entry_reports_json_when_the_projection_is_unavailable(tmp_path):
     (tmp_path / "winrt.py").write_text("raise ImportError('fixture unavailable')", encoding="utf-8")
     child = subprocess.run([sys.executable, "-P", "-m", MODULE, "--mode", "check"], capture_output=True,
                            text=True, timeout=30,
-                           env={**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(tmp_path)])})
+                           env={**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(tmp_path)])}, check=False)
     assert child.returncode == 1, child.stderr
     payload = json.loads(child.stdout)
     assert payload["ok"] is False and payload["available"] is None

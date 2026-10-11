@@ -214,6 +214,9 @@ class TestCommandBoundaryFinalization:
         class _FakeLock:
             holder = None
 
+            def __init__(self, **_kw):  # cmd_update passes install_root
+                pass
+
             def acquire(self):
                 return True
 

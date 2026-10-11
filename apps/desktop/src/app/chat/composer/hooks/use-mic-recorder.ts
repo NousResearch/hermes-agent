@@ -14,6 +14,10 @@ export interface MicRecorderOptions {
   silenceLevel?: number
   silenceMs?: number
   idleSilenceMs?: number
+  /** Live PCM tap (streaming dictation): mono s16le chunks at the meter context's rate, which
+   *  `onPcmRate` reports once before the first chunk. The MediaRecorder blob is unaffected. */
+  onPcm?: (chunk: ArrayBuffer) => void
+  onPcmRate?: (sampleRate: number) => void
 }
 
 export interface MicRecording {
@@ -87,6 +91,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const audioContextRef = useRef<AudioContext | null>(null)
+  const pcmTapRef = useRef<ScriptProcessorNode | null>(null)
   const animationRef = useRef<number | null>(null)
   const startedAtRef = useRef(0)
   const heardSpeechRef = useRef(false)
@@ -101,6 +106,8 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       animationRef.current = null
     }
 
+    pcmTapRef.current?.disconnect()
+    pcmTapRef.current = null
     // Null the ref before closing so the context's own 'closed' statechange
     // isn't mistaken for a meter failure.
     const audioContext = audioContextRef.current
@@ -156,6 +163,10 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
       source.connect(analyser)
       audioContextRef.current = audioContext
+
+      if (options.onPcm) {
+        startPcmTap(audioContext, source, options)
+      }
 
       // A device or renderer error kills the context without throwing
       // anywhere we'd see it; the analyser just goes flat. Watch for it.
@@ -225,6 +236,30 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     } catch {
       failMeter()
     }
+  }
+
+  // ScriptProcessor: deprecated but universal, and it needs no worklet module URL in the Electron
+  // renderer. The host resamples, so chunks go out at the context's own rate.
+  const startPcmTap = (audioContext: AudioContext, source: MediaStreamAudioSourceNode, options: MicRecorderOptions) => {
+    const tap = audioContext.createScriptProcessor(4096, 1, 1)
+    pcmTapRef.current = tap
+    options.onPcmRate?.(audioContext.sampleRate)
+
+    tap.onaudioprocess = event => {
+      const input = event.inputBuffer.getChannelData(0)
+      const pcm = new Int16Array(input.length)
+
+      for (let i = 0; i < input.length; i += 1) {
+        const sample = Math.max(-1, Math.min(1, input[i]))
+        pcm[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
+      }
+
+      options.onPcm?.(pcm.buffer)
+    }
+
+    // A tap only fires while connected through to the destination; its output buffer stays silent.
+    source.connect(tap)
+    tap.connect(audioContext.destination)
   }
 
   const start: MicRecorderHandle['start'] = async (options = {}) => {

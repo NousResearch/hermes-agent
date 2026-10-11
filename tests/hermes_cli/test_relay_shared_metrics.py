@@ -13,7 +13,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -78,7 +78,7 @@ SCHEMA_PATH = (
     / "hermes_cli"
     / "observability"
     / "schemas"
-    / "hermes.shared_metrics.v3.schema.json"
+    / "hermes.shared_metrics.v4.schema.json"
 )
 LEGACY_SCHEMA_PATH = SCHEMA_PATH.with_name("hermes.shared_metrics.v1.schema.json")
 
@@ -178,7 +178,7 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
     _schema_validator().validate(first_package)
     uuid.UUID(first_package["package_id"])
     uuid.UUID(first_package["install_id"])
-    assert first_package["schema_version"] == "hermes.shared_metrics.v3"
+    assert first_package["schema_version"] == "hermes.shared_metrics.v4"
     assert first_package["resource"] == _resource()
     assert first_package["metrics"] == [
         {
@@ -256,7 +256,7 @@ def test_v2_package_preserves_pending_v1_model_counters(tmp_path):
     package = json.loads(package_path.read_text(encoding="utf-8"))
     _schema_validator().validate(package)
 
-    assert package["schema_version"] == "hermes.shared_metrics.v3"
+    assert package["schema_version"] == "hermes.shared_metrics.v4"
     assert package["metrics"] == [
         {
             "name": LEGACY_MODEL_CALL_METRIC,
@@ -338,14 +338,14 @@ def test_v1_outbox_package_exports_unchanged_after_upgrade(tmp_path):
 def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
     tmp_path, monkeypatch
 ):
-    current_time = datetime(2026, 7, 28, 9, tzinfo=timezone.utc)
+    current_time = datetime(2026, 7, 28, 9, tzinfo=UTC)
     monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: current_time)
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
 
     store.record_model_call(_dimensions(), _resource())
     assert len(store.create_and_export_package_if_due()) == 1
 
-    current_time = datetime(2026, 7, 28, 18, tzinfo=timezone.utc)
+    current_time = datetime(2026, 7, 28, 18, tzinfo=UTC)
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
     store.record_model_call(_dimensions(), _resource())
     assert store.create_and_export_package_if_due() == []
@@ -359,7 +359,7 @@ def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
         "packaged_value": 1,
     }
 
-    current_time = datetime(2026, 7, 29, 9, tzinfo=timezone.utc)
+    current_time = datetime(2026, 7, 29, 9, tzinfo=UTC)
     store.record_model_call(_dimensions(), _resource())
     assert len(store.create_and_export_package_if_due()) == 2
     assert len(list((tmp_path / "outbox").glob("*.json"))) == 3
@@ -379,7 +379,7 @@ def test_client_active_uses_a_transactional_rolling_24_hour_latch(
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
     store = SharedMetricsStore(database_path, outbox_directory)
-    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
     monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
 
     assert store.record_client_active(_resource())
@@ -415,7 +415,7 @@ def test_client_active_recovers_from_an_invalid_latch_and_creates_identity(
             "INSERT INTO telemetry_state(key, value) VALUES (?, ?)",
             ("client_active_recorded_at", "invalid-timestamp"),
         )
-    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
     monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
 
     assert store.record_client_active(_resource())
@@ -436,7 +436,7 @@ def test_client_active_rebases_a_future_latch_without_double_counting(
 ):
     database_path = tmp_path / "metrics.sqlite3"
     store = SharedMetricsStore(database_path, tmp_path / "outbox")
-    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
     monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
 
     assert store.record_client_active(_resource())
@@ -502,7 +502,7 @@ def test_package_schema_matches_the_model_call_contract():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     properties = _package_dimension_schema()["properties"]
 
-    assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v3"
+    assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v4"
     assert set(properties) == {"call_role", "error_class", "model", "outcome", "provider", "ttft_bucket"}
     # Rows counted before the v3 upgrade carry only model/provider and must still drain.
     assert set(_package_dimension_schema()["required"]) == {"model", "provider"}
@@ -566,7 +566,7 @@ def test_client_active_mark_accepts_only_an_empty_allowlisted_payload():
         name="hermes.client.active",
         scope_category=None,
         metadata={
-            "hermes.metrics.schema_version": "hermes.metrics.event.v3",
+            "hermes.metrics.schema_version": "hermes.metrics.event.v4",
         },
         data={},
     )
@@ -841,7 +841,7 @@ def test_tool_subscriber_contract_accepts_only_bounded_events():
         category_profile={},
         name="hermes.tool_call",
         scope_category="end",
-        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v3"},
+        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v4"},
         data={
             "approval_outcome": "approved",
             "error_class": "none",
@@ -881,7 +881,7 @@ def test_tool_subscriber_contract_accepts_only_bounded_events():
         category_profile=None,
         name="hermes.tool_approval",
         scope_category=None,
-        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v3"},
+        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v4"},
         data={"attribution": "unattributed", "outcome": "denied"},
     )
     assert tool_approval_counter(approval) == (
@@ -893,7 +893,7 @@ def test_tool_subscriber_contract_accepts_only_bounded_events():
 
 
 def test_skill_subscriber_contract_accepts_only_bounded_marks():
-    metadata = {"hermes.metrics.schema_version": "hermes.metrics.event.v3"}
+    metadata = {"hermes.metrics.schema_version": "hermes.metrics.event.v4"}
     lifecycle = SimpleNamespace(
         kind="mark",
         category=None,
@@ -1100,7 +1100,7 @@ def test_store_exports_task_started_and_terminal_counters(tmp_path):
     )
     end = SimpleNamespace(
         kind="scope", category="function", category_profile=None, name="hermes.task_run",
-        scope_category="end", metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v3"},
+        scope_category="end", metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v4"},
         data=terminal,
     )
     for counter in (task_counter(end), task_duration_counter(end)):
@@ -1134,6 +1134,44 @@ def test_v2_task_and_tool_rows_recorded_before_an_upgrade_still_package(tmp_path
     assert {metric["name"] for metric in package["metrics"]} == {
         "hermes.task_run.finished", "hermes.tool_call.count",
     }
+
+
+def test_failure_class_rows_validate_and_v3_rows_still_drain(tmp_path, monkeypatch):
+    """v4 adds failure_class to compression and memory rows: a free-form compressor class collapses to
+    a closed name before it is stored, and rows counted before the upgrade (v3 shape) still package."""
+    from hermes_cli.observability.shared_metrics_fields import compression_fields
+
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    legacy = {
+        "hermes.compression.count": {"context_fill_bucket": "lt_50", "outcome": "failed", "trigger": "auto"},
+        "hermes.memory.op.count": {"op": "add", "origin": "foreground", "outcome": "failed", "provider": "builtin"},
+    }
+    for name, dimensions in legacy.items():
+        store.record_counter(name, dimensions, _resource())
+    classes = {}
+    for raw in ("exception:AcmeCorpSecretError", "rollback:KeyboardInterrupt", "acme_engine_reason", None):
+        fields = compression_fields(trigger="auto", outcome="failed", tokens_before=1, context_length=10,
+                                    failure_class=raw)
+        classes[raw] = fields["failure_class"]
+        store.record_counter("hermes.compression.count", fields, _resource())
+    assert classes == {
+        "exception:AcmeCorpSecretError": "exception", "rollback:KeyboardInterrupt": "rollback",
+        "acme_engine_reason": "other", None: "unknown",
+    }
+    # The skip/fail verdict reads the same normalized class that is stored, so they cannot disagree.
+    from hermes_cli.observability import shared_metrics_events as events
+
+    recorded = []
+    monkeypatch.setattr(events, "record_compression", lambda **kw: recorded.append(kw))
+    events.begin_compression_attempt("auto", 1)
+    events.finish_compression_attempt("aborted", "  Lock_Contended ", 10)
+    assert [(kw["outcome"], kw["failure_class"]) for kw in recorded] == [("skipped", "lock_contended")]
+
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    _schema_validator().validate(package)
+    assert "Acme" not in package_path.read_text(encoding="utf-8")
+    assert sum(1 for m in package["metrics"] if "failure_class" not in m["dimensions"]) == 2
 
 
 def test_sent_package_keeps_its_file_but_not_a_second_copy_in_the_database(tmp_path):
@@ -1273,7 +1311,7 @@ def test_retention_prunes_only_expired_exported_history(tmp_path):
         )
 
     store._prune_expired_history(
-        now=datetime(2026, 7, 23, tzinfo=timezone.utc)
+        now=datetime(2026, 7, 23, tzinfo=UTC)
     )
 
     assert not expired_path.exists()

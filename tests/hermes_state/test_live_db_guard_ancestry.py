@@ -79,6 +79,7 @@ def _run_probe(env):
         text=True,
         cwd=str(REPO_ROOT),
         timeout=120,
+        check=False,
     )
     verdict = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
     if verdict == "NO-ROOT":

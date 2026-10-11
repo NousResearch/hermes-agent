@@ -16,7 +16,7 @@ def _summary_output(capsys, provider_ready: bool):
     from hermes_cli import setup as setup_mod
 
     if provider_ready:
-        resolver = lambda *a, **k: "openrouter"  # noqa: E731
+        resolver = lambda *a, **k: "openrouter"
     else:
         def resolver(*a, **k):
             raise AuthError(

@@ -7,7 +7,10 @@ name, the settings it already read, its data directory and tool names, so the mi
 * ``hermes update`` — for every profile home that shares the venv (primary; runs where the venv was
   just rebuilt anyway).
 * agent init — when the configured provider cannot be found at all, once per process (Desktop
-  users update through the app and never run ``hermes update`` by hand).
+  users update through the app and never run ``hermes update`` by hand). After a failed attempt,
+  starts skip it for :data:`STARTUP_RETRY_SECONDS` (``hermes update`` always retries): every
+  ``hermes chat``, cron run and Desktop restart otherwise paid the network round trip again and
+  showed the same failure.
 
 Both install the catalog entry at its reviewed pin through the normal plugin install path (kill
 list, dependency constraints, enable), never a custom source. Every outcome — installed, refused,
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -30,6 +34,29 @@ _attempted: set[tuple[str, str]] = set()
 # accepted the deps when they picked the built-in. Any other catalog plugin named in memory.provider
 # (a synced config, a cloned profile) still needs an explicit install.
 _LEFT_CORE = frozenset({"hindsight", "honcho", "mem0", "supermemory", "openviking", "retaindb", "byterover", "holographic"})
+
+STARTUP_RETRY_SECONDS = 3600.0
+
+
+def _failure_stamp(home: Path, plugin: str) -> Path:
+    """Touched on every failed automatic install; its mtime gates the next startup attempt."""
+    return home / "cache" / f"left-core-{plugin}.failed"
+
+
+def _note_failure(home: Path, plugin: str) -> None:
+    stamp = _failure_stamp(home, plugin)
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except OSError as exc:
+        logger.debug("left-core retry stamp not written for %s: %s", home, exc)
+
+
+def _failed_recently(home: Path, plugin: str) -> bool:
+    try:
+        return time.time() - _failure_stamp(home, plugin).stat().st_mtime < STARTUP_RETRY_SECONDS
+    except OSError:
+        return False
 
 
 def configured_provider(home: Path) -> str:
@@ -158,14 +185,15 @@ def _home_consent(home: Path) -> bool:
         reset_hermes_home_override(token)
 
 
-def _install_into(home: Path) -> Callable[[str], dict]:
+def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
     def _install(name: str) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
-                                            assume_deps_consent=name in _LEFT_CORE and _unattended_consent())
+                                            assume_deps_consent=(name in _LEFT_CORE and _unattended_consent())
+                                            if consent is None else consent)
         finally:
             reset_hermes_home_override(token)
     return _install
@@ -254,4 +282,21 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
                f"security.allow_lazy_installs is off, so Hermes did not fetch it: "
                f"run `{_install_command(name, home)}`.")
         return False
-    return migrate_home(home, install=_install_into(home), say=report) == name
+    # Agent init cannot answer a dependency prompt: under the CLI the prompt_toolkit input owns the
+    # terminal (the question hangs the turn), elsewhere there is no terminal (the install is refused,
+    # every process). So it installs with consent or not at all: a provider that shipped in core
+    # carries the consent its built-in had; any other one needs the user's own install.
+    if name not in _LEFT_CORE:
+        if _pending_provider(home, say=report) == name:
+            report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
+                   f"It never shipped with Hermes, so Hermes installs it only when you ask: "
+                   f"run `{_install_command(name, home)}`.")
+        return False
+    if _failed_recently(home, name):
+        report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
+               f"Its automatic install failed less than an hour ago: run `{_install_command(name, home)}`.")
+        return False
+    installed = migrate_home(home, install=_install_into(home, consent=True), say=report) == name
+    if not installed:
+        _note_failure(home, name)
+    return installed

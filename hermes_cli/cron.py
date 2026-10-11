@@ -4,7 +4,7 @@ import contextlib
 import json
 import re
 import sys
-from datetime import timezone
+from datetime import timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -14,11 +14,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from hermes_cli.colors import Colors, color
 
 
-def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
+def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[list[str]]:
     """Deduped, stripped skill names; None when neither argument was given."""
     if skills is None and single_skill is None:
         return None
-    normalized: List[str] = []
+    normalized: list[str] = []
     for item in list(skills) if skills is not None else [single_skill]:
         text = str(item or "").strip()
         if text and text not in normalized:
@@ -119,10 +119,10 @@ def _next_run_overdue_seconds(next_run_at: Any) -> Optional[float]:
     if dt is None:
         return None
     # Same-tzinfo subtraction is wall-clock arithmetic in Python; compare instants.
-    return (now().astimezone(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+    return (now().astimezone(UTC) - dt.astimezone(UTC)).total_seconds()
 
 
-def _next_run_row(job: Dict[str, Any]) -> tuple[str, str]:
+def _next_run_row(job: dict[str, Any]) -> tuple[str, str]:
     """``("Next run" | "Overdue", value)`` for one job.
 
     A stamp parked past `cron doctor`'s grace on a job that is supposed to fire is the only
@@ -176,8 +176,10 @@ _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[complete
 
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
-    from cron.jobs import effective_job_state, list_jobs
-    jobs = list_jobs(include_disabled=True)
+    from cron.jobs import effective_job_state
+    _store_report, jobs = _probe_then_list_jobs(include_disabled=True, brief=True)
+    if jobs is None:
+        return
     if not show_all:
         jobs = [
             job for job in jobs
@@ -206,7 +208,7 @@ def cron_list(show_all: bool = False):
     _warn_if_gateway_not_running()
 
 
-def _last_run_display(job: Dict[str, Any]) -> str:
+def _last_run_display(job: dict[str, Any]) -> str:
     last_status = job["last_status"]
     if last_status == "ok":
         return color("ok", Colors.GREEN)
@@ -223,7 +225,7 @@ def _last_run_display(job: Dict[str, Any]) -> str:
     return display
 
 
-def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
+def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
     """``(label, value)`` detail rows for one job in ``cron list``."""
     # `repeat` / `deliver` may be present-but-null (dict-default only covers a missing key).
     repeat_info = job.get("repeat") or {}
@@ -267,18 +269,18 @@ def _short_reason(text: Any, limit: int = 120) -> str:
     return (reason[: limit - 1] + "…") if len(reason) > limit else (reason or "no details")
 
 
-def _delivery_fix_hint(job: Dict[str, Any]) -> str:
+def _delivery_fix_hint(job: dict[str, Any]) -> str:
     return (f"Check the target with `hermes cron status` or change it with "
             f"`hermes cron edit {job.get('id', '<id>')} --deliver <target>`.")
 
 
-def _missed_fire_issue(job: Dict[str, Any], fire_err: Dict[str, Any]) -> str:
+def _missed_fire_issue(job: dict[str, Any], fire_err: dict[str, Any]) -> str:
     return (f"missed scheduled fire at {fire_err.get('at', '?')}: {_short_reason(fire_err['detail'])}. "
             "The messaging gateway was unreachable. Run `hermes gateway restart`, then "
             f"`hermes cron run {job.get('id', '<id>')}` to run it now.")
 
 
-def _job_warnings(job: Dict[str, Any]) -> List[str]:
+def _job_warnings(job: dict[str, Any]) -> list[str]:
     """Delivery / fire warning lines for one job in ``cron list``."""
     lines = []
     if queued := job.get("last_delivery_queued"):
@@ -410,6 +412,40 @@ def _ticker_age_is_fresh(age: Optional[float]) -> bool:
     return age is not None and age <= TICKER_INTERVAL_SECONDS * 3 + 20
 
 
+def _store_unwritable_report() -> Optional[dict]:
+    """Probe the active cron store (never a marker inside it): ``None`` when it accepts writes.
+    Runs before any job read: loading jobs re-secures the dir, which can mask a mode problem."""
+    from cron.jobs import _current_cron_store
+    from cron.store_health import probe_report
+    return probe_report(_current_cron_store().cron_dir)
+
+
+def _probe_then_list_jobs(*, include_disabled: bool, brief: bool = False):
+    """``(store report or None, jobs or None)``. Probes and prints the unwritable-store warning
+    BEFORE reading jobs: loading re-secures the dir mode (masking a mode problem), and on an
+    unwritable store the read itself can fail (it creates cron/output). Jobs is ``None`` only
+    when that read failed on a store already reported unwritable."""
+    from cron.jobs import list_jobs
+    if (report := _store_unwritable_report()) is not None:
+        _print_store_unwritable(report, brief=brief)
+    try:
+        return report, list_jobs(include_disabled=include_disabled)
+    except OSError:
+        if report is None:
+            raise
+        return report, None
+
+
+def _print_store_unwritable(report: dict, *, brief: bool = False) -> None:
+    if brief:  # `cron list`: one line
+        print(color(f"⚠ Cron store {report['store']} is NOT writable ({report['error']}) — scheduled jobs "
+                    f"are being skipped; {report['fix']}. See `hermes cron status`.", Colors.RED))
+        return
+    print(color("⚠ Cron store is NOT writable — scheduled jobs are being skipped", Colors.RED))
+    print(color(f"  {report['store']}: {report['error']} (last successful write {report['since']})", Colors.RED))
+    print(color(f"  Fix: {report['fix']}. Each due job then fires once on the next tick.", Colors.YELLOW))
+
+
 def _print_ticker_health(pids: list, restart_command: str = "hermes gateway restart") -> None:
     """Report builtin-ticker liveness for a gateway process known to be alive.
 
@@ -475,11 +511,18 @@ def _print_ticker_health(pids: list, restart_command: str = "hermes gateway rest
 
 def cron_status():
     """Show cron execution status."""
-    from cron.jobs import list_jobs
     from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
     from hermes_cli.profiles import get_active_profile_name
     print()
 
+    store_report, active_jobs = _probe_then_list_jobs(include_disabled=False)
+    if active_jobs is None:
+        print(color("  Jobs could not be read from the unwritable store.", Colors.RED))
+    elif store_report is not None:
+        overdue = sum(1 for j in active_jobs if (_next_run_overdue_seconds(j.get("next_run_at")) or 0) > 0)
+        print(color(f"  {overdue} due run(s) not fired", Colors.RED))
+    if store_report is not None:
+        print()
     provider = _active_cron_provider_name()
     if provider != "builtin":
         # External providers fire via webhook: no ticker thread / heartbeat file by design, so
@@ -567,7 +610,7 @@ def cron_status():
                       "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
 
     print()
-    _print_active_jobs_summary(list_jobs(include_disabled=False))
+    _print_active_jobs_summary(active_jobs)
     print()
 
 
@@ -582,7 +625,7 @@ def _print_active_jobs_summary(jobs) -> None:
     # job its configured zone), so order by instant, never by ISO text; display the stored stamp.
     # `_parse_aware` hands back one shared ZoneInfo, and Python compares same-tzinfo datetimes
     # by wall clock (wrong across a DST fold) — normalise to UTC before ordering.
-    next_runs = [(parsed.astimezone(timezone.utc), j["next_run_at"]) for j in jobs
+    next_runs = [(parsed.astimezone(UTC), j["next_run_at"]) for j in jobs
                  if (parsed := _parse_aware(j.get("next_run_at"))) is not None]
     print(f"  {len(jobs)} active job(s)")
     if next_runs:
@@ -652,8 +695,8 @@ def _next_run_overdue_issue(next_run: str) -> Optional[str]:
     return f"next_run_at is {amount} overdue — job is not firing (is the scheduler running?)"
 
 
-def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
-    issues: List[str] = []
+def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
     if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
@@ -719,7 +762,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("interpreter", "interpreter"))
 
 
-def _job_api_kwargs(args) -> Dict[str, Any]:
+def _job_api_kwargs(args) -> dict[str, Any]:
     """Collect the create/update kwargs shared by ``cron create`` and ``cron edit``."""
     return {api_key: getattr(args, attr, None) for api_key, attr in _JOB_ARG_FIELDS}
 
@@ -734,7 +777,7 @@ _JOB_DETAIL_LINES = (
     ("interpreter", "  Python: {}"))
 
 
-def _print_job_details(job_data: Dict[str, Any]) -> None:
+def _print_job_details(job_data: dict[str, Any]) -> None:
     """Print the optional Script/Monitor/Mode/Continuity/Workdir lines of a job record."""
     for key, template in _JOB_DETAIL_LINES:
         if job_data.get(key):
@@ -840,7 +883,7 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
-def _run_outcome(job: Dict[str, Any]) -> str:
+def _run_outcome(job: dict[str, Any]) -> str:
     """One-line verdict for a manual run.
 
     A background-dispatched run (execution_mode="background" / delegation_id) keeps running

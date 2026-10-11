@@ -359,7 +359,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           </div>
         </div>
       ) : (
-        <div className="h-full overflow-y-auto [scrollbar-gutter:stable]">
+        // pb: the full-page view sits under the floating composer overlay with
+        // no [data-chat-surface] ancestor, so the clearance comes from the
+        // :root fallback of --composer-measured-height.
+        <div className="h-full overflow-y-auto pb-[var(--composer-measured-height)] [scrollbar-gutter:stable]">
           <div className="flex flex-col gap-3 px-3 pb-2">
             {visibleImageArtifacts.length > 0 && (
               <section className="flex flex-col">

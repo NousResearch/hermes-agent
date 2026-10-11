@@ -702,7 +702,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
   }, [filePath, selection])
 
   return (
-    <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
+    <div className="h-full overflow-auto pb-[var(--composer-measured-height)]" onScroll={onScroll} ref={scrollerRef}>
       <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed">
         {beforeRows > 0 && <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />}
         {visibleChunks.map(chunk => (
@@ -1274,7 +1274,10 @@ export function LocalFilePreview({
             ) : null
           }
         />
-        <div className="min-h-0 flex-1 overflow-auto">
+        {/* pb: this pane sits under the floating composer overlay, which this
+            pane is not part of (no [data-chat-surface] ancestor), so the
+            clearance comes from the :root fallback of --composer-measured-height. */}
+        <div className="min-h-0 flex-1 overflow-auto pb-[var(--composer-measured-height)]">
           {mode === 'rendered' ? (
             <MarkdownPreview filePath={filePath} text={state.text} />
           ) : mode === 'diff' ? (

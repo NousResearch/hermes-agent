@@ -255,6 +255,10 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
         "tools.read_terminal_tool", "read_terminal_tool", "read_terminal_callback",
         ("start_line", "start_line"), ("count", "count"),
     ),
+    "present_menu": _callback_tool(
+        "tools.reaction_menu_tool", "present_menu_tool", "present_menu_callback",
+        ("prompt", "prompt", ""), ("options", "options"), ("context_id", "context_id"),
+    ),
     "desktop_preview": _desktop_preview,
     "drive_preview": _callback_tool(
         "tools.drive_preview_tool", "drive_preview_tool", "drive_preview_callback",

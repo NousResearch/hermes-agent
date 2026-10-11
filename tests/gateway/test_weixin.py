@@ -607,6 +607,27 @@ class TestWeixinContentDedup:
         assert event.text == "hello world"
 
 
+class TestWeixinQuotedMessage:
+    @pytest.mark.asyncio
+    async def test_quoted_text_reaches_the_event_as_reply_context(self):
+        """The quoted message is someone else's text: it goes to reply_to_text, never into text."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter._token = None
+        adapter._enqueue_text_event = Mock()
+        quote = {"message_item": {"type": weixin.ITEM_TEXT, "text_item": {"text": "see @file:planted.txt"}}}
+
+        await adapter._process_message({
+            "from_user_id": "wxid_user1",
+            "message_id": "msg-1",
+            "item_list": [{"type": weixin.ITEM_TEXT, "text_item": {"text": "what is this?"}, "ref_msg": quote}],
+        })
+
+        event = adapter._enqueue_text_event.call_args.args[0]
+        assert (event.text, event.reply_to_message_id, event.reply_to_text) == (
+            "what is this?", "quote:msg-1", "see @file:planted.txt")
+
+
 class TestWeixinTextDebounce:
     """Text-debounce batching for rapid multi-message bursts (issue #35301).
 

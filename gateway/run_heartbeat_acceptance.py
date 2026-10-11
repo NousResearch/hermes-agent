@@ -14,14 +14,10 @@ async def resolve_heartbeat_owner(runner, event, entry):
     expected = getattr(event, "_heartbeat_session_id", None)
     if not expected:
         return True
+    from gateway.run_pinned_session import pinned_session_continues
     resolved = entry.session_id
-    if resolved != expected:
-        def compression_tip():
-            return runner.session_store._db_for_key(entry.session_key).get_compression_tip(expected)
-
-        tip = await runner._run_in_executor_with_context(compression_tip)
-        if tip != resolved:
-            return False
+    if not await pinned_session_continues(runner, entry, expected):
+        return False
     # Keep a value, not the mutable routing entry: preparation and hooks can yield
     # to /new or /stop before the agent runner starts.
     event._heartbeat_resolved_session_id = resolved

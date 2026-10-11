@@ -520,20 +520,26 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return True if text in {"1", "true", "yes", "on"} else False if text in {"0", "false", "no", "off"} else default
 
 
+def _extract_quote(item_list: list[dict[str, Any]]) -> Optional[str]:
+    """The text of the message that the first text item quotes, or None."""
+    for item in item_list:
+        if item.get("type") != ITEM_TEXT:
+            continue
+        ref = item.get("ref_msg") or {}
+        ref_item = ref.get("message_item") or {}
+        title = str(ref.get("title") or "")
+        if ref_item.get("type") in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
+            return title or "(media)"
+        if ref_item:
+            return " | ".join(p for p in (title, _extract_text([ref_item])) if p) or None
+        return None
+    return None
+
+
 def _extract_text(item_list: list[dict[str, Any]]) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
-            text = str((item.get("text_item") or {}).get("text") or "")
-            ref = item.get("ref_msg") or {}
-            ref_item = ref.get("message_item") or {}
-            if ref_item.get("type") in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
-                title = ref.get("title") or ""
-                return f"[引用媒体: {title}]\n{text}".strip() if title else f"[引用媒体]\n{text}".strip()
-            if ref_item:
-                parts = [p for p in (str(ref["title"]) if ref.get("title") else "", _extract_text([ref_item])) if p]
-                if parts:
-                    return f"[引用: {' | '.join(parts)}]\n{text}".strip()
-            return text
+            return str((item.get("text_item") or {}).get("text") or "")
     for item in item_list:
         if item.get("type") == ITEM_VOICE:
             # Tencent's ``voice_item.text`` is their STT output and is wrong for non-Chinese audio.
@@ -877,7 +883,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
-        if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
+        quote = _extract_quote(item_list)
+        content = f"{quote}\n{text}" if quote else text
+        if content and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(content.encode()).hexdigest()}"):
             logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
             return
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
@@ -896,14 +904,20 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             ref_item = (item.get("ref_msg") or {}).get("message_item")
             for candidate in (item, ref_item) if isinstance(ref_item, dict) else (item,):
                 await self._collect_media(candidate, media_paths, media_types)
-        if not text and not media_paths:
+        if not text and not quote and not media_paths:
             return
         source = self.build_source(chat_id=effective_chat_id, chat_type=chat_type, user_id=sender_id, user_name=sender_id)
         event = MessageEvent(
             text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
-            message_id=message_id or None, media_urls=media_paths, media_types=media_types, timestamp=datetime.now())
+            message_id=message_id or None, media_urls=media_paths, media_types=media_types,
+            # The quote has no message ID, and the gateway shows reply_to_text only beside one.
+            reply_to_message_id=f"quote:{message_id}" if quote else None, reply_to_text=quote, timestamp=datetime.now())
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         if event.message_type == MessageType.TEXT:
+            key = self._text_batch_key(event)
+            existing = self._pending_text_batches.get(key)
+            if existing is not None and existing.reply_context_conflicts(event):
+                await self._flush_text_batch_now(key)
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)

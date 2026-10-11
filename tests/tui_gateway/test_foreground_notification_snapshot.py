@@ -62,7 +62,7 @@ def test_tui_real_turn_snapshot_next_turn_and_child_threads(turn_env, marker_hom
         return {"final_response": "requested result", "messages": []}
     agent.run_conversation = run
     for _ in expected:
-        assert server._run_prompt_submit("r", "snapshot", session, "human request")
+        assert server._run_prompt_submit("r", "snapshot", session, "human request", turn_claim=server._claim_session_turn(session))
         session["_run_thread"].join(10)
         assert not session["_run_thread"].is_alive()
         assert not hasattr(agent, "_notification_config")

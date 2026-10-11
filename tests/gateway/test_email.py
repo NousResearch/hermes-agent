@@ -1044,6 +1044,168 @@ class TestReconnectSeenUidsRestore(unittest.TestCase):
         asyncio.run(adapter.disconnect())
 
 
+class TestSeenUidsSurviveProcessRestart(unittest.TestCase):
+    """A restarted gateway must still deliver mail that arrived while it was down.
+
+    The baseline lives in the process, so a fresh process with nothing to resume from takes the
+    whole mailbox for history. It is persisted per account (UIDVALIDITY-scoped) so the next process
+    resumes where the last one stopped, and the boundary comes from the mailbox's own UIDNEXT rather
+    than a ``UID SEARCH ALL`` enumeration — an enumeration is capped at ``_seen_uids_max``, which is
+    what let a large inbox re-read its trimmed-away lower half as new mail (#60637).
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def setUp(self):
+        from plugins.platforms.email.adapter import EmailAdapter
+        EmailAdapter._seen_uids_snapshot.clear()
+
+    tearDown = setUp
+
+    @staticmethod
+    def _select_fields(uidvalidity=b"42", uidnext=0, exists=0):
+        return {"UIDVALIDITY": ("UIDVALIDITY", [uidvalidity]),
+                "UIDNEXT": ("UIDNEXT", [str(uidnext).encode()]),
+                "EXISTS": ("EXISTS", [str(exists).encode()])}
+
+    def _connect(self, adapter, *, uidvalidity=b"42", uidnext=0, exists=0, mailbox_uids=None, is_reconnect=False):
+        import asyncio
+
+        fields = self._select_fields(uidvalidity, uidnext, exists)
+        mock_imap = MagicMock()
+        mock_imap.response.side_effect = lambda code: fields[code]
+        if mailbox_uids is not None:  # only the no-UIDNEXT fallback ever searches
+            mock_imap.uid.side_effect = lambda command, *args: ("OK", [mailbox_uids])
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch.object(
+            adapter, "_connect_smtp", return_value=MagicMock()
+        ):
+            connected = asyncio.run(adapter.connect(is_reconnect=is_reconnect))
+        return connected, mock_imap
+
+    def _restart(self, adapter):
+        """What a new process sees: the in-process snapshot is gone, the state file is not."""
+        import asyncio
+        from plugins.platforms.email.adapter import EmailAdapter
+        asyncio.run(adapter.disconnect())
+        EmailAdapter._seen_uids_snapshot.clear()
+
+    @staticmethod
+    def _message(uid, subject, sender="user@test.com"):
+        mail = MIMEText("body", "plain", "utf-8")
+        mail["From"] = sender
+        mail["Subject"] = subject
+        mail["Message-ID"] = f"<{uid}@test.com>"
+        return mail
+
+    @staticmethod
+    def _poll(adapter, unseen, payloads):
+        mock_imap = MagicMock()
+        mock_imap.response.side_effect = lambda code: {"UIDVALIDITY": ("UIDVALIDITY", [b"42"])}.get(code, (code, [b"0"]))
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [unseen])
+            uid = args[0]
+            if uid in payloads:
+                return ("OK", [(uid, payloads[uid])])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            return adapter._fetch_new_messages(lambda _candidate: True), mock_imap
+
+    @staticmethod
+    def _enumerations(mock_imap):
+        """``UID SEARCH ALL`` calls — the enumeration a boundary-based baseline must not need."""
+        return [call for call in mock_imap.uid.call_args_list if call.args[0] == "search" and call.args[2] == "ALL"]
+
+    def test_restart_resumes_from_the_persisted_boundary(self):
+        first = self._make_adapter()
+        self.assertTrue(self._connect(first, uidnext=3, exists=2)[0])  # UIDs 1-2 exist, 3 is next
+        self.assertEqual(first._baseline, 2)
+        self.assertEqual(first._seen_uids, set())
+        self._restart(first)
+
+        second = self._make_adapter()
+        _, mock_imap = self._connect(second, uidnext=4, exists=3)
+        # UID 3 arrived while the gateway was down: not history, so the poll will fetch it.
+        self.assertEqual(second._baseline, 2)
+        self.assertFalse(second._is_history(b"3"))
+        self.assertTrue(second._is_history(b"2"))
+        # ... and the mailbox was never enumerated to work that out.
+        self.assertEqual(self._enumerations(mock_imap), [])
+        self._restart(second)
+
+    def test_restart_delivers_mail_that_arrived_while_the_gateway_was_down(self):
+        first = self._make_adapter()
+        self.assertTrue(self._connect(first, uidnext=3, exists=2)[0])
+        self._restart(first)
+
+        second = self._make_adapter()
+        self.assertTrue(self._connect(second, uidnext=4, exists=3)[0])
+
+        outage_mail = self._message(3, "Outage mail")  # UID 2 is history, UID 3 arrived during the outage
+        results, _ = self._poll(second, b"2 3", {b"3": outage_mail.as_bytes()})
+        self.assertEqual([message["subject"] for message in results], ["Outage mail"])
+        self._restart(second)
+
+    def test_large_inbox_is_not_enumerated_and_keeps_its_old_unread_mail(self):
+        """A >_seen_uids_max inbox must not re-read the trimmed-away half as new mail (#60637)."""
+        adapter = self._make_adapter()
+        _, mock_imap = self._connect(adapter, uidnext=5001, exists=5000)
+        self.assertEqual(adapter._baseline, 5000)
+        self.assertEqual(adapter._seen_uids, set())  # 5000 existing messages, nothing enumerated
+        self.assertEqual(self._enumerations(mock_imap), [])
+
+        new_mail = self._message(5001, "New mail")
+        results, _ = self._poll(adapter, b"1500 2500 5000 5001", {b"5001": new_mail.as_bytes()})
+        self.assertEqual([message["subject"] for message in results], ["New mail"])
+        self._restart(adapter)
+
+    def test_transient_fetch_failure_keeps_the_boundary_below_it(self):
+        adapter = self._make_adapter()
+        self.assertTrue(self._connect(adapter, uidnext=11, exists=10)[0])  # UIDs 1-10 exist
+
+        refused = self._message(11, "Refused")
+        delivered = self._message(12, "Delivered")
+        # UID 11's RFC822 fetch is refused (transient), UID 12 is handled in the same poll.
+        results, _ = self._poll(adapter, b"11 12", {b"12": delivered.as_bytes()})
+        self.assertEqual([message["uid"] for message in results], [b"12"])
+        # The boundary must not move past the UID the poll left unconsumed, or a restart would turn
+        # that retry into a skip; it is kept above the boundary instead.
+        self.assertEqual(adapter._baseline, 10)
+        self.assertFalse(adapter._is_history(b"11"))
+        self.assertEqual(refused["Subject"], "Refused")
+        self._restart(adapter)
+
+    def test_renumbered_mailbox_ignores_the_stale_boundary(self):
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        first = self._make_adapter()
+        self.assertTrue(self._connect(first, uidvalidity=b"42", uidnext=3, exists=2)[0])
+        self._restart(first)
+
+        EmailAdapter._seen_uids_snapshot.clear()
+        second = self._make_adapter()
+        # Same mailbox path, new UIDVALIDITY: UIDs recorded against the old numbering mean nothing,
+        # so the boundary is taken from the mailbox as it is now (UIDNEXT 9 -> 8), not from the file.
+        self.assertTrue(self._connect(second, uidvalidity=b"43", uidnext=9, exists=8)[0])
+        self.assertEqual(second._baseline, 8)
+        self.assertTrue(second._is_history(b"5"))      # would be outside a stale boundary of 2
+        self.assertFalse(second._is_history(b"9"))
+        self._restart(second)
+
+
 class TestSendEmailStandalone(unittest.TestCase):
     """Test the standalone _send_email function in send_message_tool."""
 

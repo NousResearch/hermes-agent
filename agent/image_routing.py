@@ -282,11 +282,16 @@ def _probe_managed_runtime(provider: str, model: str, cfg: Optional[dict[str, An
     return managed_model_supports_vision(model) if managed else None
 
 
-def _probe_models_dev(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
+def _probe_models_dev(
+    provider: str, model: str, cfg: Optional[dict[str, Any]], *, requested_provider: str = "",
+) -> Optional[bool]:
     """models.dev catalog verdict. ``allow_network=True`` on purpose: this runs only
     when an image needs routing, and the text-only-main guard depends on catalog
     data — a cold cache returning "unknown" would reintroduce attempting the call.
-    The fetch is cached (4h TTL) and backoff-limited."""
+    The fetch is cached (4h TTL) and backoff-limited. The lookup keys on the
+    requested identity when one exists: a named custom provider reaches the catalog
+    only through its ``catalog_provider`` alias (#135701), which the canonicalized
+    ``"custom"`` slug cannot resolve."""
     from agent.models_dev import get_model_capabilities
 
     # allow_network=True on purpose: vision-capability lookup runs when an image actually needs routing (not
@@ -294,14 +299,15 @@ def _probe_models_dev(provider: str, model: str, cfg: Optional[dict[str, Any]]) 
     # "unknown" would fall back to attempting the call and reintroduce the bug. This preserves the
     # historical network-on-cold-cache behavior for this one path; the fetch is cached (4h TTL) and
     # backoff-limited after failures.
-    if (provider or "").strip().lower() == "openai-codex":
+    identity = requested_provider or provider
+    if (identity or "").strip().lower() == "openai-codex":
         # A VALID Codex ``-900k`` picker variant is a Hermes-side alias of its base slug; the catalog
         # only knows the base, so look that up. The runtime model id stays untouched (the transport
         # owns wire normalization) and ineligible ``-900k`` strings pass through unchanged (#102189).
         from agent.model_metadata import strip_codex_context_variant_suffix
 
         model = strip_codex_context_variant_suffix(model)
-    caps = get_model_capabilities(provider, model, allow_network=True)
+    caps = get_model_capabilities(identity, model, allow_network=True, config=cfg)
     return None if caps is None else caps.supports_vision
 
 
@@ -325,6 +331,22 @@ _VISION_PROBES: tuple[tuple[str, Callable[..., Optional[bool]]], ...] = (
     ("caps lookup", _probe_models_dev),
     ("ollama vision probe", _probe_ollama),
 )
+
+
+def _run_vision_probe(
+    probe: Callable[..., Optional[bool]],
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]],
+    requested_provider: str,
+) -> Optional[bool]:
+    """Dispatch one vision probe. The models.dev lookup keys on the requested
+    provider identity — a named custom provider reaches the catalog only through
+    its ``catalog_provider`` alias (#135701) — while the local probes (managed
+    runtime, Ollama) run on the canonicalized provider."""
+    if probe is _probe_models_dev:
+        return probe(provider, model, cfg, requested_provider=requested_provider)
+    return probe(provider, model, cfg)
 
 
 def _lookup_supports_vision(
@@ -363,7 +385,7 @@ def _lookup_supports_vision(
 
     for label, probe in _VISION_PROBES:
         try:
-            verdict = probe(provider, model, cfg)
+            verdict = _run_vision_probe(probe, provider, model, cfg, requested_provider)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("image_routing: %s failed for %s:%s — %s", label, provider, model, exc)
             continue

@@ -29,6 +29,8 @@ from tools import browser_tool_session as bt_session
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
+    from tools import browser_use_cli_lifecycle
+    monkeypatch.setattr(browser_use_cli_lifecycle, "_daemons", {})
     monkeypatch.delenv("BU_NAME", raising=False)
     monkeypatch.delenv("BU_AUTOSPAWN", raising=False)
     monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)

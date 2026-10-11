@@ -14,7 +14,6 @@ import re
 import signal
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -565,7 +564,6 @@ def _clamp_timeout(timeout_s: Any) -> int:
 # instant; the deadline only guards against a process outside the group still holding a pipe.
 _POST_KILL_DRAIN_S = 10.0
 
-
 def _kill_cli_process_group(proc) -> None:
     """SIGKILL the CLI's whole process group (POSIX; ``start_new_session`` made pgid == pid) or,
     on Windows, its process tree via ``taskkill /T /F`` — the only group-wide kill it offers."""
@@ -602,26 +600,15 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
-# BU_NAMEs whose harness daemon this process has driven. The daemon reads BU_CDP_* once, at start, and
-# outlives every call, so a backend swap (/browser connect|disconnect) that only changes the resolved
-# endpoint leaves later browser_exec calls in the old browser until these are stopped.
-_driven_daemons: set = set()
-_driven_daemons_lock = threading.Lock()
+def stop_harness_daemons(*, task_id: Optional[str] = None, cache_key: Optional[str] = None) -> None:
+    """Stop released harness owners, or all driven daemons at a global lifecycle boundary.
 
-
-def stop_harness_daemons() -> None:
-    """Stop every harness daemon this process drove, through the harness's own identity-checked
-    ``--reload``; the next browser_exec respawns one on the endpoint it resolves then."""
-    with _driven_daemons_lock:
-        names = sorted(_driven_daemons)
-        _driven_daemons.clear()
-    cmd = _find_cli() if names else None
-    if not cmd:
-        return
-    env = _base_subprocess_env()
-    for name in names:
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            _run_cli_killing_process_group([*cmd, "--reload"], "", {**env, "BU_NAME": name}, 15)
+    The registry retains the spawning command/environment, including profile-specific IPC paths.
+    The harness's own ``--reload`` verifies identity and Windows tokens before stopping a daemon.
+    """
+    from tools.browser_use_cli_lifecycle import release_daemons
+    owner = (str(get_hermes_home()), task_id) if task_id is not None else None
+    release_daemons(_run_cli_killing_process_group, owner=owner, cache_key=cache_key)
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
@@ -650,6 +637,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
+    from tools.browser_use_cli_lifecycle import prepare_runtime
+    prepare_runtime(env, get_hermes_home())
     bot_desktop_browser = bool(env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None))
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
@@ -672,18 +661,20 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
-        with _driven_daemons_lock:
-            _driven_daemons.add(env.get("BU_NAME", "default"))
-        try:
-            return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
-        except subprocess.TimeoutExpired:
-            return {"error_result": tool_error(
-                f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
-                f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
-                "append to workspace files — anything already written to the workspace is preserved."
-            )}
-        except OSError as e:
-            return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
+        from tools.browser_use_cli_lifecycle import drive_daemon
+        lease = drive_daemon(cmd, env, (str(get_hermes_home()), task_id or "default"),
+                             _backend_cache_key(task_id, session), _run_cli_killing_process_group)
+        with lease:
+            try:
+                return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
+            except subprocess.TimeoutExpired:
+                return {"error_result": tool_error(
+                    f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
+                    f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
+                    "append to workspace files — anything already written to the workspace is preserved."
+                )}
+            except OSError as e:
+                return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
 
     if bot_desktop_browser:
         from tools.browser_tool_session import run_fenced

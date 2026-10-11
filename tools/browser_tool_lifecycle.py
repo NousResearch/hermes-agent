@@ -68,6 +68,11 @@ def _stop_all_lightpanda() -> None:
     stop_all_lightpanda()
 
 
+def _stop_harness_daemons(**kwargs) -> None:
+    from tools.browser_use_cli import stop_harness_daemons
+    stop_harness_daemons(**kwargs)
+
+
 def _emergency_cleanup_all_sessions():
     """atexit: close this process's sessions, then sweep orphans left by crashed
     hermes processes — every clean exit reaps accumulated orphans, not only
@@ -98,6 +103,10 @@ def _emergency_cleanup_all_sessions():
                 _bt._session_owner_homes.clear()
                 _bt._cleanup_failures.clear()
                 _bt._recording_sessions.clear()
+    # A task close may already have emptied the browser cache while its harness still lives.
+    _best_effort("Browser Use harness cleanup on exit", _stop_harness_daemons)
+    from tools.browser_use_cli_lifecycle import cleanup_runtime_dirs
+    _best_effort("Browser Use runtime cleanup on exit", cleanup_runtime_dirs)
     # Lightpanda servers we spawned that fell out of ``_active_sessions``.
     _best_effort("Lightpanda cleanup on exit", _stop_all_lightpanda)
     # Safe even if we never used the browser — owner_pid liveness protects daemons
@@ -160,6 +169,10 @@ def _cleanup_inactive_browser_sessions():
                                if current_time - last_time > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT]
 
     for task_id in sessions_to_cleanup:
+        from tools.browser_use_cli_lifecycle import has_active_calls
+        if has_active_calls(task_id):
+            _update_session_activity(task_id)
+            continue
         with _session_owner_scope(task_id):
             if _human_holds_shared_browser(task_id):
                 # A human took the bot's screen (login, 2FA) — the agent is idle BECAUSE they are working.
@@ -628,6 +641,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             session_keys.append(sidecar_key)
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
+    _best_effort("Browser Use task cleanup", lambda: _stop_harness_daemons(task_id=task_id))
     _drop_last_active_binding(task_id)
 
 
@@ -661,6 +675,7 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> No
     must still release the cloud session and the local Chromium.
     """
     bb_session_id = session_info.get("bb_session_id", "unknown")
+    _best_effort("Browser Use session cleanup", lambda: _stop_harness_daemons(cache_key=task_id))
     _forget_session_tracking(task_id, session=True)
 
     if bb_session_id:  # cloud only — local sidecars have bb_session_id=None
@@ -755,10 +770,7 @@ def cleanup_all_browsers() -> None:
     except Exception:
         pass
 
-    def _stop_harness():
-        from tools.browser_use_cli import stop_harness_daemons
-        stop_harness_daemons()
-    _best_effort("Browser Use harness daemon stop", _stop_harness)
+    _best_effort("Browser Use harness daemon stop", _stop_harness_daemons)
 
     _install._discover_homebrew_node_dirs.cache_clear()
     _bt._chromium_autoinstall_attempted = False

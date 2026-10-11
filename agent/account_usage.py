@@ -628,6 +628,28 @@ def redeem_codex_reset_credit(
     return _codex_reset_outcome(body, available)
 
 
+def _get_anthropic_usage_payload(token: str) -> dict:
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
+               "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
+    return _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=15.0)
+
+
+def _load_anthropic_pool():
+    from agent.credential_pool import load_pool
+    return load_pool("anthropic")
+
+
+def _refresh_anthropic_usage_token(stale_token: str) -> Optional[str]:
+    """Force-refresh the pool entry that issued *stale_token*; the new access token or None. Never raises."""
+    try:
+        entry = _load_anthropic_pool().try_refresh_matching(api_key_hint=stale_token)
+    except Exception:
+        logger.debug("Anthropic usage: pool refresh after 401 failed", exc_info=True)
+        return None
+    token = str(getattr(entry, "runtime_api_key", "") or getattr(entry, "access_token", "") or "").strip() if entry else ""
+    return token if token and token != stale_token else None
+
+
 def _fetch_anthropic_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[AccountUsageSnapshot]:
@@ -642,9 +664,19 @@ def _fetch_anthropic_account_usage(
     if not _is_oauth_token(token):
         return _snapshot("anthropic", "oauth_usage_api", [], [],
                          unavailable_reason="Anthropic account limits are only available for OAuth-backed Claude accounts.")
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
-               "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
-    payload = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=15.0)
+    try:
+        payload = _get_anthropic_usage_payload(token)
+    except httpx.HTTPStatusError as exc:
+        # The resolver is deliberately read-only, so a pool row whose access token expired while no
+        # inference ran (e.g. dashboards polling `hermes usage`) answers 401 here forever. Refresh
+        # exactly that row through the pool (locked, single-use-safe, persisted) and retry once.
+        # An explicit credential belongs to its caller's refresh path and is never rotated here.
+        if exc.response.status_code != 401 or explicit:
+            raise
+        refreshed = _refresh_anthropic_usage_token(token)
+        if not refreshed:
+            raise
+        payload = _get_anthropic_usage_payload(refreshed)
     windows = _usage_windows(
         payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,

@@ -77,7 +77,7 @@ class FakeIdP:
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self._thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
 
-    def start(self) -> "FakeIdP":
+    def start(self) -> FakeIdP:
         self._thread.start()
         return self
 

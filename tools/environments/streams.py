@@ -129,7 +129,7 @@ _TCP_RELAY = (
     "  os.write(1,d)\n"
 )
 
-_forwards: dict[tuple[int, str, int], "PortForward"] = {}
+_forwards: dict[tuple[int, str, int], PortForward] = {}
 _forwards_lock = threading.Lock()
 
 

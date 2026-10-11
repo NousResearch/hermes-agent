@@ -147,7 +147,7 @@ def _sale_pct(current: Any, original: Any) -> int | None:
     cur, orig = _price_float(current, positive=True), _price_float(original, positive=True)
     if cur is None or orig is None or cur >= orig:
         return None
-    return int(round((1.0 - (cur / orig)) * 100))
+    return round((1.0 - (cur / orig)) * 100)
 
 
 def compute_sale_discount(prompt: str, completion: str, original: Any) -> tuple[int, str, str] | None:
@@ -324,8 +324,7 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
     except Exception:
         pass
     base_url = (env_base or creds_base or _DEFAULT_NOUS_INFERENCE_BASE).rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
+    base_url = base_url.removesuffix("/v1")
     return (api_key, base_url)
 
 

@@ -33,7 +33,7 @@ def _exec_py(image: str, py: str) -> str:
         "docker", "run", "--rm", "--network=none", "--entrypoint", "su", image,
         "hermes", "-s", "/bin/bash", "-c", inner,
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
     assert r.returncode == 0, f"in-container python failed:\n{r.stderr[-2000:]}"
     return r.stdout.strip()
 
@@ -118,6 +118,7 @@ print(json.dumps({
         ["docker", "run", "--rm", "--network=none", "--user", "hermes",
          "--entrypoint", "/bin/bash", built_image, "-c", inner],
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert r.returncode == 0, r.stderr[-2000:]
     out = json.loads(r.stdout.strip())

@@ -550,9 +550,10 @@ def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
         out = subprocess.run(
             ["tmux", "list-panes", "-t", session, "-F", "#{pane_dead}"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+            check=False,
         )
         if out.stdout.strip() == "1":
-            subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True, timeout=5)
+            subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True, timeout=5, check=False)
             _kb._log.debug("Killed stale tmux session: %s", session)
     except Exception:
         pass  # best-effort — never block completion

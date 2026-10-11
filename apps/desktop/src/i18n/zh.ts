@@ -9,6 +9,7 @@ import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
   externalOpenFailed: {
@@ -1269,9 +1270,7 @@ export const zhOverrides = {
       screenRecording: '屏幕录制',
       driverHealth: '驱动健康状态'
     },
-    about: {
-      updates: '更新'
-    },
+    about: { updates: '更新', channel: zhUpdateChannel },
     config: {
       minimizeToTrayTitle: '最小化到托盘',
       minimizeToTrayDesc:
@@ -3471,11 +3470,6 @@ export const zhOverrides = {
     editingQueuedInComposer: '正在输入框中编辑排队回合',
     restoredDraftNotice: '已恢复你未发送的消息',
     restoredDraftUndo: '撤销',
-    localSetup: {
-      title: '这可以在你的电脑上运行',
-      text: (model: string) => `${model} 适合这台电脑。免费，对话留在你的电脑上。`,
-      action: '带我看看'
-    },
     queueEdit: '编辑',
     queueExpand: '展开',
     queueCollapse: '收起',

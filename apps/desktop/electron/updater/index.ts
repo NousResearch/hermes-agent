@@ -60,6 +60,8 @@ export interface UpdaterStatusWire {
   currentSha?: string
   currentVersion?: string
   channel?: string
+  /** source_check can persist a channel; runtimes older than the selector cannot. */
+  channelSelectable?: boolean
   retirement?: ChannelRetirementStatus
   latestTag?: string | null
   targetSha?: string

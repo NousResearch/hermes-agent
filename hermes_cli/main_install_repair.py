@@ -126,8 +126,7 @@ def _filter_pending_shim_renames(entries: list[str], shims: list[Path]) -> tuple
 
     def _norm(value: str) -> str:
         path = str(value).lstrip("!")
-        if path.startswith("\\??\\"):
-            path = path[4:]
+        path = path.removeprefix("\\??\\")
         return ntpath.normcase(ntpath.normpath(path))
 
     shim_paths = {_norm(str(shim)) for shim in shims}

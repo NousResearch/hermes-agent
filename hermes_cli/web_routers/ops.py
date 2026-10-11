@@ -13,7 +13,7 @@ import re
 import secrets
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -651,7 +651,7 @@ async def run_import_upload(
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not create import staging directory: {exc}")
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     target = staging_dir / f"dashboard-import-{stamp}-{secrets.token_hex(4)}-{_safe_backup_upload_name(file.filename)}"
     total = await stream_upload_to_path(
         file, target, too_large="Archive is too large",

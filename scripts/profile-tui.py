@@ -574,6 +574,7 @@ def loop_mode(args: argparse.Namespace) -> int:
                     cwd=tui_dir,
                     capture_output=True,
                     text=True, encoding='utf-8', errors='replace',
+                    check=False,
                 )
                 if result.returncode != 0:
                     print("✗ build failed:")

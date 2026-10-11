@@ -15,7 +15,7 @@ from utils import env_var_enabled, is_truthy_value
 logger = logging.getLogger("tools.approval")
 
 
-def _ctx(name: str, default: "str | None" = "") -> contextvars.ContextVar:
+def _ctx(name: str, default: str | None = "") -> contextvars.ContextVar:
     return contextvars.ContextVar(name, default=default)
 
 

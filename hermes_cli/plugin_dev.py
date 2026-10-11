@@ -273,7 +273,7 @@ def _accepts_var_kwargs(callback: Any) -> bool:
     return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters)
 
 
-def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
+def _check_manifest_v2(report: DoctorReport, manifest: Any) -> None:
     """Manifest v2 checks: versions, deps, pip declarations, config schema."""
     import importlib.metadata
     import re as _re

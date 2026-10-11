@@ -326,7 +326,7 @@ class TestAgentCardV1:
             "web": ["web_search", "web_extract"],
             "terminal": ["terminal"],
         })
-        web = [s for s in skills if s["name"] == "web"][0]
+        web = next(s for s in skills if s["name"] == "web")
         assert "web_search" in web["tags"]
         assert "web_extract" in web["tags"]
 
@@ -669,7 +669,7 @@ class TestReplyCapture:
 
         try:
             asyncio.run(run())
-            state, text = fut.result(timeout=0)
+            state, _text = fut.result(timeout=0)
             assert state == protocol.STATE_FAILED
         finally:
             adapter._pop_pending("task-fail")

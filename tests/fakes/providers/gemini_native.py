@@ -38,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
+import itertools
 
 GEMINI_HOST = "generativelanguage.googleapis.com"
 MODEL_ID = "gemini-3-flash-preview"
@@ -342,7 +343,7 @@ def validate_generate_request(body: Any, version: str, model: str, issued: set[s
             raise InvalidArgument(f"* GenerateContentRequest.contents[{ci}].parts: contents.parts must not be empty.")
         norm.append({"role": role, "parts": [_validate_part(p, f"contents[{ci}].parts[{pi}]")
                                               for pi, p in enumerate(parts)]})
-    for a, b in zip(norm, norm[1:]):
+    for a, b in itertools.pairwise(norm):
         if a["role"] == b["role"]:
             raise InvalidArgument("Please ensure that multiturn requests alternate between user and model.")
     if norm[-1]["role"] != "user":
@@ -396,7 +397,7 @@ def _write_tls_material(directory: Path) -> tuple[Path, Path, Path]:
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "hermes-e2e gemini fake CA")])
     ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name)
@@ -458,7 +459,7 @@ class GeminiFake:
         self._thread = threading.Thread(target=self._server.serve_forever, name="gemini-fake", daemon=True)
 
     # lifecycle ---------------------------------------------------------------------------------
-    def __enter__(self) -> "GeminiFake":
+    def __enter__(self) -> GeminiFake:
         self._thread.start()
         return self
 

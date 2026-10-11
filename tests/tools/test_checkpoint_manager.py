@@ -842,6 +842,7 @@ class TestGpgIsolation:
             result = subprocess.run(
                 ["git", "config", "--file", str(store / "config"), "--get", key],
                 capture_output=True, text=True,
+                check=False,
             )
             assert result.stdout.strip() == "false", key
 
@@ -870,7 +871,7 @@ class TestGpgIsolation:
 # prune_checkpoints + maybe_auto_prune_checkpoints
 # =========================================================================
 
-def _seed_legacy_repo(base: Path, name: str, workdir: Path, mtime: float = None) -> Path:
+def _seed_legacy_repo(base: Path, name: str, workdir: Path, mtime: float | None = None) -> Path:
     """Create a minimal pre-v2 shadow repo directly under base."""
     shadow = base / name
     shadow.mkdir(parents=True)

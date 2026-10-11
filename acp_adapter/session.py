@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -63,7 +63,7 @@ def _format_updated_at(value: Any) -> str | None:
     if value is None or (isinstance(value, str) and value.strip()):
         return value
     try:
-        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
     except Exception:
         return None
 
@@ -74,7 +74,7 @@ def _updated_at_sort_key(value: Any) -> float:
     raw = str(value).strip() if value is not None else ""
     if not raw:
         return float("-inf")
-    for parse in (lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp(), float):
+    for parse in (lambda s: datetime.fromisoformat(s).timestamp(), float):
         try:
             return parse(raw)
         except Exception:

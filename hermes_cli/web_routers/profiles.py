@@ -14,6 +14,7 @@ import contextlib
 import copy
 import functools
 from hermes_cli.web_read_coalescing import coalesced_read
+from hermes_cli.web_routers._common import is_recently_active
 import inspect
 import json
 import logging
@@ -234,9 +235,7 @@ def _tag_rows(rows: list[dict[str, Any]], name: str, now: float) -> list[dict[st
     for s in rows:
         s["profile"] = name
         s["is_default_profile"] = name == "default"
-        s["is_active"] = (
-            s.get("ended_at") is None and (now - s.get("last_active", s.get("started_at", 0))) < 300
-        )
+        s["is_active"] = is_recently_active(s, now)
         s["archived"] = bool(s.get("archived"))
         s["pinned"] = bool(s.get("pinned"))
     return rows

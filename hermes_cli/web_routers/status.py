@@ -15,6 +15,7 @@ import sys
 import time
 from fastapi import APIRouter
 from hermes_cli.web_deps import LateState, late
+from hermes_cli.web_routers._common import is_recently_active
 from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
@@ -84,8 +85,7 @@ def _count_status_active_sessions() -> int:
     try:
         sessions = db.list_sessions_rich(limit=50, compact_rows=True)
         now = time.time()
-        return sum(1 for s in sessions if s.get("ended_at") is None
-                   and (now - s.get("last_active", s.get("started_at", 0))) < 300)
+        return sum(1 for s in sessions if is_recently_active(s, now))
     finally:
         db.close()
 

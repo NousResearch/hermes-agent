@@ -19,6 +19,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
 from hermes_cli.session_listing import subagent_listing_scope
+from hermes_cli.web_routers._common import is_recently_active
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _maybe_auto_archive_for_profile, _session_latest_descendant
@@ -130,9 +131,7 @@ def _csv(value: Optional[str]) -> list[str]:
 
 
 def _is_active(row: dict, now: float) -> bool:
-    return (
-        row.get("ended_at") is None
-        and (now - row.get("last_active", row.get("started_at", 0))) < _ACTIVE_WINDOW_S)
+    return is_recently_active(row, now, _ACTIVE_WINDOW_S)
 
 
 def _with_db(profile: Optional[str], fn: Callable, *, read_only: bool):

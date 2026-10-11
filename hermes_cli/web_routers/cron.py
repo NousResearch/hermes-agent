@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from hermes_cli.web_deps import late
+from hermes_cli.web_routers._common import is_recently_active
 from hermes_cli.config import cfg_get
 from hermes_cli.web_server_cron import (
     _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
@@ -542,7 +543,7 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
         now = time.time()
         inflight = _live_inflight_execution(canonical)
         for s in session_runs:
-            s["is_active"] = s.get("ended_at") is None and (now - s.get("last_active", s.get("started_at", 0))) < 300
+            s["is_active"] = is_recently_active(s, now)
             s["scheduler_owned"] = _run_owned_by(s, inflight)
             s["archived"] = bool(s.get("archived"))
             if selected:

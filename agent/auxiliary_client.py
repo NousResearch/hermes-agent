@@ -48,33 +48,9 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 if TYPE_CHECKING:
     from openai import OpenAI
 
-_OPENAI_CLS_CACHE: Optional[type] = None
+from agent.auxiliary_openai_client import _AuxiliaryOpenAIProxy
 
-
-def _load_openai_cls() -> type:
-    """Import and cache ``openai.OpenAI``."""
-    global _OPENAI_CLS_CACHE
-    if _OPENAI_CLS_CACHE is None:
-        from openai import OpenAI as _cls
-        _OPENAI_CLS_CACHE = _cls
-    return _OPENAI_CLS_CACHE
-
-
-class _OpenAIProxy:
-    """Lazy stand-in for ``openai.OpenAI``: forwards calls and isinstance checks, importing on first use."""
-    __slots__ = ()
-
-    def __call__(self, *args, **kwargs):
-        return _load_openai_cls()(*args, **kwargs)
-
-    def __instancecheck__(self, obj):
-        return isinstance(obj, _load_openai_cls())
-
-    def __repr__(self):
-        return "<lazy openai.OpenAI proxy>"
-
-
-OpenAI = _OpenAIProxy()
+OpenAI = _AuxiliaryOpenAIProxy()
 
 
 # Availability probe mode: check_fns only need to know whether a client is RESOLVABLE, so
@@ -1781,6 +1757,7 @@ class _AnthropicCompletionsAdapter:
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,
+            preserve_usage_unknown=True,
             # Record provider-response timing every event, but tick forward progress only for
             # substantive payloads so keepalives can't hold a stalled summary open. None keeps
             # the fast get_final_message path.
@@ -1904,7 +1881,9 @@ def _maybe_wrap_anthropic(
     if api_mode != "anthropic_messages" and (api_mode or not _endpoint_speaks_anthropic_messages(base_url)):
         return client_obj
     try:
-        from agent.anthropic_adapter import build_anthropic_client
+        from agent.native_usage_anthropic import (
+            build_auxiliary_anthropic_client as build_anthropic_client,
+        )
     except ImportError:
         logger.warning(
             "Endpoint %s speaks Anthropic Messages but the anthropic SDK is "
@@ -2893,7 +2872,9 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
         # OAuth identity only when the host is exactly api.anthropic.com (key_cmd callable included,
         # #114967); third-party Anthropic-compatible gateways never get it.
         try:
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.native_usage_anthropic import (
+                build_auxiliary_anthropic_client as build_anthropic_client,
+            )
             from agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
         except ImportError:
@@ -3020,7 +3001,9 @@ def _try_azure_foundry(
 def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
                    explicit_base_url: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
     try:
-        from agent.anthropic_adapter import build_anthropic_client
+        from agent.native_usage_anthropic import (
+            build_auxiliary_anthropic_client as build_anthropic_client,
+        )
         from agent.anthropic_credentials import resolve_anthropic_token
     except ImportError:
         return None, None
@@ -4693,7 +4676,8 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
-    from openai import AsyncOpenAI
+    from agent.native_usage_openai import UsageValidatedAsyncOpenAI as AsyncOpenAI
+
     if isinstance(sync_client, _AuxProbeClientStub):
         return sync_client, model
     if isinstance(sync_client, CodexAuxiliaryClient):
@@ -4847,7 +4831,8 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[
     final_model = _normalize_resolved_model(model or "google/gemini-3-flash-preview", provider)
     try:
         # Aliased import: a bare `from openai import OpenAI` would shadow the module-level lazy proxy.
-        from openai import OpenAI as _VertexOpenAI
+        from agent.native_usage_openai import UsageValidatedOpenAI as _VertexOpenAI
+
         client = _VertexOpenAI(api_key=token, base_url=base_url)
     except Exception as exc:
         logger.warning("resolve_provider_client: cannot create Vertex client: %s", exc)
@@ -5195,7 +5180,9 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # Mirrors the anonymous-custom branch in _try_custom_endpoint(). See #15033.
     if entry_api_mode == "anthropic_messages":
         try:
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.native_usage_anthropic import (
+                build_auxiliary_anthropic_client as build_anthropic_client,
+            )
             from agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
             if entry_headers:

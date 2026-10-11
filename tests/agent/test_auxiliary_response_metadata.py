@@ -10,6 +10,7 @@ import httpx
 
 from agent.auxiliary_client import _AnthropicCompletionsAdapter, _CodexCompletionsAdapter, _aggregate_chat_stream
 from agent.usage_pricing import CanonicalUsage, normalize_usage
+from agent.native_usage import NativeUsageError
 from tests.agent.test_auxiliary_codex_completion_status import _adapter_response
 
 
@@ -279,7 +280,500 @@ def test_bedrock_preserves_usage_presence(streamed, metadata):
             native["usage"] = metadata
         response = normalize_converse_response(native)
 
-    assert response.usage == (None if not metadata else NS(
-        prompt_tokens=0, completion_tokens=0, total_tokens=0,
-        cache_read_input_tokens=0, cache_creation_input_tokens=0,
-    ))
+    assert response.usage == (
+        None
+        if not metadata
+        else NS(
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        )
+    )
+
+
+@pytest.mark.parametrize("provider", ["gemini", "codex", "anthropic"])
+@pytest.mark.parametrize("counter", ["primary", "optional"])
+@pytest.mark.parametrize("value", [True, False, "2", 1.5, -1])
+@pytest.mark.parametrize("complete", [False, True])
+def test_native_usage_rejects_malformed_counts(provider, counter, value, complete):
+    from agent.auxiliary_anthropic_response import (
+        _normalize_anthropic_auxiliary_response,
+    )
+    from agent.auxiliary_codex_response import _parse_codex_final_response
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    if provider == "gemini":
+        usage = {"promptTokenCount": 2, "candidatesTokenCount": 1, "totalTokenCount": 3}
+        usage["promptTokenCount" if counter == "primary" else "thoughtsTokenCount"] = (
+            value
+        )
+        if not complete:
+            usage.pop("candidatesTokenCount")
+        field = "promptTokenCount" if counter == "primary" else "thoughtsTokenCount"
+        gemini_native = {"usageMetadata": usage, "candidates": []}
+        project = lambda: translate_gemini_response(gemini_native, "served-model")
+    elif provider == "codex":
+        usage = {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3}
+        if counter == "primary":
+            usage["input_tokens"] = value
+        else:
+            usage["input_tokens_details"] = {"cached_tokens": value}
+        if not complete:
+            usage.pop("output_tokens")
+        field = (
+            "input_tokens"
+            if counter == "primary"
+            else "input_tokens_details.cached_tokens"
+        )
+        native = NS(status="completed", output=[], usage=usage)
+        project = lambda: _parse_codex_final_response(native)
+    else:
+        usage = {"input_tokens": 2, "output_tokens": 1}
+        usage["input_tokens" if counter == "primary" else "cache_read_input_tokens"] = (
+            value
+        )
+        if not complete:
+            usage.pop("output_tokens")
+        field = "input_tokens" if counter == "primary" else "cache_read_input_tokens"
+        native = NS(content=[], stop_reason="end_turn", usage=NS(**usage))
+        project = lambda: _normalize_anthropic_auxiliary_response(
+            native, is_oauth=False
+        )
+
+    with pytest.raises(NativeUsageError, match="Invalid native usage") as error:
+        project()
+    assert (error.value.code, error.value.field) == ("invalid_usage", f"usage.{field}")
+
+
+@pytest.mark.parametrize("provider", ["gemini", "codex", "anthropic"])
+@pytest.mark.parametrize("primary", [None, "missing", 0])
+def test_native_usage_requires_measured_primary_counts(provider, primary):
+    from agent.auxiliary_anthropic_response import (
+        _normalize_anthropic_auxiliary_response,
+    )
+    from agent.auxiliary_codex_response import _parse_codex_final_response
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    if provider == "gemini":
+        usage = {"candidatesTokenCount": 0, "thoughtsTokenCount": None}
+        if primary != "missing":
+            usage["promptTokenCount"] = primary
+        response = translate_gemini_response(
+            {"usageMetadata": usage, "candidates": []}, "served-model"
+        )
+    elif provider == "codex":
+        usage = {"output_tokens": 0, "input_tokens_details": {"cached_tokens": None}}
+        if primary != "missing":
+            usage["input_tokens"] = primary
+        response = _parse_codex_final_response(
+            NS(status="completed", output=[], usage=usage)
+        )
+    else:
+        usage = {"output_tokens": 0, "cache_read_input_tokens": None}
+        if primary != "missing":
+            usage["input_tokens"] = primary
+        response = _normalize_anthropic_auxiliary_response(
+            NS(content=[], stop_reason="end_turn", usage=NS(**usage)),
+            is_oauth=False,
+        )
+
+    if primary != 0:
+        assert response.usage is None
+        return
+    assert normalize_usage(response.usage, provider=provider) == CanonicalUsage()
+    assert response.usage is not None
+
+
+def _openai_usage_http_response(usage, streamed):
+    message = {
+        "role": "assistant",
+        "content": "Answer.",
+        "refusal": "Refusal detail.",
+        "tool_calls": [
+            {
+                "id": "call_provider",
+                "type": "function",
+                "index": 0,
+                "function": {"name": "inspect", "arguments": "{}"},
+            }
+        ],
+    }
+    choice = {
+        "index": 0,
+        "finish_reason": "stop",
+        "logprobs": None,
+        "delta" if streamed else "message": message,
+    }
+    native = {
+        "id": "chat_provider",
+        "model": "served-model",
+        "created": 0,
+        "object": "chat.completion.chunk" if streamed else "chat.completion",
+        "choices": [choice],
+        "usage": usage,
+    }
+    if streamed:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text="data: " + json.dumps(native) + "\n\ndata: [DONE]\n\n",
+        )
+    return httpx.Response(200, json=native)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("value", [True, "2", 1.5, -1])
+@pytest.mark.parametrize("counter", ["primary", "optional"])
+def test_auxiliary_openai_rejects_raw_usage_before_sdk_coercion(
+    async_mode, streamed, value, counter
+):
+    from agent.auxiliary_client import _create_openai_client, _to_async_client
+
+    usage = {"prompt_tokens": value, "completion_tokens": 1, "total_tokens": 3}
+    field = "usage.prompt_tokens"
+    if counter == "optional":
+        usage = {
+            "completion_tokens": 1,
+            "prompt_tokens_details": {"cached_tokens": value},
+        }
+        field = "usage.prompt_tokens_details.cached_tokens"
+    transport = httpx.MockTransport(
+        lambda request: _openai_usage_http_response(usage, streamed)
+    )
+    with _create_openai_client(
+        api_key="fixture",
+        base_url="https://native.example/v1",
+        http_client=httpx.Client(transport=transport),
+    ) as client:
+        kwargs = {
+            "model": "requested-model",
+            "messages": [{"role": "user", "content": "Answer."}],
+            "stream": streamed,
+        }
+        if not async_mode:
+            with pytest.raises(NativeUsageError, match="Invalid native usage") as error:
+                response = client.chat.completions.create(**kwargs)
+                if streamed:
+                    list(response)
+            assert (error.value.code, error.value.field) == ("invalid_usage", field)
+            return
+
+        async def run():
+            with patch(
+                "agent.auxiliary_client._openai_http_client_kwargs",
+                return_value={"http_client": httpx.AsyncClient(transport=transport)},
+            ):
+                async_client, _ = _to_async_client(client, "requested-model")
+            async with async_client:
+                with pytest.raises(
+                    NativeUsageError, match="Invalid native usage"
+                ) as error:
+                    response = await async_client.chat.completions.create(**kwargs)
+                    if streamed:
+                        async for _ in response:
+                            pass
+                assert (error.value.code, error.value.field) == ("invalid_usage", field)
+
+        asyncio.run(run())
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize(
+    "usage",
+    [
+        None,
+        {},
+        {"completion_tokens": 0},
+        {"prompt_tokens": 0, "completion_tokens": 0},
+        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": None},
+        {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 9},
+    ],
+)
+def test_auxiliary_openai_keeps_unknown_zero_and_reported_totals(
+    async_mode, streamed, usage
+):
+    from agent.auxiliary_client import _create_openai_client, _to_async_client
+
+    transport = httpx.MockTransport(
+        lambda request: _openai_usage_http_response(usage, streamed)
+    )
+    with _create_openai_client(
+        api_key="fixture",
+        base_url="https://native.example/v1",
+        http_client=httpx.Client(transport=transport),
+    ) as client:
+        if not async_mode:
+            response = client.with_options(max_retries=0).chat.completions.create(
+                model="requested-model",
+                messages=[],
+                stream=streamed,
+            )
+            if streamed:
+                (response,) = list(response)
+        else:
+
+            async def run():
+                with patch(
+                    "agent.auxiliary_client._openai_http_client_kwargs",
+                    return_value={
+                        "http_client": httpx.AsyncClient(transport=transport)
+                    },
+                ):
+                    async_client, _ = _to_async_client(client, "requested-model")
+                async with async_client:
+                    response = await async_client.with_options(
+                        max_retries=0
+                    ).chat.completions.create(
+                        model="requested-model",
+                        messages=[],
+                        stream=streamed,
+                    )
+                    if streamed:
+                        (response,) = [chunk async for chunk in response]
+                    return response
+
+            response = asyncio.run(run())
+        measured = (
+            usage is not None
+            and "prompt_tokens" in usage
+            and "completion_tokens" in usage
+        )
+        expected = None
+        if measured:
+            expected = {
+                "prompt_tokens": usage["prompt_tokens"],
+                "completion_tokens": usage["completion_tokens"],
+                "total_tokens": usage.get("total_tokens")
+                if usage.get("total_tokens") is not None
+                else usage["prompt_tokens"] + usage["completion_tokens"],
+                "prompt_tokens_details": None,
+                "completion_tokens_details": None,
+            }
+        assert (
+            response.id,
+            response.model,
+            None if response.usage is None else response.usage.model_dump(),
+        ) == (
+            "chat_provider",
+            "served-model",
+            expected,
+        )
+        message = response.choices[0].delta if streamed else response.choices[0].message
+        assert (
+            message.role,
+            message.content,
+            message.refusal,
+            [
+                (call.id, call.type, call.function.model_dump())
+                for call in message.tool_calls
+            ],
+        ) == (
+            "assistant",
+            "Answer.",
+            "Refusal detail.",
+            [("call_provider", "function", {"name": "inspect", "arguments": "{}"})],
+        )
+
+
+def _codex_usage_http_response(usage, streamed):
+    native = {
+        "id": "resp_provider",
+        "model": "served-codex",
+        "created_at": 0,
+        "status": "completed",
+        "output": [],
+        "usage": usage,
+    }
+    if not streamed:
+        return httpx.Response(200, json=native)
+    event = {"type": "response.completed", "sequence_number": 0, "response": native}
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        text="data: " + json.dumps(event) + "\n\n",
+    )
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("value", [True, "2", 1.5, -1, 0, None])
+def test_auxiliary_codex_checks_raw_usage_without_object_discriminator(streamed, value):
+    from agent.auxiliary_client import _create_openai_client
+    from agent.auxiliary_codex_response import _parse_codex_final_response
+
+    usage = {"input_tokens": value, "output_tokens": 0, "total_tokens": 0}
+    transport = httpx.MockTransport(
+        lambda request: _codex_usage_http_response(usage, streamed)
+    )
+    with _create_openai_client(
+        api_key="fixture",
+        base_url="https://native.example/v1",
+        http_client=httpx.Client(transport=transport),
+    ) as client:
+
+        def project():
+            native = client.responses.create(
+                model="requested-model", input="Answer.", stream=streamed
+            )
+            if streamed:
+                (event,) = list(native)
+                native = event.response
+            return _parse_codex_final_response(native)
+
+        if value is not None and (type(value) is not int or value < 0):
+            with pytest.raises(NativeUsageError, match="Invalid native usage"):
+                project()
+            return
+        response = project()
+        assert (response.id, response.model, response.usage) == (
+            "resp_provider",
+            "served-codex",
+            None
+            if value is None
+            else NS(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+
+
+def _anthropic_usage_http_response(usage, streamed):
+    native = {
+        "id": "msg_provider",
+        "type": "message",
+        "role": "assistant",
+        "model": "served-claude",
+        "content": [{"type": "text", "text": "Answer."}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": usage,
+    }
+    if not streamed:
+        return httpx.Response(200, json=native)
+    events = [
+        {
+            "type": "message_start",
+            "message": {**native, "content": [], "stop_reason": None},
+        },
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": "Answer."},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": None
+            if usage is None
+            else {"output_tokens": usage.get("output_tokens")},
+        },
+        {"type": "message_stop"},
+    ]
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        text="".join(
+            f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events
+        ),
+    )
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize(
+    "usage",
+    [
+        None,
+        {"output_tokens": 0},
+        {"input_tokens": 0, "output_tokens": 0},
+        {"input_tokens": 0},
+        {"input_tokens": 0, "output_tokens": None},
+        {"input_tokens": True, "output_tokens": 0},
+        {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": "2"},
+    ],
+)
+def test_auxiliary_anthropic_raw_usage_and_null_stream_provenance(streamed, usage):
+    from agent.anthropic_adapter import _base_client_kwargs
+    from agent.auxiliary_anthropic_response import (
+        _normalize_anthropic_auxiliary_response,
+    )
+    from agent.auxiliary_client import _maybe_wrap_anthropic
+
+    transport = httpx.MockTransport(
+        lambda request: _anthropic_usage_http_response(usage, streamed)
+    )
+    with httpx.Client(transport=transport) as http_client:
+
+        def client_kwargs(*args, **kwargs):
+            route, options = _base_client_kwargs(*args, **kwargs)
+            return route, {**options, "http_client": http_client}
+
+        with patch(
+            "agent.anthropic_adapter._base_client_kwargs", side_effect=client_kwargs
+        ):
+            wrapped = _maybe_wrap_anthropic(
+                NS(), "requested-model", "fixture", "https://native.example/anthropic"
+            )
+        client = wrapped._real_client
+        kwargs = {"model": "requested-model", "max_tokens": 8, "messages": []}
+
+        def project():
+            if streamed:
+                return wrapped.chat.completions.create(**kwargs)
+            native = client.messages.create(**kwargs)
+            return _normalize_anthropic_auxiliary_response(native, is_oauth=False)
+
+        if usage and (
+            usage.get("input_tokens") is True or "cache_read_input_tokens" in usage
+        ):
+            with pytest.raises(NativeUsageError, match="Invalid native usage"):
+                project()
+            return
+        response = project()
+        assert (
+            response.id,
+            response.model,
+            response.choices[0].message.content,
+            response.usage,
+        ) == (
+            "msg_provider",
+            "served-claude",
+            "Answer.",
+            None
+            if not usage
+            or usage.get("input_tokens") is None
+            or usage.get("output_tokens") is None
+            else NS(
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+        )
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("metadata", [False, 0, [], ""])
+def test_gemini_validates_falsey_native_usage_containers(streamed, metadata):
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    native = {"usageMetadata": metadata, "candidates": []}
+    response = (
+        httpx.Response(200, text="data: " + json.dumps(native) + "\n\n")
+        if streamed
+        else httpx.Response(200, json=native)
+    )
+    with GeminiNativeClient(
+        api_key="fixture",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(lambda request: response),
+        ),
+    ) as client:
+        with pytest.raises(NativeUsageError) as error:
+            result = client.chat.completions.create(
+                model="requested-model", messages=[], stream=streamed
+            )
+            if streamed:
+                list(result)
+        assert (error.value.code, error.value.field) == ("invalid_usage", "usage")

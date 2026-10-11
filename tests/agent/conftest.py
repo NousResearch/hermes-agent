@@ -45,3 +45,29 @@ def _fast_retry_backoff(request, monkeypatch):
     # server-error retries don't burn real wall-clock seconds.
     from agent import retry_utils as _retry_utils
     monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0)
+
+
+@pytest.fixture
+def auxiliary_client_state(monkeypatch):
+    """Strip provider env vars so each test starts clean."""
+    for key in (
+        "OPENROUTER_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "LLM_MODEL",
+        "NOUS_INFERENCE_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "NVIDIA_API_KEY",
+        "NVIDIA_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    import agent.auxiliary_client as _aux_mod
+
+    _aux_mod._aux_unhealthy_until.clear()
+    _aux_mod._aux_unhealthy_logged_at.clear()
+    yield
+    _aux_mod._aux_unhealthy_until.clear()
+    _aux_mod._aux_unhealthy_logged_at.clear()

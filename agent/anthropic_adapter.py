@@ -12,7 +12,7 @@ import re
 import shutil
 import subprocess
 from contextlib import suppress
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from utils import normalize_proxy_env_vars
 
@@ -398,7 +398,12 @@ def _base_client_kwargs(base_url, timeout) -> tuple[str, dict[str, Any]]:
 
 
 def _build_anthropic_client_with_bearer_hook(
-    token_provider, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False
+    token_provider,
+    base_url: str | None = None,
+    timeout: float | None = None,
+    *,
+    drop_context_1m_beta: bool = False,
+    client_factory: Callable[..., Any] | None = None,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`. The SDK stores
     ``api_key``/``auth_token`` as static strings, so per-request bearer refresh (Microsoft's
@@ -422,10 +427,18 @@ def _build_anthropic_client_with_bearer_hook(
         headers["x-app"] = "cli"
     else:
         headers = _beta_header(betas)
-    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
+    return _new_sdk_client(
+        sdk, kwargs, headers, route=base_url, client_factory=client_factory
+    )
 
 
-def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route: str | None = None):
+def _new_sdk_client(
+    sdk,
+    kwargs: dict[str, Any],
+    headers: dict[str, str],
+    route: str | None = None,
+    client_factory: Callable[..., Any] | None = None,
+):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
     ``route`` is the caller's un-normalized base_url (the ``/v1`` form ``custom_providers`` entries are
     keyed by; ``kwargs["base_url"]`` has it stripped) for the per-provider ``extra_headers`` lookup.
@@ -447,7 +460,7 @@ def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route:
     merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
     if merged:
         kwargs["default_headers"] = merged
-    return sdk.Anthropic(**kwargs)
+    return (client_factory or sdk.Anthropic)(**kwargs)
 
 
 def _custom_provider_extra_headers(base_url) -> dict[str, str]:
@@ -481,7 +494,14 @@ def _auth_style(api_key, base_url, normalized_base_url) -> str:
     return "api_key"
 
 
-def build_anthropic_client(api_key, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False):
+def build_anthropic_client(
+    api_key,
+    base_url: str | None = None,
+    timeout: float | None = None,
+    *,
+    drop_context_1m_beta: bool = False,
+    client_factory: Callable[..., Any] | None = None,
+):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
     :func:`_build_anthropic_client_with_bearer_hook`). ``timeout`` overrides the 900s read timeout
@@ -491,7 +511,11 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
     sdk = _require_sdk("the Anthropic provider")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
-            api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta
+            api_key,
+            base_url,
+            timeout,
+            drop_context_1m_beta=drop_context_1m_beta,
+            client_factory=client_factory,
         )
     normalize_proxy_env_vars()
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
@@ -511,7 +535,9 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
         # get these from profile.default_headers, but this route never sees the profile.
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
-    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
+    return _new_sdk_client(
+        sdk, kwargs, headers, route=base_url, client_factory=client_factory
+    )
 
 
 def build_anthropic_bedrock_client(region: str):
@@ -752,8 +778,11 @@ def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None
 class _UsageNormalizingStream:
     """Raw SSE iterator proxy that fills ``usage: null`` before the SDK accumulates it (#60683)."""
 
-    def __init__(self, inner):
+    def __init__(self, inner, *, preserve_usage_unknown: bool = False):
         self._inner = inner
+        self._preserve_usage_unknown = preserve_usage_unknown
+        self.input_tokens = None
+        self.output_tokens = None
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -767,18 +796,31 @@ class _UsageNormalizingStream:
             if etype == "message_start":
                 message = getattr(event, "message", None)
                 usage = getattr(message, "usage", None)
+                self.input_tokens = getattr(usage, "input_tokens", None)
+                self.output_tokens = getattr(usage, "output_tokens", None)
                 if message is not None and usage is None:
                     message.usage = Usage(input_tokens=0, output_tokens=0)
                 elif usage is not None:
                     output_tokens = getattr(usage, "output_tokens", 0) or 0
-            elif etype == "message_delta" and getattr(event, "usage", None) is None:
+            elif etype == "message_delta":
+                usage = getattr(event, "usage", None)
+                self.output_tokens = getattr(usage, "output_tokens", None)
+                if (input_tokens := getattr(usage, "input_tokens", None)) is not None:
+                    self.input_tokens = input_tokens
+                if usage is not None:
+                    if self._preserve_usage_unknown and self.output_tokens is None:
+                        usage.output_tokens = output_tokens
+                    yield event
+                    continue
                 # accumulate_event() assigns delta output_tokens unconditionally; carry
                 # message_start's count forward instead of clobbering it with 0.
                 event.usage = MessageDeltaUsage(output_tokens=output_tokens)
             yield event
 
 
-def normalize_stream_usage(message_stream: Any) -> Any:
+def normalize_stream_usage(
+    message_stream: Any, *, preserve_usage_unknown: bool = False
+) -> Any:
     """Patch ``usage: null`` on raw SSE events before the SDK accumulates them.
 
     Anthropic-compatible providers (MiniMax) send ``usage: null`` on message_start and/or
@@ -787,7 +829,9 @@ def normalize_stream_usage(message_stream: Any) -> Any:
     raw = getattr(message_stream, "_raw_stream", None)
     if raw is None or not hasattr(raw, "__iter__"):
         return message_stream
-    message_stream._raw_stream = _UsageNormalizingStream(raw)
+    message_stream._raw_stream = _UsageNormalizingStream(
+        raw, preserve_usage_unknown=preserve_usage_unknown
+    )
     return message_stream
 
 
@@ -804,10 +848,19 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
     return is_streaming_access_denied_error(exc)
 
 
-def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response):
+def _stream_final_message(
+    stream_fn,
+    api_kwargs,
+    log_prefix,
+    on_stream_event,
+    on_response,
+    preserve_usage_unknown=False,
+):
     """``messages.stream()`` -> final Message, ticking the best-effort callbacks."""
     with stream_fn(**{k: v for k, v in api_kwargs.items() if k != "stream"}) as stream:
-        stream = normalize_stream_usage(stream)  # MiniMax usage:null (#60683), same as the main turn
+        stream = normalize_stream_usage(
+            stream, preserve_usage_unknown=preserve_usage_unknown
+        )
         if callable(on_response):
             try:
                 on_response(getattr(stream, "response", None))
@@ -844,14 +897,25 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
                 "Anthropic Messages stream ended before message_stop (possible upstream stream drop)."
             )
         message = stream.get_final_message()
+        if preserve_usage_unknown and isinstance(
+            raw := getattr(stream, "_raw_stream", None), _UsageNormalizingStream
+        ):
+            if raw.input_tokens is None or raw.output_tokens is None:
+                message.usage = None
         if stop_details is not None:
             message.stop_details = stop_details
         return message
 
 
 def create_anthropic_message(
-    client: Any, api_kwargs: dict, *, log_prefix: str = "", prefer_stream: bool = True,
-    on_stream_event=None, on_response=None,
+    client: Any,
+    api_kwargs: dict,
+    *,
+    log_prefix: str = "",
+    prefer_stream: bool = True,
+    on_stream_event=None,
+    on_response=None,
+    preserve_usage_unknown: bool = False,
 ) -> Any:
     """Create an Anthropic message, aggregating via stream when available. Some Anthropic-compatible
     gateways are SSE-only and answer ``create()`` with ``text/event-stream``, which the SDK surfaces
@@ -866,7 +930,14 @@ def create_anthropic_message(
     stream_fn = getattr(messages_api, "stream", None)
     if prefer_stream and callable(stream_fn):
         try:
-            return _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response)
+            return _stream_final_message(
+                stream_fn,
+                api_kwargs,
+                log_prefix,
+                on_stream_event,
+                on_response,
+                preserve_usage_unknown,
+            )
         except TimeoutError:
             raise
         except Exception as exc:

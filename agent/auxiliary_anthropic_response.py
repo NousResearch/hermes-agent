@@ -4,20 +4,25 @@ from types import SimpleNamespace
 from typing import Any
 
 
-def _normalize_anthropic_auxiliary_response(response: Any, *, is_oauth: bool) -> SimpleNamespace:
+def _normalize_anthropic_auxiliary_response(
+    response: Any, *, is_oauth: bool
+) -> SimpleNamespace:
+    from agent.native_usage import NativeUsageCounts
     from agent.transports import get_transport
 
     normalized = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=is_oauth)
     usage = None
     if (native_usage := getattr(response, "usage", None)) is not None:
-        cache_read = getattr(native_usage, "cache_read_input_tokens", 0) or 0
-        cache_write = getattr(native_usage, "cache_creation_input_tokens", 0) or 0
-        prompt = (getattr(native_usage, "input_tokens", 0) or 0) + cache_read + cache_write
-        completion = getattr(native_usage, "output_tokens", 0) or 0
-        usage = SimpleNamespace(
-            prompt_tokens=prompt, completion_tokens=completion, total_tokens=prompt + completion,
-            cache_read_input_tokens=cache_read, cache_creation_input_tokens=cache_write,
-        )
+        counts = NativeUsageCounts.read(native_usage, kind="anthropic")
+        if counts.input is not None and counts.output is not None:
+            prompt = counts.input + counts.cached + counts.cache_write
+            usage = SimpleNamespace(
+                prompt_tokens=prompt,
+                completion_tokens=counts.output,
+                total_tokens=prompt + counts.output,
+                cache_read_input_tokens=counts.cached,
+                cache_creation_input_tokens=counts.cache_write,
+            )
     choice = SimpleNamespace(
         index=0, finish_reason=normalized.finish_reason,
         message=SimpleNamespace(

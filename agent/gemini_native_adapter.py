@@ -579,7 +579,7 @@ def _dump_call_args(fc: dict[str, Any], **kwargs: Any) -> str:
         return "{}"
 
 
-def _usage_from_metadata(usage_meta: dict[str, Any]) -> SimpleNamespace:
+def _usage_from_metadata(usage_meta: dict[str, Any]) -> SimpleNamespace | None:
     """Gemini ``usageMetadata`` → OpenAI-shaped usage.
 
     Hidden thinking is reported separately in ``thoughtsTokenCount``:
@@ -589,12 +589,20 @@ def _usage_from_metadata(usage_meta: dict[str, Any]) -> SimpleNamespace:
     real output and ``prompt + completion != total``) and also surfaced under
     ``completion_tokens_details.reasoning_tokens``, where ``normalize_usage`` reads
     them. Absent on non-thinking/older responses, which keeps their numbers as-is."""
-    count = lambda key: int(usage_meta.get(key) or 0)
-    reasoning_tokens = count("thoughtsTokenCount")
+    from agent.native_usage import NativeUsageCounts
+
+    counts = NativeUsageCounts.read(usage_meta, kind="gemini")
+    if counts.input is None or counts.output is None:
+        return None
+    completion = counts.output + counts.reasoning
     return SimpleNamespace(
-        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount") + reasoning_tokens,
-        total_tokens=count("totalTokenCount"), prompt_tokens_details=SimpleNamespace(cached_tokens=count("cachedContentTokenCount")),
-        completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens),
+        prompt_tokens=counts.input,
+        completion_tokens=completion,
+        total_tokens=counts.total
+        if counts.total is not None
+        else counts.input + completion,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=counts.cached),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=counts.reasoning),
     )
 
 
@@ -661,7 +669,11 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
     finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
     if _prompt_is_blocked(resp):
         finish_reason = "content_filter"
-    usage = _usage_from_metadata(metadata) if (metadata := resp.get("usageMetadata")) else None
+    usage = (
+        _usage_from_metadata(metadata)
+        if (metadata := resp.get("usageMetadata")) is not None
+        else None
+    )
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
                               tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None,
@@ -753,6 +765,7 @@ def _tool_call_slot(fc: dict[str, Any], part: dict[str, Any], part_index: int, a
 def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices: dict[str, dict[str, Any]]) -> list[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
     metadata = event.get("usageMetadata")
+    usage = _usage_from_metadata(metadata) if metadata is not None else None
     model = event.get("modelVersion")
     prompt_blocked = _prompt_is_blocked(event)
     if not candidates and not (metadata or model or event.get("responseId") or prompt_blocked):
@@ -793,8 +806,8 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
         chunks.append(_make_stream_chunk(model=model))
     for chunk in chunks:
         chunk.id = event.get("responseId")
-    if metadata:
-        chunks[-1].usage = _usage_from_metadata(metadata)
+    if metadata is not None:
+        chunks[-1].usage = usage
     return chunks
 
 

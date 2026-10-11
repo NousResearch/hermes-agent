@@ -52,23 +52,33 @@ def _parse_codex_final_response(
     message.role = "assistant"
     message.content = message.content.strip() or None
     message.tool_calls = message.tool_calls or None
+    from agent.native_usage import NativeUsageCounts
+
     usage = None
     resp_usage = getattr(final, "usage", None)
-    if resp_usage:
-        usage = SimpleNamespace(
-            prompt_tokens=_field(resp_usage, "input_tokens") or 0,
-            completion_tokens=_field(resp_usage, "output_tokens") or 0,
-            total_tokens=_field(resp_usage, "total_tokens") or 0,
-        )
-        if (details := _field(resp_usage, "input_tokens_details")) is not None:
-            usage.prompt_tokens_details = SimpleNamespace(cached_tokens=_field(details, "cached_tokens") or 0)
-            cache_write = _field(details, "cache_write_tokens")
-            if cache_write is None:
-                cache_write = _field(details, "cache_creation_tokens")
-            if cache_write is not None:
-                usage.prompt_tokens_details.cache_write_tokens = cache_write
-        if (details := _field(resp_usage, "output_tokens_details")) is not None:
-            usage.completion_tokens_details = SimpleNamespace(reasoning_tokens=_field(details, "reasoning_tokens") or 0)
+    if resp_usage is not None:
+        counts = NativeUsageCounts.read(resp_usage, kind="codex")
+        if counts.input is not None and counts.output is not None:
+            usage = SimpleNamespace(
+                prompt_tokens=counts.input,
+                completion_tokens=counts.output,
+                total_tokens=counts.total
+                if counts.total is not None
+                else counts.input + counts.output,
+            )
+            if (details := _field(resp_usage, "input_tokens_details")) is not None:
+                usage.prompt_tokens_details = SimpleNamespace(
+                    cached_tokens=counts.cached
+                )
+                if (
+                    _field(details, "cache_write_tokens") is not None
+                    or _field(details, "cache_creation_tokens") is not None
+                ):
+                    usage.prompt_tokens_details.cache_write_tokens = counts.cache_write
+            if _field(resp_usage, "output_tokens_details") is not None:
+                usage.completion_tokens_details = SimpleNamespace(
+                    reasoning_tokens=counts.reasoning
+                )
     choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
     return SimpleNamespace(
         id=getattr(final, "id", None), model=getattr(final, "model", None),

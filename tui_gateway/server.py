@@ -1840,7 +1840,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch"}
     with session.get("history_lock") or contextlib.nullcontext():
         history = session.setdefault("history", [])
-        history[:] = [h for h in history if not _is_model_switch_marker(h)]
+        history[:] = _without_model_switch_markers(history)  # keeps a prompt repair folded into one
         history.append(entry)
         session["history_version"] = int(session.get("history_version", 0)) + 1
     try:

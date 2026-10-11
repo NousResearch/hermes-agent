@@ -287,8 +287,9 @@ def _commit_turn_history(
         # _append_model_switch_marker strips prior markers in-place then appends a new one, so the delta is
         # NOT a simple tail-slice — we must compare content, not indices.
         current_history = list(session["history"])
-        history_no_markers = [e for e in history if not _is_pivot_marker(e)]
-        current_no_markers = [e for e in current_history if not _is_pivot_marker(e)]
+        # Both sides through the same marker strip: a prompt folded into the stripped marker stays, as a copy.
+        history_no_markers = [e for e in _without_model_switch_markers(history) if not _is_pivot_marker(e)]
+        current_no_markers = [e for e in _without_model_switch_markers(current_history) if not _is_pivot_marker(e)]
         if current_no_markers == history_no_markers and any(
                 _is_pivot_marker(e) for e in current_history):
             # Auto-compression can leave the result shorter than the turn-start history.

@@ -488,6 +488,25 @@ class GatewayConfigLoadersMixin:
         return mode
 
     @staticmethod
+    def _load_agent_inject_mute_chats() -> set:
+        """[LOCAL PATCH 2026-09-05] chat 级 agent 注入静音名单。
+
+        名单内会话的后台进程**成功**完成不再注入叫醒 agent（失败照注入），
+        名单外会话行为完全不变。来源：env HERMES_AGENT_INJECT_MUTE_CHATS
+        （逗号分隔）或 config display.background_process_agent_inject_mute_chats
+        （list）。背景：E11/E12 M3 被成功注入唤醒后编造进度刷屏；全局 error
+        档会误伤其他群「后台跑完自动汇报」流程，故改 chat 级名单。"""
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
+        from gateway.run import _load_gateway_config
+        raw_env = _platform_gate_env("HERMES_AGENT_INJECT_MUTE_CHATS")
+        if raw_env:
+            return {c.strip() for c in str(raw_env).split(",") if c.strip()}
+        raw = cfg_get(_load_gateway_config(), "display", "background_process_agent_inject_mute_chats")
+        if isinstance(raw, (list, tuple, set)):
+            return {str(c) for c in raw}
+        return set()
+
+    @staticmethod
     def _load_provider_routing() -> dict:
         """OpenRouter provider routing preferences (canonical fail-open loader: managed overlay + ${VAR})."""
         from gateway.run import _load_gateway_config

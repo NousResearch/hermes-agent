@@ -146,3 +146,32 @@ def is_partial_silence_marker(text: Any) -> bool:
         c and any(marker.startswith(c) for marker in LIVE_GATEWAY_SILENT_MARKERS)
         for c in _canonical_silence_candidates(text)
     )
+
+
+# [LOCAL PATCH 2026-09-05] 通知倾倒检测（chat 级出站过滤用）。
+# 事故：M3 被唤醒后把上下文里的 supervisor 历史通知原样倒了 11K 字符进群
+# （一行一条 `[九门_S01E12] ⏳/✅/…`）。判定：匹配该通知行格式的行 ≥3 即
+# 视为倾倒。正常答复里偶尔引用 1-2 行不误伤。
+import re as _re
+
+_NOTIFICATION_LINE_RE = _re.compile(
+    r"^\s*[【\[][^\]】\n]{1,60}[】\]]\s*(⏳|✅|❌|⚠️|🔍|✨|📦|🗑️|▶️)"
+)
+NOTIFICATION_DUMP_MIN_LINES = 3
+
+
+def is_notification_dump(text: Any) -> bool:
+    """Return True when ``text`` is a dump of supervisor-style notifications.
+
+    Counts lines matching the pipeline-notification shape
+    ``[tag] <emoji> …`` (⏳/✅/❌/⚠️/🔍/✨/📦/🗑️/▶️); at least
+    ``NOTIFICATION_DUMP_MIN_LINES`` such lines means the agent regurgitated
+    its notification backlog instead of answering. Non-strings, blanks, and
+    ordinary prose quoting one or two notification lines return False.
+    """
+    if not isinstance(text, str):
+        return False
+    hits = sum(
+        1 for line in text.splitlines() if _NOTIFICATION_LINE_RE.match(line)
+    )
+    return hits >= NOTIFICATION_DUMP_MIN_LINES

@@ -2,6 +2,7 @@ from gateway.response_filters import (
     is_autonomous_silence_response,
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
+    is_notification_dump,
 )
 
 
@@ -41,3 +42,30 @@ def test_autonomous_lane_agrees_with_interactive_lane_on_cjk_punctuation_variant
     for variant in ("【静默】", "静默。", "【沉默】", "沉默。", "**[静默]**", "NO_REPLY."):
         assert is_intentional_silence_response(variant)
         assert is_autonomous_silence_response(variant) == is_intentional_silence_response(variant), variant
+
+
+
+# [LOCAL PATCH 2026-09-05] 通知倾倒检测（E12 M3 倒 11K 历史通知刷屏事故）。
+
+def test_notification_dump_detects_supervisor_backlog_paste():
+    sample = "\n".join(
+        [
+            "[九门_S01E12] ⏳ preprocess_asr_scene 已跑 5m1s，超阈值 5m0s，仍在继续",
+            "[九门_S01E12] ⚠️ preprocess_asr_scene 跑过 1h15m0s，极大超时，自动修复桥唤起 K3 诊断",
+            "[九门_S01E12] ✨ 修复完成，重跑管线（断点续跑）",
+            "[九门_S01E12] ✅ curate done (49m20s)",
+            "[九门_S01E12] 📦 任务失败，请人工介入",
+        ]
+    )
+    assert is_notification_dump(sample)
+    # 中文书名号变体
+    assert is_notification_dump("【九门_S01E12】 ✅ accept done\n【九门_S01E12】 ▶️ 管线启动\n【九门_S01E12】 ❌ 任务失败")
+
+
+def test_notification_dump_ignores_normal_replies():
+    assert not is_notification_dump("curate 慢是因为 27B 精修逐帧打分，建议 M3 分担初筛。")
+    # 引用 1-2 行通知不算倾倒
+    assert not is_notification_dump("[九门_S01E12] ✅ curate done\n这条说明 curate 没问题。")
+    assert not is_notification_dump("")
+    assert not is_notification_dump(None)
+    assert not is_notification_dump(123)

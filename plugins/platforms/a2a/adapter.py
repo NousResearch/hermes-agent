@@ -531,12 +531,16 @@ class A2AAdapter(BasePlatformAdapter):
         # A retry after a timeout must find its accepted work, not queue a second turn.
         input_id = ("a2a-msg:" + hashlib.sha256(f"{context_id}\0{message_id}".encode()).hexdigest()
                     if message_id else None)
-        retry = input_id is not None and self._note_forwarded_input(input_id)
+        # The process LRU answers concurrent resends atomically; the durable context log answers
+        # one whose id the LRU evicted or a restart forgot.
+        retry = input_id is not None and (self._note_forwarded_input(input_id)
+                                          or protocol.logged_input(context_id, input_id))
         task_id = protocol.new_task_id()
         # The owner answers a resend from the accepted admission; it is not another turn of the loop.
         turn = 0 if retry else self._turns.track(context_id)
         max_turns = protocol.max_pingpong_turns()
-        rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
+        rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent),
+                                input_id=(input_id or task_id) if forwarded else "")
         if turn > max_turns:
             protocol.metrics.anti_loop_triggers += 1
             logger.warning("A2A: anti-loop triggered for context %s (turn %d > %d)", context_id, turn, max_turns)
@@ -547,7 +551,7 @@ class A2AAdapter(BasePlatformAdapter):
         framed = security.wrap_inbound(peer, text)
         security.audit("inbound", peer, task_id, text)
         if not retry:
-            protocol.persist_message(context_id, "user", text, task_id)
+            protocol.persist_message(context_id, "user", text, task_id, input_id=input_id or "")
             protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if forwarded:
@@ -749,6 +753,11 @@ class A2AAdapter(BasePlatformAdapter):
             return error
         if rec["state"] in protocol.TERMINAL_STATES:
             return _err(req_id, protocol.ERR_TASK_NOT_CANCELABLE, f"task {task_id} already {rec['state']}")
+        if rec.get("input_id"):
+            # Forwarded: the owner holds the admission and this adapter cannot stop it, so marking
+            # the task canceled would report a cancel while the owner's turn ran to completion.
+            return _err(req_id, protocol.ERR_TASK_NOT_CANCELABLE,
+                        f"task {task_id} was forwarded to its profile owner; accepted work is not cancelled")
         self.tasks.complete(task_id, protocol.STATE_CANCELED, "")
         self._turns.reset(rec["context_id"])
         self._resolve_task(task_id, protocol.STATE_CANCELED, "")

@@ -758,6 +758,40 @@ describe('refreshSessions batches slices into one request', () => {
     )
   })
 
+  // #67794: a platform the recents SQL exclusion doesn't name (plugin adapter,
+  // custom --source) arrives in BOTH slices — the client must file it into the
+  // messaging slice only, so it gets its own section instead of sitting under
+  // the generic Sessions list.
+  it('re-files an unlisted platform row out of recents and into the messaging slice', async () => {
+    const platformRow = row('irc-1', { source: 'irc' })
+    const localRow = row('local-1', { source: 'desktop' })
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [localRow, platformRow] }, [], [platformRow]))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(session => session.id)).toEqual(['local-1'])
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['irc-1'])
+  })
+
+  it('also evicts an unlisted platform row a previous refresh had left in recents', async () => {
+    // Pre-change rows (or a keep-set survivor) already sitting in $sessions.
+    setSessions([row('old-irc', { source: 'irc' }), row('local-1', { source: 'desktop' })])
+    listSidebarSessions.mockResolvedValue(
+      sidebar({ sessions: [row('local-1', { source: 'desktop' })] }, [], [row('old-irc', { source: 'irc' })])
+    )
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(session => session.id)).toEqual(['local-1'])
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['old-irc'])
+  })
+
   it('does not start a refresh callback captured before a profile switch', async () => {
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
 

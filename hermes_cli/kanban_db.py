@@ -1633,14 +1633,20 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     return False
 
 
-def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+def unlink_tasks(
+    conn: sqlite3.Connection, parent_id: str, child_id: str, *, actor: Optional[str] = None,
+) -> bool:
+    """Drop a dependency edge; ``actor`` (the acting profile) lands in the event."""
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?", (parent_id, child_id),
         )
         removed = cur.rowcount > 0
         if removed:
-            _append_event(conn, child_id, "unlinked", {"parent": parent_id, "child": child_id})
+            payload = {"parent": parent_id, "child": child_id}
+            if actor:
+                payload["actor"] = actor
+            _append_event(conn, child_id, "unlinked", payload)
     if removed:
         # Re-gate the child now (as complete_task/unblock_task do) instead of
         # leaving it in todo until the next tick.
@@ -3808,7 +3814,11 @@ def specify_triage_task(
     return True
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
+def archive_task(
+    conn: sqlite3.Connection, task_id: str, *, signal_fn=None,
+    refuse_live_claim: bool = False, reason: Optional[str] = None,
+    actor: Optional[str] = None,
+) -> bool:
     """Archive a task; a *running* task's host-local worker is terminated.
 
     Clearing ``worker_pid`` in the DB alone left the OS process running past its
@@ -3821,6 +3831,13 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     dispatcher can spawn a duplicate worker off the released claim. The
     termination outcome lands as its own ``archive_worker_termination`` event so
     the ``archived`` event stays atomic with the status flip.
+
+    ``refuse_live_claim=True`` raises :class:`LiveClaimError` instead of
+    archiving a ``running`` task whose worker is alive (``_claim_is_live``);
+    the check runs inside the archive txn, so a claim landing between a
+    caller's read and this call is still refused. ``reason`` (with ``actor``)
+    is recorded as an ``Archived: <reason>`` comment and on the ``archived``
+    event in the same txn: a committed archive never loses its reason.
     """
     with write_txn(conn):
         row = conn.execute(
@@ -3829,6 +3846,8 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
         ).fetchone()
         if not row:
             return False
+        if refuse_live_claim and _claim_is_live(row):
+            raise LiveClaimError(task_id)
         was_running = row["status"] == "running"
         prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
         cur = conn.execute(
@@ -3843,7 +3862,11 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             conn, task_id, outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        payload = None
+        if reason:
+            payload = {"reason": reason, "actor": actor}
+            add_comment(conn, task_id, actor or "kanban", f"Archived: {reason}")
+        _append_event(conn, task_id, "archived", payload, run_id=run_id)
     if was_running:
         termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
         with write_txn(conn):

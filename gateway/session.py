@@ -1097,7 +1097,14 @@ class SessionStore(
         Internal bookkeeping must not advance the user-activity clock used by housekeeping
         and restart recovery.
         """
-        return self._update_entry(session_key, lambda e: e.metadata.__setitem__(key, value))
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None:
+                return False
+            entry.metadata[key] = value
+        # Metadata-only: single-row UPSERT, outside ``_lock`` (Slack writes one per thread reply).
+        self._save_entry(session_key)
+        return True
 
     def set_model_override(self, session_key: str, override: Optional[dict[str, Any]]) -> None:
         """Persist (or clear, with ``None``) the /model override; non-secret keys only."""

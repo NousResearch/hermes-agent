@@ -172,6 +172,18 @@ class TestShouldExclude:
         assert _should_exclude(Path("profiles/clean/models/big.gguf"))
         assert _should_exclude(Path("profiles/clean/runtimes/llamacpp/x.dll"))
 
+    def test_excludes_win_arm64_build_tools_vcpkg_cache_at_root(self):
+        """build-tools/ at a profile-home root is the win-arm64 vcpkg/OpenSSL toolchain
+        (scripts/windows-build-deps.ps1) — a multi-GB, fully regenerable build cache that
+        must not be walked into a backup (#125237). A skill's own build-tools/ is user data."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("build-tools/vcpkg/downloads/tool.zip"))
+        assert _should_exclude(Path("build-tools/vcpkg/installed/arm64-windows/lib/libssl.a"))
+        assert _should_exclude(Path("profiles/clean/build-tools/vcpkg/buildtrees/x.log"))
+        # A deeper dir that merely shares the name is user data and must survive.
+        assert not _should_exclude(Path("skills/mlops/build-tools/notes.md"))
+        assert not _should_exclude(Path("profiles/clean/skills/x/build-tools/a.txt"))
+
     def test_excludes_regenerable_cache_but_keeps_durable_artifacts(self):
         """Catalogs and live browser profiles are rebuilt on demand; delivered media and the
         citation ledger are not, so they stay in the archive."""

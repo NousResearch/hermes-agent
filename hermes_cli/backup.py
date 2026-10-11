@@ -96,7 +96,13 @@ _EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS | (PM_RUNTIME_ROOT_DIRS - {"cache"
 # Browser Use CLI profile dir (browser.backend: browser-use): Chromium user-data with Login Data
 # / Cookies. Root-scoped like models/ — a skill's own browser_profiles/ is user data. Backup-only:
 # do not fold into LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
-_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles"})
+#
+# ``build-tools`` is the win-arm64 native-dependency toolchain (scripts/windows-build-deps.ps1
+# clones vcpkg into ``HERMES_HOME/build-tools/vcpkg`` to build a static OpenSSL for cryptography).
+# It is a Hermes-managed, fully regenerable build cache — a multi-GB vcpkg tree (65k+ files) that
+# otherwise dominates every full backup walk. Root-scoped like models/, so a skill's own
+# build-tools/ stays user data; backup-only for the same clone-all reason as browser_profiles.
+_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", "build-tools"})
 
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media

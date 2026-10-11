@@ -362,10 +362,10 @@ def test_bot_authored_publication_echo_is_refused(running_service):
     assert _user_events(running_service) == []
 
 
-def test_facade_exposes_no_publication_verb():
-    """Publication stays behind a separately reviewed gate: the facade can read, not post."""
+def test_facade_public_verbs_are_exactly_the_reviewed_set():
+    """New surface (another post/send path) needs its own review; publication is the one gated verb."""
     public = {name for name in dir(HostedRoomFacade) if not name.startswith("_")}
-    assert public == {"describe", "submit_telegram_update", "outcomes", "stop"}
+    assert public == {"describe", "submit_telegram_update", "outcomes", "stop", "publish_outcome"}
 
 
 def test_unsettled_member_reply_is_not_surfaced_as_an_outcome(running_service, monkeypatch):

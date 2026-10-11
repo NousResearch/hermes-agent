@@ -6,13 +6,18 @@ Disabled-first and fail-closed. Every verb re-checks, at call time and in this o
 hosted-room worker in this process, and a room protocol this facade was written against. Any miss
 returns a typed ``disabled`` result; no verb raises into PTB handler dispatch, so ordinary Telegram
 handling continues unchanged. Coordinates are derived from the adapter-delivered ``Update`` here,
-never accepted from the plugin. There is deliberately no publication verb.
+never accepted from the plugin. ``publish_outcome`` is coordinator-only and separately gated
+(``gateway.hosted_room_publish``): it re-verifies a settled reply against this gateway's own room
+log and posts it as the gateway bot to the binding's chat/topic only, never a caller-chosen target.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import threading
+from collections import OrderedDict
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 FACADE_VERSION = 1
 CAPABILITY_ID = "gateway.hosted_room_ingress"
+PUBLISH_CAPABILITY_ID = "gateway.hosted_room_publish"
+MAX_PUBLICATION_CHARS = 4000
 SUPPORTED_ROOM_PROTOCOLS = frozenset({2})
 _GROUP_CHAT_TYPES = frozenset({"group", "supergroup"})
 _OUTCOME_KINDS = {"turn.settled": "settled", "turn.failed": "failed",
@@ -74,6 +81,7 @@ class FacadeStatus:
     enabled: bool
     reason: str
     room_protocol: Optional[int]
+    publication: bool = False
 
 
 @dataclass(frozen=True)
@@ -115,6 +123,18 @@ class StopResult:
     status: Literal["stopped", "disabled", "rejected", "failed"]
     reason: str = ""
     tasks: int = 0
+
+
+@dataclass(frozen=True)
+class PublicationResult:
+    status: Literal["published", "duplicate", "disabled", "rejected", "failed"]
+    reason: str = ""
+    message_id: Optional[str] = None
+    retryable: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.status in ("published", "duplicate")
 
 
 class _Rejected(Exception):
@@ -186,6 +206,152 @@ def _error_reason(exc: Exception) -> Optional[str]:
     return None
 
 
+# -- publication ------------------------------------------------------------------------------
+
+# Per gateway process: a restart forgets it, so a relay persists its own outcomes cursor.
+_LEDGER_MAX = 4096
+_IN_FLIGHT = object()
+_UNCERTAIN = object()  # the send was cancelled mid-flight: it may have reached Telegram
+_ledger_lock = threading.Lock()
+_ledger: OrderedDict = OrderedDict()
+
+
+def _ledger_claim(key: tuple) -> Optional[PublicationResult]:
+    """``None`` = claimed for this caller; else the ``duplicate`` answer for an earlier claim."""
+    with _ledger_lock:
+        if key in _ledger:
+            value = _ledger[key]
+            if value is _IN_FLIGHT:
+                return PublicationResult("duplicate", "in_flight")
+            if value is _UNCERTAIN:
+                return PublicationResult("duplicate", "delivery_uncertain")
+            return PublicationResult("duplicate", "", value)
+        _ledger[key] = _IN_FLIGHT
+        # Evict the oldest settled entries only; a live claim is never dropped.
+        for old in [k for k, v in _ledger.items() if v is not _IN_FLIGHT][:max(0, len(_ledger) - _LEDGER_MAX)]:
+            del _ledger[old]
+    return None
+
+
+def _ledger_settle(key: tuple, result: Optional[PublicationResult]) -> None:
+    """Record a published id; a failed send releases the claim so a retry can publish. ``None`` = the
+    caller was cancelled mid-send: keep the key so the possibly-delivered post is never repeated."""
+    with _ledger_lock:
+        if result is None:
+            _ledger[key] = _UNCERTAIN
+        elif result.status == "published":
+            _ledger[key] = result.message_id
+        else:
+            _ledger.pop(key, None)
+
+
+def _claim_reason(binding: Any, outcome: Any) -> str:
+    if not isinstance(binding, TelegramRoomBinding) or not isinstance(outcome, RoomOutcome) \
+            or not (_is_int(outcome.seq) and outcome.seq > 0):
+        return "invalid_outcome"
+    if outcome.status != "settled" or not isinstance(outcome.text, str) or not outcome.text:
+        return "not_settled"
+    return ""
+
+
+def _terminal_payload(db_path: Any, binding: TelegramRoomBinding, seq: int, authority: str) -> dict:
+    """Payload of the coordinator's own non-pass ``turn.settled`` at exactly ``seq``."""
+    from gateway import hosted_rooms
+    rows = hosted_rooms.read_events(db_path, room_id=binding.room_id, since_seq=seq - 1, limit=1).get("events") or []
+    event = rows[0] if rows else {}
+    payload, actor = event.get("payload") or {}, event.get("actor") or {}
+    if event.get("seq") != seq or event.get("kind") != "turn.settled" or payload.get("passed") is not False \
+            or (actor.get("kind"), actor.get("id")) != ("gateway", authority):
+        raise _Rejected("not_settled")
+    if payload.get("thread_id") != binding.room_thread_id:
+        raise _Rejected("topic_mismatch")
+    return payload
+
+
+def _scan_log(db_path: Any, room_id: str, stop_seq: int, wanted: set) -> dict[str, dict]:
+    """Events before ``stop_seq`` whose id is in ``wanted``; nothing else is kept."""
+    from gateway import hosted_rooms
+    found: dict[str, dict] = {}
+    cursor = 0
+    while cursor < stop_seq - 1 and len(found) < len(wanted):
+        page = hosted_rooms.read_events(db_path, room_id=room_id, since_seq=cursor, limit=hosted_rooms.MAX_LOG_LIMIT)
+        rows = page.get("events") or []
+        for row in rows:
+            if int(row["seq"]) >= stop_seq:
+                return found
+            if row.get("event_id") in wanted:
+                found[row["event_id"]] = row
+        advanced = int(page.get("cursor") or cursor)
+        if not rows or advanced <= cursor:
+            break
+        cursor = advanced
+    return found
+
+
+def _check_source(source: Optional[dict], binding: TelegramRoomBinding) -> None:
+    """Loop prevention: only rounds an allowlisted human started in this exact chat/topic publish."""
+    source = source or {}
+    actor_id = (source.get("actor") or {}).get("id")
+    if source.get("kind") != "message.user" or actor_id not in {f"telegram:{s}" for s in binding.sender_ids} \
+            or (source.get("payload") or {}).get("thread_id") != binding.room_thread_id:
+        raise _Rejected("source_not_admitted")
+
+
+def _member_text(message: Optional[dict], member_id: str, binding: TelegramRoomBinding) -> str:
+    payload = (message or {}).get("payload") or {}
+    if (message or {}).get("kind") != "message.member" or payload.get("member_id") != member_id \
+            or payload.get("thread_id") != binding.room_thread_id or not isinstance(payload.get("text"), str):
+        raise _Rejected("not_settled")
+    return payload["text"]
+
+
+def _verify_publication(db_path: Any, binding: TelegramRoomBinding, outcome: RoomOutcome) -> str:
+    """Re-derive ``outcome`` from the room log; returns the member's reply text or raises."""
+    from gateway import hosted_rooms
+    room = hosted_rooms.room_state(db_path, room_id=binding.room_id)
+    authority = room.get("authority_gateway_id")
+    if not authority or authority != hosted_rooms.local_authority_gateway_id():
+        raise _Rejected("not_room_authority")
+    payload = _terminal_payload(db_path, binding, outcome.seq, authority)
+    member_id = payload.get("member_id")
+    profiles = {m.get("member_id"): m.get("profile") for m in room.get("members") or []}
+    if member_id not in profiles or outcome.member_id != member_id or outcome.profile != profiles[member_id]:
+        raise _Rejected("roster_mismatch")
+    source_id = payload.get("discussion_event_id")
+    if not isinstance(source_id, str) or not re.fullmatch(rf"tg:{binding.chat_id}:[1-9][0-9]*", source_id):
+        raise _Rejected("chat_mismatch")
+    message_id = payload.get("message_event_id")
+    found = _scan_log(db_path, binding.room_id, outcome.seq, {source_id, message_id})
+    _check_source(found.get(source_id), binding)
+    text = _member_text(found.get(message_id), member_id, binding)
+    derived = (outcome.seq, "settled", member_id, profiles[member_id], source_id, text)
+    if derived != (outcome.seq, outcome.status, outcome.member_id, outcome.profile, outcome.source_event_id,
+                   outcome.text):
+        raise _Rejected("outcome_mismatch")
+    return text
+
+
+async def _deliver(runner: Any, adapter: Any, binding: TelegramRoomBinding, text: str) -> PublicationResult:
+    # The strict-topic flag makes the Telegram adapter fail loudly on "thread not found" instead
+    # of retrying without message_thread_id, which would post into the General topic.
+    meta = None if binding.thread_id is None else {
+        "thread_id": str(binding.thread_id), "telegram_dm_topic_created_for_send": True}
+    loop = getattr(runner, "_gateway_loop", None)
+    try:
+        coro = adapter.send(str(binding.chat_id), text, metadata=meta)
+        if loop is not None and loop.is_running() and not loop.is_closed() and loop is not asyncio.get_running_loop():
+            result = await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, loop))
+        else:
+            result = await coro
+    except Exception:
+        logger.warning("hosted_rooms publish send raised for room %s", binding.room_id, exc_info=True)
+        return PublicationResult("failed", "adapter_error", retryable=True)
+    if not getattr(result, "success", False):
+        return PublicationResult("failed", "send_failed", retryable=bool(getattr(result, "retryable", False)))
+    message_id = getattr(result, "message_id", None)
+    return PublicationResult("published", "", str(message_id) if message_id is not None else None)
+
+
 class HostedRoomFacade:
     """Per-plugin facade; holds only the plugin id and its profile home."""
 
@@ -195,14 +361,17 @@ class HostedRoomFacade:
 
     # -- gate ---------------------------------------------------------------------------------
 
-    def _granted(self) -> bool:
+    def _scope(self) -> Any:
+        from hermes_cli.plugins_loader import _plugin_home_scope
+        return _plugin_home_scope(self._home) if self._home is not None else nullcontext()
+
+    def _granted(self, capability: str = CAPABILITY_ID) -> bool:
         try:
             from hermes_cli.config import load_config
             from hermes_cli.plugin_capabilities import plugin_capability_granted
-            from hermes_cli.plugins_loader import _plugin_home_scope
-            with _plugin_home_scope(self._home) if self._home is not None else nullcontext():
+            with self._scope():
                 cfg = load_config() or {}
-            return plugin_capability_granted(self._plugin_id, CAPABILITY_ID, config=cfg)
+            return plugin_capability_granted(self._plugin_id, capability, config=cfg)
         except Exception:
             logger.debug("hosted_rooms capability check failed for %s", self._plugin_id, exc_info=True)
             return False
@@ -226,7 +395,8 @@ class HostedRoomFacade:
     def describe(self) -> FacadeStatus:
         """Version + capability discovery; call before relying on any other verb."""
         _service, reason = self._gate()
-        return FacadeStatus(FACADE_VERSION, not reason, reason, _room_protocol())
+        publication = not reason and self._granted(PUBLISH_CAPABILITY_ID)
+        return FacadeStatus(FACADE_VERSION, not reason, reason, _room_protocol(), publication)
 
     # -- ingress ------------------------------------------------------------------------------
 
@@ -321,3 +491,77 @@ class HostedRoomFacade:
                 return StopResult("rejected", code)
             logger.warning("hosted_rooms stop failed for plugin %s", self._plugin_id, exc_info=True)
             return StopResult("failed", "internal_error")
+
+    # -- publication --------------------------------------------------------------------------
+
+    def _telegram_adapter(self) -> tuple[Any, Any]:
+        """``(runner, adapter)`` for this plugin's profile's connected Telegram bot, else
+        ``(None, None)``. Profile-aware and fail-closed like ``platform_actions``: no fallback to
+        ``runner.adapters``, which would act through the default profile's bot."""
+        try:
+            from gateway.config import Platform
+            from gateway.run import _gateway_runner_ref
+            from hermes_cli.profiles import get_active_profile_name
+            runner = _gateway_runner_ref()
+            resolve = getattr(runner, "_authorization_adapter", None)
+            if runner is None or not callable(resolve):
+                return None, None
+            with self._scope():
+                profile = get_active_profile_name()
+            adapter = resolve(Platform.TELEGRAM, profile)
+            return (runner, adapter) if adapter is not None and bool(adapter.is_connected) else (None, None)
+        except Exception:
+            logger.debug("hosted_rooms adapter lookup failed for %s", self._plugin_id, exc_info=True)
+            return None, None
+
+    async def _publish(self, binding: Any, outcome: Any, facade_version: Any) -> PublicationResult:
+        if not (_is_int(facade_version) and facade_version == FACADE_VERSION):
+            return PublicationResult("disabled", "incompatible_facade")
+        service, reason = self._gate()
+        if service is None:
+            return PublicationResult("disabled", reason)
+        if not self._granted(PUBLISH_CAPABILITY_ID):
+            return PublicationResult("disabled", "capability_not_granted")
+        if reason := _claim_reason(binding, outcome):
+            return PublicationResult("rejected", reason)
+        runner, adapter = self._telegram_adapter()
+        if adapter is None:
+            return PublicationResult("disabled", "adapter_unavailable")
+        try:
+            member_text = await asyncio.to_thread(_verify_publication, service.db_path, binding, outcome)
+        except _Rejected as exc:
+            return PublicationResult("rejected", exc.reason)
+        except Exception as exc:
+            if (code := _error_reason(exc)) is None:
+                raise
+            return PublicationResult("rejected", code)
+        text = f"[{outcome.profile}] {member_text}"
+        if len(text) > MAX_PUBLICATION_CHARS:
+            return PublicationResult("rejected", "text_too_long")
+        key = (str(service.db_path), binding.room_id, outcome.seq, binding.chat_id, binding.thread_id)
+        if (duplicate := _ledger_claim(key)) is not None:
+            return duplicate
+        try:
+            result = await _deliver(runner, adapter, binding, text)
+        except BaseException:  # cancelled mid-send (``_deliver`` itself never raises an Exception)
+            _ledger_settle(key, None)
+            raise
+        _ledger_settle(key, result)
+        return result
+
+    async def publish_outcome(self, binding: TelegramRoomBinding, outcome: RoomOutcome, *,
+                              facade_version: int) -> PublicationResult:
+        """Post one settled reply as ``[profile] text`` to ``binding``'s chat/topic as the gateway bot.
+
+        ``outcome`` is only a claim: it is re-verified against this gateway's room log (this gateway
+        must be the room's coordinator, the round must have been started by an allowlisted Telegram
+        sender in this exact chat/topic). Writes nothing to any room store. Idempotent per
+        (room, seq, target) within this gateway process; never raises."""
+        try:
+            result = await self._publish(binding, outcome, facade_version)
+        except Exception:
+            logger.warning("hosted_rooms publish failed for plugin %s", self._plugin_id, exc_info=True)
+            result = PublicationResult("failed", "internal_error")
+        logger.info("hosted_rooms publish plugin=%s room=%s seq=%s status=%s reason=%s", self._plugin_id,
+                    getattr(binding, "room_id", None), getattr(outcome, "seq", None), result.status, result.reason)
+        return result

@@ -47,7 +47,10 @@ _CAPABILITY_ROWS = (
      "(add reactions, rename threads) via ctx.platform_actions"),
     ("gateway.hosted_room_ingress", ("allow_hosted_room_ingress",),
      "Admit allowlisted Telegram group messages into Hermes Group Chat rooms "
-     "(runs the room's profiles) and read their replies via ctx.hosted_rooms"))
+     "(runs the room's profiles) and read their replies via ctx.hosted_rooms"),
+    ("gateway.hosted_room_publish", ("allow_hosted_room_publish",),
+     "Post settled, attributed Group Chat replies back to the bound Telegram chat/topic "
+     "as the gateway bot via ctx.hosted_rooms"))
 CAPABILITY_REGISTRY: dict[str, CapabilitySpec] = {
     cid: CapabilitySpec(cid, path, desc) for cid, path, desc in _CAPABILITY_ROWS
 }

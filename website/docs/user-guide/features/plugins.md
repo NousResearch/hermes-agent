@@ -569,6 +569,7 @@ working but are **deprecated** in favor of the consent flow:
 | `llm.task_override` | `llm.allow_task_override` |
 | `gateway.platform_actions` | `allow_platform_actions` |
 | `gateway.hosted_room_ingress` | `allow_hosted_room_ingress` |
+| `gateway.hosted_room_publish` | `allow_hosted_room_publish` |
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
@@ -649,7 +650,7 @@ binding = TelegramRoomBinding(          # operator-pinned; validated on construc
     room_id="relay-room", chat_id=-100123, thread_id=42,   # thread_id=None: non-topic messages
     sender_ids=frozenset({1384262162}),
 )
-status = ctx.hosted_rooms.describe()    # FacadeStatus(facade_version, enabled, reason, room_protocol)
+status = ctx.hosted_rooms.describe()    # FacadeStatus(facade_version, enabled, reason, room_protocol, publication)
 
 async def on_update(update, context):   # registered via ctx.register_platform_handler("telegram", ...)
     result = await ctx.hosted_rooms.submit_telegram_update(binding, update)
@@ -694,11 +695,37 @@ turns. Cancelled turns then come back from `outcomes()` as `cancelled`.
 Cancelling the `submit_telegram_update` await does not undo an append that has
 already started; retrying the same update afterwards returns `duplicate`.
 
-**Not provided.** Room creation, roster changes and **publication**: the
-facade has no send verb, so posting a reply back to Telegram stays behind its
-own reviewed gate. Granting `gateway.hosted_room_ingress` means allowlisted
-group members can trigger turns for the room's profiles, so grant it only to a
-relay you trust.
+**Publication.** `await ctx.hosted_rooms.publish_outcome(binding, outcome,
+facade_version=1)` posts one settled reply back to the binding's chat and topic
+as the gateway bot, labelled `[<profile>] <text>`. It needs a second
+capability, `gateway.hosted_room_publish` (legacy key
+`allow_hosted_room_publish`), on top of the ingress gate;
+`describe().publication` is `True` only when both are granted and the facade
+is enabled. The caller never chooses the target: chat and topic come from the
+binding, and the `outcome` is only a claim that is re-verified against the
+room log. This gateway must be the room's coordinator, the turn must be its own
+non-pass `turn.settled` in the binding's topic, the member and profile must
+match the roster, and the round must have been started by an allowlisted human
+Telegram message in that exact chat and topic. Rounds started from the desktop
+or by a bot are never published. Publication writes nothing to the room. It
+returns a `PublicationResult(status, reason, message_id, retryable)` with
+`status` one of `published`, `duplicate`, `disabled`, `rejected`, or `failed`.
+Disabled reasons add `incompatible_facade` and `adapter_unavailable`. Rejected
+reasons add `invalid_outcome`, `not_settled`, `topic_mismatch`,
+`roster_mismatch`, `chat_mismatch`, `source_not_admitted`, `outcome_mismatch`,
+and `text_too_long` (over `MAX_PUBLICATION_CHARS`, 4000). Failed reasons are
+`adapter_error`, `send_failed`, and `internal_error`. Republishing the same
+outcome returns `duplicate` with the first `message_id`, or `duplicate` with
+reason `in_flight` while the first send is still running. A failed send
+releases the claim so a retry can publish. A send whose caller was cancelled
+may already have reached Telegram, so it is never repeated: later calls return
+`duplicate` with reason `delivery_uncertain`. The duplicate ledger lives only in the
+gateway process and a restart forgets it, so a relay must persist its own
+`outcomes()` cursor.
+
+**Not provided.** Room creation and roster changes. Granting
+`gateway.hosted_room_ingress` means allowlisted group members can trigger turns
+for the room's profiles, so grant it only to a relay you trust.
 
 ### Discovering plugins — the Hermes plugin catalog
 

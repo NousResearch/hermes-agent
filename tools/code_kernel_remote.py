@@ -336,6 +336,7 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str
 def execute_in_remote_kernel(
     code: str, *, env, env_type: str, task_env_id: str, sandbox_tools: frozenset,
     timeout: int, max_tool_calls: int, reset: bool, idle_exit: int = 1800,
+    session_id: str = "",
 ) -> Optional[dict[str, Any]]:
     """Run one cell in the owner's remote kernel. Returns the raw cell result dict (caller
     post-processes output), or ``None`` when no kernel could be spawned (caller falls open to
@@ -356,7 +357,8 @@ def execute_in_remote_kernel(
     try:
         return _run_attached_cell(kernel, key, code, env=env, task_env_id=task_env_id,
                                   sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                                  reused=reused, state_reset=state_reset, state_lost=state_lost)
+                                  reused=reused, state_reset=state_reset, state_lost=state_lost,
+                                  session_id=session_id)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -365,7 +367,8 @@ def execute_in_remote_kernel(
 
 def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task_env_id: str,
                        sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-                       reused: bool, state_reset: bool, state_lost: bool) -> dict[str, Any]:
+                       reused: bool, state_reset: bool, state_lost: bool,
+                       session_id: str = "") -> dict[str, Any]:
     from tools.code_execution_rpc import tool_errors_since
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
@@ -379,10 +382,14 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
     tool_call_counter, tool_call_log, stop_event = [0], [], threading.Event()
     # Per-cell RPC thread carrying THIS call's approval/session context — the remote analogue
     # of CellAuthority: authority lives exactly as long as the cell's poll loop.
+    # Resolve the session_id here (on the parent thread) so it can be passed explicitly to
+    # the RPC thread — handle_function_call reads session_id as a parameter, not from a
+    # ContextVar, so without explicit forwarding nested tool hooks see an empty session_id
+    # (#51931).
     rpc_thread = threading.Thread(
         target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
         args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, tool_call_log, tool_call_counter,
-              max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token))
+              max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token, session_id))
     rpc_thread.start()
     cell_status, cell_payload = "no-result", {}
     try:

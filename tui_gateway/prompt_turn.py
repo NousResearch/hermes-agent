@@ -654,6 +654,61 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
         logger.debug("first-contact onboarding note failed", exc_info=True)
 
 
+def _apply_pending_moa(sid: str, session: dict, prompt: Any) -> None:
+    """Apply the matching MoA one-shot queued while the previous turn was running."""
+    pending = session.get("pending_moa")
+    if not isinstance(pending, list) or not pending:
+        return
+    index = next((i for i, item in enumerate(pending)
+                  if isinstance(item, dict) and item.get("prompt") == prompt), None)
+    if index is None:
+        return
+    item = pending.pop(index)
+    if pending:
+        session["pending_moa"] = pending
+    else:
+        session.pop("pending_moa", None)
+    restore = item.get("restore") if isinstance(item, dict) else None
+    if not isinstance(restore, dict):
+        restore = {
+            "override": session.get("model_override"),
+            "model": getattr(session.get("agent"), "model", None),
+            "provider": getattr(session.get("agent"), "provider", None),
+        }
+    session["moa_one_shot_restore"] = restore
+    preset = str(item.get("preset") or "") if isinstance(item, dict) else ""
+    try:
+        _apply_model_switch(
+            sid, session, f"{preset} --provider moa", confirm_expensive_model=False,
+            pin_session_override=True, persist_override=False, count_switch=False)
+    except Exception:
+        session.pop("moa_one_shot_restore", None)
+        raise
+
+
+def _restore_moa_one_shot(sid: str, session: dict) -> None:
+    """Restore a queued or idle-path MoA one-shot, including a standing model override."""
+    restore = session.pop("moa_one_shot_restore", None)
+    if not isinstance(restore, dict):
+        return
+    previous_override = restore.get("override")
+    previous_model = restore.get("model")
+    previous_provider = restore.get("provider")
+    if previous_override is None:
+        session.pop("model_override", None)
+    else:
+        session["model_override"] = previous_override
+    if previous_model:
+        raw = f"{previous_model} --provider {previous_provider}" if previous_provider else previous_model
+        try:
+            _apply_model_switch(
+                sid, session, raw, confirm_expensive_model=False,
+                pin_session_override=bool(previous_override),
+                persist_override=False, count_switch=False)
+        except Exception as exc:
+            logger.warning("MoA one-shot model restore failed: %s", exc)
+
+
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
@@ -677,12 +732,16 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
-    if not st.one_turn_restore:
-        # Skip the config-model sync while a /model --once override is active: the once-model is
-        # intentionally not pinned as a session model_override (it must not persist), so without this guard
-        # the sync would see "agent model != config model" and clobber the once-override back to the config
-        # model before the turn runs (#29923 review defect). Any config.yaml change is adopted on the NEXT
-        # turn, after the finally-restore below.
+    # A /moa queued while the previous turn ran applies to its own queued prompt only. A failed
+    # switch must not kill the turn thread: run the prompt on the current model instead.
+    try:
+        _apply_pending_moa(sid, session, text)
+    except Exception:
+        logger.warning("queued MoA one-shot could not be applied; running on the current model", exc_info=True)
+    if not st.one_turn_restore and not session.get("moa_one_shot_restore"):
+        # Skip the config-model sync while a /model --once override or /moa one-shot is active: the
+        # temporary model is intentionally not pinned as a session model_override (it must not persist),
+        # so without this guard the sync would clobber it before the turn runs.
         _apply_pending_model_switch(sid, session)
         _sync_agent_model_with_config(sid, session)
         _sync_agent_compression_with_config(sid, session)
@@ -839,33 +898,8 @@ def _absorb_turn_result(
                     if display_metadata:
                         message["display_metadata"] = display_metadata
                     break
-    if "moa_one_shot_restore" in session:
-        # Undo a /moa one-shot through the switch path: resetting model_override alone
-        # would leave the live client pinned to MoA after the in-place switch_model().
-        _restore = session.pop("moa_one_shot_restore", None)
-        # Restore the model the user was on before the /moa one-shot. See #53444.
-        if isinstance(_restore, dict):
-            _prev_override = _restore.get("override")
-            _prev_model = _restore.get("model")
-            _prev_provider = _restore.get("provider")
-            if _prev_override is None:
-                session.pop("model_override", None)
-            else:
-                session["model_override"] = _prev_override
-            if _prev_model:
-                _raw = (
-                    f"{_prev_model} --provider {_prev_provider}" if _prev_provider else _prev_model)
-                try:
-                    _apply_model_switch(
-                        sid, session, _raw, confirm_expensive_model=False,
-                        pin_session_override=bool(_prev_override),
-                        persist_override=False, count_switch=False)  # session-internal restore, never config.yaml
-                except Exception as _moa_restore_exc:
-                    logger.warning("MoA one-shot model restore failed: %s", _moa_restore_exc)
-        elif _restore is None:
-            session.pop("model_override", None)
-        else:
-            session["model_override"] = _restore
+    if session.get("moa_one_shot_restore"):
+        _restore_moa_one_shot(sid, session)
     status_note = None
     if isinstance(result, dict):
         if isinstance(result.get("messages"), list):
@@ -1061,6 +1095,8 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
             _persist_live_session_system_prompt(session)
         except Exception:
             logger.debug("TUI one-turn model restore failed", exc_info=True)
+    if session.get("moa_one_shot_restore"):
+        _restore_moa_one_shot(sid, session)
     scopes = st.scopes
     with contextlib.suppress(Exception):
         if scopes.approval is not None:

@@ -122,6 +122,23 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_skip_wins_over_earlier_allow_result(monkeypatch):
+    """One plugin cannot allow a message that a later policy plugin rejects."""
+    async def _fake_hook(name, **kwargs):
+        assert name == "pre_gateway_dispatch"
+        return [
+            {"action": "allow", "reason": "first plugin"},
+            {"action": "skip", "reason": "policy plugin"},
+        ]
+
+    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", _fake_hook)
+    runner, _adapter = _make_runner(Platform.TELEGRAM)
+    event = _make_event(platform=Platform.TELEGRAM)
+
+    assert await runner._hm_pre_gateway_dispatch_hook(event, event.source) is None
+
+
+@pytest.mark.asyncio
 async def test_async_hook_callback_is_awaited_on_the_gateway_loop(monkeypatch):
     """An ``async def`` pre_gateway_dispatch callback is awaited on the gateway's own loop.
 

@@ -1522,6 +1522,22 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _blocked_outcome_hold_reason(conn, task_id: str, ended_at: int) -> Optional[str]:
+    """Hold parentless blocked runs until an operator or new input releases them."""
+    if conn.execute("SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1", (task_id,)).fetchone():
+        return None
+    release = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND created_at > ? "
+        "AND kind IN ('unblocked', 'status', 'promoted_manual', 'commented') LIMIT 1",
+        (task_id, ended_at),
+    ).fetchone()
+    if release or conn.execute(
+        "SELECT 1 FROM task_comments WHERE task_id = ? AND created_at > ? LIMIT 1", (task_id, ended_at)
+    ).fetchone():
+        return None
+    return "blocked_outcome"
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1595,6 +1611,11 @@ def check_respawn_guard(
     # are the canonical *inputs* to a review handoff, not duplicate-work signals.
     if lane == "review":
         return None
+
+    if latest_run is not None and latest_run["outcome"] == "blocked" and latest_run["ended_at"] is not None:
+        held = _blocked_outcome_hold_reason(conn, task_id, int(latest_run["ended_at"]))
+        if held:
+            return held
 
     # 3. Completed run within guard window. Exception: an explicit re-queue
     #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is

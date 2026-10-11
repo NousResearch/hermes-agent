@@ -14,6 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -165,20 +166,48 @@ pub async fn get_bootstrap_status(
 /// Returns Err with a human-readable message if the binary doesn't exist
 /// (e.g. when Stage-Desktop was skipped) so the frontend can present
 /// actionable failure UI rather than silently doing nothing.
+///
+/// A success is terminal for the process (`app.exit(0)`), so exactly one
+/// launch may ever run. `claim_launch_slot()` enforces that process-wide:
+/// a second invoke while the first is still in flight — e.g. the frontend's
+/// recovery timeout re-enabling Launch while the first command is stalled in
+/// its AV-held probe — reports an error instead of spawning a second
+/// Hermes.exe moments before the first one appears.
 #[tauri::command]
 pub async fn launch_hermes_desktop(
     app: AppHandle,
     install_root: String,
 ) -> Result<(), String> {
+    claim_launch_slot()?;
+    let _release = LaunchSlotReleaseOnExit;
     let install_root = PathBuf::from(install_root);
-    let exe_path = resolve_hermes_desktop_exe(&install_root).ok_or_else(|| {
-        format!(
-            "Couldn't find a built Hermes desktop at {}. The desktop build step \
-             may have been skipped or failed. Run `hermes desktop` from a \
-             terminal to build and launch it.",
-            install_root.join("apps").join("desktop").join("release").display()
-        )
-    })?;
+    // Logged BEFORE the lookup: everything below can stall or fail, and until
+    // now the first trace came AFTER it, so a failure here left a log that
+    // simply stopped -- indistinguishable from the command never running.
+    tracing::info!(?install_root, "launch requested: locating the desktop exe");
+
+    // resolve_hermes_desktop_exe() does blocking std::fs metadata probes, and
+    // it was being awaited inline in this async command. Two problems, both
+    // observed in CI: it blocks the executor, and the Launch button is an
+    // unbounded spinner, so if a probe stalls the installer sits on
+    // "LAUNCHING" forever with no error and no log line. Seen repeatedly on
+    // Windows immediately after a desktop rebuild, where the probe targets a
+    // ~214 MB Electron binary written seconds earlier -- the shape of an
+    // on-access AV scan holding the metadata query. The bounded probe runs it
+    // off the executor and under a deadline, so this command ALWAYS settles
+    // into success or a message.
+    let exe_path = match resolve_desktop_exe_bounded(&install_root).await {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            return Err(format!(
+                "Couldn't find a built Hermes desktop at {}. The desktop build step \
+                 may have been skipped or failed. Run `hermes desktop` from a \
+                 terminal to build and launch it.",
+                install_root.join("apps").join("desktop").join("release").display()
+            ));
+        }
+        Err(message) => return Err(message),
+    };
 
     tracing::info!(?exe_path, "launching Hermes desktop");
 
@@ -194,6 +223,11 @@ pub async fn launch_hermes_desktop(
             exe_path.display()
         )
     })?;
+    // Spawned: the slot stays claimed for the rest of the process. `app.exit(0)`
+    // can return without exiting (update.rs::exit_after_success), and returning
+    // Ok would otherwise drop the guard and let a second click spawn another
+    // Hermes.exe once the frontend backstop re-enables Launch.
+    std::mem::forget(_release);
 
     // Give Windows ~150ms to actually start the new process before we exit.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -231,6 +265,119 @@ pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Opti
         }
     }
     None
+}
+
+/// One launch may ever run per process: a success exits the installer, and a
+/// second `Hermes.exe` moments after the first would double-launch the app.
+/// The frontend's recovery timeout can re-enable Launch while the first
+/// invoke is still stalled on its (AV-held) exe probe, so the guard lives on
+/// the backend where both invokes land. Compare-and-swap lets exactly one
+/// caller flip false→true; every concurrent or later caller is refused.
+static LAUNCH_CLAIMED: AtomicBool = AtomicBool::new(false);
+
+/// Error for a second `launch_hermes_desktop` while one is already in flight.
+/// Extracted so the guard's contract is unit-testable.
+pub(crate) fn launch_already_running_error() -> String {
+    "A desktop launch is already in progress — it should appear in a moment. \
+     If it doesn't, close the installer and run `hermes desktop` from a \
+     terminal."
+        .to_string()
+}
+
+/// Claim the process-wide launch slot. `Ok(())` exactly once per process;
+/// every later claim fails with [`launch_already_running_error`].
+pub(crate) fn claim_launch_slot() -> Result<(), String> {
+    if LAUNCH_CLAIMED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        Ok(())
+    } else {
+        Err(launch_already_running_error())
+    }
+}
+
+/// Frees the launch slot when a launch fails, so the user can retry Launch
+/// after an error. A successful spawn `mem::forget`s it, so the flag stays
+/// claimed for the life of the process: a second launch attempt racing the
+/// exit (or a wedged `app.exit`) must not spawn another Hermes.exe.
+struct LaunchSlotReleaseOnExit;
+
+impl Drop for LaunchSlotReleaseOnExit {
+    fn drop(&mut self) {
+        LAUNCH_CLAIMED.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Bound for the blocking exe probe in `launch_hermes_desktop`. Long enough
+/// for a healthy filesystem probe (~µs); short enough that an on-access AV
+/// scan holding the freshly-written 214 MB binary can't pin the Launch
+/// button forever. The frontend's backstop timeout sits ABOVE this so the
+/// backend's specific error wins the race when its own deadline works.
+pub(crate) const EXE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// User-facing message when the exe probe outlives its deadline (the
+/// on-access-AV shape on a freshly built binary). Extracted so the copy is
+/// unit-testable without forcing a filesystem stall.
+pub(crate) fn probe_deadline_error(install_root: &std::path::Path) -> String {
+    tracing::error!(
+        ?install_root,
+        "timed out locating the desktop exe after 30s"
+    );
+    format!(
+        "Timed out looking for the Hermes desktop under {}. Antivirus \
+         software can hold a freshly built binary; retry, or start it \
+         with `hermes desktop` from a terminal.",
+        install_root
+            .join("apps")
+            .join("desktop")
+            .join("release")
+            .display()
+    )
+}
+
+/// The bounded exe probe `launch_hermes_desktop` runs: off the async executor
+/// (`spawn_blocking`) so a stalled metadata query can't block unrelated
+/// tasks, and under `EXE_PROBE_TIMEOUT` so the invoke ALWAYS settles —
+/// Ok(Some(exe)), Ok(None) (nothing built), or Err (deadline / join failure).
+/// Every arm is terminal: nothing here can hang the caller.
+pub(crate) async fn resolve_desktop_exe_bounded(
+    install_root: &std::path::Path,
+) -> Result<Option<PathBuf>, String> {
+    bounded_exe_probe(install_root, EXE_PROBE_TIMEOUT, resolve_hermes_desktop_exe).await
+}
+
+/// [`resolve_desktop_exe_bounded`] with the probe and deadline as parameters,
+/// so a test can stall the probe past a short deadline and watch it settle.
+pub(crate) async fn bounded_exe_probe(
+    install_root: &std::path::Path,
+    deadline: std::time::Duration,
+    probe: fn(&std::path::Path) -> Option<PathBuf>,
+) -> Result<Option<PathBuf>, String> {
+    let probe_root = install_root.to_path_buf();
+    match tokio::time::timeout(
+        deadline,
+        tokio::task::spawn_blocking(move || probe(&probe_root)),
+    )
+    .await
+    {
+        Ok(joined) => match joined {
+            Ok(resolved) => Ok(resolved),
+            Err(join_err) => {
+                tracing::error!(%join_err, "desktop exe lookup task failed");
+                Err(format!(
+                    "Couldn't start the search for the Hermes desktop under {}. \
+                     Run `hermes desktop` from a terminal to launch it.",
+                    install_root
+                        .join("apps")
+                        .join("desktop")
+                        .join("release")
+                        .display()
+                ))
+            }
+        },
+        Err(_elapsed) => Err(probe_deadline_error(install_root)),
+    }
 }
 
 pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Option<PathBuf> {
@@ -1360,6 +1507,107 @@ mod tests {
             !should_retry_missing_stage_frame(Some(-1), false, MAX_STAGE_ATTEMPTS),
             "the retry policy must stay bounded"
         );
+    }
+
+    // ---- one-shot launch slot (double-launch guard, #128804) --------------
+    // The frontend's recovery timeout can re-enable Launch while the first
+    // invoke is still stalled on its exe probe. The slot guarantees a retry
+    // is idempotent: the second invoke is refused instead of spawning a
+    // second Hermes.exe moments before the first one appears.
+
+    #[test]
+    fn launch_slot_is_claimed_exactly_once() {
+        // Tests share the process, so reset and re-claim through the same
+        // protocol the command uses. claim -> second claim refused -> Drop
+        // of the failed command's release guard frees the slot for a retry.
+        LAUNCH_CLAIMED.store(false, Ordering::SeqCst);
+        assert!(
+            claim_launch_slot().is_ok(),
+            "the first launch claim must succeed"
+        );
+        let err = claim_launch_slot()
+            .expect_err("a second claim while the first launch is in flight must be refused");
+        assert!(
+            err.contains("already in progress"),
+            "refusal must be user-actionable, got: {err}"
+        );
+
+        // A failed command drops its release guard, so the user can retry.
+        drop(LaunchSlotReleaseOnExit);
+        assert!(
+            claim_launch_slot().is_ok(),
+            "a retry after a failed launch must be able to claim the slot"
+        );
+        LAUNCH_CLAIMED.store(false, Ordering::SeqCst);
+    }
+
+    #[tokio::test]
+    async fn bounded_probe_resolves_a_built_desktop_and_settles_fast() {
+        // The healthy path: an existing exe resolves quickly through the
+        // blocking pool and the probe settles in milliseconds — i.e. the
+        // spawn_blocking + deadline change adds no perceptible latency.
+        // `make_release_tree` returns the .app bundle on macOS; the probe
+        // resolves down to the executable inside it.
+        let root = unique_tmp_dir("probe-ok");
+        make_release_tree(&root);
+        let expected = resolve_hermes_desktop_exe(&root)
+            .expect("fixture must build the platform's exe path");
+
+        let started = Instant::now();
+        let resolved = resolve_desktop_exe_bounded(&root).await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(resolved.expect("probe must settle Ok"), Some(expected));
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "a healthy probe must not wait out its deadline (took {elapsed:?})"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn bounded_probe_reports_nothing_built() {
+        // Stage-Desktop skipped: the probe settles Ok(None) and the command
+        // maps it to the actionable "nothing built" message.
+        let root = unique_tmp_dir("probe-none");
+        assert_eq!(
+            resolve_desktop_exe_bounded(&root)
+                .await
+                .expect("absent exe must settle Ok, not hang"),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_probe_settles_with_the_deadline_error() {
+        // The probe stands in for an AV-held metadata query: it sleeps far past
+        // the deadline. The invoke must settle with the deadline's message well
+        // before the probe would have returned, which is the whole guarantee
+        // the Launch button relies on. The message must name the timeout and
+        // the terminal fallback, because the frontend renders it verbatim.
+        fn stalled(_: &std::path::Path) -> Option<PathBuf> {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            None
+        }
+        let root = unique_tmp_dir("probe-deadline");
+        let started = Instant::now();
+        let message = bounded_exe_probe(&root, std::time::Duration::from_millis(50), stalled)
+            .await
+            .expect_err("a probe stalled past its deadline must settle Err");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "the deadline, not the probe, must decide when the invoke settles"
+        );
+        assert!(
+            message.contains("Timed out"),
+            "deadline error must say what happened: {message}"
+        );
+        assert!(
+            message.contains("hermes desktop"),
+            "deadline error must tell the user the terminal fallback: {message}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

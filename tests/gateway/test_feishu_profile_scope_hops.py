@@ -115,17 +115,23 @@ def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope
 
             def start(self):  # the SDK-owned thread every lark callback fires on
                 seen["ws_thread"] = _observe(routed_scope)
+                # The SDK's receive-loop entry — the in-thread proof of a live link that
+                # ``_connect_websocket`` waits for before it calls connect() a success.
+                on_link_up = getattr(fa._ws_isolation_state, "on_link_up", None)
+                if on_link_up is not None:
+                    on_link_up()
                 seen["loop_callback"] = asyncio.run_coroutine_threadsafe(_on_loop(), adapter_loop).result(5)
 
         monkeypatch.setattr(fa, "FeishuWSClient", FakeWSClient)
         stub = SimpleNamespace(
             _loop=adapter_loop, _app_id="cli_x", _app_secret="s", _domain_name="feishu", _event_handler=None,
             _ws_thread_loop=None, _ws_reconnect_nonce=None, _ws_reconnect_interval=None,
-            _ws_ping_interval=None, _ws_ping_timeout=None, _ws_client=None, _ws_future=None,
+            _ws_ping_interval=None, _ws_ping_timeout=None, _ws_client=None, _ws_future=None, _running=False,
             _prepare_client=lambda: "feishu-domain", _hydrate_bot_identity=AsyncMock(),
         )
         # The WS thread runs on the adapter-owned pool, never the loop default executor.
         stub._get_sdk_executor = fa.FeishuAdapter._get_sdk_executor.__get__(stub)
+        stub._ws_link_up = fa.FeishuAdapter._ws_link_up.__get__(stub)
         await fa.FeishuAdapter._connect_websocket(stub)
         await stub._ws_future
         stub._sdk_executor.shutdown(wait=True)

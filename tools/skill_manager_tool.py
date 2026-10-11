@@ -647,7 +647,7 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
 # --- Main entry point ---------------------------------------------------------
 
 # Set while replaying an approved staged skill write so skill_manage() does not re-gate it.
-_skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
+_skill_gate_bypass: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
 
 

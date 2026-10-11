@@ -82,7 +82,7 @@ class SentenceChunker:
         self.buf = ""
 
     @classmethod
-    def from_config(cls, tts_config: dict) -> "SentenceChunker":
+    def from_config(cls, tts_config: dict) -> SentenceChunker:
         """Chunker honouring ``tts.streaming.min_len``. 20 suits English; a CJK opener of 5–7
         characters is a whole clause, so voice setups lower it to speak the first sentence
         alone instead of buffering it behind the second. Floor 1: 0 would emit every boundary."""
@@ -446,7 +446,7 @@ class XAIStreamer(StreamingTTSProvider):
         import threading
         from contextvars import copy_context
 
-        q: "queue.Queue[object]" = queue.Queue(maxsize=_XAI_QUEUE_MAX)
+        q: queue.Queue[object] = queue.Queue(maxsize=_XAI_QUEUE_MAX)
         done = object()
         stop = threading.Event()
 
@@ -512,7 +512,7 @@ class XAIStreamer(StreamingTTSProvider):
                     message = await asyncio.wait_for(
                         ws.recv(), timeout=self._RECV_TIMEOUT_S
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     raise RuntimeError(f"xAI streaming TTS: no audio for {self._RECV_TIMEOUT_S}s")
                 except websockets.exceptions.ConnectionClosedOK:
                     return  # clean close, with or without audio.done

@@ -125,7 +125,7 @@ class GatewayUnderTest:
     def db_path(self) -> Path:
         return self.hermes_home / "state.db"
 
-    def start(self, timeout: float = 60.0) -> "GatewayUnderTest":
+    def start(self, timeout: float = 60.0) -> GatewayUnderTest:
         assert self.proc is None or self.proc.poll() is not None
         log = open(self.log_path, "a", encoding="utf-8")
         self.proc = subprocess.Popen(
@@ -161,7 +161,7 @@ class GatewayUnderTest:
     def run_cli(self, *argv: str, timeout: float = 120.0) -> subprocess.CompletedProcess:
         return subprocess.run([sys.executable, "-m", "hermes_cli.main", *argv], cwd=str(self.home),
                               env=hermetic_env(self.home, dict(self._env)), stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=timeout)
+                              capture_output=True, text=True, timeout=timeout, check=False)
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None

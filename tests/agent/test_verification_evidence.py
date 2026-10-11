@@ -1,7 +1,7 @@
 import json
 import sqlite3
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -414,7 +414,7 @@ def test_recording_expires_old_edit_only_state(tmp_path, monkeypatch):
         cwd=tmp_path,
         paths=[str(tmp_path / "src" / "app.ts")],
     )
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=31)).isoformat()
     with sqlite3.connect(home / "verification_evidence.db") as conn:
         conn.execute("UPDATE verification_state SET last_edit_at = ?", (cutoff,))
         conn.commit()

@@ -25,7 +25,7 @@ import webbrowser
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from functools import partial
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -798,7 +798,7 @@ def _save_auth_store(auth_store: dict[str, Any], target_path: Optional[Path] = N
     an explicit *target_path* (e.g. the global-root write-through for rotating xAI OAuth grants)."""
     auth_file = target_path if target_path is not None else _auth_file_path()
     auth_store["version"] = AUTH_STORE_VERSION
-    auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
+    auth_store["updated_at"] = datetime.now(UTC).isoformat()
     _save_private_json(auth_file, auth_store, fsync_dir=True)
     if target_path is not None:
         # A write-through to the global root must not be masked by the mtime memo: on coarse-mtime
@@ -1724,7 +1724,7 @@ def resolve_provider(
 
 def _utc_now_z() -> str:
     """Current UTC time as an ISO-8601 string with a ``Z`` suffix (last_refresh format)."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _parse_iso_timestamp(value: Any) -> Optional[float]:
@@ -1738,7 +1738,7 @@ def _parse_iso_timestamp(value: Any) -> Optional[float]:
     except Exception:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
@@ -1753,19 +1753,19 @@ def _tls_state_from_verify(verify: Any) -> dict[str, Any]:
 
 
 def _last_auth_error_marker(
-    provider: str, error: "AuthError", *, reason: str, default_code: Optional[str] = None,
+    provider: str, error: AuthError, *, reason: str, default_code: Optional[str] = None,
 ) -> dict[str, Any]:
     """The ``last_auth_error`` record persisted when dead OAuth material is quarantined."""
     return {
         "provider": provider, "message": str(error), "reason": reason, "relogin_required": True,
         "code": error.code if default_code is None else (error.code or default_code),
-        "at": datetime.now(timezone.utc).isoformat()}
+        "at": datetime.now(UTC).isoformat()}
 
 
 _FLAT_OAUTH_TOKEN_KEYS = ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at")
 
 
-def _quarantine_flat_oauth_state(state: dict[str, Any], provider: str, exc: "AuthError") -> None:
+def _quarantine_flat_oauth_state(state: dict[str, Any], provider: str, exc: AuthError) -> None:
     """Strip dead tokens from a flat OAuth state after a terminal runtime refresh failure so
     subsequent calls fail fast without a network retry (mirrors the Nous / xAI / Codex pattern)."""
     for _k in _FLAT_OAUTH_TOKEN_KEYS:
@@ -1798,7 +1798,7 @@ _NOUS_PORTAL_ALLOWED_HOSTS: frozenset[str] = frozenset({
 # per-turn HERMES_HOME override a multiplex gateway sets), so a single slot would hand profile A's
 # Portal bearer to profile B for up to the TTL.
 _RESOLVE_TOKEN_CACHE_LOCK = threading.Lock()
-_RESOLVE_TOKEN_CACHE: "dict[str, tuple[float, str]]" = {}
+_RESOLVE_TOKEN_CACHE: dict[str, tuple[float, str]] = {}
 _RESOLVE_TOKEN_CACHE_TTL_S = 5.0
 
 

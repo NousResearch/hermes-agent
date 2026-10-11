@@ -111,7 +111,7 @@ def canary(tmp_path, r2_server, monkeypatch):
 
     def run(script, **overrides):
         return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=clone,
-                              env={**env, **overrides}, capture_output=True, text=True, timeout=60)
+                              env={**env, **overrides}, capture_output=True, text=True, timeout=60, check=False)
 
     return clone, identity, env, run
 

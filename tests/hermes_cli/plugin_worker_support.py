@@ -18,7 +18,7 @@ import sys
 import pytest
 import hermes_yaml as yaml
 
-from tests.pm._fixtures import _wheel, isolated_python as isolated_python
+from tests.pm._fixtures import _wheel, isolated_python as isolated_python  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 def worker_command(worker: Path, uv: str, python: str, *, prelude: str = "", runtime_python: str | None = None) -> list[str]:
@@ -36,7 +36,7 @@ def git(repo: Path, *args: str) -> str:
     env = {k: v for k, v in os.environ.items() if k not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}}
     env.update(GIT_AUTHOR_NAME="fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
                GIT_COMMITTER_NAME="fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
-    result = subprocess.run(["git", *args], cwd=repo, env=env, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(["git", *args], cwd=repo, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
 
@@ -110,7 +110,7 @@ class PluginWorld:
             f"assert plugin.register(None) == ({pin!r}, {pin!r})"
         )
         result = subprocess.run([str(python), "-I", "-B", "-c", code], cwd=self.root,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=30, check=False)
         assert result.returncode == 0, result.stderr
 
 
@@ -192,6 +192,6 @@ def plugin_world(tmp_path, monkeypatch, isolated_python):
         'dependencies=["plugin-core-dep==1.0"]\n[tool.uv]\npackage=false\nno-index=true\n'
         f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8")
     result = subprocess.run([uv, "lock", "--python", sys.executable], cwd=world.core,
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stderr
     return world

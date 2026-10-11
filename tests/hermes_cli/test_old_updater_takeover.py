@@ -73,7 +73,7 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
            if not key.startswith(('HERMES_', 'PYTHON', 'UV_'))}
     env.update(HOME=str(home), HERMES_HOME=str(home))
     result = subprocess.run([sys.executable, "-B", str(program)], env=env,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     handoff = json.loads((home / "logs/update_receipts").glob("post_swap_*.json").__next__().read_text())
     assert handoff["had_desktop_app_before_update"] is desktop
@@ -128,6 +128,7 @@ def test_shipped_post_swap_argv_enters_takeover_before_current_cli(tmp_path):
         [sys.executable, "-B", "-m", "hermes_cli.main", "update", "--yes",
          "--no-gateway-restart", "--branch", "main", "--post-swap", str(handoff)],
         cwd=root, env=env, capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert not handoff.exists()
@@ -190,7 +191,7 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
     if stdio:
         env["PYTHONIOENCODING"] = stdio
     result = subprocess.run([sys.executable, "-B", str(program)], env=env,
-                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
     assert result.returncode == status, result.stdout + result.stderr
     assert (home / "runs").read_text() == "child\n"
     assert (home / "cleanup").read_text() == "ran"
@@ -238,7 +239,7 @@ def test_only_known_early_updater_restarts_with_original_arguments(tmp_path, pos
            if not key.startswith(("HERMES_", "PYTHON", "UV_"))}
     env.update(HOME=str(home), HERMES_HOME=str(home))
     result = subprocess.run([sys.executable, "-B", *argv], env=env,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     request = json.loads((home / "request.json").read_text())
     assert request.get("restart_update", False) is (not post_pull and module_name == "update_cmd")
@@ -291,7 +292,7 @@ def test_atexit_recovers_only_stopped_serves_after_cached_update(tmp_path, ackno
            if not key.startswith(("HERMES_", "PYTHON", "UV_"))}
     env.update(HOME=str(home), HERMES_HOME=str(home))
     result = subprocess.run([sys.executable, "-B", str(program)], env=env,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 7, result.stdout + result.stderr
     assert (home / "runs").read_text() == "update\ncleanup\n"
     token = json.loads((home / "token.json").read_text())
@@ -347,7 +348,7 @@ def test_serve_resume_child_reuses_respawn_without_updater_or_supervisors(tmp_pa
            if not key.startswith(("HERMES_", "PYTHON", "UV_"))}
     env.update(HOME=str(home), HERMES_HOME=str(home))
     result = subprocess.run([sys.executable, "-I", "-B", "-X", "utf8", str(program)],
-                            env=env, capture_output=True, text=True, timeout=30)
+                            env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == int(spawn_fails or discarded), result.stdout + result.stderr
     assert json.loads(result_path.read_text()) == {"serves_handled": True}
     commands = json.loads((home / "commands.json").read_text())
@@ -372,6 +373,7 @@ def test_serve_resume_child_leaves_token_unhandled_when_imports_fail(tmp_path):
     result = subprocess.run(
         [sys.executable, "-I", "-S", "-B", "-X", "utf8", str(root / "hermes_cli/update_serve_resume.py"),
          str(context), str(result_path)], env=env, capture_output=True, text=True, timeout=30,
+         check=False,
     )
     assert result.returncode == 1
     assert json.loads(result_path.read_text()) == {"serves_handled": False}
@@ -404,6 +406,7 @@ def test_completed_serve_token_is_acknowledged_without_preparation(tmp_path, enc
         [sys.executable, "-I", "-S", "-B", str(package / f"{entrypoint}.py"),
          str(context), str(result_path)], cwd=tmp_path, capture_output=True,
         text=True, encoding="utf-8", timeout=30,
+        check=False,
     )
     assert child.returncode == 0, child.stdout + child.stderr
     assert json.loads(result_path.read_text(encoding="utf-8-sig")) == {"serves_handled": True}
@@ -439,6 +442,7 @@ def test_bootstrap_lock_remains_live_without_application_dependencies(tmp_path):
              prelude + "assert not lock.acquire(), 'live lock was stolen'\n"
                        f"assert lock.holder.pid == {holder_pid}, lock.holder\n"],
             stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=30,
+            check=False,
         )
     finally:
         holder.communicate("\n", timeout=30)
@@ -533,6 +537,7 @@ def test_takeover_arms_the_host_record_without_application_dependencies(tmp_path
          f"_arm_fleet_obligation(Path({str(root)!r}))\n"],
         env={**os.environ, "HERMES_GATEWAY_LOCK_DIR": str(lock_dir), "HERMES_HOME": str(home)},
         stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=60,
+        check=False,
     )
     assert child.returncode == 0, child.stdout + child.stderr
     [armed] = lock_dir.glob("host-update-restart-*.json")  # the install-keyed record (review S3)

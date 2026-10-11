@@ -545,3 +545,26 @@ def test_branch_tip_failure_names_the_cause(installation):
     status = check_for_updates(install_root=root, home=home, force=True)
     assert status["error"] == "fetch-failed"
     assert "HTTP 503" in status["message"]
+
+
+def test_module_entry_point_installs_os_trust_before_checking(tmp_path, monkeypatch, capsys):
+    """Desktop runs this module directly, so it must set up TLS trust itself before any HTTPS."""
+    import sys
+
+    import agent.ssl_verify
+    from hermes_cli import source_check
+
+    calls = []
+    monkeypatch.setattr(agent.ssl_verify, "install_truststore", lambda: calls.append("truststore") or True)
+
+    def check(**kwargs):
+        calls.append("check")
+        return {"supported": True, "behind": 0}
+
+    monkeypatch.setattr(source_check, "check_for_updates", check)
+    monkeypatch.setattr(sys, "argv", ["source_check", "--install-root", str(tmp_path), "--home", str(tmp_path)])
+
+    source_check.main()
+
+    assert calls == ["truststore", "check"]
+    assert json.loads(capsys.readouterr().out) == {"supported": True, "behind": 0}

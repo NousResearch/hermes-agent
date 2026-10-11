@@ -459,6 +459,9 @@ def main() -> None:
     parser.add_argument("--set-channel", type=validate_name,
                         help="Persist this install's channel (the Desktop selector), then report as usual.")
     args = parser.parse_args()
+    # Desktop runs this module directly, bypassing hermes_cli.main's TLS setup.
+    from agent.ssl_verify import install_truststore
+    install_truststore()
     with contextlib.redirect_stdout(sys.stderr):
         if args.set_channel:
             from hermes_constants import set_hermes_home_override

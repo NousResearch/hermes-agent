@@ -1417,9 +1417,22 @@ class SessionMessagesMixin:
             rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
         elif include_compacted and not include_inactive and self._ensure_display_order(session_id):
             # _read_retrying_ioerr: mode=ro pooled readers see a transient IOERR mid-checkpoint (#100871).
-            rows = self._read_retrying_ioerr(
-                lambda conn: self._display_rows_from_conn(
-                    conn, session_id, limit=limit, offset=offset, latest=latest))
+            def read_page(conn):
+                # The NULL probe and indexed page must share one snapshot: content rewrites
+                # clear both display columns. Never group distinct unbackfilled rows as NULL.
+                conn.execute("BEGIN")
+                try:
+                    if conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone():
+                        return None
+                    return self._display_rows_from_conn(
+                        conn, session_id, limit=limit, offset=offset, latest=latest)
+                finally:
+                    if conn.in_transaction:
+                        conn.execute("ROLLBACK")
+            rows = self._read_retrying_ioerr(read_page)
+            if rows is None:
+                rows = self._legacy_display_page(
+                    session_id, active_clause=active_clause, limit=limit, offset=offset, latest=latest)
         elif include_compacted:
             # Read-only legacy stores cannot persist display identities; keep only fixed-width
             # identities and representative ids while scanning, then fetch the selected payloads.

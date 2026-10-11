@@ -56,6 +56,37 @@ def _sub_rows(tid: str) -> list:
 
 
 class TestCollectKanbanNotifications:
+    def test_review_requested_delivers_once_and_retains_subscription(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            assert kb.request_review(conn, tid, summary="implementation ready for independent review")
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session())
+        assert len(texts) == 1
+        assert tid in texts[0]
+        assert "implementation ready for independent review" in texts[0]
+        assert _collect_kanban_notifications(_session()) == []
+        # A review park is not terminal: the subscriber must hear the verdict too.
+        assert len(_sub_rows(tid)) == 1
+
+    def test_other_review_attention_events_deliver_once(self):
+        for kind in ("changes_requested", "block_loop_detected"):
+            tid = _create_subscribed_task()
+            conn = kbc.connect()
+            try:
+                with kbc.write_txn(conn):
+                    kb._append_event(conn, tid, kind, {"reason": "inspect retained evidence"})
+            finally:
+                conn.close()
+            texts = _collect_kanban_notifications(_session())
+            assert len(texts) == 1, kind
+            assert tid in texts[0]
+            assert "inspect retained evidence" in texts[0]
+            assert _collect_kanban_notifications(_session()) == []
+
     def test_zero_sub_board_is_never_opened_writable(self):
         conn = kbc.connect()
         conn.close()
@@ -249,6 +280,72 @@ class TestFormatKanbanEventText:
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
 
+    def test_review_requested_surfaces_handoff(self):
+        ev = SimpleNamespace(
+            kind="review_requested",
+            payload={"summary": "implemented parser\ndetails"},
+        )
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert text is not None
+        assert "t_abc123" in text
+        assert "ready for review" in text
+        assert "implemented parser" in text
+        assert "details" not in text  # only the first handoff line
+
+    def test_changes_requested_includes_reason_and_provenance(self):
+        ev = SimpleNamespace(
+            kind="changes_requested",
+            payload={
+                "reason": "tests missing",
+                "reviewer": "rev",
+                "implementer": "impl",
+            },
+        )
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert text is not None
+        assert "t_abc123" in text
+        assert "changes/BLOCK" in text
+        assert "tests missing" in text
+        assert "@rev" in text
+        assert "@impl" in text
+
+    def test_changes_requested_defaults_reason_when_absent(self):
+        ev = SimpleNamespace(kind="changes_requested", payload={})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert text is not None
+        assert "reviewer feedback requires changes" in text
+
+    def test_block_loop_detected_routes_to_triage(self):
+        ev = SimpleNamespace(
+            kind="block_loop_detected",
+            payload={"reason": "same failure", "recurrences": 3},
+        )
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert text is not None
+        assert "TRIAGE" in text
+        assert "same failure" in text
+        assert "3x" in text
+
+    def test_block_loop_detected_claims_human_decision_only_for_needs_input(self):
+        def text_for(kind):
+            ev = SimpleNamespace(kind="block_loop_detected", payload={"kind": kind, "recurrences": 3})
+            return _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+
+        assert "human decision" in text_for("needs_input")
+        for kind in ("capability", "transient", None):
+            text = text_for(kind)
+            assert "human decision" not in text
+            assert "orchestration attention" in text
+
+    def test_notify_kinds_mirror_gateway_review_lifecycle(self):
+        """The TUI poller must claim the same review-lifecycle kinds the gateway
+        notifier does, or TUI/Desktop sessions never see review parks (#99436).
+        """
+        from tui_gateway.server import _KANBAN_NOTIFY_KINDS
+
+        for kind in ("review_requested", "changes_requested", "block_loop_detected"):
+            assert kind in _KANBAN_NOTIFY_KINDS
+
 
 class TestNotificationPollerLoopKanbanWiring:
     """Drive a real TUI subscription through ``_notification_poller_loop``.
@@ -319,6 +416,30 @@ class TestNotificationPollerLoopKanbanWiring:
         assert any(e == "message.start" for e, _ in emits)
         assert any(tid in text for text in submits), submits
         assert session["running"] is True  # poller claimed the turn
+        assert not session.get("_kanban_pending")
+
+    def test_review_buffers_while_busy_then_dispatches_once(self, monkeypatch):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            assert kb.request_review(conn, tid, summary="review pickup probe")
+        finally:
+            conn.close()
+        session = self._poller_session(running=True)
+        stop, thread, emits, submits = self._start_poller(session, monkeypatch)
+        try:
+            assert self._wait_for(lambda: session.get("_kanban_pending"))
+            assert not submits
+            with session["history_lock"]:
+                session["running"] = False
+            assert self._wait_for(lambda: submits), "review never woke the idle session"
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+        assert len(submits) == 1
+        assert tid in submits[0]
+        assert "review pickup probe" in submits[0]
+        assert _collect_kanban_notifications(_session()) == []
         assert not session.get("_kanban_pending")
 
     def test_busy_session_buffers_then_flushes_when_idle(self, monkeypatch):

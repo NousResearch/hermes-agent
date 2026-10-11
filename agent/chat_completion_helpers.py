@@ -24,7 +24,9 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_cli.timeouts import (
+    get_provider_request_timeout, get_provider_stale_timeout, get_provider_stream_total_timeout,
+)
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
@@ -72,6 +74,14 @@ _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 # outer retry loop (up to ~3 attempts x backoff, well under 60s) so an outage doesn't
 # double traffic every attempt, while later turns re-arm automatically.
 _STREAM_5XX_PROBE_WINDOW_S = 60.0
+
+# #5450: the streaming wall-clock budget is ABSOLUTE (anchored on the request start so
+# it spans the transient-error ladder's retries), but a stream attempt is never killed
+# before it has had this much runway. The retry that reopens after a budget kill would
+# otherwise be re-killed by the very next 0.3s monitor poll, before it could deliver
+# anything -- a tight retry loop. Bounded on both ends: the absolute deadline still ends
+# the request, so a retry that itself trickles cannot run forever.
+_BUDGET_MIN_RETRY_RUNWAY_S = 5.0
 
 
 def _context_thread_target(callback):
@@ -2754,6 +2764,16 @@ class _StreamingCall(StreamingWaitMonitor):
         # Shared by the socket read timeout (``_stream_timeouts``) and the stale
         # detector (``_resolve_stale_timeout``); None until resolved.
         self._stream_stale_timeout = None
+        # Total wall-clock budget for THIS request, resolved once in ``run()``.
+        # ``None`` (unset) means no budget. Monotonic, not ``time.time``: the monitor
+        # compares it across a request that a wall-clock step can move backwards.
+        self._stream_total_timeout = None
+        self._request_started_at = time.monotonic()
+        # Monotonic start of the CURRENT stream attempt; re-stamped in
+        # ``_start_stream_attempt``. The budget is anchored on the REQUEST start so it
+        # spans the ladder's retries, but an attempt is not killed before its runway --
+        # see ``_BUDGET_MIN_RETRY_RUNWAY_S`` (#5450).
+        self._attempt_started_at = self._request_started_at
         self.stream_attempt_lock = threading.Lock()
         self.stream_attempt_state = {"current": 0, "cancelled": set(), "discarded_chunks": 0, "discarded_bytes": 0}
         self._stale_counted_attempts: set[int] = set()  # breaker counts each attempt once
@@ -2812,6 +2832,9 @@ class _StreamingCall(StreamingWaitMonitor):
         # Attempt-local like provider_tool_in_flight: a tool name from a stream that died
         # before any text must not label a later attempt's partial stub or its retry decision.
         self.result["partial_tool_names"] = []
+        # The retry reopens seconds after a budget kill; give it a fresh runway so the
+        # (still-elapsed) absolute deadline cannot fire on its very first poll (#5450).
+        self._attempt_started_at = time.monotonic()
         return attempt_id
 
     def _cancel_current_stream_attempt(self, reason: str) -> None:
@@ -3893,6 +3916,92 @@ class _StreamingCall(StreamingWaitMonitor):
             return
         self._stream_stale_timeout = _cloud_stale_timeout_for(self.agent, self.api_kwargs)
 
+    def _resolve_total_timeout(self) -> None:
+        """Set ``_stream_total_timeout`` from the provider/model config (#5450).
+
+        Read once here, alongside ``_resolve_stale_timeout``, so the monitor reads a
+        resolved value off the instance instead of re-reading config from its thread.
+        Unset stays ``None``: the budget is opt-in (see
+        ``get_provider_stream_total_timeout``).
+
+        ponytail: one ABSOLUTE deadline for the whole request, not a fresh one per
+        internal stream retry -- re-arming per attempt would measure the ladder,
+        not the request, and lets a trickling retry multiply the configured budget.
+        The retry still is not instantly re-killed: every attempt gets
+        ``_BUDGET_MIN_RETRY_RUNWAY_S`` of runway first (#5450).
+        Also not applied to the ``codex_responses`` / ``bedrock_converse`` runners,
+        which never build a ``_StreamingCall``; those keep their TTFB + stale
+        watchdogs. Non-streaming already has ``request_timeout_seconds``.
+        """
+        self._stream_total_timeout = get_provider_stream_total_timeout(
+            self.agent.provider, self.agent.model)
+
+    def _total_budget_spent(self, now: float) -> Optional[float]:
+        """Elapsed seconds past this request's wall-clock budget, else ``None``.
+
+        Measured from the REQUEST start, deliberately not from ``last_chunk_time``:
+        every other bound on this path is an idle bound and re-arms on every arriving
+        chunk, which is exactly the slow-but-progressing stream they all miss.
+
+        The deadline SPANS the transient-error ladder's own retries -- it is anchored
+        on the request, not on the attempt, so a retry that itself trickles is ended
+        too instead of running to the end of the turn. The only concession to the
+        ladder is the per-attempt runway: without it the 0.3s monitor poll re-kills
+        the retry the instant it reopens, a tight loop (#5450).
+        """
+        if self._stream_total_timeout is None:
+            return None
+        elapsed = now - self._request_started_at
+        if elapsed <= self._stream_total_timeout:
+            return None
+        if now - self._attempt_started_at < _BUDGET_MIN_RETRY_RUNWAY_S:
+            return None
+        return elapsed
+
+    def _kill_over_budget_stream(self, elapsed: float) -> None:
+        """This request is past its wall-clock budget: end it and let the existing
+        transient-error ladder take over (#5450).
+
+        Cancellation is the stale kill's, deliberately -- same socket shutdown, same
+        force-close, same "not a user cancel" handling, so text already delivered to
+        the platform survives through ``_partial_stream_stub`` exactly as it does for an
+        idle-stale kill. That is why this aborts rather than only warning: reporting a
+        budget overrun and then waiting anyway is what leaves the agent loop blocked,
+        which is the bug.
+
+        One deliberate difference from ``_kill_stale_stream``: no
+        ``_count_stale_attempt()``. That streak feeds ``_check_stale_giveup``, which
+        stops streaming entirely after repeated *unresponsive* attempts; a provider
+        still delivering tokens is responsive, and charging its budget here would take
+        a healthy provider offline.
+
+        No latch: the absolute deadline still governs the ladder's retry, which only
+        gets a fresh ``_BUDGET_MIN_RETRY_RUNWAY_S`` runway (re-stamped here so a poll
+        racing the worker's unwind cannot re-fire immediately, and again in
+        ``_start_stream_attempt``).
+        """
+        self._attempt_started_at = time.monotonic()
+        logger.warning(
+            "Stream total budget spent after %.0fs (budget %.0fs) — ending the request. "
+            "model=%s. Chunks were still arriving, so this is not counted as a stale attempt.",
+            elapsed, self._stream_total_timeout, self.api_kwargs.get("model", "unknown"),
+        )
+        self.agent._buffer_diagnostic_status(
+            f"⚠️ Provider stream passed its {int(elapsed)}s budget for this request "
+            f"(model: {self.api_kwargs.get('model', 'unknown')}). Reconnecting...")
+        # Captured BEFORE the cancel/abort for the same reason as the stale kill: the
+        # pool sweep can miss the connection checked out for the in-flight body read.
+        _killed_response = self._attempt_stream_response
+        with contextlib.suppress(Exception):
+            self._cancel_current_stream_attempt("stream_total_budget")
+            self.clients.close_once("stream_total_budget")
+        self._shutdown_stale_attempt_socket(_killed_response)
+        # Reset the idle clock so a stale kill cannot fire immediately behind this one.
+        self.last_chunk_time["t"] = time.time()
+        self.agent._emit_diagnostic_wait(
+            f"⚠ request exceeded its {int(elapsed)}s budget — reconnecting...")
+        self.agent._touch_activity(f"stream total budget spent after {int(elapsed)}s, reconnecting")
+
     def _partial_stream_stub(self):
         """Tokens already reached the platform: a finish_reason="length" stub fires the
         continuation machinery; tool_calls=None blocks executing incomplete calls.
@@ -3955,6 +4064,7 @@ class _StreamingCall(StreamingWaitMonitor):
         """Resolve the stale timeout, run the request (worker thread or inline),
         drive the heartbeat/stale/interrupt monitor, then translate the outcome."""
         self._resolve_stale_timeout()
+        self._resolve_total_timeout()
         # Delegated children and cron turns run the request INLINE (a worker inside
         # their nested pools wedges before the socket opens) but must still STREAM
         # (edge proxies kill silent POSTs). Only the poll loop moves to a monitor

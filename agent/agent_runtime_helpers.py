@@ -52,8 +52,15 @@ _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
     r'<function\b[^>]*\bname\s*=[^>]*>'
     r'(?:(?:(?!</function>).)*)</function>', re.DOTALL | re.IGNORECASE,
 )
+# Open tag at a block boundary with no closer yet (#136557): the well-formed opener
+# (``\b[^>]*>``, tag name ends at a boundary before optional attributes) matches first,
+# then the glued/malformed shape (``<thinkingBackup done...``, tag name runs straight
+# into a payload word character; ``\b`` cannot fire there and a ``>`` may never arrive
+# -- hence ``\w.*`` with an optional ``>``). Mid-line prose that merely mentions a tag
+# stays safe: the block-boundary gate (start of text / after a newline) is unchanged.
 _UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
-    rf'(?:^|\n)[ \t]*<(?:{"|".join(THINK_TAG_NAMES)})\b[^>]*>.*$', re.DOTALL | re.IGNORECASE
+    rf'(?:^|\n)[ \t]*["\']?<(?:{"|".join(THINK_TAG_NAMES)})(?:\b[^>]*>|\w.*)>?.*$',
+    re.DOTALL | re.IGNORECASE,
 )
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
     rf'</?(?:{"|".join(THINK_TAG_NAMES)})>\s*', re.IGNORECASE

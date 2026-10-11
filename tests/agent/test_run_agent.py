@@ -436,6 +436,41 @@ class TestStripThinkBlocks:
 
 
 
+    # ─── Malformed glued opener, no '>' anywhere (#136557) ───────────────
+    # `<thinkingBackup done...`: the tag name runs straight into a payload
+    # word character, so `\b` cannot fire (word→word), and no `>` ever
+    # arrives, so `[^>]*>` fails too. Whole reasoning block used to survive
+    # into durable assistant content; now stripped from the opener on.
+
+    def test_glued_malformed_opener_stripped(self, agent):
+        text = '"<thinkingBackup done. Now let me run the maintenance script"'
+        result = agent._strip_think_blocks(text)
+        assert result == ""
+
+    def test_glued_malformed_opener_after_newline_stripped(self, agent):
+        result = agent._strip_think_blocks('backup\n<thinkingBackup tail')
+        assert result == "backup"
+
+    def test_midline_mention_of_glued_tag_not_stripped(self, agent):
+        """Non-boundary mention in prose must survive (boundary gate holds)."""
+        text = 'for each <think event, log it'
+        assert agent._strip_think_blocks(text) == text
+
+    # ─── Unterminated-block coverage (#8878, #9568, #10408) ──────────────
+    # Reasoning models served via NIM / MiniMax M2.7 frequently drop the
+    # closing tag, leaking raw reasoning into assistant content. The open
+    # tag appears at a block boundary (start of text or after a newline);
+    # everything from that tag to end-of-string is stripped.
+
+    def test_unterminated_block_stripped(self, agent):
+        assert agent._strip_think_blocks('prechatter\n<think> reasoning continues') == "prechatter"
+
+    def test_unterminated_opening_tag_with_attrs_stripped(self, agent):
+        assert agent._strip_think_blocks('<thinking provider="x"> tail') == ""
+
+    def test_unterminated_at_start_stripped(self, agent):
+        assert agent._strip_think_blocks('<think> reasoning with no closer') == ""
+
     def test_mixed_case_closed_pair_stripped(self, agent):
         """Mixed-case variants <THINK>…</THINK>, <Thinking>…</Thinking> are
         handled by case-insensitive closed-pair regex, so the trailing

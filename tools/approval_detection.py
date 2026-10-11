@@ -226,14 +226,18 @@ def detect_hardline_command(command: str) -> tuple:
 
 # ---- Dangerous command patterns -----------------------------------------------------------
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
-    (r'\brm\s+-[^\s]*r', "recursive delete"),
-    (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
+    # `rm` must be a command word, not the `rm` embedded in a container/CLI flag: the word
+    # boundary alone also matched `--rm`, so `docker run --rm --network=none alpine true`
+    # read as `rm --network...` and tripped these rules (#132313). The lookbehind bars a
+    # leading dash; separators (`; rm`, `&& rm`) still match because `-` is not a word char.
+    (r'(?<!-)\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    (r'(?<!-)\brm\s+-[^\s]*r', "recursive delete"),
+    (r'(?<!-)\brm\s+--recursive\b', "recursive delete (long flag)"),
     # GNU rm permutes options, so flags may FOLLOW operands (`rm build/ -rf`). The operand run
     # cannot cross a command separator (so `rm foo | grep -r` is not attributed to rm), a quote,
     # or a bare ` -- ` end-of-options (after which `-rf` is a literal filename). The flag token
     # must follow whitespace so the `r` in long options like `--registry` does not count.
-    (r'\brm\s+(?!--(?:\s|$))(?:(?!\s--(?:\s|$))[^\n"\';|&])*\s' r'(?:-[a-z]*r[a-z]*\b|--recursive\b)',
+    (r'(?<!-)\brm\s+(?!--(?:\s|$))(?:(?!\s--(?:\s|$))[^\n"\';|&])*\s' r'(?:-[a-z]*r[a-z]*\b|--recursive\b)',
      # GNU rm permutes options, so a recursive flag group may legally FOLLOW the operands: `rm build/ -rf`,
      # `rm build/ -r -f`, and `rm build/ --recursive --force` are all equivalent to the flags-first
      # spellings the two patterns above catch — without this rule they run with no approval prompt at all.

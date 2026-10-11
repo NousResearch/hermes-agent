@@ -1277,6 +1277,14 @@ class TurnRunner:
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
+        if getattr(agent, "_fallback_activated", False):
+            # The cached agent is still on its fallback route (primary restore gated this
+            # turn), but `reasoning_config` was resolved for the session's configured model -
+            # the primary. Re-resolve for the live fallback model so a per-model override of
+            # the primary does not ride the fallback request (#136564 follow-up); a session
+            # /reasoning override is model-independent and still wins inside the resolver.
+            reasoning_config = runner._resolve_session_reasoning_config(
+                source=ctx.source, session_key=ctx.session_key, model=agent.model)
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
         agent._voice_turn_pending = ctx.voice_turn  # auxiliary.voice_chat route
         self._merge_turn_request_overrides(agent, turn_route)

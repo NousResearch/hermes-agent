@@ -593,3 +593,60 @@ class TestTurnMergeOnGatedFallback:
         # The fallback route keeps only its own body; the primary's body re-applies when
         # restore actually succeeds, through the same merge on that turn's route.
         assert agent.request_overrides.get("extra_body") == {"top_k": 20}, agent.request_overrides
+
+
+class TestTurnWiringReasoningConfigOnFallback:
+    """Gateway per-turn wiring resolves reasoning_config for the SESSION's configured model
+    (the primary). On a reused agent still on its fallback route (restore gated), the wiring
+    must not stomp the fallback-reresolved reasoning_config with the primary model's
+    per-model override. Session /reasoning overrides still win (they are model-independent)."""
+
+    def _wire(self, agent, reasoning_by_model):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from gateway.run_turn_runner import TurnRunner
+
+        ctx = MagicMock()
+        ctx.user_config = {}
+        ctx.source.platform = "test"
+        ctx._voice_ack_guild = (None, None)
+        ctx._native_slack_task_cards = False
+        ctx._hooks_ref.loaded_hooks = []
+        ctx._status_adapter = None
+        ctx.session_key = "session-key"
+        ctx.mute_notification_reply = False
+        ctx.agent_holder = [None]
+        ctx.tools_holder = [None]
+        runner = MagicMock()
+        runner._service_tier = None
+        runner._consume_pending_turn_sidecar_notes.return_value = []
+        runner._resolve_session_reasoning_config.side_effect = (
+            lambda **kw: reasoning_by_model.get(kw["model"])
+        )
+        tr = TurnRunner.__new__(TurnRunner)
+        tr._ctx = ctx
+        tr._runner = runner
+        with patch.object(TurnRunner, "_attach_session_title_callback", lambda self, a, c: None):
+            tr._wire_turn_agent_callbacks(agent, {}, reasoning_by_model["old-model"], None, None, False)
+
+    def test_turn_wiring_keeps_fallback_reasoning_config(self):
+        agent = _make_agent(fallback_model={"provider": "custom:fbprov", "model": "fb-model", "base_url": FB_URL})
+        agent.provider, agent.model, agent.base_url = "custom", "old-model", OLD_URL
+        agent._custom_providers = [
+            {"name": "oldprov", "base_url": OLD_URL, "extra_body": {"old_only": 1}},
+            {"provider_key": "fbprov", "base_url": FB_URL, "extra_body": {"top_k": 20}},
+        ]
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(base_url=FB_URL), "fb-model"),
+            ),
+            patch("agent.model_metadata.get_model_context_length", return_value=128_000),
+        ):
+            assert agent._try_activate_fallback() is True
+        fb_reasoning = {"effort": "low"}
+        agent.reasoning_config = fb_reasoning  # what _reresolve_fallback_reasoning_config installed
+        # The gateway resolves the turn's reasoning_config for the session's (primary) model.
+        self._wire(agent, {"old-model": {"effort": "high"}, "fb-model": fb_reasoning})
+        assert agent.reasoning_config == fb_reasoning, agent.reasoning_config

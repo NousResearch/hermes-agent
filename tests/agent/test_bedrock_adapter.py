@@ -1783,3 +1783,122 @@ class TestSealedReasoningResendOnce:
             with pytest.raises(Exception, match="ValidationException"):
                 call_converse(region="us-east-1", model="m", messages=[{"role": "user", "content": "hi"}])
         assert client.converse.call_count == 1
+
+
+class TestBedrockClientTimeoutConfig:
+    """Verifies that configured request timeouts propagate to boto3 client Config."""
+
+    def test_returns_none_when_timeout_not_configured(self):
+        from agent.bedrock_adapter import _bedrock_client_config, _bedrock_client_kwargs
+        with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+            assert _bedrock_client_config() is None
+            kwargs = _bedrock_client_kwargs("us-east-1")
+            assert kwargs == {"region_name": "us-east-1"}
+            assert "config" not in kwargs
+
+    def test_returns_botocore_config_when_timeout_configured(self):
+        pytest.importorskip("botocore.config", reason="botocore required")
+        from agent.bedrock_adapter import _bedrock_client_config, _bedrock_client_kwargs
+        with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=120.0):
+            cfg = _bedrock_client_config()
+            assert cfg is not None
+            assert cfg.read_timeout == 120.0
+            assert cfg.connect_timeout == 60.0
+
+            kwargs = _bedrock_client_kwargs("us-east-1")
+            assert kwargs["region_name"] == "us-east-1"
+            assert "config" in kwargs
+            assert kwargs["config"].read_timeout == 120.0
+
+    def test_connect_timeout_capped_at_low_timeout(self):
+        pytest.importorskip("botocore.config", reason="botocore required")
+        from agent.bedrock_adapter import _bedrock_client_config
+        with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=25.0):
+            cfg = _bedrock_client_config()
+            assert cfg is not None
+            assert cfg.read_timeout == 25.0
+            assert cfg.connect_timeout == 25.0
+
+    def test_explicit_timeout_arg_and_non_positive_values(self):
+        pytest.importorskip("botocore.config", reason="botocore required")
+        from agent.bedrock_adapter import _bedrock_client_config
+        cfg = _bedrock_client_config(timeout=180.0)
+        assert cfg is not None
+        assert cfg.read_timeout == 180.0
+
+        assert _bedrock_client_config(timeout=0) is None
+        assert _bedrock_client_config(timeout=-5.0) is None
+
+    def test_handles_missing_botocore_gracefully(self, monkeypatch):
+        import builtins
+        from agent.bedrock_adapter import _bedrock_client_config
+
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if "botocore" in name:
+                raise ImportError("No module named 'botocore'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=120.0):
+            assert _bedrock_client_config() is None
+
+    def test_cached_client_unscoped_passes_config_to_boto3(self):
+        from types import SimpleNamespace
+        from agent.bedrock_adapter import _cached_client
+        mock_boto3 = MagicMock()
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        cache = {}
+        fake_cfg = SimpleNamespace(read_timeout=300.0)
+
+        with patch("agent.bedrock_adapter._bedrock_client_config", return_value=fake_cfg), \
+             patch("agent.bedrock_adapter._require_boto3", return_value=mock_boto3):
+            client = _cached_client(cache, "bedrock-runtime", "us-east-1")
+
+        assert client is mock_client
+        assert "us-east-1" in cache
+        mock_boto3.client.assert_called_once()
+        service, kwargs = mock_boto3.client.call_args[0][0], mock_boto3.client.call_args[1]
+        assert service == "bedrock-runtime"
+        assert kwargs["region_name"] == "us-east-1"
+        assert "config" in kwargs
+        assert kwargs["config"].read_timeout == 300.0
+
+    def test_cached_client_scoped_session_passes_config_to_boto3(self, tmp_path):
+        from types import SimpleNamespace
+        from agent import bedrock_adapter
+        from agent.bedrock_adapter import _cached_client
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "home-scoped"
+        home.mkdir()
+        (home / ".env").write_text(
+            "AWS_ACCESS_KEY_ID=AKIA-TEST\nAWS_SECRET_ACCESS_KEY=secret-test\n",
+            encoding="utf-8",
+        )
+        h_tok = set_hermes_home_override(str(home))
+        try:
+            mock_boto3 = MagicMock()
+            mock_session = MagicMock()
+            mock_client = MagicMock()
+            mock_boto3.Session.return_value = mock_session
+            mock_session.client.return_value = mock_client
+            bedrock_adapter.reset_client_cache()
+            fake_cfg = SimpleNamespace(read_timeout=240.0)
+
+            with patch("agent.bedrock_adapter._bedrock_client_config", return_value=fake_cfg), \
+                 patch("agent.bedrock_adapter._require_boto3", return_value=mock_boto3):
+                client = _cached_client({}, "bedrock-runtime", "us-east-1")
+
+            assert client is mock_client
+            mock_session.client.assert_called_once()
+            service, kwargs = mock_session.client.call_args[0][0], mock_session.client.call_args[1]
+            assert service == "bedrock-runtime"
+            assert kwargs["region_name"] == "us-east-1"
+            assert "config" in kwargs
+            assert kwargs["config"].read_timeout == 240.0
+        finally:
+            reset_hermes_home_override(h_tok)
+            bedrock_adapter.reset_client_cache()

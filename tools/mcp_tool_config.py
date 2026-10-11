@@ -181,13 +181,15 @@ _CONTEXT_VAR_RESOLVERS = {
 
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
-    keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
-    precisely so subprocesses can consume them), plus the server config's own ``env``."""
+    keys, the owning profile home, vars injected by an external secret source (users configured
+    that backend precisely so subprocesses can consume them), plus the server config's own ``env``.
+    Process-wide ``XDG_*`` values are not inherited; a server can still set them explicitly."""
     from agent.secret_scope import get_secret
+    from hermes_constants import get_hermes_home
     from hermes_cli.env_loader import secret_source_names
     env = {
         key: value for key, value in os.environ.items()
-        if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}
+        if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE}
     # Source-tagged names are process-wide (any profile's hydration tags them) while os.environ
     # holds only the LAUNCH profile's values, so the value must come from the active profile's
     # secret scope; a profile that lacks the name gets nothing, never another profile's token.
@@ -200,6 +202,8 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
             env[key] = os.environ[key]
     if user_env:
         env.update(user_env)
+    # Multiplex routing overrides HERMES_HOME context-locally; never leak the launch profile.
+    env["HERMES_HOME"] = str(get_hermes_home())
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 

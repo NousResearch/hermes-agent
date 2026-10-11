@@ -1460,7 +1460,7 @@ class TestBuildSafeEnv:
     """Tests for _build_safe_env() environment filtering."""
 
     def test_only_safe_vars_passed(self):
-        """Only safe baseline vars and XDG_* from os.environ are included."""
+        """Only safe baseline vars are inherited; server-configured XDG values are retained."""
         from tools.mcp_tool_config import _build_safe_env
 
         fake_env = {
@@ -1472,19 +1472,19 @@ class TestBuildSafeEnv:
             "TERM": "xterm",
             "SHELL": "/bin/bash",
             "TMPDIR": "/tmp",
-            "XDG_DATA_HOME": "/home/test/.local/share",
+            "XDG_DATA_HOME": "/launch-profile/share",
             "SECRET_KEY": "should_not_appear",
             "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
         }
         with patch.dict("os.environ", fake_env, clear=True):
-            result = _build_safe_env(None)
+            result = _build_safe_env({"XDG_DATA_HOME": "/server/share"})
 
         # Safe vars present
         assert result["PATH"] == "/usr/bin"
         assert result["HOME"] == "/home/test"
         assert result["USER"] == "test"
         assert result["LANG"] == "en_US.UTF-8"
-        assert result["XDG_DATA_HOME"] == "/home/test/.local/share"
+        assert result["XDG_DATA_HOME"] == "/server/share"
         # Unsafe vars excluded
         assert "SECRET_KEY" not in result
         assert "AWS_ACCESS_KEY_ID" not in result
@@ -1555,6 +1555,31 @@ class TestBuildSafeEnv:
         assert result["PATH"] == "/usr/bin"
         assert result["GITHUB_TOKEN"] == "profile-b"
         assert "NOTION_TOKEN" not in result
+
+    def test_stdio_env_uses_owning_profile_without_launch_profile_xdg(self, monkeypatch, tmp_path):
+        """A routed profile's stdio child must not inherit another profile's config/runtime roots."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.mcp_tool_config import _build_safe_env
+
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        token = set_hermes_home_override(profile_b)
+        try:
+            with patch.dict("os.environ", {
+                "PATH": "/usr/bin",
+                "HOME": str(tmp_path),
+                "HERMES_HOME": str(profile_a),
+                "XDG_CONFIG_HOME": str(profile_a / "config"),
+                "XDG_RUNTIME_DIR": str(profile_a / "runtime"),
+            }, clear=True):
+                result = _build_safe_env(None)
+        finally:
+            reset_hermes_home_override(token)
+
+        assert result["PATH"] == "/usr/bin"
+        assert result["HERMES_HOME"] == str(profile_b)
+        assert "XDG_CONFIG_HOME" not in result
+        assert "XDG_RUNTIME_DIR" not in result
 
     def test_windows_location_vars_passed_without_secrets(self):
         """Windows launcher tools need location vars, but secrets stay filtered."""

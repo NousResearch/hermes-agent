@@ -3,10 +3,12 @@ import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
 import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { hotkeys } from '../../../content/hotkeys.js'
+import { type CopyItem, latestCodeBlocks, latestCommands } from '../../../domain/copyTargets.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
+  SessionHistoryResponse,
   SessionSaveResponse,
   SessionStatusResponse,
   SessionSteerResponse,
@@ -26,7 +28,89 @@ import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
-import type { SlashCommand } from '../types.js'
+import type { SlashCommand, SlashRunCtx } from '../types.js'
+
+/** Native clipboard first, OSC 52 over SSH or when native tools fail (#31528). */
+const copyOut = (text: string, okMessage: string, ctx: SlashRunCtx) => {
+  const { sys } = ctx.transcript
+
+  if (isRemoteShellSession(process.env)) {
+    writeOsc52Clipboard(text)
+
+    return sys(t('slashCmd.core.copy.sentOsc52'))
+  }
+
+  void writeClipboardText(text)
+    .then(nativeOk => {
+      if (ctx.stale()) {
+        return
+      }
+
+      if (nativeOk) {
+        sys(okMessage)
+      } else {
+        writeOsc52Clipboard(text)
+        sys(t('slashCmd.core.copy.sentOsc52'))
+      }
+    })
+    .catch(error => {
+      if (!ctx.stale()) {
+        sys(t('slashCmd.core.copy.failed', String(error)))
+      }
+    })
+}
+
+/** /copy code [n] — one fenced block's raw content; /copy cmd [n] — one shell
+ *  command from the latest command-running turn. One item copies at once;
+ *  several list numbered. Scopes after Muse Code's /copy picker. */
+const copyScopedItem = (scope: 'cmd' | 'code', pick: string, ctx: SlashRunCtx) => {
+  const { sys } = ctx.transcript
+
+  const choose = (items: CopyItem[]) => {
+    if (!items.length) {
+      return sys(t(scope === 'code' ? 'slashCmd.core.copy.noCode' : 'slashCmd.core.copy.noCmd'))
+    }
+
+    const n = pick ? Number(pick) : 1
+
+    if (pick && !(/^[1-9]\d*$/.test(pick) && n <= items.length)) {
+      return sys(t('slashCmd.core.copy.invalidItem', String(items.length)))
+    }
+
+    if (!pick && items.length > 1) {
+      const rows = items.map((item, i) => {
+        const first = item.text.trim().split('\n', 1)[0] ?? ''
+
+        return `${String(i + 1).padStart(2)}  ${item.label.padEnd(10)} ${first.length > 60 ? `${first.slice(0, 60)}…` : first}`
+      })
+
+      const head = t(
+        scope === 'code' ? 'slashCmd.core.copy.pickCode' : 'slashCmd.core.copy.pickCmd',
+        String(items.length)
+      )
+
+      return sys([head, ...rows, t('slashCmd.core.copy.pickHint', scope, String(items.length))].join('\n'))
+    }
+
+    const item = items[n - 1]!
+
+    copyOut(item.text, t('slashCmd.core.copy.copiedItem', String(n), item.label), ctx)
+  }
+
+  if (scope === 'code') {
+    return choose(latestCodeBlocks(ctx.local.getHistoryItems()))
+  }
+
+  // Tool calls never reach the TUI's Msg rows; the gateway's history projection carries their args.
+  if (!ctx.sid) {
+    return choose([])
+  }
+
+  ctx.gateway
+    .rpc<SessionHistoryResponse>('session.history', { session_id: ctx.sid })
+    .then(ctx.guarded<SessionHistoryResponse>(r => choose(latestCommands(r.messages ?? []))))
+    .catch(ctx.guardedErr)
+}
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -400,6 +484,12 @@ export const coreCommands: SlashCommand[] = [
       }
 
       if (arg && Number.isNaN(parseInt(arg, 10))) {
+        const [scope = '', pick = ''] = arg.trim().split(/\s+/, 2)
+
+        if (scope === 'code' || scope === 'cmd') {
+          return copyScopedItem(scope, pick, ctx)
+        }
+
         return sys(t('slashCmd.core.copy.usage'))
       }
 
@@ -410,32 +500,7 @@ export const coreCommands: SlashCommand[] = [
         return sys(t('slashCmd.core.copy.nothingToCopy'))
       }
 
-      const shouldUseTerminalClipboard = isRemoteShellSession(process.env)
-
-      if (shouldUseTerminalClipboard) {
-        writeOsc52Clipboard(target.text)
-
-        return sys(t('slashCmd.core.copy.sentOsc52'))
-      }
-
-      void writeClipboardText(target.text)
-        .then(nativeOk => {
-          if (ctx.stale()) {
-            return
-          }
-
-          if (nativeOk) {
-            sys(t('slashCmd.core.copy.copied'))
-          } else {
-            writeOsc52Clipboard(target.text)
-            sys(t('slashCmd.core.copy.sentOsc52'))
-          }
-        })
-        .catch(error => {
-          if (!ctx.stale()) {
-            sys(t('slashCmd.core.copy.failed', String(error)))
-          }
-        })
+      copyOut(target.text, t('slashCmd.core.copy.copied'), ctx)
     }
   },
 

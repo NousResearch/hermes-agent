@@ -90,3 +90,32 @@ def test_copy_native_first_when_local():
     mock_osc52.assert_not_called()
 
 
+
+
+def test_copy_scopes_copy_raw_code_block_and_executed_command():
+    """/copy code N copies one fence's raw content (fence lines and other prose excluded) from the
+    latest response that has blocks; /copy cmd N copies a shell command the latest command-running
+    turn executed, never one from an earlier turn or a non-shell tool."""
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"function": {"name": "terminal", "arguments": '{"command": "echo stale"}'}}]},
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "read_file", "arguments": '{"path": "x"}'}},
+            {"function": {"name": "terminal", "arguments": '{"command": "make  test"}'}}]},
+        {"role": "tool", "content": "ok"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "terminal", "arguments": {"command": "git status"}}}]},
+        {"role": "assistant", "content": "Run:\n```bash\n  pip install x\n```\nthen\n~~~py\nprint(1)\n~~~\n```unclosed"},
+        {"role": "assistant", "content": "done, no code here"},
+    ]
+
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy, \
+         patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False):
+        for cmd in ("/copy code 1", "/copy code 2", "/copy cmd 2", "/copy cmd 1", "/copy code 3"):
+            cli_obj.process_command(cmd)
+
+    assert [c.args[0] for c in mock_copy.call_args_list] == [
+        "  pip install x", "print(1)", "git status", "make  test"]

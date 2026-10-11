@@ -73,11 +73,18 @@ export const slashCmdCoreEn = {
       copiedCharsOne: (count: string) => `copied ${count} character`,
       copiedCharsOther: (count: string) => `copied ${count} characters`,
       clipboardFailed: 'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence',
-      usage: 'usage: /copy [number]',
+      usage: 'usage: /copy [number] | /copy code [n] | /copy cmd [n]',
       nothingToCopy: 'nothing to copy — start a conversation first',
       sentOsc52: 'sent OSC52 copy sequence (terminal support required)',
       copied: 'copied to clipboard',
-      failed: (error: string) => `copy failed: ${error}`
+      failed: (error: string) => `copy failed: ${error}`,
+      noCode: 'no complete code blocks in assistant responses yet',
+      noCmd: 'no shell commands have run yet',
+      invalidItem: (max: string) => `invalid item number — use 1-${max}`,
+      pickCode: (count: string) => `${count} code blocks in the latest response:`,
+      pickCmd: (count: string) => `${count} commands in the latest turn:`,
+      pickHint: (scope: string, max: string) => `run /copy ${scope} <1-${max}> to copy one`,
+      copiedItem: (index: string, label: string) => `copied #${index} (${label})`
     },
     paste: {
       usage: 'usage: /paste'

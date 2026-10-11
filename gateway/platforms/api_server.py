@@ -1675,8 +1675,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 from agent.secret_scope import is_multiplex_active
                 if is_multiplex_active():
                     from gateway.run import _profile_runtime_scope
-                    from hermes_constants import get_hermes_home
-                    return _profile_runtime_scope(get_hermes_home())
+                    from hermes_constants import get_routing_process_hermes_home
+                    # A prefix-less request is a routed-profile decision: it must enter
+                    # the launch profile's scope, not whatever home a live-followed
+                    # HERMES_HOME mirror happens to name mid-request (#134095).
+                    return _profile_runtime_scope(get_routing_process_hermes_home())
             return nullcontext()
         from gateway.run import _profile_runtime_scope
         from hermes_cli.profiles import get_profile_dir

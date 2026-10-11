@@ -471,6 +471,7 @@ When the bot is in a voice channel:
 - Agent responses are sent as text in the channel AND spoken in the VC
 - The text channel is the one where `/voice join` was issued
 - Running `/voice join` from another text channel moves the binding there; speech captured before the move, whether still being transcribed or not yet finished, is dropped, not posted to the new channel
+- When the call ends, the text channel's voice mode returns to `off`. A call ends on `/voice leave`, after the inactivity timeout, and when the gateway stops, restarts or crashes
 
 ### Echo Prevention
 

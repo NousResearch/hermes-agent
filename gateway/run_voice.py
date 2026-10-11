@@ -16,7 +16,7 @@ import weakref
 from contextlib import suppress
 from difflib import SequenceMatcher
 from types import SimpleNamespace
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from agent.i18n import t
 from gateway.config import Platform
@@ -29,9 +29,13 @@ logger = logging.getLogger("gateway.run")  # log-record parity with the origin m
 # Adapter-side per-chat auto-TTS override sets (``/voice off`` vs explicit ``/voice on``/``tts``).
 _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
 _VOICE_MODES = {"off", "voice_only", "all"}
+_CALL_ENDED_MODE = "off"
 
 
 class GatewayVoiceMixin:
+    _voice_call_keys: set[str]
+    _adapter_profile_for_source: Callable[[SessionSource], Optional[str]]
+
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
         share a key and one ``/voice`` flips the other's); default keeps ``<platform>:<chat>``.
@@ -71,9 +75,11 @@ class GatewayVoiceMixin:
         return {k: m for k, m in items.items() if ":" in k}
 
     def _save_voice_modes(self) -> None:
+        # This file is restart state: call-bound modes are off even while the live call speaks.
+        persisted = {**self._voice_mode, **dict.fromkeys(self._voice_call_keys, _CALL_ENDED_MODE)}
         try:
             self._VOICE_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            payload = json.dumps(self._voice_mode, indent=2)
+            payload = json.dumps(persisted, indent=2)
             self._VOICE_MODE_PATH.write_text(payload, encoding="utf-8")
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
@@ -98,9 +104,15 @@ class GatewayVoiceMixin:
     def _set_adapter_auto_tts_enabled(self, adapter, chat_id: str, enabled: bool) -> None:
         self._toggle_adapter_auto_tts_set(adapter, chat_id, enabled, enable=True)
 
-    def _apply_voice_mode(self, adapter, voice_key: str, chat_id: str, mode: str) -> None:
-        """Record+persist ``mode``; mirror into adapter sets (``off`` -> disabled, else enabled)."""
+    def _apply_voice_mode(
+        self, adapter, voice_key: str, chat_id: str, mode: str, *, in_call: bool = False
+    ) -> None:
+        """Set the live mode and the adapter override. A call mode expires when the call ends."""
         self._voice_mode[voice_key] = mode
+        if in_call:
+            self._voice_call_keys.add(voice_key)
+        else:
+            self._voice_call_keys.discard(voice_key)
         self._save_voice_modes()
         self._toggle_adapter_auto_tts_set(adapter, chat_id, True, enable=mode != "off")
 
@@ -167,7 +179,9 @@ class GatewayVoiceMixin:
             adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
                 self._voice_key(Platform.DISCORD, str(chat_id), profile=voice_profile), "off")
         try:
-            success = await adapter.join_voice_channel(voice_channel)
+            success = await adapter.join_voice_channel(
+                voice_channel, text_channel_id=int(event.source.chat_id),
+                source=event.source.to_dict())
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
             adapter._voice_input_callback = None
@@ -177,17 +191,8 @@ class GatewayVoiceMixin:
         if not success:
             adapter._voice_input_callback = None
             return t("gateway.voice.channel_join_permissions")
-        text_channel_id = int(event.source.chat_id)
-        # Moving to another text channel drops speech buffered for the old one (a same-channel rejoin
-        # keeps it); nothing awaits between this and the binding write, so no poll sees the gap.
-        previous = adapter._voice_text_channels.get(guild_id)
-        if previous is not None and previous != text_channel_id and hasattr(adapter, "discard_pending_voice_input"):
-            adapter.discard_pending_voice_input(guild_id)
-        adapter._voice_text_channels[guild_id] = text_channel_id
-        if hasattr(adapter, "_voice_sources"):
-            adapter._voice_sources[guild_id] = event.source.to_dict()
         self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, "all")
+                               event.source.chat_id, "all", in_call=True)
         return t("gateway.voice.channel_joined", name=voice_channel.name)
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
@@ -197,13 +202,15 @@ class GatewayVoiceMixin:
                 and hasattr(adapter, "is_in_voice_channel")
                 and adapter.is_in_voice_channel(guild_id)):
             return t("gateway.voice.channel_not_joined")
+        text_channel_id = adapter._voice_text_channels.get(guild_id)
         try:
-            await adapter.leave_voice_channel(guild_id)
+            text_channel_id = await adapter.leave_voice_channel(guild_id)
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
-        # Always clean up state even if leave raised an exception
-        self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, "off")
+        if text_channel_id is not None:
+            voice_profile = self._adapter_profile_for_source(event.source)
+            key = self._voice_key(event.source.platform, str(text_channel_id), profile=voice_profile)
+            self._apply_voice_mode(adapter, key, str(text_channel_id), _CALL_ENDED_MODE)
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return t("gateway.voice.channel_left")
@@ -215,7 +222,7 @@ class GatewayVoiceMixin:
             adapter = self.adapters.get(Platform.DISCORD)
         key = self._voice_key(Platform.DISCORD, chat_id,
                               profile=getattr(adapter, "_owner_profile", None))
-        self._apply_voice_mode(adapter, key, chat_id, "off")
+        self._apply_voice_mode(adapter, key, chat_id, _CALL_ENDED_MODE)
 
     def _is_duplicate_voice_transcript(self, binding: tuple, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for one recent utterance (voice capture can emit it twice a

@@ -95,6 +95,7 @@ export const de: Translations = {
   status: {
     actionFailed: "Aktion fehlgeschlagen",
     actionFinished: "Abgeschlossen",
+    actionFinishedOwed: "Aktualisiert, aber noch offen (`hermes update` erneut ausführen, um abzuschließen)",
     actions: "Aktionen",
     agent: "Agent",
     activeSessions: "Aktive Sitzungen",
@@ -162,6 +163,7 @@ export const de: Translations = {
     deleteSelectedConfirmMessage:
       "Dies entfernt {count} ausgewählte Sitzungen und alle zugehörigen Nachrichten dauerhaft. Dies kann nicht rückgängig gemacht werden.",
     selectedSessionsDeleted: "{count} Sitzungen gelöscht",
+    selectedSessionsSkippedActive: "{deleted} gelöscht; {count} behalten, weil noch ein Turn läuft",
     failedToDeleteSelected: "Ausgewählte Sitzungen konnten nicht gelöscht werden",
     resumeInChat: "Im Chat fortsetzen",
     newChat: "Neuer Chat",

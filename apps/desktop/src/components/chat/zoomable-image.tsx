@@ -1,12 +1,15 @@
 'use client'
 
-import { type ComponentProps, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { type ComponentProps, useEffect } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { useZoomPan } from '@/components/ui/use-zoom-pan'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
-import { Download } from '@/lib/icons'
+import { Download, ZoomIn, ZoomOut } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $transcriptLightbox, closeTranscriptLightbox, openTranscriptLightbox } from '@/store/transcript-lightbox'
 
 export interface ZoomableImageProps extends ComponentProps<'img'> {
   containerClassName?: string
@@ -21,6 +24,9 @@ export interface ZoomableImageProps extends ComponentProps<'img'> {
 export interface ImageActionCopy {
   downloadImage: string
   savingImage: string
+  zoomIn: string
+  zoomOut: string
+  resetZoom: string
 }
 
 export function ZoomableImage({
@@ -38,7 +44,14 @@ export function ZoomableImage({
   // thumbnail (`src`) stays the cheap paint.
   const fullSrc = zoomSrc || src || ''
   const { download, saving } = useImageDownload(fullSrc)
-  const [lightboxOpen, setLightboxOpen] = useState(false)
+  // The open flag lives in a store keyed by source identity, not local state:
+  // transcript rows (and the markdown leaves inside them) remount routinely
+  // while a turn streams — the render-budget slice can drop the row, and the
+  // streaming re-parse re-mounts AST leaves — which used to close a
+  // user-opened lightbox with no gesture (#123018). A remounted row reads the
+  // same store and re-presents its own open dialog.
+  const openSrc = useStore($transcriptLightbox)
+  const lightboxOpen = openSrc !== null && openSrc === fullSrc
   const canOpen = Boolean(src)
 
   return (
@@ -51,7 +64,7 @@ export function ZoomableImage({
           aria-label={canOpen ? copy.openImage : undefined}
           className="contents"
           disabled={!canOpen}
-          onClick={() => canOpen && setLightboxOpen(true)}
+          onClick={() => canOpen && openTranscriptLightbox(fullSrc)}
           type="button"
         >
           <img alt={alt ?? ''} className={className} src={src} {...props} />
@@ -65,7 +78,7 @@ export function ZoomableImage({
           alt={alt}
           copy={copy}
           onClick={download}
-          onOpenChange={setLightboxOpen}
+          onOpenChange={open => (open ? openTranscriptLightbox(fullSrc) : closeTranscriptLightbox(fullSrc))}
           open={lightboxOpen}
           saving={saving}
           src={fullSrc}
@@ -92,20 +105,96 @@ export function ImageLightbox({
   saving: boolean
   src: string
 }) {
+  // Shared pan/zoom mechanics (wheel zoom, drag pan, pinch) come from
+  // useZoomPan — the same hook the diagram/artifact viewer uses, so there is a
+  // single source of truth for this gesture math. `moved` lets us close the
+  // lightbox on a clean click while leaving pans/pinches alone.
+  const { moved, panning, ref, reset, scale, stageProps, style, zoomIn, zoomOut } = useZoomPan<HTMLImageElement>({
+    enabled: open
+  })
+
+  // Reset zoom whenever the lightbox opens.
+  useEffect(() => {
+    if (open) {
+      reset()
+    }
+  }, [open, reset])
+
+  const onImageClick = () => {
+    // A pan/pinch gesture must not close the lightbox; only a clean click.
+    if (!moved) {
+      onOpenChange(false)
+    }
+  }
+
+  const cursor = scale > 1 ? (panning ? 'grabbing' : 'grab') : 'zoom-out'
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
         bodyClassName="block overflow-visible p-0"
-        className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
+        chrome={
+          open && (
+            <div
+              className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border/70 bg-background/85 p-1 shadow-lg backdrop-blur"
+              onClick={event => event.stopPropagation()}
+              onPointerDown={event => event.stopPropagation()}
+            >
+              <button
+                aria-label={copy.zoomOut}
+                className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                disabled={scale <= 0.25}
+                onClick={() => zoomOut()}
+                type="button"
+              >
+                <ZoomOut className="size-4" />
+              </button>
+              <button
+                aria-label={copy.resetZoom}
+                className="min-w-14 rounded-full px-2 text-center text-xs font-medium tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                onClick={() => reset()}
+                type="button"
+              >
+                {Math.round(scale * 100)}%
+              </button>
+              <button
+                aria-label={copy.zoomIn}
+                className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                disabled={scale >= 8}
+                onClick={() => zoomIn()}
+                type="button"
+              >
+                <ZoomIn className="size-4" />
+              </button>
+            </div>
+          )
+        }
+        className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent! shadow-none!"
+        // The media-lightbox shell variant. styles.css paints every
+        // [data-slot='dialog-content'] with the themed elevated background +
+        // --shadow-md — fine for opaque dialogs, but this shell is meant to be
+        // an invisible frame around the image: when a zoomed/panned image moves
+        // inside it, that paint shows as a stray box of shell area the image
+        // no longer covers. tailwind-merge cannot drop the base `shadow-nous`
+        // (unknown class group, so it survives next to `shadow-none`), and the
+        // attribute selector out-specifies the plain utilities — hence the
+        // important utilities and the data-variant opt-out in styles.css.
+        data-variant="media-lightbox"
         overlayClassName="bg-black/60"
         showCloseButton={false}
       >
         <div className="group/lightbox relative inline-block">
           <img
             alt={alt ?? ''}
-            className="block max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] cursor-zoom-out select-auto rounded-lg object-contain shadow-2xl"
-            onClick={() => onOpenChange(false)}
+            className={cn(
+              'block max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] select-none rounded-lg object-contain shadow-2xl',
+              panning && 'cursor-grabbing'
+            )}
+            onClick={onImageClick}
+            ref={ref}
             src={src}
+            style={{ ...style, cursor, touchAction: 'none' }}
+            {...stageProps}
           />
           <ImageActionButton
             className="group-hover/lightbox:opacity-100"

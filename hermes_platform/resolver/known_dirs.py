@@ -25,17 +25,6 @@ def rust_tool_dirs() -> tuple[str, ...]:
     return ("~/.cargo/bin",) if _POSIX else ("%USERPROFILE%/.cargo/bin",)
 
 
-def uv_tool_dirs() -> tuple[str, ...]:
-    """uv's install locations outside PATH, in uv's own install order: the per-user
-    installer's ``~/.local/bin`` (every OS — that is where uv's docs put it), then
-    Homebrew (Apple Silicon ``/opt``, Intel / from-source ``/usr/local``). The tilde
-    form is deliberate: callers that only ``expanduser`` (the stdio launcher
-    fallback) get the same result as ``locate_command``'s expandvars+expanduser."""
-    if _POSIX:
-        return ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin")
-    return ("~/.local/bin",)
-
-
 def node_tool_dirs() -> tuple[str, ...]:
     return ("~/.npm-global/bin", "~/.bun/bin", "~/.volta/bin") if _POSIX else ("%APPDATA%/npm", "%USERPROFILE%/.bun/bin", "%LOCALAPPDATA%/Volta/bin")
 
@@ -52,3 +41,16 @@ def windows_user_program_dirs() -> tuple[str, ...]:
         "%USERPROFILE%/scoop/shims",
         "%LOCALAPPDATA%/Microsoft/WinGet/Links",
     )
+
+
+def mac_application_dirs() -> tuple[str, ...]:
+    return ("/Applications", "~/Applications") if sys.platform == "darwin" else ()
+
+
+def flatpak_export_dirs() -> tuple[str, ...]:
+    """Where flatpak links each installed app's launcher, named by its app id (system, then per-user)."""
+    return ("/var/lib/flatpak/exports/bin", "~/.local/share/flatpak/exports/bin") if sys.platform.startswith("linux") else ()
+
+
+def snap_bin_dirs() -> tuple[str, ...]:
+    return ("/snap/bin",) if sys.platform.startswith("linux") else ()

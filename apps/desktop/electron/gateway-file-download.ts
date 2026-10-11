@@ -330,7 +330,43 @@ export function filenameFromContentDisposition(value: unknown): string {
   }
 }
 
+export interface SaveDialogFilter {
+  name: string
+  extensions: string[]
+}
+
+const ALL_FILES: SaveDialogFilter = { name: 'All Files', extensions: ['*'] }
+
+// Build the Electron save-dialog `filters` for a resolved download name.
+//
+// Not cosmetic. Electron hands `filters` to the platform save dialog as its set
+// of file types, and on Windows the selected type is also what supplies the
+// default extension. Omit it and the dialog has exactly one type, "All Files",
+// with no default extension to append — so a name the shell chose to display
+// without its extension is then SAVED without it, and a .pptx lands as a
+// typeless "File" that Explorer cannot open (#92480). The image-save dialog
+// already carries a filter for the same reason.
+//
+// The extension is whitelisted rather than merely extracted, because the name
+// it comes from can be attacker-influenced: `filenameFromContentDisposition`
+// reads a server-supplied header. A filter is a poor injection target, but an
+// unbounded string from the network has no business reaching a native dialog,
+// and anything failing the test still saves — under "All Files", exactly as
+// it does today.
+export function saveDialogFilters(filename: unknown): SaveDialogFilter[] {
+  const name = path.basename(String(filename || '').trim())
+  const ext = path.extname(name).replace(/^\./, '').toLowerCase()
+
+  if (!/^[a-z0-9]{1,16}$/.test(ext)) {
+    return [ALL_FILES]
+  }
+
+  return [{ name: `${ext.toUpperCase()} File`, extensions: [ext] }, ALL_FILES]
+}
+
 // Preserve file URIs: only the gateway knows its native drive/UNC semantics.
+// Normalize a gateway file path that may arrive as a bare path or a file:// URL.
+
 export function gatewayFilePath(rawPath: unknown): string {
   return String(rawPath || '').trim()
 }
@@ -353,6 +389,7 @@ export interface GatewayFileSaveResult {
 
 export interface GatewaySaveDialogOptions {
   defaultPath: string
+  filters?: SaveDialogFilter[]
   title: string
 }
 
@@ -392,7 +429,11 @@ export async function finalizeGatewayDownload(
   const filename: string = filenameFromContentDisposition(disposition) || context.suggested || context.fallbackName
 
   try {
-    const result: GatewaySaveDialogResult = await deps.showSaveDialog({ defaultPath: filename, title: 'Save File' })
+    const result: GatewaySaveDialogResult = await deps.showSaveDialog({
+      defaultPath: filename,
+      filters: saveDialogFilters(filename),
+      title: 'Save File'
+    })
 
     if (result.canceled || !result.filePath) {
       abort()
@@ -461,6 +502,7 @@ export async function saveGatewayDownload(
 
   const result: GatewaySaveDialogResult = await deps.showSaveDialog({
     defaultPath: context.suggested || context.fallbackName,
+    filters: saveDialogFilters(context.suggested || context.fallbackName),
     title: 'Save File'
   })
 

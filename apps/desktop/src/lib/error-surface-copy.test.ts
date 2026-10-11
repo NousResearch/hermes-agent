@@ -52,3 +52,19 @@ it.each(['zh', 'zh-hant', 'ja'] as const)(
     }
   }
 )
+
+it('does not blame a slow reply when the provider could not be reached', () => {
+  // The backend stamps `timeout` for refused connections and DNS failures too
+  // (agent/error_classifier.py _CONNECTION_MESSAGE_PATTERNS).
+  const surface = parseErrorSurface({
+    layer: 'provider',
+    code: 'timeout',
+    provider_label: 'OpenCode Go',
+    retryable: true
+  })
+
+  const copy = errorCardText(TRANSLATIONS.en.assistant.thread, surface)
+
+  expect(copy.title).toBe('Could not reach the AI service')
+  expect(copy.body).toContain('OpenCode Go could not be reached')
+})

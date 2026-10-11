@@ -91,7 +91,7 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
     monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: False)
     monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: False)
     monkeypatch.setattr(
-        "agent.auxiliary_client.get_available_vision_backends", lambda: []
+        "agent.auxiliary_client.get_available_vision_backends", list
     )
 
     _print_setup_summary(load_config(), tmp_path)

@@ -53,13 +53,33 @@ def home_in_update_scope(home, scope: set[Path] | None = None) -> bool:
     return resolved in (update_scope_homes() if scope is None else scope)
 
 
-def gateway_pid_in_update_scope(pid: int, scope: set[Path] | None = None) -> bool | None:
-    """Does gateway *pid* run on a home this update owns? ``None`` when its home cannot be read."""
+def _ledger_gateway_home(pid: int) -> str | None:
+    """Home this install's spawn ledger records for gateway *pid* (``register_self`` at gateway boot),
+    only for an exact live ``(pid, create_time)`` match. Proof for a gateway whose environment is
+    unreadable (elevated, or another account's service) while its create time still is."""
+    with suppress(Exception):
+        from hermes_cli.process_identity import ledger_entries
+        for entry in ledger_entries(verified_only=True):
+            if entry.get("pid") == pid and entry.get("purpose") == "gateway":
+                return entry.get("hermes_home") or None
+    return None
+
+
+def gateway_pid_home(pid: int) -> str | None:
+    """The home gateway *pid* runs on: its live environment, else the exact-birth ledger witness;
+    ``None`` when neither proves one. Discovery, the Windows pause record and its readiness check
+    share it, so the home discovery proved is the home the restart debt keeps."""
     from hermes_cli.dashboard_procs import _hermes_home_for_pid
     try:
         home = _hermes_home_for_pid(pid)
-    except Exception:
-        return None
+    except Exception:  # health: allow BLE001 -- tri-state resolver: any environment-read failure is "unknown" and the ledger witness decides
+        home = None
+    return home or _ledger_gateway_home(pid)
+
+
+def gateway_pid_in_update_scope(pid: int, scope: set[Path] | None = None) -> bool | None:
+    """Does gateway *pid* run on a home this update owns? ``None`` when its home cannot be read."""
+    home = gateway_pid_home(pid)
     if home is None:
         return None
     return home_in_update_scope(home, scope)

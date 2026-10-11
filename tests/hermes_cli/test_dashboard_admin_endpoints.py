@@ -390,6 +390,12 @@ class TestWebhookEndpoints:
         subs = self.client.get("/api/webhooks").json()["subscriptions"]
         assert subs[0]["script"] == "todoist_filter.py"
 
+        # A re-POST is a general update, not an enable: an explicit disable must survive it.
+        assert self.client.put("/api/webhooks/todoist/enabled", json={"enabled": False}).status_code == 200
+        assert self.client.post("/api/webhooks", json={"name": "todoist", "deliver": "log"}).status_code == 200
+        from hermes_cli.webhook import _load_subscriptions
+        assert _load_subscriptions()["todoist"]["enabled"] is False
+
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         from hermes_cli.config import load_config
 
@@ -417,7 +423,8 @@ class TestWebhookEndpoints:
             "restart_action": "gateway-restart",
             "restart_pid": 4242,
         }
-        assert restart_calls == [(["gateway", "restart"], "gateway-restart")]
+        # The default home is named explicitly: a bare child would re-read the sticky active_profile.
+        assert restart_calls == [(["-p", "default", "gateway", "restart"], "gateway-restart")]
         assert load_config()["platforms"]["webhook"]["enabled"] is True
         assert self.client.get("/api/webhooks").json()["enabled"] is True
 
@@ -687,7 +694,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_returns_skill_md_text(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", list
         )
         bundle = _FakeBundle("github/owner/repo/x")
         meta = _FakeMeta("github/owner/repo/x")
@@ -708,7 +715,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_404_when_unresolved(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", list
         )
         monkeypatch.setattr(
             "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
@@ -728,7 +735,7 @@ class TestSkillsHubScanEndpoint:
         from tools.skills_guard import ScanResult, Finding
 
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", list
         )
         bundle = _FakeBundle("github/owner/repo/x", trust_level="community")
         monkeypatch.setattr(
@@ -797,7 +804,7 @@ class TestUpdateCheckEndpoint:
 
         monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
         # Stub the shared checker so the contract is deterministic (no network).
-        import hermes_cli.banner as banner
+        from hermes_cli import banner
 
         monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {"behind": 5, "commits": []})
 
@@ -998,7 +1005,7 @@ def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypat
     import sys
     from pathlib import Path
 
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
     import hermes_cli.web_server as ws
 
     user_home = tmp_path / "user"
@@ -1146,3 +1153,31 @@ def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
         pass
 
     assert calls == ["terminate"]
+
+
+def test_desktop_lifespan_reaps_orphans_with_a_startup_grace(monkeypatch):
+    """The boot sweep must pass the startup grace, not reap a just-launching gateway (#122533).
+
+    Asserting only "the reaper ran" would not catch a revert to the bare
+    ``_reap_unsupervised_gateway_orphans()`` call, which is exactly the regression.
+    """
+    import hermes_cli.web_server as ws
+    from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
+
+    seen = {}
+
+    def _fake_reap(extra_exclude=None, *, min_age_s=0.0):
+        seen["min_age_s"] = min_age_s
+        return False
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+    monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
+    monkeypatch.setattr("hermes_cli.gateway._reap_unsupervised_gateway_orphans", _fake_reap)
+
+    client, _header = _client()
+    with client:
+        pass
+
+    assert seen["min_age_s"] == _REAP_MIN_AGE_SECONDS

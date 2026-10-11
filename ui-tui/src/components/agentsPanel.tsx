@@ -6,6 +6,8 @@ import { useEffect, useState } from 'react'
 import { $agentDockCollapsed, useAgentRoster } from '../app/agentRoster.js'
 import { type ProcessRow, useProcessRows } from '../app/processRoster.js'
 import { $uiState } from '../app/uiStore.js'
+import { messages } from '../i18n/runtime.js'
+import { useT } from '../i18n/useT.js'
 import { type AgentRows, buildAgentRows, dockRowLimit } from '../lib/agentRows.js'
 import { processGlyph } from '../lib/processGlyph.js'
 import { statusGlyph } from '../lib/subagentGlyph.js'
@@ -53,8 +55,9 @@ export const splitDockBudget = (
 
 export const processSummary = (block: ProcessBlock): string => {
   const done = block.total - block.running
+  const T = messages().hubs.agentsPanel
 
-  return [block.running ? `${block.running} running` : '', done ? `${done} done` : ''].filter(Boolean).join(' · ')
+  return [block.running ? T.running(block.running) : '', done ? T.done(done) : ''].filter(Boolean).join(' · ')
 }
 
 /** One `⚙ command · 42s · last: …` line per process; the exit verdict replaces the
@@ -82,19 +85,21 @@ export function AgentsPanelView({
   running,
   t
 }: AgentRows & { collapsed?: boolean; cols: number; processes?: ProcessBlock; t: Theme }) {
+  const T = useT().hubs.agentsPanel
+
   if (!running && !processes.total) {
     return null
   }
 
   const counts = [
-    running ? `${running} live agents` : '',
-    processes.total ? (processes.running ? `${processes.running} procs` : `${processes.total} done`) : ''
+    running ? T.liveAgents(running) : '',
+    processes.total ? (processes.running ? T.procs(processes.running) : T.procsDone(processes.total)) : ''
   ]
     .filter(Boolean)
     .join(' · ')
 
   const summary = `▸ ${counts}`
-  const hints = ' · Ctrl+T expand · Ctrl+R restore'
+  const hints = T.collapsedHint
   const activityWidth = cols - stringWidth(summary + hints) - 3
   const firstDetail = rows[0]?.detail ?? processes.rows[0]?.detail ?? ''
   const activity = firstDetail && activityWidth >= 12 ? ` · ${compactPreview(firstDetail, activityWidth)}` : ''
@@ -113,7 +118,7 @@ export function AgentsPanelView({
       ) : null}
       {!collapsed && running ? (
         <Text bold color={t.color.accent} wrap="truncate-end">
-          {`▾ ${running} live agents${hidden ? ` · +${hidden} more` : ''} · Ctrl+T expand · Ctrl+R collapse`}
+          {`▾ ${T.liveAgents(running)}${hidden ? T.moreHidden(hidden) : ''}${T.expandedHint}`}
         </Text>
       ) : null}
       {!collapsed &&
@@ -129,8 +134,8 @@ export function AgentsPanelView({
         ))}
       {!collapsed && processes.total ? (
         <Text bold color={t.color.accent} wrap="truncate-end">
-          {`▾ Processes · ${processSummary(processes)}${processes.hidden ? ` · +${processes.hidden} more` : ''}${
-            running ? '' : ' · Ctrl+T expand · Ctrl+R collapse'
+          {`▾ ${T.processes} · ${processSummary(processes)}${processes.hidden ? T.moreHidden(processes.hidden) : ''}${
+            running ? '' : T.expandedHint
           }`}
         </Text>
       ) : null}

@@ -1,6 +1,8 @@
 """R2 channel wire protocol. Names are data; no local channel registry exists."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
 import json
@@ -253,6 +255,25 @@ class _NoRedirect(HTTPRedirectHandler):
         raise ChannelError("Channel archive redirects are not permitted")
 
 
+_RETRY_READS: ContextVar[bool] = ContextVar("release_channel_read_retries", default=False)
+
+
+@contextmanager
+def retrying_reads():
+    """Let channel reads inside the block wait out a CDN blip with PM's bounded retries.
+
+    Only an explicit ``hermes update`` opts in. Passive checks (``hermes --version``, the
+    banner, the Desktop/dashboard update check) make one attempt: offline also reads as
+    transient (DNS EAI_AGAIN, ENETUNREACH), so retrying there adds backoff to a synchronous
+    status line, stretches a hung CDN from 30 s to ~2 min and logs a WARNING per retry.
+    """
+    token = _RETRY_READS.set(True)
+    try:
+        yield
+    finally:
+        _RETRY_READS.reset(token)
+
+
 class ChannelReader:
     def __init__(self, base_url: str, repository: str | None = None, opener=None):
         self.base_url = public_base(base_url)
@@ -263,11 +284,19 @@ class ChannelReader:
         url = self.base_url + "/" + artifact_key(key)
         if sha256 is not None:
             require_sha256(sha256)
-        try:
+
+        # Channel reads are idempotent and precede the PM download path, so an explicit update
+        # uses the same bounded transient-failure policy instead of a second retry classifier.
+        from pm.network import retry_network
+
+        def read() -> bytes:
             with self.opener(Request(url, headers={"Cache-Control": "no-cache"}), timeout=30) as response:
                 if response.geturl() != url:
                     raise ChannelError("Channel archive redirects are not permitted")
-                body = response.read(MAX_METADATA + 1)
+                return response.read(MAX_METADATA + 1)
+
+        try:
+            body = retry_network(read) if _RETRY_READS.get() else read()
         except HTTPError as exc:
             if exc.code == 404:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc

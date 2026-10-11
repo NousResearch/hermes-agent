@@ -87,6 +87,62 @@ with sqlite3.connect(sys.argv[1]) as c:
   }
 })
 
+test('a managed installation runs the snapshot through the installation launcher', (): void => {
+  const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-preflight-'))
+  const shims: string = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-shim-'))
+  const python: string = process.env.HERMES_PYTHON || 'python3'
+  const script: string = fileURLToPath(new URL('../../../../hermes_cli/backup_sqlite.py', import.meta.url))
+
+  // Stand-in for the installation launcher under `.hermes/bin`: it must accept
+  // exactly what the runtime passes it — `--run-module hermes_cli.backup_sqlite
+  // <home>` — and publish the snapshot like the real launcher does.
+  const shim: string = path.join(shims, process.platform === 'win32' ? 'hermes.cmd' : 'hermes')
+  fs.writeFileSync(
+    shim,
+    process.platform === 'win32'
+      ? `@echo off\r\n"${python}" -I -S "${script}" %3\r\n`
+      : `#!/bin/sh\nexec "${python}" -I -S "${script}" "$3"\n`
+  )
+
+  if (process.platform !== 'win32') {
+    fs.chmodSync(shim, 0o755)
+  }
+
+  const logs: string[] = []
+
+  try {
+    const created = spawnSync(
+      python,
+      [
+        '-I',
+        '-S',
+        '-c',
+        "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('CREATE TABLE t (x)'); c.commit(); c.close()",
+        path.join(home, 'state.db')
+      ],
+      { encoding: 'utf8' }
+    )
+
+    assert.equal(created.status, 0, created.stderr)
+
+    preflightStateDb({
+      python: null,
+      launcher: shim,
+      script,
+      home,
+      log: (message: string): void => {
+        logs.push(message)
+      }
+    })
+
+    const backups: string[] = fs.readdirSync(home).filter((name: string): boolean => name.endsWith('.bak'))
+    assert.equal(backups.length, 1, logs.join('\n'))
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(shims, { recursive: true, force: true })
+  }
+})
+
 test('an older selected checkout without the snapshot helper refuses before backend stop', (): void => {
   const oldRoot: string = fs.mkdtempSync(path.join(os.tmpdir(), 'old-preflight-'))
   let stopped = false

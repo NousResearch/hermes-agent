@@ -77,7 +77,7 @@ class SubagentHandle:
         return dataclasses.asdict(self)
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "SubagentHandle":
+    def from_dict(cls, value: Mapping[str, Any]) -> SubagentHandle:
         try:
             return cls(**dict(value))
         except (TypeError, ValueError) as exc:
@@ -174,7 +174,7 @@ def bind_subagent_parent(parent_agent: Any):
     try:
         ref = weakref.ref(parent_agent)
     except TypeError:
-        ref = lambda: parent_agent  # noqa: E731 — non-weakrefable test doubles
+        ref = lambda: parent_agent
     token = _ACTIVE_PARENT_AGENT.set(ref)
     try:
         yield

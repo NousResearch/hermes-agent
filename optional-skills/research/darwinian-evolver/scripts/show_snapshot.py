@@ -56,10 +56,10 @@ def main() -> int:
     # The outer pickle wraps a dict; the inner pickle contains the actual organism
     # objects, which must be importable under their original dotted path. If you
     # ran a custom driver, make sure its module is on sys.path before calling this.
-    outer = pickle.loads(args.snapshot.read_bytes())  # noqa: S301 — gated by --i-trust-this-file
+    outer = pickle.loads(args.snapshot.read_bytes())
     if not isinstance(outer, dict) or "population_snapshot" not in outer:
         sys.exit("not a darwinian-evolver snapshot (no population_snapshot key)")
-    inner = pickle.loads(outer["population_snapshot"])  # noqa: S301 — gated by --i-trust-this-file
+    inner = pickle.loads(outer["population_snapshot"])
     pairs = inner["organisms"]  # list of (Organism, EvaluationResult)
 
     print(f"# organisms: {len(pairs)}\n")

@@ -7,8 +7,8 @@ of that this module stages what a real user machine looks like to the installer 
   the official clone URLs are rewritten to by the sandbox's own ``~/.gitconfig``, plus a ``git``
   wrapper that reports the official URL for ``remote get-url origin`` (``insteadOf`` would
   otherwise expose the local path and send the updater down the fork path);
-* the real host uv on PATH as an optional warm-cache shortcut; the installer
-  still rejects a version below its PM pin and provisions the pinned artifact;
+* the real host uv on PATH, which the installer must ignore: it always provisions the pinned
+  PM artifact;
 * ``TMPDIR`` inside the sandbox root (the host's is not writable in the sandbox).
 """
 
@@ -38,7 +38,7 @@ def real_uv() -> str | None:
 
 def git(*args: str, cwd: Path, check: bool = True, env: dict | None = None) -> str:
     cp = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
-                        env=env or {**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                        env=env or {**os.environ, "GIT_TERMINAL_PROMPT": "0"}, check=False)
     if check and cp.returncode != 0:
         raise AssertionError(f"git {args} failed in {cwd}: {cp.stderr}")
     return cp.stdout.strip()
@@ -51,12 +51,19 @@ def head_sha() -> str:
 
 
 def make_origin(root: Path, ref: str) -> Path:
-    """Bare origin with ``main`` at ``ref``."""
+    """Bare origin with ``main`` at ``ref``.
+
+    ``--single-branch``: only this checkout's branch is copied, never every local branch of the
+    host repository (a blobless developer clone holds branches whose blobs it never fetched, and
+    serving those makes the installer's clone die with ``unable to read <sha>``).
+    ``uploadpack.allowFilter``: a blobless host checkout's object store is itself partial, and the
+    installer's clone of this origin needs the filter capability to be served from it."""
     origin = root / "origin.git"
-    git("clone", "-q", "--bare", "--shared", "--no-tags", str(H.WORKTREE), str(origin), cwd=root)
+    git("clone", "-q", "--bare", "--shared", "--no-tags", "--single-branch", str(H.WORKTREE), str(origin), cwd=root)
     git("update-ref", "refs/heads/main", ref, cwd=origin)
     git("symbolic-ref", "HEAD", "refs/heads/main", cwd=origin)
     git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=origin)
+    git("config", "uploadpack.allowFilter", "true", cwd=origin)
     return origin
 
 
@@ -156,6 +163,17 @@ def run_installer(sb: Sandbox, *, timeout: float = 1800) -> subprocess.Completed
     shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
     return sb.run(["bash", str(script), "--non-interactive"],
                   timeout=timeout, input="")
+
+
+def pin_main_channel(sb: Sandbox) -> None:
+    """Follow every commit on main, as `hermes update --set-channel main` records it.
+
+    An official-origin source checkout defaults to the stable channel (the latest published GitHub
+    release). These sandboxes publish commits on main and no releases, and their subject is moving
+    between commits; channel resolution has its own suites (test_release_channel_records,
+    tests/hermes_cli/test_source_release_channels.py)."""
+    cp = sb.cli("update", "--set-channel", "main", timeout=120)
+    assert cp.returncode == 0 and "Update channel for" in cp.stdout, "could not pin the main channel:\n" + describe(cp)
 
 
 def provider_config(base_url: str, version: int | None, extra: str = "") -> str:

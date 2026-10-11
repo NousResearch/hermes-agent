@@ -22,20 +22,21 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import merge_pending_message_event
+from gateway.platforms.base_pending_merge import merge_pending_message_event
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import (
     GatewayRunner,
-    _build_media_placeholder,
     _event_media_is_audio,
     _event_media_is_image,
     _event_media_is_video,
 )
+from gateway.run_inbound_media import _build_media_placeholder
 from gateway.session import SessionSource
 
 
 def _evt(media_urls, media_types, message_type):
-    return SimpleNamespace(
+    return MessageEvent(
+        text="",
         media_urls=media_urls,
         media_types=media_types,
         message_type=message_type,

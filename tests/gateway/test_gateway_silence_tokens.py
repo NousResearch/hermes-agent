@@ -43,7 +43,7 @@ def _runner(monkeypatch, tmp_path):
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._is_user_authorized = lambda _source: True
-    runner._set_session_env = lambda _context: None
+    runner._set_session_env = lambda _context: []
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
     runner._session_db = MagicMock()
     runner._recover_telegram_topic_thread_id = lambda _source: None
@@ -274,7 +274,7 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
 ])
 def test_one_turn_answering_several_messages_is_addressed_if_any_was(opener, absorbed, merged):
     """A merged pending message answers both texts, so an addressed one keeps the fallback."""
-    from gateway.platforms.base import merge_pending_message_event
+    from gateway.platforms.base_pending_merge import merge_pending_message_event
 
     pending = {"k": _event(reply_expected=opener)}
     merge_pending_message_event(pending, "k", _event(reply_expected=absorbed), merge_text=True)

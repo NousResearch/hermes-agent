@@ -9,6 +9,8 @@ Telegram and Feishu.
 """
 
 import asyncio
+from dataclasses import replace
+from importlib import import_module
 from unittest.mock import AsyncMock
 
 import pytest
@@ -107,10 +109,12 @@ def _make_matrix_adapter():
     adapter = object.__new__(MatrixAdapter)
     adapter._platform = adapter.platform = Platform.MATRIX
     adapter.config = config
+    adapter._client = None
+    adapter._text_batch_intakes = {}
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
-    adapter._text_batch_delay_seconds = 0.1
-    adapter._text_batch_split_delay_seconds = 0.3
+    adapter._text_batch_delay_seconds = 0.0
+    adapter._text_batch_split_delay_seconds = 0.0
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._message_handler = AsyncMock()
@@ -127,7 +131,7 @@ class TestMatrixTextBatching:
         adapter._enqueue_text_event(event)
 
         adapter.handle_message.assert_not_called()
-        await asyncio.sleep(0.2)
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
 
         adapter.handle_message.assert_called_once()
         assert adapter.handle_message.call_args[0][0].text == "hello world"
@@ -137,11 +141,10 @@ class TestMatrixTextBatching:
         adapter = _make_matrix_adapter()
 
         adapter._enqueue_text_event(_make_event("first part", Platform.MATRIX))
-        await asyncio.sleep(0.02)
         adapter._enqueue_text_event(_make_event("second part", Platform.MATRIX))
 
         adapter.handle_message.assert_not_called()
-        await asyncio.sleep(0.2)
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
 
         adapter.handle_message.assert_called_once()
         text = adapter.handle_message.call_args[0][0].text
@@ -201,3 +204,139 @@ class TestWeComTextBatching:
         text = adapter.handle_message.call_args[0][0].text
         assert "first part" in text
         assert "second part" in text
+
+
+_ADAPTER_TYPES = {
+    Platform.DISCORD: ("plugins.platforms.discord.adapter", "DiscordAdapter"),
+    Platform.MATRIX: ("plugins.platforms.matrix.adapter", "MatrixAdapter"),
+    Platform.WHATSAPP: ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+    Platform("simplex"): ("plugins.platforms.simplex.adapter", "SimplexAdapter"),
+    Platform.WECOM: ("plugins.platforms.wecom.adapter", "WeComAdapter"),
+}
+
+
+def _make_reply_batch_adapter(platform: Platform):
+    module, adapter_type = _ADAPTER_TYPES[platform]
+    adapter = object.__new__(getattr(import_module(module), adapter_type))
+    if platform == Platform.MATRIX:
+        adapter._client = None
+        adapter._text_batch_intakes = {}
+        adapter._buffered_intakes = {}
+    adapter._platform = adapter.platform = platform
+    adapter.config = PlatformConfig(enabled=True, token="test-token")
+    adapter._background_tasks = set()
+    adapter._pending_text_batches = {}
+    adapter._pending_text_batch_tasks = {}
+    adapter._text_batch_delay_seconds = 0
+    adapter._text_batch_split_delay_seconds = 0
+    adapter._attachment_text_merge_delay_seconds = 0
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", tuple(_ADAPTER_TYPES))
+@pytest.mark.parametrize(
+    "boundary",
+    (
+        "same", "plain-first", "plain-last", "reply_to_message_id",
+        "reply_to_text", "reply_to_author_id", "reply_to_author_name",
+        "reply_to_is_own_message", "attachment-caption",
+    ),
+)
+async def test_shared_batches_preserve_reply_context_and_attachment_positions(
+    platform, boundary
+):
+    adapter = _make_reply_batch_adapter(platform)
+    first = _make_event("first", platform)
+    first.reply_to_message_id = "reply-a"
+    first.reply_to_text = "quoted text"
+    first.reply_to_author_id = "author-a"
+    first.reply_to_author_name = "Author A"
+    first.reply_to_is_own_message = False
+    first.media_urls = ["/tmp/first.png"]
+    first.media_types = ["image/png"]
+    first.media_text_inlined = []
+    second = replace(
+        first, text="second", media_urls=["/tmp/second.txt"],
+        media_types=["text/plain"], media_text_inlined=[False],
+    )
+    if boundary.startswith("reply_to_"):
+        setattr(second, boundary, True if boundary == "reply_to_is_own_message" else "other")
+    if boundary in {"plain-first", "plain-last"}:
+        plain = first if boundary == "plain-first" else second
+        plain.reply_to_message_id = plain.reply_to_text = None
+        plain.reply_to_author_id = plain.reply_to_author_name = None
+        plain.reply_to_is_own_message = False
+    if boundary == "attachment-caption":
+        first.text = ""
+        first.message_type = MessageType.PHOTO
+        second.message_type = MessageType.TEXT
+        second.reply_to_message_id = "reply-b"
+    separated = boundary.startswith("reply_to_") or boundary == "attachment-caption"
+    if separated:
+        expected = [replace(first), replace(second)]
+    else:
+        context = second if boundary == "plain-first" else first
+        expected = [replace(
+            first, text="first\nsecond",
+            reply_to_message_id=context.reply_to_message_id,
+            reply_to_text=context.reply_to_text,
+            reply_to_author_id=context.reply_to_author_id,
+            reply_to_author_name=context.reply_to_author_name,
+            reply_to_is_own_message=context.reply_to_is_own_message,
+            media_urls=first.media_urls + second.media_urls,
+            media_types=first.media_types + second.media_types,
+            media_text_inlined=[None, False],
+        )]
+
+    adapter._enqueue_text_event(first)
+    adapter._enqueue_text_event(second)
+    await asyncio.wait_for(asyncio.gather(
+        *adapter._background_tasks, *adapter._pending_text_batch_tasks.values()
+    ), timeout=5)
+    actual = [call.args[0] for call in adapter.handle_message.await_args_list]
+    assert actual == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", tuple(_ADAPTER_TYPES))
+async def test_shared_reply_boundary_preserves_an_in_flight_dispatch(platform):
+    adapter = _make_reply_batch_adapter(platform)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    first = _make_event("first", platform)
+    first.reply_to_message_id = "reply-a"
+    second = _make_event("second", platform)
+    second.reply_to_message_id = "reply-b"
+    expected = [replace(first), replace(second)]
+
+    async def dispatch(event):
+        if event is first:
+            started.set()
+            await release.wait()
+            finished.set()
+
+    adapter.handle_message.side_effect = dispatch
+    try:
+        adapter._enqueue_text_event(first)
+        adapter._enqueue_text_event(second)
+        boundary_tasks = tuple(adapter._background_tasks)
+        await asyncio.wait_for(started.wait(), timeout=5)
+        for task in boundary_tasks:
+            task.cancel()
+        await asyncio.wait_for(asyncio.gather(*boundary_tasks), timeout=5)
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=5)
+        await asyncio.wait_for(asyncio.gather(
+            *adapter._pending_text_batch_tasks.values()
+        ), timeout=5)
+    finally:
+        release.set()
+        tasks = (*adapter._background_tasks, *adapter._pending_text_batch_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+    actual = [call.args[0] for call in adapter.handle_message.await_args_list]
+    assert actual == expected

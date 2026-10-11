@@ -979,6 +979,32 @@ class TestCrossPlatformDeliveryMirror:
         assert self._transcript(default_home, "dm-default") == []
 
 
+    @pytest.mark.asyncio
+    async def test_opted_in_delivery_mirrors_into_a_matrix_room_session(self, homes):
+        """The webhook passes no chat type, so the mirror finds the room's session by its origin."""
+        from hermes_state import SessionDB
+
+        default_home, _ = homes
+        room = "!reports:example.org"
+        db = SessionDB(db_path=default_home / "state.db")
+        db.create_session("matrix-room", source="matrix")
+        assert db._conn is not None
+        db._conn.execute("UPDATE sessions SET session_key=?, chat_id=?, user_id=? WHERE id=?",
+                         (f"agent:main:matrix:group:{room}:@alice:example.org", room,
+                          "@alice:example.org", "matrix-room"))
+        db._conn.commit()
+        db.close()
+        adapter = self._attach_target(_make_adapter())
+        delivery = {"deliver": "matrix", "route": "reports", "mirror": True,
+                    "deliver_extra": {"chat_id": room}}
+
+        result = await adapter._deliver_cross_platform("matrix", "Build finished", delivery)
+
+        assert result.success is True
+        assert self._transcript(default_home, "matrix-room") == [
+            ("user", "[Webhook delivery: reports]\nBuild finished")]
+
+
 class TestInsecureNoAuthSafetyRail:
     """connect() refuses to start when INSECURE_NO_AUTH is combined with a
     non-loopback bind. Guards against accidentally exposing an unauthenticated

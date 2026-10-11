@@ -17,6 +17,8 @@ See tests/cron/test_shutdown_interrupt.py for the cron-side primitives
 this relies on (get_running_job_ids, mark_running_jobs_interrupted).
 """
 
+from cron import scheduler_interrupt as interruption
+
 import asyncio
 from unittest.mock import patch
 
@@ -98,18 +100,19 @@ class TestKillToolSubprocessesMarksCronInterrupted:
         monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         marked_calls = []
-        real_mark = sched.mark_running_jobs_interrupted
+        real_mark = interruption.mark_running_jobs_interrupted
 
         def _spy(reason):
             result = real_mark(reason)
             marked_calls.append((reason, result))
             return result
 
-        monkeypatch.setattr(sched, "mark_running_jobs_interrupted", _spy)
+        monkeypatch.setattr(interruption, "mark_running_jobs_interrupted", _spy)
 
         with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"), \
              patch("cron.scheduler.mark_job_run"):
             await runner.stop()
 
         assert marked_calls, "mark_running_jobs_interrupted was never called during shutdown"
-        assert any(result == ["job-1"] for _reason, result in marked_calls)
+        home = sched._get_hermes_home().resolve()
+        assert any(result == [interruption.InterruptedCronRun("job-1", home)] for _reason, result in marked_calls)

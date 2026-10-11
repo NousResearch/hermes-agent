@@ -38,6 +38,7 @@ def _make_runner(session_entry: SessionEntry):
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter.send = AsyncMock()
     adapter._pending_messages = {}
     runner.adapters = {Platform.TELEGRAM: adapter}

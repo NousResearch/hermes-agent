@@ -3,6 +3,7 @@ hydration / the lazy watch path must NOT clear ``ended_at``/``end_reason`` — o
 first real turn (prompt.submit) reopens the row, so DB-derived liveness cannot re-light
 a finished session just because someone opened it."""
 
+import contextlib
 import io
 import json
 import threading
@@ -206,4 +207,111 @@ def test_compute_host_child_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     finally:
         server._sessions.pop("child-sid", None)
         host.close()
+        db.close()
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["inline", "isolated"])
+@pytest.mark.parametrize("claim_state", ["current", "stopped", "replaced"])
+def test_submit_reopens_only_for_its_owned_claim(
+    tmp_path, monkeypatch, isolated, claim_state
+):
+    db, home = _finalized_db(tmp_path)
+    _mount(monkeypatch, db, home, tmp_path)
+    monkeypatch.setattr(
+        server,
+        "_session_uses_compute_host",
+        lambda session, cfg=None: isolated if cfg else False,
+    )
+    monkeypatch.setattr(
+        server,
+        "_load_dashboard_process_isolation_config",
+        lambda: {"turn_isolation": isolated},
+    )
+    monkeypatch.setattr(server, "_start_turn_thread", lambda *args: True)
+    dispatched = []
+
+    def submit_turn(frame, on_complete):
+        dispatched.append(frame["text"])
+
+    monkeypatch.setattr(
+        server,
+        "_get_compute_host_supervisor",
+        lambda *args: types.SimpleNamespace(submit_turn=submit_turn),
+    )
+    monkeypatch.setattr(
+        server,
+        "_compute_host_turn_frame",
+        lambda rid, sid, session, text, **kwargs: {"sid": sid, "text": text},
+    )
+    admission = server._session_turn_admission
+    sid = None
+    try:
+        mounted = server.handle_request({
+            "id": "resume",
+            "method": "session.resume",
+            "params": {"session_id": "finalized", "source": "desktop", "lazy": True},
+        })
+        assert mounted is not None and "error" not in mounted, mounted
+        sid = mounted["result"]["session_id"]
+        session = server._sessions[sid]
+        session["agent"] = types.SimpleNamespace(
+            session_id="finalized", clear_interrupt=lambda: None
+        )
+        session["agent_ready"] = threading.Event()
+
+        @contextlib.contextmanager
+        def stop_after_admission(current):
+            with admission(current) as admitted:
+                yield admitted
+            if claim_state == "current":
+                return
+            interrupted = server.handle_request({
+                "id": "stop",
+                "method": "session.interrupt",
+                "params": {"session_id": sid},
+            })
+            assert interrupted is not None and "error" not in interrupted, interrupted
+            if claim_state == "replaced":
+                with current["history_lock"]:
+                    server._claim_session_turn(current)
+
+        monkeypatch.setattr(server, "_session_turn_admission", stop_after_admission)
+        response = server.handle_request({
+            "id": "submit",
+            "method": "prompt.submit",
+            "params": {"session_id": sid, "text": "one more thing"},
+        })
+        assert response is not None, response
+        row = db.get_session("finalized")
+        observed = {
+            "finalized": row["ended_at"] is not None,
+            "end_reason": row["end_reason"],
+            "messages": [
+                (message["role"], message["content"])
+                for message in db.get_messages("finalized")
+            ],
+            "dispatched": dispatched,
+            "error_code": (response.get("error") or {}).get("code"),
+            "claim": session["_turn_claim"],
+            "running": session["running"],
+        }
+        accepted = claim_state != "replaced"
+        isolated_dispatch = isolated and claim_state == "current"
+        assert observed == {
+            "finalized": not accepted,
+            "end_reason": None if accepted else "agent_close",
+            "messages": [("user", "old ask"), ("assistant", "old answer")]
+            + (
+                [("user", "one more thing")]
+                if accepted and not isolated_dispatch
+                else []
+            ),
+            "dispatched": ["one more thing"] if isolated_dispatch else [],
+            "error_code": None if accepted else 4125,
+            "claim": 2 if claim_state == "replaced" else 1,
+            "running": claim_state != "stopped",
+        }
+    finally:
+        if sid is not None:
+            server._sessions.pop(sid, None)
         db.close()

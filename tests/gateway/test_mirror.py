@@ -2,6 +2,8 @@
 
 import importlib
 import json
+
+import pytest
 from unittest.mock import patch, MagicMock
 
 import gateway.mirror as mirror_mod
@@ -208,3 +210,55 @@ class TestSessionsIndexProfileScoping:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "elsewhere"))
 
         assert mirror_mod._find_session_id("telegram", "12345") == "sess_patched"
+
+
+@pytest.mark.parametrize("isolated", [False, True])
+@pytest.mark.parametrize("alice_exists", [False, True])
+def test_matrix_legacy_mirror_uses_the_configured_participant_key(
+    tmp_path, monkeypatch, isolated, alice_exists
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from gateway.config import Platform
+    from gateway.session import SessionSource, build_session_key
+    from gateway import mirror
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(json.dumps({
+        "thread_sessions_per_user": isolated,
+        "multiplex_profiles": False,
+    }), encoding="utf-8")
+    room = "!reports:remote.test"
+    source = SessionSource(
+        platform=Platform.MATRIX, chat_id=room, thread_id="$root",
+        chat_type="group", user_id="@bob:remote.test",
+    )
+    bob_key = build_session_key(source, thread_sessions_per_user=isolated)
+    entries = {bob_key: {"session_id": "bob-session", "origin": source.to_dict()}}
+    source.user_id = "@alice:remote.test"
+    if alice_exists:
+        alice_key = build_session_key(source, thread_sessions_per_user=isolated)
+        entries[alice_key] = {"session_id": "alice-session", "origin": source.to_dict()}
+    index = tmp_path / "sessions.json"
+    index.write_text(json.dumps(entries), encoding="utf-8")
+    monkeypatch.setattr(mirror, "_SESSIONS_INDEX", index)
+    db = SimpleNamespace(find_latest_gateway_session_for_peer=Mock(return_value=None))
+    monkeypatch.setattr("hermes_state_registry.acquire", lambda: db)
+    monkeypatch.setattr("hermes_state_registry.release_or_close", lambda db: None)
+    append = Mock()
+    monkeypatch.setattr(mirror, "_append_to_sqlite", append)
+
+    mirrored = mirror.mirror_to_session(
+        "matrix", room, "Brief", thread_id=source.thread_id,
+        user_id=source.user_id, chat_type=source.chat_type,
+    )
+
+    expected_id = "alice-session" if alice_exists else "bob-session" if not isolated else None
+    assert mirrored == bool(expected_id)
+    assert [(args[0], args[1]["content"]) for args, kwargs in append.call_args_list] == (
+        [(expected_id, "Brief")] if expected_id else []
+    )
+    db.find_latest_gateway_session_for_peer.assert_called_once_with(
+        source="matrix", session_key=build_session_key(source, thread_sessions_per_user=isolated),
+    )

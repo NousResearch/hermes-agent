@@ -69,6 +69,7 @@ def _make_runner(session_db=None):
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter.send = AsyncMock()
     adapter.send_image_file = AsyncMock()
     adapter._bot = None
@@ -382,7 +383,7 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
 
     assert "Started a new Hermes session in this topic" not in result
     assert "parallel work" not in result
-    runner.session_store.reset_session.assert_called_once_with(group_key)
+    runner.session_store.reset_session.assert_called_once_with(group_key, source=group_source)
 
 
 @pytest.mark.asyncio

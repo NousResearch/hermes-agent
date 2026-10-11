@@ -60,6 +60,7 @@ def _make_runner():
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter.send = AsyncMock()
     adapter._send_with_retry = AsyncMock(
         return_value=SimpleNamespace(success=True, message_id="reply1")

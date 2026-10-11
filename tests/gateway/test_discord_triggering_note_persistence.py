@@ -2,6 +2,9 @@
 API-bound user message but must never be persisted as the user row's ``content``
 (every transcript surface rendered it as if the user typed it).
 """
+import json
+import uuid
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,7 +13,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
-from gateway.run_inbound import discord_triggering_note
+from gateway.run_inbound_context import discord_triggering_note
 from gateway.session import SessionSource
 
 
@@ -76,7 +79,7 @@ async def test_queued_followup_persists_authored_text():
     )
     pending_event = SimpleNamespace(
         source=source, message_id="6002", channel_prompt=None, message_type=None, internal=False, metadata={},
-        reply_expected=None,
+        reply_expected=None, _pending_snapshot_uid="stable-pending-record",
     )
 
     await GatewayRunner._run_agent_queued_followup(
@@ -87,3 +90,8 @@ async def test_queued_followup_persists_authored_text():
     kwargs = runner._run_agent.await_args.kwargs
     assert kwargs["message"] == f"{note}\n\nthe follow-up"
     assert kwargs["persist_user_message"] == "the follow-up"
+
+    namespace = [source.platform.value, source.profile, source.scope_id,
+                 source.chat_id, source.thread_id, "pending:stable-pending-record"]
+    owner = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
+    assert kwargs["persist_user_display_metadata"] == {"gateway_input_owner": owner}

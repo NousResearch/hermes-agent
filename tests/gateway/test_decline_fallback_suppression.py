@@ -62,7 +62,7 @@ def _runner(adapter: _Adapter):
         _status_thread_metadata={},
         _session_key="sk1",
         session_key="sk1",
-        source=SimpleNamespace(chat_id="C1", platform="discord", session_key="sk1"),
+        source=SimpleNamespace(chat_id="C1", platform="discord", session_key="sk1", user_id="u1"),
     )
     runner._ctx = ctx
 
@@ -79,7 +79,7 @@ APPROVAL = {"command": "rm -rf /", "description": "danger", "pattern_key": "k"}
 
 
 def test_exec_approval_decline_does_not_send_the_text_fallback():
-    from gateway.run_turn_runner import _ExecApprovalDeclined
+    from gateway.run_turn_runner_approval_notify import _ExecApprovalDeclined
 
     adapter = _Adapter(
         SendResult(success=False, error="declined", raw_response=CODE_ONLY_DECLINE)

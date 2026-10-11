@@ -45,8 +45,8 @@ def _deliver_platform_and_mirror(job: dict, content: str) -> tuple[str, str]:
     sink = MagicMock(return_value=True)
     with patch("gateway.config.load_gateway_config", return_value=_telegram_cfg()), \
          patch("tools.send_message_tool._send_to_platform", new=send), \
-         patch("cron.scheduler_delivery._cron_mirror_delivery_enabled", return_value=True), \
-         patch("cron.scheduler_delivery._target_matches_origin", return_value=True), \
+         patch("cron.scheduler_delivery_continuation._cron_mirror_delivery_enabled", return_value=True), \
+         patch("cron.scheduler_delivery_continuation._target_matches_origin", return_value=True), \
          patch("gateway.mirror.mirror_to_session", new=sink), \
          patch("sys.is_finalizing", return_value=False):
         _deliver_result(job, content)

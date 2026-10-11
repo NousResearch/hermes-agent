@@ -17,6 +17,20 @@ Slash commands: handlers are looked up by name through `_command_handler_table`;
 listed in `_IDLE_COMMANDS` or `_PLAIN_COMMANDS` (works mid-run) in `run_busy.py`. No
 `if canonical == ...` chains. Registry + adding a command: `hermes_cli/AGENTS.md`.
 
+The agent-thread approval notification implementation is in
+`run_turn_runner_approval_notify.py`. `TurnRunner._approval_notify_sync` forwards to it.
+
+The shared `send_exec_approval` implementation is in
+`platforms/base_approval_prompt.py`. Relay approval rendering and resolution
+are in `relay/approval.py`. Discord, Slack, Telegram and Feishu approval
+rendering and callbacks are in their platform plugin `approval.py` siblings.
+Discord's approval view is created there by `create_exec_approval_view`;
+its adapter keeps the existing public view registration and SDK patch seams.
+
+Matrix room-message sends, reactions and redactions are defined in
+`plugins/platforms/matrix/send_retry.py`. The adapter includes their mixin;
+SDK bindings are resolved through the adapter when each method runs.
+
 ## The gateway has TWO message guards — both must bypass approval/control commands
 
 While an agent is running, an inbound message passes two sequential guards: (1) the **base
@@ -90,10 +104,12 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   answers "which bot received it / who may admit it / where does it run" ONCE per event and pins a
   frozen `RoutingIdentity` on the source (wire-invisible, like `_transport_adapter_ref`). Every
   ingress path calls the canonicalize seam before it derives a key: the adapter side
-  (`platforms/base.py::_canonicalize` — `handle_message`, `_enqueue_text_event`, Telegram photo /
-  album routing, `_handle_message_while_active`, every `_source_session_key`) and the runner side
+  (`platforms/base.py::_canonicalize` in `handle_message`, Telegram photo /
+  album routing and every `_source_session_key`;
+  `platforms/base_busy.py::_handle_message_while_active`; and
+  `platforms/base_text_batching.py::_enqueue_text_event`) and the runner side
   (`run_adapters.py::_canonicalize` — the per-profile / default message, busy and platform-event
-  handlers, the adapter auth-check callback, `run_inbound.py::_hm_admit_event`). No key derivation
+  handlers, the adapter auth-check callback, `run_inbound_admission.py::_hm_admit_event`). No key derivation
   before it; an unresolved identity under multiplexing (route to an unserved profile) is dropped
   with one WARNING at the first seam it reaches, never keyed into `agent:main`. `_transport_owner`,
   `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and
@@ -157,7 +173,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   that touches a session's home, secrets or terminal scope with no turn on the stack: release and
   eviction (`run_agent_cache.py::_run_release_in_profile_scope` — TTL, LRU and memory-pressure
   eviction all route through it so `on_session_end`/memory flush hit the OWNING profile's provider),
-  shutdown (`run_shutdown.py::_finalize_session`), post-turn media delivery
+  shutdown (`run_shutdown.py::_finalize_session`, with notices in
+  `run_shutdown_notices.py` and process teardown in `run_shutdown_processes.py`), post-turn media delivery
   (`platforms/base.py::_media_delivery_scope`), deferred callbacks (pickers, reactions — capture the
   routed home at command time, re-enter the scope in the callback), notifiers and outbound webhooks.
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never

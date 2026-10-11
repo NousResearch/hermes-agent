@@ -5,7 +5,7 @@ import logging
 import re
 from pathlib import Path
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Any
 
 from hermes_cli.config import get_hermes_home
@@ -56,11 +56,65 @@ class DeliveryTransport:
     def is_relay(self) -> bool:
         return self.transport_platform == Platform.RELAY
 
+    @property
+    def resolves_destinations(self) -> bool:
+        """Whether the adapter overrides ``resolve_delivery_target``. Relay egress keeps targets
+        as given."""
+        from gateway.platforms.base import BasePlatformAdapter
+
+        resolver = getattr(type(self.adapter), "resolve_delivery_target", None)
+        return (not self.is_relay and resolver is not None
+                and resolver is not BasePlatformAdapter.resolve_delivery_target)
+
+    async def resolve_destination(
+        self, source: SessionSource, *, refresh: bool = False
+    ) -> Optional["ResolvedDeliveryDestination"]:
+        """Resolve the canonical reply source through the adapter that answers ``source``, or
+        None when this transport keeps targets as given. Send and seed through the returned
+        transport's adapter."""
+        if not self.resolves_destinations:
+            return None
+        transport = self
+        runner = getattr(self.adapter, "gateway_runner", None)
+        owner_for = getattr(runner, "_delivery_adapter_for", None)
+        if callable(owner_for):
+            owner = owner_for(source)
+            if owner is None:
+                raise ValueError(
+                    f"No owning adapter for {source.platform.value}:{source.chat_id}"
+                )
+            transport = replace(self, adapter=owner)
+        resolved = await transport.adapter.resolve_delivery_target(source, refresh=refresh)
+        return ResolvedDeliveryDestination(transport, resolved)
+
     async def send(self, logical_platform: Platform, chat_id: str, content: str,
                    metadata: Optional[dict[str, Any]]) -> Any:
         """Send through this transport while preserving the logical platform."""
         return await (self.adapter.send_for_platform(logical_platform, chat_id, content, metadata=metadata)
                       if self.is_relay else self.adapter.send(chat_id, content, metadata=metadata))
+
+
+@dataclass(frozen=True)
+class ResolvedDeliveryDestination:
+    """Canonical reply source and the transport that resolved it."""
+    transport: DeliveryTransport
+    source: SessionSource
+
+
+@dataclass(frozen=True)
+class SentDestination:
+    """Where a sender delivered a message. A sender that resolves its target reports
+    ``chat_type`` with the canonical ``chat_id`` and ``thread_id``; any other result keeps the
+    requested destination and leaves ``chat_type`` unset."""
+    chat_id: str
+    thread_id: Optional[str]
+    chat_type: Optional[str] = None
+
+    @classmethod
+    def from_result(cls, result: Any, chat_id: str, thread_id: Optional[str]) -> "SentDestination":
+        if not isinstance(result, dict) or "chat_type" not in result:
+            return cls(chat_id, thread_id)
+        return cls(result.get("chat_id", chat_id), result.get("thread_id", thread_id), result["chat_type"])
 
 
 def resolve_delivery_transport(platform: Platform, config: GatewayConfig,

@@ -20,8 +20,8 @@ SETTLE_TIMEOUT_SECONDS = 5.0
 # older voice it was owed is dropped and the mention is answered as text, as on main.
 MAX_PARKED_PER_SENDER = 4
 
-# (voice event_id, content, relates_to)
-ParkedVoice = tuple[str, dict, dict]
+# (voice event_id, server timestamp in seconds, content, relates_to)
+ParkedVoice = tuple[str, float, dict, dict]
 
 
 def has_voice_marker(content: dict) -> bool:
@@ -36,10 +36,11 @@ def is_voice_event(content: dict) -> bool:
 class VoiceGate:
     """One voice being gated; ``seq`` orders voices from the same sender by arrival."""
 
-    __slots__ = ("done", "seq")
+    __slots__ = ("seq", "event_ts", "done")
 
-    def __init__(self, seq: int) -> None:
+    def __init__(self, seq: int, event_ts: float) -> None:
         self.seq = seq
+        self.event_ts = event_ts
         self.done = asyncio.Event()
 
 
@@ -73,10 +74,10 @@ class ParkedVoices:
         """Arrival limit for a bare mention: only voices that began before this may be claimed."""
         return self._next_seq
 
-    def begin(self, room_id: str, sender: str) -> VoiceGate:
+    def begin(self, room_id: str, sender: str, event_ts: float) -> VoiceGate:
         """Mark a parkable voice as being gated. Call before the first await; always pair with
         ``release`` (idempotent, so it may run early and again in a ``finally``)."""
-        gate = VoiceGate(self._next_seq)
+        gate = VoiceGate(self._next_seq, event_ts)
         self._next_seq += 1  # unbounded Python int: never wraps
         self._inflight.setdefault((room_id, sender), []).append(gate)
         return gate
@@ -109,9 +110,22 @@ class ParkedVoices:
             return  # a newer voice from this sender was already claimed
         self._prune()
         entries = self._parked.setdefault(key, [])
-        entries.append((time.monotonic(), gate.seq, (event_id, content, relates_to)))
+        entries.append((time.monotonic(), gate.seq, (event_id, gate.event_ts, content, relates_to)))
         entries.sort(key=lambda e: e[1])
         del entries[:-MAX_PARKED_PER_SENDER]
+
+    def discard(self, room_id: str, sender: str, event_id: str) -> bool:
+        """Forget a parked voice that its sender redacted, so no later mention claims it."""
+        key = (room_id, sender)
+        entries = self._parked.get(key, [])
+        kept = [e for e in entries if e[2][0] != event_id]
+        if len(kept) == len(entries):
+            return False
+        if kept:
+            self._parked[key] = kept
+        else:
+            del self._parked[key]
+        return True
 
     def claim(self, room_id: str, sender: str, before: int) -> Optional[ParkedVoice]:
         """Pop the sender's newest parked voice for this room that began before ``before``

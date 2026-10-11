@@ -47,11 +47,11 @@ async def test_sends_and_budget_sized_edits_fit_one_event():
     adapter = _make_adapter()
     sent, edits = [], []
 
-    async def send_room_message(chat_id, content):
+    async def send_room_message(chat_id, content, *, finalize=False, notice=False):
         sent.append(content)
         return "$sent"
 
-    async def send_content_event(chat_id, content):
+    async def send_content_event(chat_id, content, *, finalize=False):
         edits.append(content)
         return SendResult(success=True, message_id="$edit")
 
@@ -73,12 +73,15 @@ async def test_sends_and_budget_sized_edits_fit_one_event():
 
 @pytest.mark.asyncio
 async def test_standalone_sender_events_fit_one_event(monkeypatch):
-    from plugins.platforms.matrix.adapter import DEFAULT_MAX_MESSAGE_LENGTH, _standalone_send
+    from plugins.platforms.matrix.adapter import DEFAULT_MAX_MESSAGE_LENGTH
+    from plugins.platforms.matrix.standalone import standalone_send
 
     payloads = []
 
     class _Response:
-        status = 200
+        def __init__(self, status=200, data=None):
+            self.status = status
+            self.data = data
 
         async def __aenter__(self):
             return self
@@ -87,16 +90,27 @@ async def test_standalone_sender_events_fit_one_event(monkeypatch):
             return None
 
         async def json(self):
-            return {"event_id": f"$e{len(payloads)}"}
+            return self.data or {"event_id": f"$e{len(payloads)}"}
 
     class _Session:
+        def __init__(self, *, headers):
+            self.headers = headers
+
         async def __aenter__(self):
             return self
 
         async def __aexit__(self, *exc):
             return None
 
-        def put(self, url, **kwargs):
+        def request(self, method, url, **kwargs):
+            if method == "GET" and url.endswith("/state/m.room.encryption"):
+                return _Response(404, {"errcode": "M_NOT_FOUND"})
+            if method == "GET" and url.endswith("/joined_members"):
+                return _Response(data={"joined": {"@bot:example.org": {}, "@alice:example.org": {}}})
+            if method == "GET" and url.endswith("/account/whoami"):
+                return _Response(data={"user_id": "@bot:example.org"})
+            if method != "PUT":
+                raise ValueError((method, url))
             payloads.append(kwargs["json"])
             return _Response()
 
@@ -104,7 +118,7 @@ async def test_standalone_sender_events_fit_one_event(monkeypatch):
     pconfig = PlatformConfig(enabled=True, token="syt_test_token", extra={"homeserver": "https://matrix.example.org"})
     # send_message chunks plugin platforms on characters at the registry's max_message_length.
     for name, text in _texts(DEFAULT_MAX_MESSAGE_LENGTH).items():
-        result = await _standalone_send(pconfig, "!room:example.org", text[:DEFAULT_MAX_MESSAGE_LENGTH])
+        result = await standalone_send(pconfig, "!room:example.org", text[:DEFAULT_MAX_MESSAGE_LENGTH])
         assert result["success"], (name, result)
 
     assert payloads

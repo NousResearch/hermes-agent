@@ -61,27 +61,33 @@ def test_matrix_homeserver_identity_follow_the_scoped_token(secondary_scope):
 @pytest.mark.asyncio
 async def test_matrix_standalone_send_posts_scoped_token_to_scoped_homeserver(secondary_scope, monkeypatch):
     import aiohttp
-    from plugins.platforms.matrix import adapter as mx
+    from plugins.platforms.matrix import standalone
 
-    seen = {}
+    requests = []
 
     class _Resp:
-        status = 200
+        def __init__(self, status, body): self.status, self._body = status, body
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
-        async def json(self): return {"event_id": "$x"}
-        async def text(self): return ""
+        async def json(self): return self._body
 
     class _Sess:
-        def __init__(self, *a, **k): pass
+        def __init__(self, *a, headers=None, **k): self.headers = headers or {}
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
-        def put(self, url, **kw): seen["url"] = url; seen["headers"] = kw.get("headers", {}); return _Resp()
+
+        def request(self, method, url, **kw):
+            requests.append((method, url.split("/_matrix/")[0], self.headers.get("Authorization")))
+            if url.endswith("/state/m.room.encryption"):
+                return _Resp(404, {"errcode": "M_NOT_FOUND"})
+            return _Resp(200, {"event_id": "$x"})
 
     monkeypatch.setattr(aiohttp, "ClientSession", _Sess)
-    await mx._standalone_send(PlatformConfig(enabled=True), "!room:example", "hi")
-    assert seen["url"].startswith(SECONDARY["MATRIX_HOMESERVER"] + "/")
-    assert DEFAULT_ENV["MATRIX_HOMESERVER"] not in seen["url"]
+    result = await standalone.standalone_send(PlatformConfig(enabled=True), "!room:example", "hi")
+    assert result["success"] is True, result
+    assert "PUT" in {method for method, _, _ in requests}
+    assert {(server, auth) for _, server, auth in requests} == {
+        (SECONDARY["MATRIX_HOMESERVER"], f"Bearer {SECONDARY['MATRIX_ACCESS_TOKEN']}")}
 
 
 def test_teams_credentials_pair_scoped_secret_with_scoped_app_identity(secondary_scope):

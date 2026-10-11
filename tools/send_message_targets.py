@@ -19,6 +19,7 @@ _SLACK_MENTION_RE = re.compile(r"^\s*<@(U[A-Z0-9]{8,})(?:\|[^>]+)?>\s*$")
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+_MATRIX_TARGET_RE = re.compile(r"^\s*([!@][^/\s]+|#[^:/\s]+:[^/\s]+)(?:/([^/\s]+))?\s*$")
 # E.164 phone recipients ("+1555..."): the '+' fails the isdigit() rule and the channel directory
 # cannot resolve a raw number, so keep the '+' and treat it as explicit.
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
@@ -75,11 +76,14 @@ def _parse_slack(ref):
 
 
 def _parse_matrix(ref):
-    # "<room>:$<event_id>" addresses a thread (rfind: room ids contain ':'). Bare "!room" /
-    # "@user" go via the generic rule so the numeric check keeps precedence.
     trimmed = ref.strip()
     split_idx = trimmed.rfind(":$")
-    return (trimmed[:split_idx], trimmed[split_idx + 1:]) if split_idx > 0 else None
+    if split_idx > 0 and "/" not in trimmed:
+        room = trimmed[:split_idx]
+        if _MATRIX_TARGET_RE.fullmatch(room):
+            return room, trimmed[split_idx + 1:]
+        return None
+    return _parse_regex_groups(_MATRIX_TARGET_RE)(ref)
 
 
 def _parse_yuanbao(ref):

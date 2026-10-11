@@ -960,7 +960,7 @@ class WebhookAdapter(BasePlatformAdapter):
         follow-up there ("so he's out?") sees what the webhook run just told the user. Without this the
         text only lives in the ephemeral opaque per-delivery webhook session and the target chat's
         agent has no idea it sent anything. Same path and USER-role convention as cron briefs
-        (``cron.scheduler_delivery._maybe_mirror_cron_delivery``, #2221): the text is not the target
+        (``cron.scheduler_delivery_continuation._maybe_mirror_cron_delivery``, #2221): the text is not the target
         session's agent speaking, and a labelled user turn merges safely on strict-alternation providers.
         Opt-in per route (``mirror_to_session: true``), default off like cron's ``mirror_delivery``: the text
         lands with user authority in a chat the route author may not own, and on ``deliver_only`` routes it is

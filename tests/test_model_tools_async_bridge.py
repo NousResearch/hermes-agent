@@ -78,6 +78,123 @@ def test_concurrent_workers_reuse_distinct_loops():
         results = [future.result(timeout=15) for future in futures]
     assert len({thread for _, thread in results}) == 3
     assert len({main, *(loop for loop, _ in results)}) == 4
+    try:
+        assert [loop.is_closed() for loop, _ in results] == [True, True, True]
+        assert not main.is_closed()
+    finally:
+        for loop, _ in results:
+            if not loop.is_closed():
+                loop.close()
+
+
+@pytest.mark.parametrize("worker_mode", ["persistent", "running-loop"])
+def test_worker_exit_closes_its_cached_client_before_the_loop(monkeypatch, worker_mode):
+    from concurrent.futures import ThreadPoolExecutor
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from openai import AsyncOpenAI
+
+    from agent import auxiliary_client as aux
+    from model_tools import _run_async
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    monkeypatch.setattr(aux, "_client_cache", {})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    serving = threading.Thread(target=server.serve_forever, daemon=True)
+    serving.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+
+    async def connect(key):
+        loop = asyncio.get_running_loop()
+        client = AsyncOpenAI(api_key="test", base_url=url, max_retries=0)
+        aux._store_cached_client(key, client, None, bound_loop=loop)
+        assert (await client._client.get(url)).text == "ok"
+        return loop, client
+
+    main_key = ("main-lifetime-control",)
+    worker_key = ("worker-lifetime",)
+    stream_closed = threading.Event()
+
+    async def open_stream(client):
+        async def stream():
+            try:
+                yield client
+            finally:
+                assert not client.is_closed()
+                stream_closed.set()
+
+        generator = stream()
+        await anext(generator)
+        return generator
+
+    async def read(client):
+        return (await client._client.get(url)).text
+
+    main, main_client = _run_async(connect(main_key))
+    try:
+
+        def worker():
+            loop, client = _run_async(connect(worker_key))
+            assert _run_async(_get_current_loop()) is loop
+            assert not client.is_closed()
+            assert _run_async(read(client)) == "ok"
+            return loop, client, _run_async(open_stream(client))
+
+        if worker_mode == "persistent":
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                loop, client, generator = pool.submit(worker).result(timeout=15)
+        else:
+
+            async def operation():
+                loop, client = await connect(worker_key)
+                assert await _get_current_loop() is loop
+                assert not client.is_closed()
+                assert await read(client) == "ok"
+                return loop, client, await open_stream(client)
+
+            async def running_caller():
+                return _run_async(operation())
+
+            loop, client, generator = asyncio.run(running_caller())
+
+        assert (
+            loop.is_closed(),
+            client.is_closed(),
+            main.is_closed(),
+            main_client.is_closed(),
+            set(aux._client_cache),
+            stream_closed.is_set(),
+        ) == (True, True, False, False, {main_key}, True)
+    finally:
+        if not stream_closed.is_set():
+            if loop.is_closed():
+                asyncio.run(generator.aclose())
+            else:
+                loop.run_until_complete(generator.aclose())
+        if not client.is_closed():
+            if loop.is_closed():
+                aux._close_cached_client(client, close_async=True)
+            else:
+                loop.run_until_complete(client.close())
+        _run_async(main_client.close())
+        aux._client_cache.clear()
+        if not loop.is_closed():
+            loop.close()
+        server.shutdown()
+        server.server_close()
+        serving.join(timeout=10)
+
 
 
 class TestRunAsyncWithRunningLoop:
@@ -154,8 +271,12 @@ class TestRunAsyncWithRunningLoop:
             FakeExecutor,
         )
 
-        with pytest.raises(concurrent.futures.TimeoutError):
-            _run_async(_never_finishes())
+        coroutine = _never_finishes()
+        try:
+            with pytest.raises(concurrent.futures.TimeoutError):
+                _run_async(coroutine)
+        finally:
+            coroutine.close()
 
         assert events["result_timeout"] == 300
         # The worker wrapper creates its own event loop so _run_async can

@@ -83,6 +83,8 @@ class PlatformEntry:
     allow_all_env: str = ""  # truthy "allow everyone" switch
     max_message_length: int = 0  # smart-chunking cap; 0 = no limit
     pii_safe: bool = False  # session descriptions redact PII (phone numbers, etc.)
+    # The adapter reads ``metadata["non_conversational"]``, so the gateway sets it on status sends.
+    reads_non_conversational_mark: bool = False
     emoji: str = "🔌"  # CLI/gateway display
     allow_update_command: bool = True  # /update may be issued from this platform
     platform_hint: str = ""  # injected into the system prompt; empty = none

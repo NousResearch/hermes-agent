@@ -8,7 +8,10 @@ single-element lists so mutation stays visible to the outer body.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
+
+if TYPE_CHECKING:
+    from gateway.inbound_context import PreparedInboundMessage
 
 
 @dataclass
@@ -41,6 +44,7 @@ class TurnContext:
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
     message: Optional[str] = None  # the only rebindable field
+    input_snapshot: Optional[PreparedInboundMessage] = None
     # turn parameters / config snapshots (read-only in run_sync)
     history: Any = None
     context_prompt: Optional[str] = None

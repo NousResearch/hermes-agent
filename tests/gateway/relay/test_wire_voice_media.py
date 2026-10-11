@@ -279,7 +279,7 @@ class TestParallelArrayLengthInvariant:
         assert len(ev.media_types) == len(ev.media_urls)
 
     def test_merging_an_untyped_event_with_a_typed_one_keeps_mimes_on_their_urls(self):
-        from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.base_pending_merge import merge_pending_message_event
         from gateway.run import _event_media_type_at
 
         untyped = _event_from_wire(

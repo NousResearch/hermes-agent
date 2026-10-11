@@ -636,11 +636,12 @@ class TeamsAdapter(BasePlatformAdapter):
     async def _on_card_action(
         self, ctx: ActivityContext[AdaptiveCardInvokeActivity]
     ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
-        from tools.approval import resolve_gateway_approval, has_blocking_approval
+        from tools.approval import resolve_gateway_approval
 
         data = ctx.activity.value.action.data or {}
         hermes_action = data.get("hermes_action", "")
         session_key = data.get("session_key", "")
+        request_id = data.get("request_id", "")
         if not hermes_action or not session_key:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
         denied = self._card_action_denied(ctx.activity.from_)
@@ -649,9 +650,12 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
-        if not has_blocking_approval(session_key):
+        count = (
+            resolve_gateway_approval(session_key, choice, request_id=request_id)
+            if request_id else 0
+        )
+        if not count:
             return self._invoke_card([TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
-        resolve_gateway_approval(session_key, choice)
         body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
         body.append(TextBlock(text=t(_APPROVAL_LABEL_KEYS[choice]), wrap=True, weight="Bolder"))
         return self._invoke_card(body)
@@ -686,7 +690,12 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         # Button data carries a truncated cmd — just enough to reconstruct the card body.
-        btn_data_base = {"session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200), "desc": prompt.description}
+        btn_data_base = {
+            "session_key": prompt.session_key,
+            "request_id": prompt.request_id,
+            "cmd": _truncate(prompt.command, 200),
+            "desc": prompt.description,
+        }
         actions = []
         for label, choice, style in prompt.actions:
             kw = {"style": self._EA_CARD_STYLES[style]} if style else {}

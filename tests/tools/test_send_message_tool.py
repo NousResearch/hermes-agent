@@ -934,7 +934,6 @@ class TestParseTargetRef:
 
     def test_non_explicit_targets_fall_through_to_resolution(self):
         cases = [
-            ("matrix", "#general:matrix.org"),   # alias needs resolution
             ("signal", "  group:  "),            # empty group id
             ("signal", "+123"),                  # E.164 too short
             ("signal", "+1234567890123456"),     # E.164 too long

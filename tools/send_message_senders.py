@@ -530,13 +530,21 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     """
     media_files = media_files or []
     metadata = {"thread_id": thread_id} if thread_id else None
+    target = f"{chat_id}/{thread_id}" if thread_id else chat_id
     from gateway.config import Platform
-    _, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
+    runner, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
         "Matrix: live gateway adapter lookup failed; falling back to an "
         "ephemeral connect (may re-init E2EE per send)"))
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
-        return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
+        from tools.send_message_tool import _dispatch_on_gateway_loop
+
+        return await _dispatch_on_gateway_loop(
+            runner,
+            lambda: _matrix_send_core(live_adapter, chat_id, message, media_files, metadata),
+            "send_message: failed to schedule Matrix send on gateway loop",
+            cancel_on_caller_cancel=True,
+        )
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
@@ -545,31 +553,93 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     adapter = MatrixAdapter(pconfig)
     try:
         if not await adapter.connect():
-            return _error("Matrix connect failed")
+            if not media_files:
+                return await _registry_standalone_send(
+                    "matrix", pconfig, chat_id, message, thread_id=thread_id
+                )
+            return _error(f"Matrix target '{target}': connect failed")
         return await _matrix_send_core(adapter, chat_id, message, media_files, metadata)
     except Exception as e:
-        return _error(f"Matrix send failed: {e}")
+        return _error(f"Matrix target '{target}': {e}")
     finally:
         with contextlib.suppress(Exception):
             await adapter.disconnect()
 
 
 async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
-    """Core send logic shared by live and ephemeral Matrix adapters."""
-    last_result = None
-    if message.strip():
-        last_result = await adapter.send(chat_id, message, metadata=metadata)
-        if not last_result.success:
-            return _error(f"Matrix send failed: {last_result.error}")
-    for media_path, is_voice in media_files:
-        if not os.path.exists(media_path):
-            return _error(f"Media file not found: {media_path}")
-        ext = os.path.splitext(media_path)[1].lower()
-        method, _ = _adapter_media_method(ext, (ext in _VOICE_EXTS and is_voice) or ext in _AUDIO_EXTS)
-        last_result = await getattr(adapter, method)(chat_id, media_path, metadata=metadata)
-        if not last_result.success:
-            return _error(f"Matrix media send failed: {last_result.error}")
-    return {"error": _NO_DELIVERABLE} if last_result is None else _success("matrix", chat_id, message_id=last_result.message_id)
+    """Resolve the target, then send through the adapter that owns it. Caller cancellation stops
+    the send until it starts. Once it starts, the send and its post-send check finish, so the
+    result reports an event that the homeserver accepted."""
+    from gateway.config import Platform
+    from gateway.delivery import DeliveryTransport
+    from gateway.session import SessionSource
+    from gateway.session_context import get_session_env
+    from gateway.session_identity import replace_source
+    from hermes_cli.profiles import get_active_profile_name
+
+    thread_id = (metadata or {}).get("thread_id")
+    target = f"{chat_id}/{thread_id}" if thread_id else chat_id
+    source = SessionSource(
+        platform=Platform.MATRIX, chat_id=chat_id, thread_id=thread_id,
+        user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None,
+        profile=get_active_profile_name(),
+    )
+    try:
+        destination = await DeliveryTransport(adapter, None, Platform.MATRIX).resolve_destination(source)
+    except Exception as exc:
+        return _error(f"Matrix target '{target}': {exc}")
+    if destination is not None:
+        adapter, source = destination.transport.adapter, destination.source
+    else:
+        source = replace_source(source, chat_type="unknown")
+    metadata = {**(metadata or {}), "_original_target": target}
+    if source.thread_id:
+        metadata["thread_id"] = source.thread_id
+    delivery = asyncio.ensure_future(
+        _matrix_deliver(adapter, source, message, media_files, metadata, target)
+    )
+    try:
+        return await asyncio.shield(delivery)
+    except asyncio.CancelledError:
+        return await delivery
+
+
+async def _matrix_deliver(adapter, source, message, media_files, metadata, target):
+    """Send the text and media to the resolved room and report the confirmed chat type."""
+    try:
+        last_result = None
+        if message.strip():
+            last_result = await adapter.send(source.chat_id, message, metadata=metadata)
+            if not last_result.success:
+                return _error(f"Matrix send failed: {last_result.error}")
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return _error(f"Matrix target '{target}': Media file not found: {media_path}")
+            ext = os.path.splitext(media_path)[1].lower()
+            method, _ = _adapter_media_method(ext, (ext in _VOICE_EXTS and is_voice) or ext in _AUDIO_EXTS)
+            last_result = await getattr(adapter, method)(source.chat_id, media_path, metadata=metadata)
+            if not last_result.success:
+                return _error(f"Matrix media send failed: {last_result.error}")
+        if last_result is None:
+            return {"error": _NO_DELIVERABLE}
+        chat_type = await _matrix_confirmed_chat_type(adapter, source, target)
+        return _success("matrix", source.chat_id, message_id=last_result.message_id, chat_type=chat_type,
+                        **({"thread_id": source.thread_id} if source.thread_id else {}))
+    except Exception as exc:
+        return _error(f"Matrix target '{target}': {exc}")
+
+
+async def _matrix_confirmed_chat_type(adapter, source, target):
+    """The chat type resolved before sending if membership still gives it after sending, else
+    ``"unknown"`` so that no session is mirrored on a changed or unconfirmed identity."""
+    if source.chat_type == "unknown":
+        return "unknown"
+    try:
+        current = await adapter.resolve_delivery_target(source, refresh=True)
+    except Exception as exc:
+        logger.warning("Matrix target '%s': continuation identity revalidation failed: %s", target, exc)
+        return "unknown"
+    return source.chat_type if current.chat_type == source.chat_type else "unknown"
 
 
 def _gateway_platform_module(name, *, unavailable, unmet):

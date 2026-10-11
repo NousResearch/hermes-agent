@@ -2899,21 +2899,7 @@ def _load_gateway_config(config_path: Path | None = None) -> dict:
         return {}
 
 
-def _checkpoint_agent_kwargs(config: dict | None) -> dict:
-    """Translate gateway checkpoint config into ``AIAgent`` constructor args.
-    Gateway bypasses ``load_config()``, so defaults are here; legacy ``checkpoints: true`` works."""
-    cp_cfg = config.get("checkpoints", {}) if isinstance(config, dict) else {}
-    if isinstance(cp_cfg, bool):
-        cp_cfg = {"enabled": cp_cfg}
-    elif not isinstance(cp_cfg, dict):
-        cp_cfg = {}
-    from hermes_cli.config import DEFAULT_CONFIG
-    defaults = DEFAULT_CONFIG["checkpoints"]
-    return {
-        "checkpoints_enabled": cp_cfg.get("enabled", defaults["enabled"]),
-        "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", defaults["max_snapshots"]),
-        "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"]),
-        "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}
+from gateway.session_worker_construct import checkpoint_agent_kwargs as _checkpoint_agent_kwargs
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:

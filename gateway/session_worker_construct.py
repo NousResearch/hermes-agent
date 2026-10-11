@@ -68,3 +68,21 @@ def construct_kwargs(frame):
 
 def _dict_list(value):
     return value is None or (isinstance(value, list) and all(isinstance(e, dict) for e in value))
+
+
+def checkpoint_agent_kwargs(config):
+    """``AIAgent`` checkpoint arguments from a config dict (every turn: the gateway's live config, a
+    managed worker's frozen session snapshot). The gateway bypasses ``load_config()``, so defaults
+    are here; legacy ``checkpoints: true`` works."""
+    cp_cfg = config.get("checkpoints", {}) if isinstance(config, dict) else {}
+    if isinstance(cp_cfg, bool):
+        cp_cfg = {"enabled": cp_cfg}
+    elif not isinstance(cp_cfg, dict):
+        cp_cfg = {}
+    from hermes_cli.config import DEFAULT_CONFIG
+    defaults = DEFAULT_CONFIG["checkpoints"]
+    return {
+        "checkpoints_enabled": cp_cfg.get("enabled", defaults["enabled"]),
+        "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", defaults["max_snapshots"]),
+        "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"]),
+        "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}

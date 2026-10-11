@@ -5796,7 +5796,11 @@ def _client_cache_key(
     runtime = _normalize_main_runtime(main_runtime)
     # `auto` resolves through the main runtime and task-specific policy, so both join the key.
     runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
-    task_key = (task or "", _task_prefers_fast_model(task)) if provider == "auto" else ""
+    task_key = ""
+    if provider == "auto":
+        from agent.auxiliary_routing_cache import routing_configuration_key
+        task_key = (task or "", _task_prefers_fast_model(task),
+                    routing_configuration_key(_get_auxiliary_task_config(task)))
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
     # Model MUST be in the key: concurrent calls to the same endpoint with different models would
     # share an entry, and the second builder's _store_cached_client would close the first's client.

@@ -21,7 +21,7 @@ def _mock_subprocess_run(monkeypatch):
     captured call list — these tests inspect the real sandbox-start ``run``.
     Tests that exercise the probe itself live in test_docker_cgroup_limits.py.
     """
-    docker_env._cgroup_limits_ok = True
+    monkeypatch.setattr(docker_env, "_cgroup_limits_ok", True)
     calls = []
 
     def _run(cmd, **kwargs):
@@ -96,8 +96,6 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" in run_args_str
-
-
 
 
 def _make_execute_only_env(forward_env=None):
@@ -254,6 +252,7 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     assert "unset SERVICE_TOKEN" in second_cmd[-1]
 
 
+@pytest.mark.platforms("posix")
 def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, tmp_path):
     """The shared snapshot must not resurrect an explicit forward-only value."""
     from agent import secret_scope as ss
@@ -561,68 +560,6 @@ def test_label_sanitizer_rejects_invalid_characters():
     assert len(docker_env._sanitize_label_value(long_value)) == 63
 
 
-def test_reuse_environment_fingerprint_tracks_immutable_configuration():
-    """Containers with different images, mounts, or Hermes homes must not
-    share the label used for cross-process reuse."""
-    base = docker_env._reuse_environment_fingerprint(
-        image="python:3.11",
-        mount_args=["-v", "volume-a:/workspace"],
-        hermes_home="/profiles/alpha",
-    )
-
-    assert base == docker_env._reuse_environment_fingerprint(
-        image="python:3.11",
-        mount_args=["-v", "volume-a:/workspace"],
-        hermes_home="/profiles/alpha",
-    )
-    assert base != docker_env._reuse_environment_fingerprint(
-        image="python:3.12",
-        mount_args=["-v", "volume-a:/workspace"],
-        hermes_home="/profiles/alpha",
-    )
-    assert base != docker_env._reuse_environment_fingerprint(
-        image="python:3.11",
-        mount_args=["-v", "volume-b:/workspace"],
-        hermes_home="/profiles/alpha",
-    )
-    assert base != docker_env._reuse_environment_fingerprint(
-        image="python:3.11",
-        mount_args=["-v", "volume-a:/workspace"],
-        hermes_home="/profiles/beta",
-    )
-
-
-def test_reuse_environment_fingerprint_ignores_volatile_temp_mounts(tmp_path, monkeypatch):
-    """A mount whose host source is a per-process tempdir must not churn the
-    reuse label: symlinked skills trees are served from a fresh mkdtemp copy
-    every process (``_safe_skills_path``), so hashing that path made the
-    label differ across processes and container reuse never matched."""
-    temp_root = tmp_path / "tmp"
-    temp_root.mkdir()
-    monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: str(temp_root))
-    stable_source = str(tmp_path / "data")
-    process_a = docker_env._reuse_environment_fingerprint(
-        image="python:3.11",
-        mount_args=["-v", f"{temp_root}/hermes-skills-safe-a1b2c3:/root/.hermes/skills:ro",
-                    "-v", f"{stable_source}:/data:ro"],
-        hermes_home="/profiles/alpha",
-    )
-    process_b = docker_env._reuse_environment_fingerprint(
-        image="python:3.11",
-        mount_args=["-v", f"{temp_root}/hermes-skills-safe-d4e5f6:/root/.hermes/skills:ro",
-                    "-v", f"{stable_source}:/data:ro"],
-        hermes_home="/profiles/alpha",
-    )
-    assert process_a == process_b
-    # A real mount change still forces a fresh container.
-    assert process_a != docker_env._reuse_environment_fingerprint(
-        image="python:3.11",
-        mount_args=["-v", f"{temp_root}/hermes-skills-safe-a1b2c3:/root/.hermes/skills:ro",
-                    "-v", f"{tmp_path}/other-data:/data:ro"],
-        hermes_home="/profiles/alpha",
-    )
-
-
 def test_run_command_sanitizes_unsafe_task_id(monkeypatch):
     """A task_id containing characters Docker rejects in label values must be
     sanitized before reaching ``docker run --label``; otherwise the daemon
@@ -725,8 +662,6 @@ def test_sandbox_dir_name_drops_separators_docker_and_the_fs_reserve():
         assert not (set(name) & set(':/\\')), name
 
 
-
-
 def test_sandbox_dir_name_bounds_pathological_ids():
     """Long keys (a Matrix room plus thread id) must stay inside the
     per-component filesystem limit."""
@@ -763,7 +698,7 @@ def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tm
     config = {"image": "python:3.11", "volumes": ["volume-a:/workspace"]}
     first = _make_dummy_env(**config)
     second = _make_dummy_env(**config)
-    assert first._labels["hermes-environment"] == second._labels["hermes-environment"]
+    assert first._labels["hermes-runtime"] == second._labels["hermes-runtime"]
     # The safe copy really is per-construction volatile: proof the stability above
     # comes from canonicalization, not from the mount happening to be stable.
     mounts = []
@@ -775,7 +710,7 @@ def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tm
     # A real (non-tempdir) mount change must still start a fresh container.
     changed = dict(config, volumes=["volume-b:/workspace"])
     third = _make_dummy_env(**changed)
-    assert third._labels["hermes-environment"] != first._labels["hermes-environment"]
+    assert third._labels["hermes-runtime"] != first._labels["hermes-runtime"]
 
 
 def test_labels_attribute_populated_after_init(monkeypatch):
@@ -788,56 +723,15 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
     env = _make_dummy_env(task_id="abc")
 
-    labels = dict(env._labels)
-    environment_label = labels.pop("hermes-environment")
-    assert labels == {
+    assert env._labels == {
         "hermes-agent": "1",
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
+        "hermes-runtime": docker_env._runtime_reuse_fingerprint(
+            env._all_run_args, env._run_env_values
+        ),
     }
-    assert re.fullmatch(r"[0-9a-f]{24}", environment_label)
-
-
-@pytest.mark.parametrize("changed_setting", ["image", "volumes", "hermes_home"])
-def test_reuse_probe_filters_on_environment_fingerprint(monkeypatch, tmp_path, changed_setting):
-    """Reuse and recovery must select the requested configuration, not stale mounts."""
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "alpha"))
-    # Keep the auto-mounted skills directory present from the first startup.
-    for name in ("alpha", "beta"):
-        (tmp_path / name / "skills").mkdir(parents=True)
-    calls = _mock_subprocess_run(monkeypatch)
-
-    def reuse_filters():
-        return tuple(
-            arg for cmd, _ in calls if isinstance(cmd, list) and cmd[1] == "ps"
-            for arg in cmd if arg.startswith("label=")
-        )
-
-    config = {"image": "python:3.11", "volumes": ["volume-a:/workspace"]}
-    _make_dummy_env(**config)
-    original_filters = reuse_filters()
-    assert original_filters
-    calls.clear()
-    _make_dummy_env(**config)
-    assert reuse_filters() == original_filters
-
-    if changed_setting == "hermes_home":
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "beta"))
-    else:
-        config[changed_setting] = {"image": "python:3.12", "volumes": ["volume-b:/workspace"]}[changed_setting]
-    calls.clear()
-    env = _make_dummy_env(**config)
-    changed_filters = reuse_filters()
-    assert changed_filters != original_filters
-    assert f"label=hermes-environment={env._labels['hermes-environment']}" in changed_filters
-    assert set(f.removeprefix("label=") for f in changed_filters) <= _labels_in_run_args(_run_args_from_calls(calls))
-
-    calls.clear()
-    assert env._recreate_container()
-    assert reuse_filters() == changed_filters
 
 
 def test_shared_container_key_replaces_profile_identity(monkeypatch, tmp_path):
@@ -860,8 +754,7 @@ def test_shared_container_key_replaces_profile_identity(monkeypatch, tmp_path):
     assert a._labels["hermes-profile"] == b._labels["hermes-profile"]
     assert a._labels["hermes-profile"] != "research"
     assert a._labels["hermes-profile"].startswith("team_workspace-")
-    # Explicit sharing retains the first creator's immutable settings.
-    assert a._labels == b._labels
+    assert a._labels["hermes-runtime"] != b._labels["hermes-runtime"]
 
 
 def test_distinct_shared_keys_never_collide(monkeypatch):
@@ -901,8 +794,14 @@ def test_empty_shared_container_key_preserves_profile_isolation(monkeypatch):
 # ── Cross-process container reuse (issue #20561) ──────────────────
 
 
-def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
-                                     start_succeeds: bool = True):
+def _mock_subprocess_run_with_reuse(
+    monkeypatch,
+    ps_state: str | None,
+    start_succeeds: bool = True,
+    expected_runtime_label: str | None = None,
+    entrypoint_json: str | None = None,
+    container_image: str | None = None,
+):
     """Reuse-aware subprocess.run mock.
 
     ``ps_state`` controls what ``docker ps -a --filter ...`` returns:
@@ -915,6 +814,7 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
     Returns the captured call list so the test can verify which docker
     commands actually ran.
     """
+    monkeypatch.setattr(docker_env, "_cgroup_limits_ok", True)
     calls = []
 
     def _run(cmd, **kwargs):
@@ -923,11 +823,24 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
             sub = cmd[1]
             if sub == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1:3] == ["image", "inspect"] and entrypoint_json is not None:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{entrypoint_json}\n", stderr=""
+                )
+            if sub == "inspect" and container_image is not None:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{container_image}\n", stderr=""
+                )
             if sub == "ps":
                 if ps_state is None:
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-                # 2-field format: ID, State. The egress posture is enforced
-                # by the label filters on the ps command itself (#99213).
+                if (
+                    expected_runtime_label is not None
+                    and f"label=hermes-runtime={expected_runtime_label}" not in cmd
+                ):
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                # 2-field format: ID, State. The egress and runtime posture are
+                # enforced by exact label filters on the ps command itself.
                 return subprocess.CompletedProcess(
                     cmd, 0,
                     stdout=f"reused-cid\t{ps_state}\n",
@@ -954,11 +867,16 @@ def test_reuse_attaches_to_running_container_without_docker_run(monkeypatch):
     despite docs claiming "ONE long-lived container shared across sessions"."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
-    calls = _mock_subprocess_run_with_reuse(monkeypatch, ps_state="running")
+    _mock_subprocess_run(monkeypatch)
+    created = _make_dummy_env(task_id="reuse-test", persist_across_processes=False)
+    expected_runtime_label = created._labels["hermes-runtime"]
+    calls = _mock_subprocess_run_with_reuse(
+        monkeypatch, ps_state="running", expected_runtime_label=expected_runtime_label
+    )
 
     env = _make_dummy_env(task_id="reuse-test")
 
-    # The reuse path must populate _container_id from the ps probe output.
+    assert env._labels["hermes-runtime"] == expected_runtime_label
     assert env._container_id == "reused-cid", (
         f"expected reused container id, got {env._container_id!r}"
     )
@@ -1259,8 +1177,6 @@ def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
     assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
 
 
-
-
 # ── Cleanup correctness (issue #20561) ────────────────────────────
 
 
@@ -1427,8 +1343,6 @@ def test_cleanup_with_persist_disabled_stops_and_rms(monkeypatch):
         "docker rm MUST run when persist_across_processes=False, even with "
         "persistent_filesystem=True — that gating was the leak source in #20561."
     )
-
-
 
 
 def test_cleanup_on_env_with_no_container_id_does_not_raise(monkeypatch):

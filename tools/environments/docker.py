@@ -6,13 +6,18 @@ bind mounts.
 """
 
 import datetime
+import errno
 import hashlib
+import hmac
 import json
 import logging
+import ntpath
 import os
 import re
+import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -22,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE
 from tools.terminal_tool_config import (
     _host_path_key, _is_windows_drive_path, cwd_follows_host_mount,
@@ -47,7 +52,6 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
-_ENVIRONMENT_LABEL_KEY = "hermes-environment"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -93,6 +97,7 @@ _load_hermes_env_vars = load_hermes_env_vars
 # Docker label values must match [a-zA-Z0-9_.-] and stay <=63 chars to round-trip
 # through `docker ps --filter label=key=value`.
 _LABEL_VALUE_OK_RE = re.compile(r"[^A-Za-z0-9_.-]")
+_RUNTIME_LABEL_KEY = "hermes-runtime"
 
 
 def _sanitize_label_value(value: str) -> str:
@@ -128,50 +133,241 @@ def _container_identity(shared_key: str = "") -> str:
     return f"{_sanitize_label_value(shared_key)[:50]}-{digest}"
 
 
-def _is_volatile_mount_spec(spec: str) -> bool:
-    """True when *spec* is a ``host:container[:mode]`` mount whose host source is a
-    per-process tempdir (a ``mkdtemp`` under the system temp), so its path is random
-    per process and must not be hashed into the reuse label.
+_RUNTIME_REUSE_KEY_FILE = ".docker-runtime-reuse.key"
+_RUNTIME_REUSE_KEYS: dict[str, bytes] = {}
+_RUNTIME_REUSE_KEY_LOCK = threading.Lock()
 
-    The known source is the symlink-safe skills copy from
-    ``credential_files._safe_skills_path``: any symlink under ``skills/`` makes it a
-    fresh ``mkdtemp`` per process. Stable host paths — including a symlink-free
-    skills dir, which mounts directly — never sit under the process tempdir.
-    """
-    if spec in ("-v", "--mount") or ":" not in spec:
-        return False  # the flag element itself, or a non-bind arg (tmpfs modes etc.)
-    parsed = _split_volume_spec(spec)
-    source = parsed[0] if parsed is not None else spec.split(":", 1)[0]
-    if _is_windows_drive_path(source):
-        return False  # drive-letter hosts can never be the POSIX process tempdir
+
+class _IncompleteRuntimeReuseKey(RuntimeError):
+    def __init__(self, message: str, *, size: int):
+        super().__init__(message)
+        self.size = size
+
+
+def _read_runtime_reuse_key(path: Path) -> bytes:
+    flags = (
+        os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    )
+    fd = os.open(path, flags)
     try:
-        temp_root = os.path.realpath(tempfile.gettempdir())
-        source_abs = os.path.realpath(os.path.abspath(os.path.expanduser(source)))
-        return source_abs == temp_root or source_abs.startswith(temp_root + os.sep)
-    except OSError:  # unreadable source — treat as stable, fail the safe way
-        return False
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise RuntimeError(f"Docker runtime reuse key is not a regular file: {path}")
+        if os.name != "nt" and file_stat.st_mode & 0o077:
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            key = handle.read(33)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(key) != 32:
+        raise _IncompleteRuntimeReuseKey(
+            f"Docker runtime reuse key must contain exactly 32 bytes: {path}", size=len(key)
+        )
+    return key
 
 
-def _reuse_environment_fingerprint(*, image: str, mount_args: list[str], hermes_home: str) -> str:
-    """Hash immutable configuration so reuse cannot silently attach to stale mounts.
+def _set_runtime_reuse_file_lock(fd: int, *, lock: bool) -> None:
+    """Acquire or release a cross-process advisory lock on an open lock file."""
+    if os.name == "nt":
+        import msvcrt
 
-    Hash requested values rather than exposing profile paths and volume sources in labels.
-    Keep mount order: later arguments can override earlier mount destinations.
-    Per-process tempdir-sourced mounts (the symlink-safe skills copy) have their volatile
-    host path replaced by a stable placeholder: the path is random per process, so hashing
-    it made the label differ across processes and cross-process container reuse never
-    matched for users with any symlink under ``skills/``. The container path stays in the
-    hash, so moving where that mount lands still forces a fresh container.
-    """
-    normalized_home = os.path.normcase(os.path.abspath(os.path.expanduser(hermes_home)))
-    canonical_mounts = [
-        (f"<volatile-tempdir-mount>:{spec.split(':', 1)[1]}"
-         if _is_volatile_mount_spec(spec) else spec)
-        for spec in mount_args]
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
+            os.fsync(fd)
+            os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
+
+
+class _RuntimeReuseFileLock:
+    def __init__(self, path: Path):
+        self.path = path
+        self.fd = -1
+
+    def __enter__(self):
+        flags = (
+            os.O_RDWR | os.O_CREAT
+            | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        self.fd = os.open(self.path, flags, 0o600)
+        try:
+            file_stat = os.fstat(self.fd)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise RuntimeError(f"Docker runtime reuse lock is not a regular file: {self.path}")
+            if os.name != "nt" and file_stat.st_mode & 0o077:
+                os.fchmod(self.fd, 0o600)
+            _set_runtime_reuse_file_lock(self.fd, lock=True)
+        except BaseException:
+            os.close(self.fd)
+            self.fd = -1
+            raise
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        fd, self.fd = self.fd, -1
+        if fd >= 0:
+            try:
+                _set_runtime_reuse_file_lock(fd, lock=False)
+            finally:
+                os.close(fd)
+
+
+def _publish_runtime_reuse_key_locked(path: Path, temp_path: Path, key: bytes) -> bytes:
+    """Atomically publish a complete key while serializing fallback publishers."""
+    lock_path = path.with_name(f".{path.name}.lock")
+    with _RuntimeReuseFileLock(lock_path):
+        try:
+            return _read_runtime_reuse_key(path)
+        except FileNotFoundError:
+            pass
+        except _IncompleteRuntimeReuseKey as exc:
+            # An empty file is crash residue from the former direct-O_EXCL
+            # fallback. Non-empty malformed keys remain a hard failure.
+            if exc.size != 0:
+                raise
+        os.replace(temp_path, path)
+        return key
+
+
+def _load_or_create_runtime_reuse_key(path: Path) -> bytes:
+    """Load or atomically create the private key used for Docker reuse labels."""
+    try:
+        return _read_runtime_reuse_key(path)
+    except _IncompleteRuntimeReuseKey:
+        # Let the serialized publisher distinguish recoverable empty crash
+        # residue from non-empty corruption.
+        pass
+    except FileNotFoundError:
+        pass
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_bytes(32)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
+    flags = (
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    fd = os.open(temp_path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(key)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            # Linking a fully written inode into place is an atomic create-if-absent.
+            # A direct O_EXCL write exposes a zero-length target to a racing reader.
+            os.link(temp_path, path)
+        except FileExistsError:
+            return _publish_runtime_reuse_key_locked(path, temp_path, key)
+        except OSError as exc:
+            unsupported = {
+                errno.EPERM,
+                errno.EACCES,
+                errno.EINVAL,
+                getattr(errno, "EOPNOTSUPP", -1),
+                getattr(errno, "ENOTSUP", -1),
+                getattr(errno, "ENOSYS", -1),
+            }
+            if exc.errno not in unsupported:
+                raise
+            # Some managed-home filesystems reject hardlinks. Serialize
+            # publishers, then atomically replace from the fully-written temp.
+            return _publish_runtime_reuse_key_locked(path, temp_path, key)
+        return key
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _runtime_reuse_key() -> bytes:
+    path = get_default_hermes_root() / _RUNTIME_REUSE_KEY_FILE
+    cache_key = str(path.expanduser().resolve(strict=False))
+    with _RUNTIME_REUSE_KEY_LOCK:
+        key = _RUNTIME_REUSE_KEYS.get(cache_key)
+        if key is None:
+            try:
+                key = _load_or_create_runtime_reuse_key(path)
+            except (OSError, RuntimeError) as exc:
+                # A missing persistent identity must disable reuse, not Docker.
+                # A process-local random key cannot match any prior process's
+                # runtime label, so this degradation fails closed for reuse.
+                key = secrets.token_bytes(32)
+                logger.warning(
+                    "Docker runtime reuse key is unavailable (%s); "
+                    "cross-process Docker reuse is disabled for this process",
+                    exc,
+                )
+            _RUNTIME_REUSE_KEYS[cache_key] = key
+        return key
+
+
+def _runtime_reuse_fingerprint(
+    run_args: list[str], run_env_values: dict[str, str],
+) -> str:
+    """Keyed label value for immutable run posture, including private paths and env values."""
+    canonical_run_args = []
+    for arg in run_args:
+        parsed = _split_volume_spec(arg)
+        if parsed is not None and _is_volatile_mount_spec(arg):
+            source, _target = parsed
+            canonical_run_args.append(
+                f"<volatile-tempdir-mount>:{arg[len(source) + 1:]}"
+            )
+        else:
+            canonical_run_args.append(arg)
     payload = json.dumps(
-        {"image": image, "mount_args": canonical_mounts, "hermes_home": normalized_home},
-        sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+        [canonical_run_args, run_env_values],
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hmac.new(
+        _runtime_reuse_key(), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:24]
+
+
+def _is_volatile_mount_spec(spec: str) -> bool:
+    """Whether a bind source is a per-process symlink-safe skills copy."""
+    if spec in ("-v", "--mount") or ":" not in spec:
+        return False
+    parsed = _split_volume_spec(spec)
+    if parsed is None:
+        return False
+    source = parsed[0]
+    try:
+        temp_root = tempfile.gettempdir()
+        path_module = (
+            ntpath
+            if os.name == "nt"
+            or _is_windows_drive_path(source)
+            or _is_windows_drive_path(temp_root)
+            else os.path
+        )
+        temp_root_abs = path_module.normcase(
+            path_module.realpath(path_module.abspath(path_module.expanduser(temp_root)))
+        )
+        source_abs = path_module.normcase(
+            path_module.realpath(path_module.abspath(path_module.expanduser(source)))
+        )
+        return (
+            path_module.dirname(source_abs) == temp_root_abs
+            and path_module.basename(source_abs).startswith("hermes-skills-safe-")
+        )
+    except OSError:
+        return False
 
 
 def reap_orphan_containers(
@@ -709,6 +905,9 @@ class DockerEnvironment(BaseEnvironment):
                 image)
         security_args = _build_security_args(
             run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat)
+        alternate_security_args = _build_security_args(
+            run_as_host_user and bool(user_args), run_exec=not image_uses_s6_init,
+            snap_compat=snap_compat)
         self._snap_compat = snap_compat
         if snap_compat:
             logger.warning(
@@ -716,29 +915,36 @@ class DockerEnvironment(BaseEnvironment):
 
         logger.info("Docker volume_args: %s", volume_args)
         # docker_extra_args go last so they can override defaults.
-        all_run_args = (
-            security_args + user_args + writable_args + resource_args
+        non_security_args = (
+            user_args + writable_args + resource_args
             + egress_host_args + volume_args + env_args + validated_extra)
+        all_run_args = security_args + non_security_args
         logger.info("Docker run_args: %s", all_run_args)
 
         # Labels identify hermes containers to the orphan reaper (hermes-agent=1),
         # cross-process reuse (task-id/profile) and operators. The reuse identity
         # is captured at start and never changes for the container's lifetime.
-        # Egress posture gets its own label: env/CA mounts are immutable after
-        # creation, so reusing a pre-egress container would bypass the firewall.
+        # Immutable run posture gets an opaque label so config changes cannot
+        # attach current policy decisions to an older container. Image stays out
+        # of this pre-filter: _attach_existing_container applies the pinned/default
+        # image policy after locating the prior sandbox.
         profile_name = _container_identity(shared_container_key)
         task_label = _sanitize_label_value(task_id)
+        try:
+            runtime_label = _runtime_reuse_fingerprint(
+                all_run_args, self._run_env_values)
+            alternate_init_runtime_label = _runtime_reuse_fingerprint(
+                alternate_security_args + non_security_args, self._run_env_values)
+        except (OSError, RuntimeError) as exc:
+            raise EnvironmentConnectionError(
+                f"Docker runtime reuse identity could not load its private key: {exc}"
+            ) from exc
         self._labels = {
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
-            _EGRESS_LABEL_KEY: egress_label}
-        # Explicit sharing opts into the first creator's settings. Otherwise,
-        # changed image/mount/home configuration must start a fresh container.
-        if not shared_container_key:
-            self._labels[_ENVIRONMENT_LABEL_KEY] = _reuse_environment_fingerprint(
-                image=image, mount_args=[*writable_args, *volume_args],
-                hermes_home=str(get_hermes_home()))
+            _EGRESS_LABEL_KEY: egress_label,
+            _RUNTIME_LABEL_KEY: runtime_label}
         # Saved for container recreation on "No such container" recovery.
         self._image = image
         self._image_pinned = image_pinned
@@ -746,7 +952,8 @@ class DockerEnvironment(BaseEnvironment):
         self._all_run_args = all_run_args
 
         reused = persist_across_processes and self._attach_existing_container(
-            task_label, profile_name, egress_label, network)
+            task_label, profile_name, egress_label, runtime_label,
+            alternate_init_runtime_label, network)
         if not reused:
             self._container_id = self._docker_run(cwd)
 
@@ -896,13 +1103,22 @@ class DockerEnvironment(BaseEnvironment):
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
         return volume_args, writable_args
 
-    def _attach_existing_container(self, task_label, profile_name, egress_label, network: bool) -> bool:
+    def _attach_existing_container(
+        self, task_label, profile_name, egress_label, runtime_label,
+        alternate_init_runtime_label, network: bool,
+    ) -> bool:
         """Attach to a prior process's labeled container ("ONE long-lived container shared
         across sessions"; opt out via ``docker_persist_across_processes: false``).
         Network guard is lockdown-only: a bridge container under ``docker_network: false``
         is removed and recreated, but a ``none`` container under default config is kept so
         ``--network=none`` in extra args doesn't churn containers every startup."""
-        existing = self._find_reusable_container(task_label, profile_name, egress_label)
+        existing = self._find_reusable_container(
+            task_label, profile_name, egress_label, runtime_label)
+        matched_alternate_init = False
+        if existing is None and alternate_init_runtime_label != runtime_label:
+            existing = self._find_reusable_container(
+                task_label, profile_name, egress_label, alternate_init_runtime_label)
+            matched_alternate_init = existing is not None
         if existing is None:
             return False
         container_id, state = existing
@@ -913,6 +1129,13 @@ class DockerEnvironment(BaseEnvironment):
         # keep it and let the CLI / Screen pane ask. Same rule Modal (snapshot wins) and Daytona
         # (labeled sandbox wins) already apply.
         actual_image = self._container_image(container_id)
+        if matched_alternate_init and (
+            actual_image is None or actual_image == self._image
+        ):
+            # The fallback exists only so a differently named default image can
+            # reach the image policy below. A same-name or uninspectable match
+            # would silently cross the effective /run exec/noexec posture.
+            return False
         if actual_image is not None and actual_image != self._image:
             if not self._image_pinned:
                 logger.warning(
@@ -1113,7 +1336,8 @@ class DockerEnvironment(BaseEnvironment):
         existing = self._find_reusable_container(
             self._labels.get("hermes-task-id", ""),
             self._labels.get("hermes-profile", ""),
-            self._labels.get(_EGRESS_LABEL_KEY, "off"))
+            self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            self._labels.get(_RUNTIME_LABEL_KEY, ""))
         if existing is not None:
             cid, state = existing
             if state == "running":
@@ -1212,21 +1436,20 @@ class DockerEnvironment(BaseEnvironment):
         return (result.stdout.strip() or None) if result is not None else None
 
     def _find_reusable_container(
-        self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
-        """``(container_id, state)`` of an existing container labeled for this task/profile/
-        egress posture and immutable environment, or ``None`` on miss or any failure.
-        Explicit shared keys opt out of the environment filter. The egress posture is a label
-        FILTER for every posture, "off" included: a container built with egress on must not be
-        reused after ``hermes egress disable`` (baked-in proxy env and CA mounts), and every
-        container this class creates carries the label. The ``{{.Label "key"}}`` template
-        function is Docker-only — podman ps exits 125 on it — so the probe never uses it (#99213)."""
+        self, task_label: str, profile_label: str, egress_label: str,
+        runtime_label: str,
+    ) -> Optional[tuple[str, str]]:
+        """``(container_id, state)`` matching this task/profile and immutable posture.
+
+        Egress and runtime identities are label filters, so containers created
+        under any different posture are excluded by Docker/Podman itself.
+        """
         filters = [
             "--filter", "label=hermes-agent=1",
             "--filter", f"label=hermes-task-id={task_label}",
             "--filter", f"label=hermes-profile={profile_label}",
-            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
-        if environment_label := self._labels.get(_ENVIRONMENT_LABEL_KEY):
-            filters.extend(["--filter", f"label={_ENVIRONMENT_LABEL_KEY}={environment_label}"])
+            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}",
+            "--filter", f"label={_RUNTIME_LABEL_KEY}={runtime_label}"]
         result = _docker_query(
             [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",

@@ -31,6 +31,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
+import { createOutboundGate } from './outbound_gate.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -123,6 +124,29 @@ const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); 
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const WHATSAPP_GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || 'pairing').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+// --- Outbound recipient gate -------------------------------------------------
+// Inbound traffic is filtered by ALLOWED_USERS, but the HTTP send endpoints
+// (/send, /send-media, /send-poll, /send-location, /edit) trusted whatever
+// chatId the caller passed.  Any process able to reach the loopback bridge
+// (curl, a debug script working around the Python gateway) could message
+// arbitrary contacts of the linked WhatsApp account.  Mirror the inbound
+// allowlist on egress; see outbound_gate.js for the policy semantics.
+const isOutboundChatAllowed = createOutboundGate({
+  env: process.env,
+  sessionDir: SESSION_DIR,
+  getAccount: () => sock?.user || null,
+});
+function rejectOutboundIfBlocked(req, res) {
+  const chatId = req.body && req.body.chatId;
+  if (isOutboundChatAllowed(chatId)) return false;
+  emitDebugEvent({ stage: 'outbound_blocked', chatId: redactWhatsAppId(chatId) });
+  res.status(403).json({
+    error: 'outbound_not_allowed',
+    chatId: redactWhatsAppId(chatId),
+    hint: 'Add to WHATSAPP_OUTBOUND_ALLOWED, or WHATSAPP_OUTBOUND_ALLOW_ALL=1 for gateway-driven delivery.',
+  });
+  return true;
+}
 // Group authorization is by group JID, not by every participant's JID.  The
 // Python adapter still applies group policy and mention rules after intake.
 const GROUP_ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_GROUP_ALLOWED_USERS || '');
@@ -847,6 +871,7 @@ app.post('/send', async (req, res) => {
   if (!chatId || !message) {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
+  if (rejectOutboundIfBlocked(req, res)) return;
 
   try {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
@@ -887,6 +912,7 @@ app.post('/edit', async (req, res) => {
   if (!chatId || !messageId || !message) {
     return res.status(400).json({ error: 'chatId, messageId, and message are required' });
   }
+  if (rejectOutboundIfBlocked(req, res)) return;
 
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
@@ -921,6 +947,7 @@ app.post('/send-media', async (req, res) => {
   if (!chatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
+  if (rejectOutboundIfBlocked(req, res)) return;
 
   try {
     if (!existsSync(filePath)) {
@@ -1024,6 +1051,7 @@ app.post('/send-poll', async (req, res) => {
   if (!chatId || !question || !Array.isArray(options)) {
     return res.status(400).json({ error: 'chatId, question, and options are required' });
   }
+  if (rejectOutboundIfBlocked(req, res)) return;
 
   try {
     const payload = buildPollPayload({ question, options, selectableCount });
@@ -1046,6 +1074,7 @@ app.post('/send-location', async (req, res) => {
   if (!chatId || latitude === undefined || longitude === undefined) {
     return res.status(400).json({ error: 'chatId, latitude, and longitude are required' });
   }
+  if (rejectOutboundIfBlocked(req, res)) return;
 
   try {
     const payload = buildLocationPayload({ latitude, longitude, name, address });

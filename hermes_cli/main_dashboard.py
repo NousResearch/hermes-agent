@@ -43,17 +43,45 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
     return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
+_POSIX_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+
+
+def _dashboard_mode(command: str) -> str | None:
+    """``"dashboard"``/``"serve"`` when *command* runs that subcommand, else None.
+
+    The canonical holder subcommand, never an argv substring (#121156). That matcher treats everything
+    after ``-c`` as data, which is right for ``python -c`` (#107002), but a POSIX shell's ``-c``
+    operand IS the command it runs: a LaunchAgent wrapping the backend in
+    ``/bin/sh -c 'exec hermes dashboard'`` must still reach the launchd inventory and the uninstall sweep.
+    """
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+
+    mode = _hermes_holder_subcommand(command)
+    if mode is None:
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = []
+        if len(tokens) >= 3 and Path(tokens[0]).name in _POSIX_SHELLS and tokens[1] == "-c":
+            mode = _hermes_holder_subcommand(tokens[2])
+    return mode if mode in ("dashboard", "serve") else None
+
+
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     """Best-effort parse of a dashboard/server cmdline into mode, host, and port.
 
-    The mode is the canonical holder subcommand, never an argv substring: this gates the launchd
-    backend inventory (a kill + kickstart path) and ``--status`` (#121156).
+    The mode (``_dashboard_mode``) gates the launchd backend inventory (a kill + kickstart path) and
+    ``--status``.
     """
-    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
-    mode = _hermes_holder_subcommand(command)
-    if mode not in ("dashboard", "serve"):
+    mode = _dashboard_mode(command)
+    if mode is None:
         return None
+    bind = _dashboard_bind(command)
+    return (mode, *bind) if bind else None
 
+
+def _dashboard_bind(command: str) -> tuple[str, int] | None:
+    """``(host, port)`` from a dashboard/server cmdline's flags (defaults 127.0.0.1:9119)."""
     port = 9119
     host = "127.0.0.1"
 
@@ -68,7 +96,7 @@ def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     if host_match:
         host = host_match.group(1).strip("\"'") or "127.0.0.1"
 
-    return mode, host, port
+    return host, port
 
 
 def _dashboard_probe_host(host: str | None) -> str:
@@ -560,22 +588,23 @@ def _report_dashboard_status() -> int:
     Serve-mode backends are INCLUDED: ``--stop`` kills them, so hiding them from
     ``--status`` let an operator kill what they couldn't see.
 
-    Ledger-registered serves (profiled launches the argv scan can't match) surface via the spawn-ledger
-    augmentation in _scan_dashboard_processes, and the ledger's recorded bind replaces the argv port so
-    ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
+    Ledger-registered backends surface via the spawn-ledger augmentation in _scan_dashboard_processes.
+    Their recorded purpose is the mode (the recorded argv of a launcher-started backend is
+    ``-c dashboard …``, which no argv parse can classify) and their recorded bind replaces the argv
+    port so ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
     """
-    from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
+    from hermes_cli.dashboard_procs import _ledger_serve_runtimes, _scan_dashboard_processes
     from gateway.status import _pid_exists
-    binds = _ledger_serve_binds()
+    ledger = _ledger_serve_runtimes()
     live: list[tuple[int, str, str]] = []
     for pid, command in _scan_dashboard_processes():
-        runtime = _parse_dashboard_runtime(command)
-        if runtime is None:
+        mode = ledger[pid][0] if pid in ledger else _dashboard_mode(command)
+        bind = _dashboard_bind(command) if mode else None
+        if bind is None:
             continue
-        mode, host, port = runtime
-        if pid in binds:
-            ledger_host, port = binds[pid]
-            host = ledger_host or host
+        host, port = bind
+        if pid in ledger and ledger[pid][2]:
+            host, port = ledger[pid][1] or host, ledger[pid][2]
         if port <= 0 or not _pid_exists(pid) or not _dashboard_listening(host, port):
             continue
         live.append((pid, command, mode))
@@ -586,8 +615,17 @@ def _report_dashboard_status() -> int:
 
     print(f"{len(live)} hermes dashboard/serve process(es) running:")
     for pid, command, mode in live:
-        print(f"    PID {pid} [{mode}]: {command}")
+        print(f"    PID {pid} [{mode}]: {_display_command(command)}")
     return len(live)
+
+
+def _display_command(command: str) -> str:
+    """One-line form for display: a Hermes inline bootstrap (the PM launcher's multi-line ``-c``
+    source) prints as the equivalent ``python -m <module> <argv…>`` it runs."""
+    from gateway.status import inline_bootstrap_argv
+
+    tokens = command.split()
+    return " ".join(inline_bootstrap_argv(tokens) or tokens)
 
 
 def _dashboard_listening(host: str, port: int) -> bool:

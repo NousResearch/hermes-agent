@@ -1186,7 +1186,7 @@ class GatewayStartupMixin:
     async def _start_prefilter_platforms(self) -> tuple[bool, int, list, list]:
         """Create + wire an adapter per enabled platform (no connects). Returns
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
-        from gateway.run import _platform_has_bot_credential
+        from gateway.run import MultiplexConfigError, _platform_has_bot_credential
         from gateway.run_adapters import _adapter_unavailable_message
         enabled_platform_count = 0
         _multiplex_on = self._multiplex_on()
@@ -1212,7 +1212,20 @@ class GatewayStartupMixin:
                 _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
-            adapter = self._create_adapter(platform, platform_config)
+            try:
+                adapter = self._create_adapter(platform, platform_config)
+            except MultiplexConfigError:
+                raise  # global routing errors still abort startup
+            except Exception as exc:
+                # Park this platform; healthy siblings still connect.
+                logger.error("Could not create %s adapter: %s", platform.value, exc, exc_info=True)
+                self._update_platform_runtime_status(
+                    platform.value, platform_state="fatal", error_code="adapter_creation_failed",
+                    error_message=f"Adapter creation failed: {exc}. Fix the platform config, then hermes gateway restart.",
+                    needs_attention=True,
+                )
+                self._startup_parked_platforms = True
+                continue
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
                 if platform.value in {m.value for m in Platform.__members__.values()}:

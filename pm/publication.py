@@ -9,8 +9,11 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import threading
 from pathlib import Path
+
+LOG = logging.getLogger(__name__)
 
 from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
 from pm.filesystem import durable_write_bytes, file_digest, read_bytes_or_none
@@ -156,6 +159,21 @@ class StagedPlugin:
             metadata = _metadata_records(previous)
             if metadata.get(self.target.name) != self.old_record:
                 raise ValueError("Plugin install metadata changed while preparing the update; retry.")
+            # Ghost rows (directory manually removed) are reconciled here, at the
+            # read-modify-write that persists the sidecar: without this the merge
+            # below re-carries them on every install (#122135). The target's own
+            # record is set fresh right after, never pruned.
+            stale = sorted(
+                name for name in metadata
+                if name != self.target.name and not (self.metadata.parent / name).is_dir()
+            )
+            if stale:
+                LOG.warning(
+                    "Dropping stale plugin install metadata for missing directories: %s",
+                    ", ".join(stale),
+                )
+                for name in stale:
+                    del metadata[name]
             metadata[self.target.name] = self.new_record
             proposed = (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode()
             current = tree_digest(self.target) if self.target.exists() else None

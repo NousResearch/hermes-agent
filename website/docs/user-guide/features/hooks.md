@@ -477,6 +477,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `post_gateway_admission` | Directive/control (fail-open) | Admitted non-internal message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed session slot and the routed profile's scope; first `handled` result skips the agent turn, anything else (including a raise or timeout) runs it. | `session_key`, `platform`, `source` (dict snapshot), `message_id`, `text` | Inbound text is untrusted user data; no runner or session-store handles are passed. |
+| `pre_send_message` | Directive/control (fail-open) | Once per outbound adapter `send` (replies, notices, approvals, interim/status), outermost call only; streamed previews and media excluded. First `rewrite` replaces the text; any `drop` suppresses the send (caller sees success, no message id). | `platform`, `chat_id`, `text`, `kind` (`message`/`interim`), `reply_to`, `metadata` (copy) | Text may include user content echoed back; no adapter handles are passed. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
@@ -1314,6 +1315,32 @@ def register(ctx):
 ```
 
 **Fail-open.** A callback that raises, times out (`plugins.hook_callback_timeout`) or returns something else is logged and the message proceeds to the agent, so one buggy plugin cannot block a profile's traffic. A plugin that needs fail-closed behaviour catches its own errors and returns `handled` with its own failure reply. The payload is a snapshot (`source` is `SessionSource.to_dict()`); do not send through adapters directly, return `reply` instead. Dedupe and durable acceptance are the plugin's responsibility.
+
+### `pre_send_message`
+
+Fires **once per outbound message**, just before a gateway adapter's `send` delivers it: final replies, cron and kanban notices, approval prompts, interim and status messages, shutdown notices, on every platform including plugin-provided ones. Nested sends inside one outer send (a subclass calling `super().send`, a split payload) fire it once. Streamed previews (`metadata["expect_edits"]`) and media sends (`send_image`, `send_voice`, ...) do not fire it.
+
+Kwargs: `platform`, `chat_id`, `text`, `kind` (`"interim"` for mid-turn status/advisory sends, else `"message"`), `reply_to`, `metadata` (a copy).
+
+Return `{"action": "rewrite", "text": "..."}` to send different text (the first rewrite wins), or `{"action": "drop", "reason": "..."}` to not send it (a drop beats any rewrite). The caller then sees a successful send with no message id, so no retry or plain-text fallback runs. Anything else sends unchanged.
+
+```python
+_sent_today = 0
+
+def budget(platform, chat_id, text, kind, **kwargs):
+    global _sent_today
+    if kind == "interim":
+        return None
+    if _sent_today >= 100:
+        return {"action": "drop", "reason": "daily budget"}
+    _sent_today += 1
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_send_message", budget)
+```
+
+**Fail-open.** A callback that raises or times out (`plugins.hook_callback_timeout`) is logged and the message goes out unchanged. Keep it fast: it runs on every send.
 
 ---
 

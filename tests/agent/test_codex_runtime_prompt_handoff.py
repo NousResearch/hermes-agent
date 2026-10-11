@@ -127,7 +127,7 @@ def test_runtime_gives_no_approval_callback_when_nobody_can_answer(monkeypatch):
     from tools.terminal_tool import set_approval_callback
 
     monkeypatch.setattr(sess_mod, "CodexAppServerClient", lambda **kw: _FakeClient())
-    panel = lambda *args, **kwargs: "once"  # noqa: E731
+    panel = lambda *args, **kwargs: "once"
     set_approval_callback(panel)
     try:
         interactive = _agent()

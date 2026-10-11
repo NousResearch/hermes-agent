@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from tools import subagent_worktree as sw  # noqa: E402
+from tools import subagent_worktree as sw
 
 
 def _git(args, cwd, check=True):

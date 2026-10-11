@@ -435,7 +435,7 @@ def test_block_happy_path(worker_env):
 def test_schedule_parks_current_worker_with_reason(worker_env):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
-    from tools import kanban_tools  # noqa: F401 — ensure registration
+    from tools import kanban_tools
     from tools.registry import registry
 
     reason = "SCHEDULED_UNTIL=2026-09-13T00:00:00Z waiting for reconnect"

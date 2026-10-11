@@ -16,7 +16,7 @@ import json
 import pytest
 
 import tools.approval as A
-import tools.approval_prompt as approval_prompt
+from tools import approval_prompt
 from tools import approval_context
 from hermes_cli import approvals_test as at
 

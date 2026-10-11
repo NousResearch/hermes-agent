@@ -53,7 +53,7 @@ class ToolLabel:
     def text(self) -> str:
         return f"{self.app} · {self.action}" if self.action else self.app
 
-    def as_payload(self) -> Dict[str, str]:
+    def as_payload(self) -> dict[str, str]:
         return {"kind": self.kind, "app": self.app, "action": self.action, "emoji": self.emoji,
                 "text": self.text, "name": self.name, "preview": self.preview}
 
@@ -116,8 +116,11 @@ def label_for_tool_name(name: str, arguments: Any = None) -> Optional[ToolLabel]
         return None
     connector = parse_connector_name(name)
     if connector is not None:
-        return ToolLabel(kind="connector", app=app_title(connector.connector),
-                         action=_action_phrase(connector.tool, connector.connector),
+        action = _action_phrase(connector.tool, connector.connector)
+        alias = arguments.get("connector_alias") if isinstance(arguments, dict) else None
+        if isinstance(alias, str) and alias.strip():
+            action = f"{action} ({alias.strip()})"
+        return ToolLabel(kind="connector", app=app_title(connector.connector), action=action,
                          emoji=CONNECTOR_EMOJI, name=name, preview=_arg_preview(name, arguments))
     if name.startswith(MCP_TOOL_NAME_PREFIX):
         server, _, tool = name[len(MCP_TOOL_NAME_PREFIX):].partition("__")
@@ -127,7 +130,7 @@ def label_for_tool_name(name: str, arguments: Any = None) -> Optional[ToolLabel]
     return _local_tool_label(name, arguments)
 
 
-def _bridge_labels(function_name: str, args: Dict[str, Any]) -> List[ToolLabel]:
+def _bridge_labels(function_name: str, args: dict[str, Any]) -> list[ToolLabel]:
     if function_name == "tool_search":
         queries = args.get("queries")
         queries = [queries] if isinstance(queries, str) else queries
@@ -142,7 +145,7 @@ def _bridge_labels(function_name: str, args: Dict[str, Any]) -> List[ToolLabel]:
                       emoji=DESCRIBE_EMOJI, name=function_name)]
 
 
-def labels_for_call(function_name: str, function_args: Any) -> List[ToolLabel]:
+def labels_for_call(function_name: str, function_args: Any) -> list[ToolLabel]:
     args = function_args if isinstance(function_args, dict) else {}
     if function_name in ("tool_search", "tool_describe"):
         return _bridge_labels(function_name, args)

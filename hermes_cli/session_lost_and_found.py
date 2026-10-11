@@ -84,7 +84,7 @@ SQLITE3_CLI_GUIDANCE = (
 # The predicate lives in hermes_cli.sqlite_runtime (stdlib-only, shared with
 # the installer/update gates) so the embedded runtime and the salvage shell
 # can never disagree about which versions are safe.
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable  # noqa: E502
+from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable
 
 _WAL_RESET_VULNERABLE_GUIDANCE = (
     "salvage against a Hermes database with the WAL-reset bug "
@@ -103,7 +103,7 @@ class LostAndFoundError(RuntimeError):
 def _parse_sqlite3_cli_version(binary: str) -> Optional[tuple[int, int, int]]:
     """Version of the sqlite3 CLI at *binary* via ``--version``, or None when it cannot run or be parsed."""
     try:
-        probe = subprocess.run([binary, "--version"], capture_output=True, timeout=30)
+        probe = subprocess.run([binary, "--version"], capture_output=True, timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     if probe.returncode != 0:
@@ -172,7 +172,7 @@ def _cli_supports_recover(binary: str) -> bool:
             conn.commit()
         finally:
             conn.close()
-        probe = subprocess.run([binary, "-readonly", str(scratch), ".recover"], capture_output=True, timeout=30)
+        probe = subprocess.run([binary, "-readonly", str(scratch), ".recover"], capture_output=True, timeout=30, check=False)
         return probe.returncode == 0 and b"sqlite_dbpage" not in probe.stderr
     except (OSError, subprocess.SubprocessError, sqlite3.Error):
         return False

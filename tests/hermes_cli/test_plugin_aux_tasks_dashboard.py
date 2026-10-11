@@ -98,7 +98,7 @@ def test_listing_is_per_profile_and_carries_inheritance(two_profile_homes):
 
 
 def test_pin_persists_per_profile_and_is_honored_by_resolution(two_profile_homes):
-    home_a, home_b = two_profile_homes
+    home_a, _home_b = two_profile_homes
     with _profile_scope("b"):
         _apply_model_assignment_sync("auxiliary", "nous", "hermes-4", "side_task", "", "")
     assert _rows("b")["side_task"]["provider"] == "nous"

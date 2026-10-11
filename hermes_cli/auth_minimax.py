@@ -12,7 +12,7 @@ import hashlib
 import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 from hermes_cli.auth_constants import (
     AuthError, MINIMAX_OAUTH_GRANT_TYPE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, MINIMAX_OAUTH_SCOPE,
@@ -50,7 +50,7 @@ def _minimax_response_error_text(response: httpx.Response, *, limit: int = _MINI
         response.close()
 
 
-def _minimax_post_form(client: httpx.Client, url: str, *, data: Dict[str, Any], headers: Dict[str, str]) -> httpx.Response:
+def _minimax_post_form(client: httpx.Client, url: str, *, data: dict[str, Any], headers: dict[str, str]) -> httpx.Response:
     """POST a MiniMax OAuth form without eagerly reading error bodies."""
     response = client.send(client.build_request("POST", url, data=data, headers=headers), stream=True)
     if response.status_code == 200:
@@ -68,7 +68,7 @@ def _minimax_pkce_pair() -> tuple:
 
 def _minimax_request_user_code(
     client: httpx.Client, *, portal_base_url: str, client_id: str, code_challenge: str, state: str
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     response = _minimax_post_form(
         client,
         f"{portal_base_url}/oauth/code",
@@ -103,13 +103,13 @@ def _minimax_resolve_token_expiry_unix(expired_in: int, *, now: datetime) -> flo
     return now.timestamp() + max(1, raw)
 
 
-def _minimax_expiry_fields(expired_in: Any) -> Dict[str, Any]:
+def _minimax_expiry_fields(expired_in: Any) -> dict[str, Any]:
     """``obtained_at`` / ``expires_at`` / ``expires_in`` derived from a MiniMax ``expired_in``."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires_at_unix = _minimax_resolve_token_expiry_unix(int(expired_in), now=now)
     return {
         "obtained_at": now.isoformat(),
-        "expires_at": datetime.fromtimestamp(expires_at_unix, tz=timezone.utc).isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at_unix, tz=UTC).isoformat(),
         "expires_in": max(0, int(expires_at_unix - now.timestamp())),
     }
 
@@ -117,9 +117,9 @@ def _minimax_expiry_fields(expired_in: Any) -> Dict[str, Any]:
 def _minimax_poll_token(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     user_code: str, code_verifier: str, expired_in: int, interval_ms: Optional[int],
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     # expired_in is a unix-ms timestamp upstream (OpenClaw) but small values are TTL seconds.
-    deadline = _minimax_resolve_token_expiry_unix(expired_in, now=datetime.now(timezone.utc))
+    deadline = _minimax_resolve_token_expiry_unix(expired_in, now=datetime.now(UTC))
     interval = max(2.0, (interval_ms or 2000) / 1000.0)
 
     while time.time() < deadline:
@@ -158,7 +158,7 @@ def _minimax_poll_token(
     raise _minimax_err("MiniMax OAuth timed out before authorization completed.", "timeout")
 
 
-def _minimax_save_auth_state(auth_state: Dict[str, Any], *, set_active: bool = True) -> None:
+def _minimax_save_auth_state(auth_state: dict[str, Any], *, set_active: bool = True) -> None:
     """Persist MiniMax OAuth state to Hermes auth store (~/.hermes/auth.json).
 
     ``set_active=False`` rewrites credentials without making minimax-oauth the
@@ -173,7 +173,7 @@ def _minimax_save_auth_state(auth_state: Dict[str, Any], *, set_active: bool = T
         _save_auth_store(auth_store)
 
 
-def _minimax_oauth_login(*, region: str = "global", open_browser: bool = True, timeout_seconds: float = 15.0) -> Dict[str, Any]:
+def _minimax_oauth_login(*, region: str = "global", open_browser: bool = True, timeout_seconds: float = 15.0) -> dict[str, Any]:
     """Run MiniMax OAuth flow, persist tokens, return auth state dict."""
     from hermes_cli.auth import PROVIDER_REGISTRY, _can_open_graphical_browser, _is_remote_session, _minimax_pkce_pair, _minimax_request_user_code, _minimax_save_auth_state, _print_device_code_instructions
     pconfig = PROVIDER_REGISTRY["minimax-oauth"]
@@ -233,7 +233,7 @@ def _minimax_oauth_login(*, region: str = "global", open_browser: bool = True, t
     return auth_state
 
 
-def _refresh_minimax_oauth_state(state: Dict[str, Any], *, timeout_seconds: float = 15.0, force: bool = False) -> Dict[str, Any]:
+def _refresh_minimax_oauth_state(state: dict[str, Any], *, timeout_seconds: float = 15.0, force: bool = False) -> dict[str, Any]:
     """Refresh MiniMax OAuth access token if close to expiry (or forced)."""
     from hermes_cli.auth import _minimax_save_auth_state
     if not state.get("refresh_token"):
@@ -276,7 +276,7 @@ def _refresh_minimax_oauth_state(state: Dict[str, Any], *, timeout_seconds: floa
     return new_state
 
 
-def _minimax_oauth_quarantine_on_terminal_refresh(state: Dict[str, Any], exc: AuthError) -> None:
+def _minimax_oauth_quarantine_on_terminal_refresh(state: dict[str, Any], exc: AuthError) -> None:
     """Wipe dead tokens from auth.json after a terminal refresh failure (fail fast, no network retry)."""
     from hermes_cli.auth import _minimax_save_auth_state, _quarantine_flat_oauth_state
     if not (exc.relogin_required and state.get("refresh_token")):
@@ -289,7 +289,7 @@ def _minimax_oauth_quarantine_on_terminal_refresh(state: Dict[str, Any], exc: Au
         logger.debug("MiniMax OAuth: failed to persist quarantined state: %s", _save_exc)
 
 
-def _minimax_fresh_state() -> Dict[str, Any]:
+def _minimax_fresh_state() -> dict[str, Any]:
     """Load the MiniMax OAuth state and refresh it if near expiry; quarantine on terminal failure.
 
     The whole read → refresh → save runs inside ``_auth_store_lock`` (reentrant, so the
@@ -337,7 +337,7 @@ def build_minimax_oauth_token_provider() -> Callable[[], str]:
 def resolve_minimax_oauth_runtime_credentials(
     *, min_token_ttl_seconds: int = MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
     as_token_provider: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Return {provider, api_key, base_url, source}; string ``api_key`` by default (``hermes status`` contract)."""
     state = _minimax_fresh_state()
     return {

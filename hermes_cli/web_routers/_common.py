@@ -154,7 +154,7 @@ def is_redacted_credential_preview(submitted: Any) -> bool:
 # (#96591). One WARNING per store per interval, then debug; the caller gets an explicit status
 # instead of a 500. The file is never quarantined or renamed from here — that is `hermes doctor`'s job.
 _CORRUPT_STORE_WARN_INTERVAL_S = 300.0
-_corrupt_store_warned_at: Dict[str, float] = {}  # {db path: monotonic}
+_corrupt_store_warned_at: dict[str, float] = {}  # {db path: monotonic}
 
 CORRUPT_STORE_DETAIL = {
     "error": "state_db_corrupt",

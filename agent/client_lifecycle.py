@@ -678,7 +678,7 @@ class ClientLifecycleMixin:
             return False
         try:
             return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
-        except Exception:  # noqa: BLE001 — a failed adoption leaves the key in hand; the 401 path still heals
+        except Exception:
             logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
             return False
 
@@ -913,7 +913,25 @@ class ClientLifecycleMixin:
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
+        old_token = self._anthropic_api_key
         self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
+        # Claude Code revokes the old token on refresh: every holder of it (agent.api_key, the compressor's
+        # main_runtime, the fallback-restore snapshot) must move too, or compression 401s for the session's life.
+        if self.api_key == old_token:
+            self.api_key = new_token
+        cc = getattr(self, "context_compressor", None)
+        if cc is not None and getattr(cc, "api_key", None) == old_token:
+            cc.api_key = new_token
+        rt = getattr(self, "_primary_runtime", None) or {}
+        if rt.get("anthropic_api_key") == old_token:  # fallback restore rebuilds from the key + flag pair
+            rt["is_anthropic_oauth"] = self._is_anthropic_oauth
+        for k in ("api_key", "anthropic_api_key", "compressor_api_key"):
+            if rt.get(k) == old_token:
+                rt[k] = new_token
+        # The turn's aux runtime was published before the first request triggered this refresh, so
+        # same-turn `auto` aux calls (approvals, goal judge, plugin llm) would still send the revoked token.
+        from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
+        rotate_runtime_main_api_key(old_token, new_token)
         return True
 
     # ------------------------------------------------------------------ route-derived client config

@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Planificando: {task}"
     ack_conversation: "Planificando a partir del contexto de esta conversación…"
+  initiate_setup:
+    ack: "Iniciando la configuración…"
   init:
     start_failed: "No se pudo iniciar /init — inténtalo de nuevo."
     ack_update: "Actualizando AGENTS.md a partir de un análisis del proyecto…"
@@ -1556,6 +1558,8 @@ slash:
     description: "Volver a ejecutar un prompt a intervalos recurrentes en esta sesión"
   plan:
     description: "Escribir un plan de implementación en markdown en .hermes/plans/ sin ejecutar nada"
+  initiate-setup:
+    description: "Ejecutar la configuración inicial: conocerte y ajustar Hermes a ti"
   moa:
     description: "Ejecutar un prompt con el preset predeterminado de Mixture of Agents y luego restaurar tu modelo"
   subgoal:
@@ -2275,6 +2279,7 @@ cli:
     failed: "Falló la conexión"
     authorized_no_tools: "Autorizado. Herramientas no disponibles."
     connected: "Conectado"
+    named_account: "Hermes llamó {alias} a esta cuenta de {name}. Puedes cambiarle el nombre cuando quieras."
     waiting: "Esperando…"
   editor:
     only_interactive: "El editor externo solo está disponible dentro de la CLI interactiva."
@@ -2914,6 +2919,8 @@ cli:
     plan:
       planning: "📋 Planificando: {task}"
       from_conversation: "📋 Planificando a partir del contexto de esta conversación..."
+    initiate_setup:
+      starting: "🧭 Iniciando la configuración..."
     init:
       updating: "⚡ Actualizando AGENTS.md a partir de un análisis del proyecto..."
       generating: "⚡ Generando AGENTS.md a partir de un análisis del proyecto..."

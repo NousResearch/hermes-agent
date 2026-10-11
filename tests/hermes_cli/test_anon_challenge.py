@@ -11,7 +11,7 @@ import pytest
 
 from hermes_cli import anon_auth, anon_challenge
 
-from tests.hermes_cli.anon_portal import PORTAL, install_portal  # noqa: F401
+from tests.hermes_cli.anon_portal import PORTAL, install_portal
 
 
 @pytest.fixture
@@ -202,7 +202,7 @@ class TestWhoWaits:
 
     def test_the_messaging_gateway_never_waits_on_a_challenge(self, nas, presented, monkeypatch):
         """Nobody sits at a gateway's console, and its token reads can run on the event loop."""
-        import gateway.status as status
+        from gateway import status
         assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
         monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
         monkeypatch.setattr(anon_challenge, "CHALLENGE_WAIT_SECONDS", 0.05)

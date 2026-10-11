@@ -1321,7 +1321,9 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
             id: 'repo',
             label: 'repo',
             path: null,
-            groups: [{ id: 'lane', label: 'lane', path: null, sessions: [{ cwd: '/repo-tree', id: 'tree-5' } as never] }],
+            groups: [
+              { id: 'lane', label: 'lane', path: null, sessions: [{ cwd: '/repo-tree', id: 'tree-5' } as never] }
+            ],
             sessionCount: 1
           }
         ],
@@ -1361,7 +1363,12 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
             label: 'repo',
             path: null,
             groups: [
-              { id: 'lane', label: 'lane', path: null, sessions: [{ cwd: '/repo-deep-primary', id: 'deep-primary' } as never] }
+              {
+                id: 'lane',
+                label: 'lane',
+                path: null,
+                sessions: [{ cwd: '/repo-deep-primary', id: 'deep-primary' } as never]
+              }
             ],
             sessionCount: 1
           }

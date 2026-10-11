@@ -73,7 +73,7 @@ def test_resolve_discovery_timeout_single_query_falls_back(monkeypatch):
     )
     assert mcp_startup._resolve_discovery_timeout(None, single_query=True) == default
 
-    monkeypatch.setattr(cfg, "load_config", lambda: {})
+    monkeypatch.setattr(cfg, "load_config", dict)
     assert mcp_startup._resolve_discovery_timeout(None, single_query=True) == default
 
 def test_resolve_discovery_timeout_explicit_overrides_single_query():
@@ -89,7 +89,7 @@ def _stub_mcp_modules(monkeypatch):
         "hermes_cli.config",
         types.SimpleNamespace(
             read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=lambda: {},
+            load_config=dict,
             DEFAULT_CONFIG={"mcp_discovery_timeout": 0.1, "mcp_single_query_discovery_timeout": 0.2},
         ),
     )
@@ -144,7 +144,7 @@ def test_ensure_helper_swallows_errors(monkeypatch):
         "hermes_cli.config",
         types.SimpleNamespace(
             read_raw_config=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
-            load_config=lambda: {},
+            load_config=dict,
             DEFAULT_CONFIG={},
         ),
     )

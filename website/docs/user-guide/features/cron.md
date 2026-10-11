@@ -399,7 +399,12 @@ move through `claimed`, `running`, and one immutable terminal state:
 `hermes cron run` / `/cron run`, so a one-shot invocation with no scheduler
 running heals the ledger too — Hermes marks an abandoned attempt `unknown` only
 when the original PID and process-start fingerprint prove that its owner is
-gone. Unknown attempts are audit records and are never automatically rerun.
+gone, or when a live owner has been **silent** for longer than the derived
+stale bound (`max(3 × HERMES_CRON_TIMEOUT, script timeout, 2 h)`): the run
+monitor stamps `progress_at` on the attempt while the agent is still calling
+tools or streaming, so a healthy multi-hour job is never reclaimed mid-run, while
+a worker deadlocked on a lock stops stamping and is released once the bound
+passes. Unknown attempts are audit records and are never automatically rerun.
 
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The

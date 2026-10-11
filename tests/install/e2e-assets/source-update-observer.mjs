@@ -2,6 +2,15 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
+// The relaunched app consumes (unlinks) the result file as soon as it boots, so
+// a file that was listed a moment ago can be gone by the time it is read.
+function readIfPresent(file) {
+  try { return readFileSync(file, 'utf8') } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
 export function observeSourceUpdate({ home, resultPath, expectSha }) {
   const directory = join(home, 'logs/update_receipts')
   const files = () => [
@@ -10,12 +19,12 @@ export function observeSourceUpdate({ home, resultPath, expectSha }) {
       .filter(name => name.startsWith('update_') && name.endsWith('.json'))
       .map(name => join(directory, name)) : []),
   ]
-  const before = new Map(files().map(file => [file, readFileSync(file, 'utf8')]))
+  const before = new Map(files().map(file => [file, readIfPresent(file)]))
   return head => {
     let complete = false
     for (const file of files()) {
-      const text = readFileSync(file, 'utf8')
-      if (before.get(file) === text) continue
+      const text = readIfPresent(file)
+      if (text === null || before.get(file) === text) continue
       let data
       try { data = JSON.parse(text.replace(/^\uFEFF/, '')) } catch { continue }
       if (file === resultPath) {

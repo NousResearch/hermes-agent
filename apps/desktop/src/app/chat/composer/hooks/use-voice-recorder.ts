@@ -115,7 +115,8 @@ export function useVoiceRecorder({
         return
       }
 
-      const transcript = (await liveTranscript(dictation)) ?? (await onTranscribeAudio(result.audio, dictation.owner)).trim()
+      const transcript =
+        (await liveTranscript(dictation)) ?? (await onTranscribeAudio(result.audio, dictation.owner)).trim()
 
       if (!live()) {
         return

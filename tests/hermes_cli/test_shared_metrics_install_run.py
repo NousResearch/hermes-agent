@@ -11,7 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,7 +78,7 @@ def test_schema_and_installers_match_the_contract_exactly():
     sh, ps1 = INSTALL_SH.read_text(encoding="utf-8-sig"), INSTALL_PS1.read_text(encoding="utf-8-sig")
     # Initialize-ResolvedPaths runs before the ladder's try, so its Fail can never write a receipt and
     # carries no class (a class there would be dead); every ladder call site must carry one.
-    pre_ladder = re.search(r"\nfunction Initialize-ResolvedPaths \{\r?\n.*?\r?\n\}\r?\n", ps1, re.S).group(0)
+    pre_ladder = re.search(r"\nfunction Initialize-ResolvedPaths \{\r?\n.*?\r?\n\}\r?\n", ps1, re.DOTALL).group(0)
     assert re.search(r'Fail "[^\n]*-InstallDir\."\r?\n', pre_ladder)
     ps1 = ps1.replace(pre_ladder, "\n")
     # Every fail()/Fail call site passes a class from the contract, and every class is used somewhere.
@@ -151,6 +151,7 @@ def test_real_install_sh_ladder_leaves_only_closed_tokens(tmp_path):
          "--dir", str(tmp_path / "checkout")],
         env={"HOME": str(tmp_path), "PATH": str(tools), "HERMES_REPO_URL": "https://example.invalid/x.git"},
         capture_output=True, text=True, encoding="utf-8", timeout=60,
+        check=False,
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert "git is required" in result.stderr
@@ -176,7 +177,7 @@ def test_receipt_is_recorded_only_on_a_day_the_sender_can_ever_send(marks, monke
     from hermes_cli.observability.shared_metrics_sender import CONSENT_GATE_SQL, reconcile_send_consent
     from hermes_cli.sqlite_util import write_txn
 
-    t0 = datetime(2026, 10, 6, tzinfo=timezone.utc)
+    t0 = datetime(2026, 10, 6, tzinfo=UTC)
     clock = {"now": t0 + timedelta(hours=9)}
     monkeypatch.setattr(store_module, "_utc_now", lambda: clock["now"])
     monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly",

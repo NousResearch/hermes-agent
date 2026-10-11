@@ -31,6 +31,7 @@ def test_local_transport_finds_conventional_bash_without_path(monkeypatch, tmp_p
         child = subprocess.run(
             [selected, "--noprofile", "--norc", "-c", "printf shell-ready"],
             cwd=tmp_path, capture_output=True, text=True, timeout=10,
+            check=False,
         )
         assert child.returncode == 0, child.stderr
         assert child.stdout == "shell-ready"

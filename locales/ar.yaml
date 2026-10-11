@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "جارٍ التخطيط: {task}"
     ack_conversation: "جارٍ التخطيط من سياق هذه المحادثة…"
+  initiate_setup:
+    ack: "جارٍ بدء الإعداد…"
   init:
     start_failed: "تعذّر بدء /init — يُرجى المحاولة مرة أخرى."
     ack_update: "جارٍ تحديث AGENTS.md من فحص المشروع…"
@@ -1556,6 +1558,8 @@ slash:
     description: "إعادة تشغيل مطالبة على فترات متكررة في هذه الجلسة"
   plan:
     description: "كتابة خطة تنفيذ بصيغة markdown في .hermes/plans/ دون تنفيذ أي شيء"
+  initiate-setup:
+    description: "شغّل الإعداد الأول: يتعرّف عليك ويجهّز Hermes حولك"
   moa:
     description: "تشغيل مطالبة واحدة عبر الإعداد الافتراضي لـ Mixture of Agents ثم استعادة نموذجك"
   subgoal:
@@ -2275,6 +2279,7 @@ cli:
     failed: "فشل الاتصال"
     authorized_no_tools: "تم التصريح. الأدوات غير متاحة."
     connected: "متصل"
+    named_account: "سمّى Hermes حساب {name} هذا {alias}. يمكنك إعادة تسميته في أي وقت."
     waiting: "في الانتظار…"
   editor:
     only_interactive: "المحرّر الخارجي متاح فقط داخل واجهة سطر الأوامر التفاعلية."
@@ -2914,6 +2919,8 @@ cli:
     plan:
       planning: "📋 جارٍ التخطيط: {task}"
       from_conversation: "📋 جارٍ التخطيط من سياق هذه المحادثة..."
+    initiate_setup:
+      starting: "🧭 جارٍ بدء الإعداد..."
     init:
       updating: "⚡ جارٍ تحديث AGENTS.md من فحص المشروع..."
       generating: "⚡ جارٍ إنشاء AGENTS.md من فحص المشروع..."

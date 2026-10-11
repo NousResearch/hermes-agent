@@ -220,7 +220,7 @@ def test_orphan_gap_is_excused_only_while_its_fix_is_absent(monkeypatch, fix_in_
 
 
 def test_orphan_marker_guard_fires_once_the_fix_lands(monkeypatch):
-    monkeypatch.setattr(crash, "orphan_marker_fix_missing", lambda: [])
+    monkeypatch.setattr(crash, "orphan_marker_fix_missing", list)
     with pytest.raises(AssertionError, match="delete ORPHAN_MARKER_GAP"):
         test_orphan_marker_wrapper_expires_once_its_fix_is_in_the_tree()
 

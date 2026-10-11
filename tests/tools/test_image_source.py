@@ -314,7 +314,7 @@ class TestSvgNormalization:
         svg = tmp_path / "art.svg"
         svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>')
         with patch.object(vt, "_rasterize_svg_to_png", return_value=False):
-            path, mime, err = vt._normalize_to_supported_image(svg, "image/svg+xml")
+            path, _mime, err = vt._normalize_to_supported_image(svg, "image/svg+xml")
         assert path is None
         assert "rasterizer" in err
 
@@ -542,7 +542,7 @@ class TestHeicDetection:
             return real_import(name, *args, **kwargs)
 
         with patch.object(builtins, "__import__", side_effect=_no_heif):
-            path, mime, err = vt._normalize_to_supported_image(heic, "image/heic")
+            path, _mime, err = vt._normalize_to_supported_image(heic, "image/heic")
         assert path is None
         assert "pillow-heif" in err
 
@@ -592,6 +592,6 @@ class TestHeicDetection:
         broken = tmp_path / "broken.avif"
         broken.write_bytes(AVIF_HEADER)
 
-        path, mime, err = vt._normalize_to_supported_image(broken, "image/avif")
+        path, _mime, err = vt._normalize_to_supported_image(broken, "image/avif")
         assert path is None
         assert "AV1" in err or "Pillow" in err

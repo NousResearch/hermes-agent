@@ -23,7 +23,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import tui_gateway.server as server
+from tui_gateway import server
 from tui_gateway.server import _session_info
 
 
@@ -143,7 +143,7 @@ class TestSessionNoneReachesDeepSeekWire:
         assert kw["reasoning_config_override"] == {"enabled": False}
 
     def test_effort_none_override_emits_thinking_disabled(self) -> None:
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
         from agent.transports.chat_completions import ChatCompletionsTransport
 

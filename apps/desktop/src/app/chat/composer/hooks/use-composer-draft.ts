@@ -350,11 +350,7 @@ export function useComposerDraft({
     )
   }, [inputDisabled, paintDraft, target])
 
-  const loadIntoComposer = (
-    text: string,
-    attachments: ComposerAttachment[],
-    preserveFocusedCaret = false
-  ) => {
+  const loadIntoComposer = (text: string, attachments: ComposerAttachment[], preserveFocusedCaret = false) => {
     // Diagnostic breadcrumb for #59305-class reports: identifies WHAT kind of
     // state got restored into the composer (session switch, queue-edit
     // restore, history browse) without logging any raw content. REF_RE has the

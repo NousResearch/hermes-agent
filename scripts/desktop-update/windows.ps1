@@ -226,16 +226,21 @@ function Get-UiHtmlPath {
 }
 
 function Get-DefaultBrowserExe {
-    # The OS default browser, read from the UserChoice ProgId that the
-    # Windows Settings app writes (https first, http as fallback). Only
+    # The OS default browser, read from the ProgId that the Windows Settings
+    # app writes (https first, http as fallback). Windows 11 25H2 writes only
+    # UserChoiceLatest\ProgId and leaves the legacy UserChoice key stale or
+    # without a value, so the newer key is read first. Only
     # Chromium-family browsers (ChromeHTML / MSEdgeHTM) support the
     # --app + --user-data-dir combo the shim relies on; any other
     # default browser returns $null and degrades to the WinForms card.
     $progId = $null
     foreach ($proto in @("https", "http")) {
-        try {
-            $progId = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$proto\UserChoice" -Name ProgId -ErrorAction Stop).ProgId
-        } catch { continue }
+        foreach ($sub in @("UserChoiceLatest\ProgId", "UserChoice")) {
+            try {
+                $progId = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$proto\$sub" -Name ProgId -ErrorAction Stop).ProgId
+            } catch { continue }
+            if ($progId) { break }
+        }
         if ($progId) { break }
     }
     if (-not $progId) { return $null }

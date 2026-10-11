@@ -118,7 +118,7 @@ class Gateway:
             return {}
 
     def start(self, timeout: float = 180) -> dict:
-        fh = open(self.log, "w", encoding="utf-8")  # noqa: SIM115 - handed to the child
+        fh = open(self.log, "w", encoding="utf-8")
         self.proc = subprocess.Popen(
             H.sandbox_argv([self.sb.hermes, "gateway", "run"], writable=[self.sb.root]),
             env=self.sb.env, cwd=str(self.sb.root), stdin=subprocess.DEVNULL, stdout=fh,

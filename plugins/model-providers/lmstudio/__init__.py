@@ -39,4 +39,5 @@ class LMStudioProfile(ProviderProfile):
 
 register_provider(LMStudioProfile(
     name="lmstudio", display_name="LM Studio", supports_model_listing=False, supports_health_check=False,
+    env_vars=("LM_API_KEY", "LM_BASE_URL"),
 ))

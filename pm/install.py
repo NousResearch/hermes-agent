@@ -530,8 +530,9 @@ def ensure(
 
     ``verify`` re-hashes an already-recorded entry and repairs it when the
     bytes moved. A deliberate install keeps that check. Shell activation
-    passes ``False``. It trusts the recorded digest, the same check startup
-    uses, because hashing every tool tree costs seconds per shell.
+    and the source-build tail (moments after the install/update's own PM
+    step) pass ``False``. It trusts the recorded digest, the same check
+    startup uses, because hashing every tool tree costs seconds per call.
 
     ``progress(stage, done, total, label)`` reports the slow parts of an
     install to a UI, including ordered multi-archive labels.
@@ -623,6 +624,13 @@ def _member_inputs(plugins: PluginInput | None) -> dict:
     raise TypeError(f"{type(plugins).__name__} changes plugin state; only a sync may carry it")
 
 
+def _extra_key(name: str) -> str:
+    """The PEP 685 name uv matches an extra by (``foo_bar`` is ``foo-bar``)."""
+    import re
+
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def _still_declared(package, recorded: list[str]) -> list[str]:
     """The recorded extras this tree still declares.
 
@@ -632,17 +640,13 @@ def _still_declared(package, recorded: list[str]) -> list[str]:
     Membership uses PEP 685 names (uv matches ``foo_bar`` to ``foo-bar``); the
     recorded spelling is what reaches uv.
     """
-    import re
     from pm.features import declared_extras
-
-    def normalized(name: str) -> str:
-        return re.sub(r"[-_.]+", "-", name).lower()
 
     root = package.project_root()
     if not (root / "pyproject.toml").is_file():
         return list(recorded)
-    declared = {normalized(extra) for extra in declared_extras(root)}
-    return [extra for extra in recorded if normalized(extra) in declared]
+    declared = {_extra_key(extra) for extra in declared_extras(root)}
+    return [extra for extra in recorded if _extra_key(extra) in declared]
 
 
 def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
@@ -868,7 +872,6 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
     problems: dict[str, str] = {}
     lockfile = _lockfile()
     facts = _facts()
-    store = _store()
     target = current_target()
     for name in lockfile.names():
         try:

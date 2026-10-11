@@ -153,7 +153,7 @@ _OPTIONAL_TABLE_NAMES = (
     "telegram_dm_topic_mode", "telegram_dm_topic_bindings", "delivery_obligations")
 
 
-def _optional_table_columns(conn) -> Dict[str, Set[str]]:
+def _optional_table_columns(conn) -> dict[str, set[str]]:
     """Live column sets of the lazily-created tables that exist (``{}`` when none do).
 
     ``apply_telegram_topic_migration`` runs only on explicit ``/topic`` opt-in, so a store
@@ -178,7 +178,7 @@ class SessionGatewayMixin:
     """Routing index, session peers/orphans, hygiene streaks, heartbeats, handoffs."""
 
     def _reap_inactive_orphan_desktop_holders(
-        self, holders: List[Tuple[int, str]], *, min_age_seconds: float) -> List[int]:
+        self, holders: list[tuple[int, str]], *, min_age_seconds: float) -> list[int]:
         """Terminate old PPID-1 Desktop ephemeral backends with no client.
 
         Fails closed: anything whose parent, age, argv, or network connections
@@ -206,7 +206,7 @@ class SessionGatewayMixin:
             except Exception:
                 continue
             candidates.append(process)
-        signalled: List[int] = []
+        signalled: list[int] = []
         for process in candidates:
             try:
                 process.terminate()
@@ -232,10 +232,10 @@ class SessionGatewayMixin:
         return signalled
 
     def record_gateway_session_peer(
-        self, session_id: str, *, source: str, user_id: str = None, session_key: str = None,
-        chat_id: str = None, chat_type: str = None, thread_id: str = None, display_name: str = None,
-        origin_json: str = None, include_compression_ancestors: bool = False,
-        transport_profile: str = None) -> None:
+        self, session_id: str, *, source: str, user_id: str | None = None, session_key: str | None = None,
+        chat_id: str | None = None, chat_type: str | None = None, thread_id: str | None = None, display_name: str | None = None,
+        origin_json: str | None = None, include_compression_ancestors: bool = False,
+        transport_profile: str | None = None) -> None:
         """Persist the gateway routing peer for an existing session row. ``display_name`` / ``origin_json``:
         ``None`` leaves the stored value untouched (consumers read routing data from state.db, not
         sessions.json). ``include_compression_ancestors`` keeps a compression lineage on one routing peer
@@ -307,7 +307,7 @@ class SessionGatewayMixin:
             (scope, session_key, entry_json, time.time()),
         )
 
-    def replace_gateway_routing_entries(self, entries: Dict[str, str], *, scope: str = "") -> None:
+    def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> None:
         """Atomically replace the routing index for *scope* (keys absent from *entries*
         are removed); other scopes untouched."""
         now = time.time()
@@ -320,12 +320,12 @@ class SessionGatewayMixin:
                     [(scope, k, v, now) for k, v in entries.items() if k and v])
         self._execute_write(_do)
 
-    def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
+    def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""
         rows = self._read_all("SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?", (scope,))
         return {r["session_key"]: r["entry_json"] for r in rows}
 
-    def list_never_active_keyed_sessions(self, *, older_than_days: float) -> List[Dict[str, Any]]:
+    def list_never_active_keyed_sessions(self, *, older_than_days: float) -> list[dict[str, Any]]:
         """Keyed, still-open rows with no evidence of a single turn (no messages, tokens, tool/API calls,
         activity, or title): leaked fixtures or chats routed but never answered. Safe to drop — the gateway
         mints a fresh session on the next message. Needs its own selector because ``bulk prune``/``archive``
@@ -366,7 +366,7 @@ class SessionGatewayMixin:
         )
         return [dict(r) for r in rows]
 
-    def gateway_routing_entry_for_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def gateway_routing_entry_for_session(self, session_id: str) -> Optional[dict[str, Any]]:
         """The routing entry (any scope) whose current owner is *session_id*, or None. The id lives
         only inside ``entry_json``, so matching is done in Python; an archived/rotated row has none."""
         for row in self._read_all("SELECT entry_json FROM gateway_routing"):
@@ -378,12 +378,12 @@ class SessionGatewayMixin:
                 return entry
         return None
 
-    def _delete_routing_entries_for_sessions(self, session_ids: Set[str]) -> int:
+    def _delete_routing_entries_for_sessions(self, session_ids: set[str]) -> int:
         """Drop ``gateway_routing`` rows pointing at any of *session_ids*; the target id
         lives only inside ``entry_json``, so matching is done in Python over all scopes."""
         if not session_ids:
             return 0
-        doomed: List[Tuple[str, str]] = []
+        doomed: list[tuple[str, str]] = []
         for row in self._read_all("SELECT scope, session_key, entry_json FROM gateway_routing"):
             try:
                 entry = json.loads(row["entry_json"] or "{}")
@@ -397,7 +397,7 @@ class SessionGatewayMixin:
         return len(doomed)
 
     def prune_never_active_keyed_sessions(
-        self, *, older_than_days: float, sessions_dir: Optional[Path] = None) -> Tuple[int, int, int]:
+        self, *, older_than_days: float, sessions_dir: Optional[Path] = None) -> tuple[int, int, int]:
         """Delete never-active keyed rows and the routing entries naming them; returns
         ``(sessions_deleted, routing_entries_deleted, sessions_skipped)``. Deletion goes through
         :meth:`delete_sessions` (one transaction; delegate cascade, FTS, transcripts).
@@ -413,14 +413,14 @@ class SessionGatewayMixin:
         if not candidates:
             return (0, 0, 0)
         ids = {str(row["id"]) for row in candidates}
-        skipped: List[str] = []
+        skipped: list[str] = []
         deleted = self.delete_sessions(
             list(ids), sessions_dir=sessions_dir, exclude_active_write_guards=True, skipped_ids=skipped)
         routing_deleted = self._delete_routing_entries_for_sessions(ids - set(skipped))
         return (deleted, routing_deleted, len(skipped))
 
     def list_gateway_sessions(
-        self, *, platform: Optional[str] = None, active_only: bool = True) -> List[Dict[str, Any]]:
+        self, *, platform: Optional[str] = None, active_only: bool = True) -> list[dict[str, Any]]:
         """List gateway sessions (rows with a session_key): newest row per key, one live
         mapping per routing key. ``platform`` filters on ``source``."""
         # Full rows carry token/cost totals — drain queued async accounting deltas first.
@@ -447,7 +447,7 @@ class SessionGatewayMixin:
     def find_latest_gateway_session_for_peer(
         self, *, source: str, user_id: Optional[str] = None, session_key: Optional[str] = None,
         chat_id: Optional[str] = None, chat_type: Optional[str] = None, thread_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Find the latest recoverable gateway session for a routing peer. The durable ``session_key`` on the row rebuilds a missing/pruned ``sessions.json`` mapping. Rows
         ended only by the old ``agent_close`` bug or a mistaken TUI ``ws_orphan_reap`` are recoverable;
         explicit boundaries (/new, /resume switches, compression splits) are not. Ranked by
@@ -488,7 +488,7 @@ class SessionGatewayMixin:
             ).fetchone()
         return self._session_row_dict(row) if row else None
 
-    def find_orphaned_gateway_sessions(self, *, max_gap_s: Optional[float] = None) -> List[Dict[str, Any]]:
+    def find_orphaned_gateway_sessions(self, *, max_gap_s: Optional[float] = None) -> list[dict[str, Any]]:
         """Report message-bearing rows that lost their routing identity (messages, no ``session_key``).
         Adoptable only when exactly one keyed predecessor can be named: ``lineage`` (``parent_session_id``
         is a keyed row of the same source; no time window) or ``contiguity`` (exactly one keyed same-source
@@ -500,7 +500,7 @@ class SessionGatewayMixin:
         excluded: unkeyed by design, not damage."""
         gap = self._ORPHAN_ADOPTION_MAX_GAP_S if max_gap_s is None else float(max_gap_s)
         owner = self._own_profile_name()
-        records: List[Dict[str, Any]] = []
+        records: list[dict[str, Any]] = []
         with self._read_ctx() as conn:
             for orphan in conn.execute(_ORPHANS_SQL).fetchall():
                 donor = None
@@ -621,10 +621,10 @@ class SessionGatewayMixin:
             return
         self._write_sql("DELETE FROM gateway_hygiene_state WHERE session_key = ?", (session_key,))
 
-    def rekey_profile_state(self, old_name: str, new_name: str) -> Dict[str, int]:
+    def rekey_profile_state(self, old_name: str, new_name: str) -> dict[str, int]:
         """Atomically rewrite exact profile identity in this state database."""
         old, new = (old_name or "").strip(), (new_name or "").strip()
-        counts: Dict[str, int] = {}
+        counts: dict[str, int] = {}
         if not old or not new or old == new:
             return counts
         old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
@@ -730,7 +730,7 @@ class SessionGatewayMixin:
         self._execute_write(_do)
         return counts
 
-    def purge_profile_state(self, profile: str) -> Dict[str, int]:
+    def purge_profile_state(self, profile: str) -> dict[str, int]:
         """Delete exact profile identity from this state database (#111926, delete side).
 
         The mirror of :meth:`rekey_profile_state`: a rename must rekey a profile's identity, a
@@ -755,7 +755,7 @@ class SessionGatewayMixin:
         Idempotent.
         """
         name = (profile or "").strip()
-        counts: Dict[str, int] = {}
+        counts: dict[str, int] = {}
         if not name:
             return counts
         ns, ns_len = f"agent:{name}:", len(f"agent:{name}:")
@@ -803,7 +803,7 @@ class SessionGatewayMixin:
         return counts
 
     @staticmethod
-    def session_gateway_runtime(session_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def session_gateway_runtime(session_meta: Optional[dict[str, Any]]) -> dict[str, Any]:
         """Read the persisted runtime route off a session row dict (``model_config`` as
         JSON string or parsed dict). Precedence: nested ``gateway_runtime`` (gateway sync /
         CLI ``/model``), then top-level ``provider``/``base_url``/``api_mode`` (TUI), with
@@ -861,7 +861,7 @@ class SessionGatewayMixin:
         return self._write_rowcount(
             "DELETE FROM gateway_heartbeats WHERE backend_id = ?", (str(backend_id),)) > 0
 
-    def prune_stale_heartbeats(self, *, max_age_seconds: float) -> List[str]:
+    def prune_stale_heartbeats(self, *, max_age_seconds: float) -> list[str]:
         """Drop heartbeat rows older than the staleness window; return removed backend ids.
         Safe from any process — only stale rows are touched."""
         if max_age_seconds <= 0:
@@ -874,7 +874,7 @@ class SessionGatewayMixin:
             return [str(r[0]) for r in cur.fetchall()]
         return list(self._execute_write(_do) or [])
 
-    def list_backend_heartbeats(self) -> List[Dict[str, Any]]:
+    def list_backend_heartbeats(self) -> list[dict[str, Any]]:
         """Snapshot of every backend heartbeat (diagnostics/tests); fields mirror the table."""
         rows = self._read_all(
             "SELECT backend_id, pid, started_at, last_heartbeat, profile, host FROM gateway_heartbeats"
@@ -890,7 +890,7 @@ class SessionGatewayMixin:
             (platform, session_id),
         ) > 0
 
-    def get_handoff_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def get_handoff_state(self, session_id: str) -> Optional[dict[str, Any]]:
         """Return ``{"state", "platform", "error"}`` or None if the session has no handoff record."""
         try:
             row = self._read_one(
@@ -903,7 +903,7 @@ class SessionGatewayMixin:
         except Exception:
             return None
 
-    def list_pending_handoffs(self) -> List[Dict[str, Any]]:
+    def list_pending_handoffs(self) -> list[dict[str, Any]]:
         """All sessions in handoff_state='pending', oldest first (gateway handoff watcher)."""
         try:
             rows = self._read_all(
@@ -933,7 +933,7 @@ class SessionGatewayMixin:
             (session_id,))
 
     def fail_handoff(
-        self, session_id: str, error: str, *, only_states: Optional[Tuple[str, ...]] = None) -> bool:
+        self, session_id: str, error: str, *, only_states: Optional[tuple[str, ...]] = None) -> bool:
         """Mark a handoff failed and record the reason; True when a row transitioned. ``only_states`` makes
         the write a compare-and-swap on ``handoff_state``. Waiters that give up (CLI 60s poll, Desktop
         bounded poll) MUST pass ``only_states=("pending",)``: once the watcher has claimed the row
@@ -946,7 +946,7 @@ class SessionGatewayMixin:
             f" AND handoff_state IN ({', '.join('?' for _ in states)})" if states else "")
         return self._write_rowcount(sql, (error[:500], session_id, *states)) > 0
 
-    def reclaim_stale_running_handoffs(self, error: str) -> List[str]:
+    def reclaim_stale_running_handoffs(self, error: str) -> list[str]:
         """Fail every handoff stuck in ``running``; returns the ids reclaimed. Only the gateway watcher sets
         ``running``, for one in-process dispatch — so a ``running`` row at watcher startup belongs to a
         PREVIOUS gateway that died mid-dispatch. It is poisonous: ``request_handoff`` only accepts

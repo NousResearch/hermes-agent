@@ -455,7 +455,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
-| `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
+| `transform_llm_output` | Transform | Before persistence, `post_llm_call` and final delivery; non-empty replacements compose in registration order. | `response_text`, `session_id`, `model`, `platform`, `turn_id` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
@@ -1707,9 +1707,16 @@ def my_callback(
 | `model` | `str` | Model name that produced the response (e.g. `anthropic/claude-sonnet-4.6`). |
 | `platform` | `str` | Delivery platform (`cli`, `telegram`, `discord`, …; empty when unset). |
 
-**Return value:** Non-empty `str` to replace the response text, `None` or empty string to leave it unchanged. **First non-empty string wins** when multiple plugins register. Unlike the tool and terminal transforms, an empty string is not accepted as a replacement.
+**Return value:** Non-empty `str` to replace the response text, `None` or empty string to leave it unchanged. **Callbacks compose in registration order**: each receives the last accepted replacement as `response_text`. Non-string returns, exceptions and timeouts leave the current text unchanged so later callbacks can still run. Unlike the tool and terminal transforms, an empty string is not accepted as a replacement. The dispatcher returns only the final composed replacement, or no result if every callback declines.
 
 **Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce a house style guide without burning tokens on SOUL instructions.
+
+The messaging gateway disables raw text previews, interim assistant messages and streaming
+TTS when this hook is registered. The completed transformed response still uses normal final
+delivery and whole-file TTS. This is a final-response transform, not a universal privacy
+boundary: interrupted turns, tool output, CLI/API streaming and other independent delivery
+surfaces retain their own contracts. Callbacks fail open, so a failing redactor does not block
+delivery.
 
 When CLI streaming is enabled, an append-only transform is printed after the
 streamed body. A transform that replaces the response is printed in full after

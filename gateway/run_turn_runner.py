@@ -918,6 +918,13 @@ class TurnRunner:
         ctx = self._ctx
         if ctx.mute_notification_reply:
             return None, None, None, False
+        from hermes_cli.lifecycle import has_hook
+
+        if has_hook("transform_llm_output"):
+            # Final-output plugins need the complete reply. Preview, commentary and streaming
+            # TTS would expose raw text before that pipeline runs. Keep final delivery (including
+            # the whole-file TTS fallback) on the normal transformed-response path.
+            return None, None, None, False
         stream_consumer = None
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
         # run_sync only reads it via the holder for delta-callback wiring.

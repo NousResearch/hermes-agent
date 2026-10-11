@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 
 import { afterEach, beforeEach, describe, test, vi } from 'vitest'
 
+import { DEFAULT_BACKEND_READY_TIMEOUT_MS } from './backend-health'
 import {
   DEFAULT_CONNECT_TIMEOUT_MS,
   DEFAULT_PROGRESS_CHECK_INTERVAL_MS,
@@ -20,6 +21,19 @@ import {
   SPAWNED_BACKEND_MAX_CONNECT_WAIT_MS,
   spawnedBackendProbeOptions
 } from './gateway-ws-probe'
+
+test('spawned-backend cap tracks the shared boot budget, not its own number', () => {
+  // The cap used to be a 90s literal next to a comment claiming it reused the
+  // port-announcement budget (#126110 drift). A live child holding the GIL
+  // through a >90s cold start must survive the WS-probe leg of the same boot
+  // that the announce and health legs already wait out.
+  assert.equal(
+    SPAWNED_BACKEND_MAX_CONNECT_WAIT_MS,
+    DEFAULT_BACKEND_READY_TIMEOUT_MS,
+    'a deliberate decoupling of the WS-probe cap from the shared boot budget ' +
+      'should reverse this expectation on purpose'
+  )
+})
 
 // Minimal WebSocket double: records listeners synchronously (the probe attaches
 // them in its executor) and exposes emit() so the test can replay events.

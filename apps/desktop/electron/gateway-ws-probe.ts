@@ -30,6 +30,8 @@
  * See ``spawnedBackendProbeOptions``.
  */
 
+import { DEFAULT_BACKEND_READY_TIMEOUT_MS } from './backend-health'
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000
 // After the upgrade is accepted, a gateway that rejects the credential
 // post-handshake closes the socket almost immediately. Wait a short grace
@@ -308,10 +310,13 @@ function closeReason(event, fallback) {
 // the TCP connect but has not answered the upgrade is busy, not refusing (a
 // refusal or auth rejection is an immediate error/close, not a timeout). A
 // dead child still fails at the base budget; a live-but-wedged one fails at
-// the cap, which reuses the port-announcement cold-start budget
-// (DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS, backend-ready.ts). Remote gateways, the
-// "Test remote" button and host-backend attach keep the fixed budget.
-const SPAWNED_BACKEND_MAX_CONNECT_WAIT_MS = 90_000
+// the cap, which tracks the shared desktop boot budget
+// (DEFAULT_BACKEND_READY_TIMEOUT_MS, backend-health.ts) — the same source the
+// port-announcement deadline derives from (backend-ready.ts), so no leg of
+// the boot kills a cold start the other legs would still wait out (#126110).
+// Remote gateways, the "Test remote" button and host-backend attach keep the
+// fixed budget.
+const SPAWNED_BACKEND_MAX_CONNECT_WAIT_MS = DEFAULT_BACKEND_READY_TIMEOUT_MS
 
 function spawnedBackendProbeOptions(isChildAlive: () => boolean) {
   return {

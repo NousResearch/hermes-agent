@@ -1,5 +1,7 @@
 import fs from 'node:fs'
 
+import { DEFAULT_BACKEND_READY_TIMEOUT_MS } from './backend-health'
+
 // `hermes serve` announces HERMES_BACKEND_READY; the legacy `hermes dashboard`
 // backend announces HERMES_DASHBOARD_READY. Accept either so the desktop spawn
 // works against both the headless backend and old/dashboard runtimes.
@@ -19,7 +21,16 @@ export const READY_IN_MERGED_OUTPUT_RE = /(?<!\w)HERMES_(?:BACKEND|DASHBOARD)_RE
 // 45s deadline kills a *healthy but still-starting* backend and respawns it,
 // piling up orphaned processes (issue #50209). A roomier default absorbs the
 // cold-start cost; a warm start still announces in well under a second.
-const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = 90_000
+//
+// The announce deadline tracks the other desktop boot waits — the
+// post-announce health wait (DEFAULT_BACKEND_READY_TIMEOUT_MS) and the
+// renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS, both 180s (#63454) — by value, not
+// as one shared clock: the waits run sequentially in main.ts and each counts
+// its own full budget, so the worst case is their sum. What the alignment
+// buys is leg agreement, not a longer boot: an independent shorter announce
+// deadline killed cold starts needing >90s to bind while both 180s waits
+// were still willing to keep going (#126110).
+const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = DEFAULT_BACKEND_READY_TIMEOUT_MS
 // Never trust a deadline tighter than the warm-start path needs; floor at 45s
 // (the historical default) so a malformed override can't reintroduce the loop.
 const MIN_PORT_ANNOUNCE_TIMEOUT_MS = 45_000
@@ -93,9 +104,10 @@ function waitForDashboardPort(
     // awaits claimBackendChild + advanceBootProgress BEFORE this listener
     // attaches. child.stdout is in flowing mode from the tail's listener, so
     // a READY line flushed during that window is emitted once and never
-    // replayed to late listeners — the wait then times out at 90s and a
-    // healthy backend is killed. Scanning the tail's buffer (and seeding any
-    // trailing partial line) makes the listener-attach ordering irrelevant.
+    // replayed to late listeners — the wait then times out at the announce
+    // deadline and a healthy backend is killed. Scanning the tail's buffer
+    // (and seeding any trailing partial line) makes the listener-attach
+    // ordering irrelevant.
     let buf = ''
     let done = false
     // #122206: the child is finishing an owed source-update completion

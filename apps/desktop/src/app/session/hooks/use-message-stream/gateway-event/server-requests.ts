@@ -31,7 +31,9 @@ import {
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
 import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
+import { $focusedSessionIsTile } from '@/store/session-focus'
 import {
+  $focusedRuntimeId,
   $sessionStates,
   $sessionTiles,
   previewScopeForRuntime,
@@ -89,7 +91,7 @@ export interface ServerRequestContext {
   request: ScopedServerRequest
   /** The session the request names ('' when unscoped). */
   sessionId: string
-  /** The named session is the one on screen. */
+  /** The named session is the conversation in focus (the primary chat or a focused tile). */
   isActiveSession: boolean
 }
 
@@ -541,11 +543,12 @@ const previewRead: Handler = ({ request, sessionId }) => {
 }
 
 const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
-  // drive_preview tool: click/type/scroll/press inside the guest page. Active
-  // session only: a background turn (including one in a tile this window hosts)
-  // must never reach into the page the user is working in (desktop AGENTS.md:
-  // offer, don't hijack). Window ownership is settled by WINDOW_OWNED_REQUESTS
-  // before this runs, so a refusal here reaches the tool instead of stalling it.
+  // drive_preview tool: click/type/scroll/press inside the guest page. The
+  // focused conversation only (primary or focused tile): a background turn
+  // (including one in a hosted tile the user hasn't focused) must never reach
+  // into the page the user is working in (desktop AGENTS.md: offer, don't
+  // hijack). Window ownership is settled by WINDOW_OWNED_REQUESTS before this
+  // runs, so a refusal here reaches the tool instead of stalling it.
   const p = request.params
 
   if (!isActiveSession) {
@@ -783,11 +786,21 @@ export function handleServerRequest(
     }
   }
 
+  // "The session the user is looking at" is the focused conversation, not
+  // only the primary: a genuinely FOCUSED tile is foreground too (#133421),
+  // while a hosted-but-unfocused tile stays a background turn. Only the tile
+  // branch adds an id — a focused primary keeps the passed ref alone, since
+  // submit/resume pin it mid-flight and the focus atom would lag the pin.
+  const focusedTileRuntimeId = $focusedSessionIsTile.get() ? $focusedRuntimeId.get() : null
+
   handler({
     deps,
     request,
     sessionId,
-    isActiveSession: requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
+    isActiveSession:
+      requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId }) ||
+      (focusedTileRuntimeId !== null &&
+        requestNamesActiveSession({ activeSessionId: focusedTileRuntimeId, sessionId, storedIdForRuntimeId }))
   })
 
   return true

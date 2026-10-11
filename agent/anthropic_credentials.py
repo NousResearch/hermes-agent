@@ -132,7 +132,7 @@ _SPENT_ROTATION_LOCK = threading.Lock()
 # Fingerprints of Claude Code refresh tokens the endpoint rejected terminally: the WARNING fires once per token
 # per process and later attempts skip the POST (a re-login rotates the token, so a new one is tried normally).
 _DEAD_REFRESH_TOKEN_FINGERPRINTS: set = set()
-_SPENT_ROTATION_FINGERPRINTS: "OrderedDict[str, None]" = OrderedDict()
+_SPENT_ROTATION_FINGERPRINTS: OrderedDict[str, None] = OrderedDict()
 _SPENT_ROTATION_MAX_TRACKED = 64
 _SPENT_ROTATION_SIDECAR_COMMENT = (
     "Non-secret one-way fingerprints of Anthropic OAuth credentials whose rotation was "
@@ -238,7 +238,7 @@ def _claude_oauth_record(data: Any, source: str) -> Optional[dict[str, Any]]:
 _KEYCHAIN_ATTR = r'(?:0x(?P<hex>[0-9A-Fa-f]+)\b.*|"(?P<text>.*)")'
 
 
-def _decode_keychain_attr(match: Optional["re.Match[str]"]) -> str:
+def _decode_keychain_attr(match: Optional[re.Match[str]]) -> str:
     """``security`` prints an attribute as ``"text"`` when it is plain printable ASCII and as
     ``0x<HEX>  "<octal-escaped echo>"`` otherwise; the quoted form is NOT escaped (an embedded
     ``"`` appears raw), so the text group must run to the last quote on the line."""
@@ -265,6 +265,7 @@ def _find_claude_code_keychain_item() -> Optional[tuple[str, dict[str, Any]]]:
         result = subprocess.run(
             ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-g"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -294,6 +295,7 @@ def _read_claude_code_keychain_payload() -> Optional[dict[str, Any]]:
         result = subprocess.run(
             ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-w"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("Keychain: security command not available or timed out")
@@ -597,6 +599,7 @@ def _mirror_claude_code_credentials_to_keychain(
             account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
         result = subprocess.run(
             argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            check=False,
         )
     except Exception as e:  # the file commit already succeeded; a Keychain hiccup must not fail the rotation
         logger.debug("Keychain mirror skipped (%s)", e)
@@ -719,7 +722,7 @@ def run_oauth_setup_token() -> Optional[str]:
         raise FileNotFoundError("The 'claude' CLI is not installed. Install it with: npm install -g @anthropic-ai/claude-code")
     # Interactive: stdio inherited so the user can complete the OAuth prompt.  noqa: subprocess-stdin
     try:
-        subprocess.run([claude_path, "setup-token"])
+        subprocess.run([claude_path, "setup-token"], check=False)
     except (KeyboardInterrupt, EOFError):
         return None
     creds = read_claude_code_credentials()

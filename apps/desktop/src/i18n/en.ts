@@ -12,6 +12,7 @@ import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enUninstallSection } from './en_uninstall_section'
+import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
 
 export const en: Translations = {
@@ -1212,9 +1213,7 @@ export const en: Translations = {
       screenRecording: 'Screen Recording',
       driverHealth: 'Driver health'
     },
-    about: {
-      updates: 'Updates'
-    },
+    about: { updates: 'Updates', channel: enUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Minimize to tray',
       minimizeToTrayDesc:
@@ -3559,11 +3558,6 @@ export const en: Translations = {
     editingQueuedInComposer: 'Editing queued turn in composer',
     restoredDraftNotice: 'Restored your unsent message',
     restoredDraftUndo: 'Undo',
-    localSetup: {
-      title: 'This could run on your computer',
-      text: (model: string) => `${model} fits this machine. Free, and chats stay on your computer.`,
-      action: 'Show me'
-    },
     queueEdit: 'Edit',
     queueExpand: 'Expand',
     queueCollapse: 'Collapse',

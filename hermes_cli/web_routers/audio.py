@@ -513,7 +513,7 @@ async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
 
 
 @router.websocket("/api/audio/transcribe-stream")
-async def transcribe_stream_ws(ws: "WebSocket") -> None:
+async def transcribe_stream_ws(ws: WebSocket) -> None:
     """Live STT for Desktop dictation: mic PCM in while the user speaks, partial + final text out.
 
     Protocol:
@@ -590,7 +590,7 @@ async def transcribe_stream_ws(ws: "WebSocket") -> None:
 
 
 @router.websocket("/api/audio/speak-stream")
-async def speak_stream_ws(ws: "WebSocket") -> None:
+async def speak_stream_ws(ws: WebSocket) -> None:
     """Streaming TTS for the desktop: text in, raw int16 PCM frames out.
 
     The socket is a per-reply speech *session*: the client feeds text

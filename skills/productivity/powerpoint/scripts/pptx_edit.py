@@ -213,7 +213,7 @@ def swap_image(prs, slide_idx, shape_name, new_path):
     for shape in slide.shapes:
         if (shape.shape_type == MSO_SHAPE_TYPE.PICTURE
                 and shape.name == shape_name):
-            image_part, rid = slide.part.get_or_add_image_part(new_path)
+            _image_part, rid = slide.part.get_or_add_image_part(new_path)
             blip = shape._element.blipFill.blip
             blip.set(R_EMBED + "embed", rid)
             return True

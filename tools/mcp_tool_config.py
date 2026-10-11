@@ -403,7 +403,7 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
 
     spec = str(rest[0])
     # Scoped names keep their leading '@', so only an '@' AFTER the scope is a version separator.
-    if "@" in (spec[1:] if spec.startswith("@") else spec):
+    if "@" in (spec.removeprefix("@")):
         return None
     if not spec or spec.startswith("-"):
         return None
@@ -472,8 +472,10 @@ def _require_rendered_remote(server_name: str, config: dict) -> dict:
     unresolved = sorted({m.group(1) for value in values for m in _ENV_VAR_PATTERN.finditer(str(value))})
     if unresolved:
         refs = ", ".join(f"${{{ref}}}" for ref in unresolved)
-        raise ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
-                         ".env or secret source")
+        unset = ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
+                           ".env or secret source")
+        unset.failure_class = "missing_credentials"  # type: ignore[attr-defined]
+        raise unset
     return config
 
 

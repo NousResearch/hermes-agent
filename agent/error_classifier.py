@@ -1301,7 +1301,7 @@ _CODEX_MASKED_REPLAY_MESSAGE = "request blocked."
 _CODEX_UNSUPPORTED_CONTENT_DETAIL = "unsupported content type"
 
 
-def _is_codex_masked_replay_rejection(c: "_Ctx") -> bool:
+def _is_codex_masked_replay_rejection(c: _Ctx) -> bool:
     """HTTP 400 / status-less ``{code: invalid_prompt, message: "Request blocked."}`` from
     ``openai-codex`` — as an SDK error body, a Responses ``error`` SSE frame, or the
     ``response.failed`` text ``"invalid_prompt: Request blocked."`` — or the bare

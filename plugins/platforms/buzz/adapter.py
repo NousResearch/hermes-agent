@@ -407,7 +407,7 @@ async def _exec_buzz(
     try:
         stdin_bytes = input_text.encode("utf-8") if input_text is not None else None
         stdout, stderr = await asyncio.wait_for(proc.communicate(stdin_bytes), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         detail = {"error": "timeout", "message": f"buzz {args[0] if args else ''} timed out after {timeout}s"}
@@ -570,7 +570,7 @@ class BuzzAdapter(BasePlatformAdapter):
         self._member_cache: dict[str, tuple[float, list[str]]] = {}  # (monotonic, pubkeys)
         self._profile_name_cache: dict[str, tuple[float, str]] = {}
         # inbound event_id -> thread root (None when top-level), so send() joins the user's thread instead of nesting.
-        self._thread_roots: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._thread_roots: OrderedDict[str, Optional[str]] = OrderedDict()
 
     @property
     def name(self) -> str:
@@ -989,7 +989,7 @@ class BuzzAdapter(BasePlatformAdapter):
         try:
             await asyncio.wait_for(self._ws_ready.wait(), timeout=_WS_AUTH_TIMEOUT + 5)
             return True
-        except (asyncio.TimeoutError, TimeoutError):
+        except TimeoutError:
             logger.warning("Buzz: WebSocket did not authenticate in time")
             await cancel_task(self._ws_task)
             self._ws_task = None

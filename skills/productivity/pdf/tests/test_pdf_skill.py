@@ -17,6 +17,7 @@ def run(script: str, *args: str, expect: int = 0) -> subprocess.CompletedProcess
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / script), *args],
         capture_output=True, text=True, encoding="utf-8", env=env,
+        check=False,
     )
     assert proc.returncode == expect, f"{script} {args}: rc={proc.returncode}\n{proc.stderr}"
     return proc

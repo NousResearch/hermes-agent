@@ -11,7 +11,7 @@ import sqlite3
 import tempfile
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -112,7 +112,7 @@ class VerificationEvidence:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _db_path() -> Path:
@@ -372,7 +372,7 @@ def _prune_old_events(conn: sqlite3.Connection, *, session_id: str, root: str) -
     old events and cap the total — never dropping an event still referenced
     by a ``verification_state.last_event_id``.
     """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=_MAX_EVIDENCE_AGE_DAYS)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=_MAX_EVIDENCE_AGE_DAYS)).isoformat()
     conn.execute(
         "DELETE FROM verification_events WHERE session_id = ? AND root = ? AND id NOT IN ("
         " SELECT id FROM verification_events WHERE session_id = ? AND root = ?"

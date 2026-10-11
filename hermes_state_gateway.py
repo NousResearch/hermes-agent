@@ -232,10 +232,10 @@ class SessionGatewayMixin:
         return signalled
 
     def record_gateway_session_peer(
-        self, session_id: str, *, source: str, user_id: str = None, session_key: str = None,
-        chat_id: str = None, chat_type: str = None, thread_id: str = None, display_name: str = None,
-        origin_json: str = None, include_compression_ancestors: bool = False,
-        transport_profile: str = None) -> None:
+        self, session_id: str, *, source: str, user_id: str | None = None, session_key: str | None = None,
+        chat_id: str | None = None, chat_type: str | None = None, thread_id: str | None = None, display_name: str | None = None,
+        origin_json: str | None = None, include_compression_ancestors: bool = False,
+        transport_profile: str | None = None) -> None:
         """Persist the gateway routing peer for an existing session row. ``display_name`` / ``origin_json``:
         ``None`` leaves the stored value untouched (consumers read routing data from state.db, not
         sessions.json). ``include_compression_ancestors`` keeps a compression lineage on one routing peer

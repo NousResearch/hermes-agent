@@ -234,44 +234,44 @@ class AIAgent(
 
     def __init__(
         self,
-        base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
-        acp_command: str = None, acp_args: list[str] | None = None, command: str = None, args: list[str] | None = None,
+        base_url: str | None = None, api_key: str | None = None, provider: str | None = None, api_mode: str | None = None,
+        acp_command: str | None = None, acp_args: list[str] | None = None, command: str | None = None, args: list[str] | None = None,
         model: str = "",
         max_iterations: int = sys.maxsize,  # unlimited tool-calling iterations by default (shared with subagents)
-        tool_delay: float = None,  # deprecated: accepted for compatibility, ignored
-        enabled_toolsets: list[str] = None, disabled_toolsets: list[str] = None,
+        tool_delay: float | None = None,  # deprecated: accepted for compatibility, ignored
+        enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
         save_trajectories: bool = False, verbose_logging: bool = False, quiet_mode: bool = False,
-        tool_progress_mode: str = "all", ephemeral_system_prompt: str = None,
+        tool_progress_mode: str = "all", ephemeral_system_prompt: str | None = None,
         log_prefix_chars: int = 100, log_prefix: str = "",
-        providers_allowed: list[str] = None, providers_ignored: list[str] = None, providers_order: list[str] = None,
-        provider_sort: str = None, provider_require_parameters: bool = False, provider_data_collection: str = None,
+        providers_allowed: list[str] | None = None, providers_ignored: list[str] | None = None, providers_order: list[str] | None = None,
+        provider_sort: str | None = None, provider_require_parameters: bool = False, provider_data_collection: str | None = None,
         openrouter_min_coding_score: Optional[float] = None,
-        session_id: str = None,
-        tool_progress_callback: callable = None, tool_start_callback: callable = None,
-        tool_complete_callback: callable = None, thinking_callback: callable = None,
-        reasoning_callback: callable = None, clarify_callback: callable = None,
-        read_terminal_callback: callable = None, read_preview_callback: callable = None,
-        drive_preview_callback: callable = None, read_window_below_callback: callable = None,
-        connection_callback: callable = None, tour_callback: callable = None,
-        setup_choose_callback: callable = None, step_callback: callable = None,
-        stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
-        tool_gen_callback: callable = None, status_callback: callable = None,
-        notice_callback: callable = None, notice_clear_callback: callable = None,
+        session_id: str | None = None,
+        tool_progress_callback: Callable[..., Any] | None = None, tool_start_callback: Callable[..., Any] | None = None,
+        tool_complete_callback: Callable[..., Any] | None = None, thinking_callback: Callable[..., Any] | None = None,
+        reasoning_callback: Callable[..., Any] | None = None, clarify_callback: Callable[..., Any] | None = None,
+        read_terminal_callback: Callable[..., Any] | None = None, read_preview_callback: Callable[..., Any] | None = None,
+        drive_preview_callback: Callable[..., Any] | None = None, read_window_below_callback: Callable[..., Any] | None = None,
+        connection_callback: Callable[..., Any] | None = None, tour_callback: Callable[..., Any] | None = None,
+        setup_choose_callback: Callable[..., Any] | None = None, step_callback: Callable[..., Any] | None = None,
+        stream_delta_callback: Callable[..., Any] | None = None, interim_assistant_callback: Callable[..., Any] | None = None,
+        tool_gen_callback: Callable[..., Any] | None = None, status_callback: Callable[..., Any] | None = None,
+        notice_callback: Callable[..., Any] | None = None, notice_clear_callback: Callable[..., Any] | None = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
         reaction_callback: Optional[Callable[[str], None]] = None,
-        max_tokens: int = None, reasoning_config: dict[str, Any] = None, service_tier: str = None,
-        request_overrides: dict[str, Any] = None, prefill_messages: list[dict[str, Any]] = None,
-        platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
-        chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
-        gateway_session_key: str = None,
+        max_tokens: int | None = None, reasoning_config: dict[str, Any] | None = None, service_tier: str | None = None,
+        request_overrides: dict[str, Any] | None = None, prefill_messages: list[dict[str, Any]] | None = None,
+        platform: str | None = None, user_id: str | None = None, user_id_alt: str | None = None, user_name: str | None = None,
+        chat_id: str | None = None, chat_name: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
+        gateway_session_key: str | None = None,
         skip_context_files: bool = False, load_soul_identity: bool = False,
         skip_memory: bool = False, skip_background_review: bool = False,
-        session_db=None, parent_session_id: str = None,
-        iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
-        fallback_model: dict[str, Any] = None, credential_pool=None,
+        session_db=None, parent_session_id: str | None = None,
+        iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
+        fallback_model: dict[str, Any] | None = None, credential_pool=None,
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
-        pass_session_id: bool = False, requested_provider: str = None,
+        pass_session_id: bool = False, requested_provider: str | None = None,
         capabilities: dict[str, bool] | None = None, cwd: str | None = None,
         side_agent: bool = False, memory_manager=None,
         tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
@@ -516,16 +516,16 @@ class AIAgent(
             return base_url_hostname(base_url)
         return getattr(self, "_base_url_hostname", "") or base_url_hostname(getattr(self, "_base_url_lower", ""))
 
-    def _is_direct_openai_url(self, base_url: str = None) -> bool:
+    def _is_direct_openai_url(self, base_url: str | None = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
         return self._hostname_for(base_url) == "api.openai.com"
 
-    def _is_azure_openai_url(self, base_url: str = None) -> bool:
+    def _is_azure_openai_url(self, base_url: str | None = None) -> bool:
         """True when a base URL targets Azure OpenAI (standard client, but NO Responses API support)."""
         url = str(base_url).lower() if base_url is not None else (getattr(self, "_base_url_lower", "") or "")
         return base_url_host_matches(url, "openai.azure.com")
 
-    def _is_github_copilot_url(self, base_url: str = None) -> bool:
+    def _is_github_copilot_url(self, base_url: str | None = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
         hostname = self._hostname_for(base_url)
         return bool(hostname) and (hostname == "api.githubcopilot.com" or hostname.endswith(".githubcopilot.com"))
@@ -862,7 +862,7 @@ class AIAgent(
             },
         )
 
-    def shutdown_memory_provider(self, messages: list = None) -> None:
+    def shutdown_memory_provider(self, messages: list | None = None) -> None:
         """Shut down the memory provider and context engine at session end (idempotent: gateway cleanup and
         ``close()`` may both call it)."""
         if getattr(self, "_memory_provider_shutdown", False):
@@ -876,7 +876,7 @@ class AIAgent(
             _quietly(lambda: self._memory_manager.shutdown_all())
         _notify_context_engine_session_end(self, messages)
 
-    def commit_memory_session(self, messages: list = None) -> None:
+    def commit_memory_session(self, messages: list | None = None) -> None:
         """Flush end-of-session extraction on session_id rotation (/new, compression) without tearing providers
         down."""
         if self._memory_manager:
@@ -1451,7 +1451,7 @@ def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[list[str]]:
     return names
 
 
-def _save_sample_trajectory(agent: "AIAgent", result: dict, user_query: str, model: str) -> None:
+def _save_sample_trajectory(agent: AIAgent, result: dict, user_query: str, model: str) -> None:
     """``--save_sample``: write one trajectory (same format as batch_runner) to a UUID-named JSON file."""
     sample_filename = f"sample_{str(uuid.uuid4())[:8]}.json"
     entry = {
@@ -1467,8 +1467,8 @@ def _save_sample_trajectory(agent: "AIAgent", result: dict, user_query: str, mod
 
 
 def main(
-    query: str = None, model: str = "", api_key: str = None, base_url: str = "", max_turns: int = 10,
-    enabled_toolsets: str = None, disabled_toolsets: str = None, list_tools: bool = False,
+    query: str | None = None, model: str = "", api_key: str | None = None, base_url: str = "", max_turns: int = 10,
+    enabled_toolsets: str | None = None, disabled_toolsets: str | None = None, list_tools: bool = False,
     save_trajectories: bool = False, save_sample: bool = False, verbose: bool = False, log_prefix_chars: int = 20,
 ):
     """

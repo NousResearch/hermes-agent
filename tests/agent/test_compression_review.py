@@ -445,7 +445,7 @@ class TestS3IdleChargedFromLastProgress:
 
         t0 = time.monotonic()
         try:
-            msgs, prompt = run_compress_context_with_progress_timeout(
+            _msgs, prompt = run_compress_context_with_progress_timeout(
                 worker=worker,
                 messages=[{"role": "user", "content": "a"}],
                 system_prompt_fallback="fb",

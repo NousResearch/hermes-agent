@@ -402,7 +402,7 @@ def _discover_files(roots: list[Path]) -> list[Path]:
     return sorted(out)
 
 
-def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
+def _kill_tree(proc: subprocess.Popen, pgid: int | None = None) -> None:
     """Kill the pytest subprocess and every descendant it spawned.
 
     A test run can spin up uvicorn servers, async runtimes, or other
@@ -440,6 +440,7 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
+                check=False,
             )  # windows-footgun: ok
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
@@ -458,6 +459,36 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         proc.kill()
     except (ProcessLookupError, OSError):
         pass
+
+
+def _kill_detached_leftovers(temproot: str) -> None:
+    """SIGKILL every process whose environment still points into this attempt's temp root.
+
+    ``_kill_tree`` reaches the attempt's process group only. A detached child
+    (``start_new_session=True``: an auto-started ``gateway run``, a ``setsid``
+    server) leaves that group, is reparented to init when its parent exits, and
+    used to run forever: 215 orphan gateways (~52 GB RSS) piled up on one host.
+    Every descendant carries the attempt's unique temproot in its environment
+    (``PYTEST_DEBUG_TEMPROOT``/``TMPDIR``, or a ``HOME``/``HERMES_HOME`` a fixture
+    made under it), so it names exactly this attempt's processes and nothing else.
+    Linux-only (``/proc``); elsewhere the process-group kill is all there is.
+    """
+    if not os.path.isdir("/proc"):
+        return
+    import signal as _signal
+
+    root = os.fsencode(temproot)
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/environ", "rb") as fh:
+                values = [item.partition(b"=")[2] for item in fh.read().split(b"\0")]
+            if not any(v == root or v.startswith(root + b"/") for v in values):
+                continue
+            os.kill(int(entry), _signal.SIGKILL)  # windows-footgun: ok — /proc exists only on Linux
+        except OSError:
+            continue
 
 
 def _effective_file_timeout(
@@ -669,6 +700,7 @@ def _run_one_file_once(
 
         output +=  "\n"
     finally:
+        _kill_detached_leftovers(temproot)
         # Delete the temp root for this attempt. Nothing reads it after the
         # subprocess exits. More than 3000 of them fill the disk of the
         # runner over one suite. Permission fixtures leave read-only dirs
@@ -890,7 +922,7 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError):
         print("[ERROR] Failed to load json durations file! {e}")
         return {}
 
@@ -1379,7 +1411,7 @@ def main() -> int:
     files_crashed = 0
     lock = threading.Lock()
 
-    def _on_done(file: Path, started_at: float, fut: "Future[tuple[Path, int, str, dict[str, int], float]]") -> None:
+    def _on_done(file: Path, started_at: float, fut: Future[tuple[Path, int, str, dict[str, int], float]]) -> None:
         nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed, tests_skipped
         nonlocal tests_collected, files_crashed
         n_tests = test_counts.get(file, 0)

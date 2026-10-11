@@ -656,7 +656,7 @@ def remember_temperature_rejection(
 
 def _fixed_temperature_for_model(
     model: Optional[str], base_url: Optional[str] = None, provider: Optional[str] = None,
-) -> "Optional[float] | object":
+) -> Optional[float] | object:
     """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot, OpenAI reasoning families, routes that
     already rejected it), a fixed ``float``, or ``None``."""
     if _is_kimi_model(model):
@@ -749,8 +749,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
         base_url = base_url.rstrip("/")
         if not base_url:
             return ""
-        if base_url.endswith("/v1"):  # fetch_models_with_pricing appends /v1/models
-            base_url = base_url[:-3]
+        base_url = base_url.removesuffix("/v1")
         # Nous-only args must match the pickers' or the seeded cache loses sale chrome and
         # policy-catalog expiry.
         _nous_kwargs = {}
@@ -2264,7 +2263,7 @@ def _warn_paid_lane_once(model: str) -> None:
     )
 
 
-def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None, model: str = None,
+def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, model: str | None = None,
                     explicit_base_url: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str]]:
     free_only, cfg_model = _aux_openrouter_settings()
     or_model = model or cfg_model
@@ -2303,7 +2302,7 @@ def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = 
     ), or_model
 
 
-def _describe_openrouter_unavailable(model: str = None) -> str:
+def _describe_openrouter_unavailable(model: str | None = None) -> str:
     """Return the policy or credential reason OpenRouter was unavailable."""
     free_only, cfg_model = _aux_openrouter_settings()
     or_model = model or cfg_model
@@ -2471,7 +2470,7 @@ def _read_main_model_for_aux() -> str:
     return model
 
 
-def _read_main_api_key_if_same_origin(aux_base_url: str) -> Union[str, Callable[[], str]]:
+def _read_main_api_key_if_same_origin(aux_base_url: str) -> str | Callable[[], str]:
     """Main api_key only when *aux_base_url* has the main base_url's exact origin.
 
     Unconditional inheritance would leak the credential to any misconfigured host; mismatch keeps ``no-key-required`` → 401.
@@ -3007,7 +3006,7 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
+def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
                    explicit_base_url: Optional[str] = None,
                    model: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
     try:
@@ -4212,7 +4211,7 @@ async def _call_fallback_candidate_async(
 
 
 def _try_payment_fallback(
-    failed_provider: str, task: str = None, reason: str = "payment error", *,
+    failed_provider: str, task: str | None = None, reason: str = "payment error", *,
     failed_base_url: str = "", failure_scope: Any = None, main_runtime: Optional[dict[str, Any]] = None,
 ) -> tuple[Optional[Any], Optional[str], str]:
     """Try the auto-detection chain after a payment/credit or connection error, skipping the failed
@@ -4271,7 +4270,7 @@ def _failed_backend_skip(
 
 
 def _try_main_agent_model_fallback(
-    failed_provider: str, task: str = None, reason: str = "error",
+    failed_provider: str, task: str | None = None, reason: str = "error",
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
 ) -> tuple[Optional[Any], Optional[str], str]:
     """Last-resort fallback to the main agent provider + model after the configured chain is exhausted.
@@ -4857,7 +4856,7 @@ class _ResolveRequest(NamedTuple):
     async_mode: bool
     raw_codex: bool
     explicit_base_url: Optional[str]
-    explicit_api_key: Optional[Union[str, Callable[[], str]]]
+    explicit_api_key: Optional[str | Callable[[], str]]
     api_mode: Optional[str]
     main_runtime: Optional[dict[str, Any]]
     is_vision: bool
@@ -4867,7 +4866,7 @@ class _ResolveRequest(NamedTuple):
 _ResolveResult = tuple[Optional[Any], Optional[str]]
 
 
-def _normalize_api_key(raw: Any) -> Union[str, Callable[[], str]]:
+def _normalize_api_key(raw: Any) -> str | Callable[[], str]:
     """A key_cmd/Entra callable passes through uncalled; strings are stripped; anything else is ''."""
     if callable(raw) and not isinstance(raw, str):
         return raw
@@ -5395,9 +5394,9 @@ _EXPLICIT_PROVIDER_BRANCHES: dict[str, Callable[[_ResolveRequest], _ResolveResul
 
 
 def resolve_provider_client(
-    provider: str, model: str = None, async_mode: bool = False, raw_codex: bool = False,
-    explicit_base_url: str = None, explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
-    api_mode: str = None, main_runtime: Optional[dict[str, Any]] = None, is_vision: bool = False,
+    provider: str, model: str | None = None, async_mode: bool = False, raw_codex: bool = False,
+    explicit_base_url: str | None = None, explicit_api_key: Optional[str | Callable[[], str]] = None,
+    api_mode: str | None = None, main_runtime: Optional[dict[str, Any]] = None, is_vision: bool = False,
     task: Optional[str] = None,
 ) -> tuple[Optional[Any], Optional[str]]:
     """Central router: return a configured client (auth, base URL, API format) for a provider + optional model.
@@ -5987,8 +5986,8 @@ def _compat_model(client: Any, model: Optional[str], cached_default: Optional[st
 
 
 def _get_cached_client(
-    provider: str, model: str = None, async_mode: bool = False, base_url: str = None,
-    api_key: str = None, api_mode: str = None, main_runtime: Optional[dict[str, Any]] = None,
+    provider: str, model: str | None = None, async_mode: bool = False, base_url: str | None = None,
+    api_key: str | None = None, api_mode: str | None = None, main_runtime: Optional[dict[str, Any]] = None,
     is_vision: bool = False, task: Optional[str] = None,
 ) -> tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
@@ -6146,7 +6145,7 @@ def _named_custom_provider_present(name: str) -> bool:
 
 
 def _resolve_task_provider_model(
-    task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
+    task: str | None = None, provider: str | None = None, model: str | None = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine (provider, model, base_url, api_key, api_mode) for a call.
@@ -6879,7 +6878,7 @@ def _fail_relay_auxiliary_call(exc: BaseException) -> None:
         logger.warning("Relay auxiliary failure finalization failed", exc_info=True)
 
 
-def _unwrap_data_envelope(response: Any, task: str = None) -> Any:
+def _unwrap_data_envelope(response: Any, task: str | None = None) -> Any:
     """Unwrap gateway envelopes like {"data": {<chat completion>}, "success": true}.
 
     Some OpenAI-compatible gateways (e.g. api.cline.bot) wrap non-streaming
@@ -6991,7 +6990,7 @@ def _client_streams_internally(client: Any) -> bool:
 
 
 _MANAGED_LOCAL_STATE_TTL_S = 15.0
-_managed_local_cache: "tuple[float, str]" = (0.0, "")
+_managed_local_cache: tuple[float, str] = (0.0, "")
 
 
 def _managed_local_netloc() -> str:
@@ -7098,7 +7097,7 @@ def _create_with_progress(
         return _create_with_progress_once(client, retry_kwargs, task, force_stream=force_stream)
 
 
-def _stream_request_plan(kwargs: dict[str, Any]) -> "tuple[dict[str, Any], str, float]":
+def _stream_request_plan(kwargs: dict[str, Any]) -> tuple[dict[str, Any], str, float]:
     """(stream kwargs, model name, total ceiling) for a streamed re-aggregation."""
     stream_kwargs = dict(kwargs)
     stream_kwargs["stream"] = True
@@ -7165,7 +7164,7 @@ def _create_with_progress_once(
 
 def _aggregate_chat_stream(
     chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
-    no_progress: "Optional[tuple[float, Optional[float]]]" = None,
+    no_progress: Optional[tuple[float, Optional[float]]] = None,
 ) -> Any:
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
     ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
@@ -7552,7 +7551,7 @@ _FALLBACK_REASONS: tuple[tuple[Callable[[Exception], bool], str], ...] = (
 )
 
 
-def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
+def _rung(step: _LadderStep, accept: Callable[[Exception], bool]):
     """One ladder rung: perform ``step``; yields ``(response, None)`` on success,
     ``(None, exc)`` when ``accept(exc)`` lets the next rung handle it, else re-raises."""
     try:
@@ -7668,7 +7667,7 @@ def _ladder_parameter_rungs(
         if hit is None:
             break
         rungs.remove(hit)
-        matches, strip, message, remember = hit
+        _matches, strip, message, remember = hit
         retry_kwargs = strip(kwargs)
         logger.info("Auxiliary %s%s: %s: %s", task or "call", tag, message, first_err)
         rejection = first_err
@@ -8022,12 +8021,12 @@ def _stamp_latency_once(latency_info: Optional[dict[str, int]], key: str, starte
 
 @_relay_auxiliary_call
 def call_llm(
-    task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
-    api_key: str = None, main_runtime: Optional[dict[str, Any]] = None, messages: list,
-    temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
-    timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
-    extra_headers: Optional[dict[str, str]] = None, api_mode: str = None, stream: bool = False,
-    stream_options: dict = None, route_info: Optional[dict[str, str]] = None,
+    task: str | None = None, *, provider: str | None = None, model: str | None = None, base_url: str | None = None,
+    api_key: str | None = None, main_runtime: Optional[dict[str, Any]] = None, messages: list,
+    temperature: Optional[float] = None, max_tokens: int | None = None, tools: list | None = None,
+    timeout: float | None = None, extra_body: dict | None = None, reasoning_config: Optional[dict] = None,
+    extra_headers: Optional[dict[str, str]] = None, api_mode: str | None = None, stream: bool = False,
+    stream_options: dict | None = None, route_info: Optional[dict[str, str]] = None,
     latency_info: Optional[dict[str, int]] = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
@@ -8157,12 +8156,12 @@ def _start_recovery_ladder(
 
 
 def _call_llm_impl(
-    task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
-    api_key: str = None, main_runtime: Optional[dict[str, Any]] = None, messages: list,
-    temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
-    timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
-    extra_headers: Optional[dict[str, str]] = None, api_mode: str = None, stream: bool = False,
-    stream_options: dict = None, route_info: Optional[dict[str, str]] = None,
+    task: str | None = None, *, provider: str | None = None, model: str | None = None, base_url: str | None = None,
+    api_key: str | None = None, main_runtime: Optional[dict[str, Any]] = None, messages: list,
+    temperature: Optional[float] = None, max_tokens: int | None = None, tools: list | None = None,
+    timeout: float | None = None, extra_body: dict | None = None, reasoning_config: Optional[dict] = None,
+    extra_headers: Optional[dict[str, str]] = None, api_mode: str | None = None, stream: bool = False,
+    stream_options: dict | None = None, route_info: Optional[dict[str, str]] = None,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
@@ -8319,10 +8318,10 @@ def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = 
 
 @_relay_auxiliary_call_async
 async def async_call_llm(
-    task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
-    api_key: str = None, main_runtime: Optional[dict[str, Any]] = None, messages: list,
-    temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
-    timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
+    task: str | None = None, *, provider: str | None = None, model: str | None = None, base_url: str | None = None,
+    api_key: str | None = None, main_runtime: Optional[dict[str, Any]] = None, messages: list,
+    temperature: Optional[float] = None, max_tokens: int | None = None, tools: list | None = None,
+    timeout: float | None = None, extra_body: dict | None = None, reasoning_config: Optional[dict] = None,
     route_info: Optional[dict[str, str]] = None,
 ) -> Any:
     """Run an asynchronous auxiliary LLM request under the configured limit."""
@@ -8343,10 +8342,10 @@ async def async_call_llm(
 
 
 async def _async_call_llm_impl(
-    task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
-    api_key: str = None, main_runtime: Optional[dict[str, Any]] = None, messages: list,
-    temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
-    timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
+    task: str | None = None, *, provider: str | None = None, model: str | None = None, base_url: str | None = None,
+    api_key: str | None = None, main_runtime: Optional[dict[str, Any]] = None, messages: list,
+    temperature: Optional[float] = None, max_tokens: int | None = None, tools: list | None = None,
+    timeout: float | None = None, extra_body: dict | None = None, reasoning_config: Optional[dict] = None,
     route_info: Optional[dict[str, str]] = None,
 ) -> Any:
     """Centralized asynchronous LLM call; see call_llm() for full documentation.

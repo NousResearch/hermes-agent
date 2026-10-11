@@ -8880,6 +8880,7 @@
     },
     {
      "content": "",
+     "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8938,6 +8939,7 @@
     },
     {
      "content": "",
+     "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8995,6 +8997,7 @@
     },
     {
      "content": "",
+     "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
       {

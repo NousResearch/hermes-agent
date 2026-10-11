@@ -58,7 +58,7 @@ def homes(tmp_path, monkeypatch):
 
 
 def test_worker_hydrates_owning_profile_plugin_secret_source(homes, tmp_path, monkeypatch):
-    launch, profile = homes
+    _launch, profile = homes
     from cron import scheduler
 
     payload = tmp_path / "payload.json"

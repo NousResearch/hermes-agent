@@ -4,7 +4,7 @@ conversation is one session row with its whole volume, and turns-before-switch n
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -20,7 +20,7 @@ from tests.hermes_cli.test_relay_shared_metrics_runtime import (
 
 PUBLIC = "anthropic/claude-sonnet-4"
 OTHER = "openai/gpt-5"
-DAY1 = datetime(2026, 9, 27, 9, 0, tzinfo=timezone.utc).timestamp()
+DAY1 = datetime(2026, 9, 27, 9, 0, tzinfo=UTC).timestamp()
 
 
 def _flush() -> None:
@@ -110,7 +110,7 @@ def test_a_late_interaction_never_reopens_a_closed_day():
     """An interaction sampled before midnight that lands after the day rolled folds into the newer day:
     the closed day is reported once, and the only close path is a later clock."""
     resource = {"architecture": "x86_64", "hermes_version": "0.0.0", "install_method": "git", "os_family": "linux"}
-    midnight = int(datetime(2026, 9, 28, tzinfo=timezone.utc).timestamp() * 1000)
+    midnight = int(datetime(2026, 9, 28, tzinfo=UTC).timestamp() * 1000)
     state, _ = engagement.apply(None, now_ms=midnight - 3_600_000, resource=resource, surface="cli")
     state, closed = engagement.apply(state, now_ms=midnight + 500, resource=resource, surface="cli")
     assert [r[3] for r in closed] == ["2026-09-27", "2026-09-27"]

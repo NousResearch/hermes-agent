@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from tests.hermes_cli.plugin_worker_support import (
-    isolated_python as isolated_python,
-    plugin_world as plugin_world,
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 from tools.skills_guard import format_scan_report
 from tools.plugin_guard import (
@@ -49,7 +49,7 @@ class TestCleanPlugin:
         result = scan_plugin(plugin, source="owner/repo")
         assert result.verdict == "safe"
         assert result.trust_level == "community"
-        allowed, reason = should_allow_plugin_install(result)
+        allowed, _reason = should_allow_plugin_install(result)
         assert allowed is True
 
     def test_provider_plugin_env_key_read_is_allowed(self, tmp_path):
@@ -192,7 +192,7 @@ class TestMaliciousPlugin:
         plugin = _mk_plugin(tmp_path, files)
         result = scan_plugin(plugin)
         assert result.verdict == "dangerous"
-        allowed, reason = should_allow_plugin_install(result, force=True)
+        allowed, _reason = should_allow_plugin_install(result, force=True)
         assert allowed is False  # --force never overrides dangerous
 
     def test_prompt_injection_in_docs_is_flagged(self, tmp_path):
@@ -276,9 +276,9 @@ class TestCautionPolicy:
         plugin = _mk_plugin(tmp_path, files)
         result = scan_plugin(plugin)
         assert result.verdict == "caution"
-        allowed, reason = should_allow_plugin_install(result)
+        allowed, _reason = should_allow_plugin_install(result)
         assert allowed is None  # needs confirmation
-        allowed, reason = should_allow_plugin_install(result, force=True)
+        allowed, _reason = should_allow_plugin_install(result, force=True)
         assert allowed is True
 
     def test_binary_file_is_caution_not_dangerous(self, tmp_path):
@@ -382,9 +382,9 @@ class TestInstallIntegration:
         self._make_git_repo(repo, BASE_FILES)
         # PM publishes plugins only under the active home's ``plugins/``; the sandboxed
         # HERMES_HOME (autouse fixture) is that home.
-        plugins_dir = pc._plugins_dir()
+        pc._plugins_dir()
 
-        target, manifest, name = pc._install_plugin_core(
+        target, _manifest, name = pc._install_plugin_core(
             f"file://{repo}", force=False,
         )
         assert name == "test-plugin"
@@ -429,7 +429,7 @@ class TestInstallIntegration:
             )
         assert not (plugins_dir / "test-plugin").exists()
         # Accepted → installs
-        target, _, name = pc._install_plugin_core(
+        target, _, _name = pc._install_plugin_core(
             f"file://{repo}", force=False, scan_decision_cb=lambda r: True,
         )
         assert target.exists()
@@ -443,7 +443,7 @@ class TestInstallIntegration:
         self._make_git_repo(repo, files)
         # PM publishes plugins only under the active home's ``plugins/``; the sandboxed
         # HERMES_HOME (autouse fixture) is that home.
-        plugins_dir = pc._plugins_dir()
+        pc._plugins_dir()
         monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: False)
 
         target, _, _ = pc._install_plugin_core(f"file://{repo}", force=False)
@@ -458,7 +458,7 @@ class TestInstallIntegration:
         self._make_git_repo(repo, files)
         # PM publishes plugins only under the active home's ``plugins/``; the sandboxed
         # HERMES_HOME (autouse fixture) is that home.
-        plugins_dir = pc._plugins_dir()
+        pc._plugins_dir()
 
         result = pc.dashboard_install_plugin(
             f"file://{repo}", force=False, enable=False,
@@ -603,12 +603,19 @@ class TestInertContextDemotions:
         assert sev[("run.py", "dump_all_env")] == "high"      # os.system("printenv"): executes
 
     def test_base64_decode_to_text_filter_vs_interpreter(self, tmp_path):
+        """A decode into a text filter is not a finding; a decode reaching an interpreter at
+        any stage (``| gunzip | sh``, ``| sh | grep``) or an archive unpacker (the payload is
+        code the scanner never sees) is high."""
         files = dict(BASE_FILES)
         files["scripts/open-pr.sh"] = "gh api repos/x/contents/y --jq .content | base64 -d | grep '^sha:'\n"
+        files["scripts/unpack.sh"] = "base64 -d assets.b64 | tar xz -C build\n"
         files["scripts/boot.sh"] = "cat payload.b64 | base64 -d | bash\n"
+        files["scripts/gz.sh"] = "cat payload.b64 | base64 -d | gunzip | sh\n"
+        files["scripts/tail.sh"] = "base64 -d payload.b64 | sh | grep ok\n"
         result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
         sev = {f.file: f.severity for f in result.findings if f.pattern_id == "base64_decode_pipe"}
-        assert sev == {"scripts/open-pr.sh": "medium", "scripts/boot.sh": "high"}
+        assert sev == {"scripts/boot.sh": "high", "scripts/gz.sh": "high", "scripts/tail.sh": "high",
+                       "scripts/unpack.sh": "high"}
 
 
 class TestIntakeFalsePositiveClasses:

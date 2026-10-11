@@ -155,7 +155,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
     """HTTP handler for the A2A JSON-RPC surface; all state lives on ``self.server.adapter``."""
 
     @property
-    def adapter(self) -> "A2AAdapter":
+    def adapter(self) -> A2AAdapter:
         return self.server.adapter  # type: ignore[attr-defined]
 
     def log_message(self, format, *args):

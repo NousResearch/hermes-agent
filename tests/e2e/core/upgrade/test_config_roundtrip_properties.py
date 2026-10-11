@@ -566,7 +566,7 @@ def _dotted_provider(case: Case) -> str:
 
 def _cli(env: dict, *args: str, timeout: float = 120) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "hermes_cli.main", *args], cwd=str(WORKTREE), env=env,
-                          capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+                          capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
 
 
 def _cli_home(tmp_path: Path, case: Case) -> tuple[dict, Path]:
@@ -1043,7 +1043,7 @@ def test_p4_load_hermes_dotenv_is_idempotent(seed, home, env_restore, monkeypatc
 
 @pytest.mark.parametrize("seed", P4_SEEDS)
 def test_p4_env_parser_sanitizer_and_writer_round_trip(seed, home, env_restore):
-    text, keys, _shell = gen_dotenv(seed)
+    text, _keys, _shell = gen_dotenv(seed)
     env_path = home / ".env"
     env_path.write_text(text, encoding="utf-8")
     C.invalidate_env_cache()

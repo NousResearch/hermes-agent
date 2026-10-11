@@ -145,6 +145,7 @@ def check_legacy_desktop_checkout() -> None:
             return subprocess.run(
                 ["git", "-C", str(checkout), *args],
                 capture_output=True, text=True, encoding="utf-8", timeout=10,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return None
@@ -566,7 +567,7 @@ def _gh_authenticated() -> bool:
     if not _safe_which("gh"):
         return False
     try:
-        result = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10)
+        result = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10, check=False)
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False

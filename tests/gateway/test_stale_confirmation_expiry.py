@@ -24,6 +24,7 @@ from agent.replay_cleanup import (
     strip_stale_dangerous_confirmations as _strip_stale_dangerous_confirmations,
 )
 from gateway.run import _build_gateway_agent_history
+import itertools
 
 
 # High-risk confirmation patterns. A user message matching one of these
@@ -132,6 +133,6 @@ def test_redaction_preserves_role_alternation():
     assert "EXPIRED" in redacted["content"]
     # No two consecutive same-role messages anywhere.
     roles = [m["role"] for m in cleaned]
-    assert all(a != b for a, b in zip(roles, roles[1:])), roles
+    assert all(a != b for a, b in itertools.pairwise(roles)), roles
     # Original history object is not mutated.
     assert history[2]["content"] == "confirm forced restart"

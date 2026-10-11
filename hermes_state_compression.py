@@ -245,9 +245,9 @@ class SessionCompressionMixin:
 
     def publish_compression_child(
         self, *, parent_session_id: str, child_session_id: str, source: str,
-        messages: list[dict[str, Any]], model: str = None, model_config: dict[str, Any] = None,
-        system_prompt: str = None, cwd: str = None, profile_name: str = None,
-        compression_lock_holder: str = None, require_compression_lease: bool = True,
+        messages: list[dict[str, Any]], model: str | None = None, model_config: dict[str, Any] | None = None,
+        system_prompt: str | None = None, cwd: str | None = None, profile_name: str | None = None,
+        compression_lock_holder: str | None = None, require_compression_lease: bool = True,
         require_lease_refresh: bool = False, lease_ttl_seconds: float = 300.0,
         watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
         """Atomically close a parent and publish its durable compression child: closure, child row, and

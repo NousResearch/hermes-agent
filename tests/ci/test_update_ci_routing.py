@@ -95,8 +95,12 @@ def _on(workflow: dict) -> dict:
     return workflow.get("on", workflow.get(True)) or {}
 
 
-def _detect_outputs(lanes: dict[str, bool]) -> dict[str, Any]:
-    """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs."""
+def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch") -> dict[str, Any]:
+    """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs.
+
+    Replays a manual dispatch by default: E2E lanes reach their consumers only on a dispatch or a
+    release run (pull requests and main pushes force them off), and the routing tests below check
+    that a set lane reaches its suites."""
     raw = {k: gha.to_string(v) for k, v in lanes.items()}
     action = _yaml(".github/actions/detect-changes/action.yml")
     action_out = {k: gha.render(v["value"], {"steps": {"classify": {"outputs": raw}}})
@@ -106,7 +110,7 @@ def _detect_outputs(lanes: dict[str, bool]) -> dict[str, Any]:
     classify = next(s for s in detect["steps"] if s.get("id") == "classify")
     assert classify["uses"] == "./.github/actions/detect-changes"
     steps = {"classify": {"outputs": action_out}}
-    ctx = {"steps": steps, "github": {"event_name": "pull_request"}, "inputs": {}}
+    ctx = {"steps": steps, "github": {"event_name": event_name}, "inputs": {}}
     steps["gate-lanes"] = {"outputs": workflow_steps.outputs(gate, ctx)}
     return {k: gha.render(v, ctx) for k, v in detect["outputs"].items()}
 
@@ -411,7 +415,7 @@ def test_marker_corpus_change_runs_every_language_that_reads_it():
 def _tracked_mentions(name: str) -> list[str]:
     try:
         out = subprocess.run(["git", "-C", str(_REPO), "grep", "-l", "-F", name, "--", "."],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, timeout=60, check=False)
     except OSError:
         pytest.skip("git unavailable: cannot list the fixture's consumers")
     if out.returncode not in (0, 1):
@@ -570,7 +574,7 @@ def test_replay_python3_is_the_replay_interpreter_when_its_dir_has_only_python(t
              "print(json.dumps([sys.executable, workflow_steps.outputs(json.loads(sys.argv[1]), {})]))")
     env = {**os.environ, "PYTHONPATH": str(_REPO)}
     result = subprocess.run([str(interpreter), "-c", probe, json.dumps(_PROBE_STEP)], cwd=_REPO, env=env,
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stderr
     replay_python, out = json.loads(result.stdout)
     assert out["py3"] == replay_python
@@ -815,10 +819,15 @@ def test_strict_acceptance_dispatch_reaches_every_e2e_suite(value):
         assert _strict_env(run, path, rel, job, step) == value, "/".join(path)
 
 
-def test_pull_requests_never_run_strict():
-    run = _ci_run(cc.classify([]))
-    for path, rel, job, step in _STRICT_STEPS:
-        assert _strict_env(run, path, rel, job, step) == "", "/".join(path)
+@pytest.mark.parametrize("event_name", ["pull_request", "push"])
+def test_pull_requests_and_main_pushes_never_run_e2e(event_name):
+    """E2E suites run only on a release run or a manual dispatch, whatever the diff or labels select."""
+    lanes = cc.classify([], run_e2e=True)  # every lane on, as a label or an update-path diff would
+    run = _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes, event_name))
+    for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update"):
+        assert not any(_consumers_reached(run, lane).values()), f"{event_name}: {lane} ran"
+    assert "e2e-desktop-core" not in run
+    assert "tests" in run and "tests-os" in run  # the unit lanes still run
 
 
 def test_windows_install_update_dispatch_alone_sets_strict():

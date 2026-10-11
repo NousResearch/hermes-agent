@@ -311,7 +311,7 @@ def test_llamacpp_endpoint_resolution_prefers_managed(tmp_path, monkeypatch, stu
     """provider: llamacpp with a live managed server resolves to it,
     api-key included."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    port, handler = stub_server
+    port, _handler = stub_server
     from hermes_cli.local_runtime import endpoint as ep
     from hermes_cli.local_runtime.supervisor import state_path
 
@@ -717,7 +717,7 @@ def test_runtime_provider_seam_llamacpp_alias(tmp_path, monkeypatch, stub_server
     """End to end through the REAL resolver: provider='llamacpp' with no
     base_url lands on the managed endpoint with source='local-runtime'."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    port, handler = stub_server
+    port, _handler = stub_server
     from hermes_cli.local_runtime.supervisor import state_path
 
     _write_current_process_state(
@@ -860,7 +860,7 @@ def test_bootstrap_reuses_running_server(tmp_path, monkeypatch, stub_server):
     """A live state file (another process supervising) short-circuits the
     install/spawn path entirely."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    port, handler = stub_server
+    port, _handler = stub_server
     from hermes_cli.local_runtime import bootstrap
     from hermes_cli.local_runtime.supervisor import state_path
 

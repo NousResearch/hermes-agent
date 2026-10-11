@@ -1,93 +1,19 @@
 /**
- * The local-setup offer: "this machine can run a model locally" for every
- * machine that qualifies, delivered by state transitions, never by a timer.
+ * Local-setup eligibility: whether this machine can run a model locally, read
+ * once per backend connection from the local-models status + catalog.
  *
- * Three surfaces read this one record:
- *
- * - The handoff tour ends on the model pill (`signpost.ts`) when the machine
- *   qualifies. Every guided user who reaches the handoff sees it.
- * - A card above the primary composer after the first finished turn once
- *   onboarding is over (handoff or skip). It renders only while that session
- *   is idle, so an automatic follow-up turn hides it and the next idle shows it.
- * - A "Run locally" row at the top of the model menu, until setup is done.
- *
- * States move only on events: `armed` when onboarding ends, `shown` on the
- * first eligible `message.complete`, `dismissed` on ✕, `accepted` on the card's
- * button. Local setup completing ends it by eligibility: a machine with a
- * runtime and a staged model no longer qualifies, so every surface hides.
- *
- * The predecessor was a tip in the rotation: 5-10 min settle, a six-hour
- * cooldown shared with every tip, a quiet check, a 22 s linger, and a 7-day
- * reshow. It fired on rtxspark and vespyr with nobody watching and recorded
- * itself as shown, which hid it for a week.
+ * Two surfaces read it: the "Run locally" row at the top of the model menu
+ * (until setup is done) and the handoff tour's model-pill step. A machine with
+ * a runtime and a staged model no longer qualifies, so both hide.
  */
 
 import { atom, computed } from 'nanostores'
 
 import { getLocalCatalog, getLocalModelsStatus } from '@/hermes'
-import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
-import { Codecs, persistentAtom } from '@/lib/persisted'
-import { readKey } from '@/lib/storage'
 import type { LocalCatalogModel, LocalModelsStatus } from '@/types/hermes'
 
 import { $localModelsEnabled } from './local-models-flag'
-import { $desktopOnboarding } from './onboarding'
-import { $onboardingGate, $onboardingStateRead, type OnboardingPhase } from './onboarding-gate'
 import { $connection } from './session'
-import { $retiredTips } from './tips'
-
-type LocalSetupOfferState = 'accepted' | 'armed' | 'dismissed' | 'shown' | 'unarmed'
-
-interface OfferRecord {
-  armedBy: null | string
-  /** ISO time of the last transition, for `state()` readouts. */
-  at: null | string
-  /** Runtime id of the session whose finished turn showed the card (diagnostics only). */
-  sessionId: null | string
-  state: LocalSetupOfferState
-}
-
-const OFFER_STATES: readonly LocalSetupOfferState[] = ['accepted', 'armed', 'dismissed', 'shown', 'unarmed']
-const EMPTY: OfferRecord = { armedBy: null, at: null, sessionId: null, state: 'unarmed' }
-
-/** Persisted as a flat string record so `Codecs.stringRecord` does the parsing at the storage boundary. */
-function toRecord(stored: Record<string, string>): OfferRecord {
-  const state = OFFER_STATES.find(candidate => candidate === stored.state)
-
-  return state
-    ? { armedBy: stored.armedBy ?? null, at: stored.at ?? null, sessionId: stored.sessionId ?? null, state }
-    : EMPTY
-}
-
-function toStored(record: OfferRecord): Record<string, string> {
-  return Object.fromEntries(Object.entries(record).filter((entry): entry is [string, string] => entry[1] !== null))
-}
-
-const STORAGE_KEY = 'hermes.desktop.offers.local-setup.v1'
-
-/** Desktop-global like the tip ledgers: the offer is about this machine, not a profile. */
-const $stored = persistentAtom<Record<string, string>>(STORAGE_KEY, {}, Codecs.stringRecord)
-
-export const $localSetupOffer = computed($stored, toRecord)
-
-/** The stored record as another window may have left it. */
-function readStoredRecord(): OfferRecord {
-  const raw = readKey(STORAGE_KEY)
-
-  return raw === null ? EMPTY : toRecord(Codecs.stringRecord.decode(raw))
-}
-
-function setRecord(record: OfferRecord): void {
-  $stored.set(toStored(record))
-}
-
-// Another window moved the offer (dismissed it, say): adopt that, so this window
-// neither keeps showing a card the user closed nor writes an older state over it.
-window.addEventListener('storage', event => {
-  if (event.key === STORAGE_KEY) {
-    $stored.set(event.newValue === null ? {} : Codecs.stringRecord.decode(event.newValue))
-  }
-})
 
 /** The recommended catalog row that fits, when this machine qualifies. */
 interface LocalSetupFit {
@@ -132,12 +58,13 @@ function pickLocalSetupFit(
     return { checkedAt: at, fit: null, reason: 'local models already set up' }
   }
 
-  const fitting = catalog.filter(model => model.fits)
-  const model = fitting.find(candidate => candidate.recommended) ?? fitting[0]
+  // The offer names the model the catalog recommends. A machine without a recommendation does not
+  // qualify, even when a model would run with part of its weights in system memory.
+  const model = catalog.find(candidate => candidate.recommended && candidate.fits)
 
   return model
     ? { checkedAt: at, fit: { model }, reason: `fits ${model.id}` }
-    : { checkedAt: at, fit: null, reason: 'no catalog model fits this machine' }
+    : { checkedAt: at, fit: null, reason: 'no catalog model is recommended for this machine' }
 }
 
 /** One status + catalog read per connection; a transient miss is retried on the next read. */
@@ -216,149 +143,23 @@ $connection.listen(() => {
   }
 })
 
-const FINAL_STATES: readonly LocalSetupOfferState[] = ['accepted', 'dismissed']
-
-function transition(state: LocalSetupOfferState, patch: Partial<OfferRecord>): void {
-  // Another window may have closed the offer since this one last read it; a final state stays final.
-  const stored = readStoredRecord()
-
-  if (FINAL_STATES.includes(stored.state)) {
-    $stored.set(toStored(stored))
-
-    return
-  }
-
-  setRecord({ ...$localSetupOffer.get(), ...patch, at: new Date().toISOString(), state })
-}
-
-/** The guide will not run for this identity: `onboarding.state` answered without starting it, or "choose a provider later". */
-function guideWillNotStart(): boolean {
-  return $onboardingStateRead.get() || $desktopOnboarding.get().firstRunSkipped
-}
-
-/**
- * Guided onboarding ending (either way) arms the offer, and so does an install
- * where the guide never runs (flag off, or `idle` with the guide ruled out).
- * `cinematic`/`guided`/`handoff`, and an `idle` the guide may still leave, wait:
- * the card must not land on top of the guide.
- */
-function armFromPhase(phase: OnboardingPhase): void {
-  if ($localSetupOffer.get().state !== 'unarmed') {
-    return
-  }
-
-  // Someone who closed the old local-setup tip already answered this offer.
-  if ($retiredTips.get().includes('local-setup')) {
-    transition('dismissed', { armedBy: 'retired-tip' })
-  } else if (phase === 'done' || phase === 'skipped') {
-    transition('armed', { armedBy: `onboarding:${phase}` })
-  } else if (!isOnboardingEnabled()) {
-    transition('armed', { armedBy: 'no-guided-onboarding' })
-  } else if (phase === 'idle' && guideWillNotStart()) {
-    transition('armed', { armedBy: 'guide-will-not-start' })
-  }
-}
-
-$onboardingGate.subscribe(gate => armFromPhase(gate.phase))
-$desktopOnboarding.listen(() => armFromPhase($onboardingGate.get().phase))
-$onboardingStateRead.listen(() => armFromPhase($onboardingGate.get().phase))
-
-interface TurnCompleteSignal {
-  /** Anything but a completed turn: errored, interrupted, cancelled. */
-  failed: boolean
-  sessionId: null | string
-  /** A turn of the setup chat itself (its closing words after `start_chat`). */
-  setupChat: boolean
-}
-
-/**
- * `message.complete` for the session the user is looking at. The whole agent
- * loop has returned at this point (tool calls and interim messages come before
- * it), so this is the end of a task, not a step in one. Turns that did not
- * complete do not count; the caller only reports the session on screen.
- */
-export function reportLocalSetupTurnComplete({ failed, sessionId, setupChat }: TurnCompleteSignal): void {
-  const offer = $localSetupOffer.get()
-
-  if (failed || !sessionId || setupChat || offer.state !== 'armed') {
-    return
-  }
-
-  // The task chat that setup hands off to speaks first: its opening turn asks which direction to take.
-  // That question is not a finished task, so the card waits for the next completed turn.
-  if (offer.armedBy === 'onboarding:done' && offer.sessionId === null) {
-    transition('armed', { sessionId })
-
-    return
-  }
-
-  void readLocalSetupEligibility().then(({ fit }) => {
-    if (fit && $localSetupOffer.get().state === 'armed') {
-      transition('shown', { sessionId })
-    }
-  })
-}
-
-export function dismissLocalSetupOffer(): void {
-  transition('dismissed', {})
-}
-
-export function acceptLocalSetupOffer(): void {
-  transition('accepted', {})
-}
-
-/** The model-menu row stays until setup completes, whatever happened to the card. */
+/** The model-menu row stays until setup completes. */
 export const $localSetupRowFit = computed($localSetupEligibility, eligibility => eligibility?.fit ?? null)
-
-/** Asks the pill of one composer (by scope target) to open its menu, where the row sits on top. */
-export const $localSetupMenuRequest = atom<null | { seq: number; target: string }>(null)
-
-export function requestLocalSetupMenu(target: string): void {
-  $localSetupMenuRequest.set({ seq: ($localSetupMenuRequest.get()?.seq ?? 0) + 1, target })
-}
 
 // ── Debug handle ────────────────────────────────────────────────────────────
 // Ships in packaged builds on purpose: rtxspark/vespyr run MSIX bundles we
 // drive over CDP, and `state()` is how a run that showed nothing explains itself.
 
-interface LocalSetupOfferDebug {
-  force: () => Promise<Eligibility>
-  reset: () => void
-  state: () => {
-    eligibility: Eligibility | null
-    localModelsEnabled: boolean
-    offer: OfferRecord
-    onboardingPhase: OnboardingPhase
-  }
+interface LocalSetupDebug {
+  state: () => { eligibility: Eligibility | null; localModelsEnabled: boolean }
 }
 
 declare global {
   interface Window {
-    __hermesTips?: LocalSetupOfferDebug
+    __hermesTips?: LocalSetupDebug
   }
 }
 
 window.__hermesTips = {
-  /** Skip onboarding and waiting: mark the card shown now, if the machine qualifies. */
-  force: async () => {
-    invalidateLocalSetupEligibility()
-    const result = await readLocalSetupEligibility()
-
-    if (result.fit) {
-      transition('shown', { armedBy: 'debug:force', sessionId: 'debug' })
-    }
-
-    return result
-  },
-  reset: () => {
-    $stored.set({})
-    invalidateLocalSetupEligibility()
-    armFromPhase($onboardingGate.get().phase)
-  },
-  state: () => ({
-    eligibility: $localSetupEligibility.get(),
-    localModelsEnabled: $localModelsEnabled.get(),
-    offer: $localSetupOffer.get(),
-    onboardingPhase: $onboardingGate.get().phase
-  })
+  state: () => ({ eligibility: $localSetupEligibility.get(), localModelsEnabled: $localModelsEnabled.get() })
 }

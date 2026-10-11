@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import hermes_yaml as yaml
+from datetime import UTC
 
 logger = logging.getLogger(__name__)
 
@@ -442,8 +443,8 @@ def _live_generated_time(data: dict[str, Any]) -> Optional[float]:
         return None
     try:
         from datetime import datetime, timezone
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
+        parsed = datetime.fromisoformat(raw)
+        return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).timestamp()
     except ValueError:
         return None
 

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 from hermes_cli.release_channels import (
     ChannelError, build_prefix, canonical_json, validate_identity,
@@ -104,7 +104,7 @@ def canary_windows_version(tag: str) -> str:
     stamp = canary_timestamp(tag)
     if stamp is None:
         raise ChannelError("Invalid canary release identity")
-    instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     return f"{instant.year % 100}.{int(f'{instant.month:02d}{instant.day:02d}')}.{instant.hour}.{int(f'{instant.minute:02d}{instant.second:02d}')}"
 
 
@@ -227,7 +227,7 @@ def read_archive_bytes(key: str) -> bytes:
 def advance_stable(env: dict, release: dict, root: Path) -> dict:
     """Advance one published release from its immutable tag-scoped receipts."""
     creds, base, bucket = r2.credentials()
-    store = R2ChannelStore(creds, base, bucket)
+    R2ChannelStore(creds, base, bucket)
     public_base = r2.public_base_url()
     key = f"releases/tag/{release['claim_tag']}/release-candidates.json"
     digest = hashlib.sha256(read_archive_bytes(key)).hexdigest()

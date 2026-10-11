@@ -114,7 +114,7 @@ def start_flow(
 
 def _lookup(
     session_id: str, server_name: str, hermes_home: Optional[str] = None,
-) -> "tuple[dict[str, Any] | None, str | None]":
+) -> tuple[dict[str, Any] | None, str | None]:
     """Find a session belonging to the caller's resolved profile."""
     from hermes_constants import hermes_home_key
     with _sessions_lock:

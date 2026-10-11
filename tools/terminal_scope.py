@@ -87,7 +87,7 @@ def terminal_env(name: str, default: str = "") -> str:
 
 
 def build_profile_terminal_scope(
-    hermes_home: "Any", *, env_overlay: Optional[dict[str, str]] = None) -> dict[str, str]:
+    hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> dict[str, str]:
     """Build the COMPLETE effective ``TERMINAL_*`` policy for a profile home.
 
     Projection: ``DEFAULT_CONFIG['terminal']`` <- profile ``.env`` TERMINAL_* <- *env_overlay*
@@ -194,7 +194,7 @@ def _resolve_scope_cwd_placeholder(scope: dict[str, str]) -> None:
 
 
 def install_profile_terminal_scope(
-    hermes_home: "Any", *, env_overlay: Optional[dict[str, str]] = None) -> Token:
+    hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> Token:
     """Build AND install a profile's policy; on failure install the refusal scope. Never raises."""
     try:
         return set_terminal_scope(build_profile_terminal_scope(hermes_home, env_overlay=env_overlay))
@@ -204,7 +204,7 @@ def install_profile_terminal_scope(
 
 
 @contextmanager
-def install_and_reset_profile_terminal_scope(hermes_home: "Any") -> Iterator[None]:
+def install_and_reset_profile_terminal_scope(hermes_home: Any) -> Iterator[None]:
     """Install the profile's terminal policy for a bounded turn/fire. Never raises."""
     token = install_profile_terminal_scope(hermes_home)
     try:

@@ -99,6 +99,7 @@ export const coreCommands: SlashCommand[] = [
       sections.push(
         {
           rows: [
+            ['/connectors', t('slashCmd.core.help.connectors')],
             ['/details [hidden|collapsed|expanded|cycle]', t('slashCmd.core.help.detailsGlobal')],
             ['/details <section> [hidden|collapsed|expanded|reset]', t('slashCmd.core.help.detailsSection')],
             ['/fortune [random|daily]', t('slashCmd.core.help.fortune')],

@@ -1,8 +1,10 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
 import json
+import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -981,3 +983,57 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+class TestToolUseEnforcementAutoSkipLog:
+    """Unknown auto aliases stay fail-open but must be visible to operators."""
+
+    def _agent(self, setting="auto", tools=("terminal",)):
+        return _make_agent(
+            valid_tool_names=list(tools),
+            model="inference.local",
+            _tool_use_enforcement=setting,
+        )
+
+    def test_unmatched_auto_logs_once_without_enabling_guidance(self, caplog, monkeypatch):
+        monkeypatch.setattr("agent.system_prompt._tool_use_enforcement_auto_skip_logged", False)
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            prompt = _stable_prompt(self._agent())
+            _stable_prompt(self._agent())
+
+        notices = [record.getMessage() for record in caplog.records
+                   if "tool_use_enforcement is auto" in record.getMessage()]
+        assert "Tool-use enforcement" not in prompt
+        assert len(notices) == 1
+        assert "inference.local" in notices[0]
+        assert "tool_use_enforcement: true" in notices[0]
+        assert _stable_prompt(self._agent()) == prompt
+
+    @pytest.mark.parametrize("setting,tools", [
+        (True, ("terminal",)),
+        (False, ("terminal",)),
+        (["does-not-match"], ("terminal",)),
+        ("auto", ()),
+    ])
+    def test_explicit_or_toolless_paths_are_silent(self, caplog, monkeypatch, setting, tools):
+        monkeypatch.setattr("agent.system_prompt._tool_use_enforcement_auto_skip_logged", False)
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            _stable_prompt(self._agent(setting, tools))
+        assert not any("tool_use_enforcement is auto" in record.getMessage()
+                       for record in caplog.records)
+
+    @pytest.mark.parametrize("setting", ["true", "always", "yes", "on", "false", "never", "no", "off"])
+    def test_explicit_string_paths_are_silent(self, caplog, monkeypatch, setting):
+        monkeypatch.setattr("agent.system_prompt._tool_use_enforcement_auto_skip_logged", False)
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            _stable_prompt(self._agent(setting))
+        assert not any("tool_use_enforcement is auto" in record.getMessage()
+                       for record in caplog.records)
+
+    def test_concurrent_unmatched_auto_logs_once(self, caplog, monkeypatch):
+        monkeypatch.setattr("agent.system_prompt._tool_use_enforcement_auto_skip_logged", False)
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(lambda _unused: _stable_prompt(self._agent()), range(16)))
+        assert sum("tool_use_enforcement is auto" in record.getMessage()
+                   for record in caplog.records) == 1

@@ -1,0 +1,30 @@
+name: account-pool
+repo: https://github.com/roqianjas/hermes-account-pool
+sha: 0d7f0dea98c2eaa35fcf8d008cc867ef5db99952
+subdir: plugins/account-pool
+version: "3.10.0"
+title: Account Pool
+description: "Run several accounts of one provider in Hermes' credential pool: `hermes account <provider> <action>` adds accounts with email verification, shows live usage per account, keeps the least-used account first (fill_first + a 5-minute balance timer), parks accounts for hours or on a weekly schedule, shows which bot is on which account and its tokens at API prices, and alerts on dead logins, a full pool or a runaway bot. Adapters for anthropic and openai-codex; generic commands for any pool provider. Optional Accounts page in Hermes Desktop. Disclosure — it WRITES credentials: add/relogin/remove/park/unpark/balance change logins in auth.json through Hermes' CredentialPool API or `hermes auth add/remove`; park moves an entry with its OAuth tokens to account-pool-parked.json (mode 600) and balance refreshes those tokens with Hermes' own refresh functions; page sign-in uses Hermes' OAuth client ids. Network: api.anthropic.com (oauth usage/profile), claude.ai and Anthropic's token endpoint, chatgpt.com/backend-api/wham/usage, auth.openai.com, Telegram through `hermes send`; no telemetry. `setup` writes plugins.enabled of every profile (via hermes config set / plugins enable), links the tracker into every profile and, with --timer, a systemd user timer. Runs systemctl --user, notify-send, hermes config set, hermes auth, hermes send; reads every profile's config.yaml and state.db (read-only) and /proc. The command registers in the default profile only and provides no tools."
+maintainer: roqianjas
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/roqianjas/hermes-account-pool/blob/0d7f0dea98c2eaa35fcf8d008cc867ef5db99952/README.md
+platforms: [linux]
+screenshots:
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/0d7f0dea98c2eaa35fcf8d008cc867ef5db99952/docs/screenshots/accounts.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/0d7f0dea98c2eaa35fcf8d008cc867ef5db99952/docs/screenshots/report.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/0d7f0dea98c2eaa35fcf8d008cc867ef5db99952/docs/screenshots/sessions.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/0d7f0dea98c2eaa35fcf8d008cc867ef5db99952/docs/screenshots/activity.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/0d7f0dea98c2eaa35fcf8d008cc867ef5db99952/docs/screenshots/alerts.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/0d7f0dea98c2eaa35fcf8d008cc867ef5db99952/docs/screenshots/add-account.png
+known_issues:
+  - "After installing, run `hermes account <provider> setup` (add --timer for the 5-minute balance timer): it lists the plugin in every profile for the Desktop page and links the session tracker into every profile."
+  - "Built for plugins.isolation: in_process (the default). Under host, Hermes skips plugin CLI commands, so `hermes account` and the timer's balance are unavailable."
+  - "Usage comes from undocumented provider endpoints (api.anthropic.com/api/oauth/usage, chatgpt.com/backend-api/wham/usage) that can change or rate-limit without notice; bots are unaffected when they do."
+  - "Codex add, relogin end to end and Codex parked-token refresh have not been run against real accounts yet."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

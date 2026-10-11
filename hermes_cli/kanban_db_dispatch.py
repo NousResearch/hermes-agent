@@ -70,6 +70,11 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# last_failure_error is sticky: review_requested / completed / other non-quota
+# outcomes do not clear it (only complete_task and cross-profile reassign do).
+# blocker_auth may still fire when the latest ended run itself is one of these.
+_RESPAWN_BLOCKER_LIVE_OUTCOMES = frozenset({"failed", "spawn_failed"})
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -1533,8 +1538,11 @@ def check_respawn_guard(
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
+    path never increments consecutive_failures), blocker_auth
+    (quota/auth pattern on a latest run that is itself a quota/auth failure,
+    or on a stamp with no ended run yet; a superseded stamp after
+    review_requested, completed, or any other non-quota outcome is ignored —
+    review does not clear last_failure_error), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
@@ -1585,11 +1593,14 @@ def check_respawn_guard(
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
     # crash is different: its persisted error includes the worker's last
     # captured output, which is context rather than a diagnosis and may contain
-    # benign commands such as ``claude auth status`` (#117097).
+    # benign commands such as claude auth status (#117097).
+    # last_failure_error is sticky across review_requested / completed / other
+    # non-quota outcomes, so a superseded stamp must not park the card.
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
-        return "blocker_auth"
+    if err and _RESPAWN_BLOCKER_RE.search(err):
+        if latest_outcome is None or latest_outcome in _RESPAWN_BLOCKER_LIVE_OUTCOMES:
+            return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
     # are the canonical *inputs* to a review handoff, not duplicate-work signals.

@@ -1022,6 +1022,30 @@ def _validate_voice(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
                "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)")
 
 
+def _validate_session_model_policy(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
+    """``session.model_policy`` must name a policy the build knows.
+
+    The reader (``cli_model_switch_mixin.resolve_session_model_policy``) refuses an unknown
+    value rather than falling back, so without this check the only symptom is a resumed
+    session that will not open. Surface it where doctor and the startup check look.
+    """
+    session_cfg = config.get("session")
+    if not isinstance(session_cfg, dict) or "model_policy" not in session_cfg:
+        return
+    value = session_cfg.get("model_policy")
+    if value is None:
+        return
+    from hermes_cli.cli_model_switch_mixin import SESSION_MODEL_POLICIES
+
+    if str(value).strip().lower() not in SESSION_MODEL_POLICIES:
+        _issue(
+            issues, "error",
+            f"session.model_policy is {value!r}, which is not a known policy",
+            "Use one of: " + ", ".join(SESSION_MODEL_POLICIES) + " "
+            "(follow_config: a stored session model is a cache of the profile config "
+            "default; never_pin: never restore a stored session model)")
+
+
 def _validate_timezone(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
     """``timezone`` must be an IANA name the runtime can load.
 
@@ -1187,6 +1211,7 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
     issues: list[ConfigIssue] = []
     _validate_voice(config, issues)
     _validate_timezone(config, issues)
+    _validate_session_model_policy(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
     for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):

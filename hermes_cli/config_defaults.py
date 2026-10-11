@@ -61,6 +61,13 @@ DEFAULT_CONFIG = {
         # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS
         # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
         "terminal_continue": True,
+        # What a stored `sessions.model` MEANS when a session is resumed: "follow_config"
+        # (default) treats it as a CACHE of the model.default that was live at creation —
+        # honoured only for a row that records a deliberate pick (a provider stamp written
+        # by /model, the composer or the desktop), otherwise reconciled back to the profile's
+        # current default; "never_pin" restores no stored model at all. An unknown value is a
+        # config ERROR, never a silent fallback. Per-lane configs inherit it like model.default.
+        "model_policy": "follow_config",
     },
     # Where the TUI/desktop gateway stages session file attachments (uploads, pasted
     # text). "hermes-home" (default) keeps <profile home>/attachments — the dir

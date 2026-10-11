@@ -127,6 +127,20 @@ This looks up the most recent `cli` session from the SQLite database and loads i
 
 A bare `-c` is terminal-aware: each CLI session drops a small breadcrumb file under `~/.hermes/terminal-sessions/` keyed by the terminal it runs in (tty device, tmux pane, kitty window, wezterm pane, Zellij pane, Windows Terminal session, ...). When you run `hermes -c` again in the *same* terminal, Hermes resumes that terminal's own session — so two panes side by side each continue their own conversation instead of both grabbing the globally most-recent one. If there's no breadcrumb for the terminal (first use, deleted session, or a stale breadcrumb older than 30 days), `-c` falls back to the most-recent-session behavior. `-c "name"` and `--resume` are unaffected. Disable with `session.terminal_continue: false` in `config.yaml`.
 
+### Which Model a Resumed Session Runs
+
+A session's stored model is a **cache of the config decision, not a decision of its own**: `hermes` writes it at session creation from whatever `model.default` said at that instant. On resume, a stored model is therefore honoured only when the row records a deliberate pick (a `/model` switch, the composer, or the Desktop picker stamp a route beside it) and the session came from an interactive source; anything else is reconciled to the profile's **current** `model.default`, the row is repaired so the stale value cannot come back, and the override is announced on stderr rather than applied silently.
+
+```yaml
+session:
+  model_policy: follow_config   # default
+```
+
+- `follow_config` *(default)* — the stored model is a cache: honoured only for a deliberate pick from an interactive source.
+- `never_pin` — no stored model is ever restored; the resolved config always wins. Non-interactive sources (`kanban`, `cron`, `oneshot`, `webhook`, ...) never restore one under either policy, since no user was there to choose.
+
+An unknown value is a config error — the reader refuses it rather than falling back, and `hermes doctor` reports it. This is unrelated to [pinning a session](#pin-a-session), which is a retention flag.
+
 ### Resume by Name
 
 If you've given a session a title (see [Session Naming](#session-naming) below), you can resume it by name:
@@ -492,6 +506,8 @@ Pinning sets a durable "keep" flag: pinned sessions are exempt from the
 `sessions.auto_archive` stale sweep and always appear in listings. It is the
 same flag the Desktop sidebar's Pinned section uses — pin from either surface
 and both see it.
+
+This is a **retention** flag and has nothing to do with which model a session runs: the stored model (see [Which Model a Resumed Session Runs](#which-model-a-resumed-session-runs)) is routing, and `session.model_policy` never reads or writes the pin.
 
 Restoring a session export (the dashboard import, or a profile adopting a
 stranded session) keeps the pinned, archived and hidden flags, and whether an

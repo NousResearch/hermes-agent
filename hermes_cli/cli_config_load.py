@@ -218,6 +218,10 @@ def _cli_config_defaults():
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": "", "api_key": ""}},
         # delegation: empty model/provider = inherit parent; api_key falls back to OPENAI_API_KEY
         "delegation": {"max_iterations": 45, "model": "", "provider": "", "base_url": "", "api_key": ""},
+        # session.model_policy governs whether a stored `sessions.model` is restored on
+        # resume (see hermes_cli/cli_model_switch_mixin.py); per-lane config.yaml inherits
+        # it exactly like model.default, and an unknown value is a config error.
+        "session": {"model_policy": "follow_config"},
         "onboarding": {"seen": {}},  # first-touch hint flags (agent/onboarding.py), latched once shown
     }
 

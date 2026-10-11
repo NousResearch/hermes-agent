@@ -18,9 +18,8 @@ import pytest
 
 pytest.importorskip("botocore")
 
-from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import (
-    ChatResult, KnownSymptom, NativeHome, assert_no_duplicate_assistant_text, make_home, messages, run_chat,
+    ChatResult, NativeHome, assert_no_duplicate_assistant_text, make_home, messages, run_chat,
 )
 from tests.fakes.providers.bedrock_converse import (
     ACCESS_KEY, REGION, SECRET_KEY, Drop, FakeBedrock, HttpError, Reasoning, Reply, StreamException, Text,
@@ -34,13 +33,6 @@ VALIDATION_MARK = "FAKE-VALIDATION-9921"
 IAM_DENIAL = ("User: arn:aws:iam::123456789012:user/e2e is not authorized to perform: "
               "bedrock:InvokeModelWithResponseStream on resource: arn:aws:bedrock:us-east-1::foundation-model/"
               + MODEL)
-
-# Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
-KNOWN: dict[str, tuple[str, str]] = {
-    "validation_retried": (r"^400 ValidationException retried: fake saw [2-9]\d* requests",
-                           "#121294 a Bedrock 400 ValidationException is retried and reported as 'temporarily unavailable'"),
-}
-
 
 CHUNK = 7
 # Event index 3 text deltas into the answer: messageStart, reasoning deltas, signature, contentBlockStop.
@@ -148,11 +140,8 @@ def test_validation_exception_is_surfaced_once_without_retry(runs: dict[str, Any
     run = runs["validation"]
     result: ChatResult = run["result"]
     sent = len(run["requests"])
-    assert sent >= 1 and run["requests"][0]["reply"] == "HttpError", run["requests"]
-    # Symptom: the 400 is retried (the scripted success behind it is reached).
-    with known_gate(KNOWN, "validation_retried", raises=KnownSymptom):
-        if sent > 1:
-            raise KnownSymptom(f"400 ValidationException retried: fake saw {sent} requests")
+    # #121294: a 400 is terminal; a retry would reach the scripted success behind it.
+    assert sent == 1 and run["requests"][0]["reply"] == "HttpError", run["requests"]
     shown = result.stdout + result.stderr
     assert result.returncode != 0 and FINAL not in shown, result.describe()
     assert VALIDATION_MARK in shown and "ValidationException" in shown, result.describe()

@@ -649,6 +649,22 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox
 
     home = _session_home(session)
+    # #128996: DMs parked behind an earlier unadvertised owner convert to mailbox
+    # tickets once a live owner is advertising. has_pending is a dir check, so the
+    # poller's cheap no-mailbox early return below stays cheap when nothing is parked.
+    from tools.bot_dm_pending import has_pending as _has_parked_dm, pending_records_for_home
+
+    if _has_parked_dm(home):
+        from tools.bot_dm_pending import convert_to_live_owner
+
+        parked_owner = find_canonical_live_owner(home)
+        if parked_owner is not None:
+            for parked in pending_records_for_home(home):
+                try:
+                    convert_to_live_owner(home, parked["id"], parked_owner)
+                except Exception:
+                    logger.warning("Could not convert parked DM %s to the live owner",
+                                   parked["id"], exc_info=True)
     # Most profiles never receive a delivery: without a mailbox there is nothing to claim, and the owner
     # lookup below costs a state.db open plus the exclusive active-session registry lock every pass (#111719).
     if not has_mailbox(home):

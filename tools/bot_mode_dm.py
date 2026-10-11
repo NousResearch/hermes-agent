@@ -52,6 +52,9 @@ _LIVE_WAIT_SECONDS = 300
 # A live owner may run a turn past one wait window, but each waiting runner holds ~46 MB and the
 # sender's notify slot: past this the runner reports pending (do not resend) and exits.
 _LIVE_WAIT_MAX_SECONDS = 30 * 60
+# The deferred-unadvertised-owner runner re-checks the ownership picture at the same cadence the
+# live-owner poller drains mailboxes (#128996).
+_DEFER_POLL_SECONDS = 5.0
 
 # '<peer>/<agent>' — peer names are lowercase (``hermes peer`` normalizes them).
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
@@ -600,6 +603,109 @@ def _runner_argv(args: list[str]) -> tuple[Optional[str], str, str, list[str]] |
     return author, rest[0], rest[1], rest[2:]
 
 
+def _defer_unadvertised_owner_dm(home: Path, dm_file: str, argv: list[str],
+                                 author: Optional[dict]) -> int:
+    """#128996: deliver a DM behind an unadvertised Bot Chat owner without cloning.
+
+    The chat is held by a surface without live-delivery metadata, so the live
+    mailbox cannot take it and a CLI turn would compete for the lease (the
+    clone the issue reports). Park the DM durably under the recipient's home,
+    then wait one bounded budget for the ownership picture to change:
+
+    - a live owner advertises -> the record converts to a mailbox ticket and
+      the standard live contract carries the reply (as though the owner had
+      advertised before the runner started);
+    - NO surface holds the chat any more -> claim the record and run the
+      sanctioned one-shot CLI turn: the message arrives without a competing
+      turn, and the lease guard on the CLI side closes any release race;
+    - the budget lapses with the unadvertised owner still holding -> report
+      ``status=queued`` + ``target_pending_live_consumer``: the receipt is
+      retained, the sender must NOT resend. A live-owner session that starts
+      advertising later picks the parked DM up on its mailbox poll.
+
+    The DM file is kept for the duration (the parked record references it);
+    a settled CLI drain removes it, and the cache sweep reaps orphans.
+    """
+    import tools.bot_dm_pending as pending
+
+    delivery_id = _dm_delivery_id(dm_file)
+    message = Path(dm_file).read_text(encoding="utf-8-sig")
+    pending.park(delivery_id, home, argv=argv, dm_file=str(dm_file),
+                 message=message, author=author)
+    deadline = time.monotonic() + _LIVE_WAIT_MAX_SECONDS
+    while True:
+        from tools.bot_live_delivery import find_canonical_live_owner, find_canonical_owner
+
+        record = pending.read_pending(home, delivery_id)
+        if record is not None and record["status"] == "transferred":
+            # A live owner (this runner's conversion or the poller's) owns it now.
+            return _wait_live_dm(str(home), delivery_id, dm_file=dm_file)
+        if record is not None and record["status"] in ("settled", "failed"):
+            # Another runner already drained this delivery; report its receipt, do not resend.
+            payload = {key: record[key] for key in ("reply", "error", "reason") if record.get(key)}
+            payload.update(status=record["status"], delivery_id=delivery_id)
+            print(json.dumps(payload))
+            return 0 if record["status"] == "settled" else 1
+        owner = find_canonical_live_owner(home)
+        if owner is not None:
+            pending.convert_to_live_owner(home, delivery_id, owner)
+            return _wait_live_dm(str(home), delivery_id, dm_file=dm_file)
+        if find_canonical_owner(home) is None:
+            claim_record = pending.claim(home, delivery_id, reason="lease released")
+            if claim_record is not None:
+                return _drain_pending_cli_turn(home, dm_file, argv, delivery_id, author)
+            # another runner claimed it; keep waiting for its outcome
+        if time.monotonic() >= deadline:
+            print(json.dumps({
+                "status": "queued", "delivery_id": delivery_id,
+                "reason": "target_pending_live_consumer",
+                "error": "The target Bot Chat is open on another surface that has not "
+                         "advertised live delivery yet. The message is parked durably; "
+                         "do not resend — it delivers once a consumer takes over or the "
+                         "chat is released.",
+            }))
+            return 0
+        time.sleep(_DEFER_POLL_SECONDS)
+
+
+def _drain_pending_cli_turn(home: Path, dm_file: str, argv: list[str],
+                            delivery_id: str, author: Optional[dict]) -> int:
+    """Run the one sanctioned CLI turn for a claimed pending DM and settle its receipt.
+
+    The claim is the at-most-once fence: a turn that never returns leaves the
+    record claimed (an inspectable unknown outcome), never a re-run. A refusal
+    from the CLI's own lease guard settles the record failed, mirroring how
+    the live lane cancels on a vanished owner.
+    """
+    import tools.bot_dm_pending as pending
+
+    from tools.bot_relay import delivery_env
+
+    # The parked record is the durable copy: the 24h cache sweep may have taken the
+    # dm file while the record waited, so re-materialize it from the record's message.
+    record = pending.read_pending(home, delivery_id) or {}
+    if not os.path.exists(dm_file):
+        dm_file = _write_dm_file(str(record.get("message") or ""))
+    env = delivery_env(author, home)
+    with _delivery_lock(argv, stdin_file=False):
+        try:
+            exit_code = _run_local_turn(argv, dm_file, env=env)
+        except Exception as exc:
+            pending.settle(home, delivery_id, status="failed", error=str(exc),
+                           reason="drain exception")
+            raise
+        finally:
+            _unlink_dm_file(dm_file)
+    if exit_code == 0:
+        pending.settle(home, delivery_id, status="settled")
+    else:
+        # _run_local_turn already printed the structured refusal/failure; the
+        # record keeps the same terminal shape for inspection.
+        pending.settle(home, delivery_id, status="failed",
+                       error=f"cli turn exited {exit_code}")
+    return exit_code
+
+
 def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                   profile_home: Path | None = None, author: Optional[dict] = None) -> int:
     """Route to the live owner before attempting a CLI transport. Live deliveries
@@ -617,6 +723,17 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     # The live consumer owns turn admission; never compete for its CLI lease.
     if not stdin_file:
         home = profile_home or _local_delivery_home(argv)
+        # A pinned live intent means this delivery was already admitted to a live
+        # owner once: the retry must replay that receipt, never park a second record.
+        if home is not None and not os.path.exists(_live_intent_file(dm_file)):
+            from tools.bot_live_delivery import find_canonical_live_owner, find_canonical_owner
+            if find_canonical_owner(home) is not None and find_canonical_live_owner(home) is None:
+                # #128996: a surface holds the Bot Chat without advertising live delivery.
+                # Spawning a CLI copy here is what produced the competing-turn collisions;
+                # park the DM and let the deferred runner deliver it — live conversion when a
+                # consumer advertises, the sanctioned CLI turn once no surface holds the chat,
+                # or a lapsed budget that keeps the receipt (the cron bot_chat_pending contract).
+                return _defer_unadvertised_owner_dm(home, dm_file, argv, author)
         if home is not None or os.path.exists(_live_intent_file(dm_file)):
             try:
                 record = _admit_live_dm(home, dm_file, author)

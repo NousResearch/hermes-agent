@@ -163,14 +163,25 @@ class GatewayTopicThreadsMixin:
         except Exception:
             logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
 
-    def _recover_telegram_topic_thread_id(self, source: SessionSource) -> Optional[str]:
-        """Pin lobby-shaped topic-mode DM replies (missing ``message_thread_id`` or General) to the
+    def _recover_telegram_topic_thread_id(
+        self, source: SessionSource, *, is_reply: bool = False
+    ) -> Optional[str]:
+        """Pin lobby-shaped topic-mode DM *replies* (missing ``message_thread_id`` or General) to the
         user's most-recent bound topic. Never rewrite a non-lobby, unbound thread id: a brand-new DM
-        topic is also "unknown" until its first message is recorded. None = leave the source alone."""
+        topic is also "unknown" until its first message is recorded. None = leave the source alone.
+
+        ``is_reply`` guards the pin: only messages that actually REPLY to a prior message (or carry an
+        explicit gateway route expectation) get steered into the last-bound topic — a *fresh* message
+        typed in the General/"All" lane is a first message for a NEW topic Telegram just created and
+        must stay in the lobby, otherwise the user's intent to start a topic is silently swallowed by
+        the running conversation (#31772).
+        """
         if (
             not self._is_telegram_dm(source) or not source.chat_id or not source.user_id
             or not self._telegram_topic_mode_enabled(source)
         ):
+            return None
+        if not is_reply:
             return None
         inbound = str(source.thread_id or "")
         if inbound and inbound not in self._TELEGRAM_GENERAL_TOPIC_IDS:

@@ -1728,6 +1728,7 @@ class TestPreToolCallDirective:
         [(hook_name, payload)] = observed
         assert hook_name == "pre_tool_call"
         assert (payload["tool_name"], payload["args"], payload["tool_call_id"]) == ("write_file", {"path": "README.md"}, "call-1")
+        assert payload["gateway_session_key"] == ""
 
     def test_approve_directive_returned(self, monkeypatch):
         from hermes_cli.plugins import get_pre_tool_call_directive

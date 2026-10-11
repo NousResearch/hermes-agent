@@ -127,6 +127,7 @@ def test_unengaged_process_preserves_os_environ_fallback(monkeypatch):
 
     assert env.get("HERMES_SESSION_KEY") == "cli-session-key"
     assert env.get("HERMES_SESSION_ID") == "cli-session-id"
+    assert "HERMES_SESSION_IDENTITY" not in env
 
 
 def test_explicit_empty_thread_id_overrides_stale_value(monkeypatch):

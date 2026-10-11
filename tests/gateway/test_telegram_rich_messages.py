@@ -832,3 +832,92 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
+
+
+def _inbound_rich_table_message():
+    rich = {
+        "blocks": [
+            {
+                "type": "table",
+                "cells": [
+                    [
+                        {"text": "食物名称", "is_header": True},
+                        {"text": "能量 (kcal/100g)", "is_header": True},
+                        {"text": "蛋白质 P (g)", "is_header": True},
+                        {"text": "脂肪 F (g)", "is_header": True},
+                        {"text": "碳水化合物 C (g)", "is_header": True},
+                    ],
+                    [
+                        {"text": "西葫芦"},
+                        {"text": "19"},
+                        {"text": "0.8"},
+                        {"text": "0.2"},
+                        {"text": "3.8"},
+                    ],
+                ],
+            }
+        ]
+    }
+    return SimpleNamespace(
+        message_id=8807,
+        chat=SimpleNamespace(id=12345, type="private", title=None, full_name="U"),
+        from_user=SimpleNamespace(
+            id=42, username="u", first_name="U", last_name=None,
+            full_name="U", is_bot=False,
+        ),
+        text=None,
+        caption=None,
+        reply_to_message=None,
+        quote=None,
+        message_thread_id=None,
+        is_topic_message=False,
+        entities=[],
+        caption_entities=[],
+        api_kwargs={"rich_message": rich},
+        date=None,
+    )
+
+
+def test_inbound_rich_table_is_projected_to_markdown():
+    adapter = _make_adapter()
+    text = adapter._extract_rich_message_text(_inbound_rich_table_message())
+
+    assert text == (
+        "| 食物名称 | 能量 (kcal/100g) | 蛋白质 P (g) | 脂肪 F (g) | 碳水化合物 C (g) |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 西葫芦 | 19 | 0.8 | 0.2 | 3.8 |"
+    )
+
+
+def test_rich_reply_table_is_visible_in_reply_context():
+    adapter = _make_adapter()
+    rich_message = _inbound_rich_table_message()
+    reply = _reply_message("8807")
+    reply.reply_to_message = rich_message
+
+    from gateway.platforms.event import MessageType
+
+    event = adapter._build_message_event(reply, MessageType.TEXT)
+
+    assert "| 西葫芦 | 19 | 0.8 | 0.2 | 3.8 |" in event.reply_to_text
+
+
+@pytest.mark.asyncio
+async def test_rich_only_inbound_message_reaches_text_queue():
+    adapter = _make_adapter()
+    adapter._bot.username = "iris_bot"
+    msg = _inbound_rich_table_message()
+    update = SimpleNamespace(effective_message=msg, message=msg, update_id=321)
+
+    adapter._is_user_authorized_from_message = MagicMock(return_value=True)
+    adapter._gate_or_observe = MagicMock(return_value=True)
+    adapter._ensure_forum_commands = AsyncMock()
+    adapter._cache_replied_media = AsyncMock()
+    adapter._apply_telegram_group_observe_attribution = MagicMock(side_effect=lambda event: event)
+    adapter._enqueue_text_event = MagicMock()
+
+    await adapter._handle_rich_message(update, None)
+
+    adapter._enqueue_text_event.assert_called_once()
+    event = adapter._enqueue_text_event.call_args.args[0]
+    assert "| 西葫芦 | 19 | 0.8 | 0.2 | 3.8 |" in event.text

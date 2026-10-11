@@ -261,13 +261,25 @@ function ackSessionRow(row: SessionInfo): void {
 }
 
 /** Clear persisted unread for a stored id even when its row isn't loaded —
- *  the marker alone can be retired; the watermark needs the row's count. With
- *  no row there is no profile to read, so we retire it from `profileHint`'s
- *  bucket, falling back to the active gateway's (the profile whose sessions
- *  you can actually be opening); other profiles' identically-named ids stay
- *  untouched. Pass the hint whenever the caller knows the owner — a hidden
- *  session can be opened without the gateway ever moving onto its profile,
- *  which would otherwise ack a bucket that never held the marker. */
+ *  the marker alone can be retired; the watermark needs the row's count.
+ *
+ *  With no row loaded, a caller-supplied `profileHint` scopes the ack to that
+ *  bucket, falling back to the active gateway's; other profiles'
+ *  identically-named ids stay untouched. Pass the hint whenever the caller
+ *  knows the owner — a hidden session can be opened without the gateway ever
+ *  moving onto its profile, which would otherwise ack a bucket that never
+ *  held the marker.
+ *
+ *  When NO row and NO hint resolve, the owner is genuinely unknowable: the
+ *  live edge files the marker under the ROW's own profile (any profile, not
+ *  just the active gateway's), and the store's own selection/focus listeners
+ *  (`$selectedStoredSessionId.listen`, `$focusedStoredSessionId.listen`) have
+ *  no owner to hint with — acking only the active gateway's bucket then
+ *  leaves the marker behind and the next list refresh repaints the dot. The
+ *  user just opened this id, so it is seen now: retire it from EVERY bucket.
+ *  Same-id sessions in different profiles stay independent whenever rows are
+ *  loaded (the row path above resolves by profile), so this fallback cannot
+ *  silence a gap it wasn't asked about. */
 export function ackStoredSessionId(storedSessionId: null | string, profileHint?: null | string): void {
   if (!storedSessionId) {
     return
@@ -281,17 +293,31 @@ export function ackStoredSessionId(storedSessionId: null | string, profileHint?:
     return
   }
 
-  const profile = unlistedProfile(profileHint)
-  const markers = $unreadFinishedMarkers.get()[profile]
+  const markers = $unreadFinishedMarkers.get()
 
-  if (!markers) {
+  if (profileHint != null) {
+    const profile = unlistedProfile(profileHint)
+    const ids = markers[profile]
+
+    if (!ids) {
+      return
+    }
+
+    const next = ids.filter(id => id !== storedSessionId)
+
+    if (next.length !== ids.length) {
+      setMarkerBucket(profile, next)
+    }
+
     return
   }
 
-  const next = markers.filter(id => id !== storedSessionId)
+  for (const [profile, ids] of Object.entries(markers)) {
+    const next = ids.filter(id => id !== storedSessionId)
 
-  if (next.length !== markers.length) {
-    setMarkerBucket(profile, next)
+    if (next.length !== ids.length) {
+      setMarkerBucket(profile, next)
+    }
   }
 }
 

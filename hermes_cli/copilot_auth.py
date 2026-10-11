@@ -220,6 +220,10 @@ _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
 _EDITOR_VERSION = "vscode/1.104.1"
 _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
+# The Copilot API serves versioned responses per client: without this header, /models reports
+# legacy default-tier limits (claude-opus-5.5 as 200K with no billing tiers), so Hermes
+# resolves long-context models ~5x too small. Matches what official clients declare.
+_COPILOT_API_VERSION = "2026-08-01"
 
 # Transient-failure hardening: gateway startup races network readiness, and a single-shot
 # exchange failing there silently degrades to the RAW GitHub token, whose integrator allowlist
@@ -503,6 +507,7 @@ def copilot_request_headers(
     *, is_agent_turn: bool = True, is_vision: bool = False) -> dict[str, str]:
     """Build the standard headers for Copilot API requests."""
     headers: dict[str, str] = {"Editor-Version": _EDITOR_VERSION, "User-Agent": "HermesAgent/1.0",
+                               "X-GitHub-Api-Version": _COPILOT_API_VERSION,
                                "Copilot-Integration-Id": "vscode-chat",
                                "Openai-Intent": "conversation-edits",
                                "x-initiator": "agent" if is_agent_turn else "user"}

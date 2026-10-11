@@ -438,7 +438,9 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     # venv interpreter symlinked to the same binary is still a different
     # interpreter (its own sys.prefix) and must re-exec once.
     same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
-    if not current or not same:
+    # a skipped retry leaves the old generation selected. restarting the same
+    # interpreter cannot make it current and would repeat this launch forever.
+    if (not current and _may_retry) or not same:
         publish_launchers(root)
         return python
     if owed_to_cli:

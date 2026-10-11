@@ -349,6 +349,33 @@ def test_failed_launch_keeps_previous_completion_and_retries(tmp_path, monkeypat
     assert not (root / ".update-incomplete").exists()
 
 
+@pytest.mark.parametrize("attempt_count", [
+    venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS,
+    venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS,
+])
+def test_skipped_completion_retry_only_changes_interpreters_once(tmp_path, monkeypatch, attempt_count):
+    """skipping a stale install's retry must not re-exec the same interpreter (#132391)."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.arm_completion(root)
+    attempts = venv_sync._completion_attempts_path(root)
+    attempts.write_text(f"{attempt_count}\n", encoding="utf-8")
+    store_python = Path(sys.executable)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: store_python)
+    monkeypatch.setattr(venv_sync, "_finish_source_update", lambda *a, **kw: pytest.fail("retry was skipped"))
+    monkeypatch.setattr(venv_sync, "publish_launchers", lambda _: None)
+
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "old-python"))
+    assert venv_sync.prepare_launch(root, []) == store_python
+    monkeypatch.setattr(sys, "executable", str(store_python))
+    assert venv_sync.prepare_launch(root, []) is None
+    assert pending.is_file()
+    assert attempts.read_text(encoding="utf-8") == f"{attempt_count}\n"
+
+
 def test_blessed_legacy_install_is_adopted_before_sync(tmp_path, monkeypatch, completion_tail):
     import pm
     from hermes_cli import _launchers

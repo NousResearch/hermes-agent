@@ -511,6 +511,46 @@ def restore_managed_env(env: dict) -> dict:
     return env
 
 
+def apply_profile_settings_env(profile_home: "str | Path | None" = None) -> None:
+    """Re-apply the OWNING profile's own non-credential ``.env`` settings to ``os.environ``.
+
+    The multiplex dotenv guard skips the process-global dotenv load for a routed profile home
+    (credentials resolve via the profile scope), and ``strip_launch_profile_env`` removes the
+    launch profile's residue by NAME — so an external cron worker built for profile X saw
+    neither X's settings nor any other profile's: a plugin reading a plain tuning key from
+    ``os.environ`` (a normal plugin pattern) silently ran on defaults in every scheduled job
+    while CLI and in-process fires read it fine (#136257). This is only called in a
+    single-profile process (the external worker): there are no sibling turns to leak into,
+    so restoring the owner's own settings matches every other surface.
+
+    Credentials stay scope-only: names the platform classifies as credentials — the same
+    classes every spawn path scrubs (:func:`_is_provider_env_blocklisted`,
+    :func:`_is_hermes_internal_secret`) — are NOT restored, process-global names
+    (:func:`agent.secret_scope._is_global_env`) belong to the deployment, and
+    administrator-managed names are policy that ``_apply_managed_env`` owns. The profile
+    is the owner of the fire, so its own ``.env`` value wins (dotenv ``override=True``
+    semantics, the load this function replaces for the routed home).
+    """
+    from agent.secret_scope import _is_global_env, load_env_file
+    from hermes_constants import get_hermes_home_override
+
+    home = Path(profile_home) if profile_home else get_hermes_home_override()
+    if not home:
+        return
+    from hermes_cli.env_loader import managed_dotenv_keys
+    managed_names = {key.upper() for key in managed_dotenv_keys()}
+    registered = _registry_adapter_secret_env()
+    for name, value in load_env_file(home / ".env").items():
+        upper = name.upper()
+        if _is_global_env(upper) or upper in managed_names:
+            continue
+        if _is_provider_env_blocklisted(name, registered) or _is_hermes_internal_secret(name):
+            continue
+        if value is None or os.environ.get(name) == value:
+            continue
+        os.environ[name] = value
+
+
 # --- Shell discovery ---
 def _find_bash() -> str:
     """Resolve the shell Hermes runs commands with. Owned by pm (the store

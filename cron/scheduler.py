@@ -3914,6 +3914,15 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         discover_plugins()
         hydrate_profile_secret_sources(profile_home)
         secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
+        # The multiplex dotenv guard skips the profile's .env for routed homes and the gateway
+        # stripped the launch profile's residue, so this worker saw NO profile settings at all
+        # (#136257): plugins reading plain tuning keys from ``os.environ`` ran on defaults in
+        # every scheduled job while CLI / in-process fires read them fine. Single-profile
+        # process: re-apply the OWNING profile's own non-credential settings; credentials stay
+        # scope-only (the same name classes every spawn path scrubs are not restored).
+        from tools.environments.local import apply_profile_settings_env
+
+        apply_profile_settings_env(profile_home)
         # This process never ran gateway startup, so the OWNING profile's ``hooks:`` block (shell
         # hooks + ``hooks.outbound``) was never registered and cron sessions silently lost it
         # (#131764). Same helper the gateway uses per profile; it must run inside the secret scope

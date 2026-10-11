@@ -115,7 +115,44 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
         runtime_site_packages = site_packages(runtime_venv)
         if not any(_same_path(runtime_site_packages, existing) for existing in result):
             result.append(runtime_site_packages)
+    for published in _published_generation_site_packages():
+        if not any(_same_path(published, existing) for existing in result):
+            result.append(published)
     return result
+
+
+def _published_generation_site_packages() -> list[Path]:
+    """Every dependency generation THIS install published -- not just the committed one.
+
+    PM keeps one generation per publication (``<install state>/environments/<gen>/venv``) and a
+    long-lived parent -- the gateway lanes are spawned from -- keeps running, and exporting, the
+    generation it booted with long after a newer one is committed. Those entries are Hermes-owned
+    by the same path provenance as the committed one, and a child on another Python cannot load
+    them either: a 3.14 ``site-packages`` handed to the system Python 3.9 dies at
+    ``No module named 'greenlet._greenlet'``, which every lane reads as "my environment is
+    broken" rather than "Hermes exported its own tree into me" (how a false bug report against
+    an unrelated lane's verifier happened).
+
+    Only exact generation directories are owned -- never descendants, and nothing outside this
+    install's own state dir, so user and plugin site-packages stay untouched. Fail-closed: an
+    unreadable state dir (or no PM install at all) owns nothing extra.
+    """
+    from pm.environments import install_state_dir, site_packages
+
+    try:
+        generations = sorted((install_state_dir(Path(__file__).resolve().parents[2]) / "environments")
+                             .glob("*/venv"))
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return []
+    owned: list[Path] = []
+    for generation in generations:
+        try:
+            packages = site_packages(generation)
+        except (OSError, ValueError):
+            continue
+        if packages.is_dir():
+            owned.append(packages)
+    return owned
 
 
 def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:

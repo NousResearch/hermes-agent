@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from agent import relay_llm, relay_runtime
+from agent import relay_llm, relay_runtime, relay_sandbox
 from tools.execution_observability import collect_tool_resources
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ def execute(
         # threads) must bypass managed Relay: the pipeline's Futures bind to THIS loop,
         # which is blocked until the tool returns.
         # See #77244.
-        with collect_tool_resources() as tool_resources:
+        with collect_tool_resources() as tool_resources, relay_sandbox.observe_tool_environment(runtime, session):
             with relay_runtime.managed_callback_guard():
                 return callback(final_args)
 

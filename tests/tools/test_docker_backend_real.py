@@ -19,6 +19,8 @@ import uuid
 
 import pytest
 
+pytest_plugins = ("tests._fixtures.relay_capture",)
+
 _IMAGE = os.getenv("HERMES_TEST_DOCKER_IMAGE", "")
 
 pytestmark = pytest.mark.skipif(not _IMAGE, reason="HERMES_TEST_DOCKER_IMAGE not set")
@@ -153,3 +155,69 @@ def test_home_survives_a_container_replacement(docker_task):
     assert r["output"].strip() == "durable"
     second = _container_id(docker_task)
     assert second and second != first
+
+
+def test_relay_observes_real_container_lifecycle_without_reparenting_tools(relay_capture, docker_task):
+    from agent import relay_tools
+    from tools.execution_observability import opaque_docker_resource_id
+    from tools.terminal_tool import terminal_tool
+
+    capture = relay_capture
+    lease = capture.acquire()
+    containers = []
+    for turn_id in ("turn-1", "turn-2"):
+        turn = capture.begin(lease, turn_id)
+        result, _ = relay_tools.execute(
+            "terminal", {"command": "printf lifecycle-ready"},
+            lambda args: terminal_tool(**args, task_id=docker_task),
+            session_id=lease.session_id,
+        )
+        assert json.loads(result)["output"] == "lifecycle-ready"
+        containers.append(_container_id(docker_task))
+        capture.coordinator.end_turn(turn, outcome="success")
+    container_id = containers[0]
+    assert container_id and containers == [container_id, container_id]
+    resource_id = opaque_docker_resource_id(container_id)
+    lease.host.close_session({"session_id": lease.session_id})
+    events = capture.events()
+
+    def scopes(name, category="start"):
+        return [event for event in events
+                if event.get("name") == name and event.get("scope_category") == category]
+
+    [session] = scopes("hermes.session")
+    [logical] = scopes("hermes.execution_environment.lease")
+    [physical] = scopes("hermes.execution_environment.lifecycle_scope")
+    assert logical["parent_uuid"] == physical["parent_uuid"] == session["uuid"]
+    assert logical["data"]["resource_id"] == resource_id
+    turns, tools = scopes("hermes.turn"), scopes("terminal")
+    tool_ends = scopes("terminal", "end")
+    assert len(turns) == len(tools) == len(tool_ends) == 2
+    assert [tool["parent_uuid"] for tool in tools] == [turn["uuid"] for turn in turns]
+    for tool in tool_ends:
+        annotation = tool["category_profile"]["tool_result_annotation"]["hermes.execution_environment"]
+        assert annotation["resource_id"] == resource_id
+        assert annotation["resource_id_status"] == "available"
+    [created] = [event for event in events
+                 if event.get("name") == "hermes.execution_environment.lifecycle.create_and_start.succeeded"]
+    assert created["parent_uuid"] == physical["uuid"]
+    assert created["data"]["resource_id"] == resource_id
+    assert created["data"]["state_after"] == "running"
+    [logical_end] = scopes("hermes.execution_environment.lease", "end")
+    assert logical_end["uuid"] == logical["uuid"]
+    assert not scopes("hermes.execution_environment.lifecycle_scope", "end")
+
+    _teardown(docker_task)
+    assert not _container_exists(container_id)
+    events = capture.events()
+    [removed] = [event for event in events
+                 if event.get("name") == "hermes.execution_environment.lifecycle.remove.succeeded"]
+    assert removed["parent_uuid"] == physical["uuid"]
+    assert removed["data"]["resource_id"] == resource_id
+    assert removed["data"]["state_after"] == "deleted"
+    [physical_end] = scopes("hermes.execution_environment.lifecycle_scope", "end")
+    assert physical_end["uuid"] == physical["uuid"]
+    assert physical_end["data"]["reason"] == "removed"
+    [session_end] = scopes("hermes.session", "end")
+    assert events.index(session_end) < events.index(removed) < events.index(physical_end)
+    assert container_id not in json.dumps(events)

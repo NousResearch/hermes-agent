@@ -105,21 +105,59 @@ def _clean_revisions(raw: dict) -> dict:
     return {str(k): max(0, int(v)) for k, v in raw.items() if isinstance(v, int) and not isinstance(v, bool)}
 
 
+# Bounded newest-first page the roster scans for its excerpt: enough to step past a run of
+# hidden/scaffold rows (several consecutive notices must not hide the last conversational text).
+_PREVIEW_SCAN_ROWS = 8
+
+
+def _preview_conversation_text(message: dict) -> str:
+    """Display words of *message* for the roster excerpt, or "" when the transcript projections
+    would not paint it as a conversational bubble.
+
+    Reuses the same read-side shaping as ``session.resume`` and the REST history (which the raw
+    truncation used to bypass, #136219): a steer row shows the user's own words instead of the
+    model-facing marker, hidden/``[System:``/model-only/compaction rows are skipped, structured
+    multimodal content renders through the storage decoder instead of leaking its encoding, and
+    skill/first-task scaffolds project to what the user typed."""
+    from agent.skill_commands import describe_skill_invocation
+    from tui_gateway.session_history import _coerce_message_text, _user_image_display_text
+    role = message.get("role")
+    if role not in ("user", "assistant"):
+        return ""
+    if message.get("display_kind") == "hidden" or message.get("_compressed_summary"):
+        return ""
+    if (message.get("display_metadata") or {}).get("model_only"):
+        return ""
+    text = _user_image_display_text(message.get("content")) if role == "user" else None
+    if text is None:
+        text = _coerce_message_text(message.get("content"), image_urls=False)
+    if not text.strip():
+        return ""
+    if role == "user":
+        if text.lstrip().startswith("[System:"):
+            return ""
+        from agent.first_task_prompt import visible_text
+        text = visible_text(text)
+        if message.get("display_kind") == "steer":
+            from agent.conversation_compression import _extract_steer_text_from_message
+            text = _extract_steer_text_from_message(message) or text
+        text = describe_skill_invocation(text, separator=" ") or text
+    return text.strip()
+
+
 def _latest_message_preview(db, session_id):
-    """≤80-char excerpt of the NEWEST active user/assistant message, or "" (roster semantics).
-    Same query shape as ``SessionDB.latest_message_row_id``; keep them in step."""
+    """≤80-char excerpt of the NEWEST visible user/assistant message, or "" (roster semantics).
+    Reads a bounded newest page through ``get_messages`` (storage owns ordering and decoding) and
+    projects each row like the transcript adapters before truncating (#136219)."""
     try:
-        with db._lock:
-            row = db._conn.execute(
-                "SELECT content FROM messages"
-                " WHERE session_id = ? AND role IN ('user', 'assistant')"
-                " AND active = 1 AND content IS NOT NULL AND TRIM(content) != ''"
-                " ORDER BY id DESC LIMIT 1",
-                (session_id,)).fetchone()
+        rows = db.get_messages(str(session_id), latest=True, limit=_PREVIEW_SCAN_ROWS)
     except Exception:
         return ""
-    text = " ".join(str(row[0] or "").split()).strip() if row else ""
-    return text[:80] + "..." if len(text) > 80 else text
+    for message in reversed(rows):
+        text = " ".join(_preview_conversation_text(message).split()).strip()
+        if text:
+            return text[:80] + "..." if len(text) > 80 else text
+    return ""
 
 
 def _resurrect_recoverable_canonical(db, profile_path, session_id):

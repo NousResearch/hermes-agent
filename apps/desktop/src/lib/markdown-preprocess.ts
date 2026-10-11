@@ -66,6 +66,107 @@ const HUGGING_DISPLAY_MATH_OPEN_RE =
   /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\$\$[ \t]*(\S[^\n]*?)[ \t]*\r?$/
 
 const HUGGING_DISPLAY_MATH_CLOSE_RE = /^([ \t]*(?:>[ \t]*)*[ \t]*)(\S[^\n]*?)\$\$[ \t]*\r?$/
+
+// The prefix group of HUGGING_DISPLAY_MATH_OPEN_RE may carry a list marker
+// (`- `, `1. `). Replaying that prefix verbatim onto every emitted line would
+// repeat the marker on the delimiter and body lines, which markdown parses as
+// sibling list items instead of one item. Blockquote markers must repeat (`>`
+// on every line keeps the block inside the quote), but a list marker is
+// replaced with an equal-width run of spaces: the marker stays on the first
+// line only and the continuation lines indent by its width — the same shape
+// normalizeDisplayMathForMarkdown pins in markdown-text.test.ts ('keeps
+// display math inside its markdown container').
+function containerContinuationPrefix(prefix: string): string {
+  return prefix.replace(/(?:[-+*]|\d+[.)])[ \t]+/g, marker => ' '.repeat(marker.length))
+}
+// True when the container prefix of a display-math line lands the math
+// content inside a CommonMark indented code block. The prefix is the flat
+// run of spaces, tabs, blockquote markers and one optional list marker that
+// the display-math line regexes capture, so it can hold containers in any
+// interleaving. CommonMark column rules: indentation before a '>' marker
+// allows up to 3 columns, a '>' keeps at most one space of padding, a list
+// marker keeps up to four, and every column left over is content
+// indentation — 4+ columns of it (or a tab) makes the line an indented
+// code block, whose literal text the math rewrites must not touch (fenced
+// code already sidesteps this pass entirely).
+
+function isIndentedCodePrefix(prefix: string): boolean {
+  // A tab anywhere in the indentation is code: at line start a tab alone
+  // makes the line an indented code block, and mid-prefix tabs are
+  // pathological — leaving the line untouched is the conservative read.
+  if (prefix.indexOf(String.fromCharCode(9)) !== -1) {
+    return true
+  }
+
+  let contentIndent = 0
+  let pos = 0
+
+  while (pos < prefix.length) {
+    const runStart = pos
+
+    while (pos < prefix.length && prefix[pos] === ' ') {
+      pos += 1
+    }
+
+    const run = pos - runStart
+
+    if (pos === prefix.length) {
+      // Trailing whitespace is pure content indentation.
+      contentIndent += run
+
+      break
+    }
+
+    if (prefix[pos] === '>') {
+      // Indentation before a blockquote marker: up to 3 columns.
+      if (run > 3) {
+        return true
+      }
+
+      pos += 1
+
+      // One optional space of padding after the marker.
+      if (prefix[pos] === ' ') {
+        pos += 1
+      }
+
+      continue
+    }
+
+    // The only other token the prefix grammar allows is one list marker.
+    if (run > 3) {
+      return true
+    }
+
+    const listMarker = /^(?:[-+*]|[0-9]+[.)])/.exec(prefix.slice(pos))
+
+    if (!listMarker) {
+      // Not a shape the display-math regexes produce; let the caller decide.
+      return false
+    }
+
+    pos += listMarker[0].length
+
+    // Up to four columns of padding after a list marker.
+    let padding = 0
+
+    while (pos < prefix.length && prefix[pos] === ' ' && padding < 4) {
+      pos += 1
+      padding += 1
+    }
+
+    // The rest of the prefix is content indentation.
+    while (pos < prefix.length && prefix[pos] === ' ') {
+      pos += 1
+      contentIndent += 1
+    }
+
+    break
+  }
+
+  return contentIndent >= 4
+}
+
 // Bare-URL autolink matcher. The character classes EXCLUDE `*` so a URL that
 // abuts markdown emphasis with no separating space (e.g. `**label: https://x**`,
 // a very common LLM pattern) doesn't swallow the trailing `**` into the href.
@@ -860,8 +961,11 @@ function escapeCjkProseDollars(text: string): string {
  * loses its first line, never closes, and KaTeX paints the remains as raw source
  * text. Models emit this form constantly.
  *
- * Single-line `$$…$$` is left alone — it routes through the inline math-text
- * construct and already renders.
+ * A single-line `$$…$$` that owns its whole line is promoted to the same flow
+ * form: left alone, the compact form routes through remark-math's inline
+ * math-text construct and renders flush left instead of as centered display
+ * math. Empty bodies and bodies containing an embedded `$$` are left as-is —
+ * an inner `$$` would close the flow fence early.
  */
 function splitHuggingDisplayMath(text: string): string {
   const lines = text.split('\n')
@@ -870,7 +974,45 @@ function splitHuggingDisplayMath(text: string): string {
   for (let index = 0; index < lines.length; index += 1) {
     const openingMatch = lines[index].match(HUGGING_DISPLAY_MATH_OPEN_RE)
 
-    // `$$x^2$$` closes on the same line — not our case.
+    // An indented code block can hold a literal $$…$$ line: splitting it
+    // would change the code the reader sees and copies. Fenced code never
+    // reaches this pass (splitFencedCode); indented code has no fence to
+    // segment on, so its lines are detected here and left untouched.
+    if (openingMatch && isIndentedCodePrefix(openingMatch[1])) {
+      out.push(lines[index])
+
+      continue
+    }
+
+    // A single-line `$$body$$` that owns its whole line is the compact display
+    // form every LLM emits. Left alone, remark-math routes it through the
+    // mathText (inline) construct — its flow construct needs the `$$`
+    // delimiters on their own lines — so KaTeX typesets it inline and the
+    // equation hugs the left edge of the bubble instead of centering.
+    // Promote it to the flow form: delimiter line, body line, delimiter line.
+    // Only when the body is non-empty and carries no embedded `$$` (an inner
+    // `$$` would terminate the flow fence early).
+    if (openingMatch && openingMatch[2].endsWith('$$')) {
+      const compactBody = openingMatch[2].slice(0, -2).trim()
+
+      if (compactBody && !compactBody.includes('$$')) {
+        const carriageReturn = lines[index].endsWith('\r') ? '\r' : ''
+        const openingPrefix = openingMatch[1]
+        const continuationPrefix = containerContinuationPrefix(openingPrefix)
+
+        out.push(
+          `${openingPrefix}$$${carriageReturn}`,
+          `${continuationPrefix}${compactBody}${carriageReturn}`,
+          `${continuationPrefix}$$${carriageReturn}`
+        )
+
+        continue
+      }
+    }
+
+    // A compact span the guards above rejected (empty body or an embedded
+    // `$$`) is left as-is; only the open-ended hugging form proceeds to the
+    // closing search below.
     if (!openingMatch || openingMatch[2].endsWith('$$')) {
       out.push(lines[index])
 
@@ -880,7 +1022,11 @@ function splitHuggingDisplayMath(text: string): string {
     let closingIndex = -1
 
     for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
-      if (HUGGING_DISPLAY_MATH_CLOSE_RE.test(lines[candidate])) {
+      const closingMatch = lines[candidate].match(HUGGING_DISPLAY_MATH_CLOSE_RE)
+
+      // An indented code line cannot close a hugging block: its literal $$
+      // is code text, not a delimiter.
+      if (closingMatch && !isIndentedCodePrefix(closingMatch[1])) {
         closingIndex = candidate
 
         break

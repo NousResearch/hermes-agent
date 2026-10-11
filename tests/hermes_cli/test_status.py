@@ -269,3 +269,27 @@ def test_platform_rows_follow_the_gateway_verdict_not_check_fn(monkeypatch, caps
     assert [("not configured" in line) for line in rows["Telegram"]] == [False]
     show_status(SimpleNamespace())
     assert "Platforms:    Telegram\n" in capsys.readouterr().out
+
+
+def test_show_status_reports_bubblewrap_backend(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_ENV", "bubblewrap")
+    monkeypatch.setenv("TERMINAL_BUBBLEWRAP_PROFILE", "workspace")
+    monkeypatch.setattr(status_mod.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"terminal": {"backend": "bubblewrap"}}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+
+    status_mod.show_status(SimpleNamespace(full=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Backend:      bubblewrap" in output
+    assert "Profile:      workspace" in output
+    assert "bwrap:        /usr/bin/bwrap" in output

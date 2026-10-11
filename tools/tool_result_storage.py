@@ -90,6 +90,19 @@ def _is_host_side_env(env) -> bool:
         return False
 
 
+def _expose_to_env(env, host_path: str) -> None:
+    """Tell a host-side backend which archive its commands may open. A backend that hides
+    ``HERMES_HOME`` from its commands (bubblewrap) shows them only the archives handed to it
+    here, not the ``cache/spillover`` of every session; the others have no such hook."""
+    expose = getattr(env, "expose_spillover_file", None)
+    if not callable(expose):
+        return
+    try:
+        expose(host_path)
+    except Exception as exc:
+        logger.debug("Could not expose %s to the terminal environment: %s", host_path, exc)
+
+
 def _write_to_spillover(content: str, filename: str):
     """Write host-side to $HERMES_HOME/cache/spillover; returns path str or None.
 
@@ -315,6 +328,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     host_path = _write_to_spillover(persisted_content, filename)
     host_side = _is_host_side_env(env)
     if host_side and host_path is not None:
+        _expose_to_env(env, host_path)
         return _persisted(host_path)
     if not host_side:
         # Remote backend: reference the mounted/synced path when the sandbox can actually read

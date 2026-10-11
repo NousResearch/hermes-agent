@@ -410,6 +410,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
+import { loadOauthLoginTimeoutPage, shouldSurfaceInteractiveLoginFailure } from './oauth-login-window-guard'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
@@ -7536,6 +7537,14 @@ async function clearOauthSession(baseUrl) {
 //     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
 //     → ``/auth/callback``, which sets the gateway cookie with NO interactive
 //     prompt. This is the per-agent cloud cascade (decisions.md Q5).
+// Interactive remote-gateway login: how long the visible login window waits
+// for ANY /login response before deciding the gateway is hung (#80733). A
+// healthy gateway answers in well under a second; a hung process accepts the
+// TCP connection and never answers, which is exactly the case that used to
+// leave the window permanently blank. Generous enough that a slow portal
+// SSO chain or a cold-starting gateway never trips it spuriously.
+const INTERACTIVE_LOGIN_DEADLINE_MS = 30_000
+
 function openOauthLoginWindow(
   baseUrl,
   { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
@@ -7564,6 +7573,10 @@ function openOauthLoginWindow(
     let pollTimer = null
     let revealTimer = null
     let deadlineTimer = null
+
+    // Resolved once, before the window opens: every guard below and the
+    // loadURL target share the normalized origin.
+    const normalizedBase = normalizeRemoteBaseUrl(baseUrl)
 
     const finish = err => {
       if (settled) {
@@ -7654,6 +7667,59 @@ function openOauthLoginWindow(
     installWindowRendererLifecycle(win, { kind: 'oauth', callbacks: { log: rememberLog } })
     pollTimer = setInterval(() => void checkCookie(), 750)
 
+    // #80733: an interactive login whose gateway accepts the connection but
+    // never answers hung this window as a permanently blank white box — no
+    // did-fail-load handler, no deadline, promise never settled. Give the
+    // visible interactive path a bounded deadline that swaps the blank window
+    // for an error page with a Retry button (the hidden recovery path already
+    // fails fast at 12s with its own message). The deadline only ends the
+    // WAIT, not the window: the user can still read the error and retry, or
+    // close the window to reject the login.
+    const interactive = !silent && !hiddenRecovery
+
+    const surfaceLoginLoadFailure = (error: unknown, timedOut: boolean) => {
+      if (!interactive || settled) {
+        return
+      }
+
+      if (!timedOut && !shouldSurfaceInteractiveLoginFailure(error)) {
+        return
+      }
+
+      rememberLog(
+        `OAuth login window: ${
+          timedOut ? `no /login response within ${INTERACTIVE_LOGIN_DEADLINE_MS}ms` : 'load failed'
+        } (${error instanceof Error ? error.message : String(error)}) — showing the gateway-unreachable page`
+      )
+      const code = timedOut ? undefined : (error as { code?: unknown } | null)?.code
+
+      void loadOauthLoginTimeoutPage(win, {
+        gatewayUrl: normalizedBase,
+        timedOut,
+        errorCode: typeof code === 'string' || typeof code === 'number' ? code : undefined
+      })
+      finish(
+        new Error(
+          timedOut
+            ? 'The gateway did not respond in time. Restart it on the host, then retry.'
+            : 'The gateway sign-in page failed to load.'
+        )
+      )
+    }
+
+    win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, failedUrl, isMainFrame) => {
+      if (isMainFrame && !settled) {
+        surfaceLoginLoadFailure({ code: errorCode, message: errorDescription }, false)
+      }
+    })
+
+    if (interactive) {
+      deadlineTimer = setTimeout(
+        () => surfaceLoginLoadFailure(new Error('deadline'), true),
+        INTERACTIVE_LOGIN_DEADLINE_MS
+      )
+    }
+
     // Silent-mode reveal fallback: if the cascade hasn't settled shortly, the
     // auto-SSO didn't go through silently (no portal session, multi-provider,
     // loop-guard tripped, etc.) and the window is now showing an interactive
@@ -7687,7 +7753,6 @@ function openOauthLoginWindow(
     //
     // silent=true loads the protected root so the gate auto-SSOs (no chooser);
     // silent=false loads the public ``/login`` chooser for interactive sign-in.
-    const normalizedBase = normalizeRemoteBaseUrl(baseUrl)
     const loginUrl = silent ? `${normalizedBase}/` : `${normalizedBase}/login`
     const loginHeaders = headersForRemoteRequest(loginUrl)
     rememberLog(
@@ -7698,6 +7763,14 @@ function openOauthLoginWindow(
       // Keep the bounded hidden recovery alive long enough to observe them.
       if (hiddenRecovery && isExpectedOauthNavigationAbort(error)) {
         void checkCookie()
+
+        return
+      }
+
+      // The interactive window's failure surface is the in-window error page
+      // (#80733) — the promise is settled there with a gateway-problem message.
+      if (interactive && shouldSurfaceInteractiveLoginFailure(error)) {
+        surfaceLoginLoadFailure(error, false)
 
         return
       }

@@ -534,9 +534,12 @@ def build_native_content_parts(
     user_text: str,
     image_paths: list[str],
     image_urls: Optional[list[str]] = None,
-) -> tuple[list[dict[str, Any]], list[str]]:
+    *,
+    revalidate: Optional[Callable[[list[str]], tuple[str, list[str]]]] = None,
+) -> tuple[List[dict[str, Any]], list[str]]:
     """Build an OpenAI-style ``content`` list for a user turn.
 
+    ``revalidate`` refreshes text and selects paths after local file conversion.
     Local paths become base64 ``data:`` URLs; remote URLs pass through verbatim.
     When any image attaches, one text part combines the caption (or a neutral
     default) with a ``[Image attached at: <path>]`` / ``[Image attached: <url>]``
@@ -545,20 +548,33 @@ def build_native_content_parts(
     ``skipped`` holds unreadable local paths (URLs are never skipped).
     """
     skipped: list[str] = []
+    converted_paths: list[str] = []
     attached: list[tuple[str, str]] = []  # (url, hint)
     for raw_path in image_paths:
         p = Path(raw_path)
         data_url = _file_to_data_url(p) if p.exists() and p.is_file() else None
         if data_url:
+            converted_paths.append(raw_path)
             attached.append((data_url, f"[Image attached at: {raw_path}]"))
         else:
             skipped.append(str(raw_path))
-    attached += [(u, f"[Image attached: {u}]") for u in ((u or "").strip() for u in image_urls or []) if u]
+    if revalidate is not None:
+        user_text, retained = revalidate(converted_paths)
+        attached = [
+            part for path, part in zip(converted_paths, attached) if path in retained
+        ]
+    attached += [
+        (u, f"[Image attached: {u}]")
+        for u in ((u or "").strip() for u in image_urls or [])
+        if u
+    ]
 
     text = (user_text or "").strip()
     if not attached:
         return ([{"type": "text", "text": text}] if text else []), skipped
-    combined_text = f"{text or 'What do you see in this image?'}\n\n" + "\n".join(h for _, h in attached)
+    combined_text = f"{text or 'What do you see in this image?'}\n\n" + "\n".join(
+        h for _, h in attached
+    )
     image_parts = [{"type": "image_url", "image_url": {"url": u}} for u, _ in attached]
     return [{"type": "text", "text": combined_text}, *image_parts], skipped
 

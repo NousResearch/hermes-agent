@@ -115,7 +115,7 @@ def whatsapp_bridge(monkeypatch):
     monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
     monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
-    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *_args: False)
+    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(aiohttp, "ClientSession", lambda *_args, **_kwargs: BridgeSession())
     return SimpleNamespace(calls=calls, state=state)
 

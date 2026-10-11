@@ -156,6 +156,11 @@ def check_<platform>_requirements() -> bool:
   gateway; the advisory lint (`scripts/check_profile_scope_patterns.py`, pattern P32) flags both
 - Call `self.handle_message(event)` to dispatch inbound messages to the gateway
 - Use `MessageEvent`, `MessageType` from `gateway.platforms.event` and `SendResult` from base
+- Put only the sender's own words in `MessageEvent.text`. The gateway treats `text` as the
+  sender's request and expands `@file:` and `@url:` references in it. Put a quoted or
+  replied-to message in `reply_to_text` (with `reply_to_message_id`), and put forwarded or
+  shared content in `channel_context`, labeled with `attributed_context()`. The gateway shows
+  both fields to the model as context and never expands references in them
 - Use `cache_image_from_bytes`, `cache_audio_from_bytes`, `cache_document_from_bytes` for attachments
 - Filter self-messages (prevent reply loops)
 - Drop redelivered inbound IDs with `MessageDeduplicator` (`gateway/platforms/helpers.py`) held as an adapter

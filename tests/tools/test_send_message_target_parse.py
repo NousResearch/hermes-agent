@@ -9,6 +9,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from gateway.config import Platform
 from tools.send_message_tool import _send_to_platform, send_message_tool
 from tools.send_message_targets import _parse_target_ref
@@ -597,3 +599,30 @@ def test_unknown_platform_that_left_core_names_its_install_command(tmp_path, mon
     assert "`hermes plugins install homeassistant`" in err
     _, _, _, err = _resolve_platform_config("nosuchplatform", GatewayConfig())
     assert err == "Unknown or unregistered plugin platform: nosuchplatform"
+
+
+@pytest.mark.parametrize(
+    "target, expected, from_directory",
+    [
+        ("#general", ("!general:example.org", None, None), True),
+        ("#general:example.org", ("#general:example.org", None, None), False),
+        ("#general:example.org/$root", ("#general:example.org", "$root", None), False),
+        ("#general:example.org:$root", ("#general:example.org", "$root", None), False),
+        ("!room/$root", ("!room", "$root", None), False),
+        ("@user/$root", ("@user", "$root", None), False),
+    ],
+)
+def test_matrix_channel_directory_and_qualified_alias_targets(
+    monkeypatch, target, expected, from_directory
+):
+    from tools.send_message_targets import resolve_send_target
+
+    calls = []
+
+    def directory(platform, reference):
+        calls.append((platform, reference))
+        return "!general:example.org"
+
+    monkeypatch.setattr("gateway.channel_directory.resolve_channel_name", directory)
+    result = resolve_send_target("matrix", target)
+    assert (result, calls) == (expected, [("matrix", target)] if from_directory else [])

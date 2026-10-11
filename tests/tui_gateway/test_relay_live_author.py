@@ -120,7 +120,9 @@ def test_turn_runner_passes_the_author_only_when_set_and_only_to_an_agent_that_d
 
     for fn, author in ((accepting, AUTHOR), (accepting, None), (legacy, AUTHOR)):
         agent = types.SimpleNamespace(session_id="a", run_conversation=fn, clear_interrupt=lambda: None)
-        srv._run_prompt_submit("rid", "ui-sid", _session(agent=agent, running=True), "ping", turn_author=author)
+        session = _session(agent=agent, running=True)
+        srv._run_prompt_submit(
+            "rid", "ui-sid", session, "ping", turn_author=author, turn_claim=srv._claim_session_turn(session))
 
     assert seen == [AUTHOR, "not passed", "legacy called"]
 
@@ -145,7 +147,7 @@ def test_a_human_prompt_after_a_relayed_dm_runs_without_an_author(turn_env, monk
         session["running"] = False
         assert srv._drain_queued_prompt("d", "sid", session) is True
         session["running"] = True
-        srv._run_prompt_submit("r2", "sid", session, "human note")
+        srv._run_prompt_submit("r2", "sid", session, "human note", turn_claim=srv._claim_session_turn(session))
     finally:
         srv._sessions.pop("sid", None)
 

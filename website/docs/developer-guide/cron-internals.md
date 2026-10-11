@@ -14,6 +14,8 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 |------|---------|
 | `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
+| `cron/scheduler_delivery.py` | Destination selection and live, standalone, relay and Bot Chat delivery |
+| `cron/scheduler_delivery_continuation.py` | Continuation eligibility, transcript mirroring and reply-session seeding |
 | `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
 | `hermes_cli/cron.py` | CLI `hermes cron` subcommands |
@@ -342,7 +344,7 @@ Most platforms also accept an optional thread/topic as a third segment: `platfor
 | Telegram | `telegram`, `telegram:<chat_id>`, `telegram:<chat_id>:<thread_id>`, `telegram:@username` | `telegram:-1001234567890:17585` |
 | Discord | `discord`, `discord:#channel`, `discord:<channel_id>`, `discord:<channel_id>:<thread_id>` | `discord:#engineering` |
 | Slack | `slack`, `slack:#channel`, `slack:<channel_id>`, `slack:<channel_id>:<thread_ts>` | `slack:#engineering` |
-| Matrix | `matrix`, `matrix:<!room_id:server>`, `matrix:<@user:server>` | `matrix:!abc123:example.org` |
+| Matrix | `matrix`, `matrix:<!room_id:server>`, `matrix:<#alias:server>` | `matrix:!abc123:example.org` |
 | Feishu | `feishu`, `feishu:<chat_id>`, `feishu:<chat_id>:<thread_id>` | `feishu:oc_abc123def` |
 | WhatsApp | `whatsapp`, `whatsapp:<jid>`, `whatsapp:+<E.164>` | `whatsapp:123456@g.us` |
 | Signal | `signal`, `signal:group:<id>`, `signal:+<E.164>` | `signal:group:aBcD==` |
@@ -411,3 +413,7 @@ hermes cron remove <job_id>         # Delete a job
 - [Cron Feature Guide](../user-guide/features/cron.md)
 - [Gateway Internals](./gateway-internals.md)
 - [Agent Loop Internals](./agent-loop.md)
+
+Interruption marking and execution flags are defined in
+`cron/scheduler_interrupt.py`. The scheduler owns the underlying in-flight
+state, which the interruption functions read at call time.

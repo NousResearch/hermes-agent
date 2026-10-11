@@ -39,12 +39,12 @@ def test_tui_kanban_splits_diagnostics_from_results_before_wake(tmp_path, monkey
     monkeypatch.setattr(server, "_collect_kanban_notifications", lambda session: [])
     emitted, submitted = [], []
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
-    monkeypatch.setattr(server, "_notif_submit", lambda *args, **kwargs: submitted.append((args, kwargs)))
+    monkeypatch.setattr(server, "_notif_submit", lambda *args, **kwargs: submitted.append((args, kwargs)) or True)
     session = {"profile_home": str(owner), "history_lock": threading.RLock(), "_kanban_pending": [DiagnosticText("worker crash"), "requested result"]}
     server._notif_poll_kanban("session", session)
     if not suppress:
         assert submitted[0][0][3] == "worker crash\nrequested result"
-        assert submitted[0][1] == {}
+        assert submitted[0][1] == {"turn_claim": 1}
         assert session["_kanban_pending"] == []
         return
     assert submitted[0][0][3] == "worker crash"
@@ -53,4 +53,4 @@ def test_tui_kanban_splits_diagnostics_from_results_before_wake(tmp_path, monkey
     session["running"] = False
     server._notif_poll_kanban("session", session)
     assert submitted[1][0][3] == "requested result"
-    assert submitted[1][1] == {}
+    assert submitted[1][1] == {"turn_claim": 2}

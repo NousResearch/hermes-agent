@@ -63,7 +63,18 @@ _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
-_LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
+# Local binds are advertised to BlueBubbles as a LITERAL loopback address, never the name
+# "localhost": the BlueBubbles server is Node, and Node resolves "localhost" to ::1 first (it has
+# not reordered to IPv4 since 17), so a registration built on the name delivers every event to the
+# IPv6 loopback and is refused when the listener bound IPv4. The value is the host to put in the
+# registered URL; only a v6 bind advertises the v6 loopback, and a v6 literal needs brackets.
+_LOCAL_HOSTS = {
+    "0.0.0.0": "127.0.0.1",
+    "127.0.0.1": "127.0.0.1",
+    "localhost": "127.0.0.1",
+    "::": "[::1]",
+    "::1": "[::1]",
+}
 
 
 def _redact(text: str) -> str:
@@ -131,6 +142,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # Send-only client: built by the standalone sender (`tools/send_message_senders.py`) to POST
+        # one message. It must NOT bind the webhook port — the live gateway holds it, so the bind
+        # raised EADDRINUSE and killed the cron fallback lane — and must not touch webhook
+        # registrations, which belong to the live listener.
+        self.send_only = bool(extra.get("send_only"))
 
     # --- API helpers ---
 
@@ -218,6 +234,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # Explicit body cap: BlueBubbles webhook events are small JSON (or form-encoded) payloads.
         # client_max_size makes aiohttp enforce the cap on every read path — including chunked requests that
         # carry no Content-Length (same pattern as webhook.py / raft, #58536/#58902).
+        if self.send_only:
+            # Nothing inbound to serve: skip the listener bind AND the webhook registration, both
+            # owned by the live gateway. `_mark_connected` is what `adapter.send()` gates on.
+            self._mark_connected()
+            return True
         app = web.Application(client_max_size=_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         app.router.add_post(self.webhook_path, self._handle_webhook)
@@ -242,7 +263,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.client = None
 
     async def disconnect(self) -> None:
-        await self._unregister_webhook()
+        # A send-only client never registered a webhook, and unregistering here would delete the
+        # LIVE listener's registration (same URL), silently stopping inbound delivery.
+        if not self.send_only:
+            await self._unregister_webhook()
         await self._close_client()
         if self._runner:
             await self._runner.cleanup()
@@ -251,12 +275,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """External webhook URL for BlueBubbles registration (local binds → localhost). In
-        shared-listener mode it is the default listener's ``/p/<profile>/`` URL."""
+        """External webhook URL for BlueBubbles registration (local binds → a literal loopback
+        address). In shared-listener mode it is the default listener's ``/p/<profile>/`` URL."""
         shared = getattr(self, "_shared_ingress_url", None)
         if shared:
             return shared
-        host = "localhost" if self.webhook_host in _LOCAL_HOSTS else self.webhook_host
+        host = _LOCAL_HOSTS.get(self.webhook_host, self.webhook_host)
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     def _webhook_register_url_with(self, password_param: str) -> str:

@@ -2097,6 +2097,7 @@ cli:
     placeholder_answer: "여기에 답을 입력하고 Enter를 누르세요"
     placeholder_processing_command: "명령 처리 중..."
     placeholder_busy: "메시지=중단 · /queue · /bg · /steer · Ctrl+C 취소"
+    placeholder_busy_recall: " · ↑ 대기 중 {queued}개 편집"
     placeholder_voice_idle: "입력하거나 {shortcut}로 녹음"
     voice_recording_failed: "음성 녹음 실패: {error}"
     recording_cancelled: "녹음이 취소됐어요."

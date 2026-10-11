@@ -2097,6 +2097,7 @@ cli:
     placeholder_answer: "在此輸入答案並按 Enter"
     placeholder_processing_command: "處理指令中..."
     placeholder_busy: "訊息=中斷 · /queue · /bg · /steer · Ctrl+C 取消"
+    placeholder_busy_recall: " · ↑ 編輯 {queued} 則排隊訊息"
     placeholder_voice_idle: "輸入文字，或按 {shortcut} 錄音"
     voice_recording_failed: "語音錄製失敗：{error}"
     recording_cancelled: "已取消錄音。"

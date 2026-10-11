@@ -2097,6 +2097,7 @@ cli:
     placeholder_answer: "yanıtınızı buraya yazıp Enter'a basın"
     placeholder_processing_command: "Komut işleniyor..."
     placeholder_busy: "mesaj=kes · /queue · /bg · /steer · Ctrl+C iptal"
+    placeholder_busy_recall: " · ↑ kuyruktaki {queued} düzenle"
     placeholder_voice_idle: "yazın veya kayıt için {shortcut}"
     voice_recording_failed: "Ses kaydı başarısız oldu: {error}"
     recording_cancelled: "Kayıt iptal edildi."

@@ -2361,6 +2361,7 @@ cli:
     placeholder_answer: "tapez votre réponse ici et appuyez sur Entrée"
     placeholder_processing_command: "Traitement de la commande..."
     placeholder_busy: "msg=interrompre · /queue · /bg · /steer · Ctrl+C annuler"
+    placeholder_busy_recall: " · ↑ modifier {queued} en file"
     placeholder_voice_idle: "tapez ou {shortcut} pour enregistrer"
     voice_recording_failed: "Échec de l'enregistrement vocal : {error}"
     recording_cancelled: "Enregistrement annulé."

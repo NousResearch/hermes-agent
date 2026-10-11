@@ -2097,6 +2097,7 @@ cli:
     placeholder_answer: "digita qui la tua risposta e premi Invio"
     placeholder_processing_command: "Elaborazione del comando..."
     placeholder_busy: "msg=interrompi · /queue · /bg · /steer · Ctrl+C annulla"
+    placeholder_busy_recall: " · ↑ modifica {queued} in coda"
     placeholder_voice_idle: "digita o {shortcut} per registrare"
     voice_recording_failed: "Registrazione vocale non riuscita: {error}"
     recording_cancelled: "Registrazione annullata."

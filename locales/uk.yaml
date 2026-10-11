@@ -2097,6 +2097,7 @@ cli:
     placeholder_answer: "введіть відповідь тут і натисніть Enter"
     placeholder_processing_command: "Обробка команди..."
     placeholder_busy: "повідомлення=перервати · /queue · /bg · /steer · Ctrl+C — скасувати"
+    placeholder_busy_recall: " · ↑ редагувати {queued} у черзі"
     placeholder_voice_idle: "введіть текст або {shortcut} для запису"
     voice_recording_failed: "Не вдалося записати голос: {error}"
     recording_cancelled: "Запис скасовано."

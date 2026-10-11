@@ -2097,6 +2097,7 @@ cli:
     placeholder_answer: "Antwort hier eingeben und Enter drücken"
     placeholder_processing_command: "Befehl wird verarbeitet..."
     placeholder_busy: "Nachricht=unterbrechen · /queue · /bg · /steer · Ctrl+C abbrechen"
+    placeholder_busy_recall: " · ↑ {queued} in Warteschlange bearbeiten"
     placeholder_voice_idle: "tippen oder {shortcut} zum Aufnehmen"
     voice_recording_failed: "Sprachaufnahme fehlgeschlagen: {error}"
     recording_cancelled: "Aufnahme abgebrochen."

@@ -2097,6 +2097,7 @@ cli:
     placeholder_answer: "اكتب إجابتك هنا واضغط Enter"
     placeholder_processing_command: "جارٍ معالجة الأمر..."
     placeholder_busy: "رسالة=مقاطعة · /queue · /bg · /steer · Ctrl+C للإلغاء"
+    placeholder_busy_recall: " · ↑ تعديل {queued} في قائمة الانتظار"
     placeholder_voice_idle: "اكتب أو {shortcut} للتسجيل"
     voice_recording_failed: "فشل التسجيل الصوتي: {error}"
     recording_cancelled: "أُلغي التسجيل."

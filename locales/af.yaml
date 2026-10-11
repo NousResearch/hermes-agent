@@ -2097,6 +2097,7 @@ cli:
     placeholder_answer: "tik jou antwoord hier en druk Enter"
     placeholder_processing_command: "Verwerk opdrag..."
     placeholder_busy: "boodskap=onderbreek · /queue · /bg · /steer · Ctrl+C kanselleer"
+    placeholder_busy_recall: " · ↑ wysig {queued} in tou"
     placeholder_voice_idle: "tik of {shortcut} om op te neem"
     voice_recording_failed: "Stemopname het misluk: {error}"
     recording_cancelled: "Opname gekanselleer."

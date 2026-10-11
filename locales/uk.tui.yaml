@@ -958,6 +958,7 @@ slashCmd.ops.reloadEnv.reloadedOne: "перезавантажено .env (оно
 slashCmd.ops.reloadEnv.reloadedOther: "перезавантажено .env (оновлено змінних: {0})"
 slashCmd.ops.reloadMcp.complete: "перезавантаження завершено"
 slashCmd.ops.reloadMcp.confirmRequired: "/reload-mcp потребує підтвердження"
+slashCmd.ops.reloadMcp.notConnected: "не підключилися: {0}"
 slashCmd.ops.reloadMcp.reloaded: "MCP-сервери перезавантажено"
 slashCmd.ops.reloadMcp.reloadedAlways: "MCP-сервери перезавантажено · надалі /reload-mcp виконуватиметься без підтвердження"
 slashCmd.ops.reloadSkills.pageTitle: "Перезавантаження навичок"

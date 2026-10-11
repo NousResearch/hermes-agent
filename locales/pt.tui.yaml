@@ -958,6 +958,7 @@ slashCmd.ops.reloadEnv.reloadedOne: ".env recarregado ({0} variável atualizada)
 slashCmd.ops.reloadEnv.reloadedOther: ".env recarregado ({0} variáveis atualizadas)"
 slashCmd.ops.reloadMcp.complete: "recarga concluída"
 slashCmd.ops.reloadMcp.confirmRequired: "/reload-mcp requer confirmação"
+slashCmd.ops.reloadMcp.notConnected: "não conectou: {0}"
 slashCmd.ops.reloadMcp.reloaded: "servidores MCP recarregados"
 slashCmd.ops.reloadMcp.reloadedAlways: "servidores MCP recarregados · os próximos /reload-mcp serão executados sem confirmação"
 slashCmd.ops.reloadSkills.pageTitle: "Recarregar skills"

@@ -958,6 +958,7 @@ slashCmd.ops.reloadEnv.reloadedOne: ".env를 다시 불러왔어요 (변수 {0}�
 slashCmd.ops.reloadEnv.reloadedOther: ".env를 다시 불러왔어요 (변수 {0}개 갱신)"
 slashCmd.ops.reloadMcp.complete: "다시 불러오기 완료"
 slashCmd.ops.reloadMcp.confirmRequired: "/reload-mcp는 확인이 필요해요"
+slashCmd.ops.reloadMcp.notConnected: "연결되지 않음: {0}"
 slashCmd.ops.reloadMcp.reloaded: "MCP 서버를 다시 불러왔어요"
 slashCmd.ops.reloadMcp.reloadedAlways: "MCP 서버를 다시 불러왔어요 · 이후 /reload-mcp는 확인 없이 실행돼요"
 slashCmd.ops.reloadSkills.pageTitle: "스킬 다시 불러오기"

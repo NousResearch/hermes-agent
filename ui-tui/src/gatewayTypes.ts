@@ -514,6 +514,8 @@ export interface ReloadMcpResponse {
    *  The client records THIS as its accepted revision, not the one it
    *  requested — a reload that raced a config edit reports the newer rev. */
   loaded_rev?: string
+  /** Servers of the caller's profile that did not connect; absent on older gateways. */
+  failed?: string[]
 }
 
 export interface ReloadEnvResponse {

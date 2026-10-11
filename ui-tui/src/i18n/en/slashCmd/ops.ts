@@ -11,6 +11,7 @@ export const slashCmdOpsEn = {
       confirmRequired: '/reload-mcp requires confirmation',
       reloaded: 'MCP servers reloaded',
       reloadedAlways: 'MCP servers reloaded · future /reload-mcp will run without confirmation',
+      notConnected: (names: string) => `did not connect: ${names}`,
       complete: 'reload complete'
     },
     reloadEnv: {

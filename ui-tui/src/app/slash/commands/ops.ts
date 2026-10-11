@@ -153,6 +153,10 @@ export const opsCommands: SlashCommand[] = [
                 params.always ? t('slashCmd.ops.reloadMcp.reloadedAlways') : t('slashCmd.ops.reloadMcp.reloaded')
               )
 
+              if (r.failed?.length) {
+                ctx.transcript.sys(t('slashCmd.ops.reloadMcp.notConnected', r.failed.join(', ')))
+              }
+
               return
             }
 

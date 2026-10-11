@@ -181,13 +181,17 @@ def _build_child_system_prompt(
 ) -> str:
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
-    can't confabulate nesting."""
+    can't confabulate nesting.
+
+    Shared scaffold first, per-child variance LAST (#103481, goose#12062): ``context`` is the one
+    input that differs between siblings of a delegate_task batch, so it trails every shared block
+    (intro, workspace + project context files, completion instructions, role block). Children of one
+    batch then share a byte-identical system-prompt prefix and a provider with automatic prefix caching
+    bills the scaffold — including a large AGENTS.md reproduction — once instead of N times."""
     # The goal is the child's first user turn (see ``_ChildRun.await_child``).
     # Keeping it out of the system prompt avoids sending OAuth Anthropic the
     # same task in both roles, while preserving the normal user-turn contract.
     parts = ["You are a focused subagent working on a specific delegated task."]
-    if context and context.strip():
-        parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
         parts.append(
             "\nWORKSPACE PATH:\n"
@@ -214,6 +218,10 @@ def _build_child_system_prompt(
             + f"NOTE: You are at depth {child_depth}. The delegation tree is capped at max_spawn_depth={max_spawn_depth}. "
             + child_note
         )
+    # Per-child variance LAST so the shared scaffold prefix above stays byte-identical across a
+    # batch (#103481): every provider prefix-cache hit on the scaffold is reused by the siblings.
+    if context and context.strip():
+        parts.append(f"\nCONTEXT:\n{context}")
     return "\n".join(parts)
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:

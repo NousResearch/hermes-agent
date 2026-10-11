@@ -2,6 +2,7 @@
 import asyncio
 from contextvars import ContextVar
 from contextlib import contextmanager
+from functools import partial
 import hmac
 import json
 import re
@@ -208,8 +209,17 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
     ref = bind_api_session(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
     check_api_turn(authority, ref, payload)
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
-                              session_id=sid, request_id=request_id, payload=payload)
+                              session_id=sid, request_id=request_id, payload=payload,
+                              _authorize_write=partial(_one_target, sid, request_id))
     return authority, ref, row
+
+
+def _one_target(session_id, request_id, conn):
+    """One API request id (an Idempotency-Key) names one admission. The ledger keys identity by
+    target too, so the same key aimed at another session would otherwise run the work again."""
+    if conn.execute("SELECT 1 FROM session_admissions WHERE principal_id='api' AND request_id=? "
+                    'AND target_session_id!=? LIMIT 1', (request_id, session_id)).fetchone():
+        raise RuntimeStoreError('admission_conflict')
 
 
 def owns_api_run(adapter, run_id, owner_scope):

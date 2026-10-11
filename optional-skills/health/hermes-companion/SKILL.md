@@ -103,6 +103,18 @@ python3 ${HERMES_SKILL_DIR}/scripts/companion.py --inbox --profile work --pendin
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-post --to-profile work --subject "..." --message "..."
 ```
 
+### Background dispatch daemon
+
+`--install-service` installs and loads the macOS LaunchAgent `ai.hermes.companion-inbox`: a resident `companion.py --daemon` process that sweeps the thread container every 5 seconds and answers letters without being asked. `KeepAlive` plus `--daemon` is what makes the latency acceptable — a transient sweep exits in milliseconds and launchd throttles a job that does that, which is why a letter could sit for minutes.
+
+```bash
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --install-service    # install or upgrade the agent
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --service-status     # launchctl state
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --dispatch-pending   # one sweep in the foreground
+```
+
+Structured, timestamped logs land in `~/.hermes/logs/companion-inbox.error.log` and `companion-inbox.log`. A letter the agent cannot answer is marked `status: failed` with `last_error`, `failed_at` and `dispatch_retries`; the iOS inbox shows that banner and its Retry resets the thread to `pending_agent`.
+
 ## Quick Reference
 
 | Question | Command | Fields to trust |

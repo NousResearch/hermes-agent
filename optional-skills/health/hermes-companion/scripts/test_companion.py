@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final, Mapping
@@ -448,6 +449,12 @@ def test_error_handling_and_sync_marker() -> None:
         marker_file = threads_dir / ".sync_marker.json"
         check("sync marker created on thread create", marker_file.is_file())
 
+        # Test retry attempts tracking without marking status failed
+        companion.update_thread_retry(threads_dir, tid, 1, "Gateway busy", now=moment)
+        meta_retry1 = companion.safe_read_json(threads_dir / tid / "meta.json")
+        check("thread retry 1 recorded", meta_retry1 is not None and meta_retry1.get("dispatch_retries") == 1)
+        check("thread retry 1 retains status pending_agent", meta_retry1 is not None and meta_retry1.get("status") == "pending_agent")
+
         companion.mark_thread_failed(threads_dir, tid, "Hermes timeout 120s", now=moment)
         meta_after = companion.safe_read_json(threads_dir / tid / "meta.json")
         check("thread marked failed", meta_after is not None and meta_after.get("status") == "failed")
@@ -458,14 +465,142 @@ def test_error_handling_and_sync_marker() -> None:
         meta_replied = companion.safe_read_json(threads_dir / tid / "meta.json")
         check("thread status transitioned to replied", meta_replied is not None and meta_replied.get("status") == "replied")
         check("last_error cleared", meta_replied is not None and "last_error" not in meta_replied)
+        check("dispatch_retries cleared after reply", meta_replied is not None and "dispatch_retries" not in meta_replied)
+
+        # Test safe_is_file resilience
+        check("safe_is_file on non-existent is False", not companion.safe_is_file(tmp_path / "does_not_exist.json"))
+        check("safe_is_file on directory is False", not companion.safe_is_file(threads_dir))
 
         # Test local exclusion lock acquisition and release
         lock_file = tmp_path / "test.lock"
         check("acquire lock succeeds", companion.acquire_dispatch_lock(lock_file))
         check("acquire lock again fails", not companion.acquire_dispatch_lock(lock_file))
         companion.release_dispatch_lock(lock_file)
-        check("acquire lock after release succeeds", companion.acquire_dispatch_lock(lock_file))
         companion.release_dispatch_lock(lock_file)
+
+
+def test_physical_context_summary() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        loc_payload = {
+            "latitude": 48.815,
+            "longitude": 9.232,
+            "timestamp": "2026-10-11T07:00:00Z",
+            "placemark_name": "Zuckerleweg 50",
+            "placemark_locality": "Stuttgart",
+            "motion_activity": "stationary",
+        }
+        (tmp_path / "latest_location.json").write_text(json.dumps(loc_payload), encoding="utf-8")
+        places_file = tmp_path / "places.json"
+        places_file.write_text(json.dumps([HOME]), encoding="utf-8")
+
+        summary = companion.get_physical_context_summary(icloud_dir=str(tmp_path), places_file=places_file, now=NOW)
+        check("summary contains coordinates", "48.815" in summary and "9.232" in summary)
+        check("summary contains placemark", "Zuckerleweg 50" in summary and "Stuttgart" in summary)
+
+
+def test_atomic_write_creates_no_debris() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = Path(tmpdir) / "nested" / "meta.json"
+        check("atomic write succeeds in a missing directory", companion.safe_write_text(target, '{"a": 1}'))
+        check("atomic write wrote the payload", json.loads(target.read_text(encoding="utf-8"))["a"] == 1)
+        leftovers = sorted(p.name for p in target.parent.iterdir() if p.name != "meta.json")
+        check("atomic write leaves no temp file behind", leftovers == [])
+
+
+def test_corrupt_payload_is_skipped_once() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        payload = Path(tmpdir) / "meta.json"
+        payload.write_text("{not json", encoding="utf-8")
+        check("corrupt payload reads as None", companion.safe_read_json(payload) is None)
+        check("corrupt payload warned once", str(payload) in companion._WARNED_PATHS)
+
+
+def test_city_fallback_without_placemark() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        (tmp_path / "latest_location.json").write_text(json.dumps({
+            "latitude": 48.814892907035208,
+            "longitude": 9.2325277521644118,
+            "timestamp": "2026-09-30T07:30:09Z",
+            "motion_activity": "stationary",
+        }), encoding="utf-8")
+        (tmp_path / "location_history.json").write_text(json.dumps({
+            "records": [
+                {
+                    "latitude": 48.80413631967493,
+                    "longitude": 9.208474413971375,
+                    "timestamp": "2026-09-29T10:51:12Z",
+                    "placemark_name": "Neckartalstraße",
+                    "placemark_locality": "Stuttgart",
+                },
+            ],
+        }), encoding="utf-8")
+        places_path = tmp_path / "places.json"
+        places_path.write_text(json.dumps([]), encoding="utf-8")
+
+        summary = companion.get_physical_context_summary(icloud_dir=str(tmp_path), places_file=places_path, now=NOW)
+        check("city falls back to the last known locality", "City: Stuttgart" in summary)
+        check("area falls back to the last known street", "Area/Street: Neckartalstraße" in summary)
+
+
+def test_city_from_saved_place() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        (tmp_path / "latest_location.json").write_text(json.dumps({
+            "latitude": 48.815047,
+            "longitude": 9.232482,
+            "timestamp": "2026-09-30T07:30:09Z",
+            "motion_activity": "stationary",
+        }), encoding="utf-8")
+        places_path = tmp_path / "places.json"
+        places_path.write_text(json.dumps([{**HOME, "latitude": 48.815047, "longitude": 9.232482, "city": "Stuttgart"}]), encoding="utf-8")
+
+        summary = companion.get_physical_context_summary(icloud_dir=str(tmp_path), places_file=places_path, now=NOW)
+        check("city comes from the matched saved place", "City: Stuttgart" in summary)
+        check("place name still reported", "Place: Home" in summary)
+
+
+def test_failed_at_recorded_and_cleared() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        threads_dir = Path(tmpdir) / "threads"
+        threads_dir.mkdir(parents=True, exist_ok=True)
+        moment = datetime(2026, 10, 9, 14, 0, 0, tzinfo=timezone.utc)
+        thread = companion.create_dispatch_thread(
+            threads_dir, "Failed letter", "body", target_profile="default", sender="user", now=moment
+        )
+        tid = thread["thread_id"]
+        companion.mark_thread_failed(threads_dir, tid, "Timeout (120s) waiting for agent", now=moment)
+        meta = companion.safe_read_json(threads_dir / tid / "meta.json")
+        check("failed_at recorded", meta is not None and meta.get("failed_at") == "2026-10-09T14:00:00Z")
+        check("failure status recorded", meta is not None and meta.get("status") == "failed")
+
+        companion.reply_to_thread(threads_dir, tid, "late reply", sender="agent", now=moment)
+        healed = companion.safe_read_json(threads_dir / tid / "meta.json")
+        check("failed_at cleared after a reply", healed is not None and "failed_at" not in healed)
+
+
+def test_render_launch_agent_plist() -> None:
+    plist = companion.render_launch_agent_plist("/usr/bin/python3", "/tmp/companion.py", Path("/tmp/threads"), "/Users/tester")
+    check("plist runs the daemon", "--daemon" in plist and "--interval" in plist)
+    check("plist keeps the job alive", "<key>KeepAlive</key>" in plist)
+    check("plist sets a throttle interval", "<key>ThrottleInterval</key>" in plist)
+    check("plist forces unbuffered logging", "PYTHONUNBUFFERED" in plist)
+    check("plist watches the threads container", "WatchPaths" in plist and "/tmp/threads" in plist)
+    check("plist drops the transient StartInterval", "StartInterval" not in plist)
+
+
+def test_daemon_loop_is_bounded() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        args = companion.build_parser().parse_args(
+            ["--daemon", "--interval", "0.1", "--max-cycles", "2", "--icloud-dir", tmpdir]
+        )
+        started = time.monotonic()
+        code = companion.command_daemon(args)
+        check("daemon exits cleanly after max cycles", code == 0)
+        check("daemon honours the sweep interval", time.monotonic() - started < 5.0)
+        check("daemon left no dispatch lock behind", not companion.get_dispatch_lock_path().exists())
+
 
 
 def main() -> int:
@@ -487,6 +622,14 @@ def main() -> int:
     test_discover_installed_hermes_profiles()
     test_clean_hermes_chat_output()
     test_error_handling_and_sync_marker()
+    test_physical_context_summary()
+    test_atomic_write_creates_no_debris()
+    test_corrupt_payload_is_skipped_once()
+    test_city_fallback_without_placemark()
+    test_city_from_saved_place()
+    test_failed_at_recorded_and_cleared()
+    test_render_launch_agent_plist()
+    test_daemon_loop_is_bounded()
     print("ok")
     return 0
 

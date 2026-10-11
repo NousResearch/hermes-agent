@@ -279,6 +279,9 @@ async def _retire_profile_authority(authority, timeout=None):
     if rest:
         await asyncio.gather(*rest, return_exceptions=True)
     unbind_owner(authority)
+    # Ownership is released next; until a successor bumps the epoch, A's epoch still fences its
+    # writes as current, so a stale connection to A must find it retired instead.
+    authority.retired = True
     # No drain is left to answer an observer (a session_busy pause keeps API/webhook/Bot ones
     # waiting): release them all. Their rows stay queued for the next owner, so nothing is resent.
     from hermes_state_runtime import RuntimeStoreError

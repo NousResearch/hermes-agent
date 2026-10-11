@@ -106,6 +106,8 @@ RUN_JOB_FLAGS = ('_model_unreachable', '_quota_hold_seconds')
 
 async def operation(authority, name, params, actor=None):
     actor = _actor(authority, actor)
+    if getattr(authority, 'retired', False):
+        raise RuntimeStoreError('runtime_retired')  # released ownership: nothing here is ours to touch
     # Only new work is fenced by a drain. ``recover``/``status``/``cancel`` observe or stop work
     # already admitted, which the drain is waiting for: refusing them makes the firer give up
     # (CronExecutionUnknown pauses the job) on every restart that overlaps a cron run.

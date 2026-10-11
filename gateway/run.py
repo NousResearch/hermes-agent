@@ -5565,10 +5565,10 @@ async def _start_gateway_start_control_socket(runner):
 
         def _pause_for_update_handler() -> dict:
             try:
-                from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
+                from hermes_cli.gateway import _get_restart_drain_timeout, _get_restart_after_turn_timeout
+                _drain = float(_get_restart_drain_timeout()) + float(_get_restart_after_turn_timeout())
             except Exception:
-                _drain = 30.0
+                _drain = 30.0 + 1800.0
             accepted_box: list[bool] = []
             _done = threading.Event()
 

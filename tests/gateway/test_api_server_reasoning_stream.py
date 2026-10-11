@@ -140,3 +140,42 @@ async def test_responses_stream_emits_reasoning_summary_events_before_message(ad
     assert "step one" not in completed["response"]["output"][1]["content"][0]["text"]
     seqs = [d["sequence_number"] for _e, d in frames]
     assert seqs == list(range(len(seqs)))
+
+
+@pytest.mark.asyncio
+async def test_runs_event_stream_forwards_agent_reasoning_callback(adapter, monkeypatch):
+    """Production entry point for ``/v1/runs``: ``_execute_run`` wires a ``reasoning_callback``
+    through the real ``_create_agent`` into ``AIAgent(...)``; what the agent emits there reaches
+    ``GET /v1/runs/{id}/events`` as ``reasoning.delta`` (``text``, the TUI gateway's field),
+    never as answer text."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self._reasoning_callback = kwargs.get("reasoning_callback")
+            self._stream_delta_callback = kwargs.get("stream_delta_callback")
+            self.session_id = kwargs.get("session_id")
+
+        def run_conversation(self, **kwargs):
+            if self._reasoning_callback is not None:
+                self._reasoning_callback("thinking...")
+            if self._stream_delta_callback is not None:
+                self._stream_delta_callback("answer")
+            return {"final_response": "answer", "completed": True}
+
+    _stub_create_agent_runtime(monkeypatch, FakeAgent)
+    monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+    app = web.Application()
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/v1/runs", json={"input": "q"})
+        assert resp.status == 202
+        run_id = (await resp.json())["run_id"]
+        body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+    events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+    assert [(e["event"], e.get("text", e.get("delta"))) for e in events[:2]] == [
+        ("reasoning.delta", "thinking..."), ("message.delta", "answer")]
+    assert events[-1]["event"] == "run.completed"
+    assert events[-1]["output"] == "answer"

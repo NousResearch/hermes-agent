@@ -4079,5 +4079,16 @@
     "headline": "Recursively built a Supabase-backed CRM dashboard where each build reuses prior components",
     "quote": "Used the Hermes Desktop App to recursively generate a CRM dashboard where each build reuses components from prior generations; it can also build full videos using official HyperFrame skills — HTML-native, full control over scenes, animations, and rendering.",
     "size": "sm"
+  },
+  {
+    "id": "blog-mindilot-free-hermes-openrouter-guide",
+    "source": "blog",
+    "author": "mindilot",
+    "url": "https://www.mindilot.com/rehberler/ucretsiz-ai-ajan-hermes-openrouter",
+    "date": "2026-07-21",
+    "category": "cost-optimization",
+    "headline": "A Turkish guide sets up Hermes with OpenRouter's free models — no monthly subscription",
+    "quote": "Hermes Agent — motor. Nous Research'ün açık kaynak ajan altyapısı, MIT lisanslı, tamamen ücretsiz. Bilgisayarında çalışıyor, dosyalarını okuyup yazabiliyor, tarayıcı açabiliyor, zamanlanmış görev kurabiliyor, kalıcı hafızası var. … Aylık maliyet sıfır; tek gider bir kereye mahsus 10 USD.",
+    "size": "md"
   }
 ]

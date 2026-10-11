@@ -346,6 +346,7 @@ export interface StatusBarSegments {
   compressions: boolean
   duration: boolean
   latency: boolean
+  sessionId: boolean
   subagents: boolean
   tps: boolean
   voice: boolean
@@ -364,8 +365,44 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     subagents: w >= 92,
     cacheHit: w >= 96,
     latency: w >= 104,
-    tps: w >= 110
+    tps: w >= 110,
+    sessionId: w >= 116
   }
+}
+
+// Durable session id tail segment — opt-in (`session_id` in display.status_bar.fields),
+// mirroring git_branch/total_tokens in the classic CLI bar, which only render when the
+// user explicitly lists them (never as part of the default set, and never when the filter
+// is null). Self-contained like SpawnHud: gated on width + opt-in + id, rendered as a
+// single `│ #id` fragment that yields first on a narrow terminal.
+export function sessionIdVisible(
+  statusBarFields: null | ReadonlySet<string>,
+  storedSid: null | string | undefined,
+  cols: number
+): boolean {
+  return !!statusBarFields && statusBarFields.has('session_id') && !!storedSid && statusBarSegments(cols).sessionId
+}
+
+function SessionIdSegment({
+  cols,
+  statusBarFields,
+  storedSid,
+  t
+}: {
+  cols: number
+  statusBarFields: null | ReadonlySet<string>
+  storedSid: null | string | undefined
+  t: Theme
+}) {
+  if (!sessionIdVisible(statusBarFields, storedSid, cols)) {
+    return null
+  }
+  return (
+    <Text color={t.color.muted} wrap="truncate-end">
+      {' │ '}
+      {storedSid}
+    </Text>
+  )
 }
 
 function SpawnHud({ t }: { t: Theme }) {
@@ -552,6 +589,7 @@ export function StatusRule({
   liveSessionCount,
   sessionTitle,
   sessionStartedAt,
+  storedSid,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -645,10 +683,8 @@ export function StatusRule({
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
 
-  // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
-  // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
-  // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
-  // raises remaining nets a negative Δ (honest).
+  // Dev-only readout (HERMES_DEV_CREDITS); server omits the key unless the flag is on, so
+  // this self-hides for normal users. micros→cents; never parseFloat a *_usd.
   const devCreditsText =
     typeof usage.dev_credits_spent_micros === 'number'
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
@@ -836,6 +872,7 @@ export function StatusRule({
             {tpsText}
           </Text>
         ) : null}
+        <SessionIdSegment cols={cols} statusBarFields={statusBarFields} storedSid={storedSid} t={t} />
         {showVoice ? (
           <Text
             color={
@@ -1005,6 +1042,8 @@ interface StatusRuleProps {
   notice?: Notice | null
   sessionStartedAt?: null | number
   sessionTitle?: string
+  // Durable session id (state.db row) — shown as an opt-in status-bar segment.
+  storedSid?: null | string
   status: string
   // display.status_bar.fields — segment visibility filter shared with the
   // classic CLI bar. null = defaults (everything shows).

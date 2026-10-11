@@ -1,7 +1,7 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { StatusRule } from '../components/appChrome.js'
+import { sessionIdVisible, StatusRule } from '../components/appChrome.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type ReactNodeLike = React.ReactNode
@@ -478,5 +478,31 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     })
 
     expect(textContent(element)).not.toContain('weekly-digest')
+  })
+})
+
+describe('sessionIdVisible (status-bar session id segment)', () => {
+  const durableSid = '20260225_143052_a1b2c3'
+  const enabled = new Set(['model', 'context_pct', 'session_id'])
+  const withoutSession = new Set(['model', 'context_pct'])
+
+  it('is visible on a wide terminal when opted in and a session id exists', () => {
+    expect(sessionIdVisible(enabled, durableSid, 160)).toBe(true)
+  })
+
+  it('is hidden by default (not in the default field set)', () => {
+    expect(sessionIdVisible(null, durableSid, 160)).toBe(false)
+  })
+
+  it('is hidden when the fields filter omits session_id', () => {
+    expect(sessionIdVisible(withoutSession, durableSid, 160)).toBe(false)
+  })
+
+  it('is hidden when no durable session id is present', () => {
+    expect(sessionIdVisible(enabled, null, 160)).toBe(false)
+  })
+
+  it('is hidden on a narrow terminal below the sessionId breakpoint', () => {
+    expect(sessionIdVisible(enabled, durableSid, 110)).toBe(false)
   })
 })

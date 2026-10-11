@@ -10,17 +10,26 @@ it on 2026-08-30 17:15 and surfaced as "Session not found".
 VM death" — it just never looked at the database that death may have torn.
 The check is gated on the unclean exit precisely because it costs ~2s on a
 500MB store; a clean boot must not pay it.
+
+Since t_8a73f016 the scan is DEFERRED by default: the boot entry point writes
+the exit-diag record and claims the sentinel immediately, and the forensic scan
+runs post-connect (``run_deferred_integrity_check``) so a large store can never
+gate platform startup (the ``:8644`` fleet peer-DM transport). The tests below
+keep the historic INLINE behaviour covered via ``defer_integrity_check=False``.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 from gateway.lifecycle_ledger import (
     check_state_db_integrity,
     get_lifecycle_sentinel_path,
     record_startup,
+    run_deferred_integrity_check,
 )
 
 _DEAD_PID = 2 ** 22 + 12345  # beyond default pid_max; never alive
@@ -57,6 +66,20 @@ def _make_state_db(home: Path, *, corrupt: bool) -> Path:
     return path
 
 
+def _make_multi_page_state_db(home: Path, rows: int = 300_000) -> Path:
+    """A store large enough that ``quick_check`` takes measured tens of ms, so a
+    wall-clock deadline can fire MID-scan. Cheap to build (~1s)."""
+    path = home / "state.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY, v TEXT)")
+    conn.executemany(
+        "INSERT INTO sessions (v) VALUES (?)", [(f"row-{i}" * 40,) for i in range(rows)]
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
 def _exit_diag_records(home: Path) -> list:
     log = home / "logs" / "gateway-exit-diag.log"
     if not log.exists():
@@ -90,7 +113,7 @@ def test_unclean_exit_records_the_corruption_verdict(tmp_path: Path) -> None:
     _make_state_db(tmp_path, corrupt=True)
     _write_sentinel(tmp_path)
 
-    evidence = record_startup(home=tmp_path)
+    evidence = record_startup(home=tmp_path, defer_integrity_check=False)
 
     assert evidence is not None
     assert evidence["state_db_integrity"] != "ok"
@@ -102,7 +125,7 @@ def test_unclean_exit_on_a_healthy_store_records_ok(tmp_path: Path) -> None:
     _make_state_db(tmp_path, corrupt=False)
     _write_sentinel(tmp_path)
 
-    evidence = record_startup(home=tmp_path)
+    evidence = record_startup(home=tmp_path, defer_integrity_check=False)
 
     assert evidence is not None
     assert evidence["state_db_integrity"] == "ok"
@@ -122,6 +145,98 @@ def test_clean_exit_does_not_pay_for_the_check(tmp_path: Path, monkeypatch) -> N
     record_startup(home=tmp_path)
 
     assert not called, "integrity check ran on a clean boot"
+
+
+# ── deferred startup (t_8a73f016): the scan must not gate platform startup ───
+
+
+def test_deferred_startup_never_runs_the_check_inline(tmp_path: Path, monkeypatch) -> None:
+    """DEFERRAL IS THE DEFAULT: the boot entry point must return WITHOUT the forensic
+    scan completing, and the exit-diag record must record that the verdict is pending.
+    The blocking stub below never returns unless the deferred path wrongly runs it."""
+    import gateway.lifecycle_ledger as ledger
+
+    started = threading.Event()
+    released = threading.Event()
+
+    def _blocking_check(**kwargs):
+        started.set()
+        released.wait(10)  # never set by the caller -> proves the boot path did not run it
+        return "ok"
+
+    monkeypatch.setattr(ledger, "check_state_db_integrity", _blocking_check)
+    _write_sentinel(tmp_path)
+
+    begin = time.monotonic()
+    evidence = record_startup(home=tmp_path)  # default: defer_integrity_check=True
+    elapsed = time.monotonic() - begin
+
+    assert evidence is not None
+    assert evidence["state_db_integrity"] == "deferred"
+    assert not started.is_set(), "the inline integrity scan ran on the deferred boot path"
+    assert elapsed < 5.0
+    record = _exit_diag_records(tmp_path)[0]
+    assert record["state_db_integrity"] == "deferred"
+    assert record["tag"] == "gateway.previous_unclean_exit"
+
+
+def test_deferred_scan_appends_a_second_record_and_returns_the_verdict(tmp_path: Path) -> None:
+    _make_state_db(tmp_path, corrupt=True)
+    _write_sentinel(tmp_path)
+
+    evidence = record_startup(home=tmp_path, defer_integrity_check=True)
+    assert evidence is not None and evidence["state_db_integrity"] == "deferred"
+
+    verdict = run_deferred_integrity_check(evidence, home=tmp_path, deadline_s=60.0)
+
+    records = _exit_diag_records(tmp_path)
+    assert [r["tag"] for r in records] == [
+        "gateway.previous_unclean_exit", "gateway.state_db_integrity"]
+    deferred = records[1]
+    assert deferred["deferred"] is True
+    assert deferred["state_db_integrity"] == verdict
+    assert deferred["prior_pid"] == _DEAD_PID
+    assert verdict != "ok"
+    assert evidence["state_db_integrity"] == verdict
+
+
+def test_deferred_scan_never_raises(tmp_path: Path, monkeypatch) -> None:
+    import gateway.lifecycle_ledger as ledger
+
+    _write_sentinel(tmp_path)
+    evidence = record_startup(home=tmp_path, defer_integrity_check=True)
+
+    def _boom(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ledger, "check_state_db_integrity", _boom)
+
+    assert run_deferred_integrity_check(evidence, home=tmp_path).startswith("check-failed")
+
+
+# ── bounded scan: a deadline aborts through the progress handler ─────────────
+
+
+def test_deadline_bounds_the_scan(tmp_path: Path, monkeypatch) -> None:
+    import gateway.lifecycle_ledger as ledger
+
+    _make_multi_page_state_db(tmp_path)
+    monkeypatch.setattr(ledger, "_INTEGRITY_CHECK_PROGRESS_OPS", 1_000)
+
+    verdict = check_state_db_integrity(home=tmp_path, deadline_s=0.01)
+
+    assert verdict.startswith("check-incomplete: exceeded"), verdict
+
+
+def test_no_deadline_keeps_the_historic_verdict_contract(tmp_path: Path, monkeypatch) -> None:
+    """``deadline_s=None`` must be byte-for-byte today's behaviour: the handler never aborts."""
+    import gateway.lifecycle_ledger as ledger
+
+    _make_multi_page_state_db(tmp_path)
+    monkeypatch.setattr(ledger, "_INTEGRITY_CHECK_PROGRESS_OPS", 1_000)
+
+    assert check_state_db_integrity(home=tmp_path) == "ok"
+    assert check_state_db_integrity(home=tmp_path, deadline_s=None) == "ok"
 
 
 # ── startup-watchdog lease during the check (#115542) ───────────────────────
@@ -157,7 +272,7 @@ def test_unclean_exit_check_renews_the_startup_lease_while_sqlite_progresses(
     _make_state_db(tmp_path, corrupt=False)
     _write_sentinel(tmp_path)
 
-    evidence = record_startup(home=tmp_path)
+    evidence = record_startup(home=tmp_path, defer_integrity_check=False)
 
     assert evidence is not None and evidence["state_db_integrity"] == "ok"
     assert handle._lease_phase == "state_db_unclean_integrity_check"

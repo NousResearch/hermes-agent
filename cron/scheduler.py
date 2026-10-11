@@ -1514,6 +1514,40 @@ def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
     return workdir
 
 
+def _bump_no_agent_skill_usage(job: dict, job_id: str) -> None:
+    """Bump usage for a no_agent job's declared skills on every fire. The script path never
+    builds a prompt, so the prompt path's bump_use() in _load_cron_skill_parts never runs and
+    these skills accrue no activity anchor: the moment the job is paused or deleted (dropping
+    them out of referenced_skill_names), the curator archives them on their stale created_at."""
+    from cron.scheduler_prompt import _job_skill_names
+    from tools.skills_tool import skill_view
+    from tools.skill_usage import bump_use
+
+    for skill_name in _job_skill_names(job):
+        try:
+            payload = json.loads(skill_view(skill_name))
+        except Exception:
+            logger.debug(
+                "Job '%s': skill_view for '%s' failed", job_id, skill_name, exc_info=True)
+            payload = None
+        if not isinstance(payload, dict) or not payload.get("success"):
+            logger.warning(
+                "Job '%s': declared skill '%s' not found — skipping usage bump",
+                job_id,
+                skill_name,
+            )
+            continue
+        try:
+            bump_use(skill_name, task_id=job_id)
+        except Exception:
+            logger.debug(
+                "Job '%s': failed to bump skill usage for '%s'",
+                job_id,
+                skill_name,
+                exc_info=True,
+            )
+
+
 def _run_no_agent_job(
     job: dict, job_id: str, job_name: str, cancel_event,
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -1535,6 +1569,8 @@ def _run_no_agent_job(
         from cron.jobs import NO_AGENT_WITHOUT_SCRIPT_ERROR
 
         return _block_and_pause_job(job_id, job_name, NO_AGENT_WITHOUT_SCRIPT_ERROR)
+
+    _bump_no_agent_skill_usage(job, job_id)
 
     # Pass workdir as subprocess cwd; never os.chdir() (leaks into concurrent gateway sessions).
     _job_workdir = _resolve_job_workdir(job, job_id)

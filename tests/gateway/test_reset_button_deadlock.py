@@ -185,7 +185,7 @@ async def test_reset_completes_when_cleanup_times_out(caplog):
     async def _instant_timeout(aw, timeout=None):
         if asyncio.iscoroutine(aw):
             aw.close()
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     runner = _make_runner_with_cached_agent(lambda: None)
 

@@ -32,6 +32,25 @@ def interrupt_issuer(agent) -> Optional[str]:
     return str(reason).strip().replace(" ", "_")
 
 
+def interrupt_skip_wording(agent) -> str:
+    """Reason a tool call was skipped/cancelled, in words safe for tool output.
+
+    Derived from the RECORDED reason rather than the call site, so a system-initiated
+    abort reads as one instead of asserting a user message that never existed (#130207)."""
+    reason = getattr(agent, "_tool_interrupt_reason", None)
+    if not reason:
+        return "Turn interrupted"
+    if reason in USER_INTERRUPT_REASONS:
+        return reason.capitalize()
+    return f"Turn aborted — {str(reason).replace('_', ' ')}"
+
+
+def interrupted_during_api_call_reason(agent) -> str:
+    """Turn exit reason for an API call cut short by an interrupt (``turn_explainers`` matches the prefix)."""
+    issuer = interrupt_issuer(agent)
+    return f"interrupted_during_api_call({issuer})" if issuer else "interrupted_during_api_call"
+
+
 def _fence_cancel_before_commit(fence, *, when_in_flight: bool, failure_log: str) -> None:
     """Call ``type(fence).cancel_before_commit(fence)`` when ``commit_in_flight`` matches.
 
@@ -126,16 +145,20 @@ class InterruptControlMixin:
                 self._turn_liveness_abort_claim = require_generation
 
         # Tool cancellation attribution stays separate from _interrupt_message, which may carry the user's
-        # full next message.
+        # full next message. An explicit ``tool_reason`` wins on BOTH paths: a system producer that has to
+        # stop the turn SOFTLY (batch guards, watchdogs) previously had no way to label itself — passing a
+        # message made it look like "the user sent a new message", so the abort was attributed to the user
+        # and rendered as a user-stop placeholder (#130207).
         tool_interrupt_reason = (
             (tool_reason or _REASON_HARD_STOP) if hard_cancel
-            else (_REASON_NEW_MESSAGE if message else _REASON_USER_INTERRUPT)
+            else (tool_reason or (_REASON_NEW_MESSAGE if message else _REASON_USER_INTERRUPT))
         )
 
         def _publish_interrupt_state() -> None:
             self._interrupt_requested = True
             self._interrupt_message = message
             self._tool_interrupt_reason = tool_interrupt_reason
+            self._turn_user_intervened = True
             # The turn record and the log must agree on WHO asked for the stop (#112647).
             logger.info("Interrupt requested (%s): %s", "hard" if hard_cancel else "soft", tool_interrupt_reason)
             _hard_event = getattr(self, "_hard_interrupt_requested", None) if hard_cancel else None
@@ -212,9 +235,15 @@ class InterruptControlMixin:
         override interrupt(message=None) without hard_cancel."""
         InterruptControlMixin.interrupt(self, message, hard_cancel=True, tool_reason=tool_reason)
 
-    def clear_interrupt(self, *, preserve_redirect: bool = False) -> bool:
+    def clear_interrupt(self, *, preserve_redirect: bool = False, hard_cancel: bool = False) -> bool:
         """Clear the interrupt request and per-thread tool signal. ``preserve_redirect`` is only for the
-        conversation loop rebuilding the same logical turn after cancelling a model request."""
+        conversation loop rebuilding the same logical turn after cancelling a model request.
+        ``hard_cancel`` also drops an unconsumed pending steer: the aborted turn's next tool iteration
+        will no longer happen, and re-injecting the note into the post-stop turn would surprise the
+        user. Every other caller (redirect rebuild, error recovery, turn-boundary hygiene) continues
+        this session, so the already-accepted steer must survive: it stays buffered for the existing
+        drains — the pre-API inject, the post-batch append, or the finalizer's leftover handoff —
+        instead of silently vanishing after the surface was told it was delivered."""
         with _ic_lock(self, "_pending_redirect_lock"):
             if preserve_redirect and not _ic_slot(self, "_pending_redirect_lock", "_pending_redirect"):
                 return False
@@ -227,9 +256,12 @@ class InterruptControlMixin:
         if self._execution_thread_id is not None:
             _set_interrupt(False, self._execution_thread_id)
         _ic_signal_tool_workers(self, False)
-        # A hard interrupt supersedes any pending /steer — its target iteration will no longer happen.
-        with _ic_lock(self, "_pending_steer_lock"):
-            self._pending_steer = None
+        if hard_cancel:
+            # Hard stop only (see docstring). The comment that used to run unconditionally here
+            # claimed a hard interrupt supersedes the steer — but nothing gated this wipe on
+            # hard_cancel, so a soft clear dropped a live user message with no trace.
+            with _ic_lock(self, "_pending_steer_lock"):
+                self._pending_steer = None
         return True
 
     def steer(self, text: str) -> bool:
@@ -241,6 +273,8 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+        # The turn no longer ran on its own (first-task-done detection reads this off the result).
+        self._turn_user_intervened = True
         return True
 
     def redirect(self, text: str) -> bool:
@@ -258,7 +292,10 @@ class InterruptControlMixin:
                 if self._interrupt_requested:
                     return False
             try:
-                return bool(_native_steer(cleaned))
+                accepted = bool(_native_steer(cleaned))
+                if accepted:
+                    self._turn_user_intervened = True
+                return accepted
             except Exception:
                 logger.debug("Codex app-server turn/steer failed", exc_info=True)
                 return False
@@ -291,6 +328,7 @@ class InterruptControlMixin:
             )
             self._interrupt_requested = True
             self._interrupt_message = None
+            self._turn_user_intervened = True
 
         # Interrupt only the model request — no fan-out to tool workers / child agents as interrupt() does.
         _execution_thread_id = getattr(self, "_execution_thread_id", None)

@@ -7,9 +7,14 @@ persisted message content should stay clean so replay does not accumulate
 
 from __future__ import annotations
 
+import errno
 import re
-from datetime import datetime
+import sys
+import time
+from datetime import datetime, timezone, UTC
 from typing import Any, Optional, Tuple
+
+from hermes_time import safe_strftime
 
 
 # Leading timestamp prefix, either the current human format
@@ -26,11 +31,29 @@ _TIMESTAMP_PREFIX_RE = re.compile(
 )
 
 
-def _localize(dt: datetime, tz) -> float:
-    """Epoch for ``dt``; naive values take ``tz`` if given, else the local zone."""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=tz) if tz is not None else dt.astimezone()
-    return float(dt.timestamp())
+def _localize(dt: datetime, tz) -> Optional[float]:
+    """Epoch for ``dt`` in ``tz`` or the local zone; None outside platform limits."""
+    naive_local = dt.tzinfo is None and tz is None
+    try:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz) if tz is not None else dt.astimezone()
+        return float(dt.timestamp())
+    except (OverflowError, ValueError):
+        return None
+    except OSError as exc:
+        if not (sys.platform == "win32" and naive_local and exc.errno == errno.EINVAL):
+            return None
+        # Windows' fold probe can reject the first Unix day. mktime can
+        # resolve those local wall times without changing their meaning.
+        # Limit recovery to that fold-free interval and reject normalization.
+        wall_time = dt.timetuple()
+        try:
+            epoch = time.mktime(wall_time)
+            if 0 <= epoch < 86_400 and time.localtime(epoch)[:6] == wall_time[:6]:
+                return float(epoch + dt.microsecond / 1_000_000)
+        except (OSError, OverflowError, ValueError):
+            pass
+        return None
 
 
 def _parse_iso(text: str, tz=None) -> Optional[float]:
@@ -81,11 +104,16 @@ def format_message_timestamp(ts_value: Any, tz=None) -> str:
     epoch = coerce_message_timestamp(ts_value, tz=tz)
     if epoch is None:
         return ""
-    dt = datetime.fromtimestamp(epoch, tz=tz) if tz is not None else datetime.fromtimestamp(epoch).astimezone()
-    return f"[{dt.strftime('%a %Y-%m-%d %H:%M:%S %Z')}]"
+    try:
+        # An early positive epoch can fall in 1969 locally. Starting from aware
+        # UTC avoids Windows' negative-time fold probe in naive astimezone().
+        dt = datetime.fromtimestamp(epoch, tz=tz) if tz is not None else datetime.fromtimestamp(epoch, tz=UTC).astimezone()
+    except (OSError, OverflowError, ValueError):
+        return ""
+    return f"[{safe_strftime(dt, '%a %Y-%m-%d %H:%M:%S %Z')}]"
 
 
-def strip_leading_message_timestamps(content: str, tz=None) -> Tuple[str, Optional[float]]:
+def strip_leading_message_timestamps(content: str, tz=None) -> tuple[str, Optional[float]]:
     """Strip leading gateway timestamp prefixes → ``(clean_content, embedded_epoch)``.
     With several prefixes the one closest to the text wins, preserving the platform-send
     time of legacy rows like ``[processing time] [platform time] [sender] message``."""

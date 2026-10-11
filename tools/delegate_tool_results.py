@@ -47,7 +47,7 @@ def _looks_like_error_output(content: Any) -> bool:
     first = content.splitlines()[0].strip().lower() if content.splitlines() else ""
     return first.startswith(("error:", "failed:", "traceback ", "exception:"))
 
-def _extract_output_tail(result: Dict[str, Any], *, max_entries: int = 12, max_chars: int = 8000) -> List[Dict[str, Any]]:
+def _extract_output_tail(result: dict[str, Any], *, max_entries: int = 12, max_chars: int = 8000) -> list[dict[str, Any]]:
     """Last N tool-call results ``{tool, preview, is_error}`` from a child's conversation (the overlay's "Output"
     section), chronological order. Content blocks are flattened first so a block-wrapped "Error: ..." is still
     flagged; line structure is preserved (capped at ``max_chars``) so the overlay shows real output rather than a
@@ -60,7 +60,7 @@ def _extract_output_tail(result: Dict[str, Any], *, max_entries: int = 12, max_c
         for msg in messages if isinstance(msg, dict) and msg.get("role") == "assistant"
         for tc in msg.get("tool_calls") or [] if tc.get("id")
     }
-    tail: List[Dict[str, Any]] = []
+    tail: list[dict[str, Any]] = []
     for msg in reversed(messages):  # newest first, then restore order below
         if len(tail) >= max_entries:
             break
@@ -103,9 +103,9 @@ def _sanitize_tool_target(key: str, value: Any) -> Any:
             return None
     return bounded
 
-def _sanitize_targets(mapping: Dict[str, Any]) -> Dict[str, Any]:
+def _sanitize_targets(mapping: dict[str, Any]) -> dict[str, Any]:
     """Keep only known side-effect target keys, each sanitized (URL secrets dropped)."""
-    targets: Dict[str, Any] = {}
+    targets: dict[str, Any] = {}
     for raw_key, value in mapping.items():
         key = str(raw_key).lower()
         if key in _TOOL_INPUT_TARGET_KEYS:
@@ -114,14 +114,14 @@ def _sanitize_targets(mapping: Dict[str, Any]) -> Dict[str, Any]:
                 targets[key] = cleaned
     return targets
 
-def _input_summary(keys: Any, targets: Any) -> Dict[str, Any]:
+def _input_summary(keys: Any, targets: Any) -> dict[str, Any]:
     """``{argument_keys, targets}`` with bounded, sanitized contents (empty on bad shapes)."""
     return {
         "argument_keys": [str(key)[:128] for key in keys[:64]] if isinstance(keys, list) else [],
         "targets": _sanitize_targets(targets) if isinstance(targets, dict) else {},
     }
 
-def _summarize_tool_arguments(arguments: Any) -> Dict[str, Any]:
+def _summarize_tool_arguments(arguments: Any) -> dict[str, Any]:
     """Summarize argument names and side-effect targets without raw payloads."""
     try:
         parsed = json.loads(arguments) if isinstance(arguments, str) else None
@@ -131,7 +131,7 @@ def _summarize_tool_arguments(arguments: Any) -> Dict[str, Any]:
         return _input_summary([], {})
     return _input_summary(sorted(str(key)[:128] for key in parsed), parsed)
 
-def _subagent_stop_tool_call_history(tool_trace: Any) -> List[Dict[str, Any]]:
+def _subagent_stop_tool_call_history(tool_trace: Any) -> list[dict[str, Any]]:
     """Detached, metadata-only tool history for lifecycle hooks (input summaries re-sanitized)."""
     if not isinstance(tool_trace, list):
         return []
@@ -140,7 +140,7 @@ def _subagent_stop_tool_call_history(tool_trace: Any) -> List[Dict[str, Any]]:
         value = item.get(key, 0)
         return max(0, int(value)) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
-    history: List[Dict[str, Any]] = []
+    history: list[dict[str, Any]] = []
     for item in tool_trace:
         if not isinstance(item, dict):
             continue
@@ -263,7 +263,7 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
         logger.debug("Summary budget computation failed", exc_info=True)
         return None
 
-def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
+def _apply_summary_budget(results: list[dict[str, Any]], parent_agent) -> None:
     """Trim subagent summaries in-place so a batch can't overflow the parent's context window (full text spilled to
     disk). Per-summary cap = MIN(dynamic headroom budget, static ``delegation.max_summary_chars`` ceiling; 0 =
     disabled); over-cap summaries become head+tail plus a pointer to the spill file."""
@@ -322,7 +322,7 @@ def _parent_finalization_lock(parent_agent) -> threading.RLock:
         if lock is None:
             lock = threading.RLock()
             try:
-                setattr(parent_agent, "_subagent_finalization_lock", lock)
+                parent_agent._subagent_finalization_lock = lock
             except Exception:
                 return _PARENT_FINALIZATION_FALLBACK_LOCK
     return lock
@@ -346,7 +346,7 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
     """Pop the model-hidden ``_child_role`` / ``_child_cost_usd`` fields from every
     entry, fire ``subagent_stop`` per child, and return the summed child cost."""
     try:
-        from hermes_cli.plugins import invoke_hook as invoke_hook
+        from hermes_cli.plugins import invoke_hook
     except Exception:
         invoke_hook = None
     children_cost_total = 0.0
@@ -390,7 +390,7 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
         logger.debug("Subagent cost rollup failed", exc_info=True)
 
 def _finalize_child_results(
-    results: List[Dict[str, Any]], task_list: List[Dict[str, Any]], children: List[tuple[int, Dict[str, Any], Any]],
+    results: list[dict[str, Any]], task_list: list[dict[str, Any]], children: list[tuple[int, dict[str, Any], Any]],
     parent_agent,
 ) -> None:
     """Apply host-owned summary, memory, hook, and cost contracts once."""
@@ -400,7 +400,7 @@ def _finalize_child_results(
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
 
-def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> Dict[str, Any]:
+def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> dict[str, Any]:
     """Run one child and apply the same host lifecycle used by delegate_task."""
     from tools.delegate_tool import _run_single_child
     result = _run_single_child(task_index, goal, child, parent_agent)

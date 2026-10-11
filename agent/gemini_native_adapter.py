@@ -25,15 +25,17 @@ from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_
 
 logger = logging.getLogger(__name__)
 
-try:
-    import hermes_cli as _hermes_cli
+from hermes_cli.version_info import get_version_info
 
-    _HERMES_VERSION = str(_hermes_cli.__version__)
-except Exception:
-    _HERMES_VERSION = "0.0.0"
-_API_CLIENT = f"hermes-agent/{_HERMES_VERSION}"  # client context per Gemini's partner-integration guidance
+_API_CLIENT = f"hermes-agent/{get_version_info().base_version}"  # client context per Gemini's partner-integration guidance
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+# A Vertex AI express-mode base, when the user configures one explicitly: aiplatform serves the
+# same native API under ``{version}/publishers/google/models/…``; the base carries that prefix so
+# every ``{base}/models/{model}:…`` builder (chat, tier probe, TTS) needs no path branching.
+# The key itself never decides routing — Google now issues ``AQ.…`` keys for BOTH Google AI Studio
+# and Vertex express mode (#115306), so an express key reaches aiplatform only via this base config.
+VERTEX_EXPRESS_BASE_URL = "https://aiplatform.googleapis.com/v1beta1/publishers/google"
 
 # Published max output-token ceiling shared by every current Gemini text model; used
 # for max_tokens=None because the native API's low internal default truncates output.
@@ -53,6 +55,20 @@ _STANDARD_KEY_GUIDANCE = (
     "generativelanguage.googleapis.com). Then update GEMINI_API_KEY / GOOGLE_API_KEY in ~/.hermes/.env, "
     "delete any leftover Windows/system copy of those variables, and restart. A stale shell key can hide "
     "the .env value. Details: https://ai.google.dev/gemini-api/docs/api-key"
+)
+# Google issues ``AQ.…`` keys for both AI Studio and Vertex express mode; each surface only accepts
+# its own keys, so a 403 usually means the key/host pairing is crossed rather than a bad key (#115306).
+_EXPRESS_KEY_ON_STUDIO_GUIDANCE = (
+    "\n\nGoogle issues 'AQ.' keys for both Google AI Studio and Vertex AI express mode, and each surface "
+    "only accepts its own keys: a Vertex express key always gets 403 PERMISSION_DENIED on "
+    "generativelanguage.googleapis.com. If this key came from Google Cloud / Vertex (express mode), point "
+    "the provider at the express surface, e.g. set base_url / GEMINI_BASE_URL to "
+    "https://aiplatform.googleapis.com/v1beta1."
+)
+_STUDIO_KEY_ON_EXPRESS_GUIDANCE = (
+    "\n\nIf this 'AQ.' key came from Google AI Studio (https://aistudio.google.com/apikey), it only works "
+    "on the default generativelanguage.googleapis.com host — remove the explicit aiplatform base_url so "
+    "the default surface is used."
 )
 # Stands in for a model turn that never arrived (stream failure / interrupt / quota
 # fallback) when a human user text turn directly follows a tool-result turn, keeping
@@ -100,6 +116,14 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
 _API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
 
 
+def is_vertex_express_base_url(base_url: str) -> bool:
+    """An aiplatform host without a project path — the express surface. The OAuth Vertex provider's
+    ``…/projects/{p}/locations/{r}/endpoints/openapi`` base is OpenAI-compatible and must stay off
+    the native adapter."""
+    normalized = str(base_url or "").strip().lower()
+    return "aiplatform.googleapis.com" in normalized and "/projects/" not in normalized
+
+
 def normalize_gemini_base_url(base_url: Optional[str]) -> str:
     """Gemini native base URL with the API version segment guaranteed. Google's own client treats the
     base as a host root and appends the version itself, so users configure ``GEMINI_BASE_URL`` (or a
@@ -108,11 +132,22 @@ def normalize_gemini_base_url(base_url: Optional[str]) -> str:
     slashes and an ``/openai`` suffix are stripped; an existing version segment (``v1``, ``v1beta``,
     ``v1alpha``, ...) is kept; empty input returns ``DEFAULT_GEMINI_BASE_URL``. Only the LAST path
     segment is inspected, so ``.../v1beta/extra`` still gets ``/v1beta`` appended; this does not
-    decide routing (see ``is_native_gemini_base_url``)."""
+    decide routing (see ``is_native_gemini_base_url``).
+
+    A Vertex express base (``aiplatform.googleapis.com``, ``…/v1beta1`` or the full
+    ``…/v1beta1/publishers/google``) is completed to the ``publishers/google`` form. The key never
+    decides routing: Google issues ``AQ.…`` keys for both AI Studio and Vertex express mode
+    (#115306), so an express key reaches aiplatform only through this explicit base configuration."""
     trimmed = str(base_url or "").strip().rstrip("/")
     trimmed = re.sub(r"/openai\Z", "", trimmed, flags=re.IGNORECASE).rstrip("/")
     if not trimmed:
-        return DEFAULT_GEMINI_BASE_URL
+        trimmed = DEFAULT_GEMINI_BASE_URL
+    if is_vertex_express_base_url(trimmed):
+        if trimmed.lower().endswith("/publishers/google"):
+            return trimmed
+        if not _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
+            trimmed = f"{trimmed}/v1beta1"
+        return f"{trimmed}/publishers/google"
     if _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
         return trimmed
     return f"{trimmed}/v1beta"
@@ -121,7 +156,9 @@ def normalize_gemini_base_url(base_url: Optional[str]) -> str:
 def is_native_gemini_base_url(base_url: str) -> bool:
     """True when the endpoint speaks Gemini's native REST API (not ``/openai``)."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
-    return "generativelanguage.googleapis.com" in normalized and not normalized.endswith("/openai")
+    if normalized.endswith("/openai"):
+        return False
+    return "generativelanguage.googleapis.com" in normalized or is_vertex_express_base_url(normalized)
 
 
 def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
@@ -170,6 +207,25 @@ def is_free_tier_quota_error(error_message: str) -> bool:
     return bool(error_message) and "free_tier" in error_message.lower()
 
 
+def wrong_gemini_surface_guidance(base_url: str, api_key: str, err_status: str) -> str:
+    """Guidance text for the 403 PERMISSION_DENIED key/host mismatches Google's AQ. rollout created.
+
+    Google issues ``AQ.…`` keys for both AI Studio and Vertex express mode, so neither the key prefix
+    nor the host alone proves the pairing; on a PERMISSION_DENIED, point the user at the surface their
+    key likely belongs to: an AQ. key rejected by the Studio host may be an express key (the explicit
+    aiplatform base_url is that key's only route there), and any key rejected by an explicitly
+    configured aiplatform base may be an AI Studio key (#115306). Empty string when the shape matches
+    neither."""
+    if (err_status or "").strip().upper() != "PERMISSION_DENIED":
+        return ""
+    normalized = str(base_url or "").strip().lower()
+    if is_vertex_express_base_url(normalized):
+        return _STUDIO_KEY_ON_EXPRESS_GUIDANCE
+    if "generativelanguage.googleapis.com" in normalized and str(api_key or "").strip().upper().startswith("AQ."):
+        return _EXPRESS_KEY_ON_STUDIO_GUIDANCE
+    return ""
+
+
 def is_standard_key_auth_error(
     status: int, error_message: str, reason: str = "", *, api_key: str = "",
 ) -> bool:
@@ -197,7 +253,7 @@ class GeminiAPIError(Exception):
     """Error shape compatible with Hermes retry/error classification."""
 
     def __init__(self, message: str, *, code: str = "gemini_api_error", status_code: Optional[int] = None,
-                 response: Optional[httpx.Response] = None, retry_after: Optional[float] = None, details: Optional[Dict[str, Any]] = None):
+                 response: Optional[httpx.Response] = None, retry_after: Optional[float] = None, details: Optional[dict[str, Any]] = None):
         super().__init__(message)
         self.code, self.status_code, self.response = code, status_code, response
         self.retry_after, self.details = retry_after, details or {}
@@ -217,7 +273,7 @@ def _coerce_content_to_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
-def _inline_data_part(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _inline_data_part(item: dict[str, Any]) -> Optional[dict[str, Any]]:
     """``inlineData`` part for an ``image_url`` item carrying a ``data:`` URL; None otherwise."""
     url = (item.get("image_url") or {}).get("url") or ""
     if item.get("type") != "image_url" or not isinstance(url, str) or not url.startswith("data:"):
@@ -230,21 +286,21 @@ def _inline_data_part(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _multimodal_part(item: Any) -> Optional[Dict[str, Any]]:
+def _multimodal_part(item: Any) -> Optional[dict[str, Any]]:
     text = _text_of(item)
     if text or isinstance(item, str):
         return {"text": text}
     return _inline_data_part(item) if isinstance(item, dict) else None
 
 
-def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
+def _extract_multimodal_parts(content: Any) -> list[dict[str, Any]]:
     if isinstance(content, list):
         return [p for p in map(_multimodal_part, content) if p]
     text = _coerce_content_to_text(content)
     return [{"text": text}] if text else []
 
 
-def _tool_call_extra_signature(tool_call: Dict[str, Any]) -> Optional[str]:
+def _tool_call_extra_signature(tool_call: dict[str, Any]) -> Optional[str]:
     """Replayed Gemini thoughtSignature from ``extra_content`` (``google.thought_signature`` or flat)."""
     extra = tool_call.get("extra_content") or {}
     sig = (extra.get("google") or extra.get("thought_signature")) if isinstance(extra, dict) else None
@@ -253,18 +309,18 @@ def _tool_call_extra_signature(tool_call: Dict[str, Any]) -> Optional[str]:
     return sig if isinstance(sig, str) and sig else None
 
 
-def _tool_call_id(tool_call: Dict[str, Any]) -> str:
+def _tool_call_id(tool_call: dict[str, Any]) -> str:
     return str(tool_call.get("id") or tool_call.get("call_id") or "")
 
 
-def _translate_tool_call_to_gemini(tool_call: Dict[str, Any], include_ids: bool = False) -> Dict[str, Any]:
+def _translate_tool_call_to_gemini(tool_call: dict[str, Any], include_ids: bool = False) -> dict[str, Any]:
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
     try:
         args = json.loads(args_raw) if isinstance(args_raw, str) and args_raw else {}
     except json.JSONDecodeError:
         args = {"_raw": args_raw}
-    call: Dict[str, Any] = {"name": str(fn.get("name") or ""), "args": args if isinstance(args, dict) else {"_value": args}}
+    call: dict[str, Any] = {"name": str(fn.get("name") or ""), "args": args if isinstance(args, dict) else {"_value": args}}
     if include_ids and (call_id := _tool_call_id(tool_call)):
         call["id"] = call_id
     return {"functionCall": call, "thoughtSignature": _tool_call_extra_signature(tool_call) or _SKIP_SIGNATURE}
@@ -281,8 +337,8 @@ def _looks_like_json_schema(node: Any) -> bool:
 
 
 def _translate_tool_result_to_gemini(
-    message: Dict[str, Any], tool_name_by_call_id: Optional[Dict[str, str]] = None, include_ids: bool = False, *, is_gemini3: bool = False,
-) -> Dict[str, Any]:
+    message: dict[str, Any], tool_name_by_call_id: Optional[dict[str, str]] = None, include_ids: bool = False, *, is_gemini3: bool = False,
+) -> dict[str, Any]:
     tool_call_id = str(message.get("tool_call_id") or "")
     # functionResponse.name must echo the matching functionCall.name, so the call-id
     # mapping beats the result's own name (may be an unwrapped MCP name via `tool_call`).
@@ -298,7 +354,7 @@ def _translate_tool_result_to_gemini(
     # display_name"; see vercel/ai#14369). A tool result that is itself a JSON Schema (e.g. tool_describe
     # output for an MCP tool) must therefore be forwarded as opaque text, not as a structured response.
     structured = isinstance(parsed, dict) and not _looks_like_json_schema(parsed)
-    function_response: Dict[str, Any] = {"name": name, "response": parsed if structured else {"output": content}}
+    function_response: dict[str, Any] = {"name": name, "response": parsed if structured else {"output": content}}
     if include_ids and tool_call_id:
         function_response["id"] = tool_call_id
     # Gemini 3.x accepts images inside functionResponse.parts; 2.x rejects the field.
@@ -307,18 +363,18 @@ def _translate_tool_result_to_gemini(
     return {"functionResponse": function_response}
 
 
-def _has_function_response(content: Dict[str, Any]) -> bool:
+def _has_function_response(content: dict[str, Any]) -> bool:
     return any(isinstance(part, dict) and "functionResponse" in part for part in content.get("parts", []))
 
 
-def _merge_alternating(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _merge_alternating(contents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Alternation contract for generateContent: 1) adjacent same-role contents merge (else HTTP 400
     "multiturn requests [must] alternate"); 2) EXCEPT never fuse a human user text turn into a preceding
     user content that only carries functionResponse parts (or vice versa) — Gemini 3 accepts the fold but
     reads the text as a continuation of the tool result and returns an empty candidate (parallel
     functionResponse + functionResponse still merge); 3) the split pair stays API-valid via an interposed
     placeholder model turn."""
-    merged: List[Dict[str, Any]] = []
+    merged: list[dict[str, Any]] = []
     # Compatibility contract for native Gemini generateContent: 1) Same-role adjacent contents still merge
     # in general (strict user/model alternation for ordinary text turns and parallel tool-result grouping;
     # consecutive same-role contents are rejected with HTTP 400 "Please ensure that multiturn requests
@@ -344,11 +400,11 @@ def _merge_alternating(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _build_gemini_contents(
-    messages: List[Dict[str, Any]], include_tool_call_ids: bool = False, *, is_gemini3: bool = False
-) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    system_text_parts: List[str] = []
-    contents: List[Dict[str, Any]] = []
-    tool_name_by_call_id: Dict[str, str] = {}
+    messages: list[dict[str, Any]], include_tool_call_ids: bool = False, *, is_gemini3: bool = False
+) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
+    system_text_parts: list[str] = []
+    contents: list[dict[str, Any]] = []
+    tool_name_by_call_id: dict[str, str] = {}
     for msg in messages:
         if not isinstance(msg, dict):
             continue
@@ -367,17 +423,22 @@ def _build_gemini_contents(
             if (call_id := _tool_call_id(tool_call)) and tool_name:
                 tool_name_by_call_id[call_id] = tool_name
             parts.append(_translate_tool_call_to_gemini(tool_call, include_ids=include_tool_call_ids))
+        # Text-turn signature goes back on the last part, where it was received (a functionCall part
+        # keeps its own signature).
+        if role == "assistant" and parts and "functionCall" not in parts[-1] and (
+                sig := _tool_call_extra_signature(msg)):
+            parts[-1] = {**parts[-1], "thoughtSignature": sig}
         if parts:
             contents.append({"role": "model" if role == "assistant" else "user", "parts": parts})
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
     return _merge_alternating(contents), ({"role": "system", "parts": [{"text": joined_system}]} if joined_system else None)
 
 
-def _function_declaration(tool: Any, *, json_schema: bool = False) -> Optional[Dict[str, Any]]:
+def _function_declaration(tool: Any, *, json_schema: bool = False) -> Optional[dict[str, Any]]:
     fn = (tool.get("function") or {}) if isinstance(tool, dict) else None
     if not isinstance(fn, dict) or not (isinstance(fn.get("name"), str) and fn["name"]):
         return None
-    decl: Dict[str, Any] = {"name": fn["name"]}
+    decl: dict[str, Any] = {"name": fn["name"]}
     if isinstance(fn.get("description"), str) and fn["description"]:
         decl["description"] = fn["description"]
     if isinstance(fn.get("parameters"), dict):
@@ -390,13 +451,13 @@ def _function_declaration(tool: Any, *, json_schema: bool = False) -> Optional[D
     return decl
 
 
-def _translate_tools_to_gemini(tools: Any, *, json_schema: bool = False) -> List[Dict[str, Any]]:
+def _translate_tools_to_gemini(tools: Any, *, json_schema: bool = False) -> list[dict[str, Any]]:
     declarations = [d for d in (_function_declaration(t, json_schema=json_schema)
                                 for t in (tools if isinstance(tools, list) else [])) if d]
     return [{"functionDeclarations": declarations}] if declarations else []
 
 
-def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[Dict[str, Any]]:
+def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[dict[str, Any]]:
     if isinstance(tool_choice, str) and tool_choice in _TOOL_CHOICE_MODES:
         return {"functionCallingConfig": {"mode": _TOOL_CHOICE_MODES[tool_choice]}}
     name = (tool_choice.get("function") or {}).get("name") if isinstance(tool_choice, dict) else None
@@ -411,7 +472,7 @@ _THINKING_KEYS = (
 )
 
 
-def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
+def _normalize_thinking_config(config: Any) -> Optional[dict[str, Any]]:
     if not isinstance(config, dict):
         return None
     values = {key: config.get(key, config.get(alias)) for key, alias, _, _ in _THINKING_KEYS}
@@ -443,58 +504,97 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
     return requested
 
 
+def _translate_response_format(response_format: Any, *, json_schema: bool = False) -> dict[str, Any]:
+    """OpenAI ``response_format`` → Gemini ``generationConfig`` JSON-output keys.
+
+    Full-JSON-Schema ``responseJsonSchema`` exists only on the generativelanguage ``v1beta``
+    surface (same gate as ``parametersJsonSchema``); ``v1`` / ``v1alpha``, Vertex express
+    ``v1beta1`` and unknown proxies take the OpenAPI-subset ``responseSchema`` path.
+    """
+    if not isinstance(response_format, dict) or response_format.get("type") not in ("json_object", "json_schema"):
+        return {}
+    spec = response_format.get("json_schema") if response_format.get("type") == "json_schema" else None
+    # A ``json_schema`` spec with no ``schema`` key has nothing to constrain with (the Anthropic
+    # translator bails the same way) — ask for JSON and let the model shape it.
+    schema = spec.get("schema") if isinstance(spec, dict) else None
+    if not isinstance(schema, dict):
+        return {"responseMimeType": "application/json"}
+    key, prep = ("responseJsonSchema", prepare_gemini_tool_parameters) if json_schema else ("responseSchema", sanitize_gemini_tool_parameters)
+    return {"responseMimeType": "application/json", key: prep(schema)}
+
+
 def build_gemini_request(
-    *, messages: List[Dict[str, Any]], tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None,
+    *, messages: list[dict[str, Any]], tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, top_p: Optional[float] = None, stop: Any = None, thinking_config: Any = None,
-    model: str = "", tools_as_json_schema: bool = False,
-) -> Dict[str, Any]:
+    response_format: Any = None, model: str = "", tools_as_json_schema: bool = False,
+) -> dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
     contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
-    optional = (
-        ("systemInstruction", system_instruction),
-        ("tools", _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)),
-        ("toolConfig", _translate_tool_choice_to_gemini(tool_choice)),
-    )
-    request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
+    gemini_tools = _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)
+    tool_config = _translate_tool_choice_to_gemini(tool_choice)
+    optional = (("systemInstruction", system_instruction), ("tools", gemini_tools), ("toolConfig", tool_config))
+    request: dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
     generation = (
         ("temperature", temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config)),
         ("topP", top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
         ("thinkingConfig", _normalize_thinking_config(thinking_config)),
     )
-    request["generationConfig"] = {k: v for k, v in generation if v is not None}
+    json_output = _translate_response_format(response_format, json_schema=tools_as_json_schema)
+    # Gemini 400s when forced function calling (mode ANY, from ``tool_choice="required"`` or a named
+    # function) is combined with a JSON responseMimeType, and pre-Gemini-3 models reject JSON output
+    # alongside ANY function declarations ("Function calling with a response mime type:
+    # 'application/json' is unsupported"); only Gemini 3+ combines tools with structured output.
+    # The tools win; JSON can come on a later turn, and callers tolerate an unconstrained reply.
+    forced_call = (tool_config or {}).get("functionCallingConfig", {}).get("mode") == "ANY"
+    if json_output and (forced_call or (gemini_tools and not is_gemini3)):
+        logger.debug("Gemini: dropping JSON response_format — %s",
+                     "tool_choice forces function calling (mode ANY)" if forced_call else "pre-Gemini-3 model with tools")
+        json_output = {}
+    request["generationConfig"] = {**{k: v for k, v in generation if v is not None}, **json_output}
     return request
 
 
 # ── Gemini → OpenAI response translation ─────────────────────────────────────
-def _tool_call_extra_from_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _tool_call_extra_from_part(part: dict[str, Any]) -> Optional[dict[str, Any]]:
     sig = part.get("thoughtSignature")
     return {"google": {"thought_signature": sig}} if isinstance(sig, str) and sig else None
 
 
-def _provider_call_id(fc: Dict[str, Any]) -> Optional[str]:
+def _provider_call_id(fc: dict[str, Any]) -> Optional[str]:
     fc_id = fc.get("id")
     return fc_id if isinstance(fc_id, str) and fc_id else None
 
 
-def _new_call_id(fc: Dict[str, Any]) -> str:
+def _new_call_id(fc: dict[str, Any]) -> str:
     """Echo the functionCall/delta ``id`` when present, else mint an OpenAI-style one."""
     return _provider_call_id(fc) or f"call_{uuid.uuid4().hex[:12]}"
 
 
-def _dump_call_args(fc: Dict[str, Any], **kwargs: Any) -> str:
+def _dump_call_args(fc: dict[str, Any], **kwargs: Any) -> str:
     try:
         return json.dumps(fc.get("args") or {}, ensure_ascii=False, **kwargs)
     except (TypeError, ValueError):
         return "{}"
 
 
-def _usage_from_metadata(usage_meta: Dict[str, Any]) -> SimpleNamespace:
-    count = lambda key: int(usage_meta.get(key) or 0)  # noqa: E731
+def _usage_from_metadata(usage_meta: dict[str, Any]) -> SimpleNamespace:
+    """Gemini ``usageMetadata`` → OpenAI-shaped usage.
+
+    Hidden thinking is reported separately in ``thoughtsTokenCount``:
+    ``candidatesTokenCount`` counts visible output only, while ``totalTokenCount``
+    already includes thoughts. OpenAI's ``completion_tokens`` covers reasoning, so
+    thoughts are folded in (otherwise a thinking turn bills a few percent of its
+    real output and ``prompt + completion != total``) and also surfaced under
+    ``completion_tokens_details.reasoning_tokens``, where ``normalize_usage`` reads
+    them. Absent on non-thinking/older responses, which keeps their numbers as-is."""
+    count = lambda key: int(usage_meta.get(key) or 0)
+    reasoning_tokens = count("thoughtsTokenCount")
     return SimpleNamespace(
-        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount"),
+        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount") + reasoning_tokens,
         total_tokens=count("totalTokenCount"), prompt_tokens_details=SimpleNamespace(cached_tokens=count("cachedContentTokenCount")),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens),
     )
 
 
@@ -510,39 +610,50 @@ def _tool_call_ns(name: str, arguments: str, index: int, call_id: str, extra_con
     return SimpleNamespace(id=call_id, type="function", index=index, function=SimpleNamespace(name=name, arguments=arguments), **extra)
 
 
-def _part_text(part: Dict[str, Any]) -> tuple[Optional[str], bool]:
+def _part_text(part: dict[str, Any]) -> tuple[Optional[str], bool]:
     """``(text, is_thought)`` for a candidate part; ``(None, False)`` when it carries no text."""
     text = part.get("text")
     return (text, part.get("thought") is True) if isinstance(text, str) else (None, False)
 
 
-def _part_function_call(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _text_part_signature(part: dict[str, Any]) -> Optional[str]:
+    """``thoughtSignature`` on a non-functionCall part (a text turn's last part; in streams an empty-text
+    part). Replay is optional, but the server rehydrates the turn's thoughts from it (live: 31 -> 237
+    prompt tokens), so it is kept as the message-level ``extra_content`` signature."""
+    sig = part.get("thoughtSignature")
+    return sig if isinstance(sig, str) and sig and "functionCall" not in part else None
+
+
+def _part_function_call(part: dict[str, Any]) -> Optional[dict[str, Any]]:
     fc = part.get("functionCall")
     return fc if isinstance(fc, dict) and fc.get("name") else None
 
 
-def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespace:
+def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespace:
     candidates = resp.get("candidates") or []
     cand = parts = None
     if isinstance(candidates, list) and candidates:
         cand = candidates[0] if isinstance(candidates[0], dict) else {}
         content_obj = cand.get("content")
         parts = content_obj.get("parts") if isinstance(content_obj, dict) else []
-    pieces: Dict[bool, List[str]] = {False: [], True: []}  # is_thought → text pieces
-    tool_calls: List[SimpleNamespace] = []
+    pieces: dict[bool, list[str]] = {False: [], True: []}  # is_thought → text pieces
+    tool_calls: list[SimpleNamespace] = []
+    text_signature = None
     for index, part in enumerate(parts or []):
         if not isinstance(part, dict):
             continue
         text, is_thought = _part_text(part)
         if text is not None:
             pieces[is_thought].append(text)
+            text_signature = _text_part_signature(part) or text_signature
         elif fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
     finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
     usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
-                              tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None)
+                              tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None,
+                              extra_content=_tool_call_extra_from_part({"thoughtSignature": text_signature}))
     return _envelope(model, "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason), usage)
 
 
@@ -550,14 +661,16 @@ class _GeminiStreamChunk(SimpleNamespace): ...
 
 
 def _make_stream_chunk(
-    *, model: str, content: str = "", tool_call_delta: Optional[Dict[str, Any]] = None, finish_reason: Optional[str] = None, reasoning: str = "",
+    *, model: str, content: str = "", tool_call_delta: Optional[dict[str, Any]] = None, finish_reason: Optional[str] = None, reasoning: str = "",
+    text_signature: Optional[str] = None,
 ) -> _GeminiStreamChunk:
     d = tool_call_delta
     tool_calls = None if d is None else [
         _tool_call_ns(d.get("name") or "", d.get("arguments") or "", d.get("index", 0), _new_call_id(d), d.get("extra_content"))
     ]
     delta = SimpleNamespace(role="assistant", content=content or None, tool_calls=tool_calls, reasoning=reasoning or None,
-                            reasoning_content=reasoning or None)
+                            reasoning_content=reasoning or None,
+                            extra_content=_tool_call_extra_from_part({"thoughtSignature": text_signature}))
     choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
     return _envelope(model, "chat.completion.chunk", choice, None, cls=_GeminiStreamChunk)
 
@@ -580,7 +693,7 @@ def _parse_sse_line(line: str) -> Any:
     return payload if isinstance(payload, dict) else None
 
 
-def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
+def _iter_sse_events(response: httpx.Response) -> Iterator[dict[str, Any]]:
     buffer = ""
     for chunk in response.iter_text():
         buffer += chunk or ""
@@ -599,8 +712,8 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
             yield payload
 
 
-def _tool_call_slot(fc: Dict[str, Any], part: Dict[str, Any], part_index: int, args_str: str,
-                    tool_call_indices: Dict[str, Dict[str, Any]]) -> tuple[str, Optional[Dict[str, Any]]]:
+def _tool_call_slot(fc: dict[str, Any], part: dict[str, Any], part_index: int, args_str: str,
+                    tool_call_indices: dict[str, dict[str, Any]]) -> tuple[str, Optional[dict[str, Any]]]:
     """``(key, existing slot or None)`` for a streamed functionCall.
 
     Gemini 3 ids each tool call, so the id is the slot identity (``part_index`` and the thought
@@ -624,13 +737,13 @@ def _tool_call_slot(fc: Dict[str, Any], part: Dict[str, Any], part_index: int, a
     return f"{key}#{len(tool_call_indices)}", None
 
 
-def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
+def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices: dict[str, dict[str, Any]]) -> list[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
     if not candidates:
         return []
     cand = candidates[0] if isinstance(candidates[0], dict) else {}
     parts = (cand.get("content") or {}).get("parts") or []
-    chunks: List[_GeminiStreamChunk] = []
+    chunks: list[_GeminiStreamChunk] = []
     for part_index, part in enumerate(parts):
         if not isinstance(part, dict):
             continue
@@ -640,6 +753,8 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             continue
         if text:
             chunks.append(_make_stream_chunk(model=model, content=text))
+        if sig := _text_part_signature(part):
+            chunks.append(_make_stream_chunk(model=model, text_signature=sig))
         if fc := _part_function_call(part):
             name = str(fc["name"])
             args_str = _dump_call_args(fc, sort_keys=True)
@@ -650,7 +765,7 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             last_arguments = slot["last_arguments"]
             slot["last_arguments"] = args_str
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
-                     "arguments": args_str[len(last_arguments):] if args_str.startswith(last_arguments) else args_str}
+                     "arguments": args_str.removeprefix(last_arguments)}
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
     if finish_reason_raw := str(cand.get("finishReason") or ""):
         finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
@@ -661,7 +776,7 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
     return chunks
 
 
-def _error_info(err_obj: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+def _error_info(err_obj: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """``(reason, metadata)`` from the first google.rpc.ErrorInfo detail (later ones fill gaps until reason is set)."""
     reason, metadata = "", {}
     details = err_obj.get("details")
@@ -672,7 +787,7 @@ def _error_info(err_obj: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
     return reason, metadata
 
 
-def _error_object(body_text: str) -> Dict[str, Any]:
+def _error_object(body_text: str) -> dict[str, Any]:
     """The ``error`` object of a Google JSON error body, or ``{}``."""
     try:
         parsed = json.loads(body_text) if body_text else None
@@ -683,8 +798,11 @@ def _error_object(body_text: str) -> Dict[str, Any]:
 
 
 def gemini_http_error(
-    response: httpx.Response, *, body_text: Optional[str] = None, api_key: str = "",
+    response: httpx.Response, *, body_text: Optional[str] = None, api_key: str = "", base_url: str = "",
+    key_guidance: bool = True,
 ) -> GeminiAPIError:
+    """``key_guidance=False`` for OAuth-bearer callers: the API-key fixes (free tier, Standard key, wrong
+    key surface) are wrong advice when the credential is a user's OAuth access token."""
     status = response.status_code
     body_text = (_response_text(response) if body_text is None else body_text) or ""
     err_obj = _error_object(body_text)
@@ -698,10 +816,12 @@ def gemini_http_error(
     # Users who bypassed the setup wizard (raw GOOGLE_API_KEY in .env) still need to learn the free
     # tier cannot sustain an agent session; a legacy "Standard" key gets the real fix (Google's raw
     # 401 asks for OAuth; after Sept 2026 the same AIza key is often a 400 API_KEY_INVALID).
-    if status == 429 and is_free_tier_quota_error(err_message or body_text):
+    if key_guidance and status == 429 and is_free_tier_quota_error(err_message or body_text):
         message += _FREE_TIER_GUIDANCE
-    if is_standard_key_auth_error(status, err_message or body_text, reason, api_key=api_key):
+    if key_guidance and is_standard_key_auth_error(status, err_message or body_text, reason, api_key=api_key):
         message += _STANDARD_KEY_GUIDANCE
+    if key_guidance and status == 403:
+        message += wrong_gemini_surface_guidance(base_url, api_key, err_status)
     return GeminiAPIError(
         message, code=_HTTP_ERROR_CODES.get(status, f"gemini_http_{status}"), status_code=status, response=response,
         retry_after=retry_after, details={"status": err_status, "reason": reason, "metadata": metadata, "message": err_message},
@@ -714,13 +834,17 @@ class GeminiNativeClient:
     # For agent/auxiliary_client.py: a complete client, never re-dispatched through a wire adapter.
     # (No HERMES_SKIP_ASYNC_WRAP — the async path has a real conversion, AsyncGeminiNativeClient.)
     HERMES_SKIP_TRANSPORT_WRAP = True
+    # Seams for a subclass that speaks the same wire under another credential (an OAuth bearer on the
+    # per-user-quota methods): RPC method names, the missing-credential text, and ``_auth_headers``.
+    GENERATE_METHOD, STREAM_METHOD = "generateContent", "streamGenerateContent"
+    MISSING_KEY_ERROR = _MISSING_KEY_ERROR
 
     def __init__(
-        self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[Dict[str, str]] = None,
+        self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[dict[str, str]] = None,
         timeout: Any = None, http_client: Optional[httpx.Client] = None, **_: Any,
     ) -> None:
         if not (api_key or "").strip():
-            raise RuntimeError(_MISSING_KEY_ERROR)
+            raise RuntimeError(self.MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
         self.base_url = normalize_gemini_base_url(base_url)
         self._default_headers = dict(default_headers or {})
@@ -739,9 +863,15 @@ class GeminiNativeClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def _headers(self) -> Dict[str, str]:
-        return {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self.api_key,
+    def _auth_headers(self) -> dict[str, str]:
+        return {"x-goog-api-key": self.api_key}
+
+    def _headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json", "Accept": "application/json", **self._auth_headers(),
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
+
+    def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
+        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:
@@ -749,23 +879,25 @@ class GeminiNativeClient:
         return (True, None) if chunk is _END else (False, chunk)
 
     def _create_chat_completion(
-        self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
+        self, *, model: str = "gemini-3.7-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None, **_: Any,
+        top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[dict[str, Any]] = None,
+        timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
-            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
+            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
+            response_format=response_format or extra.get("response_format"), model=model,
             tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
         if stream:
-            return self._stream_completion(model, url + "streamGenerateContent?alt=sse", request, timeout)
-        response = self._http.post(url + "generateContent", json=request, headers=self._headers(), timeout=timeout)
+            return self._stream_completion(model, f"{url}{self.STREAM_METHOD}?alt=sse", request, timeout)
+        response = self._http.post(url + self.GENERATE_METHOD, json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
-            raise gemini_http_error(response, api_key=self.api_key)
+            raise self._http_error(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -774,15 +906,13 @@ class GeminiNativeClient:
             ) from exc
         return translate_gemini_response(payload, model=model)
 
-    def _stream_completion(self, model: str, url: str, request: Dict[str, Any], timeout: Any) -> Iterator[_GeminiStreamChunk]:
+    def _stream_completion(self, model: str, url: str, request: dict[str, Any], timeout: Any) -> Iterator[_GeminiStreamChunk]:
         try:
             headers = {**self._headers(), "Accept": "text/event-stream"}
             with self._http.stream("POST", url, json=request, headers=headers, timeout=timeout) as response:
                 if response.status_code != 200:
-                    raise gemini_http_error(
-                        response, body_text=read_streaming_error_body(response), api_key=self.api_key,
-                    )
-                tool_call_indices: Dict[str, Dict[str, Any]] = {}
+                    raise self._http_error(response, read_streaming_error_body(response))
+                tool_call_indices: dict[str, dict[str, Any]] = {}
                 for event in _iter_sse_events(response):
                     yield from translate_stream_event(event, model, tool_call_indices)
         except httpx.HTTPError as exc:

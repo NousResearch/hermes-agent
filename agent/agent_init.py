@@ -1553,13 +1553,12 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         # Actionable user messages guaranteed to survive in the tail (default 1, floor 1).
         min_tail_users=max(1, _parse_config_int(cfg.get("min_tail_user_messages", 1), 1)),
         max_attempts=min(max_attempts, 10),
-        # Opt-in proactive tool-result prune trigger (0 = disabled; negatives = disabled).
-        proactive_prune_tokens=max(0, _parse_config_int(cfg.get("proactive_prune_tokens", 0), 0)),
-        proactive_prune_min_chars=_parse_config_int(
-            cfg.get("proactive_prune_min_result_chars", 8000), 8000
-        ),
+        # Proactive tool-result prune trigger (0 / false / negatives = disabled; other bad values = default).
+        proactive_prune_tokens=0 if cfg.get("proactive_prune_tokens") is False else max(0, _parse_config_int(
+            cfg.get("proactive_prune_tokens", 64000), 64000)),
+        proactive_prune_min_chars=_parse_config_int(cfg.get("proactive_prune_min_result_chars", 1000), 1000),
         proactive_prune_min_reclaim=max(
-            0, _parse_config_int(cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096)
+            0, _parse_config_int(cfg.get("proactive_prune_min_reclaim_tokens", 64000), 64000)
         ),
         protect_first=protect_first,
         abort_on_summary_failure=_cfg_flag(cfg, "abort_on_summary_failure", False),

@@ -27,6 +27,9 @@ def _compressor(**kw):
         threshold_percent=0.50,
         protect_first_n=2,
         protect_last_n=4,
+        # Mechanics fixtures reclaim ~5-7K tokens; pin the pre-default gate so the shipped
+        # 64K min_reclaim default doesn't turn every commit-path test into a no-op.
+        proactive_prune_min_reclaim_tokens=4096,
     )
     defaults.update(kw)
     with patch(
@@ -205,11 +208,17 @@ def test_no_orphans_both_directions():
     assert call_ids <= result_ids, "orphan tool calls without a matching result"
 
 
-def test_unset_config_zero_behavior_change():
-    """Pin: with the config knobs unset, the compressor behaves byte-identically
-    to pre-feature main — the prune path is dead code and the full-compression
-    Phase-1 caller keeps its 200-char floor."""
-    c = _compressor()  # nothing configured
+def test_shipped_defaults_are_on_and_episodic():
+    """Unset config ships the measured defaults: prune on at 64K, 1000-char floor, 64K reclaim gate."""
+    c = ContextCompressor(model="test", quiet_mode=True)
+    assert (c.proactive_prune_tokens, c.proactive_prune_min_result_chars, c.proactive_prune_min_reclaim_tokens) == (
+        64_000, 1_000, 64_000,
+    )
+
+
+def test_disabled_prune_is_a_no_op():
+    """Pin: proactive_prune_tokens=0 makes the prune path dead code and never mutates its input."""
+    c = _compressor(proactive_prune_tokens=0)
     assert c.proactive_prune_tokens == 0
     msgs = _build(8, big_indices={0, 1, 2})
     import copy

@@ -4,8 +4,7 @@ Mirrors ``test_compression_max_attempts_config.py``: the three knobs are
 parsed in ``agent_init`` with the same hardened semantics (booleans rejected,
 fractional floats rejected — not truncated, integral floats and numeric
 strings accepted) and attached to the built-in compressor.  Default is
-0 / 8000 / 4096, i.e. the feature is OFF and behavior-neutral unless
-``proactive_prune_tokens`` is set above 0.
+64000 / 1000 / 64000 (on); ``proactive_prune_tokens: 0`` or ``false`` turns it off.
 """
 
 from __future__ import annotations
@@ -73,10 +72,18 @@ class TestProactivePruneConfig:
         assert cc.proactive_prune_min_result_chars == 12_000
         assert cc.proactive_prune_min_reclaim_tokens == 8_192
 
+    def test_unset_ships_the_measured_defaults(self, monkeypatch, tmp_path):
+        cc = _make_agent(monkeypatch, tmp_path).context_compressor
+        assert (cc.proactive_prune_tokens, cc.proactive_prune_min_result_chars, cc.proactive_prune_min_reclaim_tokens) == (
+            64_000, 1_000, 64_000,
+        )
+
     def test_boolean_is_rejected_not_coerced(self, monkeypatch, tmp_path):
-        # bool subclasses int: YAML `proactive_prune_tokens: true` must fall
-        # back to disabled, never coerce to 1 token.
+        # bool subclasses int: YAML `true` must never coerce to a 1-token trigger;
+        # it keeps the default. `false` is an explicit off switch.
         agent = _make_agent(monkeypatch, tmp_path, proactive_prune_tokens=True)
+        assert agent.context_compressor.proactive_prune_tokens == 64_000
+        agent = _make_agent(monkeypatch, tmp_path / "off", proactive_prune_tokens=False)
         assert agent.context_compressor.proactive_prune_tokens == 0
 
 

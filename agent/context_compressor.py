@@ -2806,8 +2806,8 @@ class ContextCompressor(
         base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "",
         api_mode: str = "", abort_on_summary_failure: bool = False, max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
-        proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
-        proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        proactive_prune_tokens: int = 64000, proactive_prune_min_result_chars: int = 1000,
+        proactive_prune_min_reclaim_tokens: int = 64000, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
@@ -2830,8 +2830,8 @@ class ContextCompressor(
         # Proactive prune runs independently of the full-compression trigger. 0 = disabled.
         self.proactive_prune_tokens = int(proactive_prune_tokens or 0)
         # Floor at 200 chars: below that a summary can exceed what it replaces and pass 2 re-summarizes
-        # its own output every turn. Configured 0 keeps the 8000 default via `or`.
-        self.proactive_prune_min_result_chars = max(_PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000))
+        # its own output every turn. Configured 0 keeps the 1000 default via `or`.
+        self.proactive_prune_min_result_chars = max(_PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 1000))
         # Every commit breaks the prompt-cache prefix; require a meaningful reclaim batch so fires are episodic.
         self.proactive_prune_min_reclaim_tokens = max(0, int(proactive_prune_min_reclaim_tokens or 0))
         # A committed prune is a cache boundary: rearm only after the prompt regrows the reclaimed tokens.

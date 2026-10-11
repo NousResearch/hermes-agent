@@ -6,9 +6,10 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from hermes_constants import display_hermes_home
+from agent.initiate_setup_prompt import HEADER as INITIATE_SETUP_HEADER
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
 from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
@@ -25,7 +26,10 @@ logger = logging.getLogger(__name__)
 # scanned once and memoized; reload_skills() clears every slot. Guards
 # publication and the freshness lookup so a reader always sees a consistent
 # (key, map) pair. Scanning stays outside the lock (#14536, #74574).
-_skill_commands_by_key: Dict[tuple, Dict[str, Dict[str, Any]]] = {}
+_skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] = {}
+# Keep the last map callers could actually see, even when plugin lifecycle
+# invalidation drops the projection cache before /reload-skills can diff it.
+_last_interactive_skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] = {}
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
@@ -153,6 +157,8 @@ def describe_skill_invocation(content: Any, separator: str = " — ") -> Optiona
     """
     if not isinstance(content, str):
         return None
+    if content.startswith(INITIATE_SETUP_HEADER):
+        return "/initiate-setup"
     if content.startswith(_AUTO_LOAD_PREFIX):
         return _describe_auto_loaded_skill_turn(content)
     if not content.startswith(_SKILL_INVOCATION_PREFIX):
@@ -349,7 +355,7 @@ def _build_skill_message(
         try:
             skill_view_target = str(skill_dir.relative_to(_skills_dir()))
         except ValueError:
-            skill_view_target = skill_dir.name  # external dir — use the skill name
+            skill_view_target = str(loaded_skill.get("name") or skill_dir.name)
         parts += ["", "[This skill has supporting files (paths relative to the skill directory above):]"]
         parts += [f"- {sf}" for sf in supporting]
         parts.append(
@@ -435,7 +441,7 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
 
 
-def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]]) -> None:
+def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
     from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
@@ -472,7 +478,7 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
                          "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}
 
 
-def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
+def scan_skill_commands() -> dict[str, dict[str, Any]]:
     """Scan skill dirs and return {"/skill-name": {name, description, skill_md_path, skill_dir}}.
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
@@ -483,7 +489,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     # its own (empty) ``seen_names`` but collided against the first scan's already- published slugs, logging
     # one bogus "already claimed" warning per skill — each naming the same skill as its own incumbent
     # (#74574).
-    commands: Dict[str, Dict[str, Any]] = {}
+    commands: dict[str, dict[str, Any]] = {}
     try:
         from tools.skills_tool import _get_disabled_skill_names, _skill_catalog
         disabled = _get_disabled_skill_names()
@@ -510,7 +516,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     return commands
 
 
-def get_skill_commands() -> Dict[str, Dict[str, Any]]:
+def get_skill_commands() -> dict[str, dict[str, Any]]:
     """Return the current skill commands mapping (scan first if empty). Rescans
     when the platform scope (one gateway serving Telegram and Discord) or the
     active profile's home (Desktop profile switch) or the session's project root (two sessions in two
@@ -528,7 +534,115 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return scan_skill_commands()
 
 
-def diff_command_snapshots(before: Dict[str, str], after: Dict[str, str]) -> Dict[str, Any]:
+# Plugin projection cache. The projection re-parses every plugin SKILL.md and sits on the
+# per-keystroke completion path (94 ms per Tab measured with 60 plugin skills), so it is reused
+# while its tag holds: the resolved Hermes home (plugin managers are home-keyed, so profiles never
+# share a registry) plus the registered qualified names (a plugin enable/disable/install changes
+# them). ``reload_skills()`` drops it explicitly to pick up edited SKILL.md files.
+_plugin_skill_commands: dict[str, dict[str, Any]] = {}
+_plugin_skill_commands_tag: Optional[tuple] = None
+
+
+def invalidate_plugin_skill_commands() -> None:
+    """Drop the cached plugin skill projection."""
+    global _plugin_skill_commands, _plugin_skill_commands_tag
+    with _publish_lock:
+        _plugin_skill_commands = {}
+        _plugin_skill_commands_tag = None
+
+
+def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
+    """Project enabled plugin skills into the interactive-only slash namespace (``/plugin:skill``).
+
+    Config disable lists (``skills.disabled``, ``plugins.disabled``) are applied on EVERY call, so a
+    config-only disable takes effect without a rescan.
+    """
+    from agent.skill_utils import get_disabled_skill_names
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from hermes_cli.plugins_discovery import _get_disabled_plugins
+    from hermes_constants import get_hermes_home
+
+    discover_plugins()  # no-op once this home is discovered
+    manager = get_plugin_manager()
+    metadata = manager.list_plugin_skill_metadata()
+    tag = (str(get_hermes_home()), tuple(str(m.get("name") or "") for m in metadata))
+    with _publish_lock:
+        cached, is_fresh = _plugin_skill_commands, _plugin_skill_commands_tag == tag
+    if not is_fresh:
+        cached = _scan_plugin_skill_commands(manager, metadata, tag)
+    disabled = get_disabled_skill_names()
+    disabled_plugins = _get_disabled_plugins()
+    if not disabled and not disabled_plugins:
+        return cached
+    return {
+        key: info for key, info in cached.items()
+        if not (info["name"] in disabled or info["name"].split(":", 1)[1] in disabled
+                or info["name"].split(":", 1)[0] in disabled_plugins)
+    }
+
+
+def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> dict[str, dict[str, Any]]:
+    """Build the plugin skill projection and publish it with its tag atomically."""
+    global _plugin_skill_commands, _plugin_skill_commands_tag
+    from tools.skills_tool import (
+        _parse_frontmatter, skill_matches_apps, skill_matches_environment,
+        skill_matches_platform,
+    )
+
+    commands: dict[str, dict[str, Any]] = {}
+    for entry in metadata:
+        qualified = str(entry.get("name") or "").strip()
+        if ":" not in qualified:
+            continue
+        skill_md = manager.find_plugin_skill(qualified)
+        if skill_md is None or not skill_md.is_file():
+            continue
+        try:
+            parsed, _ = _parse_frontmatter(skill_md.read_text(encoding="utf-8-sig", errors="replace"))
+        except OSError:
+            continue
+        # Offer from the file we will actually load, not registration-time hints.
+        if not (skill_matches_platform(parsed) and skill_matches_environment(parsed) and skill_matches_apps(parsed)):
+            continue
+        key = f"/{qualified.lower()}"
+        if skill_command_collision_note(qualified) is not None or key in commands:
+            logger.warning("Plugin skill %r collides with an existing slash command; skipping", qualified)
+            continue
+        commands[key] = {
+            "name": qualified, "description": str(parsed.get("description") or entry.get("description")
+                                                  or f"Invoke the {qualified} plugin skill").strip(),
+            "skill_identifier": qualified, "skill_md_path": str(skill_md),
+            "skill_dir": str(skill_md.parent), "source": "plugin",
+        }
+    with _publish_lock:
+        _plugin_skill_commands, _plugin_skill_commands_tag = commands, tag
+    return commands
+
+
+def _merge_interactive_skill_commands(
+    filesystem_commands: dict[str, dict[str, Any]], plugin_commands: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Merge interactive sources with filesystem commands winning collisions."""
+    commands = dict(filesystem_commands)
+    for command, info in plugin_commands.items():
+        if command in commands:
+            logger.warning("Plugin skill %r collides with %r; keeping the first", command, commands[command]["name"])
+        else:
+            commands[command] = info
+    return commands
+
+
+def get_interactive_skill_commands() -> dict[str, dict[str, Any]]:
+    """Filesystem skills plus profile-scoped plugin skills; never use for
+    messaging/native command menus (plugin skills are CLI/TUI/desktop only)."""
+    identity = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
+    commands = _merge_interactive_skill_commands(get_skill_commands(), get_plugin_skill_commands())
+    with _publish_lock:
+        _last_interactive_skill_commands_by_key[identity] = dict(commands)
+    return commands
+
+
+def diff_command_snapshots(before: dict[str, str], after: dict[str, str]) -> dict[str, Any]:
     """Diff two {name: description} snapshots into added/removed/unchanged/total.
     Removed entries carry the pre-rescan description (the file may be gone)."""
     return {
@@ -539,42 +653,66 @@ def diff_command_snapshots(before: Dict[str, str], after: Dict[str, str]) -> Dic
     }
 
 
-def command_snapshot(cmds: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+def command_snapshot(cmds: dict[str, dict[str, Any]]) -> dict[str, str]:
     """``{"/slug": info}`` -> ``{"slug": description}`` for diff_command_snapshots."""
     return {key.lstrip("/"): (info or {}).get("description") or "" for key, info in cmds.items()}
 
 
-def reload_skills() -> Dict[str, Any]:
+def reload_skills() -> dict[str, Any]:
     """Re-scan skill dirs and return a diff of the slash-command map (``added``
     / ``removed`` / ``unchanged`` / ``total`` / ``commands``; descriptions are the
     full frontmatter field). Does NOT invalidate the skills system-prompt cache:
-    skills are called by name, so ``/reload-skills`` costs no cache reset."""
+    skills are called by name, so ``/reload-skills`` costs no cache reset. The
+    plugin projection is rebuilt too, so a plugin enabled/disabled/installed
+    since the last scan shows up without a restart."""
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
-        before_commands = _skill_commands_by_key.get(key, {})
+        before_commands = _last_interactive_skill_commands_by_key.get(key)
+    if before_commands is None:
+        # Preserve only a previously published view. A first-ever reload has
+        # no before-state, so discoveries correctly appear as additions.
+        with _publish_lock:
+            before_commands = dict(_skill_commands_by_key.get(key, {}))
+            if _plugin_skill_commands_tag and _plugin_skill_commands_tag[0] == key[1]:
+                for command, info in _plugin_skill_commands.items():
+                    if command not in before_commands:
+                        before_commands[command] = info
+    before = command_snapshot(before_commands)
+    with _publish_lock:
         # Clear the entire multi-slot cache: a skill edit could affect any
         # platform/profile combination, so every cached identity must rescan.
         _skill_commands_by_key.clear()
     from tools.skills_tool import clear_skills_cache
     clear_skills_cache()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
-    before = command_snapshot(before_commands)
+    invalidate_plugin_skill_commands()
     new_commands = scan_skill_commands()
-    result = diff_command_snapshots(before, command_snapshot(new_commands))
-    result["commands"] = len(new_commands)
+    effective_commands = _merge_interactive_skill_commands(new_commands, get_plugin_skill_commands())
+    after = command_snapshot(effective_commands)
+    result = diff_command_snapshots(before, after)
+    with _publish_lock:
+        _last_interactive_skill_commands_by_key[key] = effective_commands
+    result["commands"] = len(effective_commands)
     return result
 
 
-def resolve_skill_command_key(command: str) -> Optional[str]:
-    """Resolve a user-typed /command to its canonical ``/slug`` key, or None.
-    ``_`` ≡ ``-``: Telegram disallows hyphens, so ``/claude-code`` arrives as ``/claude_code``."""
-    return resolve_slash_key(command, get_skill_commands())
+def resolve_skill_command_key(command: str, *, interactive: bool = False) -> Optional[str]:
+    """Resolve a user-typed slash command, or return None.
+
+    Try the exact qualified spelling before the filesystem skill slug fallback,
+    where underscores and hyphens are interchangeable for Telegram. Native
+    callers retain the filesystem-only lookup; plugin skills are interactive.
+    """
+    return resolve_slash_key(command, get_interactive_skill_commands() if interactive else get_skill_commands())
 
 
-def resolve_slash_key(command: str, table: Dict[str, Any]) -> Optional[str]:
+def resolve_slash_key(command: str, table: Mapping[str, Any]) -> Optional[str]:
     """``command`` -> ``"/slug"`` when present in *table* (``_`` normalized to ``-``), else None."""
     if not command:
         return None
-    cmd_key = f"/{command.replace('_', '-')}"
+    exact_key = f"/{command.lower()}"
+    if exact_key in table:
+        return exact_key
+    cmd_key = f"/{command.replace('_', '-').lower()}"
     return cmd_key if cmd_key in table else None
 
 
@@ -582,8 +720,8 @@ def build_skill_invocation_message(
     cmd_key: str, user_instruction: str = "", task_id: str | None = None, runtime_note: str = "",
 ) -> Optional[str]:
     """Build the user message for a skill slash command, or None if not found."""
-    skill_info = get_skill_commands().get(cmd_key)
-    loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id) if skill_info else None
+    skill_info = get_interactive_skill_commands().get(cmd_key)
+    loaded = _load_skill_payload(skill_info.get("skill_identifier") or skill_info["skill_dir"], task_id=task_id) if skill_info else None
     if not loaded:
         return None
     note = (f'[IMPORTANT: The user has invoked the "{loaded[2]}" skill, indicating they want '
@@ -597,10 +735,12 @@ def build_skill_invocation_message(
 _MAX_STACKED_SKILLS = 5
 
 
-def split_stacked_skill_commands(rest: str) -> tuple[list[str], str]:
+def split_stacked_skill_commands(rest: str, *, interactive: bool = False) -> tuple[list[str], str]:
     """Consume further leading ``/skill`` tokens from *rest* (text after the first
     matched command); stops at the first non-skill (or repeated) token, which
-    starts the user instruction. Returns ``(extra_cmd_keys, remaining_instruction)``."""
+    starts the user instruction. Returns ``(extra_cmd_keys, remaining_instruction)``.
+    Native callers (messaging gateway) must pass ``interactive=False``: plugin
+    skills are interactive-only and must not resolve here."""
     keys: list[str] = []
     remaining = rest or ""
     while len(keys) < _MAX_STACKED_SKILLS - 1:
@@ -608,7 +748,7 @@ def split_stacked_skill_commands(rest: str) -> tuple[list[str], str]:
         if not stripped.startswith("/"):
             break
         token, tail = (stripped.split(None, 1) + [""])[:2]
-        cmd_key = resolve_skill_command_key(token.lstrip("/"))
+        cmd_key = resolve_skill_command_key(token.lstrip("/"), interactive=interactive)
         if cmd_key is None or cmd_key in keys:
             break
         keys.append(cmd_key)
@@ -620,12 +760,13 @@ def build_stacked_skill_invocation_message(
     cmd_keys: list[str], user_instruction: str = "", task_id: str | None = None,
 ) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message for a stacked multi-skill slash invocation:
-    ``(message, loaded_skill_names, missing_skill_names)``, or ``None`` when no skill loaded."""
-    commands = get_skill_commands()
+    ``(message, loaded_skill_names, missing_skill_names)``, or ``None`` when no skill loaded.
+    Keys come from ``split_stacked_skill_commands``; native callers only ever pass filesystem keys."""
+    commands = get_interactive_skill_commands()
     keys = [k for k in cmd_keys if k]
     loaded_names, missing, _disabled, skill_blocks = _load_skill_blocks(
         keys,
-        lambda cmd_key: _load_skill_payload(commands[cmd_key]["skill_dir"], task_id=task_id) if cmd_key in commands else None,
+        lambda cmd_key: _load_skill_payload(commands[cmd_key].get("skill_identifier") or commands[cmd_key]["skill_dir"], task_id=task_id) if cmd_key in commands else None,
         lambda name: f'[Loaded as part of the stacked skill invocation "{name}".]',  # bundle block marker
         task_id, missing_label=lambda k: k.lstrip("/"),
     )
@@ -670,7 +811,8 @@ def _load_skill_blocks(
             missing.append(missing_label(identifier))
             continue
         skill_name = loaded[2]
-        if disabled_names and (skill_name in disabled_names or identifier in disabled_names):
+        if disabled_names and (skill_name in disabled_names or identifier in disabled_names
+                               or (":" in skill_name and skill_name.split(":", 1)[1] in disabled_names)):
             if disabled_as_missing:
                 missing.append(identifier)
             else:

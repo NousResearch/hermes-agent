@@ -91,7 +91,7 @@ def test_script_import_failure_json_and_exit(tmp_path):
     (tmp_path / "winrt.py").write_text("raise ImportError('fixture unavailable')", encoding="utf-8")
     child = subprocess.run([HERMES_PYTHON, "-P", "-m", MODULE], capture_output=True,
                            text=True, timeout=30,
-                           env={**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(tmp_path)])})
+                           env={**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(tmp_path)])}, check=False)
     assert child.returncode == 1, child.stderr
     payload = json.loads(child.stdout)
     assert payload["available"] is None
@@ -113,6 +113,7 @@ def test_installed_winrt_projects_checker_uri_and_async_types(tmp_path):
          "_load_projection(); "
          "print('WINRT_CHECKER_TYPES_OK')"],
         cwd=tmp_path, capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert probe.returncode == 0, probe.stderr
     assert probe.stdout.strip() == "WINRT_CHECKER_TYPES_OK"

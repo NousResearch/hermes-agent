@@ -17,9 +17,13 @@ _NEXT_DENY_PREFIXES = ("/login", "/auth/", "/api/auth/")
 
 
 def client_ip(request: Request) -> str:
-    """First ``X-Forwarded-For`` hop, else the peer address."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
+    """ASGI peer address for rate limits, native pending caps, and auth audit.
+
+    Never parse client-supplied ``X-Forwarded-For`` here: direct clients can
+    spoof it. Trusted proxy normalization belongs upstream, where the server
+    may rewrite ``request.client`` only for operator-configured trusted peers.
+    """
+    return request.client.host if request.client else ""
 
 
 def extract_bearer(request: Request) -> str:

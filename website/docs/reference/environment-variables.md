@@ -437,6 +437,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `EMAIL_SMTP_HOST` | SMTP hostname for the email adapter |
 | `EMAIL_SMTP_PORT` | SMTP port |
 | `EMAIL_ALLOWED_USERS` | Comma-separated email addresses allowed to message the bot |
+| `EMAIL_AUTHSERV_ID` | Exact authserv-id on the receiving server's topmost `Authentication-Results` header; required unless sender authentication is disabled (`EMAIL_TRUST_FROM_HEADER=true`) |
 | `EMAIL_HOME_ADDRESS` | Default recipient for proactive email delivery |
 | `EMAIL_HOME_ADDRESS_NAME` | Display name for the email home target |
 | `EMAIL_POLL_INTERVAL` | Email polling interval in seconds |
@@ -542,8 +543,9 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `MATRIX_MAX_MEDIA_BYTES` | Maximum Matrix media upload/download size in bytes (default: `104857600`) |
 | `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |
 | `MATRIX_RECOVERY_KEY_OUTPUT_FILE` | Optional one-time path for a generated Matrix recovery key. Created with mode `0600` and never overwritten. |
-| `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
-| `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
+| `HASS_TOKEN` | Home Assistant plugin: Long-Lived Access Token (enables the HA platform + tools; requires the `homeassistant` catalog plugin, see [Home Assistant](../user-guide/messaging/homeassistant.md)) |
+| `HASS_URL` | Home Assistant plugin: Home Assistant URL (default: `http://homeassistant.local:8123`) |
+| `HASS_HOME_CHANNEL` | Home Assistant plugin: default notify target for a bare `deliver: homeassistant` (cron, webhooks) |
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |
 | `WEBHOOK_PORT` | HTTP server port for receiving webhooks (default: `8644`) |
 | `WEBHOOK_SECRET` | Global HMAC secret for webhook signature validation (used as fallback when routes don't specify their own) |

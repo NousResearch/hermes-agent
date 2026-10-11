@@ -23,7 +23,7 @@ from agent.provider_base import CatalogProviderBase
 logger = logging.getLogger(__name__)
 
 
-VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")
+VALID_ASPECT_RATIOS: tuple[str, ...] = ("landscape", "square", "portrait")
 DEFAULT_ASPECT_RATIO = "landscape"
 
 
@@ -32,10 +32,11 @@ class ImageGenProvider(CatalogProviderBase):
     :attr:`name` and :meth:`generate`; ``list_models`` entries may add
     ``speed`` / ``strengths`` / ``price`` for the picker."""
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         """``modalities`` (``"text"`` and/or ``"image"``) and ``max_reference_images``; optionally
-        ``supports_upscale`` (bool) and ``creative_controls`` (names from the tool's creative-control
-        vocabulary: ``creativity``, ``intensity``, ``complexity``, ``movement``). Surfaced in the
+        ``supports_upscale`` (bool), ``creative_controls`` (names from the tool's creative-control
+        vocabulary: ``creativity``, ``intensity``, ``complexity``, ``movement``) and
+        ``source_image_role`` (``"style"`` when image inputs set the look and are not edited). Surfaced in the
         dynamic tool schema so the model knows when ``image_url`` / ``upscale`` / each control is
         honored, and only declared controls are passed to :meth:`generate`; the text-only default
         keeps non-overriding providers backward compatible."""
@@ -48,9 +49,9 @@ class ImageGenProvider(CatalogProviderBase):
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
         *,
         image_url: Optional[str] = None,
-        reference_image_urls: Optional[List[str]] = None,
+        reference_image_urls: Optional[list[str]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate an image, or edit ``image_url`` (``reference_image_urls`` are extra
         style/composition refs, clamped to ``max_reference_images``); any source image
         routes to the edit endpoint. Return :func:`success_response` / :func:`error_response`.
@@ -65,7 +66,7 @@ def resolve_aspect_ratio(value: Optional[str]) -> str:
     return v if v in VALID_ASPECT_RATIOS else DEFAULT_ASPECT_RATIO
 
 
-def normalize_reference_images(value: Any) -> Optional[List[str]]:
+def normalize_reference_images(value: Any) -> Optional[list[str]]:
     """Coerce a str or list into a clean list of non-blank strings; ``None`` when
     nothing usable remains so providers treat "no refs" as one sentinel."""
     if isinstance(value, str):
@@ -109,10 +110,10 @@ def success_response(
     aspect_ratio: str,
     provider: str,
     modality: str = "text",
-    extra: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    extra: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Uniform success dict; ``extra`` keys are added without overriding standard ones."""
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "success": True, "image": image, "model": model, "prompt": prompt,
         "aspect_ratio": aspect_ratio, "modality": modality, "provider": provider,
     }
@@ -129,7 +130,7 @@ def error_response(
     model: str = "",
     prompt: str = "",
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build a uniform error response dict."""
     return {
         "success": False, "image": None, "error": error, "error_type": error_type,

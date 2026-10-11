@@ -187,6 +187,26 @@ def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
     return str(reasoning_config.get("effort") or "").strip().lower() or None
 
 
+def tokenhub_effort(requested: Optional[str]) -> str:
+    """TokenHub's top-level ``reasoning_effort``: ``high`` when no level was chosen, else the
+    request clamped to low/medium/high. Shared by the tencent-tokenhub profile and the host-based
+    branch base_url-only agents take; callers handle thinking-off themselves."""
+    return "high" if requested is None else clamp_effort(requested, TOKENHUB_EFFORTS)
+
+
+def generic_nested_reasoning(reasoning_config: Optional[dict]) -> dict:
+    """The OpenAI-compatible ``extra_body`` fallback for a route whose profile declares no
+    reasoning shape: ``{}`` with no config, ``{"reasoning": {"enabled": False}}`` when disabled,
+    else ``{"reasoning": {"enabled": True, "effort": <effort or medium>}}``. Used by auxiliary
+    calls, and by a profile hook that wants that fallback (``handles_reasoning`` skips it for any
+    profile overriding ``build_api_kwargs_extras``)."""
+    if not reasoning_config or not isinstance(reasoning_config, dict):
+        return {}
+    if reasoning_config.get("enabled") is False:
+        return {"reasoning": {"enabled": False}}
+    return {"reasoning": {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}}
+
+
 def clamp_reasoning_config(reasoning_config: Optional[dict], supported: Sequence[str] = OPENAI_COMPAT_WIRE_EFFORTS) -> Optional[dict]:
     """Return ``reasoning_config`` with its ``effort`` clamped onto ``supported`` (non-dicts and
     configs without an effort pass through untouched).
@@ -225,6 +245,23 @@ def thinking_toggle_extras(
     if clamped in efforts:
         return ({"thinking": {"type": "enabled"}} if always_emit_toggle else {}), {"reasoning_effort": clamped}
     return {"thinking": {"type": "enabled"}}, {}
+
+
+# DashScope documents ``preserve_thinking`` (Qwen3.6+ and the Kimi K2.6/K2.7 it hosts) and a
+# top-level ``clear_thinking`` (its GLM-5.x) as the switches that make the server KEEP replayed
+# prior-turn ``reasoning_content``; without them the replay is accepted and dropped.
+# https://www.alibabacloud.com/help/en/model-studio/deep-thinking
+_DASHSCOPE_PRESERVE_MODELS = ("qwen3.6", "qwen3.7", "qwen3.8", "kimi-k2.6", "kimi-k2.7")
+
+
+def dashscope_preserve_thinking_extras(model: Optional[str]) -> dict:
+    """``extra_body`` keys that keep replayed reasoning on a DashScope-hosted model, else ``{}``."""
+    m = (model or "").strip().lower()
+    if any(token in m for token in _DASHSCOPE_PRESERVE_MODELS):
+        return {"preserve_thinking": True}
+    if m.startswith("glm-5"):
+        return {"clear_thinking": False}
+    return {}
 
 
 def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[str]) -> tuple[dict, dict]:

@@ -90,6 +90,17 @@ def _process_group_exists(pgid: int) -> bool:
     return True
 
 
+def _psutil_alive(proc) -> bool:
+    """Best-effort 'is this psutil Process still alive' for the shutdown cadence;
+    zombies count as dead and it never raises."""
+    try:
+        import psutil  # type: ignore
+
+        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        return False
+
+
 class PtyBridge:
     """Thin wrapper around ``ptyprocess.PtyProcess`` for byte streaming. Not thread-safe: owned by
     the WebSocket handler that spawned it; reads run in an executor thread, writes are awaited on
@@ -97,7 +108,7 @@ class PtyBridge:
     WebSocket task, never the dashboard event loop.
     """
 
-    def __init__(self, proc: "ptyprocess.PtyProcess"):  # type: ignore[name-defined]
+    def __init__(self, proc: ptyprocess.PtyProcess):  # type: ignore[name-defined]
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
@@ -117,7 +128,7 @@ class PtyBridge:
     @classmethod
     def spawn(
         cls, argv: Sequence[str], *, cwd: Optional[str] = None, env: Optional[dict] = None, cols: int = 80, rows: int = 24
-    ) -> "PtyBridge":
+    ) -> PtyBridge:
         """Spawn ``argv`` behind a new PTY and return a bridge."""
         if not _PTY_AVAILABLE:
             if sys.platform.startswith("win"):
@@ -191,7 +202,7 @@ class PtyBridge:
             loop.add_writer(self._fd, _mark_ready)
             await asyncio.wait_for(ready, timeout=timeout)
             return not self._closed
-        except (asyncio.TimeoutError, OSError, ValueError):
+        except (TimeoutError, OSError, ValueError):
             return False
         finally:
             try:
@@ -284,6 +295,23 @@ class PtyBridge:
 
         pgid = self._pgid
         leader_was_alive = self._proc.isalive()
+        # No group signal is safe for a shared-group child, so its descendants must be
+        # snapshotted BEFORE the parent is signalled: once the parent exits they reparent
+        # and psutil can no longer find them (browser_tool_lifecycle._legacy_kill_process_tree,
+        # process_registry._terminate_host_pid). The sweep below then kills them individually
+        # so a SIGHUP-ignoring helper cannot keep the PTY slave open (#76759).
+        non_leader_descendants: list = []
+        if pgid is not None and pgid != self._proc.pid:
+            # Not a group leader: the child shares OUR process group, so killpg would
+            # take the TUI down with it. Signal the child directly instead.
+            if leader_was_alive:
+                try:
+                    import psutil  # type: ignore
+
+                    non_leader_descendants = psutil.Process(self._proc.pid).children(recursive=True)
+                except Exception:
+                    non_leader_descendants = []
+            pgid = None
 
         # Signal the whole process group, not just the PTY leader: the dashboard TUI starts helper
         # children (e.g. the Python slash worker) and killing only the leader strands them.
@@ -319,13 +347,34 @@ class PtyBridge:
                 except OSError:
                     break  # ESRCH: the group is empty
                 self._wait_for_group_exit(pgid, grace if sig == signal.SIGHUP else 0.5)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        elif non_leader_descendants:
+            # The shared-group branch: the helpers-outlive-leader sweep above cannot run
+            # (no killpg is safe), so end the snapshotted descendants individually. The main
+            # loop above signalled only the child PID, so the descendants got no SIGHUP —
+            # send it now and allow the helper grace, then SIGKILL survivors: a helper
+            # saving state on SIGHUP still finishes, and one that ignores SIGHUP cannot
+            # outlive the close (mirrors the group sweep's leader-dead cadence, #76759).
+            grace = _helper_shutdown_grace()
+            for sig in (signal.SIGHUP, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                for child in non_leader_descendants:
+                    try:
+                        if sig == signal.SIGHUP:  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                            child.send_signal(sig)
+                        else:
+                            child.kill()
+                    except Exception:
+                        pass  # already gone; psutil raises NoSuchProcess/Zombie
+                if sig == signal.SIGHUP:  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                    deadline = time.monotonic() + grace
+                    while any(_psutil_alive(c) for c in non_leader_descendants) and time.monotonic() < deadline:
+                        self._discard_output(0.02)
 
         try:
             self._proc.close(force=True)
         except Exception:
             pass
 
-    def __enter__(self) -> "PtyBridge":
+    def __enter__(self) -> PtyBridge:
         return self
 
     def __exit__(self, *_exc) -> None:

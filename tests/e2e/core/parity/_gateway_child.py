@@ -79,7 +79,7 @@ class ParityTelegramAdapter(BasePlatformAdapter):
         self._mark_disconnected()
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                   metadata: Optional[dict[str, Any]] = None) -> SendResult:
         self._sent += 1
         message_id = f"parity-{self._sent}"
         emit("send", chat_id=str(chat_id), message_id=message_id, content=content)
@@ -90,7 +90,7 @@ class ParityTelegramAdapter(BasePlatformAdapter):
         emit("edit", chat_id=str(chat_id), message_id=message_id, content=content)
         return SendResult(success=True, message_id=message_id)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": "parity", "type": "dm", "chat_id": chat_id}
 
     async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:

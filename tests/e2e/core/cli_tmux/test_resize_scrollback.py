@@ -44,7 +44,7 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
     (tmp_path / "work").mkdir()
 
     def tmux(*args: str) -> str:
-        return subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
+        return subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False).stdout
 
     def transcript() -> str:
         return tmux("capture-pane", "-p", "-J", "-t", "p", "-S", "-", "-E", "-")
@@ -146,5 +146,5 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
     assert sorted(w for w in expected if words[w] != 1) == [], final
     assert [final.count(f"zq{t}q") for t in WORDS] == [1, 1, 1], final
     assert sum(1 for line in final.split("\n") if line.lstrip().startswith("❯")) == 1, final
-    blank_runs = [len(run) for run in re.findall(r"(?:^[ \t]*\n)+", final, flags=re.M)]
+    blank_runs = [len(run) for run in re.findall(r"(?:^[ \t]*\n)+", final, flags=re.MULTILINE)]
     assert max(blank_runs, default=0) <= 2, final  # the reply panel's own spacing, nothing more

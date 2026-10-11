@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 WS_CLOSE_PROCESS_EXITED = 4410
@@ -42,10 +43,34 @@ async def _close_ws(ws, code: int) -> None:
         pass
 
 
+def _process_ancestors(pid: int) -> set[int]:
+    """Pids of ``pid``'s live ancestors; empty when the process is gone or unreadable."""
+    import psutil  # type: ignore
+
+    try:
+        return {parent.pid for parent in psutil.Process(pid).parents()}
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, ValueError):
+        return set()
+
+
+def _key_segments(key: str) -> tuple[str, str]:
+    """``(profile, resume)`` a keep-alive key was registered under.
+
+    Registry keys read ``token\\0profile\\0resume``; a key without those
+    segments — a chat that was never resumed from — yields ``("", "")``.
+    Session ids are only unique within a profile's store, so a resume target
+    is identified by both.
+    """
+    parts = key.split("\0")
+    return (parts[1], parts[2]) if len(parts) >= 3 else ("", "")
+
+
 class PtySession:
-    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float) -> None:
+    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float, active_session_file: Optional[Path] = None) -> None:
         self.key = key
         self.bridge = bridge
+        self.active_session_file = active_session_file
+        self.active_session_cleanup: Optional[Callable[[], None]] = None
         self.buffer = RingBuffer(buffer_cap)
         self.alive = True
         self.attached = False
@@ -133,6 +158,22 @@ class PtySession:
         self.attached = False
         self.last_detached_at = time.monotonic()
 
+    def hosts_pid(self, pid: Optional[int]) -> bool:
+        """Whether ``pid`` runs inside this PTY: the leader itself or one of its descendants.
+
+        The dashboard's PTY leader is ``node entry.js``; the process that takes the
+        session lease is its ``tui_gateway`` child, so the lease pid is never the
+        bridge's own pid and only ancestry identifies the terminal. A bridge that
+        cannot report a pid (already reaped, or a stub) is simply not a match.
+        """
+        if pid is None:
+            return False
+        try:
+            leader = int(self.bridge.pid)
+        except (AttributeError, TypeError, ValueError, OSError):
+            return False
+        return leader == pid or leader in _process_ancestors(pid)
+
     async def close(self) -> None:
         self.alive = False
         if self._drain_task is not None:
@@ -145,8 +186,19 @@ class PtySession:
             # bridge.close() joins the child — blocking; keep it off the event loop.
             # See #53227.
             await asyncio.to_thread(self.bridge.close)
-        except Exception:
+        except Exception:  # health: allow BLE001 S110 -- teardown of an already-dead PTY must not mask the caller's error path
             pass
+        try:
+            if self.active_session_file is not None:
+                self.active_session_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if self.active_session_cleanup is not None:
+            try:
+                self.active_session_cleanup()
+            except Exception:  # health: allow BLE001 S110 -- cleanup callback must not mask the close path; the PTY is dead either way
+                pass
+            self.active_session_cleanup = None
 
 
 class RegistryFull(Exception):
@@ -156,7 +208,7 @@ class RegistryFull(Exception):
         super().__init__(message)
 
 
-async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) -> None:
+async def run_reaper(registry: PtySessionRegistry, *, interval: float = 60.0) -> None:
     """Periodically reap idle/dead keep-alive sessions. Cancelled on shutdown."""
     while True:
         await asyncio.sleep(interval)
@@ -172,7 +224,7 @@ class PtySessionRegistry:
         self._max = max_sessions
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
-        self._sessions: Dict[str, PtySession] = {}
+        self._sessions: dict[str, PtySession] = {}
         # The get-or-spawn decision spans awaits (reap_idle, the spawn thread,
         # session.start), so two connections racing one attach token both saw
         # "no session" and forked a PTY each: the token then mapped to whichever
@@ -187,7 +239,7 @@ class PtySessionRegistry:
         # awaits them too, and holding the tasks keeps them from being garbage-collected.
         self._background_closes: set[asyncio.Task] = set()
 
-    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]) -> Tuple[PtySession, bool]:
+    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object], active_session_file: Optional[Path] = None) -> tuple[PtySession, bool]:
         await self.reap_idle()
         async with self._attach_lock:
             existing = self._sessions.get(key)
@@ -203,7 +255,13 @@ class PtySessionRegistry:
             # PTY spawn does blocking fork/exec work — keep it off the event loop.
             # See #53227.
             bridge = await asyncio.to_thread(spawn)
-            session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout)
+            session = PtySession(
+                key,
+                bridge,
+                buffer_cap=self._buffer_cap,
+                read_timeout=self._read_timeout,
+                active_session_file=active_session_file,
+            )
             await session.start()
             self._sessions[key] = session
             return session, True
@@ -229,6 +287,39 @@ class PtySessionRegistry:
                     # until its next keystroke fails with 1013.
                     await _close_ws(session._ws, WS_CLOSE_SUPERSEDED)
                     await session.close()
+
+    async def close_orphaned_sessions(
+        self, resume: Optional[str], *, keep_key: str, holder_pid: Optional[int] = None,
+    ) -> None:
+        """Close a keep-alive PTY stranded under a superseded attach token.
+
+        Rotating the token — the dashboard's *New chat* — moves the tab to a
+        fresh PTY while the previous one keeps the TUI's single-writer lease on
+        its session. That terminal is out of the user's reach, so the next
+        return to the same chat is refused as a session held elsewhere. A PTY
+        with a live viewer is never a candidate: somebody is still using it.
+
+        A chat that was never resumed from carries no resume target in its key,
+        so ``holder_pid`` — the process holding the lease for the session being
+        resumed — identifies that terminal instead.
+        """
+        if not resume:
+            return
+        # The requested chat is (profile, session): the same session id in
+        # another profile's store is a different chat whose terminal stays.
+        target = (_key_segments(keep_key)[0], resume)
+        async with self._attach_lock:
+            doomed = [
+                key for key, session in self._sessions.items()
+                if key != keep_key and not session.attached
+                and (_key_segments(key) == target or session.hosts_pid(holder_pid))
+            ]
+            sessions = [self._sessions.pop(key) for key in doomed]
+        # Close outside the registry lock — a close can wait out its helpers' SIGHUP grace and
+        # this lock serializes every new chat — but still before the caller spawns: the child's
+        # session lease is only released once its close finishes.
+        for session in sessions:
+            await session.close()
 
     def detach(self, key: str, ws) -> None:
         s = self._sessions.get(key)
@@ -261,7 +352,7 @@ class PtySessionRegistry:
         self._sessions.pop(oldest.key, None)
         self._close_in_background(oldest)
 
-    def _close_in_background(self, session: "PtySession") -> None:
+    def _close_in_background(self, session: PtySession) -> None:
         task = asyncio.create_task(session.close())
         self._background_closes.add(task)
         task.add_done_callback(self._background_closes.discard)

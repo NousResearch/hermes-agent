@@ -108,6 +108,26 @@ class PlatformEntry:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
     # -> {"success": True, "message_id": ...} | {"error": str}``.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+    # Every inbound event is produced by the service the adapter authenticated to with its own
+    # credential (an event bus, not a person), so user allowlists and pairing do not apply. Never
+    # set it for a chat platform: any sender would reach the agent. Consumer: Home Assistant.
+    trusted_inbound: bool = False
+    # Built-in display defaults tier ("high" | "medium" | "low" | "minimal", see
+    # gateway/display_config.py) used below the user's display.* overrides; "" = global defaults.
+    display_tier: str = ""
+    # Env prefixes shared with a non-channel capability (the same plugin's tools): profile clones
+    # strip keys under them only when the source profile runs the adapter (profile_channels.py).
+    shared_env_prefixes: tuple = ()
+
+
+def core_ships_platform(name: str) -> bool:
+    """*name* is a platform core ships an adapter for: a static ``Platform`` member or a bundled
+    ``plugins/platforms/`` plugin. A user plugin may replace such an adapter but never mark it
+    ``trusted_inbound``: its senders are people, and that flag waives allowlists and pairing."""
+    from gateway.config import Platform
+    value = str(name or "").strip().lower()
+    return value in {Platform[member].value for member in Platform._member_names_} or (
+        value in Platform._scan_bundled_plugin_platforms()[0])
 
 
 class PlatformRegistry:

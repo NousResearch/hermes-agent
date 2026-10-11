@@ -277,7 +277,7 @@ class TestFirecrawlScrapeTimeout:
 
         # Patch _get_firecrawl_client to return our fake client
         monkeypatch.setattr(
-            firecrawl_provider, "_get_firecrawl_client", lambda: fake_client
+            firecrawl_provider, "_get_firecrawl_client", lambda capability=None: fake_client
         )
         # Patch check_website_access to allow the URL
         monkeypatch.setattr(

@@ -59,7 +59,7 @@ def test_boot_uses_one_selected_dependency_tree_in_fresh_process(tmp_path, monke
         "print(importlib.util.find_spec('base_only') is None)"
     )
     process = subprocess.run([sys.executable, "-c", code, str(root), str(site_of(base))],
-                             env=dict(os.environ), text=True, capture_output=True, timeout=30)
+                             env=dict(os.environ), text=True, capture_output=True, timeout=30, check=False)
     assert process.returncode == 0, process.stderr
     assert process.stdout.splitlines() == ["new", "True"]
 
@@ -95,7 +95,7 @@ def test_boot_puts_the_checkout_launcher_ahead_of_the_venvs_own_console_script(t
         "activate_dependencies(Path(sys.argv[1])); print(os.environ.get('PATH', ''))"
     )
     process = subprocess.run([sys.executable, "-c", code, str(root)],
-                             env=dict(os.environ), text=True, capture_output=True, timeout=30)
+                             env=dict(os.environ), text=True, capture_output=True, timeout=30, check=False)
     assert process.returncode == 0, process.stderr
     entries = process.stdout.strip().split(os.pathsep)
     assert entries.index(str(checkout_bin)) < entries.index(str(venv_bin))
@@ -116,7 +116,7 @@ def test_broken_environment_keeps_explicit_repair_entry_reachable(tmp_path, monk
     record.write_text(json.dumps({"packages": {"venv": {"environment": str(tmp_path / "missing")}}}))
     code = "import sys; sys.argv = ['hermes', *sys.argv[1:]]; import hermes_bootstrap; print('bootstrap-ready')"
     result = subprocess.run([sys.executable, "-c", code, *command], env=dict(os.environ),
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert (result.returncode == 0) is allowed, result.stderr
     if not allowed:
         assert "hermes pm repair" in result.stderr
@@ -142,7 +142,7 @@ def test_manual_repair_bypasses_damaged_generation_activation(tmp_path, monkeypa
     }}}), encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": str(repo)}
     result = subprocess.run([sys.executable, "-S", "-m", "hermes_cli.main", "pm", "repair", "--help"],
-                            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+                            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert "hermes pm repair" in result.stdout
 
@@ -183,7 +183,7 @@ def test_boot_never_activates_the_pre_pm_venv(tmp_path, monkeypatch, interpreter
         "print('legacy importable:', importlib.util.find_spec('legacy_only') is not None)"
     )
     result = subprocess.run([python, "-I", "-c", code, str(repo), str(root)], env=dict(os.environ),
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     expected = ("refused: no dependency environment is committed" if interpreter == "store"
                 else "legacy importable: False")

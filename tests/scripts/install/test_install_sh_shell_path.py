@@ -57,7 +57,7 @@ def _wire(home: Path, runs: int = 1) -> None:
                NO_COLOR="1", TERM="dumb", CI="true")
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest\n" + "wire_shell_path\n" * runs
     result = subprocess.run(["bash", "-c", script], env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -65,7 +65,7 @@ def _login_path(home: Path) -> list[str]:
     # Absolute path: the pinned PATH below has no bash on hosts like NixOS.
     result = subprocess.run([shutil.which("bash"), "-lc", 'printf %s "$PATH"'],
                             env={"HOME": str(home), "PATH": "/usr/local/bin:/usr/bin:/bin"},
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     return result.stdout.split(":")
 

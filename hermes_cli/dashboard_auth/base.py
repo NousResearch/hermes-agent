@@ -128,7 +128,7 @@ class DashboardAuthProvider(ABC):
     @abstractmethod
     def revoke_session(self, *, refresh_token: str) -> None: ...
 
-    def complete_password_login(self, *, username: str, password: str) -> "Session":
+    def complete_password_login(self, *, username: str, password: str) -> Session:
         """Verify a username/password pair and mint a :class:`Session` (only called when
         ``supports_password``). Raise ``InvalidCredentialsError`` on rejection (SHOULD be constant
         time for unknown users — no timing oracle) and ``ProviderError`` when the store is
@@ -137,7 +137,7 @@ class DashboardAuthProvider(ABC):
             f"{type(self).__name__} does not support password login "
             "(set supports_password = True and override complete_password_login)")
 
-    def verify_token(self, *, token: str) -> "Optional[TokenPrincipal]":
+    def verify_token(self, *, token: str) -> Optional[TokenPrincipal]:
         """Verify a non-interactive bearer token; return its principal. Mirrors ``verify_session``:
         return ``None`` (never raise) for an unrecognised token so the seam falls through; raise
         ``ProviderError`` ONLY for a genuine backing-store outage. Shared secrets MUST be compared

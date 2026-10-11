@@ -48,7 +48,7 @@ def convert_base64_images_to_links(text: str) -> str:
     """Replace inline base64 image blobs (token bombs) with ``[IMAGE: alt]`` placeholders: markdown images
     (alt kept), parenthesised blobs, and bare ``data:image/...;base64,`` payloads. Real http(s) markdown
     image links are left untouched so the agent can ``web_extract`` / ``vision_analyze`` them."""
-    def _md_repl(m: "re.Match[str]") -> str:
+    def _md_repl(m: re.Match[str]) -> str:
         return f"[IMAGE: {alt}]" if (alt := (m.group("alt") or "").strip()) else "[IMAGE]"
 
     out = re.sub(r"!\[(?P<alt>[^\]]*)\]\(\s*data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+\)", _md_repl, text)
@@ -78,7 +78,7 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
         # into remote backends' container UID.
         write_text_exclusive(path, content, private=False, overwrite=True)
         return str(path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Failed to store full web_extract text for %s: %s", url, exc)
         return None
 
@@ -150,7 +150,7 @@ def _binary_payload_kind(text: str) -> str:
     return ""
 
 
-def _truncate_results(results: List[dict], char_limit: int, debug_call_data: dict) -> None:
+def _truncate_results(results: list[dict], char_limit: int, debug_call_data: dict) -> None:
     """In place: replace each successful entry's content with its base64-cleaned, budgeted text;
     per-page truncation metrics go into ``debug_call_data``."""
     for result in results:
@@ -181,7 +181,7 @@ def _truncate_results(results: List[dict], char_limit: int, debug_call_data: dic
             logger.info("%s (%d chars, whole)", url, len(clean))
 
 
-def _trim_results(results: List[dict]) -> List[dict]:
+def _trim_results(results: list[dict]) -> list[dict]:
     """Keep only url/title/content/error per entry (+ blocked_by_policy when present)."""
     return [
         {

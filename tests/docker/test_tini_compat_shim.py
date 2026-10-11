@@ -23,6 +23,7 @@ def test_legacy_tini_entrypoint_boots(built_image: str) -> None:
         ["docker", "run", "--rm", "--entrypoint", "/usr/bin/tini",
          built_image, "-g", "--", "--help"],
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     combined = r.stdout + r.stderr
     assert "-g: not found" not in combined, (

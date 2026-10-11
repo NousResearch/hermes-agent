@@ -40,7 +40,8 @@ from tools.file_tools_read_tracking import (
     _file_metadata, _file_version,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
-    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
+    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp,
+    retire_full_write_baselines)
 
 logger = logging.getLogger(__name__)
 
@@ -385,6 +386,7 @@ def clear_file_ops_cache(task_id: str | None = None):
             _file_ops_cache.clear()
 
     with _read_tracker_lock:
+        retire_full_write_baselines(task_id)
         if task_id:
             _read_tracker.pop(task_id, None)
         else:

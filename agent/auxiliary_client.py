@@ -7208,7 +7208,7 @@ class _ChatStreamAccumulator:
             reasoning="".join(self.reasoning_parts) or None,
             reasoning_details=self.reasoning_details or None,
         )
-        choice = SimpleNamespace(index=0, message=message, finish_reason=self.finish_reason or "stop")
+        choice = SimpleNamespace(index=0, message=message, finish_reason=self.finish_reason)
         return SimpleNamespace(id=self.resp_id, model=self.resp_model, object="chat.completion",
                                choices=[choice], usage=self.usage, **({"native": self.native} if self.native is not None else {}))
 

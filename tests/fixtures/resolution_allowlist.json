@@ -249,6 +249,11 @@
   },
   {
     "path": "hermes_cli/linux_desktop_entry.py",
+    "symbol": "ensure_scheme_handler_association",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/linux_desktop_entry.py",
     "symbol": "refresh_desktop_databases",
     "kind": "bare_which"
   },

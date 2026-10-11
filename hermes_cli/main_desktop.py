@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import time as _time_mod
+import urllib.parse
 
 from pathlib import Path
 from typing import Callable, Optional
@@ -1626,6 +1627,46 @@ def _launch_installed_macos_desktop_app() -> bool:
     print(f"→ Launched the installed Hermes Desktop app: {executable} (pid {pid})")
     return True
 
+# Deep-link contract with the Linux launcher entry (linux_desktop_entry.render_desktop_entry
+# appends `%u`) and apps/desktop/electron/main.ts (HERMES_PROTOCOL / DEEPLINK_SCHEMES).
+# Only these schemes are forwarded, verbatim, as ONE argv element.
+_DESKTOP_URI_SCHEMES = ("hermes", "hermes-dev")
+_DESKTOP_URI_MAX_LENGTH = 4096
+
+
+def _approved_desktop_uri(raw) -> Optional[str]:
+    """Validate the optional positional URI the OS handler passes on a link open.
+
+    Returns the URI unchanged (forwarded verbatim, never shell-interpolated or
+    query-decoded) or ``None`` when absent. Raises ``ValueError`` for anything
+    that is not a well-formed hermes:// (or hermes-dev://) URI: other schemes,
+    whitespace/control characters, and overlong input.
+    """
+    if raw is None:
+        return None
+    uri = str(raw)
+    if not uri:
+        return None
+    if len(uri) > _DESKTOP_URI_MAX_LENGTH:
+        raise ValueError(f"overlong input ({len(uri)} characters)")
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in uri):
+        raise ValueError("URI contains whitespace or control characters")
+    parts = urllib.parse.urlsplit(uri)
+    if parts.scheme not in _DESKTOP_URI_SCHEMES or not uri.startswith(f"{parts.scheme}://"):
+        raise ValueError("unsupported scheme (expected hermes:// or hermes-dev://)")
+    if not (parts.netloc or parts.path):
+        raise ValueError("no link target after the scheme")
+    return uri
+
+
+def _loggable_launch_command(launch_command: "list[str]", deep_link: Optional[str]) -> str:
+    """Command line for launch logs. A forwarded URI carries the link's payload,
+    so it is replaced by its scheme — logs never see URI contents."""
+    if not deep_link:
+        return " ".join(launch_command)
+    scheme = deep_link.split("://", 1)[0]
+    return " ".join(a for a in launch_command if a != deep_link) + f" <{scheme}:// link>"
+
 
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
@@ -1656,6 +1697,16 @@ def cmd_gui(args: argparse.Namespace):
                 "  or run `hermes desktop` from a source checkout."
             )
         sys.exit(1)
+
+    # The launcher entry forwards the opened deep link as an optional positional
+    # argument. Validate it BEFORE any install/build work: a malformed or
+    # foreign-scheme argument must never reach the build or the app's argv.
+    try:
+        deep_link = _approved_desktop_uri(getattr(args, "uri", None))
+    except ValueError as exc:
+        print(f"✗ Refusing the desktop URI argument: {exc}")
+        print("  Expected a hermes:// deep link, e.g. hermes://blueprint/morning-brief")
+        sys.exit(2)
 
     with contextlib.suppress(Exception):
         from hermes_logging import setup_logging as _setup_logging_gui
@@ -1788,8 +1839,17 @@ def cmd_gui(args: argparse.Namespace):
     if getattr(args, "close_preview", False):
         launch_command.append("--close-preview")
     launch_command.extend(_explicit_profile_args())
+    if deep_link:
+        # Exact URI, one argv element, no shell: the OS handed us the link and
+        # the app parses it — nothing here interpolates or executes its payload.
+        # Neither launch path echoes argv (packaged: notice via
+        # _loggable_launch_command below; source: Electron logs the URI only
+        # into its own rotated logs, redacted in apps/desktop/electron/main.ts).
+        launch_command.append(deep_link)
     if not source_mode:
-        desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
+        desktop_launch_notice(
+            f"→ Launching packaged Hermes Desktop: {_loggable_launch_command(launch_command, deep_link)}"
+        )
     # The launch target is ready; the fixups above finished mutating the
     # packaged tree. Electron is the long-lived handoff, so release the build
     # lock now — an open Desktop window must never block a future rebuild.

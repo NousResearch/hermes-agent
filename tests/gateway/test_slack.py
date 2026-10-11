@@ -5746,3 +5746,69 @@ class TestNonConversationalSubtypeAllowlist:
         for event in events:
             accepted = await adapter._prefilter_inbound(event, None)
             assert accepted is not None and accepted[0]["channel"] == "C_FREE", event.get("subtype")
+
+
+class TestBlockKitDepthBudget:
+    """#132023 — ``blocks`` is sender-authored JSON and every Block Kit walker recursed
+    shape-blind, so a remote sender only had to nest deeply to raise an unhandled
+    ``RecursionError`` in the background dispatch task (message silently dropped). Each walker
+    now carries a depth budget and stops descending past it; payloads within the budget render
+    and detect mentions exactly as before."""
+
+    @staticmethod
+    def _deep_quote(n: int) -> list:
+        node = {"type": "rich_text_section", "elements": [{"type": "text", "text": "hi"}]}
+        for _ in range(n):
+            node = {"type": "rich_text_quote", "elements": [node]}
+        return [{"type": "rich_text", "elements": [node]}]
+
+    @staticmethod
+    def _deep_user(n: int, uid: str = "U0BOT") -> list:
+        node = {"type": "user", "user_id": uid}
+        for _ in range(n):
+            node = {"type": "rich_text_section", "elements": [node]}
+        return [{"type": "rich_text", "elements": [node]}]
+
+    @staticmethod
+    def _deep_table(n: int) -> dict:
+        node = "leaf"
+        for _ in range(n):
+            node = {"x": node}
+        return {"type": "table", "rows": [[node]]}
+
+    def test_deeply_nested_blocks_no_longer_crash_the_walkers(self):
+        # 4000 levels is ~4x past the pre-fix RecursionError boundary (~500-1000 levels);
+        # past the budget the walkers degrade to empty output instead of unwinding the stack.
+        assert _slack_mod._extract_text_from_slack_blocks(self._deep_quote(4000)) == ""
+        assert _slack_mod._extract_urls_from_slack_blocks(self._deep_quote(4000)) == []
+        assert _slack_mod._render_slack_table_block(self._deep_table(4000)) == ""
+
+    def test_deeply_nested_mention_degrades_to_dropped(self):
+        # Deterministic contract: a mention buried under attack-grade nesting is dropped
+        # (never summonable that way) and detection itself stays alive.
+        assert _slack_mod._slack_mention_detection_text(
+            {"text": "", "blocks": self._deep_user(4000)}) == ""
+
+    def test_shallow_mention_survives_a_deep_sibling_subtree(self):
+        # Pre-fix, the walker exhausted the stack inside the deep sibling and the outer
+        # ``except Exception: return []`` threw away the shallow Block-Kit-only mention it
+        # had already collected, so the bot went silent on a genuine mention (#132023).
+        blocks = [
+            self._deep_user(4000)[0],
+            {"type": "rich_text", "elements": [
+                {"type": "rich_text_section", "elements": [
+                    {"type": "text", "text": "hey "},
+                    {"type": "user", "user_id": "U0BOT"},
+                ]},
+            ]},
+        ]
+        assert "<@U0BOT>" in _slack_mod._slack_mention_detection_text(
+            {"text": "", "blocks": blocks})
+
+    def test_nesting_within_the_budget_renders_and_detects_as_before(self):
+        # 25/50 levels are far beyond any client-authored payload yet well inside the budget.
+        # The mention walker budgets tree edges (each ``rich_text_section`` level costs two),
+        # hence the smaller depth there.
+        assert "hi" in _slack_mod._extract_text_from_slack_blocks(self._deep_quote(50))
+        assert "<@U0BOT>" in _slack_mod._slack_mention_detection_text(
+            {"text": "", "blocks": self._deep_user(25)})

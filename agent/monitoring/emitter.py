@@ -26,7 +26,7 @@ class MonitoringEmitter:
 
     def __init__(self, *, enabled: bool = True) -> None:
         self._enabled = enabled
-        self._q: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=_MAX_QUEUE)
+        self._q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=_MAX_QUEUE)
         self._dropped = 0
         self._dispatched = 0
         self._stop = threading.Event()

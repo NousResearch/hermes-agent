@@ -88,7 +88,7 @@ def _head_sha(root: Path) -> str:
 
     try:
         head = subprocess.run([_git_executable(), "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=60)
+                              text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=60, check=False)
         if head.returncode == 0 and _SHA.fullmatch(head.stdout.strip()):
             return head.stdout.strip()
     except (OSError, subprocess.SubprocessError):
@@ -139,6 +139,7 @@ def main() -> int:
         return subprocess.run(
             [str(python), "-I", "-B", "-X", "utf8", str(root / "hermes_cli/update_serve_resume.py"),
              str(context), str(result)], cwd=root, env=activation_environment(root),
+             check=False,
         ).returncode
     from hermes_cli import update_receipt
     from hermes_cli.update_lock import UpdateLock, describe_holder

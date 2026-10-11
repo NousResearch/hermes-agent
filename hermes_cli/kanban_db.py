@@ -2058,7 +2058,12 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
-def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
+def recompute_ready(
+    conn: sqlite3.Connection,
+    failure_limit: int | None = None,
+    *,
+    tenant: Optional[str] = None,
+) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
@@ -2069,6 +2074,9 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
 
     1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
     explicit ``kanban_unblock`` (#28712).
+
+    ``tenant`` confines the sweep to that tenant's rows (parents are still read wherever they live), so
+    a tenant-scoped caller never promotes another tenant's pipeline. ``None`` sweeps the whole board.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -2077,6 +2085,8 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
         todo_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
+            + (" AND tenant = ?" if tenant is not None else ""),
+            (tenant,) if tenant is not None else (),
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]

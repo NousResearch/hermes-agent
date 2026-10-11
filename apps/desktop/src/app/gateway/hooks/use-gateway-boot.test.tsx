@@ -828,16 +828,16 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(FakeWebSocket.instances).toHaveLength(0)
     expect($gatewayState.get()).not.toBe('open')
     expect($desktopBoot.get().error).toBeNull()
-    // ^ connecting === true here → fullscreen CONNECTING, no Settings.
 
-    // After ~45s waitForHermes gives up and getConnection rejects → boot()
-    // catch → failDesktopBoot → the BootFailureOverlay recovery surface.
+    // After ~45s the rejection reaches boot() and publishes the recovery surface.
     await act(async () => {
-      rejectConn(new Error('Hermes backend did not become ready: timeout'))
+      rejectConn(
+        new Error("Error invoking remote method 'x': DesktopBridgeError: Hermes backend did not become ready: timeout")
+      )
       await vi.advanceTimersByTimeAsync(0)
     })
 
-    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().error).toBe('Hermes backend did not become ready: timeout')
   })
 
   it('resets the old machine context before connecting an applied gateway', async () => {

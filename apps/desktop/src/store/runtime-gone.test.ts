@@ -184,6 +184,12 @@ describe('gone-latch classifier and rebind seam', () => {
     expect(isSessionGoneForBackgroundPolling(new Error('tool failed: upstream said session not found'))).toBe(false)
   })
 
+  it('recognizes a typed IPC session-not-found error', () => {
+    expect(
+      isSessionGoneForBackgroundPolling(new Error("Error invoking remote method 'x': LookupError: session not found"))
+    ).toBe(true)
+  })
+
   it('clears the latch only for ids a successful resume/activate rebound', () => {
     markSessionGone('rt-dead')
     markSessionGone('rt-other')

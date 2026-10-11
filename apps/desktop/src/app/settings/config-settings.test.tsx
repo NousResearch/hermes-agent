@@ -1,11 +1,14 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import type { QueryClient } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
+import { bindConfigReadOrigin } from '@/api/config'
+import { queryClient } from '@/lib/query-client'
 import { $settingsRequestProfile } from '@/store/settings-scope'
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
@@ -30,6 +33,8 @@ vi.mock('@/hermes', async () => ({
   getHermesConfigRecord: (profile?: string) => getHermesConfigRecord(profile),
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
+  saveHermesConfigRecord: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
+  getProfiles: async () => ({ profiles: [] }),
   getElevenLabsVoices: () => getElevenLabsVoices(),
   setApiRequestProfile: () => {}
 }))
@@ -77,11 +82,12 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  queryClient.clear()
   vi.clearAllMocks()
 })
 
 function renderConfigSettings(activeSectionId = 'safety') {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client = queryClient
   const importInputRef = createRef<HTMLInputElement>()
 
   render(
@@ -92,10 +98,67 @@ function renderConfigSettings(activeSectionId = 'safety') {
     </MemoryRouter>
   )
 
-  return { importInputRef }
+  return { client, importInputRef }
 }
 
 describe('ConfigSettings autosave', () => {
+  it.each(['settings', 'voice'])('refetches server truth after %s autosave', async surface => {
+    let disk = { checkpoints: { enabled: false }, stt: { openai: { model: 'whisper-1' } }, model: 'initial' }
+    getHermesConfigRecord.mockImplementation(async () => {
+      const record = structuredClone(disk)
+      bindConfigReadOrigin(record, { profile: 'default' })
+
+      return record
+    })
+    saveHermesConfig.mockImplementation(async patch => {
+      disk = { ...disk, ...patch }
+
+      return { ok: true }
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      let client: QueryClient
+
+      if (surface === 'settings') {
+        ;({ client } = renderConfigSettings())
+        await screen.findByRole('switch')
+      } else {
+        const { VoiceProviderFields } = await import('./voice-provider-fields')
+        client = queryClient
+        render(
+          <QueryClientProvider client={client}>
+            <VoiceProviderFields profile="default" providerKey="openai" section="stt" />
+          </QueryClientProvider>
+        )
+        await screen.findByRole('combobox')
+      }
+
+      disk = { ...disk, model: 'external' }
+      await act(async () => {
+        if (surface === 'settings') {
+          screen.getByRole('switch').click()
+        } else {
+          fireEvent.change(screen.getByRole('combobox'), { target: { value: 'gpt-4o-transcribe' } })
+        }
+
+        await vi.advanceTimersByTimeAsync(700)
+      })
+      await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
+      expect(saveHermesConfig).toHaveBeenCalledWith(
+        surface === 'settings'
+          ? { checkpoints: { enabled: true } }
+          : { stt: { openai: { model: 'gpt-4o-transcribe' } } },
+        { profile: 'default' }
+      )
+      await waitFor(() => expect(client.getQueryData(['hermes-config-record', 'default'])).toEqual(disk))
+      await act(async () => void (await vi.advanceTimersByTimeAsync(6500)))
+      expect(saveHermesConfig).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

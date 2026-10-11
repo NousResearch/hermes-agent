@@ -22,6 +22,7 @@ import {
   LIVENESS_REPROBE_DELAY_MS
 } from '@/lib/gateway-liveness-policy'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
+import { stripIpcErrorPrefix } from '@/lib/ipc-error'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -564,7 +565,7 @@ export function useGatewayBoot({
         // through to the backoff in the finally block below — they must NOT
         // take the full-screen "couldn't start" path (locks reading/drafting).
         if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
-          primaryReauthError = err instanceof Error ? err.message : String(err)
+          primaryReauthError = stripIpcErrorPrefix(err instanceof Error ? err.message : String(err))
           syncPrimaryReauthError()
           reauthNotified = true
           // Plain "signed out" copy; the raw ticket/HTTP text stays under
@@ -898,7 +899,7 @@ export function useGatewayBoot({
           !cancelled && (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken))
 
         if (mayPublishFailure) {
-          const message = err instanceof Error ? err.message : String(err)
+          const message = stripIpcErrorPrefix(err instanceof Error ? err.message : String(err))
           bootFailed = true
           failDesktopBoot(message)
 
@@ -1603,7 +1604,7 @@ export function useGatewayBoot({
         void warnIfTerminalBackendUnavailable()
       } catch (err) {
         if (!cancelled) {
-          const message = err instanceof Error ? err.message : String(err)
+          const message = stripIpcErrorPrefix(err instanceof Error ? err.message : String(err))
 
           // Main's classification (#82679) still decides every failure it can
           // see. The one it cannot see is the renderer-owned WebSocket dial:

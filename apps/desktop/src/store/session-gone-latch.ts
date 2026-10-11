@@ -1,5 +1,7 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 
+import { stripIpcErrorPrefix } from '@/lib/ipc-error'
+
 /** Session ids the gateway has told us are gone. A session-scoped RPC against a
  *  runtime the gateway no longer holds fails 4001 "session not found" — terminal
  *  for THIS runtime id, not a transient socket loss.
@@ -44,10 +46,10 @@ export function isSessionGoneForBackgroundPolling(error: unknown): boolean {
     return code === GATEWAY_SESSION_NOT_FOUND_CODE
   }
 
-  const message = (error instanceof Error ? error.message : String(error ?? ''))
-    .trim()
-    .replace(/^Error invoking remote method '[^']+':\s*Error:\s*/i, '')
-    .replace(/^Error:\s*/i, '')
+  const message = stripIpcErrorPrefix(error instanceof Error ? error.message : String(error ?? '')).replace(
+    /^Error:\s*/i,
+    ''
+  )
 
   return /^(?:4001\s*[:,-]?\s*)?session not found[.!]?$/i.test(message)
 }

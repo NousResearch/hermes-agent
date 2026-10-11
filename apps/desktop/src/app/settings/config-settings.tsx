@@ -31,7 +31,7 @@ import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRec
 import { $settingsRequestProfile } from '@/store/settings-scope'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
-import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
+import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
@@ -125,10 +125,6 @@ function ConfigSettingsInner({
     refetch: refetchConfig,
     writeScope
   } = useHermesConfigRecord(scopeProfile)
-
-  // Writes land on the same cache key the query above reads (base key when
-  // following the active profile, suffixed when a scope override is set).
-  const writeConfigCache = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
 
   const {
     data: schemaResponse,
@@ -239,9 +235,9 @@ function ConfigSettingsInner({
           // pre-save value diffs to nothing and the revert never reaches disk.
           configBaselineRef.current = snapshot
 
-          // Mirror the saved record into the shared cache so MCP/model surfaces
-          // reflect the edit without their own refetch.
-          writeConfigCache(snapshot)
+          // The server merges the patch; untouched draft fields may be stale.
+          // Publish server truth while keeping the local draft baseline above.
+          await refetchConfig()
           const savedScope = writeScope ?? scopeProfile
 
           recordSettingsSaved(patch, schema ?? {}, typeof savedScope === 'string' ? savedScope : savedScope?.profile)
@@ -269,8 +265,8 @@ function ConfigSettingsInner({
     }, 550)
 
     return () => window.clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
-  }, [config, onConfigSaved, saveVersion, writeScope, scopeProfile])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- read-origin identity changes on refetch, not edits; copy is stable
+  }, [config, onConfigSaved, saveVersion, scopeProfile])
 
   const applyConfig = (next: HermesConfigRecord) => {
     saveVersionRef.current += 1

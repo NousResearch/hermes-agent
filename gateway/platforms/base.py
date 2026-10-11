@@ -3984,19 +3984,19 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             await dispatch_busy_burst(self, event, session_key)  # main's photo/text burst merge
             return
         # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
-        # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
-        # calling the message handler directly and sending the response.  Do NOT use
-        # _process_message_background — it manages session lifecycle and its cleanup
-        # races with the running task (split-brain, see PR #4926).
-        # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
-        # runner. Without this, they are queued as pending messages and either: See #4926.
-        self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
+        # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by calling the
+        # message handler directly and sending the response.  Do NOT use _process_message_background
+        # — it manages session lifecycle and its cleanup races with the running task (split-brain, #4926).
+        src = event.source
+        self._canonicalize(src)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
         if should_bypass_active_session(cmd):
             try:
-                # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.
-                if cmd and is_interrupt_then_dispatch(cmd):
+                # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel. The cancel
+                # belongs to the session's authorized users (thread keys carry no user part, so they're shared).
+                if cmd and is_interrupt_then_dispatch(cmd) and self._is_sender_authorized(
+                        src.user_id, src.chat_type, src.chat_id, is_bot=src.is_bot, thread_id=src.thread_id) is not False:
                     self._discard_text_debounce(session_key)
                     await self._dispatch_active_session_command(event, session_key, cmd)
                 else:

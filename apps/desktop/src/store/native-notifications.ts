@@ -88,6 +88,20 @@ function readPrefs(): NativeNotificationPrefs {
 
 export const $nativeNotifyPrefs = atom<NativeNotificationPrefs>(readPrefs())
 
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key !== null && event.key !== STORAGE_KEY) {
+      return
+    }
+
+    const next = readPrefs()
+
+    if (JSON.stringify(next) !== JSON.stringify($nativeNotifyPrefs.get())) {
+      $nativeNotifyPrefs.set(next)
+    }
+  })
+}
+
 function writePrefs(next: NativeNotificationPrefs) {
   $nativeNotifyPrefs.set(next)
   persistString(STORAGE_KEY, JSON.stringify(next))

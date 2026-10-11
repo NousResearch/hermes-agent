@@ -150,12 +150,26 @@ def cua_driver_child_env(base_env: Optional[dict[str, str]] = None) -> dict[str,
         env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
     return env
 
-def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
-    """``((command, args), child_env)`` spawning ``cua-driver mcp`` INSIDE the terminal backend when the Bot
+def _sandbox_cua_invocation(argv: list[str], *, interactive: bool,
+                            extra_env: Optional[dict[str, str]] = None
+                            ) -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
+    """``((command, args), child_env)`` running *argv* INSIDE the terminal backend's sandbox when the Bot
     Desktop is placed there (the driver in the sandbox image drives the sandbox's own screen); None on a
     gateway-hosted desktop, where the local driver is used. Placement is the authority: a ``terminal``
     placement gets its screen started here and a ``refused`` one raises — the host driver is never the
-    fallback for a sandbox whose screen is down."""
+    fallback for a sandbox whose screen is down.
+
+    Shared by the long-lived MCP server (``sandbox_mcp_invocation``), the one-shot CLI fallback
+    (``sandbox_cli_invocation``) and the embedded daemon's own serve/status/stop one-shots
+    (``cua_backend_daemon.py::_EmbeddedCuaDaemon``) — every cua-driver process this profile spawns,
+    long-lived or one-shot, must land in the SAME container the screen lives in, never on the host
+    gateway process (#<t_39df9245>: a non-``standard`` permission mode's embedded daemon was spawned
+    unconditionally on the host, even for a Docker/ssh/apptainer-sandboxed Bot Desktop, so
+    ``computer_use`` never touched the sandbox's screen at all — every call hit a nonexistent host
+    DISPLAY, logically succeeding with zero windows until a full-screen capture surfaced the failure
+    as \"Connection refused (os error 111)\"). *extra_env* folds the daemon's own permission-mode env
+    (``CUA_DRIVER_PERMISSION_MODE`` / the bypass flag) into the exec script, since that env must be
+    exported INSIDE the sandbox, not read from this (host) process's own environ."""
     from tools.bot_desktop import placement, runtime as _bd_runtime
     if _bd_runtime.tool_placement() == placement.GATEWAY:
         return None
@@ -166,10 +180,40 @@ def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, 
     env = _bd_runtime._sandbox_env(create=True)
     if env is None:
         raise RuntimeError("the terminal backend's sandbox is not running, so there is nowhere to run cua-driver")
-    command, args = sandbox_host.cua_mcp_invocation(env, _bd_runtime._profile_name(),
-                                                    {**published, _CUA_TELEMETRY_ENV_VAR: "0"})
+    merged_env = {**published, _CUA_TELEMETRY_ENV_VAR: "0", **(extra_env or {})}
+    command, args = sandbox_host.exec_invocation(env, _bd_runtime._profile_name(), merged_env, argv,
+                                                 interactive=interactive)
     _bd_runtime.touch_activity()
     return (command, args), {"PATH": os.environ.get("PATH", "")}
+
+
+def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
+    """``((command, args), child_env)`` spawning ``cua-driver mcp`` INSIDE the terminal backend's sandbox;
+    None on a gateway-hosted desktop. See ``_sandbox_cua_invocation``."""
+    return _sandbox_cua_invocation(["cua-driver", "mcp", "--no-overlay"], interactive=True)
+
+
+def sandbox_cli_invocation(call_argv: list[str]) -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
+    """``((command, args), child_env)`` running a one-shot ``call_argv`` (a ``cua-driver call ...`` CLI
+    invocation) INSIDE the terminal backend's sandbox, the same exec-prefix + env wrapping
+    ``sandbox_mcp_invocation`` uses for the long-lived MCP server; None on a gateway-hosted desktop.
+
+    The MCP transport's ``list_windows``-empty-result CLI fallback (``cua_backend_session.py::
+    _call_tool_via_cli``) used to skip this and run a bare local ``cua-driver call`` instead, which has no
+    DISPLAY for a desktop that lives inside the sandbox ('no DISPLAY is set' / 'Connection refused (os error
+    111)') even though the MCP transport it is falling back FROM is already running correctly inside that
+    same sandbox. Same placement authority as ``sandbox_mcp_invocation``: raises rather than falling back to
+    the host driver when the sandbox's screen is down."""
+    return _sandbox_cua_invocation(call_argv, interactive=False)
+
+
+def sandbox_serve_invocation(serve_argv: list[str], *, extra_env: Optional[dict[str, str]] = None
+                             ) -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
+    """``((command, args), child_env)`` running a long-lived ``cua-driver serve ...`` (the embedded daemon
+    backing a ``bounded``/``unrestricted`` permission mode) INSIDE the terminal backend's sandbox; None on
+    a gateway-hosted desktop, where ``_EmbeddedCuaDaemon`` spawns the host binary directly. Same placement
+    authority as ``sandbox_mcp_invocation``. See ``_sandbox_cua_invocation``."""
+    return _sandbox_cua_invocation(serve_argv, interactive=True, extra_env=extra_env)
 
 
 def sanitized_cua_driver_env() -> dict[str, str]:
@@ -233,12 +277,31 @@ def _linux_session_locked() -> Optional[bool]:
     except Exception:
         return None
 
+def _effective_display() -> str:
+    """The DISPLAY that actually matters for diagnosing empty discovery: the sandbox's own published
+    DISPLAY when the Bot Desktop is sandboxed (``bot_desktop.placement: terminal``), never the host
+    gateway process's ``os.environ`` -- a headless Docker host legitimately has NO DISPLAY on itself
+    by design, so checking it for a sandboxed desktop always misdiagnoses a healthy sandbox as
+    "no DISPLAY is set" (reported live: Wian's Docker-sandboxed Bot Desktop, 2026-10-09 -- the
+    sandbox's screen was confirmed working by hand, yet every empty discovery blamed a missing
+    DISPLAY that was never actually missing)."""
+    try:
+        from tools.bot_desktop import placement, runtime as _bd_runtime
+        if _bd_runtime.tool_placement() != placement.GATEWAY:
+            return str(_bd_runtime.published_env().get("DISPLAY") or "")
+    except Exception as e:  # health: allow BLE001,S110 -- diagnostic-only boundary: placement resolution
+        # failing must never crash the "why did discovery come back empty" path itself; falling through
+        # to the host env is the correct degrade, logged so it's not silently invisible.
+        logger.debug("cua-driver _effective_display: placement resolution failed: %s", e)
+    return str(os.environ.get("DISPLAY") or "")
+
+
 def _empty_discovery_reason() -> str:
     """One-line diagnosis for 'window discovery found nothing'."""
     if _linux_session_locked() is True:
         return ("the desktop session is LOCKED (loginctl LockedHint=yes) — unlock the screen; "
                 "a locked compositor hides windows and freezes app renderers")
-    if sys.platform == "linux" and not os.environ.get("DISPLAY"):
+    if sys.platform == "linux" and not _effective_display():
         return "no DISPLAY is set — X11/XWayland is not reachable from this process"
     if sys.platform == "darwin":  # headless Mac / asleep panel: ScreenCaptureKit has 0 shareable displays while TCC looks fine
         return ("window discovery returned no windows; on macOS this usually means no shareable display (headless Mac or "

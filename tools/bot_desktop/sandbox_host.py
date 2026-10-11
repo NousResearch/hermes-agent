@@ -304,11 +304,31 @@ def open_rfb_stream(env: Any, profile: str) -> subprocess.Popen:
     return streams.open_stream(env, ["python3", "-c", _RELAY, f"{rdir}/rfb.sock"], user=_user_for(env))
 
 
+def exec_invocation(env: Any, profile: str, published: dict[str, str], argv: list[str], *,
+                    interactive: bool) -> tuple[str, list[str]]:
+    """``(command, args)`` running *argv* inside the sandbox on the Bot Desktop's display: the backend's
+    exec prefix wrapping *argv* with *published* exported first. ``interactive=True`` for a long-lived
+    process held open over stdio (the MCP server, the embedded daemon's ``serve``); ``interactive=False``
+    for a one-shot call (``cua-driver call ...``, daemon ``status``/``stop`` probes), whose subprocess
+    is spawned with ``stdin=DEVNULL`` and needs no held-open pipe. Shared by ``cua_mcp_invocation``,
+    ``cua_cli_invocation`` and the embedded daemon's sandboxed routing (``cua_backend.py::
+    sandbox_serve_invocation`` / ``sandbox_cli_invocation``)."""
+    call_argv = streams.remote_command(env, argv, child_env=published, user=_user_for(env), interactive=interactive)
+    if call_argv is None:
+        raise RuntimeError(f"{type(env).__name__} cannot host cua-driver")
+    return call_argv[0], call_argv[1:]
+
+
 def cua_mcp_invocation(env: Any, profile: str, published: dict[str, str]) -> tuple[str, list[str]]:
     """``(command, args)`` for ``StdioServerParameters``: the backend's exec prefix running ``cua-driver mcp`` on
     the sandbox display."""
-    argv = streams.remote_command(env, ["cua-driver", "mcp", "--no-overlay"], child_env=published,
-                                  user=_user_for(env), interactive=True)
-    if argv is None:
-        raise RuntimeError(f"{type(env).__name__} cannot host cua-driver")
-    return argv[0], argv[1:]
+    return exec_invocation(env, profile, published, ["cua-driver", "mcp", "--no-overlay"], interactive=True)
+
+
+def cua_cli_invocation(env: Any, profile: str, published: dict[str, str],
+                       call_argv: list[str]) -> tuple[str, list[str]]:
+    """``(command, args)`` running a one-shot ``call_argv`` (a ``cua-driver call ...`` CLI invocation, not the
+    long-lived MCP server) on the sandbox display -- the same exec prefix and env ``cua_mcp_invocation`` uses,
+    so the MCP->CLI fallback transport never falls back to a bare host-side call with no DISPLAY.
+    ``interactive=False``: a one-shot subprocess with ``stdin=DEVNULL`` needs no held-open stdin."""
+    return exec_invocation(env, profile, published, call_argv, interactive=False)

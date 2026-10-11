@@ -7,6 +7,7 @@ from contextvars import copy_context
 from dataclasses import dataclass, replace
 from threading import Lock, Thread, current_thread
 from typing import Any, Optional
+from datetime import UTC
 
 _pricing_prewarm_lock = Lock()
 _pricing_prewarm_threads: dict[tuple[str, tuple[tuple[str, str], ...]], Thread] = {}
@@ -27,7 +28,7 @@ class ConfigContext:
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
         current_base_url: Optional[str] = None,
-    ) -> "ConfigContext":
+    ) -> ConfigContext:
         """Copy with TRUTHY overrides applied: the TUI reads agent attributes that may be empty strings
         before an agent is spawned — empties must not clobber the disk-config values."""
         overrides = (("current_provider", current_provider), ("current_model", current_model),
@@ -44,7 +45,7 @@ def load_picker_context() -> ConfigContext:
     cfg = load_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, dict):
-        # PyYAML parses unquoted scalars as int (`provider: 2070`); keep strings so picker/options
+        # YAML parses unquoted scalars as int (`provider: 2070`); keep strings so picker/options
         # paths never call `.strip()` on an int.
         current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
         current_provider = coerce_provider_id(model_cfg.get("provider", ""))
@@ -78,13 +79,16 @@ def build_models_payload(
     capabilities: bool = False, featured: bool = False, force_fresh_nous_tier: bool = False,
     refresh: bool = False, probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, max_models: int | None = None, non_blocking_catalogs: bool = False,
+    fast_custom_probe: bool | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer needs. ``explicit_only`` keeps
     only providers the user explicitly configured — hides ambient/auto-seeded credentials from
     desktop chat pickers. ``pricing_cache_only``: with ``pricing``, use only values already resident
     in process caches (normal picker opens, while a background worker warms cold endpoints).
     ``non_blocking_catalogs``: provider catalogs come from the disk cache only — a degraded provider
-    cannot stall the response (GUI picker opens)."""
+    cannot stall the response (GUI picker opens). ``fast_custom_probe`` overrides the
+    custom-endpoint discovery budget ``for_picker`` otherwise implies (1.5s vs 5s) — ``None`` keeps
+    the coupling, ``False`` retains the full 5s budget (#103843)."""
     from hermes_cli.model_switch import list_authenticated_providers
 
     rows = list_authenticated_providers(
@@ -94,7 +98,7 @@ def build_models_payload(
         max_models=max_models, refresh=refresh, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider, for_picker=for_picker,
         excluded_providers=ctx.excluded_providers or [],
-        non_blocking_catalogs=non_blocking_catalogs,
+        non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
     )
 
     # Managed local runtime: staged GGUFs are selectable like any provider's models, but
@@ -142,11 +146,25 @@ def build_models_payload(
         rows = _reorder_canonical(rows)
     if pricing:
         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier, cached_only=pricing_cache_only)
+    # Both metadata decorators consult ``model_overrides``.  Snapshot the
+    # read-only config once for this payload rather than letting each model
+    # lookup reopen config.yaml through models_dev._cfg_get().
+    metadata_config = None
+    if capabilities or featured:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            metadata_config = load_config_readonly()
+        except Exception:
+            metadata_config = None
     if capabilities:
-        _apply_capabilities(rows)
+        _apply_capabilities(rows, metadata_config=metadata_config)
     if featured:
-        _apply_featured(rows)
+        _apply_featured(rows, metadata_config=metadata_config)
     _apply_custom_aliases(rows)
+    from hermes_cli.models_validate import drop_unofferable_model_ids
+
+    drop_unofferable_model_ids(rows)
 
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 
@@ -214,19 +232,237 @@ def build_model_options_payload(
 
     A normal open (``refresh=False``) is a READ path: provider catalogs come from the disk cache
     only and stale/missing ones warm in the background, so a degraded provider (hanging endpoint,
-    failed auth probe) delays neither the other providers' rows nor the response (#114215)."""
+    failed auth probe) delays neither the other providers' rows nor the response (#114215).
+
+    ``for_picker=True`` keeps providers whose credential pool is entirely rate-limited visible:
+    these are human-facing pickers, and hiding a temporarily exhausted pool makes providers vanish
+    mid-session even though another model under the same provider may still work (same contract
+    as ``/model`` and the aux pickers, #66584 / #66624). Visibility only: ``fast_custom_probe=False``
+    keeps the live probe of the current custom endpoint on its full 5s discovery budget."""
     refresh = bool(refresh)
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
-        capabilities=True, featured=True,
+        capabilities=True, featured=True, for_picker=True, fast_custom_probe=False,
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
         non_blocking_catalogs=not refresh,
     )
+    _apply_limits(payload["providers"])
+    _apply_usage(payload["providers"])
     if not refresh:
         _prewarm_pricing_async(payload["providers"], current_provider=ctx.current_provider,
                                current_base_url=ctx.current_base_url)
     return payload
+
+
+def _apply_limits(rows: list[dict]) -> None:
+    """Attach ``limit`` to rows whose credential pool is rate-limited, so a picker can say why and until
+    when instead of the row just looking broken. Only providers with a persisted pool are read (no
+    seeding), and a pool that fails to load says nothing rather than failing the whole catalog."""
+    import logging
+    from datetime import datetime, timezone
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool
+
+    def iso(epoch: float) -> str:
+        return datetime.fromtimestamp(epoch, UTC).isoformat()
+
+    pooled = {slug for slug, entries in read_credential_pool().items() if entries}
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        if slug not in pooled or row.get("is_user_defined"):
+            continue
+        try:
+            state = load_pool(slug).limit_state(row.get("models") or [])
+        except Exception:  # an unreadable pool must not fail the whole catalog
+            logging.getLogger(__name__).debug("Pool limit read failed for %s", slug, exc_info=True)
+            continue
+        if state is None:
+            continue
+        if state["scope"] == "account":
+            row["limit"] = {"scope": "account", "resets_at": iso(state["resets_at"])}
+        else:
+            row["limit"] = {"scope": "models", "models": {m: iso(at) for m, at in state["models"].items()}}
+
+
+def _apply_usage(rows: list[dict]) -> None:
+    """Attach ``usage`` (subscription windows: % spent + reset) to signed-in rows that can report it,
+    from the cache only, and ask for a background refresh, so the picker never waits on a usage API
+    and a chip can warn before the wall instead of at it.
+
+    Single-account providers keep the legacy gauge (``usage.windows``). A provider with a
+    MULTI-ENTRY credential pool reports ``usage.accounts`` instead — one row per account, each with
+    its own windows/state/resets_at — because one account's quota says nothing about its siblings;
+    a provider-wide percentage there would be a fabricated average. A snapshot older than the
+    staleness bound renders ``unknown``/``unavailable``, never a confident stale gauge. Nothing here
+    mutates the pool or disables routing: telemetry never benches a credential."""
+    from agent.account_usage_cache import (
+        cached_account_usage, has_account_usage, refresh_account_usage_async,
+        refresh_account_usage_entries_async, snapshot_is_stale,
+    )
+    from hermes_cli.auth import read_credential_pool
+
+    def _wire_windows(snapshot) -> list[dict]:
+        return [
+            {"label": w.label, "used_percent": float(w.used_percent),
+             "resets_at": w.reset_at.isoformat() if w.reset_at else None,
+             "scope": w.scope}
+            for w in (snapshot.windows if snapshot else ()) if w.used_percent is not None
+        ]
+
+    def _account_resets_at(snapshot, live_cooldown_until: float | None) -> str | None:
+        """A quota-exhausted account recovers at the LATEST of its exhausted account-scoped
+        windows (all of them must reopen before the account is whole again); a live
+        credential-wide cooldown wins when later. Model-scoped windows never reset an account.
+        Unknown stays None — the frontend renders its own advisory (e.g. the earliest sibling)."""
+        resets: list[str] = []
+        if live_cooldown_until:
+            resets.append(_iso_from_epoch(live_cooldown_until))
+        for window in (snapshot.windows if snapshot else ()):
+            if window.scope != "account" or window.used_percent is None or window.reset_at is None:
+                continue
+            if float(window.used_percent) >= _EXHAUSTED_WINDOW_PERCENT:
+                resets.append(window.reset_at.isoformat())
+        return max(resets) if resets else None
+
+    wanted: list[str] = []
+    entry_requests: list[dict] = []
+    pooled_sizes = {slug: len(entries) for slug, entries in read_credential_pool().items() if entries}
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        if not slug or row.get("is_user_defined") or row.get("authenticated") is False:
+            continue
+        supports_usage = has_account_usage(slug)
+        # A single-entry pool (or no pool) is the single-account case: the legacy gauge stays
+        # (chip contract unchanged). Only a genuinely multi-entry pool gets per-account rows —
+        # there, a provider-wide percentage would be a fabricated average across logins.
+        if pooled_sizes.get(slug, 0) < 2:
+            if not supports_usage:
+                continue
+            wanted.append(slug)
+            snapshot = cached_account_usage(slug)
+            windows = _wire_windows(snapshot)
+            if windows and not snapshot_is_stale(snapshot):
+                row["usage"] = {"windows": windows}
+            continue
+        if supports_usage:
+            wanted.append(slug)
+        accounts = _pool_usage_accounts(slug, _wire_windows, _account_resets_at, entry_requests)
+        if accounts is not None:
+            row["usage"] = {"accounts": accounts}
+    refresh_account_usage_async(wanted)
+    refresh_account_usage_entries_async(entry_requests)
+
+
+# A window this spent counts as exhausted when computing an account's recovery time.
+_EXHAUSTED_WINDOW_PERCENT = 100.0
+
+
+def _iso_from_epoch(epoch: float) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(float(epoch), UTC).isoformat()
+
+
+def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
+                         entry_requests: list[dict]) -> Optional[list[dict]]:
+    """Per-account usage rows for one pooled provider, or None when the pool cannot be read.
+
+    Read-only: entries are inspected via ``load_pool(slug)`` properties (no select/rotate/refresh).
+    Dedupe is scoped to provider+host+trusted decoded account id where supported (several
+    credentials of one Codex account are ONE account), else per-credential token identity — never
+    a provider-wide singleton. Providers without a usage fetcher still get one metadata row per
+    account with state unknown/limited/unavailable, so the chip can count honestly without bogus
+    fetches. DEAD auth rows stay visible as ``unavailable`` (never a quota row). No secrets, raw
+    payloads or base URLs ride the wire."""
+    import logging
+    import time
+
+    from agent.account_usage_cache import _identity_id_for, cached_account_usage, has_account_usage, snapshot_is_stale
+    from agent.credential_pool import STATUS_DEAD, _exhausted_until, load_pool
+
+    try:
+        pool = load_pool(slug)
+        entries = list(pool.entries())
+    except Exception:  # an unreadable pool must not fail the whole catalog
+        logging.getLogger(__name__).debug("Pool usage read failed for %s", slug, exc_info=True)
+        return None
+    if not entries:
+        return None
+    live = [e for e in entries if e.last_status != STATUS_DEAD]
+    sole = len(live) <= 1
+    supports_usage = has_account_usage(slug)
+    now = time.time()
+    accounts: list[dict] = []
+    seen: dict[tuple[str, str, str], dict] = {}
+    for entry in entries:
+        identity_id = _identity_id_for(slug, entry)
+        host = _pool_entry_host(slug, entry)
+        dedupe_key = (slug, host, identity_id)
+        is_dead = entry.last_status == STATUS_DEAD
+        snapshot = (cached_account_usage(slug, identity_id=identity_id)
+                    if supports_usage and not is_dead else None)
+        stale = snapshot_is_stale(snapshot)
+        windows = wire_windows(snapshot) if not stale else []
+        # 'limited' only when a live credential-wide cooldown benches this account or its
+        # account-scoped quota windows are exhausted — telemetry alone never benches anything.
+        cooldown_until = None if is_dead else _exhausted_until(entry, sole_credential=sole)
+        live_cooldown = cooldown_until if cooldown_until and cooldown_until > now else None
+        quota_exhausted = bool(windows) and any(
+            w.get("scope") == "account" and w.get("used_percent") is not None
+            and float(w["used_percent"]) >= _EXHAUSTED_WINDOW_PERCENT for w in windows)
+        if is_dead:
+            state = "unavailable"
+        elif live_cooldown is not None or quota_exhausted:
+            state = "limited"
+        elif snapshot is None or stale or not windows:
+            # No numeric live windows (failed/empty fetch, stale snapshot, non-supporting
+            # provider): unknown — including a "ready-looking" account with nothing to show.
+            state = "unknown"
+        else:
+            state = "ready"
+        account_row = {
+            "id": identity_id, "label": str(entry.label or ""), "windows": windows,
+            "state": state, "resets_at": account_resets_at(snapshot, live_cooldown),
+        }
+        if dedupe_key in seen:
+            # Same account under a second credential: keep the row that says more (state rank
+            # limited > ready > unknown > unavailable), but never duplicate the account.
+            existing = seen[dedupe_key]
+            rank = {"limited": 3, "ready": 2, "unknown": 1, "unavailable": 0}
+            if rank.get(account_row["state"], 0) > rank.get(existing["state"], 0):
+                accounts[accounts.index(existing)] = account_row
+                seen[dedupe_key] = account_row
+            continue
+        seen[dedupe_key] = account_row
+        accounts.append(account_row)
+        if supports_usage and not is_dead:
+            entry_requests.append({
+                "provider": slug, "identity_id": identity_id,
+                "base_url": _pool_entry_route_base_url(slug, entry), "api_key": entry.runtime_api_key,
+            })
+    return accounts or None
+
+
+def _pool_entry_host(slug: str, entry) -> str:
+    """Normalized route host of one entry, for account dedupe scoping. Never serialized."""
+    from agent.credential_pool import _norm_url
+
+    if slug == "openai-codex":
+        from hermes_cli.auth_codex import _codex_pool_route_base_url
+
+        return _norm_url(_codex_pool_route_base_url(entry.runtime_base_url))
+    return _norm_url(getattr(entry, "runtime_base_url", None))
+
+
+def _pool_entry_route_base_url(slug: str, entry) -> Optional[str]:
+    """The base URL a usage fetch for *entry* must target (its own route, never a sibling's)."""
+    if slug == "openai-codex":
+        from hermes_cli.auth_codex import _codex_pool_route_base_url
+
+        return _codex_pool_route_base_url(entry.runtime_base_url)
+    return getattr(entry, "runtime_base_url", None) or None
 
 
 # ─── Public: auxiliary-task pickers ─────────────────────────────────────
@@ -300,12 +536,12 @@ def _reasoning_catalog_reader(slug: str):
     return read
 
 
-def _apply_capabilities(rows: list[dict]) -> None:
+def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None) -> None:
     """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from hermes_cli.models import model_supports_fast_mode
+    from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -316,18 +552,21 @@ def _apply_capabilities(rows: list[dict]) -> None:
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
-
         for model in row.get("models") or []:
             reasoning = True
             if get_model_capabilities is not None and slug:
                 try:
-                    meta = get_model_capabilities(slug, model)
+                    meta = get_model_capabilities(slug, model, config=metadata_config)
                     if meta is not None and meta.supports_reasoning is not None:
                         reasoning = meta.supports_reasoning
                 except Exception:
                     reasoning = True
 
-            entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
+            fast = resolve_fast_mode_overrides(
+                model, provider=slug, base_url=row.get("api_url")) is not None
+            entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
+            if fast and model_supports_ultrafast(model):
+                entry["ultrafast"] = True
 
             if reasoning and read_reasoning_catalog is not None:
                 try:
@@ -351,18 +590,33 @@ def _apply_capabilities(rows: list[dict]) -> None:
 _FEATURED_PER_LAB = 5
 
 
-def _apply_featured(rows: list[dict]) -> None:
-    """Attach a ``featured_models`` shortlist to each aggregator row: newest ``_FEATURED_PER_LAB`` per
-    vendor by models.dev ``release_date`` (ranked within the row, never vs. today, so it is stable);
-    ties keep curated order. Non-aggregators get an empty list and keep top-N behaviour."""
+def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None) -> None:
+    """Attach a ``featured_models`` shortlist to each routing-aggregator row: newest
+    ``_FEATURED_PER_LAB`` per vendor by models.dev ``release_date`` (ranked within the row, never vs.
+    today, so it is stable); ties keep curated order. Non-aggregators — including every user-defined
+    row, whose ``models:`` list is an explicit allow-list — get an empty list and keep top-N
+    behaviour (#120217)."""
     try:
         from agent.models_dev import get_model_info
     except Exception:
         get_model_info = None  # type: ignore[assignment]
 
+    # "Is this row an aggregator?" is answered canonically by is_routing_aggregator() — the same
+    # predicate _strip_aggregator_overlaps() uses. Deriving it from model-id spelling (does any id
+    # contain "/" and span >= 2 prefixes?) misread every Org/Model-shaped user provider as a
+    # multi-lab aggregator and hid the models its owner configured by hand (#120217).
+    try:
+        from hermes_cli.providers import is_routing_aggregator
+    except Exception:
+        is_routing_aggregator = None  # type: ignore[assignment]
+
     for row in rows:
         slug = str(row.get("slug") or "").strip().lower()
         models = row.get("models") or []
+
+        if row.get("is_user_defined") or not (is_routing_aggregator and is_routing_aggregator(slug)):
+            row["featured_models"] = []
+            continue
 
         by_lab: dict[str, list[tuple[int, str, str]]] = {}  # only multi-lab aggregators get a shortlist
         for pos, model in enumerate(models):
@@ -372,7 +626,8 @@ def _apply_featured(rows: list[dict]) -> None:
                 break
             date = ""
             if get_model_info is not None:
-                info = get_model_info(slug, model) or get_model_info("openrouter", model)
+                info = (get_model_info(slug, model, config=metadata_config)
+                        or get_model_info("openrouter", model, config=metadata_config))
                 date = getattr(info, "release_date", "") if info else ""
             by_lab.setdefault(lab, []).append((pos, date, model))
 
@@ -438,14 +693,26 @@ def _append_unconfigured_rows(
     """Empty setup skeletons for canonical providers missing from ``rows`` — except the *current* one:
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
-    from hermes_cli.models import CANONICAL_PROVIDERS, _model_requires_account_discovery
+    from hermes_cli.models import _PROVIDER_ALIASES, _model_requires_account_discovery
+    from hermes_cli.models_catalog_static import listed_canonical_providers
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
+    # Honor ``model_catalog.excluded_providers`` like ``list_authenticated_providers`` does — unconditionally,
+    # even for the current provider — or ``include_unconfigured`` pickers (TUI ``/model``) resurrect every
+    # excluded provider as a skeleton row (#68816). A slug is hidden when it or any alias is excluded, so an
+    # alias exclusion (``google`` → ``gemini``) can't leak the canonical row back.
+    excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+    names_for: dict[str, set[str]] = {}
+    for alias, canon in _PROVIDER_ALIASES.items():
+        names_for.setdefault(canon.lower(), {canon.lower()}).add(alias.lower())
     extras: list[dict] = []
-    for entry in CANONICAL_PROVIDERS:
-        if entry.slug.lower() in seen:
+    for entry in listed_canonical_providers():
+        slug = entry.slug.lower()
+        if slug in seen:
+            continue
+        if names_for.get(slug, {slug}) & excluded:
             continue
         if current_only and entry.slug.lower() != cur:
             continue
@@ -622,6 +889,8 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
             continue
         try:
             pricing_kwargs = {"cached_only": True} if cached_only else {}
+            if slug.startswith("custom:"):
+                pricing_kwargs["base_url"] = str(row.get("api_url") or "")
             raw_pricing = get_pricing_for_provider(slug, **pricing_kwargs) or {}
         except Exception:
             raw_pricing = {}
@@ -687,7 +956,7 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 row["unavailable_models"] = []
 
 
-def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
+def _local_runtime_row(ctx: ConfigContext) -> dict | None:
     """The ``llamacpp`` row from staged GGUFs (``None`` when none) — downloaded models must be selectable
     before the server runs (selection starts it via the runtime_provider seam). The row's id comes from
     the provider registry's own definition, never a local literal: a row the resolver can't resolve is
@@ -726,10 +995,18 @@ def _prewarm_pricing_async(
     from hermes_constants import hermes_home_key
     from hermes_cli.models_pricing import pricing_cache_scope
 
-    slugs = {str(row.get("slug") or "").lower() for row in rows if row.get("slug")}
+    slugs = {
+        (
+            str(row.get("slug") or "").lower(),
+            str(row.get("api_url") or "") if str(row.get("slug") or "").lower().startswith("custom:") else "",
+        )
+        for row in rows if row.get("slug")
+    }
     endpoint_scope = tuple(sorted(
-        (slug, pricing_cache_scope(slug, current_provider=current_provider, current_base_url=current_base_url))
-        for slug in slugs))
+        (slug, pricing_cache_scope(
+            slug, base_url=base_url, current_provider=current_provider, current_base_url=current_base_url,
+        ))
+        for slug, base_url in slugs))
     prewarm_key = (hermes_home_key(), endpoint_scope)
 
     with _pricing_prewarm_lock:
@@ -755,7 +1032,15 @@ def _prewarm_pricing_async(
 
 
 def _moa_provider_row(current_provider: str = "") -> dict | None:
-    """The virtual ``moa`` row shared by the CLI inventory and gateway picker; ``None`` without presets."""
+    """The virtual ``moa`` row shared by the CLI inventory and gateway picker; ``None`` without presets.
+
+    Strictly opt-in (#63353): the row only appears when the user's raw config.yaml explicitly
+    enables at least one MoA preset. The synthesized ``default`` preset from
+    ``normalize_moa_config({})`` — which every user gets via DEFAULT_CONFIG defaults — must not
+    be treated as a user choice."""
+    if not _raw_config_has_enabled_moa_preset():
+        return None
+
     try:
         from hermes_cli.config import load_config
         from hermes_cli.moa_config import normalize_moa_config

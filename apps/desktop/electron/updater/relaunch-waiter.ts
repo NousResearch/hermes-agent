@@ -1,0 +1,335 @@
+// Stage the waiter outside the package and await its old-version snapshot.
+// A failed handshake cancels our child instead of leaving a delayed relaunch.
+
+import { type ChildProcess, spawn as nodeSpawn } from 'node:child_process'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+export const RELAUNCH_WAITER_SCRIPT = 'update-relaunch-waiter.ps1'
+
+/**
+ * The waiter ships as an app resource (electron-builder win.extraResources):
+ * it is PowerShell run outside the package, not core code, and the sealed
+ * payload's snapshot omits scripts/.
+ */
+export function relaunchWaiterScript(resourcesPath: string): string {
+  return path.join(resourcesPath, RELAUNCH_WAITER_SCRIPT)
+}
+
+export const RELAUNCH_WAITER_READY_FILENAME = 'ready.txt'
+export const DEFAULT_RELAUNCH_WAITER_TIMEOUT_SECONDS = 900
+export const DEFAULT_RELAUNCH_WAITER_HANDSHAKE_MS = 10_000
+
+/** Absolute path — never resolved via inherited PATH (it can point into the package). */
+export const POWERSHELL_PATH = path.win32.join(
+  process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows',
+  'System32',
+  'WindowsPowerShell',
+  'v1.0',
+  'powershell.exe'
+)
+
+export interface RelaunchWaiterOptions {
+  /** The quitting app's pid — the waiter waits for this process to exit. */
+  processId: number
+  /** Wall-clock ms the parent process started (PID-reuse guard). */
+  processStartTimeMs: number
+  /** The MSIX identity name of this install (e.g. NousResearch.HermesBundled). */
+  identityName: string
+  /** Absolute path to the waiter script shipped in the app's resources. */
+  scriptPath: string
+  timeoutSeconds?: number
+}
+
+export interface WaiterStaging {
+  stageDir: string
+  scriptPath: string
+  readyFile: string
+}
+
+export type SpawnWaiter = (
+  command: string,
+  args: string[],
+  opts: { detached: boolean; stdio: 'ignore'; windowsHide: boolean; cwd: string }
+) => ChildProcess
+
+export interface RelaunchWaiterDeps {
+  spawn?: SpawnWaiter
+  /** Handshake deadline in ms (tests shrink this). */
+  handshakeTimeoutMs?: number
+  /** Poll interval for the ready file (tests shrink this). */
+  pollMs?: number
+  cancelTimeoutMs?: number
+  /** Where the reason for each failed start goes (the caller passes desktop.log). */
+  log?: (message: string) => void
+}
+
+/** Written by the waiter script itself, outside the stage dir that it deletes on exit. */
+export const RELAUNCH_WAITER_LOG_FILENAME = 'hermes-relaunch-waiter.log'
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+}
+
+/** Max bytes read from the shared script log: a failure report must not scale with its history. */
+export const RELAUNCH_WAITER_LOG_TAIL_BYTES = 16 * 1024
+
+/**
+ * The script log is shared by every attempt, so keep only this attempt's lines
+ * (the script tags each with its stage dir name) from a bounded suffix.
+ */
+export function waiterLogTail(
+  file: string,
+  attempt: string,
+  maxBytes: number = RELAUNCH_WAITER_LOG_TAIL_BYTES
+): string {
+  let text: string
+
+  try {
+    const fd: number = fs.openSync(file, 'r')
+
+    try {
+      const size: number = fs.fstatSync(fd).size
+      const length: number = Math.min(size, maxBytes)
+      const buffer: Buffer = Buffer.alloc(length)
+      fs.readSync(fd, buffer, 0, length, size - length)
+      text = buffer.toString('utf8')
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    return `${file}: not written (the script never ran far enough to log)`
+  }
+
+  const lines: string[] = text.split(/\r?\n/).filter((line: string): boolean => line.includes(`[${attempt}]`))
+
+  return `${file}:\n${lines.length ? lines.join('\n') : 'no lines from this attempt'}`
+}
+
+/** Pure: the exact argv the waiter is spawned with. */
+export function buildRelaunchWaiterArgs(options: RelaunchWaiterOptions, readyFile: string): string[] {
+  return [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    options.scriptPath,
+    '-ProcessId',
+    String(options.processId),
+    '-ProcessStartTimeMs',
+    String(options.processStartTimeMs),
+    '-IdentityName',
+    options.identityName,
+    '-ReadyFile',
+    readyFile,
+    '-TimeoutSeconds',
+    String(options.timeoutSeconds ?? DEFAULT_RELAUNCH_WAITER_TIMEOUT_SECONDS)
+  ]
+}
+
+/** Stage outside the package so its replacement does not invalidate the waiter. */
+async function stageRelaunchWaiter(
+  options: RelaunchWaiterOptions,
+  log: (message: string) => void
+): Promise<WaiterStaging | undefined> {
+  let stageDir: string
+
+  try {
+    stageDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hermes-relaunch-'))
+  } catch (error) {
+    log(`[updates] relaunch waiter: cannot create a staging dir under ${os.tmpdir()}: ${errorText(error)}`)
+
+    return undefined
+  }
+
+  const scriptPath = path.join(stageDir, RELAUNCH_WAITER_SCRIPT)
+  const readyFile = path.join(stageDir, RELAUNCH_WAITER_READY_FILENAME)
+
+  try {
+    await fs.promises.copyFile(options.scriptPath, scriptPath)
+  } catch (error) {
+    log(`[updates] relaunch waiter: cannot copy ${options.scriptPath} to ${scriptPath}: ${errorText(error)}`)
+
+    try {
+      await fs.promises.rm(stageDir, { recursive: true, force: true })
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Relaunch waiter staging cleanup failed')
+    }
+
+    return undefined
+  }
+
+  return { stageDir, scriptPath, readyFile }
+}
+
+export interface RelaunchWaiterHandle {
+  cancel: () => Promise<void>
+}
+
+/** Return ownership after readiness, or no handle after a safely stopped failure. */
+export async function startRelaunchWaiter(
+  options: RelaunchWaiterOptions,
+  deps: RelaunchWaiterDeps = {}
+): Promise<RelaunchWaiterHandle | undefined> {
+  const spawn = deps.spawn ?? (nodeSpawn as unknown as SpawnWaiter)
+  const handshakeTimeoutMs = deps.handshakeTimeoutMs ?? DEFAULT_RELAUNCH_WAITER_HANDSHAKE_MS
+  const pollMs = deps.pollMs ?? 250
+  const cancelTimeoutMs = deps.cancelTimeoutMs ?? 10_000
+  const log = deps.log ?? ((): void => {})
+  const staging = await stageRelaunchWaiter(options, log)
+
+  if (!staging) {
+    return undefined
+  }
+
+  const cleanup = () => fs.promises.rm(staging.stageDir, { recursive: true, force: true })
+  let child: ChildProcess
+
+  try {
+    child = spawn(
+      POWERSHELL_PATH,
+      buildRelaunchWaiterArgs({ ...options, scriptPath: staging.scriptPath }, staging.readyFile),
+      { detached: true, stdio: 'ignore', windowsHide: true, cwd: staging.stageDir }
+    )
+  } catch (error) {
+    log(`[updates] relaunch waiter: spawning ${POWERSHELL_PATH} threw: ${errorText(error)}`)
+
+    try {
+      await cleanup()
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Relaunch waiter spawn cleanup failed')
+    }
+
+    return undefined
+  }
+
+  let closed = false
+  const startedAt = Date.now()
+  const attempt: string = path.basename(staging.stageDir)
+  const waiterLogPath: string = path.join(os.tmpdir(), RELAUNCH_WAITER_LOG_FILENAME)
+
+  const closedPromise = new Promise<void>(resolve => {
+    child.once('close', () => {
+      closed = true
+      resolve()
+    })
+  })
+
+  let cancellation: Promise<void> | undefined
+
+  const cancel = (): Promise<void> => {
+    cancellation ??= (async () => {
+      if (!closed) {
+        if (child.pid !== undefined) {
+          child.kill()
+        }
+
+        let timeout: ReturnType<typeof setTimeout> | undefined
+
+        try {
+          await Promise.race([
+            closedPromise,
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(
+                () => reject(new Error('Relaunch waiter did not exit after cancellation')),
+                cancelTimeoutMs
+              )
+            })
+          ])
+        } finally {
+          clearTimeout(timeout)
+        }
+      }
+
+      await cleanup()
+    })()
+
+    return cancellation
+  }
+
+  const ready = await new Promise<boolean>(resolve => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout>
+    const deadline = Date.now() + handshakeTimeoutMs
+
+    const finish = (ready: boolean) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      clearTimeout(timer)
+      resolve(ready)
+    }
+
+    child.once('error', error => {
+      log(`[updates] relaunch waiter: PowerShell failed to start: ${errorText(error)}`)
+      finish(false)
+    })
+    child.once('close', (code, signal) => {
+      if (!settled) {
+        log(
+          `[updates] relaunch waiter: exited before its handshake after ${Date.now() - startedAt}ms ` +
+            `(exit code ${code ?? 'none'}, signal ${signal ?? 'none'}; 1 = script error, 2 = identity ` +
+            `${options.identityName} not found or has no app id)\n${waiterLogTail(waiterLogPath, attempt)}`
+        )
+      }
+
+      finish(false)
+    })
+
+    const check = () => {
+      if (settled) {
+        return
+      }
+
+      if (fs.existsSync(staging.readyFile)) {
+        finish(true)
+      } else if (Date.now() >= deadline) {
+        finish(false)
+      } else {
+        timer = setTimeout(check, pollMs)
+      }
+    }
+
+    check()
+  })
+
+  if (!ready) {
+    if (!closed) {
+      log(
+        `[updates] relaunch waiter: no handshake within ${handshakeTimeoutMs}ms ` +
+          `(pid ${child.pid ?? 'none'}); stopping it\n${waiterLogTail(waiterLogPath, attempt)}`
+      )
+    }
+
+    await cancel()
+
+    return undefined
+  }
+
+  child.unref()
+
+  return { cancel }
+}
+
+/** The MSIX update paths all hand off to this waiter; `log` is where a failed start explains itself. */
+export function startUpdateRelaunchWaiter(
+  identityName: string,
+  resourcesPath: string,
+  log: (message: string) => void,
+  timeoutSeconds?: number
+): Promise<RelaunchWaiterHandle | undefined> {
+  return startRelaunchWaiter(
+    {
+      processId: process.pid,
+      processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
+      identityName,
+      scriptPath: relaunchWaiterScript(resourcesPath),
+      timeoutSeconds
+    },
+    { log }
+  )
+}

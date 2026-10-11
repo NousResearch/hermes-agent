@@ -46,7 +46,11 @@ def test_should_use_direct_api_call_only_for_cron_openai_wire():
     assert should_use_direct_api_call(_make_agent(platform="telegram")) is False
     assert should_use_direct_api_call(_make_agent(platform=None)) is False
 
-    for api_mode in ("codex_responses", "anthropic_messages", "bedrock_converse"):
+    codex = _make_agent(platform="cron")
+    codex.api_mode = "codex_responses"
+    assert should_use_direct_api_call(codex) is True  # #69734
+
+    for api_mode in ("anthropic_messages", "bedrock_converse"):
         agent = _make_agent(platform="cron")
         agent.api_mode = api_mode
         assert should_use_direct_api_call(agent) is False

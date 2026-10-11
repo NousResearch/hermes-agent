@@ -12,7 +12,7 @@ def _data_line(obj) -> bytes:
         return b"data: " + bytes(obj) + b"\n\n"
     if obj == "[DONE]":
         return b"data: [DONE]\n\n"
-    return f"data: {json.dumps(obj)}\n\n".encode("utf-8")
+    return f"data: {json.dumps(obj)}\n\n".encode()
 
 
 def test_complete_stream_without_done_appends():

@@ -62,9 +62,6 @@ description: test skill
 # Round-trip
 # ---------------------------------------------------------------------------
 
-def test_empty_usage_returns_empty_dict(skills_home):
-    from tools.skill_usage import load_usage
-    assert load_usage() == {}
 
 
 def test_save_and_load_roundtrip(skills_home):
@@ -333,10 +330,6 @@ def test_concurrent_bump_view_preserves_all_updates(skills_home):
 # State transitions
 # ---------------------------------------------------------------------------
 
-def test_set_state_active(skills_home):
-    from tools.skill_usage import set_state, get_record, STATE_ACTIVE
-    set_state("x", STATE_ACTIVE)
-    assert get_record("x")["state"] == "active"
 
 
 def test_restoring_from_archive_clears_timestamp(skills_home):

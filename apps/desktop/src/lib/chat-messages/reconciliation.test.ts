@@ -1,15 +1,30 @@
 import { expect, it } from 'vitest'
 
-import { type ChatMessage, preserveLocalAssistantErrors, textPart, toChatMessages } from './index'
+import {
+  type ChatMessage,
+  chatMessageText,
+  preserveLocalAssistantErrors,
+  preserveLocalSystemNotices,
+  textPart,
+  toChatMessages
+} from './index'
 
 const row = (id: string, role: 'user' | 'assistant', text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
-  id, role, parts: [textPart(text)], ...extra
+  id,
+  role,
+  parts: [textPart(text)],
+  ...extra
 })
 
 it('reconciles only the represented failed tail, retaining its structured error and omitted segments', () => {
   const hydrated = toChatMessages([
     { role: 'user', content: 'read it', timestamp: 1 },
-    { role: 'assistant', content: '', timestamp: 2, tool_calls: [{ id: 'call', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }] },
+    {
+      role: 'assistant',
+      content: '',
+      timestamp: 2,
+      tool_calls: [{ id: 'call', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }]
+    },
     { role: 'tool', tool_call_id: 'call', tool_name: 'read_file', content: 'contents', timestamp: 3 },
     { role: 'assistant', content: 'Done.', timestamp: 4 }
   ])
@@ -25,7 +40,12 @@ it('reconciles only the represented failed tail, retaining its structured error 
   for (const id of [failed.id, storedAssistant.id]) {
     const merged = preserveLocalAssistantErrors(hydrated, [row('local-user', 'user', 'read it'), { ...failed, id }])
     expect(merged.filter(message => message.role === 'assistant')).toHaveLength(1)
-    expect(merged.at(-1)).toMatchObject({ id: storedAssistant.id, error: failed.error, errorSurface: failed.errorSurface, pending: false })
+    expect(merged.at(-1)).toMatchObject({
+      id: storedAssistant.id,
+      error: failed.error,
+      errorSurface: failed.errorSurface,
+      pending: false
+    })
   }
 
   const user = row('user', 'user', 'read it')
@@ -33,13 +53,29 @@ it('reconciles only the represented failed tail, retaining its structured error 
   const laterUser = row('later-user', 'user', 'read it')
 
   const cases: { name: string; stored: ChatMessage[]; local: ChatMessage[] }[] = [
-    { name: 'omitted continuation', stored: [user, earlier], local: [user, earlier, row('hidden', 'user', 'Continue.', { hidden: true }), failed] },
+    {
+      name: 'omitted continuation',
+      stored: [user, earlier],
+      local: [user, earlier, row('hidden', 'user', 'Continue.', { hidden: true }), failed]
+    },
     { name: 'older failed segment', stored: [user, earlier], local: [user, failed, earlier] },
     { name: 'repeated prompt', stored: [user, earlier], local: [user, earlier, laterUser, failed] },
     { name: 'older identical text', stored: [user, earlier, laterUser], local: [user, earlier, laterUser, failed] },
-    { name: 'different attachments', stored: [{ ...user, attachmentRefs: ['a.png'] }, earlier], local: [{ ...user, attachmentRefs: ['b.png'] }, failed] },
-    { name: 'different durable row', stored: [user, { ...earlier, rowId: 10 }], local: [user, { ...failed, rowId: 20 }] },
-    { name: 'reused tool id across turns', stored: [user, storedAssistant, laterUser], local: [user, storedAssistant, laterUser, failed] }
+    {
+      name: 'different attachments',
+      stored: [{ ...user, attachmentRefs: ['a.png'] }, earlier],
+      local: [{ ...user, attachmentRefs: ['b.png'] }, failed]
+    },
+    {
+      name: 'different durable row',
+      stored: [user, { ...earlier, rowId: 10 }],
+      local: [user, { ...failed, rowId: 20 }]
+    },
+    {
+      name: 'reused tool id across turns',
+      stored: [user, storedAssistant, laterUser],
+      local: [user, storedAssistant, laterUser, failed]
+    }
   ]
 
   for (const fixture of cases) {
@@ -56,4 +92,366 @@ it('reconciles only the represented failed tail, retaining its structured error 
   const merged = preserveLocalAssistantErrors(stored, current)
   expect(merged.map(message => message.id)).toEqual(stored.map(message => message.id))
   expect(merged.at(-1)).toMatchObject({ error: failed.error, errorSurface: failed.errorSurface })
+})
+
+const turnLabels = (messages: ChatMessage[]) => messages.map(message => `${message.role}:${chatMessageText(message)}`)
+
+it('drops a local errored turn the refreshed transcript already stored under new ids', () => {
+  const stored = [
+    row('s1', 'user', 'old q', { rowId: 1 }),
+    row('s2', 'assistant', 'old a', { rowId: 2 }),
+    row('s3', 'user', 'new q', { rowId: 3 }),
+    row('s4', 'assistant', 'new a', { rowId: 4 })
+  ]
+
+  const current = [
+    row('user-1-x', 'user', 'old q'),
+    row('assistant-stream-1-0', 'assistant', 'old a', { error: 'boom' }),
+    row('s3', 'user', 'new q'),
+    row('s4', 'assistant', 'new a')
+  ]
+
+  expect(turnLabels(preserveLocalAssistantErrors(stored, current))).toEqual(turnLabels(stored))
+})
+
+it('keeps an unstored errored turn at its original position instead of after newer turns', () => {
+  const stored = [
+    row('s1', 'user', 'first q'),
+    row('s2', 'assistant', 'first a'),
+    row('s3', 'user', 'later q'),
+    row('s4', 'assistant', 'later a')
+  ]
+
+  const current = [
+    row('s1', 'user', 'first q'),
+    row('s2', 'assistant', 'first a'),
+    row('user-9-x', 'user', 'failed q'),
+    row('assistant-stream-9-0', 'assistant', '', { error: 'boom' }),
+    row('s3', 'user', 'later q'),
+    row('s4', 'assistant', 'later a')
+  ]
+
+  expect(turnLabels(preserveLocalAssistantErrors(stored, current))).toEqual([
+    'user:first q',
+    'assistant:first a',
+    'user:failed q',
+    'assistant:',
+    'user:later q',
+    'assistant:later a'
+  ])
+})
+
+it('returns a preserved failed turn to its timeline position once the conversation moved on (#118002)', () => {
+  const firstUser = row('u1', 'user', 'summarize the log')
+  const firstReply = row('a1', 'assistant', 'Done.')
+  const retriedPrompt = row('u2', 'user', 'retry the deploy')
+  const retriedReply = row('a2', 'assistant', 'Deployed.')
+  const failedPrompt = row('u0', 'user', 'retry the deploy')
+  const failed = row('local-failure', 'assistant', 'connection lost', { error: 'upstream timeout' })
+
+  const merged = preserveLocalAssistantErrors(
+    [firstUser, firstReply, retriedPrompt, retriedReply],
+    [firstUser, firstReply, failedPrompt, failed, retriedPrompt, retriedReply]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['u1', 'a1', 'local-failure', 'u2', 'a2'])
+  expect(merged.find(message => message.id === failed.id)).toMatchObject({
+    error: failed.error,
+    pending: false
+  })
+})
+
+it('keeps a failed tail at the end while its re-submitted prompt is still local-only', () => {
+  const firstUser = row('u1', 'user', 'summarize the log')
+  const firstReply = row('a1', 'assistant', 'Done.')
+  const failedPrompt = row('u0', 'user', 'retry the deploy')
+  const failed = row('local-failure', 'assistant', 'connection lost', { error: 'upstream timeout' })
+  const optimisticRetry = row('optimistic-retry', 'user', 'retry the deploy')
+
+  const merged = preserveLocalAssistantErrors(
+    [firstUser, firstReply],
+    [firstUser, firstReply, failedPrompt, failed, optimisticRetry]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['u1', 'a1', 'u0', 'local-failure'])
+})
+
+it('does not re-append a failed turn whose prompt hydration carries under a new id (#119326)', () => {
+  // The backend rewrote the stored prompt (attachment suffix), so only its
+  // durable rowId still ties it to the local optimistic row.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'hi', { rowId: 1 }),
+      row('9-1-assistant', 'assistant', 'hello', { rowId: 2 }),
+      row('9-2-user', 'user', 'look\n\n[image attached]', { rowId: 3 }),
+      row('9-3-user', 'user', 'newer', { rowId: 5 }),
+      row('9-4-assistant', 'assistant', 'reply', { rowId: 6 })
+    ],
+    [
+      row('1-0-user', 'user', 'hi', { rowId: 1 }),
+      row('1-1-assistant', 'assistant', 'hello', { rowId: 2 }),
+      row('user-look', 'user', 'look', { rowId: 3 }),
+      row('local-failure', 'assistant', '', { error: 'upstream timeout' }),
+      row('user-newer', 'user', 'newer', { rowId: 5 }),
+      row('assistant-stream-reply', 'assistant', 'reply', { rowId: 6 })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual([
+    '9-0-user',
+    '9-1-assistant',
+    '9-2-user',
+    'local-failure',
+    '9-3-user',
+    '9-4-assistant'
+  ])
+})
+
+it('moves a local error onto the durable row it already represents (#119326)', () => {
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'look\n\n[image attached]', { rowId: 3 }),
+      row('9-1-assistant', 'assistant', 'partial', { rowId: 4 })
+    ],
+    [
+      row('user-look', 'user', 'look', { rowId: 3 }),
+      row('assistant-stream-x', 'assistant', 'partial', { error: 'upstream timeout', rowId: 4 })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant'])
+  expect(merged[1]).toMatchObject({ error: 'upstream timeout', pending: false })
+})
+
+it('does not re-append a rowId-less pasted-attachment prompt rewritten by the backend (#120978)', () => {
+  // The pasted clipboard image has no rowId on the optimistic local row, and
+  // the durable prompt is rewritten to marker lines + an injected
+  // memory-context block, so no exact text/refs compare can tie them.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'first', { rowId: 1 }),
+      row('9-1-assistant', 'assistant', 'first answer', { rowId: 2 }),
+      row('9-2-user', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]\n[screenshot]', { rowId: 3 })
+    ],
+    [
+      row('1-0-user', 'user', 'first', { rowId: 1 }),
+      row('1-1-assistant', 'assistant', 'first answer', { rowId: 2 }),
+      row('user-1790168309-ab12cd', 'user', 'unable to publish', {
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant', '9-2-user'])
+})
+
+it('folds a preserved attachment error onto the durable reply via the tolerant caption (#120978)', () => {
+  // The errored assistant's hydrated row exists, but neither it nor the user
+  // row can be matched by rowId (the local pair carries none) — the tolerant
+  // caption match must fold the error onto the durable reply and drop the
+  // optimistic pair instead of preserving both at the tail.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]', { rowId: 18711 }),
+      row('9-1-assistant', 'assistant', 'partial', { rowId: 18715 }),
+      row('9-2-user', 'user', 'later question', { rowId: 18817 }),
+      row('9-3-assistant', 'assistant', 'later answer', { rowId: 18822 })
+    ],
+    [
+      row('user-1790168309-ab12cd', 'user', 'unable to publish', {
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      }),
+      row('assistant-stream-deadbeef', 'assistant', 'partial', { error: 'upstream timeout' }),
+      row('9-2-user', 'user', 'later question', { rowId: 18817 }),
+      row('9-3-assistant', 'assistant', 'later answer', { rowId: 18822 })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant', '9-2-user', '9-3-assistant'])
+  expect(merged[1]).toMatchObject({ error: 'upstream timeout', pending: false })
+})
+
+it('never tolerance-matches a plain repeated prompt without attachment evidence (#120978)', () => {
+  // Gating: the stored row carries rewrite markers but the local repeat is a
+  // bare caption with no refs — a genuine repeat must survive.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]', { rowId: 18711 }),
+      row('9-1-assistant', 'assistant', 'stored reply', { rowId: 18712 })
+    ],
+    [
+      row('1-0-user', 'user', 'earlier', { rowId: 100 }),
+      row('1-1-assistant', 'assistant', 'earlier answer', { rowId: 101 }),
+      row('user-repeat', 'user', 'unable to publish'),
+      row('assistant-stream-x', 'assistant', 'stored reply', { error: 'upstream timeout' })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant', 'user-repeat', 'assistant-stream-x'])
+})
+
+it('never folds a captionless attachment error onto another paste\u2019s reply (#120978)', () => {
+  // A captionless paste strips to the empty caption on both sides, and empty
+  // cannot identify a turn: two markers-only stored rows would compare equal
+  // against ANY captionless local row, so findIndex could fold an error raised
+  // on the first paste onto the first settled reply after the SECOND paste.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', '[Image attached at: /tmp/first.png]', { rowId: 18711 }),
+      row('9-1-assistant', 'assistant', 'first answer', { rowId: 18712 }),
+      row('9-2-user', 'user', '[Image attached at: /tmp/second.png]', { rowId: 18811 }),
+      row('9-3-assistant', 'assistant', 'second answer', { rowId: 18812 })
+    ],
+    [
+      row('9-2-user', 'user', '[Image attached at: /tmp/second.png]', { rowId: 18811 }),
+      row('9-3-assistant', 'assistant', 'second answer', { rowId: 18812 }),
+      row('user-paste-1', 'user', '', {
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      }),
+      row('assistant-stream-x', 'assistant', 'never stored anywhere', { error: 'upstream timeout' })
+    ]
+  )
+
+  // The errored turn cannot be pinned to a durable reply: it must survive
+  // locally instead of stealing the second paste's settled reply.
+  expect(merged.map(message => message.id)).toEqual([
+    '9-0-user',
+    '9-1-assistant',
+    '9-2-user',
+    '9-3-assistant',
+    'user-paste-1',
+    'assistant-stream-x'
+  ])
+  expect(merged.find(message => message.id === '9-1-assistant')?.error).toBeUndefined()
+  expect(merged.find(message => message.id === '9-3-assistant')?.error).toBeUndefined()
+  expect(merged.find(message => message.id === 'assistant-stream-x')?.error).toBe('upstream timeout')
+})
+
+it('folds a repeated-caption attachment error onto its own paste\u2019s reply, not the earlier one (#122079)', () => {
+  // Two pastes of the same captioned screenshot are indistinguishable by
+  // tolerant caption alone — the marker paths that separate them strip out of
+  // the compare — so a first-match fold stamps the SECOND paste's error onto
+  // the FIRST paste's settled reply. The errored turn must pair with the
+  // stored row at the same position: the n-th local captioned paste folds
+  // onto the n-th stored one.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'run the migration\n\n[Image attached at: /tmp/first.png]', { rowId: 18711 }),
+      row('9-1-assistant', 'assistant', 'first answer', { rowId: 18712 }),
+      row('9-2-user', 'user', 'run the migration\n\n[Image attached at: /tmp/second.png]', { rowId: 18811 }),
+      row('9-3-assistant', 'assistant', 'second answer', { rowId: 18812 })
+    ],
+    [
+      row('9-0-user', 'user', 'run the migration\n\n[Image attached at: /tmp/first.png]', { rowId: 18711 }),
+      row('9-1-assistant', 'assistant', 'first answer', { rowId: 18712 }),
+      row('user-paste-2', 'user', 'run the migration', {
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      }),
+      row('assistant-stream-x', 'assistant', 'never stored anywhere', { error: 'upstream timeout' })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant', '9-2-user', '9-3-assistant'])
+  expect(merged.find(message => message.id === '9-1-assistant')?.error).toBeUndefined()
+  expect(merged.find(message => message.id === '9-3-assistant')?.error).toBe('upstream timeout')
+})
+
+it('keeps a repeated-caption attachment error local when its prompt never committed (#122079)', () => {
+  // The first paste committed and settled; the second paste errored before
+  // its prompt was saved. The tail user row of the refreshed page is the
+  // FIRST paste — same tolerant caption, different turn — so neither the
+  // error fold nor the tail prompt match may claim it: the failed pair
+  // survives locally and the first paste's settled reply stays clean.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'run the migration\n\n[Image attached at: /tmp/first.png]', { rowId: 18711 }),
+      row('9-1-assistant', 'assistant', 'first answer', { rowId: 18712 })
+    ],
+    [
+      row('9-0-user', 'user', 'run the migration\n\n[Image attached at: /tmp/first.png]', { rowId: 18711 }),
+      row('9-1-assistant', 'assistant', 'first answer', { rowId: 18712 }),
+      row('user-paste-2', 'user', 'run the migration', {
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      }),
+      row('assistant-stream-x', 'assistant', 'never stored anywhere', { error: 'upstream timeout' })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant', 'user-paste-2', 'assistant-stream-x'])
+  expect(merged.find(message => message.id === '9-1-assistant')?.error).toBeUndefined()
+  expect(merged.find(message => message.id === 'assistant-stream-x')?.error).toBe('upstream timeout')
+})
+
+it('splices an older-rowId preserved run in front of the first newer hydrated row (#120978)', () => {
+  // The windowed hydrated page starts past the failed turn; the kept pair
+  // (user 210 + errored assistant 211) must land ABOVE the newer turn, not
+  // below it.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'newer question', { rowId: 220 }),
+      row('9-1-assistant', 'assistant', 'newer answer', { rowId: 221 })
+    ],
+    [
+      row('user-210', 'user', 'older question', { rowId: 210 }),
+      row('assistant-stream-211', 'assistant', 'older partial', { rowId: 211, error: 'upstream timeout' }),
+      row('9-0-user', 'user', 'newer question', { rowId: 220 }),
+      row('9-1-assistant', 'assistant', 'newer answer', { rowId: 221 })
+    ]
+  )
+
+  expect(merged.map(message => message.rowId)).toEqual([210, 211, 220, 221])
+  expect(merged[1]).toMatchObject({ error: 'upstream timeout', pending: false })
+})
+
+it('keeps a rowId-less preserved run trailing (#118002 behavior unchanged)', () => {
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'newer question', { rowId: 220 }),
+      row('9-1-assistant', 'assistant', 'newer answer', { rowId: 221 })
+    ],
+    [
+      row('user-no-row', 'user', 'older question'),
+      row('assistant-stream-x', 'assistant', 'older partial', { error: 'upstream timeout' }),
+      row('9-0-user', 'user', 'newer question', { rowId: 220 }),
+      row('9-1-assistant', 'assistant', 'newer answer', { rowId: 221 })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant', 'user-no-row', 'assistant-stream-x'])
+})
+
+// #126422: the fallback-switch notice is a client-local `system` row the
+// stored page cannot carry; the post-turn refresh rebuilds from stored rows
+// and must re-graft it instead of silently dropping it.
+it('preserveLocalSystemNotices re-grafts trailing client-local system notices', () => {
+  const notice: ChatMessage = {
+    id: 'fallback-switch-1234',
+    parts: [textPart('Model fallback: using xiaomi/mimo via nous.')],
+    role: 'system',
+    timestamp: 1234
+  }
+
+  const refreshed = [row('s1', 'user', 'prompt'), row('s2', 'assistant', 'reply')]
+
+  const preserved = preserveLocalSystemNotices(refreshed, [...refreshed, notice])
+
+  expect(preserved.at(-1)?.id).toBe('fallback-switch-1234')
+})
+
+it('preserveLocalSystemNotices does not duplicate a notice the page already carries', () => {
+  const notice: ChatMessage = {
+    id: 'fallback-switch-1234',
+    parts: [textPart('Model fallback: using xiaomi/mimo via nous.')],
+    role: 'system',
+    timestamp: 1234
+  }
+
+  const refreshed = [
+    row('s1', 'user', 'prompt'),
+    row('s2', 'assistant', 'reply'),
+    { ...notice, id: 'fallback-switch-5678' }
+  ]
+
+  const preserved = preserveLocalSystemNotices(refreshed, [...refreshed, { ...notice, id: 'other' }])
+  expect(preserved).toBe(refreshed)
 })

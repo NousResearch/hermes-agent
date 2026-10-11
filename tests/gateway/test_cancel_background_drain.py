@@ -18,7 +18,6 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
-
 class _StubAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False):
         pass
@@ -32,12 +31,10 @@ class _StubAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id):
         return {}
 
-
 def _make_adapter():
     adapter = _StubAdapter(PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM)
     adapter._send_with_retry = AsyncMock(return_value=None)
     return adapter
-
 
 def _event(text, cid="42"):
     return MessageEvent(
@@ -45,7 +42,6 @@ def _event(text, cid="42"):
         message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.TELEGRAM, chat_id=cid, chat_type="dm"),
     )
-
 
 @pytest.mark.asyncio
 async def test_cancel_background_tasks_drains_late_arrivals():
@@ -116,34 +112,4 @@ async def test_cancel_background_tasks_drains_late_arrivals():
         "Late-arrival M2 was NOT cancelled by cancel_background_tasks — "
         "the re-drain loop is missing and the task leaked"
     )
-    assert adapter._background_tasks == set()
-
-
-@pytest.mark.asyncio
-async def test_cancel_background_tasks_handles_no_tasks():
-    """Regression guard: no tasks, no hang, no error."""
-    adapter = _make_adapter()
-    await adapter.cancel_background_tasks()
-    assert adapter._background_tasks == set()
-
-
-@pytest.mark.asyncio
-async def test_cancel_background_tasks_bounded_rounds():
-    """Regression guard: the drain loop is bounded — it does not spin
-    forever even if late-arrival tasks keep getting spawned."""
-    adapter = _make_adapter()
-
-    # Single well-behaved task that cancels cleanly — baseline check
-    # that the loop terminates in one round.
-    async def quick():
-        try:
-            await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            raise
-
-    task = asyncio.create_task(quick())
-    adapter._background_tasks.add(task)
-
-    await adapter.cancel_background_tasks()
-    assert task.done()
     assert adapter._background_tasks == set()

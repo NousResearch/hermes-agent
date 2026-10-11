@@ -226,3 +226,16 @@ function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemot
     url
   }
 }
+
+/**
+ * Boot target when the user asked to launch the registry primary. Returns null
+ * for last-used mode and for a local primary — those keep the local spawn.
+ * Ignores legacy connection.json mode, which must not override this choice.
+ */
+export function registryPrimaryBootRoute(registry: ConnectionRegistry): DesktopRemoteRoute | null {
+  if (registry?.launchMode !== 'primary') {
+    return null
+  }
+
+  return resolveRegistryPrimaryRoute(registry)
+}

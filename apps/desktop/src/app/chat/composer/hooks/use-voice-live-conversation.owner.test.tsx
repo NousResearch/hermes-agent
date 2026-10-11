@@ -13,7 +13,9 @@ import { useVoiceLiveConversation } from './use-voice-live-conversation'
 // — the same owner route the TTS legs already trust (#117014) — so the voice
 // configured on the Bot's profile is the voice that answers (#117401).
 
-const constructed = vi.hoisted(() => ({ owners: [] as Array<null | { connectionId?: null | string; profile?: null | string }> }))
+const constructed = vi.hoisted(() => ({
+  owners: [] as Array<null | { connectionId?: null | string; profile?: null | string }>
+}))
 
 vi.mock('@/lib/voice-live', async importOriginal => {
   const actual = (await importOriginal()) as Record<string, unknown>
@@ -23,7 +25,10 @@ vi.mock('@/lib/voice-live', async importOriginal => {
     VoiceLiveSession: class {
       close = vi.fn()
 
-      constructor(_handlers: VoiceLiveHandlers, owner: null | { connectionId?: null | string; profile?: null | string } = null) {
+      constructor(
+        _handlers: VoiceLiveHandlers,
+        owner: null | { connectionId?: null | string; profile?: null | string } = null
+      ) {
         constructed.owners.push(owner)
       }
 

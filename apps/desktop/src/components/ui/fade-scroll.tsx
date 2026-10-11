@@ -1,6 +1,5 @@
-import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { type CSSProperties, type ReactNode, useLayoutEffect, useRef } from 'react'
 
-import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
 
 /** How much of a clipped edge the gradient eats. */
@@ -15,7 +14,7 @@ export interface FadeEdges {
  * The mask for a pair of clipped edges, or `undefined` when nothing is clipped
  * — a list that fits must not be dimmed at all.
  */
-export function edgeMask({ above, below }: FadeEdges): string | undefined {
+export function edgeMask({ above, below }: FadeEdges, axis: 'x' | 'y' = 'y'): string | undefined {
   if (!above && !below) {
     return undefined
   }
@@ -23,7 +22,7 @@ export function edgeMask({ above, below }: FadeEdges): string | undefined {
   const top = above ? `transparent, black ${FADE}` : 'black'
   const bottom = below ? `black calc(100% - ${FADE}), transparent` : 'black'
 
-  return `linear-gradient(to bottom, ${top}, ${bottom})`
+  return `linear-gradient(to ${axis === 'x' ? 'right' : 'bottom'}, ${top}, ${bottom})`
 }
 
 /** Which edges of a scroller currently have content clipped behind them. */
@@ -42,60 +41,51 @@ export function scrollEdges(el: Pick<HTMLElement, 'clientHeight' | 'scrollHeight
  * backdrop, inside a widget panel, and in a drawer without knowing any of
  * their fills. Same technique as FadeText, on the other axis.
  *
- * The gradient is EDGE-AWARE — a side only fades when it actually has content
- * clipped behind it, so a list that fits shows no gradient at all and a list
- * scrolled to the bottom stops fading its last row. That state is tracked on
- * scroll and on resize (via the app's shared observer, so N of these cost one
- * delivery per frame rather than N).
+ * The gradient is EDGE-AWARE and pure CSS: the `scroll-fade-y` utility
+ * (styles.css) drives the mask off the scroller's own scroll position with
+ * scroll-driven animations. A side only fades while content is clipped behind
+ * it, a list that fits shows no gradient at all, and a list scrolled to the
+ * bottom stops fading its last row, with no scroll or resize listener and no
+ * React state. A browser without scroll-driven animations (Chromium < 115)
+ * shows no fade rather than a broken one.
  *
- * `deps` re-pins the scroller to the bottom when it changes — newest-at-bottom
- * feeds want that; a plain list should leave it unset.
+ * From each edge inward the mask is `pad` of fully hidden content, then `fade`
+ * of gradient. Set `pad` to the scroller's own padding so the gradient starts
+ * at the content instead of spending itself on the empty padding. `deps`
+ * re-pins the scroller to the bottom when it changes — newest-at-bottom feeds
+ * want that; a plain list should leave it unset.
  */
 export function FadeScroll({
   children,
   className,
   deps,
-  maxHeight = '9rem'
+  fade,
+  maxHeight = '9rem',
+  pad
 }: {
   children: ReactNode
   className?: string
   deps?: unknown
+  fade?: string
   maxHeight?: string
+  pad?: string
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const [edges, setEdges] = useState({ above: false, below: false })
-
-  const measure = useCallback(() => {
-    const el = ref.current
-
-    if (!el) {
-      return
-    }
-
-    const next = scrollEdges(el)
-
-    setEdges(prev => (prev.above === next.above && prev.below === next.below ? prev : next))
-  }, [])
 
   useLayoutEffect(() => {
     if (deps !== undefined && ref.current) {
       ref.current.scrollTop = ref.current.scrollHeight
     }
+  }, [deps])
 
-    measure()
-  }, [deps, measure])
-
-  useResizeObserver(measure, ref)
-
-  const mask = edgeMask(edges)
+  const style = {
+    maxHeight,
+    ...(fade ? { '--scroll-fade-size': fade } : {}),
+    ...(pad ? { '--scroll-fade-pad': pad } : {})
+  } as CSSProperties
 
   return (
-    <div
-      className={cn('overflow-y-auto overscroll-contain', className)}
-      onScroll={measure}
-      ref={ref}
-      style={mask ? { maskImage: mask, maxHeight, WebkitMaskImage: mask } : { maxHeight }}
-    >
+    <div className={cn('scroll-fade-y overflow-y-auto overscroll-contain', className)} ref={ref} style={style}>
       {children}
     </div>
   )

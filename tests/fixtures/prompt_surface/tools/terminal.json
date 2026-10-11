@@ -1,0 +1,60 @@
+{
+  "description": "Execute shell commands. The host OS, shell, and terminal backend are stated in your environment section — write commands for THAT platform. Filesystem, current working directory, and exported environment variables persist between calls.\n\nDo NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), sed/awk (use patch), or echo/heredoc file creation (use write_file). Reserve terminal for: builds, installs, git, processes, scripts, network, package managers — anything that needs a shell. Output is auto-truncated with the full text saved to a file — never pipe through tail/head to shorten it.\nEnvironment state persists: activate a virtualenv or export variables once per session, not before every command.\n\nForeground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds and fixed waits.\nBackground: set background=true (returns a session_id) only for commands that must keep running independently after this tool call returns; add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. Do not start sleep, timers, cooldowns, delays, or polling loops with background=true — to wait a fixed time, run the wait as a normal foreground command with a high enough timeout. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action=\"poll\"/\"wait\").\nWorking directory: use 'workdir' for per-command cwd; when a command changes the session cwd (cd, pushd), trust the result's \"cwd\" field instead of prefixing every command with 'cd'.\nPTY: pty=true + background=true for interactive CLIs (they hang without a terminal); drive them with process(action=\"write\"/\"submit\"). Local backend only.\nPersist: background=true, persist_on_release=true keeps the job alive across agent lifecycle cleanup (session end, /new, compression, error recovery, stop-on-max-iterations). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation; the user can still stop it on purpose.\n",
+  "name": "terminal",
+  "parameters": {
+    "properties": {
+      "background": {
+        "default": false,
+        "description": "Run in the background, returning a session_id. Pair with notify=true for anything with a defined end (tests, builds, deploys) — without it the process runs silently. Only servers/watchers/daemons that never exit should stay silent. Short commands: prefer foreground with a generous timeout.",
+        "type": "boolean"
+      },
+      "command": {
+        "description": "The shell command to execute",
+        "type": "string"
+      },
+      "heartbeat": {
+        "default": 0,
+        "description": "0 disables. With background=true: also notify every N seconds (positive values are clamped to min 60) with the output produced since the last notice; a tick with no new output is skipped. For bounded jobs you must react to mid-run (merge trains, full suites, deploys) — never for servers or watchers; implies notify=true. Ignored on foreground commands.",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "notify": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ],
+        "description": "With background=true: notify=true fires exactly one notification when the process exits (the right choice for nearly every bounded task — builds, tests, deploys). notify=['pattern', ...] instead notifies when a line matches a pattern — ONLY for one-shot readiness signals on processes that never exit (e.g. ['Application startup complete']); rate-limited and auto-disabled if it over-fires. Omit for silent daemons."
+      },
+      "persist_on_release": {
+        "default": false,
+        "description": "With background=true: keep the process alive across agent lifecycle cleanup (session end, /new, context compression, error recovery, max-iteration stop). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation (overnight batches, watchful daemons); it still dies with the host process, and the user (or a later turn via process kill) can stop it on purpose. Default false.",
+        "type": "boolean"
+      },
+      "pty": {
+        "default": false,
+        "description": "With background=true: run in a pseudo-terminal for interactive CLI tools (Codex, Claude Code, Python REPL). Local backend only. Default: false.",
+        "type": "boolean"
+      },
+      "timeout": {
+        "description": "Max seconds to wait (default: 180, foreground max: 600). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. A foreground timeout above 600s runs the command as a tracked background process with notify_on_complete=true instead (the result says so; do not re-run it).",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "workdir": {
+        "description": "Working directory for this command (absolute path). Defaults to the session working directory.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "command"
+    ],
+    "type": "object"
+  }
+}

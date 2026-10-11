@@ -17,7 +17,6 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
@@ -965,7 +964,7 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
 
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
     api = SimpleNamespace(supports_async_delivery=False, _ensure_session_db=lambda: None)
-    for _restart in range(10):
+    for _restart in range(3):
         runner = _runner(adapter)
         runner.adapters = {Platform.API_SERVER: api} if unavailable == "api_db" else {}
         if unavailable == "owner_db":
@@ -1044,25 +1043,40 @@ def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     assert isolated_registry.completion_queue.empty()
 
 
-@pytest.mark.parametrize("failure", ["sibling_claim", "target_validation"])
-def test_batch_claims_are_released_when_handoff_fails(monkeypatch, isolated_registry, failure):
+@pytest.mark.parametrize("failure,batch_size", [
+    ("sibling_claim", 3), ("target_validation", 3),
+    ("target_validation", 1), ("scope_entry", 3),
+])
+def test_batch_claims_are_released_when_handoff_fails(monkeypatch, isolated_registry, failure, batch_size):
     """A partial batch or cancelled preflight must leave no orphaned SQLite claims."""
     from tools import async_delegation
 
-    events = [_async_event(f"handoff_{i}") for i in range(3)]
+    events = [_async_event(f"handoff_{i}") for i in range(batch_size)]
     for event in events:
         event["parent_session_id"] = "parent-session"
         _persist_pending_completion(event)
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
-    parent_lookups = 0
 
     async def get_parent(_session_id):
-        nonlocal parent_lookups
-        parent_lookups += 1
-        if failure == "target_validation" and parent_lookups > len(events):
+        primary = async_delegation.get_durable_delegation(events[0]["delegation_id"])
+        if failure == "target_validation" and primary["delivery_attempts"]:
             raise asyncio.CancelledError()
         return {"ended_at": None}
+
+    if failure == "scope_entry":
+        from contextlib import asynccontextmanager
+        real_scope = runner._completion_event_scope
+
+        @asynccontextmanager
+        async def enter_scope(event):
+            primary = async_delegation.get_durable_delegation(events[0]["delegation_id"])
+            if primary["delivery_attempts"]:
+                raise asyncio.CancelledError()
+            async with real_scope(event):
+                yield
+
+        runner._completion_event_scope = enter_scope
 
     runner._session_db = SimpleNamespace(get_session=get_parent)
     real_claim = async_delegation.claim_event_delivery

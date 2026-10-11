@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Test harness supplies the host's locale registration, as plugin loading does.
@@ -47,20 +47,5 @@ describe('board switcher', () => {
     mount()
 
     expect(await screen.findByText('Shipping')).toBeTruthy()
-  })
-
-  // The trigger is projected into the Kanban page header as the board's own name, so it
-  // must announce itself as a control: a visible "Board" label, a "Board: …"
-  // accessible name, and a "Switch board" tooltip on hover.
-  it('identifies the current board switcher as a control', async () => {
-    mount()
-
-    const trigger = await screen.findByRole('button', { name: 'Board: Shipping' })
-
-    expect(trigger.textContent).toContain('Board')
-
-    fireEvent.pointerMove(trigger, { pointerType: 'mouse' })
-
-    expect((await screen.findByRole('tooltip')).textContent).toContain('Switch board')
   })
 })

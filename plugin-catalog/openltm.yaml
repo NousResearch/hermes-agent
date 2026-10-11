@@ -5,14 +5,14 @@
 # The `sha` above is the exact reviewed commit; the version label matches it.
 name: openltm
 repo: https://github.com/RohiRIK/OpenLtm
-sha: 687934564e68878ff9646a57aa72f6d3fc4f5fc8
+sha: d2a0154983eb074c36775bc5af6d60fc376f84d6
 subdir: hermes/openltm_hermes
 description: "Long-term memory for Hermes agents, stored in a local SQLite database. FTS5 full-text search with optional vector (sqlite-vec) recall, importance-weighted decay, a queryable memory graph, and automatic capture: a declarative rule engine classifies corrections, constraints, preferences, decisions, and agent-discovered facts from a conversation and stores each one as a distilled, self-contained fact. Runtime notifications and read-only OpenLTM tool requests are excluded by named guards so ops noise never becomes memory. No cloud, no telemetry, no API keys required; optional Gemini/OpenAI/Ollama providers for embeddings. MIT licensed. Disclosure — local SQLite in HERMES_HOME; runs git config to read the repo remote; memory text goes to Gemini or OpenAI embeddings only if selected in openltm.json (default local Ollama)"
 maintainer: RohiRIK
 tier: community
 category: memory
 docs_url: https://github.com/RohiRIK/OpenLtm/blob/main/docs/10-hermes-plugin.md
-version: "2.16.2"
+version: "2.17.0"
 image: https://raw.githubusercontent.com/RohiRIK/OpenLtm/687934564e68878ff9646a57aa72f6d3fc4f5fc8/hermes/plugin-catalog/banner.png
 readme: true
 platforms: []

@@ -48,6 +48,7 @@ export interface ConnectorAccountsTranslations {
   remove: string
   removeTitle: (app: string, name: string) => string
   removeBody: string
+  reconnectNote: string
   retiredCount: (count: number) => string
   status: {
     expired: string

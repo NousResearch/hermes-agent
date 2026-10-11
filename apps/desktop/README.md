@@ -100,6 +100,26 @@ HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
+### Provider accounts in Connectors
+
+Connectors lists Gmail, Google Calendar, Google Drive and the verified additional
+provider catalog as individual cards. Select a provider to add an account, then
+complete its supported consent flow. Account aliases and statuses are listed on
+that provider's card; another account can be added without replacing the first.
+Reconnect starts a replacement authorization and keeps the old account until it
+is explicitly disconnected. Stop waiting stops local polling, not the grant.
+
+These cards use Composio's official hosted MCP endpoint with Hermes's native MCP
+OAuth store. A fresh profile first authorizes that endpoint, then receives the
+selected provider's account link. This route requires a Composio consumer account;
+it does not require a CLI or a project API key. Provider availability and account
+methods are checked against the live tool schemas. API-key providers still require
+their own credential handoff. Tools run through Hermes's existing untrusted-MCP
+approval checks; connection controls never execute provider actions themselves.
+
+Live OAuth completion and provider calls must be verified separately from fixture
+tests. An existing connection in another client is not automatically available here.
+
 ### Isolated connector rehearsal
 
 Build the development Electron bundle from the repository root:

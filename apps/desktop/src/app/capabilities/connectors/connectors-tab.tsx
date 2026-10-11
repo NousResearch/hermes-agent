@@ -13,6 +13,7 @@ import { installBundledEntry } from '../mcp/install-catalog-entry'
 import { useMcpServers } from '../mcp/use-mcp-servers'
 
 import { AddServerDialog } from './add-dialog'
+import { ComposioProviderRows, composioProvidersMatch, useComposioProviderCatalog } from './composio-providers'
 import { ConnectorsDirectory } from './connectors-directory'
 import { $abandonedConnects, $accountOperations, abandonConnect, accountOperationFor } from './data/account-operations'
 import { claimRouteLink } from './data/deep-link'
@@ -51,6 +52,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
 
   const hosted = useHostedConnectors(profile)
   const mcp = useMcpServers({ gateway, profile })
+  const composioCatalog = useComposioProviderCatalog(profile)
   const operations = useStore($accountOperations)
   const abandoned = useStore($abandonedConnects)
   const freeTier = useStore($freeTierStatus)
@@ -108,6 +110,13 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
     [abandoned, bundled, hosted.rows, hosted.titles, servers]
   )
 
+  const directoryCards = useMemo(
+    () => cards.filter(card => card.slug.toLowerCase() !== 'composio' && card.name.toLowerCase() !== 'composio'),
+    [cards]
+  )
+
+  const providerMatches = composioProvidersMatch(composioCatalog.data?.providers ?? [], filter.query)
+
   useEffect(startConnectorPersistence, [])
 
   useEffect(() => {
@@ -115,11 +124,11 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
     $abandonedConnects.set([])
   }, [profile])
 
-  usePrefetchConnectedTools(profile, cards)
+  usePrefetchConnectedTools(profile, directoryCards)
 
-  const openCard = useMemo(() => cards.find(card => cardKey(card) === openKey) ?? null, [cards, openKey])
+  const openCard = useMemo(() => directoryCards.find(card => cardKey(card) === openKey) ?? null, [directoryCards, openKey])
 
-  useOpenFromRoute(cards, profile, setOpenKey, setPendingRename)
+  useOpenFromRoute(directoryCards, profile, setOpenKey, setPendingRename)
 
   const write = async (pending: Promise<{ error?: unknown; ok: boolean }>) => {
     const outcome = await pending
@@ -253,11 +262,27 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
           </Button>
         }
         busyKey={busyKey}
-        cards={cards}
+        cards={directoryCards}
         filter={filter}
         hostedFailed={hosted.phase === 'failed'}
-        loading={(hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) && cards.length === 0}
-        notices={<HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />}
+        loading={
+          (hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) &&
+          directoryCards.length === 0 &&
+          (composioCatalog.data?.providers.length ?? 0) === 0
+        }
+        notices={
+          <>
+            <HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />
+            <ComposioProviderRows
+              actionsDisabled={mcp.configLoading || mcp.profilePending}
+              catalog={composioCatalog}
+              filterQuery={filter.query}
+              mcpServers={mcp.servers}
+              profile={profile}
+              refreshMcpConfig={mcp.refetchConfig}
+            />
+          </>
+        }
         onFilterChange={setFilter}
         onOpen={card => setOpenKey(cardKey(card))}
         onPrefetch={card => {
@@ -273,6 +298,8 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         }}
         onVerb={runVerb}
         selectedKey={openKey}
+        supplementalMatches={providerMatches}
+        supplementalSearchableCount={composioCatalog.data?.providers.length ?? 0}
       />
 
       {openCard && openCard.ways.hosted === null ? (

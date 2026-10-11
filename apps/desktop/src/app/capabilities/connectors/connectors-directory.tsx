@@ -21,6 +21,8 @@ export interface ConnectorsDirectoryProps {
   hostedFailed?: boolean
   loading?: boolean
   notices?: ReactNode
+  supplementalMatches?: boolean
+  supplementalSearchableCount?: number
   onFilterChange: (next: ConnectorsFilter) => void
   onOpen: (card: ConnectorCardModel) => void
   onPrefetch?: (card: ConnectorCardModel) => void
@@ -38,6 +40,8 @@ export function ConnectorsDirectory({
   hostedFailed = false,
   loading = false,
   notices,
+  supplementalMatches = false,
+  supplementalSearchableCount = 0,
   onFilterChange,
   onOpen,
   onPrefetch,
@@ -53,6 +57,7 @@ export function ConnectorsDirectory({
   const set = (patch: Partial<ConnectorsFilter>) => onFilterChange({ ...filter, ...patch })
 
   const { groups, hiddenMatches, segment, segments } = derivePage(cards, filter)
+  const searchableCount = cards.length + supplementalSearchableCount
 
   const showSegments = segments.length > 2
   const segmentFellBack = segments.length > 0 && segment !== filter.segment
@@ -64,14 +69,14 @@ export function ConnectorsDirectory({
         {addYourOwn}
       </div>
 
-      {cards.length === 0 ? null : (
+      {searchableCount === 0 ? null : (
         <>
           <div className="flex shrink-0 items-center gap-3 border-b border-(--ui-stroke-tertiary) pb-1.5">
             <SearchField
               containerClassName="min-w-0 flex-1"
               inputClassName="flex-1"
               onChange={query => set({ query })}
-              placeholder={copy.searchPlaceholder(cards.length)}
+              placeholder={copy.searchPlaceholder(searchableCount)}
               value={filter.query}
             />
           </div>
@@ -108,57 +113,57 @@ export function ConnectorsDirectory({
         </>
       )}
 
-      {notices}
+      <div className="grid min-h-0 flex-1 content-start gap-6 overflow-y-auto overscroll-contain pb-4">
+        {notices}
 
-      {hostedFailed && onRetryHosted ? (
-        <ErrorBanner className="shrink-0 items-center">
-          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-            <span className="font-medium">{copy.page.hostedFailedTitle}</span>
-            <span className="opacity-80">{copy.page.hostedFailedBody}</span>
-            <Button className="text-destructive" onClick={onRetryHosted} size="xs" variant="text">
-              {copy.page.retry}
-            </Button>
-          </span>
-        </ErrorBanner>
-      ) : null}
-
-      {loading ? (
-        <ToolsWash label={copy.page.loading} rows={10} />
-      ) : groups.length > 0 ? (
-        <div className="grid min-h-0 flex-1 content-start gap-6 overflow-y-auto overscroll-contain pb-4">
-          {groups.map(group => (
-            <Group
-              busyKey={busyKey}
-              group={group}
-              key={group.id}
-              onOpen={onOpen}
-              onPrefetch={onPrefetch}
-              onServerToggle={onServerToggle}
-              onVerb={onVerb}
-              selectedKey={selectedKey}
-              where={where}
-            />
-          ))}
-        </div>
-      ) : cards.length === 0 ? (
-        hostedFailed ? null : (
-          <PanelEmpty action={addYourOwn} icon="plug" title={copy.page.emptyTitle} />
-        )
-      ) : (
-        <PanelEmpty
-          action={
-            <div className="flex items-center gap-2">
-              <Button onClick={() => set(EMPTY_CONNECTORS_FILTER)} size="xs" variant="secondary">
-                {copy.page.clearSearch}
+        {hostedFailed && onRetryHosted ? (
+          <ErrorBanner className="shrink-0 items-center">
+            <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+              <span className="font-medium">{copy.page.hostedFailedTitle}</span>
+              <span className="opacity-80">{copy.page.hostedFailedBody}</span>
+              <Button className="text-destructive" onClick={onRetryHosted} size="xs" variant="text">
+                {copy.page.retry}
               </Button>
-              {addYourOwn}
-            </div>
-          }
-          description={copy.page.noMatchBody}
-          icon="search"
-          title={copy.page.noMatchTitle}
-        />
-      )}
+            </span>
+          </ErrorBanner>
+        ) : null}
+
+        {loading ? (
+          <ToolsWash label={copy.page.loading} rows={10} />
+        ) : groups.length > 0 ? (
+          <div className="grid content-start gap-6">
+            {groups.map(group => (
+              <Group
+                busyKey={busyKey}
+                group={group}
+                key={group.id}
+                onOpen={onOpen}
+                onPrefetch={onPrefetch}
+                onServerToggle={onServerToggle}
+                onVerb={onVerb}
+                selectedKey={selectedKey}
+                where={where}
+              />
+            ))}
+          </div>
+        ) : searchableCount === 0 ? (
+          hostedFailed ? null : <PanelEmpty action={addYourOwn} icon="plug" title={copy.page.emptyTitle} />
+        ) : supplementalMatches ? null : (
+          <PanelEmpty
+            action={
+              <div className="flex items-center gap-2">
+                <Button onClick={() => set(EMPTY_CONNECTORS_FILTER)} size="xs" variant="secondary">
+                  {copy.page.clearSearch}
+                </Button>
+                {addYourOwn}
+              </div>
+            }
+            description={copy.page.noMatchBody}
+            icon="search"
+            title={copy.page.noMatchTitle}
+          />
+        )}
+      </div>
     </div>
   )
 }

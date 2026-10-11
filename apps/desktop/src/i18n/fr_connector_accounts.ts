@@ -16,6 +16,7 @@ export const frConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   remove: 'Retirer',
   removeTitle: (app: string, name: string) => `Retirer le compte ${app} ${name} ?`,
   removeBody: "Hermes cesse d'agir avec ce compte. Vos autres comptes restent connectés.",
+  reconnectNote: 'Reconnecter démarre une nouvelle connexion. Ce compte reste jusqu’à sa suppression.',
   retiredCount: (count: number) => `${count} retiré${count === 1 ? '' : 's'}`,
   status: {
     expired: 'Accès expiré',

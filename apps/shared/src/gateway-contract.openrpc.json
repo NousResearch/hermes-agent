@@ -493,6 +493,78 @@
       }
     },
     {
+      "name": "composio.catalog",
+      "summary": "The verified provider cards supported by the hosted Composio MCP server.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ComposioCatalogParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ComposioCatalogResult"
+        }
+      }
+    },
+    {
+      "name": "composio.connect",
+      "summary": "Start a new, user-requested provider account connection and return its Composio auth link.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ComposioConnectParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ComposioConnectResult"
+        }
+      }
+    },
+    {
+      "name": "composio.remove",
+      "summary": "Remove only the exact account selected by the user from its provider toolkit.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ComposioRemoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ComposioRemoveResult"
+        }
+      }
+    },
+    {
+      "name": "composio.status",
+      "summary": "Read provider account status through Composio's allowlisted connection-management tools.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ComposioStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ComposioStatusResult"
+        }
+      }
+    },
+    {
       "name": "config.get",
       "summary": "Read one normalised config value (or the whole effective config) the way the UIs render it.",
       "params": [
@@ -8629,6 +8701,367 @@
           }
         },
         "title": "CompletionItemsResult",
+        "type": "object"
+      },
+      "ComposioAccountRow": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ComposioAccountStatus"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "account_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Account Type"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "ComposioAccountRow",
+        "type": "object"
+      },
+      "ComposioAccountStatus": {
+        "enum": [
+          "active",
+          "pending",
+          "failed",
+          "expired",
+          "revoked",
+          "inactive",
+          "unknown"
+        ],
+        "title": "ComposioAccountStatus",
+        "type": "string"
+      },
+      "ComposioCatalogParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "ComposioCatalogParams",
+        "type": "object"
+      },
+      "ComposioCatalogResult": {
+        "additionalProperties": false,
+        "properties": {
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ComposioProviderRow"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "title": "ComposioCatalogResult",
+        "type": "object"
+      },
+      "ComposioConnectParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "title": "ComposioConnectParams",
+        "type": "object"
+      },
+      "ComposioConnectResult": {
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "toolkit": {
+            "title": "Toolkit",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ComposioProviderStatus"
+          },
+          "auth_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Auth Url"
+          },
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/ComposioAccountRow"
+            },
+            "title": "Accounts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider",
+          "toolkit",
+          "status"
+        ],
+        "title": "ComposioConnectResult",
+        "type": "object"
+      },
+      "ComposioProviderRow": {
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "toolkit": {
+            "title": "Toolkit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "label",
+          "toolkit"
+        ],
+        "title": "ComposioProviderRow",
+        "type": "object"
+      },
+      "ComposioProviderState": {
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "toolkit": {
+            "title": "Toolkit",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ComposioProviderStatus"
+          },
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/ComposioAccountRow"
+            },
+            "title": "Accounts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider",
+          "toolkit",
+          "status"
+        ],
+        "title": "ComposioProviderState",
+        "type": "object"
+      },
+      "ComposioProviderStatus": {
+        "enum": [
+          "connected",
+          "disconnected",
+          "pending",
+          "failed",
+          "expired",
+          "revoked",
+          "inactive",
+          "requires_mcp_auth",
+          "unavailable"
+        ],
+        "title": "ComposioProviderStatus",
+        "type": "string"
+      },
+      "ComposioRemoveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "account_id": {
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "account_id"
+        ],
+        "title": "ComposioRemoveParams",
+        "type": "object"
+      },
+      "ComposioRemoveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "toolkit": {
+            "title": "Toolkit",
+            "type": "string"
+          },
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "removed",
+              "not_found",
+              "requires_mcp_auth"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "toolkit",
+          "account_id",
+          "status"
+        ],
+        "title": "ComposioRemoveResult",
+        "type": "object"
+      },
+      "ComposioStatusParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          }
+        },
+        "title": "ComposioStatusParams",
+        "type": "object"
+      },
+      "ComposioStatusResult": {
+        "additionalProperties": false,
+        "properties": {
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ComposioProviderState"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "title": "ComposioStatusResult",
         "type": "object"
       },
       "CompressionSummary": {

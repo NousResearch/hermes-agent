@@ -458,6 +458,62 @@ export interface ProjectFacts {
   verifyCommands: string[]
   contextFiles: string[]
 }
+export interface ComposioCatalogParams {
+  profile?: string | null
+}
+export interface ComposioCatalogResult {
+  providers: ComposioProviderRow[]
+}
+export interface ComposioProviderRow {
+  provider: string
+  label: string
+  toolkit: string
+}
+export interface ComposioStatusParams {
+  profile?: string | null
+  provider?: string | null
+}
+export interface ComposioStatusResult {
+  providers: ComposioProviderState[]
+}
+export interface ComposioProviderState {
+  provider: string
+  toolkit: string
+  status: ComposioProviderStatus
+  accounts?: ComposioAccountRow[]
+}
+export type ComposioProviderStatus = 'connected' | 'disconnected' | 'pending' | 'failed' | 'expired' | 'revoked' | 'inactive' | 'requires_mcp_auth' | 'unavailable'
+export interface ComposioAccountRow {
+  id: string
+  alias?: string | null
+  status: ComposioAccountStatus
+  is_default?: boolean
+  account_type?: string | null
+}
+export type ComposioAccountStatus = 'active' | 'pending' | 'failed' | 'expired' | 'revoked' | 'inactive' | 'unknown'
+export interface ComposioConnectParams {
+  profile?: string | null
+  provider: string
+  alias?: string | null
+}
+export interface ComposioConnectResult {
+  provider: string
+  toolkit: string
+  status: ComposioProviderStatus
+  auth_url?: string | null
+  accounts?: ComposioAccountRow[]
+}
+export interface ComposioRemoveParams {
+  profile?: string | null
+  provider: string
+  account_id: string
+}
+export interface ComposioRemoveResult {
+  provider: string
+  toolkit: string
+  account_id: string
+  status: 'removed' | 'not_found' | 'requires_mcp_auth'
+}
 /** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin. */
 export interface ConfigGetParams {
   profile?: string | null
@@ -5064,6 +5120,14 @@ export interface RpcMethods {
   'complete.path': { params: CompletePathParams; result: CompletionItemsResult }
   /** Ranked slash-command / skill completions for a ``/`` token. */
   'complete.slash': { params: CompleteSlashParams; result: CompleteSlashResult }
+  /** The verified provider cards supported by the hosted Composio MCP server. */
+  'composio.catalog': { params: ComposioCatalogParams; result: ComposioCatalogResult }
+  /** Start a new, user-requested provider account connection and return its Composio auth link. */
+  'composio.connect': { params: ComposioConnectParams; result: ComposioConnectResult }
+  /** Remove only the exact account selected by the user from its provider toolkit. */
+  'composio.remove': { params: ComposioRemoveParams; result: ComposioRemoveResult }
+  /** Read provider account status through Composio's allowlisted connection-management tools. */
+  'composio.status': { params: ComposioStatusParams; result: ComposioStatusResult }
   /** Read one normalised config value (or the whole effective config) the way the UIs render it. */
   'config.get': { params: ConfigGetParams; result: ConfigGetResult }
   /** Change one config key (persisted or session-scoped) and read back the normalised value. */
@@ -5552,6 +5616,10 @@ export const RPC_METHODS = [
   'commands.catalog',
   'complete.path',
   'complete.slash',
+  'composio.catalog',
+  'composio.connect',
+  'composio.remove',
+  'composio.status',
   'config.get',
   'config.set',
   'config.show',

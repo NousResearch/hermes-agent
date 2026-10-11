@@ -5908,8 +5908,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         own ``message_thread_id``."""
         chat = getattr(message, "chat", None)
         user = getattr(message, "from_user", None)
-        created = getattr(message, "forum_topic_created", None)
-        thread_id = getattr(created, "message_thread_id", None)
+        # The Bot API ForumTopicCreated carries only name/icon fields, never the topic id; the
+        # new topic id lives on the service Message itself (message_thread_id).
+        if getattr(message, "forum_topic_created", None) is None:
+            return
+        thread_id = getattr(message, "message_thread_id", None)
         if user is None or getattr(user, "is_bot", False) or thread_id is None:
             return
         if self._chat_type_str(chat) != "private":
@@ -5931,14 +5934,19 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return None
         if getattr(message, "message_thread_id", None) is not None:
             return None  # already threaded; only thread-less openers lost their id
+        # Some tests build duck-typed adapters via object.__new__ (no __init__ attributes); a
+        # missing/empty registry means no pairing exists, which is this helper's None contract.
+        pending = getattr(self, "_pending_topic_openers", None)
+        if not pending:
+            return None
         key = (str(chat.id), str(user.id))
-        entry = self._pending_topic_openers.get(key)
+        entry = pending.get(key)
         if entry is None:
             return None
         thread_id, svc_message_id, ts = entry
         if int(getattr(message, "message_id", -1) or -1) != svc_message_id + 1:
             return None
-        self._pending_topic_openers.pop(key, None)
+        pending.pop(key, None)
         if time.monotonic() - ts > self._TOPIC_OPENER_WINDOW_SECONDS:
             return None
         logger.info(

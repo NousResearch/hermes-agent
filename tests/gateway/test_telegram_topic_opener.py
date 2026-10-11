@@ -47,10 +47,12 @@ def _make_message(chat_id=111, user_id=42, message_id=1002, thread_id=None, text
 
 def _make_service_message(chat_id=111, user_id=42, message_id=1001, thread_id=40798,
                           chat_type="private", is_forum=None):
+    # Real Bot API shape: ForumTopicCreated carries only name/icon fields — never the topic id.
+    # The new topic id lives on the service Message itself (message_thread_id= below).
     return _make_message(
         chat_id=chat_id, user_id=user_id, message_id=message_id, thread_id=thread_id, text=None,
         chat_type=chat_type, is_forum=is_forum,
-        forum_topic_created=SimpleNamespace(name="Prova 3", message_thread_id=thread_id),
+        forum_topic_created=SimpleNamespace(name="Prova 3", icon_color=0x6FB9F0),
     )
 
 
@@ -130,4 +132,12 @@ def test_bot_created_topic_service_messages_are_ignored():
     msg = _make_service_message(message_id=1001, thread_id=40798)
     msg.from_user = SimpleNamespace(id=777, full_name="the bot", is_bot=True)
     _record(adapter, msg)
+    assert adapter._pending_topic_openers == {}
+
+
+def test_plain_threaded_message_is_not_recorded():
+    """A private-chat message that merely carries a thread id (no forum_topic_created service
+    payload) records nothing — only real topic-creation service messages pair."""
+    adapter = _make_adapter()
+    _record(adapter, _make_message(message_id=1001, thread_id=40798))
     assert adapter._pending_topic_openers == {}

@@ -474,9 +474,15 @@ whole migration.
 ### Composer extensions
 
 `COMPOSER_AREAS` (`top`, `bottom`, `underside`, `leading`, `actions`,
-`attachments`, `middleware`) let a plugin add controls around the message
-composer, provide an attachment source, or transform a draft before it is sent
-(`ComposerMiddleware` with a `handler(draft) => draft | null`). `top` is a
+`attachments`, `middleware`, `roomBottom`) let a plugin add controls around the
+message composer, provide an attachment source, or transform a draft before it
+is sent (`ComposerMiddleware` with a `handler(draft) => draft | null`). The
+middleware chain runs for BOTH composers: the app chat composer and Bot Mode's
+group-room composer (room send + per-thread reply). A room draft carries an
+optional `ComposerDraftContext` (`{kind: 'group-room', roomId, threadId?}`) so
+handlers know which draft they annotate — app-chat drafts have no context.
+`roomBottom` is a plugin-reachable render area mounted under the Bot Mode room
+input (via `ComposerSlot`, the same primitive the app composer uses). `top` is a
 banner strip above the input and `bottom` a row below the input grid, both
 inside the composer chrome; `underside` is the floating strip BELOW the whole
 composer with no chrome of its own — the seat for a suggestion pill or a status

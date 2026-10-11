@@ -1681,9 +1681,12 @@ export {
   type ComposerAtCompletionItem,
   type ComposerAtCompletionSource,
   type ComposerAttachmentProvider,
+  type ComposerDraft,
+  type ComposerDraftContext,
   type ComposerMiddleware,
   type ComposerModelPillContext,
-  type ComposerModelPillProvider
+  type ComposerModelPillProvider,
+  runComposerMiddleware
 } from '@/app/chat/composer/contrib'
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
@@ -1763,6 +1766,7 @@ export { APPEARANCE_AREAS } from '@/app/settings/appearance-contrib'
  *  never an Off/On pill pair. Use them for preference rows in plugin panes and
  *  dialogs so they line up with core Settings. */
 export { ListRow, ToggleRow } from '@/app/settings/primitives'
+
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
  *  decoupled (the "manage keys" deep link is a no-op outside the router); pass
@@ -1888,6 +1892,12 @@ export type { GatewayEventListener } from '@/contrib/events'
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
+/** Renders a contribution area inline, in registry order, each item behind
+ *  its own error boundary — the same primitive core mounts for `composer.top`
+ *  et al. Exported for non-standard composer hosts: Bot Mode's room renders
+ *  `composer.roomBottom` with it, and a plugin can host its own area id the
+ *  same way. */
+export { Slot as ComposerSlot } from '@/contrib/react/slot'
 
 // -- contracts ----------------------------------------------------------------
 

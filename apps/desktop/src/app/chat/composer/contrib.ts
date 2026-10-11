@@ -9,6 +9,10 @@
  *                                                  whole composer (no chrome)
  *                             composer.leading   — inline after the "+" menu
  *                             composer.actions   — inline before the model pill
+ *                             composer.roomBottom — row below the Bot Mode room
+ *                                                 input (hermes-bots); the
+ *                                                 room-scoped twin of
+ *                                                 composer.bottom
  *
  *   data kinds (`data`):      composer.middleware    (ComposerMiddleware)
  *                             composer.attachments   (ComposerAttachmentProvider)
@@ -16,8 +20,10 @@
  *
  * Core keeps ownership of the transcript, input, and submit engine — these
  * seams AUGMENT the composer, they never replace it. Middleware runs as an
- * ordered async chain around the app's onSubmit: each handler may rewrite the
- * draft, pass it through, or cancel the send by returning null.
+ * ordered async chain around the host's onSubmit: each handler may rewrite
+ * the draft, pass it through, or cancel the send by returning null. Hosts are
+ * the app chat composer and Bot Mode's room composer (hermes-bots); a draft's
+ * optional `context` says which composer (and room/thread) it came from.
  */
 
 import { useMemo } from 'react'
@@ -38,12 +44,30 @@ export const COMPOSER_AREAS = {
   attachments: 'composer.attachments',
   microActions: 'composer.microActions',
   atCompletions: 'composer.atCompletions',
-  modelPill: 'composer.modelPill'
+  modelPill: 'composer.modelPill',
+  /** Row below the Bot Mode room input (hermes-bots' `GroupMentionInput`),
+   *  rendered for both the main "new thread" composer and per-thread reply
+   *  boxes — the draft's `context` tells a provider which is which. Scoped to
+   *  the room so app-chat contributions never leak into it, and vice versa. */
+  roomBottom: 'composer.roomBottom'
 } as const
+
+/** Which composer produced a middleware draft. Optional on `ComposerDraft`:
+ *  absent means the app chat composer — pre-existing consumers never see a
+ *  shape change. Bot Mode's room composer sets `kind: 'group-room'`. */
+export interface ComposerDraftContext {
+  kind: 'group-room'
+  /** The room the draft was typed in (hermes-bots group id). */
+  roomId: string
+  /** Set when the draft is a reply inside this thread; absent for the room's
+   *  main composer (a new thread). */
+  threadId?: string
+}
 
 export interface ComposerDraft {
   text: string
   attachments?: ComposerAttachment[]
+  context?: ComposerDraftContext
 }
 
 /** Payload of a `composer.middleware` data contribution. */

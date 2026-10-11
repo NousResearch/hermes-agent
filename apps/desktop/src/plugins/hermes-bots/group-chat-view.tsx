@@ -16,6 +16,8 @@ import {
   Button,
   cn,
   Codicon,
+  COMPOSER_AREAS,
+  ComposerSlot,
   ConfirmDialog,
   CopyButton,
   Dialog,
@@ -29,6 +31,7 @@ import {
   queryClient,
   relativeTime,
   RowButton,
+  runComposerMiddleware,
   Tip,
   ToggleRow,
   useI18n,
@@ -1057,11 +1060,48 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     </div>
   )
 
-  const submit = () => {
+  // Shared submit middleware: the room's two send sites run their draft
+  // through the SAME `composer.middleware` chain as the app chat composer
+  // (core `runComposerMiddleware`). Default-off: with no middleware
+  // registered the chain is an identity pass-through and behavior is
+  // unchanged. A handler may annotate/rewrite (returns a draft) or cancel
+  // (null — the send is skipped and the draft is NOT cleared). The optional
+  // `context` tells a handler which composer/room/thread a draft came from.
+  // In-flight composers ('main' | thread id) — Enter-mashing while an async
+  // chain runs would otherwise queue a duplicate send, since the draft only
+  // clears after the chain returns.
+  const submittingRef = useRef(new Set<string>())
+
+  const runRoomMiddleware = async (text: string, thread: null | string) => {
+    const composerId = thread ?? 'main'
+
+    if (submittingRef.current.has(composerId)) {
+      return null
+    }
+
+    submittingRef.current.add(composerId)
+
+    try {
+      return await runComposerMiddleware({
+        context: { kind: 'group-room' as const, roomId: group, ...(thread ? { threadId: thread } : {}) },
+        text
+      })
+    } finally {
+      submittingRef.current.delete(composerId)
+    }
+  }
+
+  const submit = async () => {
     const text = draft.trim()
     const images = imagesFor(null)
 
     if (!text && !images.length) {
+      return
+    }
+
+    const marked = await runRoomMiddleware(text, null)
+
+    if (!marked) {
       return
     }
 
@@ -1079,7 +1119,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     // Main composer = START A NEW THREAD with the whole group (Slack shape).
     // Full descriptors ride into the turn loop: remote members keep their
     // connection fields so their turns route to their own machines.
-    const minted = sendToGroupChat(group, memberDescriptors(), text, null, images)
+    const minted = sendToGroupChat(group, memberDescriptors(), marked.text, null, images)
 
     if (!minted) {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
@@ -1090,11 +1130,17 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     }
   }
 
-  const submitReply = (thread: string) => {
+  const submitReply = async (thread: string) => {
     const text = (replyDrafts[thread] || '').trim()
     const images = imagesFor(thread)
 
     if (!text && !images.length) {
+      return
+    }
+
+    const marked = await runRoomMiddleware(text, thread)
+
+    if (!marked) {
       return
     }
 
@@ -1114,7 +1160,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
     // Reply box = CONTINUE this thread; the member turns it triggers are
     // scoped to it.
-    const sent = sendToGroupChat(group, memberDescriptors(), text, thread, images)
+    const sent = sendToGroupChat(group, memberDescriptors(), marked.text, thread, images)
 
     if (!sent) {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
@@ -1388,7 +1434,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           key={`replybox:${id}`}
           onSubmit={event => {
             event.preventDefault()
-            submitReply(id)
+            void submitReply(id)
           }}
         >
           {attachmentRow(id)}
@@ -1404,7 +1450,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                 }))
               }
               onPaste={event => pasteImages(id, event)}
-              onSubmitDraft={() => submitReply(id)}
+              onSubmitDraft={() => void submitReply(id)}
               placeholder={b.group.replyInThreadPlaceholder}
               value={replyDrafts[id] || ''}
             />
@@ -1413,6 +1459,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               {b.group.reply}
             </Button>
           </div>
+          <ComposerSlot area={COMPOSER_AREAS.roomBottom} />
         </form>
       ) : (
         <Button
@@ -1505,7 +1552,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           className="grid gap-0"
           onSubmit={event => {
             event.preventDefault()
-            submit()
+            void submit()
           }}
         >
           {attachmentRow(null)}
@@ -1515,7 +1562,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               members={members}
               onChange={setDraft}
               onPaste={event => pasteImages(null, event)}
-              onSubmitDraft={submit}
+              onSubmitDraft={() => void submit()}
               placeholder={b.group.newThreadPlaceholder(group)}
               value={draft}
             />
@@ -1524,6 +1571,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               {b.group.newThread}
             </Button>
           </div>
+          <ComposerSlot area={COMPOSER_AREAS.roomBottom} />
         </form>
       </div>
       <GroupChatSettingsDialog

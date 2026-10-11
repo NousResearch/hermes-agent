@@ -182,6 +182,13 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         # thinking on families that document it: Gemini 2.5 and 3+ (plus the
         # ``gemini-flash-latest`` alias); future majors are added only when the
         # API documents thinkingBudget for them. (#91927)
+        # Exception: 3.x Flash-Lite rejects ``thinkingBudget`` outright (HTTP 400
+        # INVALID_ARGUMENT, #136456) — its no-thinking encoding is the documented
+        # floor level ``minimal``.
+        if "flash-lite" in normalized_model and (
+            normalized_model.startswith("gemini-3") or normalized_model == "gemini-flash-lite-latest"
+        ):
+            return {"thinkingLevel": "minimal"}
         config: dict[str, Any] = {"includeThoughts": False}
         if normalized_model == "gemini-flash-latest" or normalized_model.startswith(("gemini-2.5-", "gemini-3")):
             config["thinkingBudget"] = 0

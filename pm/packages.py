@@ -948,13 +948,13 @@ class CuaDriver(BinaryPackage):
             shutil.rmtree(sdk, ignore_errors=True)
 
     def _probe_env(self) -> dict:
-        """The probe IS a first run: it must not mint telemetry state."""
-        try:
-            from tools.computer_use.cua_backend import cua_driver_child_env
+        """Keep the version probe private without loading application dependencies.
 
-            return cua_driver_child_env()
-        except Exception:
-            return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
+        PM can run this check in its bare Python worker, where the Hermes venv
+        (and httpx) is intentionally unavailable.  A version probe needs no
+        desktop routing or user configuration.
+        """
+        return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
 
 
 @register

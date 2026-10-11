@@ -1,0 +1,21 @@
+name: photofresco
+title: PhotoFresco
+repo: https://github.com/photofresco/photofresco-agent
+sha: 0f8168b2ab7bf35155d73d041a44320fa37e2533
+description: "Edit images in a PhotoFresco window you approve: layers, masks, selections, adjustment layers, previews and PNG/PSD export. Portable Agent Plugins v1 package (mcp.json + skills/) with a local stdio MCP server and bundled skill; needs Node.js 22+ and Chrome, Edge or Chromium 120+. Disclosure — opens https://photofresco.com/app/ (remote web editor, live code not covered by this pin) in a separate Chrome/Edge/Chromium profile under ~/.local/share/photofresco-connector (macOS ~/Library/Application Support/PhotoFresco Connector), with cookies/sign-in/autosave kept there; previews and document state the agent requests go to your model provider; with the Send/Spend permissions granted in the PhotoFresco window, AI ops spend PhotoFresco credits up to the budget you set and cloud/feedback ops send document data to PhotoFresco, and Hermes does not prompt before those calls; with Export granted, quick-export ops save to the browser's download folder; no local folders are readable or writable unless you add --read/--write yourself."
+maintainer: photofresco
+tier: community
+category: tools
+docs_url: https://photofresco.com/docs/ai-agents/
+version: "0.1.0"
+image: https://raw.githubusercontent.com/photofresco/photofresco-agent/0f8168b2ab7bf35155d73d041a44320fa37e2533/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/photofresco/photofresco-agent/0f8168b2ab7bf35155d73d041a44320fa37e2533/assets/demo.gif
+platforms: []
+known_issues:
+  - Needs a desktop session and an installed Chrome, Edge or Chromium; the user approves the connection and each permission in the PhotoFresco window.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

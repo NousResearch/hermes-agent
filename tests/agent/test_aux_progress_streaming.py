@@ -230,6 +230,10 @@ class TestCreateWithProgress:
 # ---------------------------------------------------------------------------
 
 class TestAggregateChatStream:
+    def test_missing_terminal_finish_reason_stays_unknown(self):
+        result = _aggregate_chat_stream(iter([_chunk(content="partial")]))
+        assert result.choices[0].finish_reason is None
+
     def test_tool_call_deltas_are_reassembled(self):
         tc0 = SimpleNamespace(
             index=0, id="call_1",

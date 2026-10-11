@@ -216,6 +216,23 @@ The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_ind
 
 Synchronous single-task delegation from an orchestrator runs directly without thread pool overhead.
 
+### Results that finish while the agent is busy
+
+By default a background result that finishes while the parent is mid-turn waits and arrives
+as its own turn once the current one ends. In the interactive CLI you can carry it into the
+running turn instead:
+
+```yaml
+delegation:
+  busy_result_mode: steer   # queue (default) | steer
+```
+
+With `steer`, the finished report is appended to the parent's next tool result, marked as
+background evidence rather than a user request, so the parent can act on it before its next
+decision. Nothing is rewritten in past context. If the turn ends without another tool call,
+or is stopped, the result arrives as the next turn exactly as in `queue` mode. Messaging
+gateways keep `queue` behaviour.
+
 ### Durable background completions
 
 When a background delegation finishes, Hermes stores its completion event in

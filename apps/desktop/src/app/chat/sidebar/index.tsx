@@ -847,12 +847,14 @@ export function ChatSidebar({
     [gatewayReady, worktreeGroupingActive]
   )
 
-  // Sessions the branch join can't answer for get one look at their own
+  // Sessions the branch join can't answer for get a look at their own
   // transcript — a `gh pr create` in there names the PR outright. Backfills
   // whatever is loaded, whether or not the badge is on: gating it on the badge
   // meant switching PR on showed a half-empty list until a second pass caught
-  // up. One request per batch of never-scanned rows, and the scanned set makes
-  // that batch empty from the second pass on, so this settles to nothing.
+  // up. Revision-triggered, debounced by the warm timer below, and batched into
+  // one request for every row whose transcript grew since its last scan — a
+  // list that stops changing settles to no requests, while a session that opens
+  // a PR mid-conversation is re-scanned on its next pass.
   useEffect(() => {
     if (!gatewayReady) {
       return

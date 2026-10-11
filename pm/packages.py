@@ -802,7 +802,11 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
 
     name = "ffmpeg"
     deb_package = "ffmpeg"
-    optional = False
+    # FFmpeg is a feature dependency (voice/media), not a prerequisite for
+    # completing a source update. Keep failures from blocking updates; callers
+    # that need media support can still install it explicitly.
+    optional = True
+    default = True
     gaps = {target: "BtbN Linux builds link glibc dynamically" for target in MUSL_TARGETS}
 
     def main_rel(self, target: str) -> str:

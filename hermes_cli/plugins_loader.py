@@ -199,6 +199,27 @@ def _dist_installed(req: str) -> Optional[bool]:
         return None
 
 
+def _declared_python_dependencies(manifest: PluginManifest) -> tuple[str, ...]:
+    """Every requirement the plugin declares, on PM's one effective surface.
+
+    ``python_dependencies`` is surfaced only (never auto-installed), while the aliases
+    :func:`pm.plugin_declarations.read_python_declaration` unions — ``pip_dependencies``
+    on the manifest, pyproject dependencies — are what an install/update actually stages
+    into the venv. A requirement missing from either family leaves the same broken import
+    for the loader to trip over, so both warn at discovery (#136519). An external-runtime
+    plugin owns its interpreter, and ``install_requirements`` already reports nothing for it.
+    """
+    deps = [req for req in manifest.python_dependencies if req and req.strip()]
+    path = manifest.path
+    if path:
+        try:
+            from pm.plugin_declarations import read_python_declaration
+            deps.extend(read_python_declaration(Path(path)).install_requirements)
+        except (OSError, ValueError, TypeError):
+            pass  # a broken declaration is admission's to report, not discovery's
+    return tuple(dict.fromkeys(req.strip() for req in deps))
+
+
 class PluginLoaderMixin:
     def on_plugin_loaded(self, callback: Callable[[list[dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
@@ -414,7 +435,7 @@ class PluginLoaderMixin:
 
         Plugin admission and PM repair own dependency changes.
         """
-        deps = manifest.python_dependencies
+        deps = _declared_python_dependencies(manifest)
         if not deps:
             return
         key = manifest_key(manifest)

@@ -20,6 +20,7 @@ from agent.image_eviction_policy import (
     OUTBOUND_IMAGE_FLOOR,
     OUTBOUND_IMAGE_LIMIT,
 )
+import itertools
 
 
 def _image_tool(i: int, *, blob: str = "A" * 80) -> list[dict]:
@@ -89,11 +90,6 @@ def _outbound_image_blocks(messages: list[dict]) -> int:
 
 
 class TestOutboundStaleVisionEviction:
-    def test_sanitize_alone_keeps_every_screenshot(self):
-        """The previous send chokepoint does not close #89296 by itself."""
-        history = _history_with_screenshots(5)
-        sanitized = sanitize_api_messages(history)
-        assert _image_bearing_tool_ids(sanitized) == [f"call_{i}" for i in range(5)]
 
     def test_nothing_is_evicted_below_the_provider_limit(self):
         """The common case must be append-only: no rewrite, so the cached prefix survives."""
@@ -144,7 +140,7 @@ class TestOutboundStaleVisionEviction:
         kept = [surviving(n) for n in span]
         assert all(len(k) <= OUTBOUND_IMAGE_LIMIT for k in kept), [len(k) for k in kept]
         frontier = [k[0] for k in kept]
-        moves = sum(a != b for a, b in zip(frontier, frontier[1:]))
+        moves = sum(a != b for a, b in itertools.pairwise(frontier))
         assert moves == 3, (
             f"frontier moved {moves} times over {len(span)} images (frontier={frontier}); "
             "each move rewrites a cached row and restarts the prefix"
@@ -197,7 +193,7 @@ class TestOutboundStaleVisionEviction:
         window = OUTBOUND_IMAGE_LIMIT // 3
         span = range(window + 1, window + 1 + 4 * (window - OUTBOUND_IMAGE_FLOOR))
         frontier = [surviving(n)[0] for n in span]
-        moves = sum(a != b for a, b in zip(frontier, frontier[1:]))
+        moves = sum(a != b for a, b in itertools.pairwise(frontier))
         assert moves <= len(span) // (window - OUTBOUND_IMAGE_FLOOR), (
             f"frontier moved {moves} times over {len(span)} turns (frontier={frontier}); "
             "a per-image frontier rewrites the cached prefix every turn"

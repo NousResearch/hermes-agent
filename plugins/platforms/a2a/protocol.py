@@ -12,7 +12,7 @@ import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
 from concurrent.futures import Future
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -53,7 +53,7 @@ def max_pingpong_turns() -> int:
 
 def now_iso() -> str:
     """ISO 8601 UTC timestamp with millisecond precision (A2A v1.0)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def build_agent_card(*, name: str, url: str, description: str, skills: Optional[list[dict]] = None,
@@ -79,7 +79,7 @@ def build_agent_card(*, name: str, url: str, description: str, skills: Optional[
     return card
 
 
-def skills_from_toolsets(toolsets: "list[str] | dict[str, list[str]] | None") -> list[dict]:
+def skills_from_toolsets(toolsets: list[str] | dict[str, list[str]] | None) -> list[dict]:
     """A2A skill descriptors from toolset names or a toolset -> tool-names mapping (tool names
     become tags, max 10)."""
     if not isinstance(toolsets, dict):
@@ -296,7 +296,7 @@ class TaskStore:
     _MAX_TERMINAL = 500
 
     def __init__(self) -> None:
-        self._tasks: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+        self._tasks: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._watchers: dict[str, list[Future]] = {}
         self._lock = threading.Lock()
 
@@ -449,7 +449,7 @@ def persist_message(context_id: str, role: str, text: str, task_id: str = "") ->
 def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     """Last *limit* messages for a context (empty list if none / unreadable)."""
     try:
-        lines = _conv_path(context_id).read_text(encoding="utf-8").splitlines()
+        lines = _conv_path(context_id).read_text(encoding="utf-8-sig").splitlines()
     except Exception:
         return []
     out: list[dict] = []
@@ -467,50 +467,3 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
 def list_conversations() -> list[str]:
     """Context-ids that have persisted conversations."""
     return sorted(p.stem for p in (get_hermes_home() / "a2a_conversations").glob("*.jsonl"))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import copy  # noqa: F401,E402
-
-ERR_PUSH_NOT_SUPPORTED = -32003    # A2A spec: PushNotificationNotSupportedError
-
-STATE_AUTH_REQUIRED = "TASK_STATE_AUTH_REQUIRED"
-
-def data_part(data: Any, media_type: str = "application/json") -> dict:
-    """Build a v1.0 data Part (structured data, no ``kind`` field)."""
-    return {"data": data, "mediaType": media_type}
-
-def file_part(url: str = "", raw: str = "", filename: str = "",
-              media_type: str = "application/octet-stream") -> dict:
-    """Build a v1.0 file Part.
-
-    Either ``url`` (file reference) or ``raw`` (base64-encoded bytes) must be
-    provided. Discrimination is by member presence — no ``kind`` field.
-    """
-    part: dict[str, Any] = {"mediaType": media_type}
-    if filename:
-        part["filename"] = filename
-    if url:
-        part["url"] = url
-    elif raw:
-        part["raw"] = raw
-    return part
-
-def message_with_parts(role: str, parts: list[dict], context_id: str = "") -> dict:
-    """Build an A2A v1.0 Message with arbitrary Parts (text, file, data)."""
-    msg: dict[str, Any] = {
-        "role": role,
-        "parts": parts,
-        "messageId": uuid.uuid4().hex,
-    }
-    if context_id:
-        msg["contextId"] = context_id
-    return msg
-
-def stream_message(message: dict) -> dict:
-    """v1.0 StreamResponse with a message member."""
-    return {"message": message}
-# ---- END PLUGIN-COMPAT ----

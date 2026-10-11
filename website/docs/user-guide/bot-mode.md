@@ -16,6 +16,19 @@ See [Profiles, agents, and bots](./profiles.md#profiles-agents-and-bots) for how
 Bot Mode relates to messaging bots and delegated subagents.
 :::
 
+## Coming from profiles?
+
+Your profiles keep working exactly as they did; Bot Mode adds the parts a profile alone does not have:
+
+| With plain profiles | With Bot Mode |
+|---|---|
+| A pile of sessions per profile; you pick one or start another | One permanent **Bot Chat** per Bot. Click the Bot and you are back in the same conversation; `/new` compacts it instead of forking it |
+| Switch profiles to talk to a different specialist | Every Bot sits in one roster with its avatar, latest message, and unread state |
+| Profiles never talk to each other | Bots [message each other](#bot-to-bot-messaging) and share [group chats](#groups-and-group-chats) |
+| Scheduled jobs live in `hermes cron`, apart from any chat | Each Bot's [routines](#routines) are scheduled and edited beside its chat |
+
+Nothing moves: config, memory, skills, and credentials stay in `~/.hermes/profiles/<name>/`, and `hermes -p <bot> chat` still opens the same agent.
+
 ## The Bots pane
 
 The roster shows one row per agent profile: avatar, latest-message preview, and timestamp.
@@ -107,14 +120,20 @@ elsewhere in the sentence is read as ordinary prose, so a German `halt` no longe
 silences the bot it was sent to — but such a message does not release a held
 member either (`@bot please just stop now` never wakes it; repeat the stop next
 to the mention to hold it). Stop words inside fenced code, inline code, quotes or
-blockquote lines are content, not directives, and never hold anyone. A member that is visibly still working keeps its turn for up to three
+blockquote lines are content, not directives, and never hold anyone. A held member
+still receives the messages its hold skipped — including the one that triggered it —
+on its first turn after release, so nothing addressed to it is lost. Rooms that never
+use "stop" as a command can turn off **Detect stop directives** in the group settings
+dialog; the Stop button keeps cancelling the active run either way. A member that is visibly still working keeps its turn for up to three
 hours (a member that stops reporting work expires after three minutes of silence regardless); a quiet
 room then watches timed-out members for another three hours after the foreground wait ends, and this
 observation window does not extend the turn itself.
 Unresolved member failures remain visible in the collapsed Activity summary after
 the room settles — including a turn the member's backend itself failed (bad
 credentials, provider errors), which is reported the moment the gateway
-reports it instead of looking like twenty minutes of thinking. Expand Activity for the turn sequence; re-address the member to
+reports it instead of looking like twenty minutes of thinking. A failure row names its cause: `builder hit an error — <first line of
+the error>` (secret-shaped tokens redacted, long lines truncated), or `builder couldn't start — too many bots running` when the local
+backend pool had no free slot. Expand Activity for the turn sequence; re-address the member to
 try again. An ambiguous submit failure is not automatically resubmitted.
 
 

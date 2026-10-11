@@ -14,7 +14,7 @@ from agent.reasoning_effort import (
     CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
-    # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
+    # per-model — "max" availability varies; "minimal"/"ultra" clamp to a listed level.
     codex_supported_efforts,
 )
 from agent.transports.base import ProviderTransport
@@ -207,7 +207,7 @@ def _openai_prefers_native_web_search() -> bool:
         from tools.web_tools import _get_search_backend
 
         return (_get_search_backend() or "").strip().lower() == "openai-native"
-    except Exception:  # noqa: BLE001 — a probe failure must not change the request shape
+    except Exception:
         return False
 
 
@@ -274,6 +274,8 @@ def _alias_wire_tools(
 
 # Models already warned that an explicit disable has no wire form on their route (one warning per process).
 _UNPROJECTABLE_DISABLE_WARNED: set[str] = set()
+# request_overrides is static config: warn about a dropped prompt_cache_options once, not every turn.
+_PROMPT_CACHE_OPTIONS_DROP_WARNED = False
 
 
 def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
@@ -395,9 +397,9 @@ def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: boo
 def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:
     """Astra's official-API contract, applied AFTER ``request_overrides`` so an override can't put a
     rejected field back on the wire: ``reasoning.effort`` is ``low..max`` only (``none``/``minimal``
-    400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side
-    (``prompt_cache_options.ttl`` accepts only its ``30m`` default, so nothing is sent for it and the
-    pre-5.6 ``prompt_cache_retention`` knob is dropped)."""
+    400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side (the
+    pre-5.6 ``prompt_cache_retention`` knob is dropped here; ``prompt_cache_options`` is already
+    stripped on every route by ``build_kwargs``)."""
     if not _is_official_openai_responses_route(model, base_url):
         return
     reasoning = kwargs.get("reasoning")
@@ -567,16 +569,29 @@ def _coerce_timeout(timeout: Any) -> Optional[float]:
     return None
 
 
+def _sends_all_turns(model: Any, params: dict[str, Any]) -> bool:
+    """``reasoning.context: "all_turns"`` goes only to api.openai.com models in the live-verified family
+    table (gpt-5.4/5.5 default to ``current_turn`` and discard replayed earlier-turn blobs without it;
+    o-series and gpt-5.1-5.3 400 on it). Never the ChatGPT Codex backend: acceptance there is unverified."""
+    from agent.codex_responses_adapter import openai_reasoning_family
+
+    return (
+        params.get("is_codex_backend") is not True and _is_openai_api_origin(params.get("base_url"))
+        and openai_reasoning_family(model) is not None
+    )
+
+
 def _reasoning_fields(
     model: str, params: dict[str, Any], *, effort: Any, enabled: bool, replay_encrypted_reasoning: bool,
-    is_xai_responses: bool, is_github_responses: bool,
+    is_xai_responses: bool, is_github_responses: bool, all_turns: bool = False,
 ) -> dict[str, Any]:
     """``reasoning`` / ``include`` request fields for the endpoint family.
 
     xAI 400s on ``reasoning.effort`` outside its allowlist; GitHub Models takes a
     verbatim ``github_reasoning_extra`` and never ``include``. A disabled ask resolved to
     ``effort="none"`` is sent as ``{"effort": "none"}`` — the wire has no other way to switch
-    a reasoning model's default effort off (#75227).
+    a reasoning model's default effort off (#75227). ``all_turns`` adds ``context: "all_turns"``
+    so the model renders replayed reasoning from earlier user turns (``_sends_all_turns``).
     """
     include = ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
     fields: dict[str, Any] = {}
@@ -589,9 +604,17 @@ def _reasoning_fields(
     elif enabled:
         if is_github_responses:
             if params.get("github_reasoning_extra") is not None:
-                fields["reasoning"] = params["github_reasoning_extra"]
+                # Request a reasoning summary so the Responses API actually returns
+                # reasoning text. Without ``summary: "auto"`` the GitHub/Copilot
+                # /responses endpoint returns reasoning items with no summary, so Hermes
+                # persists empty reasoning/thinking content for every Copilot model on
+                # the Responses API (gpt-5.4, gpt-5, ...) — the same loss the non-GitHub
+                # branch below already avoids. Verified against api.githubcopilot.com
+                # /responses: the summary is only emitted when summary="auto" is sent.
+                # See #46527.
+                fields["reasoning"] = {**params["github_reasoning_extra"], "summary": "auto"}
         else:
-            fields["reasoning"] = {"effort": effort, "summary": "auto"}
+            fields["reasoning"] = {"effort": effort, "summary": "auto", **({"context": "all_turns"} if all_turns else {})}
             fields["include"] = include
     elif not is_github_responses and not is_xai_responses:
         fields["include"] = []
@@ -611,6 +634,36 @@ class ResponsesApiTransport(ProviderTransport):
     _last_issuer_model: Optional[str] = None
     # ``{wire_alias: original}`` of the most recent build_kwargs. None = no request built (legacy map).
     _last_wire_aliases: Optional[dict[str, str]] = None
+    # Wire models that 400'd on ``reasoning.context`` this session (the transport is cached per agent).
+    _all_turns_rejected: frozenset = frozenset()
+    _last_sent_all_turns: bool = False
+
+    def reject_all_turns(self, error: Any) -> bool:
+        """400 naming ``reasoning.context``/``all_turns`` on a request that carried the opt-in: omit it for that
+        model for the rest of the session. False otherwise, so it buys at most one retry per model."""
+        text = str(error).lower()
+        if not self._last_sent_all_turns or getattr(error, "status_code", None) not in (400, None) or not (
+            "reasoning.context" in text or "all_turns" in text
+        ):
+            return False
+        self._all_turns_rejected = self._all_turns_rejected | {self._last_issuer_model}
+        self._last_sent_all_turns = False
+        logger.warning("reasoning.context rejected by %s; omitting it for this session", self._last_issuer_model)
+        return True
+
+    def drop_unverified_replay(self, *message_lists: Any) -> int:
+        """First ``invalid_encrypted_content`` rung: drop the replayed blobs the failing request could not vouch
+        for (not stamped by exactly its endpoint + model), keeping the session's own continuity. Returns the
+        count removed from the first list; 0 means only the route's own blobs were sent."""
+        from agent.codex_responses_adapter import strip_unverified_reasoning_items
+
+        if self._last_issuer_kind is None or self._last_issuer_model is None:
+            return 0
+        removed = [
+            strip_unverified_reasoning_items(msgs, issuer_kind=self._last_issuer_kind, issuer_model=self._last_issuer_model)
+            for msgs in message_lists
+        ]
+        return removed[0] if removed else 0
 
     @property
     def api_mode(self) -> str:
@@ -739,10 +792,14 @@ class ResponsesApiTransport(ProviderTransport):
         if cache_retention:
             kwargs.setdefault("prompt_cache_retention", cache_retention)
 
+        self._last_sent_all_turns = (
+            reasoning_enabled and _sends_all_turns(wire_model, params) and wire_model not in self._all_turns_rejected
+        )
         kwargs.update(_reasoning_fields(
             model, params, effort=reasoning_effort, enabled=reasoning_enabled,
             replay_encrypted_reasoning=replay_encrypted_reasoning,
             is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
+            all_turns=self._last_sent_all_turns,
         ))
         # agent.text_verbosity -> top-level ``text.verbosity`` (#20203). Unset sends nothing;
         # xAI's /responses rejects unknown top-level fields, same as service_tier below.
@@ -752,6 +809,20 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
+
+        # ``prompt_cache_options`` is not a Responses.create() kwarg in the OpenAI SDK, so a
+        # top-level copy (e.g. from request_overrides) fails the call with TypeError before any
+        # request is sent, on every route. Endpoints that manage cache lifetime own it
+        # server-side; a proxy that accepts the field gets it via request_overrides
+        # ``extra_body``, which the SDK merges into the body post-transform.
+        if kwargs.pop("prompt_cache_options", None) is not None:
+            global _PROMPT_CACHE_OPTIONS_DROP_WARNED
+            if not _PROMPT_CACHE_OPTIONS_DROP_WARNED:
+                _PROMPT_CACHE_OPTIONS_DROP_WARNED = True
+                logger.warning(
+                    "Dropped prompt_cache_options: not a Responses.create() kwarg "
+                    "(use request_overrides={'extra_body': ...} for wire-only fields)."
+                )
 
         _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
@@ -883,16 +954,6 @@ class ResponsesApiTransport(ProviderTransport):
 
 
 # Auto-register on import
-from agent.transports import register_transport  # noqa: E402
+from agent.transports import register_transport
 
 register_transport("codex_responses", ResponsesApiTransport)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -12,6 +12,35 @@ from typing import Any, Dict, Mapping, Tuple
 from urllib.parse import urlsplit
 
 from agent.skill_utils import yaml_load
+from hermes_platform.declaration import Declaration, parse_declaration
+
+_HERMES_EXTENSION = "com.nousresearch.hermes"
+_LIVENESS: dict[str, dict] = {}
+
+
+def liveness_for(server_name: str) -> dict | None:
+    """Return a copy of the portable server's liveness declaration."""
+    value = _LIVENESS.get(server_name)
+    return dict(value) if value is not None else None
+
+
+def _set_liveness(server_name: str, value: object) -> None:
+    if value is None:
+        _LIVENESS.pop(server_name, None)
+    elif isinstance(value, dict):
+        _LIVENESS[server_name] = dict(value)
+    else:
+        raise AgentPluginError(f"server '{server_name}' liveness must be an object")
+
+
+def _clear_liveness(server_name: str) -> None:
+    _LIVENESS.pop(server_name, None)
+
+
+@dataclass(frozen=True)
+class AgentPluginServerDeclaration:
+    declaration: Declaration
+    liveness: dict | None
 
 PLUGIN_SCHEMA_V1 = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA_V1 = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
@@ -54,9 +83,68 @@ class AgentPluginPackage:
     root: Path
     data_root: Path
     manifest: Mapping[str, Any]
-    skills: Tuple[AgentPluginSkill, ...]
-    mcp_servers: Mapping[str, Dict[str, Any]]
-    diagnostics: Tuple[AgentPluginDiagnostic, ...]
+    skills: tuple[AgentPluginSkill, ...]
+    mcp_servers: Mapping[str, dict[str, Any]]
+    server_declarations: Mapping[str, AgentPluginServerDeclaration]
+    diagnostics: tuple[AgentPluginDiagnostic, ...]
+
+
+def _server_declarations(
+    manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]
+) -> dict[str, AgentPluginServerDeclaration]:
+    namespace = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {})
+    raw_servers = namespace.get("servers", {})
+    if not isinstance(raw_servers, dict):
+        raise AgentPluginError(f"extension '{_HERMES_EXTENSION}'.servers must be an object")
+    declarations: dict[str, AgentPluginServerDeclaration] = {}
+    for name, raw in raw_servers.items():
+        if name not in mcp_servers:
+            raise AgentPluginError(f"server declaration '{name}' has no matching mcp.json server")
+        if not isinstance(raw, dict):
+            raise AgentPluginError(f"server declaration '{name}' must be an object")
+        if "liveness" in raw and "app" not in raw and "requires" not in raw:
+            raise AgentPluginError(f"server declaration '{name}' has liveness without app or requires")
+        unknown = set(raw) - {"app", "requires", "liveness", "trust"}
+        if unknown:
+            raise AgentPluginError(f"server declaration '{name}' has unknown keys {sorted(unknown)}")
+        if set(raw) == {"trust"}:
+            continue  # trust only (see _server_trust): no application to declare
+        try:
+            declaration = parse_declaration(
+                name, raw.get("app"), raw.get("requires"),
+                where=f"plugin.json extension server {name!r}",
+            )
+        except ValueError as exc:
+            raise AgentPluginError(str(exc)) from exc
+        liveness = raw.get("liveness")
+        if liveness is not None and not isinstance(liveness, dict):
+            raise AgentPluginError(f"server declaration '{name}' liveness must be an object")
+        declarations[name] = AgentPluginServerDeclaration(
+            declaration=declaration,
+            liveness=dict(liveness) if liveness is not None else None,
+        )
+    return declarations
+
+
+def _server_trust(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]) -> dict[str, str]:
+    """Servers the package asks Hermes to gate: ``extensions.com.nousresearch.hermes.servers.<name>.trust``.
+
+    The package may only narrow access. ``untrusted`` makes every write-capable call to that server
+    ask the user first (the native ``trust: untrusted`` gate); ``full`` is the default and so changes
+    nothing. A package can never widen a server the user configured: a ``config.yaml`` server with
+    the same name replaces the package's entry, trust included.
+    """
+    raw_servers = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {}).get("servers", {})
+    trust: dict[str, str] = {}
+    for name, raw in (raw_servers.items() if isinstance(raw_servers, dict) else ()):
+        if not isinstance(raw, dict) or "trust" not in raw or name not in mcp_servers:
+            continue  # shape errors are raised by _server_declarations
+        value = raw["trust"]
+        if value not in ("full", "untrusted"):
+            raise AgentPluginError(f"server declaration '{name}' trust must be 'untrusted' or 'full', not {value!r}")
+        if value == "untrusted":
+            trust[name] = value
+    return trust
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -76,7 +164,7 @@ def _str_map(value: object) -> bool:
 
 def _read_json_object(path: Path, *, label: str) -> dict:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise AgentPluginError(f"{label} is not valid readable JSON: {exc}") from exc
     if not isinstance(value, dict):
@@ -141,7 +229,7 @@ def _valid_skill_frontmatter(frontmatter: Mapping[str, Any], directory_name: str
 
 def _parse_skill_frontmatter(skill_md: Path) -> dict:
     """Read SKILL.md and return its YAML frontmatter object; raises ValueError/OSError/UnicodeError."""
-    content = skill_md.read_text(encoding="utf-8").lstrip("\ufeff")
+    content = skill_md.read_text(encoding="utf-8-sig").lstrip("\ufeff")
     if not content.startswith("---"):
         raise ValueError("missing YAML frontmatter")
     end_match = re.search(r"\n---\s*\n", content[3:])
@@ -254,7 +342,7 @@ def _validate_remote_url(url: object) -> str:
     return url
 
 
-def _translate_remote(config: Mapping[str, Any]) -> Dict[str, Any]:
+def _translate_remote(config: Mapping[str, Any]) -> dict[str, Any]:
     """Translate a portable ``streamable-http`` entry into native MCP config. The v1 spec requires
     ``strict_redirect_headers``: drop configured headers on any cross-origin redirect."""
     if set(config) - _REMOTE_FIELDS:
@@ -262,14 +350,14 @@ def _translate_remote(config: Mapping[str, Any]) -> Dict[str, Any]:
     url = _validate_remote_url(config.get("url"))
     if not _validate_headers(config.get("headers")):
         raise ValueError("invalid headers")
-    translated: Dict[str, Any] = {"url": url, "strict_redirect_headers": True}
+    translated: dict[str, Any] = {"url": url, "strict_redirect_headers": True}
     if config.get("headers"):
         translated["headers"] = dict(config["headers"])
     return translated
 
 
 def _translate_stdio(config: Mapping[str, Any], plugin_root: Path, data_root: Path,
-                     create_data: bool = False) -> Dict[str, Any]:
+                     create_data: bool = False) -> dict[str, Any]:
     if set(config) - _STDIO_FIELDS:
         raise ValueError("unknown stdio field")
     command = config.get("command")
@@ -314,7 +402,7 @@ def _reject_sse(server: Mapping[str, Any]) -> None:
 
 
 def _discover_mcp(root: Path, data_root: Path, diagnostics: list[AgentPluginDiagnostic], *,
-                  create_data: bool = True) -> Dict[str, Dict[str, Any]]:
+                  create_data: bool = True) -> dict[str, dict[str, Any]]:
     mcp_path = root / "mcp.json"
     if not mcp_path.exists() and not mcp_path.is_symlink():
         return {}
@@ -334,7 +422,7 @@ def _discover_mcp(root: Path, data_root: Path, diagnostics: list[AgentPluginDiag
         return {}
     translators = {"stdio": lambda server: _translate_stdio(server, root, data_root, create_data),
                    "streamable-http": _translate_remote, "sse": _reject_sse}
-    translated: Dict[str, Dict[str, Any]] = {}
+    translated: dict[str, dict[str, Any]] = {}
     for name, server in servers.items():
         try:
             if not isinstance(name, str) or not name or not isinstance(server, dict):
@@ -359,11 +447,17 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
     """Validate and translate one installed Agent Plugins v1 package."""
     root, manifest, diagnostics = _validate_root(plugin_root)
     resolved_data = Path(data_root).resolve(strict=False)
-    return AgentPluginPackage(  # skills are discovered before MCP: diagnostics keep that order
+    skills = _discover_skills(root, diagnostics)
+    mcp_servers = _discover_mcp(root, resolved_data, diagnostics)
+    for name, tier in _server_trust(manifest, mcp_servers).items():
+        mcp_servers[name] = {**mcp_servers[name], "trust": tier}
+    return AgentPluginPackage(
         name=manifest["name"], version=manifest.get("version", ""),
         description=manifest.get("description", ""), root=root, data_root=resolved_data,
-        manifest=dict(manifest), skills=_discover_skills(root, diagnostics),
-        mcp_servers=_discover_mcp(root, resolved_data, diagnostics), diagnostics=tuple(diagnostics))
+        manifest=dict(manifest), skills=skills, mcp_servers=mcp_servers,
+        server_declarations=_server_declarations(manifest, mcp_servers),
+        diagnostics=tuple(diagnostics),
+    )
 
 
 def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPluginDiagnostic, ...]]:

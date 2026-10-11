@@ -152,7 +152,9 @@ Abridged — see `SCHEMA_SQL` in `hermes_state_common.py` (applied by `hermes_st
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
 compression-failure fields, `profile_name`, `transport_profile` (the multiplex
-bot that received the lane, nullable), `rewind_count`, `archived`, and
+bot that received the lane, nullable), `rewind_count`, `archived`,
+`auto_archived` (set only by the idle sweep; a resume or compression
+continuation clears a sweep-only archive, never a deliberate one), and
 `pinned`):
 
 ```sql
@@ -207,7 +209,8 @@ later.
 
 Abridged — the full schema also includes `effect_disposition`,
 `platform_message_id`, `observed`, `active`, `compacted`, `api_content`,
-`display_kind`, and `display_metadata`:
+`display_kind`, `display_metadata`, `message_uid`, `absorbed_message_uids`,
+`tool_call_uids`, and `tool_call_uid`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS messages (
@@ -236,12 +239,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
-- `reasoning_details` is always kept in history; on the chat-completions wire it is replayed only to OpenRouter and the Nous Portal (every other chat-completions route gets a copy without it, since strict schemas reject the field)
+- `reasoning`, `reasoning_content` and `reasoning_details` are always kept in history. On the chat-completions wire every assistant turn replays its stored reasoning on the carriers the route reads (`agent/message_sanitization.py::route_reasoning_carriers`): `reasoning_content` everywhere by default; plus `reasoning` and `reasoning_details` on OpenRouter-format gateways (OpenRouter, Kilo, Vercel AI Gateway, Nous Portal); `reasoning_details` on Novita, MiniMax `/v1` and TokenHub; `reasoning` on local servers, Ollama and Upstage. Strict schemas (Mistral, Groq, Cerebras, SambaNova) get no reasoning key, and Fireworks gets `reasoning_content` only. Only DeepSeek, Kimi and MiMo pad a reasoning-less tool-call turn with `" "`. When a route rejects a field by name ("Extra inputs are not permitted, field: messages[N].reasoning_details"), Hermes records it for that provider/host/model, strips it and retries once. The record lasts for the session and never touches history.
 - Desktop history hydration retains assistant sidecars in both REST and JSON-RPC (`session.resume`, `session.activate`, `session.history`) projections, including rows with reasoning and tool calls. REST may return the SQLite JSON string while RPC returns decoded items; Desktop accepts both. A final Responses reply may live only in `codex_message_items` while `content` is empty. Canonical content still takes precedence, and analysis/commentary items are not promoted to reply text.
 - `reasoning` stores the raw reasoning text for providers that expose it
 - A reasoning-only clean stop (empty `content`, `finish_reason=stop`, reasoning present) is answered with the reasoning text, but the assistant row is never written with that text as `content`: `content` stays empty, the text lives in `reasoning`/`reasoning_content`, and `api_content` carries it so the next request replays the answer byte-identically. History surfaces therefore show it as reasoning, not as a reply.
 - `api_content` is a byte-fidelity sidecar: the exact content string sent to the API for this message when it differs from `content` (ephemeral memory/plugin injections, persist overrides). It preserves the wire bytes for prompt-cache-stable replay — stored as sent, except lone surrogates, which sqlite3 cannot bind and which the conversation loop scrubs from every outgoing payload anyway. `NULL` means `content` was sent verbatim.
 - Timestamps are Unix epoch floats (`time.time()`)
+- `message_uid` is the durable per-message id (32 hex, `uuid4().hex`): minted once at a row's first insert and copied by every clone (in-place compaction generations, rotation children, concurrent-tail clones, `replace_messages` re-issues, export/import), so one logical message keeps one uid while its physical `id` changes. Row-addressed rewrites leave it alone. It is restored on every projection (`get_messages_as_conversation` sets it unconditionally; `_row_id` stays opt-in) and stripped from provider requests. Context engines key their own per-message state on it — see [Context Engine Plugins](./context-engine-plugin.md#stable-message-identity-message_uid).
+- `absorbed_message_uids` is the merge witness: a JSON list of the `message_uid`s the host folded into this row (alternation repair's user and assistant merges, the compressor's in-flight restatement and anchor folds, micro-compaction's adjacent-user merge; the composite keeps the first constituent's uid). Written when the survivor is flushed, rewritten with it, restored as the live `_absorbed_message_uids`, `NULL` on rows that absorbed nothing.
+- `tool_call_uids` (assistant rows) is a JSON `{tool_call_id: uid}` map giving each entry of `tool_calls` a per-occurrence id, because provider tool-call ids repeat (calls repeating an id inside one response share its uid; after two assistant turns are folded, an id both name maps to a list of uids, one per occurrence in call order); `tool_call_uid` (tool rows) is the matching value for the result. The `tool_calls` JSON itself is never modified. Minted at the assistant row's first insert, paired onto the result at flush or, when the column is `NULL`, derived on restore from the preceding assistant row; restored as the live `_tool_call_uids` / `_tool_call_uid`.
 
 ### FTS5 Full-Text Search
 
@@ -264,7 +270,7 @@ indexed columns — see `SCHEMA_SQL` in `hermes_state_common.py` for the exact S
 
 ## Schema Version and Migrations
 
-Current schema version: **23**
+Current schema version: **31**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
@@ -288,6 +294,7 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 23 | FTS storage redesign — external-content FTS tables replacing the v11 inline-mode copies (opt-in transition for existing DBs) |
 | 29 | Cron sessions leave the trigram (substring/CJK) index; `messages_fts_trigram_src` view + triggers filter on `sessions.source`, one-time rebuild purges historical rows |
 | 30 | Delegate-child (subagent) sessions leave the trigram index too — `source='subagent'` or the `$._delegate_from` marker (`FTS_TRIGRAM_SESSION_SQL`). Rows stay in `messages` and the standard `messages_fts` word index, so `session_search` still finds them; only the ~2.6× trigram shadow tables shrink. Same one-time rebuild as v29 |
+| 31 | `messages.message_uid`, `absorbed_message_uids`, `tool_call_uids`, `tool_call_uid` (declarative column adds), a backfill of a fresh `message_uid` onto every row that predates the column (2,000-id chunks, each its own short write; one open spends about a second past its first chunk and resumes from the `message_uid_backfill_id` meta cursor on the next open, until the `message_uid_backfill` marker ends it, so a large store never holds the write lock for the whole table), and the `messages_message_uid_insert` trigger that mints one for any row inserted without it (an older build writing into the store), so a v31 store hands every row to consumers with an id (tool-call uids are minted when a row is next written; results are paired on restore) |
 
 Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
 
@@ -326,6 +333,15 @@ in their offset (`state.db-shm` byte 120 = WAL write, 121 = checkpoint,
 PENDING/RESERVED/SHARED). The open-descriptor scan cannot make this distinction
 because every Hermes process has the DB open. Look for that line in
 `~/.hermes/logs/errors.log` next to the `database is locked` failure.
+
+Lock contention is recognised by SQLite result code (`SQLITE_BUSY` /
+`SQLITE_LOCKED`, `hermes_state_errors.is_sqlite_lock_error`), not by message
+text. In rollback-journal (`delete`) mode a lock lost inside FTS5's table
+constructor arrives as `SQLITE_BUSY` with the text `vtable constructor failed:
+messages_fts`; it is treated like `database is locked`. Opening a writable
+`SessionDB` waits up to `_WRITE_PATIENCE_S`; a read-only open waits its
+`_READ_BUSY_TIMEOUT_S` (5 s) read budget once. If the lock outlasts that, the dashboard
+answers 503 (busy), not 500.
 
 
 ## Common Operations

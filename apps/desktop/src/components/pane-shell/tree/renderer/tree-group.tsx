@@ -12,6 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
+import { ShellMenuItems } from '@/app/context-menu/shell-menu-items'
 import { TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -31,9 +32,9 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
-import { closeAllOpenSessionTiles } from '@/store/session-states'
+import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
 
-import { $layoutEditMode } from '../../edit-mode'
+import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
 import { emptyPaneLifecycleState, reconcilePaneLifecycle } from '../../pane-lifecycle'
 import { hiddenPaneProps, PaneGroupContext, PaneLifecycleContext, PaneVisibleContext } from '../../pane-visibility'
@@ -48,7 +49,6 @@ import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
-  $mainTileZoneCount,
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
@@ -85,6 +85,7 @@ import {
 } from '../tab-selection'
 
 import { startPaneDrag } from './drag-session'
+import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
 import { PaneBody } from './pane-body'
 import { usePanelTitlebar } from './panel-titlebar'
 import { tabStripVisibleForZone } from './strip-visibility'
@@ -99,6 +100,7 @@ import { paneChrome } from './track-model'
 function ZoneMenu({
   children,
   closable,
+  includeAppActions = false,
   minimizable = true,
   minimizeLabel,
   minimized,
@@ -108,6 +110,7 @@ function ZoneMenu({
   targetPane
 }: {
   children: ReactNode
+  includeAppActions?: boolean
   /** The pane the menu closes (the right-clicked chip / the active pane);
    *  undefined = not closable (the main zone). */
   closable?: () => string | undefined
@@ -199,7 +202,11 @@ function ZoneMenu({
               {/* The hint's `ml-auto` makes the label the row's flexible part,
                   so without this it breaks mid-phrase before the menu widens. */}
               <span className="whitespace-nowrap">{stripVisible ? t.zones.hideTabStrip : t.zones.showTabStrip}</span>
-              {toggleHint && <span className="ml-auto pl-2 text-(--ui-text-quaternary)">{toggleHint}</span>}
+              {toggleHint && (
+                <span className="ml-auto shrink-0 pl-2 whitespace-nowrap text-(--ui-text-quaternary)">
+                  {toggleHint}
+                </span>
+              )}
             </>
           ),
           onSelect: () => setTreeGroupTabStrip(nodeId, stripVisible ? 'never' : 'always')
@@ -212,12 +219,20 @@ function ZoneMenu({
             label: minimized ? t.zones.restore : (minimizeLabel ?? t.zones.minimize),
             onSelect: () => setTreeGroupMinimized(nodeId, !minimized)
           })}
+        {includeAppActions && (
+          <>
+            <kit.Separator />
+            <ShellMenuItems kit={kit} primaryOnly />
+          </>
+        )}
       </>
     )
   }
 
+  // `w-40` clips the spelled-out chord (`Ctrl+Alt+T`) under the menu's
+  // overflow-x-hidden. Size to the row; `min-w-40` keeps the short rows.
   return (
-    <ActionsContextMenu contentClassName="w-40" items={items}>
+    <ActionsContextMenu contentClassName="w-max min-w-40" items={items}>
       {children}
     </ActionsContextMenu>
   )
@@ -252,18 +267,17 @@ export function TreeGroup({
   // workspace).
   const [menuPane, setMenuPane] = useState<string | undefined>(undefined)
   const panes = useContributions('panes')
+  const stableHosts = useStablePaneHosts()
   // Coarse drag flag only (set once at drag start/end). The per-frame drop
   // HINT lives in ZoneDropOverlay so a moving pointer re-renders the tiny
   // overlay, not every zone's header/body (and not the menuDirections walk).
   const dragging = useStore($treeDragging)
   const editMode = useStore($layoutEditMode)
+  const revealsHidden = useStore($layoutEditRevealsHidden)
   const wcOverlap = useWindowControlsOverlap(ref, !topEdge)
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
-  // A count that moves only when a main zone appears or goes — NOT the tree
-  // itself (see the note above `targetPane` on why zones never subscribe to it).
-  const mainTileZoneCount = useStore($mainTileZoneCount)
   const workspaceMode = useStore($workspaceMode)
   const workspaceOwnerKey = useStore($workspaceOwnerKey)
   const newSessionTabAction = useStore($newSessionTabAction)
@@ -280,10 +294,10 @@ export function TreeGroup({
   // Unregistered (plugin not loaded), chrome-toggled-off, and narrow-collapsed
   // panes drop out of the header; the active pane falls back to the first
   // shown one (render-side — the tree keeps `active`).
-  // Edit mode forces toggle-hidden panes visible so they can be rearranged
-  // (mirrors tree-split's paneGone) — restores itself on exit.
+  // Edit mode (in Advanced) forces toggle-hidden panes visible so they can be
+  // rearranged (mirrors tree-split's paneGone) — restores itself on exit.
   const paneShown = (id: string) =>
-    Boolean(paneFor(id)) && (editMode || !hiddenPanes.has(id)) && !(narrow && paneChrome(paneFor(id)).collapsible)
+    Boolean(paneFor(id)) && (revealsHidden || !hiddenPanes.has(id)) && !(narrow && paneChrome(paneFor(id)).collapsible)
 
   const shown = node.panes.filter(paneShown)
   const memoryKey = workspaceScopeKey(workspaceMode, workspaceOwnerKey)
@@ -343,6 +357,21 @@ export function TreeGroup({
   const paneLifecycle = lifecycleRef.current.entries
   const keptPanes = shown.filter(id => paneLifecycle[id] && paneLifecycle[id].lifecycle !== 'parked')
 
+  // A parked session pane releases its transcript from the warm cache
+  // (#77311): publish which tiles are parked so use-session-state-cache stops
+  // treating them as referenced. Cleared on unmount so a zone that goes away
+  // never leaves a tile marked parked.
+  const parkedSessionKey = shown
+    .filter(id => id.startsWith('session-tile:') && paneLifecycle[id]?.lifecycle === 'parked')
+    .map(id => id.slice('session-tile:'.length))
+    .join('\n')
+
+  useEffect(() => {
+    setZoneParkedTiles(node.id, parkedSessionKey ? parkedSessionKey.split('\n') : [])
+
+    return () => setZoneParkedTiles(node.id, [])
+  }, [node.id, parkedSessionKey])
+
   // HIDE ≠ CLOSE for stateful guests: a minimized zone keeps only its
   // keep-alive panes mounted (the embedded Browser's <webview> would otherwise
   // be destroyed and rebuilt on restore — fresh document, lost automation
@@ -350,6 +379,9 @@ export function TreeGroup({
   const mountedPanes = node.minimized
     ? keptPanes.filter(id => Boolean(paneChrome(paneFor(id)).lifecycleKeepAlive))
     : keptPanes
+
+  const hostedPanes = stableHosts ? node.panes.filter(id => paneChrome(paneFor(id)).lifecycleKeepAlive) : []
+  const inlinePanes = mountedPanes.filter(id => !stableHosts || !paneChrome(paneFor(id)).lifecycleKeepAlive)
 
   // ONE header style: the app's compact pane-header. Whether this zone shows
   // it is the resolver's call, not this component's — see strip-visibility.ts
@@ -360,8 +392,7 @@ export function TreeGroup({
     isCollapsePane,
     mode: node.tabStrip,
     paneFor,
-    shown,
-    siblingMainZone: mainTileZoneCount > (shown.some(id => paneChrome(paneFor(id)).placement === 'main') ? 1 : 0)
+    shown
   })
 
   // A group collapses ALONG its parent split's axis. In a row that means the
@@ -758,23 +789,55 @@ export function TreeGroup({
           `visibility` (not display) keeps the hidden pane's layout box, so
           scroll positions and measurements survive the round-trip — which also
           makes a hidden layer's rect identical to the visible one's, hence the
-          marker document-wide lookups filter on (see pane-visibility.ts). */}
-      {(!node.minimized || mountedPanes.length > 0) && (
-        <PaneBody hidden={Boolean(node.minimized)}>
+          marker document-wide lookups filter on (see pane-visibility.ts).
+          The body carries the zone's right-click menu too: a pane without a
+          header (no strip showing) otherwise has no Close anywhere on screen
+          (#92500) — same ZoneMenu the strip and the edit veil already serve. */}
+      {(!node.minimized || mountedPanes.length > 0 || hostedPanes.length > 0) && (
+        <PaneBody
+          hidden={Boolean(node.minimized)}
+          wrap={
+            !isEmpty
+              ? body => (
+                  <ZoneMenu {...zoneMenu} includeAppActions>
+                    <div
+                      aria-label={t.zones.zoneMenuLabel(String(tabLabel(activeId)))}
+                      data-zone-body={node.id}
+                      style={{ display: 'contents' }}
+                    >
+                      {body}
+                    </div>
+                  </ZoneMenu>
+                )
+              : undefined
+          }
+        >
+          {hostedPanes.map(paneId => (
+            <KeepAlivePaneSlot
+              groupId={node.id}
+              headerVisible={headerVisible}
+              key={paneId}
+              paneId={paneId}
+              visible={paneId === activeId && !node.minimized}
+            />
+          ))}
           {isEmpty ? (
             <div className="grid h-full place-items-center">
               {/* Same decode primitive as the CONNECTING boot overlay. */}
               <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="HERMES" />
             </div>
           ) : (
-            mountedPanes.map(paneId => {
+            inlinePanes.map(paneId => {
               const pane = paneFor(paneId)
               const isActive = paneId === activeId && !node.minimized
 
               return (
                 <div
                   aria-hidden={!isActive || undefined}
-                  className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
+                  className={cn(
+                    'absolute inset-0 overflow-auto',
+                    !isActive && 'pointer-events-none invisible opacity-0'
+                  )}
                   inert={!isActive || undefined}
                   key={paneId}
                   {...hiddenPaneProps(!isActive)}

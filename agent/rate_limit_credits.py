@@ -117,8 +117,8 @@ class RateLimitCreditsMixin:
                 "credits ▸ remaining=%d (%s) · paid=%s · denom=%s · used=%s · Δspent=%s · age=%s%s",
                 state.remaining_micros, state.remaining_usd or "?", state.paid_access, state.denominator_kind,
                 _pct(state.used_fraction), ("%.1f¢" % (spent / 10000)) if spent is not None else "n/a",
-                ("%.0fs" % state.age_seconds) if state.age_seconds != float("inf") else "n/a",
-                (" · disabled=%s" % state.disabled_reason) if state.disabled_reason else "")
+                (f"{state.age_seconds:.0f}s") if state.age_seconds != float("inf") else "n/a",
+                (f" · disabled={state.disabled_reason}") if state.disabled_reason else "")
         self._emit_credits_notices()
 
     def _emit_credits_notices(self) -> None:
@@ -133,6 +133,7 @@ class RateLimitCreditsMixin:
             return
         try:
             from agent.credits_tracker import (
+                _remember_shown_band,
                 evaluate_credits_notices, is_free_tier_model, new_credits_latch, rewarm_pricing_before_depleted_notice,
             )
             latch = getattr(self, "_credits_latch", None)
@@ -147,6 +148,12 @@ class RateLimitCreditsMixin:
                 self._emit_notice_clear(key)
             for notice in to_show:
                 self._emit_notice(notice)
+            # Record the band this session last showed so a desktop reap/resume rebuild
+            # (fresh agent + fresh latch, SAME session_id) restores it instead of
+            # re-announcing the unchanged band as a fresh crossing (#101578). Both the
+            # live-header path and the cold-start seed route through here, so this is the
+            # single chokepoint.
+            _remember_shown_band(getattr(self, "session_id", None), latch.get("usage_band"))
         except Exception:
             logger.warning("credits notice evaluation/emit failed", exc_info=True)
 

@@ -7,16 +7,17 @@ chat_completions reasoning translations (GLM-5.2, Kimi K2, DeepSeek, Ox Alpha).
 from typing import Any
 
 from agent import reasoning_effort as re_
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 from providers import register_provider
 from providers.base import ProviderProfile
+from datetime import UTC
 
 # Attribution headers (same values as OpenRouter / Vercel / Fireworks); via
 # default_headers so they survive model switches and credential rotation.
 _ATTRIBUTION_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
 }
 
 
@@ -85,7 +86,7 @@ class OpenCodeGoProfile(ProviderProfile):
             reset_at = datetime.fromisoformat(reset_raw) if reset_raw else None
             windows.append(AccountUsageWindow(label=label, used_percent=float(window["percent"]), reset_at=reset_at))
         return AccountUsageSnapshot(provider=self.name, source="go_usage_api",
-                                    fetched_at=datetime.now(timezone.utc), windows=tuple(windows))
+                                    fetched_at=datetime.now(UTC), windows=tuple(windows))
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from tools.mcp_oauth import HermesTokenStorage
@@ -28,8 +29,8 @@ _DISCOVERY_CONTEXT_LEAD = "Could not read authorization-server metadata"
 def _default_auth_request_user_agent() -> str:
     """``Hermes-Agent/<version>`` for SDK-built OAuth requests that would otherwise carry no User-Agent at
     all; versioned so an operator debugging a WAF block can tell which client they are looking at."""
-    from hermes_cli import __version__
-    return f"Hermes-Agent/{__version__}"
+    from hermes_cli.version_info import get_version_info
+    return f"Hermes-Agent/{get_version_info().base_version}"
 
 
 DEFAULT_AUTH_REQUEST_USER_AGENT = _default_auth_request_user_agent()
@@ -164,6 +165,17 @@ class HermesProviderMixin:
         untouched, so the SEP-2352 credential binding still uses the advertised identifier (stable across
         runs), while the RFC 9207 ``iss`` check and Hermes' refresh-token binding use the document's issuer.
         Every other response goes back to the SDK unchanged, including its issuer check."""
+        # This compatibility shim is only for authorization-server metadata
+        # responses. Never consume arbitrary 200 responses here: MCP resource
+        # responses may be long-lived SSE streams (for example GET /v2/mcp),
+        # and response.aread() would wait for that stream to end while holding
+        # the OAuth state semaphore.
+        req = getattr(response, "request", None)
+        request_path = urlsplit(str(req.url)).path if req is not None else ""
+        if not any(request_path == base or request_path.startswith(f"{base}/")
+                   for base in _ASM_DISCOVERY_PATHS):
+            return response
+
         from mcp.shared.auth import OAuthMetadata
         from pydantic import ValidationError
         try:
@@ -591,7 +603,7 @@ def enforce_refresh_token_issuer(context: Any) -> None:
         tokens.refresh_token = None
 
 
-def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict | None) -> tuple[dict, "HermesTokenStorage"]:
+def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict | None) -> tuple[dict, HermesTokenStorage]:
     """Copy the ``oauth:`` block, apply provider defaults, open its token storage. The copy
     matters: later steps record ``_resolved_port`` / ``_cimd_url`` in the dict, which must
     never leak back into the caller's config."""
@@ -601,7 +613,7 @@ def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict |
     return cfg, mo.HermesTokenStorage(server_name)
 
 
-def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy_hint: bool) -> dict[str, Any]:
+def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_hint: bool) -> dict[str, Any]:
     """Resolve the callback port and return the shared provider constructor kwargs. Order
     matters: metadata needs the resolved port, pre-registration needs the metadata.
     ``ssh_proxy_hint`` lets the redirect handler tailor its remote-session hint to a configured

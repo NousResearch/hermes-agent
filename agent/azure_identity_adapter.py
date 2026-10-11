@@ -11,6 +11,7 @@ Reference: https://learn.microsoft.com/azure/ai-foundry/foundry-models/how-to/co
 
 from __future__ import annotations
 
+from pm import install_hint
 import contextvars
 import functools
 import logging
@@ -25,10 +26,14 @@ logger = logging.getLogger(__name__)
 # scope is an ARM control-plane scope rejected for inference by newer resources; override via ``model.entra.scope``.
 SCOPE_AI_AZURE_DEFAULT = "https://ai.azure.com/.default"
 
-_AZURE_IDENTITY_FEATURE = "provider.azure_identity"
+# ---------------------------------------------------------------------------
+# Lazy SDK import — only loaded when the Entra path is actually used.
+# ---------------------------------------------------------------------------
+
+_AZURE_IDENTITY_FEATURE = "azure-identity"
 _INSTALL_MSG = "The 'azure-identity' package is required for Azure AI Foundry Entra ID authentication. "
 _LAZY_INSTALL_HINT = (
-    "pip install azure-identity manually, or enable lazy installs (security.allow_lazy_installs: true in config.yaml)."
+    f"Run: {install_hint('azure-identity')}"
 )
 _AUTH_HEADERS = ("Authorization", "authorization", "Api-Key", "api-key", "X-Api-Key", "x-api-key")
 
@@ -36,7 +41,7 @@ _AUTH_HEADERS = ("Authorization", "authorization", "Api-Key", "api-key", "X-Api-
 def has_azure_identity_installed() -> bool:
     """Cheap importability check — does not walk the credential chain."""
     try:
-        import azure.identity  # noqa: F401
+        import azure.identity
         return True
     except Exception:
         return False
@@ -49,12 +54,12 @@ def _require_azure_identity():
         return _ai
     except ImportError:
         try:
-            from tools.lazy_deps import ensure, FeatureUnavailable
+            from pm import InstallError, ensure_import
         except ImportError as exc:
-            raise ImportError(_INSTALL_MSG + "Install it with: pip install azure-identity") from exc
+            raise ImportError(_INSTALL_MSG + "Run: hermes pm repair") from exc
         try:
-            ensure(_AZURE_IDENTITY_FEATURE, prompt=False)
-        except FeatureUnavailable as exc:
+            ensure_import(_AZURE_IDENTITY_FEATURE)
+        except InstallError as exc:
             raise ImportError(_INSTALL_MSG + str(exc)) from exc
         import azure.identity as _ai  # noqa: WPS440 — retry after lazy install
         return _ai
@@ -80,11 +85,11 @@ class EntraIdentityConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "scope", str(self.scope or "").strip() or SCOPE_AI_AZURE_DEFAULT)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"scope": self.scope, "exclude_interactive_browser": self.exclude_interactive_browser}
 
     @classmethod
-    def from_dict(cls, data: Optional[Dict[str, Any]], *, default_scope: Optional[str] = None) -> "EntraIdentityConfig":
+    def from_dict(cls, data: Optional[dict[str, Any]], *, default_scope: Optional[str] = None) -> EntraIdentityConfig:
         data = data or {}
         return cls(
             scope=str(data.get("scope") or "").strip() or default_scope or SCOPE_AI_AZURE_DEFAULT,
@@ -109,7 +114,7 @@ def _default_chain_credential(config: EntraIdentityConfig) -> Any:
 # the ambient default chain is refused outright when the profile sets no credential of its own: every source it
 # could mint from (env SP, CLI/azd/PowerShell caches, host managed identity) is the launch context's identity,
 # and _inject_bearer would ship it to whatever base_url the served profile configured.
-_credentials_by_home: Dict[tuple, Any] = {}
+_credentials_by_home: dict[tuple, Any] = {}
 
 _AMBIENT_CHAIN_REFUSAL = (
     "Entra ID auth is refused for this profile: it sets no AZURE_* credential of its own, and under "
@@ -124,7 +129,7 @@ _AMBIENT_CHAIN_REFUSAL = (
 def _scoped_credential(ai: Any, config: EntraIdentityConfig) -> Any:
     from agent.secret_scope import current_secret_scope, is_multiplex_active
     scope = current_secret_scope() or {}
-    read = lambda name: (scope.get(name) or "").strip()  # noqa: E731
+    read = lambda name: (scope.get(name) or "").strip()
     tenant, client = read("AZURE_TENANT_ID"), read("AZURE_CLIENT_ID")
     if tenant and client and read("AZURE_CLIENT_SECRET"):
         return ai.ClientSecretCredential(tenant, client, read("AZURE_CLIENT_SECRET"))
@@ -159,12 +164,12 @@ def _resolve_config(config: Optional[EntraIdentityConfig], scope: Optional[str],
     return EntraIdentityConfig(scope=(scope or "").strip() or SCOPE_AI_AZURE_DEFAULT, **overrides)
 
 
-def _install_failure(allow_install: bool) -> Optional[Dict[str, Any]]:
+def _install_failure(allow_install: bool) -> Optional[dict[str, Any]]:
     """None when ``azure.identity`` is importable (lazy-installing if allowed), else ``{"error", "hint"}``."""
     if has_azure_identity_installed():
         return None
     if not allow_install:
-        return {"error": "azure-identity not installed", "hint": "pip install azure-identity (or rely on lazy install at first use)"}
+        return {"error": "azure-identity not installed", "hint": _LAZY_INSTALL_HINT}
     try:
         _require_azure_identity()
     except ImportError as exc:
@@ -182,9 +187,9 @@ def build_token_provider(scope: Optional[str] = None, *, config: Optional[EntraI
     return ai.get_bearer_token_provider(build_credential(config), config.scope)
 
 
-def _probe_token(config: EntraIdentityConfig, timeout_seconds: float) -> Optional[Dict[str, Any]]:
+def _probe_token(config: EntraIdentityConfig, timeout_seconds: float) -> Optional[dict[str, Any]]:
     """``get_token`` on a daemon thread under a hard deadline → ``{"token"}`` / ``{"error"}`` / None on timeout."""
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
     ctx = contextvars.copy_context()
 
     def _probe() -> None:
@@ -246,11 +251,11 @@ _ENV_SOURCE_CHECKS = (
 
 def describe_active_credential(config: Optional[EntraIdentityConfig] = None, *, scope: Optional[str] = None,
                                timeout_seconds: float = 10.0, allow_install: bool = True,
-                               **overrides: Any) -> Dict[str, Any]:
+                               **overrides: Any) -> dict[str, Any]:
     """Doctor / preflight diagnostics. Never raises; ``{"ok": False, "error": ...}`` on failure. azure-identity
     hides the winning inner credential, so this reports a coarse picture (env sources, token expiry) rather
     than a class name; ``AZURE_LOG_LEVEL=DEBUG`` shows the chain."""
-    info: Dict[str, Any] = {"ok": False}
+    info: dict[str, Any] = {"ok": False}
     failure = _install_failure(allow_install)
     if failure is not None:
         info["error"], info["hint"] = failure["error"], failure["hint"]
@@ -313,7 +318,7 @@ def build_bearer_http_client(token_provider: Callable[[], str], **httpx_kwargs: 
         raise ValueError("build_bearer_http_client requires a zero-arg callable token provider")
     import httpx
 
-    def _inject_bearer(request: "httpx.Request") -> None:
+    def _inject_bearer(request: httpx.Request) -> None:
         try:
             token = materialize_bearer_for_http(token_provider)
         except ValueError as exc:
@@ -332,7 +337,15 @@ def build_bearer_http_client(token_provider: Callable[[], str], **httpx_kwargs: 
 
 
 __all__ = [
-    "EntraIdentityConfig", "SCOPE_AI_AZURE_DEFAULT", "build_bearer_http_client", "build_credential",
-    "build_token_provider", "describe_active_credential", "has_azure_identity_credentials",
-    "has_azure_identity_installed", "is_token_provider", "materialize_bearer_for_http", "reset_credential_cache",
+    "SCOPE_AI_AZURE_DEFAULT",
+    "EntraIdentityConfig",
+    "build_bearer_http_client",
+    "build_credential",
+    "build_token_provider",
+    "describe_active_credential",
+    "has_azure_identity_credentials",
+    "has_azure_identity_installed",
+    "is_token_provider",
+    "materialize_bearer_for_http",
+    "reset_credential_cache",
 ]

@@ -1,0 +1,17 @@
+name: vector-platform
+repo: https://github.com/BonesGit/hermes-vector-platform
+sha: 06276236e03e61f86934b09dbf25f0f53b9a1684
+description: "Vector (vectorapp.io) messaging platform plugin: Hermes becomes a first-class Nostr-based Vector bot (its own nsec/npub identity), relaying DMs through a local Rust sidecar that wraps vector-sdk. First run needs `hermes gateway setup`, which provisions the bot identity (create or import). Disclosure — `hermes gateway setup` downloads a prebuilt vector-bridge binary from github.com/BonesGit/hermes-vector-platform/releases (tag v<version>, sha256 checked against that release's SHA256SUMS; set vector.prebuilt.download: false to build from the bundled Rust source), merges `vector:` settings into ~/.hermes/config.yaml, writes VECTOR_* to ~/.hermes/.env, and publishes a public bot profile (kind-0, bot: true) to Nostr discovery relays."
+maintainer: BonesGit
+tier: community
+category: platform
+docs_url: https://github.com/BonesGit/hermes-vector-platform
+image: https://raw.githubusercontent.com/VectorPrivacy/Vector/0ca50a9e7aa4aa3879199994a63acd1c574b7708/assets/github_header_readme.png
+version: "0.5.2"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - VECTOR_NPUB

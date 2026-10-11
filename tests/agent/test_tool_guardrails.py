@@ -232,6 +232,40 @@ def test_identical_call_streak_never_halts_when_hard_stop_disabled_or_for_poller
     assert hard.halt_decision is None
 
 
+def test_tool_search_identical_streak_halts_even_without_hard_stop():
+    # tool_search is not idempotent-classified, so the failure-keyed detector never
+    # sees its successful repeats: the harness itself must enforce the stop on the
+    # consecutive no-progress streak (arXiv:2610.06191), interactive or not.
+    soft = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=False, no_progress_block_after=5)
+    )
+    for _ in range(4):
+        soft.observe_call("tool_search", {"query": "auth"}, "[]", failed=False)
+    assert soft.halt_decision is None  # notice-only until the block threshold
+    soft.observe_call("tool_search", {"query": "auth"}, "[]", failed=False)
+    halt = soft.halt_decision
+    assert halt is not None
+    assert halt.code == "identical_call_streak_halt"
+    assert halt.should_halt is True
+    assert halt.tool_name == "tool_search" and halt.count == 5
+
+
+def test_tool_search_identical_streak_resets_when_a_query_returns_something_new():
+    # The streak keys on (signature, result): a query that finally returns fresh
+    # output resets the run, so genuine incremental discovery is never halted.
+    soft = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=False, no_progress_block_after=5)
+    )
+    soft.observe_call("tool_search", {"query": "auth"}, "[]", failed=False)
+    soft.observe_call("tool_search", {"query": "auth"}, "[]", failed=False)
+    for i in range(4):
+        soft.observe_call("tool_search", {"query": f"auth:{i}"}, f'["tool-{i}"]', failed=False)
+    soft.observe_call("tool_search", {"query": "auth"}, "[]", failed=False)
+    soft.observe_call("tool_search", {"query": "auth"}, "[]", failed=False)
+    soft.observe_call("tool_search", {"query": "auth"}, "[]", failed=False)
+    assert soft.halt_decision is None
+
+
 
 
 
@@ -250,9 +284,36 @@ def test_loop_cap_zero_disables_and_junk_falls_back():
     assert LoopCapConfig.from_mapping({"max_web_searches": 0}).max_web_searches == 0
     assert LoopCapConfig.from_mapping({"max_web_searches": -5}).max_web_searches == LoopCapConfig().max_web_searches
     assert LoopCapConfig.from_mapping({"max_subagents": "nope"}).max_subagents == LoopCapConfig().max_subagents
+    assert LoopCapConfig.from_mapping({"max_tool_searches": 0}).max_tool_searches == 0
+    assert LoopCapConfig.from_mapping({"max_tool_searches": -1}).max_tool_searches == LoopCapConfig().max_tool_searches
 
 
-def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
+def test_tool_search_cap_blocks_after_limit_regardless_of_hard_stop():
+    # Each distinct query avoids the identical-streak detector so we know the
+    # block came from the per-turn cap, not a no-progress repeat.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(max_tool_searches=3),
+        )
+    )
+    for i in range(3):
+        assert controller.before_call("tool_search", {"query": f"q{i}"}).action == "allow"
+    decision = controller.before_call("tool_search", {"query": "q4"})
+    assert decision.action == "block"
+    assert decision.code == "loop_tool_search_cap"
+    assert decision.should_halt is True
+
+
+def test_tool_search_cap_zero_disables_limit():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(max_tool_searches=0),
+        )
+    )
+    for i in range(8):
+        assert controller.before_call("tool_search", {"query": f"q{i}"}).action == "allow"
     # Loop caps fire even with hard_stop_enabled=False (the per-turn loop
     # detector's flag). Each distinct query avoids the loop detector so we know
     # the block came from the loop cap, not exact-failure repetition.

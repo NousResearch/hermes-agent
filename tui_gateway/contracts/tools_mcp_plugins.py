@@ -74,7 +74,7 @@ class ToolsAction(WireEnum):
 
 class ToolsConfigureParams(Params):
     """``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's
-    profile is authoritative and its agent is rebuilt."""
+    profile is authoritative. Its agent is rebuilt when the effective selection changes."""
 
     action: ToolsAction
     names: list[str]
@@ -83,16 +83,21 @@ class ToolsConfigureParams(Params):
 
 
 class ToolsConfigureResult(Result):
+    """``unknown`` lists names that match no toolset. ``rejected`` maps each toolset that exists but is
+    not available on the ``cli`` platform to the error that ``hermes tools enable|disable`` prints for
+    it. The handler applies neither kind, and ``changed`` includes neither."""
+
     changed: list[str]
     enabled_toolsets: list[str]
     info: SessionLiveInfo | None = None
     missing_servers: list[str]
+    rejected: dict[str, str]
     reset: bool
     unknown: list[str]
 
 
 method("tools.configure", params=ToolsConfigureParams, result=ToolsConfigureResult,
-       doc="Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now.")
+       doc="Persist a toolset / MCP enable-disable change and rebuild the session agent when the effective selection changes.")
 
 
 # ── reload ────────────────────────────────────────────────────────────────────────────────────

@@ -397,6 +397,34 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('prints the reason for each toolset that tools.configure rejects', async () => {
+    const rejection = "Toolset 'discord' is not available on platform 'cli' (only: discord)"
+
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        changed: ['web'],
+        enabled_toolsets: ['web'],
+        missing_servers: [],
+        rejected: { discord: rejection },
+        reset: false,
+        unknown: []
+      })
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/tools enable discord web')
+
+    expect(rpc).toHaveBeenCalledWith('tools.configure', {
+      action: 'enable',
+      names: ['discord', 'web'],
+      session_id: null
+    })
+    await vi.waitFor(() => {
+      expect(vi.mocked(ctx.transcript.sys).mock.calls).toEqual([[t('slashCmd.ops.tools.enabled', 'web')], [rejection]])
+    })
+  })
+
   it('opens the pet picker for /pet list only', () => {
     const ctx = buildCtx()
 

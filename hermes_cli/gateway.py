@@ -3133,6 +3133,29 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
+def _service_project_root() -> Path:
+    """Use the stable install tree when invoked from a managed environment copy."""
+    root = PROJECT_ROOT.resolve()
+    try:
+        install_home = Path(get_hermes_home()).resolve()
+        from hermes_constants import named_profile_home
+        profile_home = named_profile_home(install_home)
+        install_root = profile_home.parent.parent if profile_home is not None else install_home
+        relative = root.relative_to(install_root / "installs")
+        parts = relative.parts
+        if len(parts) >= 4 and parts[1] == "environments" and parts[3] == "workspace":
+            canonical = install_root / "hermes-agent"
+            if not (canonical / ".hermes" / "bin" / "hermes").is_file():
+                raise RuntimeError(
+                    f"Refusing service definition: canonical launcher is missing at {canonical}. "
+                    "Re-run the service command from a normal Hermes installation."
+                )
+            return canonical
+    except (OSError, ValueError):
+        pass
+    return root
+
+
 def _stable_service_working_dir() -> str:
     """WorkingDirectory that won't disappear under systemd (HERMES_HOME, else PROJECT_ROOT). cwd is
     irrelevant to ``-m`` resolution, and a pinned transient checkout rots: systemd fails at CHDIR
@@ -3258,7 +3281,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
-    project_root = PROJECT_ROOT
+    project_root = _service_project_root()
 
     path_entries = _build_service_path_dirs()
     if not system:

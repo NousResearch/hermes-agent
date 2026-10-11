@@ -247,3 +247,120 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+# ── Single-element array envelopes ("{"item": ...}") ─────────────────────
+
+
+class TestSingleKeyArrayEnvelope:
+    """Models emit a lone array as a one-key object ("{"item": ...}") instead of a list.
+
+    The generic "wrap the bare value in a list" repair then buries the real element
+    one level too deep, so the tool rejects the call with a missing property on
+    items[0] (or a type error) instead of running — the shape reported as
+    "edits[0] (required): 'oldText' is a required property". Field reports across
+    seats and models; the wrapper is in the raw provider output, not added here.
+    """
+
+    def _array_of_objects_schema(self):
+        return {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "oldText": {"type": "string"},
+                                "newText": {"type": "string"},
+                            },
+                            "required": ["oldText", "newText"],
+                        },
+                    },
+                },
+                "required": ["edits"],
+            },
+        }
+
+    def _array_of_strings_schema(self):
+        return {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "properties": {"paths": {"type": "array", "items": {"type": "string"}}},
+                "required": ["paths"],
+            },
+        }
+
+    def test_lone_object_envelope_becomes_array_of_one(self):
+        """The exact reported failure: {"item": {..}} for an array of objects."""
+        schema = self._array_of_objects_schema()
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"edits": {"item": {"oldText": "a", "newText": "b"}}}
+            result = coerce_tool_args("test_tool", args)
+            assert result["edits"] == [{"oldText": "a", "newText": "b"}]
+
+    def test_list_envelope_is_unwrapped(self):
+        schema = self._array_of_strings_schema()
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"paths": {"item": ["a.txt", "b.txt"]}}
+            result = coerce_tool_args("test_tool", args)
+            assert result["paths"] == ["a.txt", "b.txt"]
+
+    def test_scalar_envelope_is_array_of_one(self):
+        """{"item": "a.txt"} is an array of one, not an object holding one."""
+        schema = self._array_of_strings_schema()
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"paths": {"item": "a.txt"}}
+            result = coerce_tool_args("test_tool", args)
+            assert result["paths"] == ["a.txt"]
+
+    def test_correctly_formed_array_untouched(self):
+        schema = self._array_of_objects_schema()
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"edits": [{"oldText": "a", "newText": "b"}]}
+            result = coerce_tool_args("test_tool", args)
+            assert result["edits"] == [{"oldText": "a", "newText": "b"}]
+
+    def test_unknown_envelope_key_not_unwrapped(self):
+        """Only known envelope names are unwrapped; 'foo' is left to fail loudly."""
+        schema = self._array_of_objects_schema()
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"edits": {"foo": {"oldText": "a", "newText": "b"}}}
+            result = coerce_tool_args("test_tool", args)
+            assert result["edits"] == [{"foo": {"oldText": "a", "newText": "b"}}]
+
+    def test_multi_key_object_not_unwrapped(self):
+        """An object with more than one key is real data, never an envelope."""
+        schema = self._array_of_objects_schema()
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"edits": {"item": {"oldText": "a"}, "other": 1}}
+            result = coerce_tool_args("test_tool", args)
+            assert result["edits"] == [{"item": {"oldText": "a"}, "other": 1}]
+
+    def test_envelope_key_as_ordinary_argument_still_works(self):
+        """'values' is a real array argument; an {"item": ...} value for it is unwrapped,
+        but a well-formed list of objects for 'values' is never disturbed."""
+        schema = {
+            "name": "cfg_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "values": {
+                        "type": "array",
+                        "items": {"type": "object", "properties": {"k": {"type": "string"}}},
+                    },
+                },
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            good = {"name": "cfg", "values": [{"k": "v"}]}
+            assert coerce_tool_args("cfg_tool", dict(good))["values"] == [{"k": "v"}]
+            enveloped = {"name": "cfg", "values": {"item": {"k": "v"}}}
+            assert coerce_tool_args("cfg_tool", enveloped)["values"] == [{"k": "v"}]

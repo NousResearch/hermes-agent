@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -151,7 +152,8 @@ def test_fresh_agent_rearms_after_durable_history_regrowth_once(tmp_path: Path) 
     assert third_count == 0
     assert restarted.context_compressor._proactive_prune_rearm_tokens == second_runway
 
-def test_prune_persistence_failure_is_a_noop(tmp_path: Path) -> None:
+@pytest.mark.parametrize("writer", ["rewrite_pruned_rows", "archive_and_compact"])
+def test_prune_persistence_failure_is_a_noop(tmp_path: Path, writer: str) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "PRUNE_PERSISTENCE_FAILURE"
     db.create_session(session_id, source="telegram")
@@ -161,8 +163,10 @@ def test_prune_persistence_failure_is_a_noop(tmp_path: Path) -> None:
     messages = db.get_messages_as_conversation(session_id)
     original_contents = [message["content"] for message in messages]
 
-    with patch.object(
-        db, "archive_and_compact", side_effect=RuntimeError("disk full"),
+    # The full rewrite runs when the store has no in-place writer.
+    in_place = patch.object(db, "rewrite_pruned_rows", None) if writer == "archive_and_compact" else contextlib.nullcontext()
+    with in_place, patch.object(
+        db, writer, side_effect=RuntimeError("disk full"),
     ):
         result, count = agent.context_compressor.prune_tool_results_only(
             messages, current_tokens=120_000,
@@ -231,3 +235,369 @@ def test_patch_session_model_config_merge_and_delete(tmp_path: Path) -> None:
     # Missing rows and empty patches are no-ops, never errors.
     db.patch_session_model_config("NO_SUCH_SESSION", {"x": 1})
     db.patch_session_model_config(session_id, {})
+
+
+def _rows(db: SessionDB, session_id: str) -> list[tuple]:
+    return db._conn.execute(
+        "SELECT id, role, content, active, compacted FROM messages WHERE session_id = ? ORDER BY id",
+        (session_id,),
+    ).fetchall()
+
+
+def test_in_place_prune_grows_by_changed_rows_only(tmp_path: Path) -> None:
+    """#124102: N messages with K demoted leave exactly N + K rows, and every live row keeps its id."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_IN_PLACE_GROWTH"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    before_rows = _rows(db, session_id)
+    messages = db.get_messages_as_conversation(session_id)
+
+    pruned, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    changed = [i for i, (old, new) in enumerate(zip(messages, pruned)) if old["content"] != new["content"]]
+    assert count >= 1 and changed
+    after_rows = _rows(db, session_id)
+    live = [row for row in after_rows if row[3] == 1]
+    twins = [row for row in after_rows if row[3] == 0]
+    assert len(after_rows) == len(before_rows) + len(changed)
+    assert [row[0] for row in live] == [row[0] for row in before_rows]
+    assert sorted(row[2] for row in twins) == sorted(before_rows[i][2] for i in changed)
+    assert all(row[4] == 1 for row in twins)  # the demoted full bodies stay searchable
+    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [m["content"] for m in pruned]
+    assert all(m.get("_db_persisted") for m in pruned)
+    # The twin keeps the live row's display slot: the transcript page shows one row per message, in place.
+    assert len(db.get_messages(session_id, include_compacted=True)) == len(pruned)
+
+
+def _page(db: SessionDB, session_id: str) -> list:
+    return [m["content"] for m in db.get_messages(session_id, include_compacted=True)]
+
+
+@pytest.mark.parametrize("shape", ["first-generation", "carried", "carried-legacy-slots"])
+def test_in_place_prune_display_survives_later_compaction_and_backfill(tmp_path: Path, shape: str) -> None:
+    """The transcript page shows each message once, in its own slot, as the stub and never the archived
+    full body: right after the prune, after a later full compaction, and after a later display backfill."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_IN_PLACE_DISPLAY"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    if shape != "first-generation":  # every message already has an archived copy in its display slot
+        db.archive_and_compact(session_id, db.get_messages_as_conversation(session_id))
+    if shape == "carried-legacy-slots":  # rows written before the display index existed
+        db._conn.execute("UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?",
+                         (session_id,))
+        db._conn.commit()
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    pruned, count = agent.context_compressor.prune_tool_results_only(
+        db.get_messages_as_conversation(session_id), current_tokens=120_000)
+    assert count >= 1
+    # The prune leaves every visible row its slot, so no whole-session backfill follows it.
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
+        "AND (display_order IS NULL OR display_identity IS NULL)", (session_id,)).fetchone()[0] == 0
+    expected = [m["content"] for m in pruned]
+    assert _page(db, session_id) == expected
+
+    db.archive_and_compact(session_id, db.get_messages_as_conversation(session_id))
+    assert _page(db, session_id) == expected
+
+    # A later content rewrite elsewhere (the turn prologue's) re-derives the session's display slots.
+    db.append_messages_batch(session_id, [{"role": "user", "content": "@notes.md"}])
+    row_id = db._conn.execute("SELECT MAX(id) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
+    assert db.set_user_message_content(session_id, row_id, "expanded notes") == 1
+    assert _page(db, session_id) == expected + ["expanded notes"]
+
+
+def test_in_place_prune_twice_keeps_one_search_hit_per_unchanged_turn(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_IN_PLACE_SEARCH"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    compressor = agent.context_compressor
+    _, first_count = compressor.prune_tool_results_only(
+        db.get_messages_as_conversation(session_id), current_tokens=120_000)
+    assert first_count >= 1
+    grown = []
+    for index in range(8, 16):
+        call_id = f"call_{index}"
+        grown += [_assistant_call(call_id), _tool_result(call_id, chr(65 + index % 26) * 24_000)]
+    db.append_messages_batch(session_id, grown)
+    rows_before_second = len(_rows(db, session_id))
+
+    _, second_count = compressor.prune_tool_results_only(
+        db.get_messages_as_conversation(session_id), current_tokens=1_000_000)
+
+    assert second_count >= 1
+    assert len(_rows(db, session_id)) - rows_before_second == second_count
+    hits = [hit for hit in db.search_messages("start") if hit.get("session_id") == session_id]
+    assert len(hits) == 1
+
+
+def test_in_place_prune_skips_when_another_writer_changed_the_stored_body(tmp_path: Path) -> None:
+    """A stored body that moved on belongs to a newer generation: the prune must not commit at all.
+
+    The in-place rewrite keeps row ids, so the held-history watermark cannot see the race; only the
+    stored-body mismatch can. Falling back to the full writer here archives rows it never compared and
+    republishes the stale held text over the newer one (#124102).
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_IN_PLACE_STALE"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id)
+    # Another surface rewrites the row this agent still holds the pre-edit body of.
+    db._conn.execute(
+        "UPDATE messages SET content = 'edited elsewhere' WHERE session_id = ? AND tool_call_id = 'call_0'",
+        (session_id,))
+    db._conn.commit()
+    rows_before = _rows(db, session_id)
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert (result, count) == (messages, 0)
+    assert full_rewrite.call_count == 0
+    assert _rows(db, session_id) == rows_before
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live.count("edited elsewhere") == 1
+
+
+def test_in_place_prune_falls_back_to_full_rewrite_when_a_row_cannot_be_named(tmp_path: Path) -> None:
+    """Genuine ambiguity over *current* content still commits through the full writer."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_IN_PLACE_UNRESOLVED"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id)
+    # Two live rows now carry call_0's current body, so no single row can be named.
+    columns = ", ".join(
+        name for name in (row[1] for row in db._conn.execute("PRAGMA table_info(messages)"))
+        if name not in ("id", "display_order"))
+    db._conn.execute(
+        f"INSERT INTO messages ({columns}) SELECT {columns} FROM messages "
+        "WHERE session_id = ? AND tool_call_id = 'call_0' AND active = 1", (session_id,))
+    db._conn.commit()
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        pruned, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert count >= 1
+    assert full_rewrite.call_count == 1
+    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+        m["content"] for m in pruned]
+
+
+def test_in_place_prune_leaves_unwritten_suffix_to_the_flush(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_IN_PLACE_SUFFIX"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id) + [{"role": "user", "content": "new turn"}]
+
+    pruned, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert count >= 1
+    assert not pruned[-1].get("_db_persisted")
+    assert "new turn" not in [m["content"] for m in db.get_messages_as_conversation(session_id)]
+    agent._flush_messages_to_session_db(pruned)
+    durable = [m["content"] for m in db.get_messages_as_conversation(session_id)]
+    assert durable == [m["content"] for m in pruned]
+    assert durable.count("new turn") == 1
+
+
+def test_rewrite_pruned_rows_refuses_user_rows(tmp_path: Path) -> None:
+    from hermes_state_errors import PruneRowUnresolvedError
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_IN_PLACE_USER"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    messages = db.get_messages_as_conversation(session_id)
+    rows_before = _rows(db, session_id)
+
+    with pytest.raises(PruneRowUnresolvedError):
+        db.rewrite_pruned_rows(session_id, [(messages[0], {**messages[0], "content": "rewritten"})])
+    assert _rows(db, session_id) == rows_before
+
+
+def test_a_stale_generation_with_an_unstamped_trailing_row_still_aborts(tmp_path: Path) -> None:
+    """The stale check must run for the durable prefix an unstamped trailing row cannot suppress.
+
+    A lease-less writer can hold an exact persisted prefix plus a trailing message with no stamps (a live
+    turn this process authored and has not flushed yet). The early return that caps the watermark for that
+    trailing row must not also skip the version check for the rows the caller does hold exactly (#124102).
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_STALE_PREFIX"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id) + [{"role": "user", "content": "live turn"}]
+    db._conn.execute(
+        "UPDATE messages SET content = 'edited elsewhere' WHERE session_id = ? AND tool_call_id = 'call_0'",
+        (session_id,))
+    db._conn.commit()
+    rows_before = _rows(db, session_id)
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert (result, count) == (messages, 0)
+    assert full_rewrite.call_count == 0
+    assert _rows(db, session_id) == rows_before
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live.count("edited elsewhere") == 1
+
+
+def _history_with_padded_text() -> list[dict]:
+    """A history whose user/assistant rows carry surrounding whitespace, the resume projection's lens."""
+    messages: list[dict] = [{"role": "user", "content": "  start \n"}]
+    for index in range(8):
+        call_id = f"call_{index}"
+        messages.append(_assistant_call(call_id))
+        content = chr(65 + index) * 24_000 if index < 3 else "ok"
+        messages.append(_tool_result(call_id, content))
+    messages.append({"role": "assistant", "content": "  done \n"})
+    messages.append({"role": "user", "content": "wrap up"})
+    return messages
+
+
+@pytest.mark.parametrize("loader", ["plain", "resume"], ids=["reload", "resume_projection"])
+def test_a_freshly_resumed_unchanged_transcript_is_not_stale(tmp_path: Path, loader: str) -> None:
+    """The loader lens (sanitize + strip on user/assistant strings) is not a rewrite (#124102).
+
+    Stored user/assistant content with surrounding whitespace loads stripped; the pre-repair head compared
+    raw storage bytes against that loaded view and falsely reported every such unchanged row as rewritten,
+    silently disabling the prune. Through the lens it must pass, and the prune must still reclaim.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_NOT_STALE_WHITESPACE"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history_with_padded_text())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    if loader == "resume":
+        messages = db.get_resume_conversations(session_id)[0]
+    else:
+        messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+
+    assert db.rewritten_held_row_ids(session_id, messages) == []
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert (result, count) != (messages, 0)
+    assert full_rewrite.call_count == 0  # committed in place, not through the generation writer
+
+
+def test_an_assistant_tool_calls_rewrite_is_stale_with_and_without_a_snapshot(tmp_path: Path) -> None:
+    """The old guard compared ids and tool content only; changed ``tool_calls`` arguments slipped through.
+
+    A named assistant row whose stored call arguments moved on is a lost race. It must fail closed in the
+    row-local writer through the loader-lens identity compare (which covers the arguments), and equally
+    through the lease-less gate — aborting the whole prune, not just the row (#124102).
+    """
+    from hermes_state_errors import PruneRowStaleError
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_STALE_TOOL_CALLS"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+    held_assistant = next(m for m in messages if m.get("role") == "assistant" and m.get("tool_calls"))
+    # Another writer changes the stored arguments of that row; the content (empty) is untouched.
+    db._conn.execute(
+        "UPDATE messages SET tool_calls = ? WHERE session_id = ? AND id = ?",
+        (json.dumps([{**held_assistant["tool_calls"][0],
+                      "function": {**held_assistant["tool_calls"][0]["function"],
+                                   "arguments": '{"cmd":"winner"}'}}]), session_id,
+         held_assistant["_row_id"]))
+    db._conn.commit()
+
+    # The row-local writer names the row exactly and fails closed through the lens compare.
+    stale = dict(held_assistant)
+    with pytest.raises(PruneRowStaleError):
+        db.rewrite_pruned_rows(session_id, [(stale, {**stale, "content": "pruned stub"})])
+    # The lease-less gate sees the same race: the prune must be a true no-op.
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    rows_before = _rows(db, session_id)
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+    assert (result, count) == (messages, 0)
+    assert full_rewrite.call_count == 0
+    assert _rows(db, session_id) == rows_before
+
+
+def test_a_concurrent_user_edit_stays_active_when_the_prune_falls_back(tmp_path: Path) -> None:
+    """The fallback full writer republishes every held row, user rows included.
+
+    A lease-less prune can hold an unwritten message BEFORE later durable rows, which sends the commit
+    down the archive_and_compact fallback. Its staleness gate must then cover the USER rows the fallback
+    re-inserts verbatim, not just the tool/assistant rows the in-place writer edits: a user row another
+    view rewrote in place (``set_user_message_content``) is the same lost race. Republishing the held
+    pre-edit body would leave the newer edit with zero active copies (#124102).
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_STALE_USER_EDIT_FALLBACK"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+    user_row = next(m for m in messages if m.get("role") == "user")
+    # Another SessionDB view rewrites that durable user row in place (a newer user edit).
+    assert db.set_user_message_content(session_id, user_row["_row_id"], "edited by the user elsewhere") == 1
+    # One unwritten live-turn message placed BEFORE later durable rows forces the fallback branch:
+    # _rewrite_pruned_rows_in_place refuses (row order would break) and returns None.
+    splice = next(i for i, m in enumerate(messages)
+                  if m.get("_row_id") and m["_row_id"] > user_row["_row_id"])
+    held = messages[:splice] + [{"role": "user", "content": "live turn not yet flushed"}] + messages[splice:]
+    rows_before = _rows(db, session_id)
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(held, current_tokens=120_000)
+
+    assert (result, count) == (held, 0)  # a true no-op: the stale generation is never published
+    assert full_rewrite.call_count == 0
+    assert _rows(db, session_id) == rows_before
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live.count("edited by the user elsewhere") == 1  # the newer edit keeps its active copy
+    assert "start" not in live  # the stale pre-edit body is not republished
+
+
+def test_the_fallback_still_commits_when_no_held_row_was_rewritten(tmp_path: Path) -> None:
+    """Widening the stale check to user rows must not disable the fallback itself: with no concurrent
+    rewrite, the same interleaved-unwritten shape still commits through archive_and_compact (#124102)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_FALLBACK_CLEAN_COMMIT"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+    first_user = next(i for i, m in enumerate(messages) if m.get("role") == "user")
+    splice = next(i for i, m in enumerate(messages) if i > first_user and m.get("_row_id"))
+    held = messages[:splice] + [{"role": "user", "content": "live turn not yet flushed"}] + messages[splice:]
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(held, current_tokens=120_000)
+
+    assert (result, count) != (held, 0)
+    assert full_rewrite.call_count == 1
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live.count("start") == 1  # the held user row is republished exactly once
+    assert live.count("live turn not yet flushed") == 1

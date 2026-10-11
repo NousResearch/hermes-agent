@@ -953,3 +953,76 @@ def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_
     assert cc._micro_compact_rolling_summary == summary  # the stale summary is not carried into the next pass
     live = [m["content"] for m in db.get_messages_as_conversation("s")]
     assert live == [m["content"] for m in winner]  # exactly one live generation
+
+
+@pytest.mark.parametrize("mode", ["prune", "micro"])
+def test_a_generation_rewritten_in_place_aborts_a_lease_less_pass(tmp_path, mode):
+    """An in-place prune keeps every row id and activity flag, so the id/activity staleness check is
+    blind to it. A second lease-less surface still holding the pre-prune bodies must abort anyway:
+    publishing them archives rows it never compared and republishes the pruned-away text over the
+    winner, undoing the prune (#124102)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db, cc, held = _held_session(tmp_path, mode)
+    # Another surface commits a prune in place: same ids, same activity, different bodies.
+    rewritten = [m for m in db.get_resume_conversations("s")[0] if m.get("role") == "tool"][:1] or [
+        m for m in db.get_resume_conversations("s")[0] if m.get("role") == "assistant"][:1]
+    assert rewritten, "fixture has no rewritable row"
+    original = dict(rewritten[0])
+    db.rewrite_pruned_rows("s", [(original, {**original, "content": "[pruned by the other surface]"})])
+    before = [m["content"] for m in db.get_messages_as_conversation("s")]
+
+    result = _run_pass(cc, mode, held)
+    for msg in result:  # finalize_turn's persist flush appends every unpersisted dict
+        if not msg.get(_DB_PERSISTED_MARKER):
+            db.append_message("s", msg["role"], msg.get("content"))
+
+    assert result is held
+    assert [m["content"] for m in db.get_messages_as_conversation("s")] == before
+
+
+@pytest.mark.parametrize("mode", ["prune", "micro"])
+def test_a_freshly_resumed_unchanged_history_is_not_a_stale_generation(tmp_path, mode):
+    """The held history's user/assistant strings load sanitized and stripped; that lens is not a rewrite.
+
+    The pre-repair guard compared raw stored bytes against the loaded view, so an unchanged padded row read
+    back as stale and silently disabled both lease-less passes (#124102). Through the loader lens the same
+    unchanged history must still be reclaimed."""
+    db, cc, held = _held_session(tmp_path, mode)
+    # Pad a durable user row; the resume projection loads it stripped.
+    db._execute_write(lambda conn: conn.execute(
+        "UPDATE messages SET content = '  padded start \n' WHERE session_id = 's' AND role = 'user'"))
+    held = db.get_resume_conversations("s")[0]
+
+    result = _run_pass(cc, mode, held)
+
+    assert result is not held  # the pass ran and committed: no false stale
+    live = [m["content"] for m in db.get_messages_as_conversation("s")]
+    assert "padded start" in " ".join(str(c) for c in live)
+
+
+@pytest.mark.parametrize("mode", ["prune", "micro"])
+def test_an_unstamped_trailing_row_does_not_suppress_the_stale_check(tmp_path, mode):
+    """An exact persisted prefix plus an unstamped trailing message is the live-turn shape. The trailing
+    row may cap the watermark, but the durable prefix the caller holds exactly must still be compared —
+    a rewritten prefix aborts the pass instead of republishing the pre-rewrite text (#124102)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db, cc, held = _held_session(tmp_path, mode)
+    rewritten = [m for m in db.get_resume_conversations("s")[0] if m.get("role") == "tool"][:1] or [
+        m for m in db.get_resume_conversations("s")[0] if m.get("role") == "assistant"][:1]
+    assert rewritten, "fixture has no rewritable row"
+    original = dict(rewritten[0])
+    db.rewrite_pruned_rows("s", [(original, {**original, "content": "[pruned by the other surface]"})])
+    held = held + [{"role": "user", "content": "live turn not yet flushed"}]
+    before = [m["content"] for m in db.get_messages_as_conversation("s")]
+
+    result = _run_pass(cc, mode, held)
+    for msg in result:  # finalize_turn's persist flush appends every unpersisted dict
+        if not msg.get(_DB_PERSISTED_MARKER):
+            db.append_message("s", msg["role"], msg.get("content"))
+
+    assert result is held
+    # The pass is a no-op on the durable prefix; the trailing row this process authored still flushes once.
+    live = [m["content"] for m in db.get_messages_as_conversation("s")]
+    assert live == before + ["live turn not yet flushed"]

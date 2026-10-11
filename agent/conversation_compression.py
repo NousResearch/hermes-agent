@@ -3648,7 +3648,13 @@ def held_archive_watermark(
     *stale_raises*: the newest exact held row being inactive means another compaction already committed.
     Under the in-place lease that cannot overlap a live compaction, so the lease watermark is returned; a
     lease-less caller (prune, micro-compaction) passes ``True`` and gets :class:`StaleHeldHistory` instead,
-    because for it the fallback would publish a stale generation beside the winner.
+    because for it the fallback would publish a stale generation beside the winner. It also catches the
+    generation change an id/activity check cannot see: an in-place prune rewrites a row's body under its
+    own id, so ``stale_raises`` additionally compares each exact persisted held row against its stored
+    payload (through the store's row-version CAS / loader-lens compare — never raw storage bytes against
+    a loaded view). That comparison runs for every exact persisted held row, so an unstamped trailing
+    message (which caps the watermark through the early return below) cannot suppress it for the durable
+    prefix.
     """
     if watermark is None:
         return None
@@ -3663,6 +3669,21 @@ def held_archive_watermark(
     ids = [_exact_id(m, False) for m in messages if isinstance(m, dict)]
     ids += [_exact_id(m, True) for m in (verbatim_tail or ()) if isinstance(m, dict)]
     held = [rid for rid in ids if rid is not None]
+    if stale_raises and held:
+        # An IN-PLACE commit (the proactive prune) keeps every row id and activity flag, so the liveness
+        # check below cannot see it. The stored payloads are the only trace: a held row whose active row
+        # now holds something else belongs to a generation this caller never saw, and publishing the held
+        # copy would republish the pre-rewrite text over the winner (#124102). Runs before the
+        # trailing-row early return: an unstamped trailing message may cap the watermark, but it must not
+        # suppress the version check for the durable prefix this caller does hold exactly.
+        rewritten_of = getattr(session_db, "rewritten_held_row_ids", None)
+        if callable(rewritten_of):
+            rewritten = rewritten_of(session_id, [
+                m for m in messages
+                if isinstance(m, dict) and _exact_id(m, False) is not None])
+            if rewritten:
+                raise StaleHeldHistory(
+                    f"held row {min(rewritten)} of session {session_id} was rewritten in place")
     if not ids or ids[-1] is None:
         return watermark
     newest_held = max(held)

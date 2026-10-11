@@ -292,3 +292,28 @@ class TestInsightsAuxTotals:
         models = {m["model"] for m in report["models"]}
         assert {"main-model", "glm-5"} <= models
 
+
+
+class TestCostSourcePropagation:
+    """Aux rows must carry ``CostResult.source`` so source-consistency checks can tell an
+    authoritative amount from an unknown-source one (both used to land as ``NULL``)."""
+
+    def test_cost_source_is_recorded(self, db):
+        db.create_session("s1", source="cli")
+        db.record_auxiliary_usage(
+            "s1", "title_generation", model="gpt-4o",
+            estimated_cost_usd=0.001965, cost_source="official_docs_snapshot",
+        )
+        rows = _usage_rows(db, "s1")
+        assert rows[0]["cost_source"] == "official_docs_snapshot"
+        assert rows[0]["estimated_cost_usd"] == 0.001965
+
+    def test_later_write_without_source_keeps_existing(self, db):
+        """COALESCE stickiness: a follow-up write that omits the source must not blank it."""
+        db.create_session("s1", source="cli")
+        db.record_auxiliary_usage(
+            "s1", "title_generation", model="gpt-4o",
+            estimated_cost_usd=0.001, cost_source="official_docs_snapshot",
+        )
+        db.record_auxiliary_usage("s1", "title_generation", model="gpt-4o", estimated_cost_usd=0.002)
+        assert _usage_rows(db, "s1")[0]["cost_source"] == "official_docs_snapshot"

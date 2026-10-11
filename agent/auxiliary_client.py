@@ -1702,6 +1702,11 @@ class _AnthropicCompletionsAdapter:
         self._client = real_client
         self._model = model
         self._is_oauth = is_oauth
+        # AnthropicBedrock detection by class name: the anthropic SDK is an optional extra, and
+        # this module must stay importable without it. Only Bedrock's InvokeModel endpoint rejects
+        # the translated output_config.format (#124923); direct/partner Anthropic and Messages-wire
+        # gateways accept it.
+        self._is_bedrock_client = type(real_client).__name__ == "AnthropicBedrock"
         # Caller URL first; fall back to the SDK client's host only for Nous Portal — a blanket
         # fallback would flip MiniMax/Zhipu aux adapters to third-party handling (strips thinking sigs).
         self._base_url = base_url or None
@@ -1769,12 +1774,30 @@ class _AnthropicCompletionsAdapter:
         # The adapter builds the Messages body from a fixed allow-list of kwargs, so before this an
         # unrecognized top-level kwarg was dropped on the floor: the request succeeded but the schema
         # contract silently became prompt compliance (#85626 review, point 2).
-        top_level_response_format = kwargs.get("response_format")
-        if top_level_response_format is not None:
-            _translate_anthropic_response_format(anthropic_kwargs, top_level_response_format)
+        # AnthropicBedrock exception: Bedrock's InvokeModel endpoint rejects the translated field
+        # with 400 ``output_config.format: Extra inputs are not permitted`` (ValidationException on
+        # InvokeModelWithResponseStream, every Claude model — endpoint, not model). The
+        # per-process _REJECTED_ROUTES memo only learns this after the first 400 and forgets it on
+        # every restart/gateway process, so skip the translation up front for that client; schema
+        # enforcement degrades to prompt compliance, the same fallback as an unsupported format
+        # (#124923). The Mantle route for Bedrock-hosted OpenAI models uses a plain OpenAI client
+        # and is not affected.
+        def _translate_or_skip(rf: Any) -> None:
+            if rf is None:
+                return
+            if self._is_bedrock_client:
+                logger.info(
+                    "AnthropicBedrock route: omitting the structured-output format field "
+                    "(Bedrock rejects output_config.format with 400); schema enforcement "
+                    "degrades to prompt compliance",
+                )
+                return
+            _translate_anthropic_response_format(anthropic_kwargs, rf)
+
+        _translate_or_skip(kwargs.get("response_format"))
         caller_extra_body = kwargs.get("extra_body")
         if caller_extra_body and isinstance(caller_extra_body, dict):
-            _translate_anthropic_response_format(anthropic_kwargs, caller_extra_body.get("response_format"))
+            _translate_or_skip(caller_extra_body.get("response_format"))
             passthrough = {
                 k: v for k, v in caller_extra_body.items()
                 if k not in {"reasoning", "response_format"} and not str(k).startswith("_")

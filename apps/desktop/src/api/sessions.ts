@@ -189,13 +189,25 @@ export interface SidebarSessionSlice {
   errors?: Array<{ profile: string; error: string }>
 }
 
-/** Which profiles filled their per-profile window in a returned page. The
- *  legacy per-slice endpoint doesn't report this, so derive it from the rows:
- *  a profile at (or over) the cap still has more on disk. Pinned rows count
- *  like any other: they occupy LIMIT slots, and a short list has nothing past
- *  the page for the pin back-fill to add, so pins cannot fake a full page
+/** Which profiles still have rows on disk beyond the returned page. The legacy
+ *  per-slice endpoint doesn't report this, so derive it from the rows. When the
+ *  endpoint carries `profile_totals` (the exact per-profile counts, computed
+ *  before the global window), compare each profile's returned count against its
+ *  known total — the most precise signal, and already paid for by the request.
+ *  Profiles with rows on disk but none in this window (pushed out by the
+ *  global merge) count as truncated too, so their rows stay reachable via the
+ *  global "Load more". Without totals, fall back to the window-full heuristic:
+ *  the backend merges all profiles then truncates globally, so a full window
+ *  means every profile in it is effectively truncated (#72492). Pinned rows
+ *  count like any other: they occupy LIMIT slots, and a short list has nothing
+ *  past the page for the pin back-fill to add, so pins cannot fake a full page
  *  (#81484). */
-function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<string, boolean> {
+function profilesTruncatedFrom(
+  sessions: SessionInfo[],
+  cap: number,
+  profileTotals?: Record<string, number>
+): Record<string, boolean> {
+  const globalTruncated = sessions.length >= cap
   const counts = new Map<string, number>()
 
   for (const session of sessions) {
@@ -204,7 +216,20 @@ function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<str
     counts.set(key, (counts.get(key) ?? 0) + 1)
   }
 
-  return Object.fromEntries([...counts].map(([name, count]) => [name, count >= cap]))
+  // Include totals-only profiles (rows on disk, none returned in this window).
+  const names = new Set([...counts.keys(), ...Object.keys(profileTotals ?? {})])
+
+  return Object.fromEntries(
+    [...names].map(name => {
+      const count = counts.get(name) ?? 0
+
+      if (profileTotals && typeof profileTotals[name] === 'number') {
+        return [name, count < profileTotals[name]]
+      }
+
+      return [name, globalTruncated || count >= cap]
+    })
+  )
 }
 
 export interface SidebarSessionsResponse {
@@ -269,7 +294,7 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
 
   const response: SidebarSessionsResponse = {
     recents: {
-      profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
+      profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit, recents.profile_totals),
       sessions: recents.sessions,
       ...(recentsErrors.length ? { errors: recentsErrors } : {})
     },

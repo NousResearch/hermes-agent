@@ -17196,7 +17196,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources)
     ])
 
-    return assembleSidebarSessionSlices(recents, cron, messaging)
+    return assembleSidebarSessionSlices(recents, cron, messaging, recentsSp)
   }
 
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile

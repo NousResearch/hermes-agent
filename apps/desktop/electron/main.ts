@@ -663,6 +663,7 @@ import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-sel
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { guardedWatch } from './watch-storm-breaker'
+import { installPreviewGuestPreload, installWebviewWindowOpenPolicy } from './webview-window-open'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
@@ -13585,6 +13586,12 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     event.preventDefault()
     void openExternalUrl(url)
   })
+  // The handlers above only cover the window's OWN webContents. A `<webview>`
+  // guest (the Preview pane) is a separate webContents with its own window-open
+  // gate, so `target="_blank"` inside a preview never reached any of this and
+  // died silently (#81660). Guests get their own policy, installed at attach
+  // time — see webview-window-open.ts for why the renderer can't do this.
+  installWebviewWindowOpenPolicy(win.webContents, { log: rememberLog, openExternal: openExternalUrl })
 }
 
 /**
@@ -13626,37 +13633,6 @@ function installPreviewGuestEscapeHatch() {
         default:
           break
       }
-    })
-  })
-}
-
-/**
- * Give the preview pane's `<webview>` guests a preload — and ONLY those
- * guests. The pane's webview is the one `webview` tag in the app and it
- * always carries the `persist:hermes-preview` partition, so the partition is
- * the ownership key: any future webview that does not opt into that partition
- * inherits nothing from this mechanism.
- *
- * The preload (preview-guest-preload-entry.ts) never opens anything itself.
- * It forwards a clicked `_blank` anchor to the host renderer via
- * `sendToHost`, and the pane admits the scheme and routes the URL through the
- * audited `hermes:openExternal` channel. Popup requests themselves stay
- * denied-by-omission: the webview has no `allowpopups`, and the
- * `setWindowOpenHandler` contract (GHSA-9f4c-93c8-jc8g) stays side-effect
- * free.
- */
-function installPreviewGuestPreload() {
-  app.on('web-contents-created', (_event, contents) => {
-    if (contents.getType() !== 'window') {
-      return
-    }
-
-    contents.on('will-attach-webview', (_attachEvent, webPreferences, params) => {
-      if (params.partition !== 'persist:hermes-preview') {
-        return
-      }
-
-      webPreferences.preload = PREVIEW_GUEST_PRELOAD_PATH
     })
   })
 }

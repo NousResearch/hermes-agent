@@ -1561,7 +1561,8 @@ class TestExecuteToolCalls:
         events = []
 
         def _invoke_hook(name, **kwargs):
-            events.append(name)
+            if name in ("post_tool_call", "transform_tool_result"):
+                events.append(name)
             return ["transformed"] if name == "transform_tool_result" else []
 
         monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
@@ -1569,12 +1570,12 @@ class TestExecuteToolCalls:
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="hook-order")
         messages = []
 
-        with patch("model_tools.handle_function_call", return_value="raw"):
+        with patch("model_tools._execute_tool", return_value="raw"):
             agent._execute_tool_calls_sequential(
                 _mock_assistant_msg(content="", tool_calls=[tc]), messages, "task-1"
             )
 
-        assert events[-2:] == ["post_tool_call", "transform_tool_result"]
+        assert events == ["post_tool_call", "transform_tool_result"]
         assert messages[0]["content"] == "transformed"
 
     @pytest.mark.parametrize("name", ["web_search", "tool_call"])

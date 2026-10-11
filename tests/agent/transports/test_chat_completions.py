@@ -622,6 +622,217 @@ class TestChatCompletionsNormalize:
 
 
 
+    def test_ollama_json_tool_calls_ignore_out_of_band_message(self, transport):
+        """Ollama/Qwen tool-call JSON may be separated by Hermes out-of-band steering text."""
+        content = (
+            '{"name":"kanban_show","arguments":{}}\n\n'
+            '[OUT-OF-BAND USER MESSAGE]\n'
+            'Task t_a4387a33 has not been handed off.\n'
+            '[/OUT-OF-BAND USER MESSAGE]\n\n'
+            '{"name":"kanban_block","arguments":{"reason":"Task has not been handed off."}}'
+            '{"name":"kanban_block","arguments":{"reason":"Task has not been handed off."}}'
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(
+            r,
+            provider_name="custom:ollama",
+            model="qwen2.5-coder:7b-hermes64k",
+            valid_tool_names={"kanban_show", "kanban_block", "kanban_complete"},
+        )
+        assert [(tc.name, tc.arguments) for tc in nr.tool_calls] == [
+            ("kanban_show", "{}"),
+            ("kanban_block", '{"reason": "Task has not been handed off."}'),
+            ("kanban_block", '{"reason": "Task has not been handed off."}'),
+        ]
+        assert nr.content is None
+        assert nr.finish_reason == "tool_calls"
+
+    def test_ollama_json_tool_calls_after_natural_language_json_marker(self, transport):
+        """Ollama/Qwen may emit prose between JSON tool-call objects."""
+        content = (
+            '{"name":"kanban_show","arguments":{}}'
+            'Understood. What would you like me to do with task t_ca49c678?json\n'
+            '{"name":"kanban_complete","arguments":{"summary":"Task t_ca49c678 completed without further review.","artifacts":[]}}'
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(
+            r,
+            provider_name="custom:ollama",
+            model="qwen2.5-coder:7b-hermes64k",
+            valid_tool_names={"kanban_show", "kanban_block", "kanban_complete"},
+        )
+        assert [(tc.name, tc.arguments) for tc in (nr.tool_calls or [])] == [
+            ("kanban_show", "{}"),
+            (
+                "kanban_complete",
+                '{"summary": "Task t_ca49c678 completed without further review.", "artifacts": []}',
+            ),
+        ]
+        assert nr.content is None
+        assert nr.finish_reason == "tool_calls"
+
+    def test_ollama_json_tool_call_preserves_nbsp_inside_string_value(self, transport):
+        """NBSP normalization must not alter legitimate JSON string content."""
+        content = (
+            'json\n'
+            '{\n'
+            '\u00a0 "name": "kanban_complete",\n'
+            '\u00a0 "arguments": {\n'
+            '\u00a0\u00a0 "summary": "keep\u00a0this",\n'
+            '\u00a0\u00a0 "artifacts": []\n'
+            '\u00a0 }\n'
+            '}\n'
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(
+            r,
+            provider_name="custom:ollama",
+            model="qwen2.5-coder:7b-hermes64k",
+            valid_tool_names={"kanban_complete"},
+        )
+        assert nr.tool_calls is not None
+        assert nr.tool_calls[0].name == "kanban_complete"
+        assert "\u00a0" in nr.tool_calls[0].arguments
+
+    def test_ollama_json_tool_call_accepts_prose_json_marker_and_nbsp(self, transport):
+        """Match the observed Qwen worker shape: prose, json marker, then NBSP JSON."""
+        content = (
+            "I have inspected the task context and found no changes needed.\n\n"
+            "Proceeding with completion.\n\n"
+            "json\n"
+            "{\n"
+            '\u00a0 "name": "kanban_complete",\n'
+            '\u00a0 "arguments": {\n'
+            '\u00a0\u00a0 "summary": "Completed read-only smoke test. No changes needed.",\n'
+            '\u00a0\u00a0 "artifacts": [],\n'
+            '\u00a0\u00a0 "created_cards": []\n'
+            '\u00a0 }\n'
+            "}\n"
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(
+            r,
+            provider_name="custom:ollama",
+            model="qwen2.5-coder:7b-hermes64k",
+            valid_tool_names={"kanban_complete"},
+        )
+        assert [(tc.name, tc.arguments) for tc in (nr.tool_calls or [])] == [
+            (
+                "kanban_complete",
+                '{"summary": "Completed read-only smoke test. No changes needed.", '
+                '"artifacts": [], "created_cards": []}',
+            ),
+        ]
+        assert nr.content is None
+        assert nr.finish_reason == "tool_calls"
+
+    def test_ollama_json_tool_call_accepts_nbsp_json_whitespace(self, transport):
+        """Qwen/Ollama may emit NBSP indentation in JSON tool-call text."""
+        content = (
+            'json\n'
+            '{\n'
+            '\u00a0 "name": "kanban_complete",\n'
+            '\u00a0 "arguments": {\n'
+            '\u00a0\u00a0 "summary": "Completed read-only smoke test. No changes needed.",\n'
+            '\u00a0\u00a0 "artifacts": [],\n'
+            '\u00a0\u00a0 "created_cards": []\n'
+            '\u00a0 }\n'
+            '}\n'
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(
+            r,
+            provider_name="custom:ollama",
+            model="qwen2.5-coder:7b-hermes64k",
+            valid_tool_names={"kanban_complete"},
+        )
+        assert [(tc.name, tc.arguments) for tc in (nr.tool_calls or [])] == [
+            (
+                "kanban_complete",
+                '{"summary": "Completed read-only smoke test. No changes needed.", '
+                '"artifacts": [], "created_cards": []}',
+            ),
+        ]
+        assert nr.content is None
+        assert nr.finish_reason == "tool_calls"
+
+    def test_ollama_json_tool_calls_have_unique_ids(self, transport):
+        content = (
+            '{"name":"kanban_show","arguments":{}}'
+            '{"name":"kanban_complete","arguments":{"summary":"ok","artifacts":[]}}'
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(
+            r,
+            provider_name="custom:ollama",
+            model="qwen2.5-coder:7b-hermes64k",
+            valid_tool_names={"kanban_show", "kanban_complete"},
+        )
+        assert nr.tool_calls is not None
+        assert len(nr.tool_calls) == 2
+        assert all(tc.id for tc in nr.tool_calls)
+        assert len({tc.id for tc in nr.tool_calls}) == 2
+
     def test_empty_reasoning_content_preserved(self, transport):
         """DeepSeek can require an explicit empty reasoning_content replay field."""
         r = SimpleNamespace(

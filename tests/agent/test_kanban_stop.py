@@ -87,11 +87,47 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
                 }
             ],
         },
-        {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": "done"},
+        {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": "{\"ok\": true}"},
     ]
     assert session_called_kanban_terminal(messages) is True
     assert build_kanban_stop_nudge(messages=messages) is None
 
+
+
+def test_final_kanban_nudge_requires_structured_terminal_call(clear_kanban_env):
+    """The last bounded nudge must force a real terminal ToolCall, not narration/status."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_final_guard")
+
+    messages = [
+        {"role": "assistant", "content": "I will check the task."},
+    ]
+
+    nudge = build_kanban_stop_nudge(
+        messages=messages,
+        attempts=1,
+        max_attempts=2,
+    )
+
+    assert nudge is not None
+    assert "FINAL Kanban terminal guard" in nudge
+    assert "MUST contain exactly one structured terminal Kanban tool call" in nudge
+    assert "Do NOT reply with plain text" in nudge
+    assert "do NOT" in nudge and "kanban_show" in nudge
+    assert "kanban_complete" in nudge
+    assert "kanban_request_review" in nudge
+    assert "kanban_request_changes" in nudge
+    assert "kanban_block" in nudge
+
+
+def test_kanban_nudge_still_stops_at_bound(clear_kanban_env):
+    """The guard remains bounded; it never becomes an unbounded continuation loop."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_final_guard")
+
+    assert build_kanban_stop_nudge(
+        messages=[{"role": "assistant", "content": "still no tool"}],
+        attempts=2,
+        max_attempts=2,
+    ) is None
 
 # ── Integration: agent nudge + dispatcher bounded retry ──────────────
 # These tests verify the two layers compose correctly: the agent-side
@@ -131,7 +167,7 @@ def test_no_nudge_after_handoff_tool(clear_kanban_env, tool_name, who):
                 }
             ],
         },
-        {"role": "tool", "name": tool_name, "tool_call_id": "1", "content": "ok"},
+        {"role": "tool", "name": tool_name, "tool_call_id": "1", "content": "{\"ok\": true}"},
     ]
     assert session_called_kanban_terminal(messages) is True, who
     assert build_kanban_stop_nudge(messages=messages) is None
@@ -160,3 +196,154 @@ def test_nudge_still_fires_for_non_terminal_kanban_tool(clear_kanban_env):
     # The nudge offers every worker exit, not just close-out; a card that must go
     # through review must never be steered to ``kanban_complete`` alone.
     assert "kanban_request_review" in nudge and "kanban_block" in nudge
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "done",
+        "ok",
+        '{"error": "failed"}',
+        '{"ok": false}',
+        "{broken json",
+    ],
+)
+def test_failed_or_unknown_terminal_tool_result_is_not_success(content, clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_fail")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {
+                        "name": "kanban_complete",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": content,
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is False
+
+
+def test_terminal_result_requires_unique_matching_tool_call_id(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_strict")
+    call = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{
+            "id": "1",
+            "type": "function",
+            "function": {"name": "kanban_complete", "arguments": "{}"},
+        }],
+    }
+
+    assert session_called_kanban_terminal([call]) is False
+    assert session_called_kanban_terminal([
+        call,
+        {"role": "tool", "name": "kanban_complete", "content": '{"ok": true}'},
+    ]) is False
+    assert session_called_kanban_terminal([
+        call,
+        {"role": "tool", "name": "kanban_complete", "tool_call_id": "2", "content": '{"ok": true}'},
+    ]) is False
+    assert session_called_kanban_terminal([
+        call,
+        {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": '{"ok": true}'},
+        {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": '{"error": "failed"}'},
+    ]) is False
+    assert session_called_kanban_terminal([
+        call,
+        {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": '{"ok": true}'},
+        {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": '{"ok": true}'},
+    ]) is False
+
+
+def test_terminal_result_requires_matching_tool_name(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_name")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "1",
+                "type": "function",
+                "function": {"name": "kanban_complete", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_block",
+            "tool_call_id": "1",
+            "content": '{"ok": true}',
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is False
+
+
+def test_terminal_id_must_be_unique_across_all_tools(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_global_id")
+
+    terminal_call = {
+        "id": "shared",
+        "type": "function",
+        "function": {"name": "kanban_complete", "arguments": "{}"},
+    }
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [terminal_call],
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "shared",
+                "type": "function",
+                "function": {"name": "other_tool", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "shared",
+            "content": '{"ok": true}',
+        },
+    ]
+
+    assert session_called_kanban_terminal(messages) is False
+
+
+def test_nonstandard_json_constants_are_not_success(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_strict_json")
+
+    for value in ("NaN", "Infinity", "-Infinity"):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_complete", "arguments": "{}"},
+                }],
+            },
+            {
+                "role": "tool",
+                "name": "kanban_complete",
+                "tool_call_id": "1",
+                "content": f'{{"ok": true, "x": {value}}}',
+            },
+        ]
+        assert session_called_kanban_terminal(messages) is False

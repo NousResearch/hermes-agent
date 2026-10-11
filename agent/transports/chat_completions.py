@@ -5,6 +5,7 @@ provider-specific work lives in build_kwargs (max_tokens, reasoning, extra_body)
 """
 
 import json
+import uuid
 from typing import Any
 from urllib.parse import urlparse
 
@@ -636,6 +637,169 @@ class ChatCompletionsTransport(ProviderTransport):
         if getattr(msg, "tool_calls", None):
             tool_calls = [tc for tc in (self._normalize_tool_call(tc) for tc in msg.tool_calls) if tc is not None]
 
+        # Ollama/Qwen may emit a tool call as JSON text instead of
+        # populating the OpenAI-compatible ``tool_calls`` field.
+        provider_name = kwargs.get("provider_name")
+
+        requested_provider = kwargs.get("requested_provider")
+        model_name = str(kwargs.get("model") or getattr(response, "model", "") or "").strip().lower()
+        valid_tool_names = kwargs.get("valid_tool_names")
+        is_ollama_route = (
+            provider_name == "custom:ollama"
+            or requested_provider in {"custom:ollama", "ollama"}
+        )
+        is_qwen_ollama_route = is_ollama_route and model_name.startswith("qwen")
+
+
+        content = getattr(msg, "content", None)
+
+
+        if (
+
+            tool_calls is None
+
+            and is_qwen_ollama_route
+
+            and isinstance(content, str)
+
+        ):
+            candidate = content.strip()
+            # Qwen/Ollama may emit JSON with U+00A0 indentation (NBSP),
+            # which the JSON decoder does not accept as JSON whitespace.
+            # Normalize U+00A0 only outside JSON string literals; preserve
+            # legitimate NBSP characters inside tool arguments.
+            def _normalize_nbsp_json_whitespace(text: str) -> str:
+                out = []
+                in_string = False
+                escaped = False
+                for ch in text:
+                    if in_string:
+                        out.append(ch)
+                        if escaped:
+                            escaped = False
+                        elif ch == "\\":
+                            escaped = True
+                        elif ch == '"':
+                            in_string = False
+                    else:
+                        if ch == '"':
+                            in_string = True
+                            out.append(ch)
+                        elif ch == "\u00a0":
+                            out.append(" ")
+                        else:
+                            out.append(ch)
+                return "".join(out)
+            candidate = _normalize_nbsp_json_whitespace(candidate)
+
+            # Hermes may inject a bounded out-of-band steering message between
+            # JSON tool-call objects. Remove only that exact marker block.
+            # Unknown text remains invalid so malformed model output still fails closed.
+            open_marker = "[OUT-OF-BAND USER MESSAGE]"
+            close_marker = "[/OUT-OF-BAND USER MESSAGE]"
+            while open_marker in candidate:
+                start = candidate.find(open_marker)
+                end = candidate.find(close_marker, start + len(open_marker))
+                if end == -1:
+                    break
+                candidate = (
+                    candidate[:start] + candidate[end + len(close_marker):]
+                ).strip()
+
+            # Qwen may prefix JSON with a literal "json" marker or wrap it in
+            # a fenced block. Strip only these known wrappers.
+            if candidate.startswith("```"):
+                block_lines = candidate.splitlines()
+                if len(block_lines) >= 3 and block_lines[-1].strip() == "```":
+                    candidate = "\n".join(block_lines[1:-1]).strip()
+                    if candidate.startswith("json"):
+                        candidate = candidate[4:].lstrip()
+
+            if candidate.startswith("json"):
+                candidate = candidate[4:].lstrip()
+
+            # Decode one or more adjacent JSON objects. Require the complete
+            # candidate to consist only of valid tool-call objects.
+            decoder = json.JSONDecoder()
+            parsed_calls = []
+            offset = 0
+
+            while offset < len(candidate):
+                while offset < len(candidate) and candidate[offset].isspace():
+                    offset += 1
+                if offset >= len(candidate):
+                    break
+
+                # Some Qwen/Ollama responses put natural-language text followed by
+                # a literal ``json`` marker between two JSON tool-call objects.
+                # Only accept that narrow bridge: no braces in the bridge and the
+                # trimmed bridge must end with ``json``. Unknown mixed text still fails closed.
+                if offset < len(candidate) and candidate[offset] != "{":
+                    next_json = candidate.find("{", offset)
+                    if next_json == -1:
+                        parsed_calls = []
+                        break
+                    bridge = candidate[offset:next_json]
+                    bridge_stripped = bridge.strip()
+                    if (
+                        not bridge_stripped
+                        or not bridge_stripped.lower().endswith("json")
+                        or "{" in bridge
+                        or "}" in bridge
+                    ):
+                        parsed_calls = []
+                        break
+                    offset = next_json
+
+                try:
+                    parsed, end_offset = decoder.raw_decode(candidate, offset)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    parsed_calls = []
+                    break
+
+                if not isinstance(parsed, dict):
+                    parsed_calls = []
+                    break
+
+                name = parsed.get("name")
+                arguments = parsed.get("arguments")
+
+                if not (
+                    isinstance(name, str)
+                    and name.strip()
+                    and isinstance(arguments, (dict, str))
+                ):
+                    parsed_calls = []
+                    break
+
+                name = name.strip()
+
+                if valid_tool_names is not None and name not in set(valid_tool_names):
+                    parsed_calls = []
+                    break
+
+                if isinstance(arguments, dict):
+                    arguments = json.dumps(arguments, ensure_ascii=False)
+                elif not arguments.strip():
+                    arguments = "{}"
+
+                if len(parsed_calls) >= 16:
+                    parsed_calls = []
+                    break
+                parsed_calls.append(
+                    ToolCall(
+                        id=f"qwen-json-{uuid.uuid4().hex[:8]}-{len(parsed_calls) + 1}",
+                        name=name.strip(),
+                        arguments=arguments,
+                    )
+                )
+                offset = end_offset
+
+            if parsed_calls and offset == len(candidate):
+                tool_calls = parsed_calls
+                content = None
+                finish_reason = "tool_calls"
+
         usage = Usage.from_openai(response.usage) if hasattr(response, "usage") and response.usage else None
 
         # Fields some SDKs park in pydantic ``model_extra`` rather than as attributes.
@@ -652,7 +816,8 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # OpenAI structured refusal (``message.refusal`` set, ``content`` empty); without
         # promotion the loop retries a deterministic refusal as an empty response.
-        content = getattr(msg, "content", None)
+        if tool_calls is None:
+            content = getattr(msg, "content", None)
         refusal = _attr_or_model_extra(msg, "refusal")
         if isinstance(refusal, str) and refusal.strip():
             provider_data["refusal"] = refusal

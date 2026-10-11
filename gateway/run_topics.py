@@ -209,6 +209,14 @@ class GatewayTopicThreadsMixin:
     # the lobby). #135959 removed the old hijack, which left this lane inert: the message hit the
     # debounced lobby reminder and no task ran. These helpers give it its own topic.
 
+    # Lobby CONTROL commands: they act on the CURRENT session/chat, never on a fresh conversation,
+    # so they must NOT be routed into a new topic when typed in the All lane. /approve and /deny
+    # are additionally excluded wherever they resolve pending approvals, and /topic is chat-level.
+    # Anything not listed here is treated as the start of a new conversation (like a message).
+    _CONTROL_LOBBY_COMMANDS = frozenset({
+        "new", "stop", "reset", "topic", "approve", "deny",
+    })
+
     def _note_own_created_lobby_topic(self, chat_id: str, thread_id: str) -> None:
         """Record a DM topic HERMES created, so the ``forum_topic_created`` service message
         Telegram emits for it is not mistaken for a user-created empty topic.
@@ -365,10 +373,25 @@ class GatewayTopicThreadsMixin:
             return False
         if getattr(event, "reply_to_message_id", None):
             return False
-        # A command typed in the lobby (/new, /model, ...) is session management, not the start of
-        # a new conversation — those keep their existing lobby/last-topic handling.
-        if event.get_command():
-            return False
+        # CONTROL commands in the lobby (/stop, /new, /reset, /topic, /approve, /deny, ...) act on
+        # the CURRENT session/chat guard, not on a fresh conversation — never start a topic for
+        # them. Every OTHER command typed in the All lane is the start of a new conversation and is
+        # routed exactly like a message (/status in All -> a /status topic, /model in All -> governs
+        # the topic it just created). The control set is structural, via busy_policy and the
+        # approval/pending-approval classes, not a hand-maintained command name list.
+        _cmd_name = event.get_command()
+        if _cmd_name:
+            from hermes_cli.commands import is_interrupt_then_dispatch, should_bypass_active_session
+            # /approve, /deny resolve pending approvals keyed by session (pre-router intercept);
+            # /stop and /new interrupt the current turn; /topic flips the chat-level toggle. None
+            # of them start a new conversation, so none may create a fresh topic.
+            if _cmd_name in self._CONTROL_LOBBY_COMMANDS or is_interrupt_then_dispatch(_cmd_name):
+                return False
+            # An UNRECOGNIZED command keeps the lobby path (never create a topic for typing
+            # garbage). Every recognized, non-control command is a conversation start: /status in
+            # All -> a /status topic and the reply lands there, like any other message.
+            if not should_bypass_active_session(_cmd_name):
+                return False
         if not await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
             return False
         thread_id = await self._auto_create_telegram_topic_for_lobby_message(source, text=event.text or "")

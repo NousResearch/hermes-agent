@@ -1054,8 +1054,18 @@ async def test_fresh_lobby_router_guards(tmp_path):
 
     # A lobby REPLY keeps the merged #135959 pin to the last-bound topic.
     assert await runner._route_fresh_lobby_message(_fresh_lobby_event(reply_to="6940")) is False
-    # A command typed in the lobby is session management, not a new conversation.
+    # CONTROL commands (interrupt/topic-toggle) must NOT start a new conversation.
     assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/new")) is False
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/stop")) is False
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/topic")) is False
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/approve")) is False
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/deny")) is False
+    # A recognized NON-control command typed in the All lane IS a conversation start: route it
+    # into its own topic exactly like a message (/status in All -> a /status topic).
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/status")) is True
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/model gpt5")) is True
+    # An UNRECOGNIZED command keeps the lobby path.
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/nonexistent")) is False
     # Explicitly routed events already name their destination.
     assert await runner._route_fresh_lobby_message(
         _fresh_lobby_event(metadata={"gateway_session_key": "agent:main:telegram:dm:x"})
@@ -1070,9 +1080,9 @@ async def test_fresh_lobby_router_guards(tmp_path):
     # Unauthorized senders must not create topics or have text re-sent.
     runner._is_user_authorized = lambda _source: False
     assert await runner._route_fresh_lobby_message(_fresh_lobby_event()) is False
-
-    adapter._create_dm_topic.assert_not_awaited()
-    assert adapter.sent == []
+    # Control commands were never routed; only /status and /model were (2 creates).
+    assert adapter._create_dm_topic.await_count == 2
+    assert adapter.sent != []  # the routed commands were echoed
     db.close()
 
 
@@ -1266,6 +1276,62 @@ async def test_fresh_lobby_message_while_busy_keys_its_own_topic(monkeypatch):
     assert event.source.thread_id == "8842"
     # ...and the busy LOBBY lane was never queued into.
     assert lobby_key not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_lobby_command_reply_lands_in_the_created_topic(tmp_path):
+    """A /status typed in the All lane: router creates a topic, and the final reply goes THERE.
+
+    The stamp happens at the adapter seam (before _dispatch_inline_reply snapshots event.source),
+    so the reply metadata carries the topic, not the lobby.
+    """
+    import dataclasses as _dataclasses
+
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+    class _CmdAdapter(BasePlatformAdapter):
+        def __init__(self):
+            super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+            self.sent = []
+
+        async def connect(self, *, is_reconnect: bool = False) -> bool:
+            return True
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.sent.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+            return SendResult(success=True, message_id="1")
+
+        async def send_typing(self, chat_id, metadata=None) -> None:
+            pass
+
+        async def stop_typing(self, chat_id, metadata=None) -> None:
+            pass
+
+        async def get_chat_info(self, chat_id):
+            return {"id": chat_id}
+
+    adapter = _CmdAdapter()
+
+    async def _handler(_event):
+        return "status output"
+
+    adapter.set_message_handler(_handler)
+
+    event = _fresh_lobby_event(text="/status")
+    # The router's stamp, done at the adapter seam before dispatch:
+    event.source = _dataclasses.replace(event.source, thread_id="8842")
+
+    await adapter._dispatch_inline_reply(event, log_cmd="status")
+
+    meta = adapter.sent[0]["metadata"]
+    assert meta["thread_id"] == "8842"
+    assert meta["direct_messages_topic_id"] == "8842"
+    assert meta["telegram_dm_topic_reply_fallback"] is True
+    assert meta["notify"] is True
+    assert adapter.sent[0]["content"] == "status output"
 
 
 # ---------------------------------------------------------------------------

@@ -447,10 +447,58 @@ def current_board_path() -> Path:
     return kanban_home() / "kanban" / "current"
 
 
+_PROFILE_BOARD_PIN_CACHE: dict = {"key": None, "value": ""}
+
+
+def _active_profile_board_pin() -> str:
+    """Board pinned by the ACTIVE profile's ``.env`` (``HERMES_KANBAN_BOARD``), or ``""``.
+
+    A multiplex gateway serves every profile in one process: ``os.environ`` carries no
+    profile pins (they load only into CLI children), so an in-process ``kanban_*`` tool
+    call made while a profile's session is active would otherwise resolve the board from
+    the shared ``<root>/kanban/current`` — cross-routing cards onto another team's board.
+    The session ContextVar names the active profile; read its pin from the same
+    ``profiles/<name>/.env`` the CLI child loads, with the SAME parser (python-dotenv,
+    utf-8-sig) so one file can never route differently in-process than in a CLI child.
+    Cached by (path, mtime, size) — this sits on dispatcher tick and kanban tool hot paths.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        profile = (get_session_env("HERMES_SESSION_PROFILE", "") or "").strip()
+    except Exception:
+        return ""
+    if not profile or profile == "default":
+        return ""
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        env_path = get_profile_dir(profile) / ".env"
+        if not env_path.is_file():
+            return ""
+        stat = env_path.stat()
+        cache_key = (str(env_path), stat.st_mtime_ns, stat.st_size)
+        if _PROFILE_BOARD_PIN_CACHE["key"] == cache_key:
+            return _PROFILE_BOARD_PIN_CACHE["value"]
+        try:
+            # Same read discipline as hermes_cli/env_loader: utf-8-sig strips a BOM that
+            # raw dotenv_values would otherwise glue onto the key name.
+            from dotenv import dotenv_values
+            text = env_path.read_bytes().decode("utf-8-sig", errors="replace")
+            import io as _io
+            value = str(dotenv_values(stream=_io.StringIO(text)).get("HERMES_KANBAN_BOARD") or "").strip()
+        except ImportError:  # pragma: no cover - dotenv is a hard dependency of env_loader
+            value = ""
+        _PROFILE_BOARD_PIN_CACHE["key"] = cache_key
+        _PROFILE_BOARD_PIN_CACHE["value"] = value
+        return value
+    except Exception:
+        return ""
+
+
 def get_current_board() -> str:
-    """Active slug: context override -> ``HERMES_KANBAN_BOARD`` -> ``<root>/kanban/current``
-    (only while that board exists) -> ``DEFAULT_BOARD``. A malformed/stale slug
-    falls through — the dispatcher must never crash on a hand-edited file."""
+    """Active slug: context override -> active profile's ``.env`` pin -> ``HERMES_KANBAN_BOARD``
+    -> ``<root>/kanban/current`` (only while that board exists) -> ``DEFAULT_BOARD``. A
+    malformed/stale slug falls through — the dispatcher must never crash on a hand-edited
+    file."""
     def _existing(candidate: str) -> Optional[str]:
         if not candidate:
             return None
@@ -469,6 +517,7 @@ def get_current_board() -> str:
 
     for candidate in (
         (_CURRENT_BOARD_OVERRIDE.get() or "").strip(),
+        _active_profile_board_pin(),
         os.environ.get("HERMES_KANBAN_BOARD", "").strip(),
     ):
         found = _existing(candidate)

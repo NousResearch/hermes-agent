@@ -527,6 +527,24 @@ class RawConfigUpdate(BaseModel):
 class ThemeSetBody(BaseModel):
     name: str
 
+
+class ProfileThemeSetBody(BaseModel):
+    profile: str
+    # When provided, install/update an explicit theme override for this profile.
+    theme: Optional[str] = None
+    # When True, reset this profile to inherit the default profile's theme.
+    # When False with `theme` set, install that explicit override.
+    # When present alone (None theme), reset to inheritance.
+    inherit_from_default: Optional[bool] = None
+
+
+class ProfileThemeGetResponse(BaseModel):
+    profile: str
+    theme: Optional[str]  # resolved effective theme name
+    inherit_from_default: bool
+    source: str  # "global" | "default" | "override"
+
+
 class FontSetBody(BaseModel):
     font: str
 

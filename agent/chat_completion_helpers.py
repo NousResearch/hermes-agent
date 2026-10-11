@@ -3259,8 +3259,17 @@ class _StreamingCall(StreamingWaitMonitor):
         return final_response
 
     @staticmethod
-    def _assemble_tool_calls(tool_calls_acc, finish_reason):
-        """Materialize accumulated tool calls; flag truncated/unrepairable args."""
+    def _assemble_tool_calls(tool_calls_acc, finish_reason, *, truncation_disproved=False):
+        """Materialize accumulated tool calls; flag truncated/unrepairable args.
+
+        A bag whose structure never closed (``{"path": "a.py", "content": "..."`` with the
+        brace missing) can be "repaired" into a complete-looking call that silently lacks
+        everything after the cut. That repair is only adopted for tools that cannot act
+        (``NO_EFFECT_TOOL_NAMES``); an effect-capable tool keeps the raw, unparseable bag.
+        ``truncation_disproved`` (usage shows the model stopped well under its budget)
+        routes such a bag to the malformed-JSON recovery (raw args, provider finish_reason)
+        instead of the output-cap retry path."""
+        from agent.tool_result_classification import tool_may_have_side_effect
         mock_tool_calls = []
         has_truncated_tool_args = False
         for idx in sorted(tool_calls_acc):
@@ -3277,8 +3286,20 @@ class _StreamingCall(StreamingWaitMonitor):
                     else:
                         # Repair before flagging (GLM via Ollama); "{}" = unrepairable.
                         repaired = _repair_tool_call_arguments(arguments, tc["function"]["name"] or "?")
-                        if repaired != "{}":
+                        structure_cut = not arguments.rstrip().endswith(("}", "]"))
+                        if repaired != "{}" and not (
+                            structure_cut and tool_may_have_side_effect(tc["function"]["name"] or "")
+                        ):
                             arguments = repaired
+                        elif truncation_disproved:
+                            # Not a cut: the provider finished with most of the budget
+                            # unused. Raw args + provider finish_reason reach
+                            # validate_tool_calls, which answers the model with the
+                            # malformed-generation error instead of a max_tokens retry.
+                            logger.warning(
+                                "Tool call '%s' arguments ended mid-JSON on a %r finish well under the "
+                                "output budget: malformed generation, not a truncation; not repairing.",
+                                tc["function"]["name"] or "?", finish_reason)
                         else:
                             has_truncated_tool_args = True
                 # Parseable JSON does not prove that a dropped stream completed its
@@ -3315,7 +3336,12 @@ class _StreamingCall(StreamingWaitMonitor):
             from agent.agent_runtime_helpers import extract_reasoning
 
             full_reasoning = extract_reasoning(self.agent, SimpleNamespace(content=full_content))
-        mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
+        from agent.tool_call_truncation_evidence import truncation_disproved
+        mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(
+            tool_calls_acc, finish_reason,
+            truncation_disproved=bool(tool_calls_acc) and truncation_disproved(
+                self.agent, finish_reason=finish_reason, usage=usage_obj, api_kwargs=self.api_kwargs),
+        )
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
         if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:
             raise EmptyStreamError(

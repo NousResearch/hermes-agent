@@ -225,6 +225,14 @@ export const SETTINGS_MANIFEST = {
         label: t.settings.notifications.completionSoundTitle,
         description: t.settings.notifications.completionSoundDesc
       })
+    },
+    attentionSound: {
+      subpage: 'sounds',
+      keywords: ['sound', 'cue', 'alert', 'approval', 'approve', 'decline', 'prompt', 'attention', 'blocked'],
+      copy: t => ({
+        label: t.settings.notifications.attentionSoundTitle,
+        description: t.settings.notifications.attentionSoundDesc
+      })
     }
   },
   sessions: {

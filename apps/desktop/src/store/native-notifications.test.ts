@@ -21,6 +21,12 @@ import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
 import { setActiveSessionId } from './session'
 import { dropSessionState, publishSessionState } from './session-states'
 
+const { playAttentionSound } = vi.hoisted(() => ({ playAttentionSound: vi.fn() }))
+
+// The cue is a side effect of the OS notification, not a second code path:
+// mocking the bank keeps this suite about WHEN it fires.
+vi.mock('@/lib/completion-sound', () => ({ playAttentionSound }))
+
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
 
@@ -137,6 +143,40 @@ describe('dispatchNativeNotification focus gating', () => {
     setActiveSessionId(null)
     dispatchNativeNotification({ global: true, kind: 'backgroundDone', title: 'Your pet hatched' })
     expect(notify).not.toHaveBeenCalled()
+  })
+})
+
+describe('dispatchNativeNotification attention cue', () => {
+  beforeEach(() => {
+    playAttentionSound.mockClear()
+  })
+
+  it('sounds its own cue for a blocking prompt that reaches the OS', () => {
+    const sessionId = freshSession()
+
+    setWindowState({ focused: true, hidden: false })
+    setActiveSessionId('on-screen')
+    dispatchNativeNotification({ kind: 'approval', sessionId, title: 'approve' })
+    expect(playAttentionSound).toHaveBeenCalledWith(`approval:${sessionId}`)
+  })
+
+  it('leaves the turn-end notification to the completion cue', () => {
+    const sessionId = freshSession()
+
+    setActiveSessionId(sessionId)
+    dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(playAttentionSound).not.toHaveBeenCalled()
+  })
+
+  it('stays silent when the notification itself was suppressed (the in-app card owns the focused case)', () => {
+    const sessionId = freshSession()
+
+    setActiveSessionId(sessionId)
+    setWindowState({ focused: true, hidden: false })
+    dispatchNativeNotification({ kind: 'approval', sessionId, title: 'approve' })
+    expect(notify).not.toHaveBeenCalled()
+    expect(playAttentionSound).not.toHaveBeenCalled()
   })
 })
 

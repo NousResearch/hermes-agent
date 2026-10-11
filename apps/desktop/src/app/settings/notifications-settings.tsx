@@ -4,10 +4,11 @@ import type { ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/i18n'
-import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
+import { COMPLETION_SOUND_VARIANTS, previewAttentionSound, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
 import { Bell, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $attentionSoundVariantId, setAttentionSoundVariantId } from '@/store/attention-sound'
 import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
 import {
   $nativeNotifyPrefs,
@@ -37,6 +38,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
   const completionSoundVariantId = useStore($completionSoundVariantId)
+  const attentionSoundVariantId = useStore($attentionSoundVariantId)
   const copy = t.settings.notifications
   const showAlerts = subpage === undefined || subpage === 'alerts'
   const showSounds = subpage === undefined || subpage === 'sounds'
@@ -123,6 +125,54 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           description={copy.completionSoundDesc}
           id={settingElementId(SETTING_IDS.notifications.completionSound)}
           title={copy.completionSoundTitle}
+        />
+      )}
+
+      {showSounds && (
+        <ListRow
+          action={
+            <>
+              <Select
+                onValueChange={value => {
+                  const variantId = Number.parseInt(value, 10)
+
+                  setAttentionSoundVariantId(variantId)
+                  previewAttentionSound(variantId)
+                  triggerHaptic('selection')
+                }}
+                value={String(attentionSoundVariantId)}
+              >
+                <SelectTrigger className={cn('min-w-56', CONTROL_TEXT)}>
+                  <SelectValue />
+                </SelectTrigger>
+
+                <SelectContent>
+                  {COMPLETION_SOUND_VARIANTS.map(variant => (
+                    <SelectItem key={variant.id} value={String(variant.id)}>
+                      {variant.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Button
+                className="gap-1.5"
+                onClick={() => {
+                  previewAttentionSound()
+                  triggerHaptic('crisp')
+                }}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <Play className="size-3.5" />
+                {copy.attentionSoundPreview}
+              </Button>
+            </>
+          }
+          description={copy.attentionSoundDesc}
+          id={settingElementId(SETTING_IDS.notifications.attentionSound)}
+          title={copy.attentionSoundTitle}
         />
       )}
 

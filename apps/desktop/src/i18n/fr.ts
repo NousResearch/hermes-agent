@@ -993,7 +993,11 @@ export const frOverrides = {
       testUnsupported: 'Ce système ne prend pas en charge les notifications natives.',
       completionSoundTitle: 'Son de fin',
       completionSoundDesc: "Se joue à la fin d'un tour d'agent. Choisissez un préréglage et prévisualisez-le ici.",
-      completionSoundPreview: 'Aperçu'
+      completionSoundPreview: 'Aperçu',
+      attentionSoundTitle: 'Son d’attention',
+      attentionSoundDesc:
+        'Se joue quand une invite attend votre réponse : approuver ou refuser une commande dangereuse, ou répondre à une question bloquante. Volontairement distinct du son de fin.',
+      attentionSoundPreview: 'Aperçu'
     },
     sections: {
       model: 'Modèle',

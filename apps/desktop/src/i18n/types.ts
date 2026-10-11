@@ -798,6 +798,9 @@ export interface Translations extends NoticeTranslations {
       completionSoundTitle: string
       completionSoundDesc: string
       completionSoundPreview: string
+      attentionSoundTitle: string
+      attentionSoundDesc: string
+      attentionSoundPreview: string
     }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>

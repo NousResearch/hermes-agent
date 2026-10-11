@@ -971,7 +971,12 @@ export const en: Translations = {
       testUnsupported: 'This system does not support native notifications.',
       completionSoundTitle: 'Completion Sound',
       completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
-      completionSoundPreview: 'Preview'
+      completionSoundPreview: 'Preview',
+      attentionSoundTitle: 'Attention Sound',
+      attentionSoundDesc:
+        'Plays when a notification needs your answer — a dangerous command to approve or decline, or a blocking ' +
+        'question. Its own preset, so it never reads as a finished turn.',
+      attentionSoundPreview: 'Preview'
     },
     sections: {
       model: 'Model',

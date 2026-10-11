@@ -548,7 +548,11 @@ export const ruOverrides = {
       testUnsupported: 'Эта система не поддерживает системные уведомления.',
       completionSoundTitle: 'Звук завершения',
       completionSoundDesc: 'Воспроизводится, когда ход агента завершён. Выберите пресет и прослушайте здесь.',
-      completionSoundPreview: 'Прослушать'
+      completionSoundPreview: 'Прослушать',
+      attentionSoundTitle: 'Звук внимания',
+      attentionSoundDesc:
+        'Играет, когда от вас ждут ответа: подтвердить или отклонить опасную команду либо ответить на блокирующий вопрос. Намеренно отличается от звука завершения.',
+      attentionSoundPreview: 'Прослушать'
     },
     sections: {
       model: 'Модель',

@@ -1,0 +1,18 @@
+name: voicestudio
+repo: https://github.com/aska-digital/protean-voice-studio
+sha: "efe5c1910ee22de7e911a9c8a8625027781f2729"
+subdir: voicestudio
+description: "Client for the local VoiceStudio text-to-speech app (debpalash/VoiceStudio): speak short text, design or clone voices, browse voices, render chaptered long-form audio, dub videos, and check server status. Six tools with mirrored slash commands plus a bundled skill. Disclosure: all traffic stays between Hermes and the configured VoiceStudio server (default http://127.0.0.1:3900); dubbing and voice-clone samples upload to that local server; no credentials read or stored, no telemetry, no self-update."
+maintainer: aska-digital
+tier: community
+category: voice
+requires_hermes: ">=0.21"
+version: "1.0.0"
+docs_url: https://github.com/aska-digital/protean-voice-studio
+readme: true
+platforms: []
+capabilities:
+  provides_tools: [vs_speak, vs_design_voice, vs_list_voices, vs_longform, vs_dub, vs_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

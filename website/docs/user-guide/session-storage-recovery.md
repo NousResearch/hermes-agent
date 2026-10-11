@@ -61,10 +61,7 @@ refusal exists precisely so nothing gets lost.
 
 ## Maintenance commands refuse while someone is writing
 
-`hermes sessions optimize`, `hermes sessions optimize-storage` and `hermes sessions prune`
-rewrite the store (VACUUM, a full-text index rebuild, bulk deletes). Running one of them under
-a live gateway is how a fleet of agents ends up in the refusal above, so they now check first
-and refuse while another process holds the database:
+`hermes sessions optimize` and `hermes sessions optimize-storage` rewrite the store (VACUUM and a full-text index rebuild), so they refuse while another process holds the database. `hermes sessions prune` uses a normal DELETE transaction and may run alongside a live gateway; keep retention runs frequent and small because a large prune can briefly surface `database is locked` warnings for concurrent writers:
 
 ```text
 Refusing `hermes sessions optimize-storage`: another process is using ~/.hermes/state.db.

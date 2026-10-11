@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import json
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -188,6 +189,51 @@ def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready:
     return True
 
 
+def _pin_session_resume_runtime(session: dict, result, persist_global: bool) -> None:
+    """Point a lazy/deferred record's stale persisted runtime at the accepted switch (#68876).
+
+    ``_deferred_build_agent_kwargs`` prefers ``resume_runtime_overrides`` over ``model_override``
+    whenever the overrides name a routable provider, so a resumed-not-yet-built session that the
+    user switches away from Anthropic (say) would still build Anthropic on the first prompt —
+    failing with "No <old provider> credentials found" while the composer shows the new pick.
+    The overrides are rewritten to the accepted pick, and the row's ``model_config`` JSON is
+    updated with the non-secret runtime identity (never ``api_key``) so a reopen between now and
+    the deferred build resolves the same provider. A global switch leaves the row alone: the
+    profile config owns it from here."""
+    if persist_global:
+        return
+    model_override = {
+        "model": result.new_model, "provider": result.target_provider or None,
+        "base_url": result.base_url or None, "api_mode": result.api_mode or None}
+    session["model_override"] = {**model_override, "api_key": result.api_key}
+    overrides = dict(session.get("resume_runtime_overrides") or {})
+    overrides["model_override"] = model_override
+    if result.target_provider:
+        overrides["provider_override"] = result.target_provider
+    else:
+        overrides.pop("provider_override", None)
+    session["resume_runtime_overrides"] = overrides
+    stored_key = str(session.get("resume_session_id") or session.get("session_key") or "").strip()
+    if not stored_key:
+        return
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                return
+            row = db.get_session(stored_key) or {}
+            model_config = _parse_model_config(row.get("model_config"), quiet=True)
+            for key, value in (("model", result.new_model), ("provider", result.target_provider),
+                               ("base_url", result.base_url), ("api_mode", result.api_mode)):
+                if value:
+                    model_config[key] = value
+                else:
+                    model_config.pop(key, None)
+            if hasattr(db, "update_session_meta"):
+                db.update_session_meta(stored_key, json.dumps(model_config), result.new_model)
+    except Exception:
+        logger.debug("deferred model switch runtime persist failed", exc_info=True)
+
+
 def _switch_request(raw_input: str, parsed_flags, persist_override) -> tuple[str, str, bool, bool, str]:
     """Normalize /model flags → (model_input, explicit_provider, one_turn, persist_global, reasoning_effort)."""
     from hermes_cli.model_switch import (
@@ -368,6 +414,17 @@ def _apply_model_switch(
         session["model_override"] = {
             "model": result.new_model, "provider": result.target_provider,
             "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
+        # A lazy/deferred record (no agent yet) restores its build from
+        # ``resume_runtime_overrides`` whenever they name a routable provider
+        # (_deferred_build_agent_kwargs) — the persisted PRE-switch runtime
+        # would win over the pick the user just made, and the first deferred
+        # build (or a later reopen) silently restores the provider they
+        # switched away from (#68876 cold-resume persistence gap). Rewrite the
+        # stale overrides to the accepted pick, same shape as
+        # _restart_completed_failed_agent_build, and persist the non-secret
+        # runtime identity so the stored row matches the composer.
+        if session.get("resume_session_id") and not session.get("agent"):
+            _pin_session_resume_runtime(session, result, persist_global)
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)

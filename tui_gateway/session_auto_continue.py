@@ -406,7 +406,14 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
-    after" message must NEVER become a live correction."""
+    after" message must NEVER become a live correction.
+
+    A pending model switch (``session["pending_model_switch"]``) overrides the mode's live-turn arms: a steer or
+    active-turn redirect would run the follow-up INSIDE the turn the user already switched away from, and the stashed
+    pick is only applied at the next fresh turn start (_apply_pending_model_switch) — so a long retry window (a 600s
+    rate-limit backoff) strands the UI's accepted switch while every follow-up keeps answering on the old provider
+    (#68876). The message queues instead (already durable at accept), the interrupt-mode policy ends the old turn, and
+    the drain runs the follow-up on the switched model."""
     mode = "queue" if queued else _load_busy_input_mode()
     agent = session.get("agent")
     # Compression in flight demotes steer/interrupt to queue: a correction delivered
@@ -414,6 +421,12 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # follow-up drains when compression finishes — the Discord-gateway contract.
     if mode in ("steer", "interrupt") and _session_compression_in_flight(session):
         mode = "queue"
+    # A pending model switch demotes the LIVE arms the same way: never steer/redirect into a turn whose provider the
+    # user switched away from. "queue" keeps its explicit no-interrupt choice (a config, not a live-turn arm); the
+    # "steer" config escalates to interrupt here so the old turn ENDS and the stash applies — otherwise a
+    # pure-steer session never reaches a fresh turn start and the switch strands forever.
+    if session.get("pending_model_switch") and mode == "steer":
+        mode = "interrupt"
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
@@ -424,8 +437,9 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
     plain_text = _coerce_message_text(text).strip() if not image_paths and _is_text_only_busy_payload(text) else ""
     # Text-only corrections steer/redirect in place when supported; media payloads and older agents fall through to
-    # the proven interrupt + queue path.
-    if plain_text and agent is not None:
+    # the proven interrupt + queue path. Never with a pending model switch: the follow-up must not join the turn the
+    # user switched away from (#68876) — it queues below and the drain runs it on the switched model.
+    if plain_text and agent is not None and not session.get("pending_model_switch"):
         supported = {
             "steer": hasattr(agent, "steer"),
             "interrupt": getattr(agent, "_supports_active_turn_redirect", False) is True and hasattr(agent, "redirect")}

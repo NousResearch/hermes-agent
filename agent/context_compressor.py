@@ -10,7 +10,6 @@ import logging
 import sqlite3
 import re
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -34,6 +33,7 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
+from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
@@ -46,14 +46,6 @@ from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
-
-
-def _safe_int(value: Any) -> int | None:
-    """Best-effort integer coercion for telemetry fields."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 # Summary-route pin lives in a ContextVar (not on the shared compressor) so the retry after a stalled
@@ -2174,7 +2166,9 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 }
 
 
-class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMixin, ContextEngine):
+class ContextCompressor(
+    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin, ContextEngine,
+):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
@@ -2195,75 +2189,6 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         self._micro_compact_rolling_summary = ""
         self._micro_compact_consecutive_failures = 0
         self._micro_compact_last_failure_cursor = -1
-
-    def _begin_compression_telemetry(
-        self, *, current_tokens: int | None, attempt_id: str | None = None, session_id: str | None = None,
-        trigger_source: str | None = None,
-    ) -> dict[str, Any]:
-        """Initialize content-free per-attempt compression telemetry."""
-        seed = getattr(self, "_compression_telemetry_seed", None)
-        seed = seed if isinstance(seed, dict) else {}
-        attempt_id = attempt_id or seed.get("attempt_id")
-        session_id = session_id or seed.get("session_id")
-        trigger_source = trigger_source or seed.get("trigger_source")
-        telemetry: dict[str, Any] = {
-            "event": "compression_attempt", "attempt_id": attempt_id or uuid.uuid4().hex,
-            "session_id": session_id or "", "trigger_source": trigger_source or "unknown",
-            "main_provider": self.provider or "", "main_model": self.model or "",
-            "main_context_limit": _safe_int(self.context_length),
-            "current_estimated_tokens": _safe_int(current_tokens),
-            "effective_threshold": _safe_int(self.threshold_tokens), "protected_head_tokens": None,
-            "protected_tail_tokens": None, "middle_window_tokens": None, "prellm_skip_count": 0,
-            "aux_prompt_tokens": None, "aux_output_reservation": None, "aux_provider": "", "aux_model": "",
-            "effective_aux_context": None, "fit_margin": None, "chunking": False, "chunk_count": 0,
-            "total_duration_ms": None, "aux_call_duration_ms": None, "queue_wait_ms": None, "prompt_build_ms": None,
-            "time_to_first_progress_ms": None, "summary_generation_ms": None, "commit_ms": None,
-            "fallback_used": False, "commit_status": "unknown", "split_status": "unknown", "failure_class": None,
-            # Lean-sampling coverage (filled by _record_summary_input_coverage; None on the legacy path).
-            "summary_input_chars": None, "summary_input_sampled_chars": None, "summary_input_omitted_chars": None,
-            "summary_input_record_count": None, "summary_input_sampled_record_count": None,
-            "summary_input_elided_record_count": None,
-        }
-        self._active_compression_telemetry = self._last_compression_telemetry = telemetry
-        return telemetry
-
-    def _record_compression_regions(
-        self, *, head_messages: list[dict[str, Any]], middle_messages: list[dict[str, Any]],
-        tail_messages: list[dict[str, Any]],
-    ) -> None:
-        telemetry = getattr(self, "_active_compression_telemetry", None)
-        if isinstance(telemetry, dict):
-            telemetry["protected_head_tokens"] = estimate_messages_tokens_rough(head_messages)
-            telemetry["middle_window_tokens"] = estimate_messages_tokens_rough(middle_messages)
-            telemetry["protected_tail_tokens"] = estimate_messages_tokens_rough(tail_messages)
-
-    def _record_aux_compression_call(
-        self, *, prompt_messages: list[dict[str, Any]], max_tokens: int | None, duration_ms: int,
-        aux_provider: str | None = None, aux_model: str | None = None,
-        effective_aux_context: int | None = None, phase_timings: dict[str, Any] | None = None,
-    ) -> None:
-        telemetry = getattr(self, "_active_compression_telemetry", None)
-        if not isinstance(telemetry, dict):
-            return
-        telemetry["aux_prompt_tokens"] = estimate_messages_tokens_rough(prompt_messages)
-        telemetry["aux_output_reservation"] = _safe_int(max_tokens)
-        if aux_provider:
-            telemetry["aux_provider"] = aux_provider
-        if aux_model:
-            telemetry["aux_model"] = aux_model
-        if effective_aux_context is not None:
-            telemetry["effective_aux_context"] = _safe_int(effective_aux_context)
-        if telemetry["effective_aux_context"] is not None and telemetry["aux_prompt_tokens"] is not None:
-            telemetry["fit_margin"] = (telemetry["effective_aux_context"] - telemetry["aux_prompt_tokens"]
-                                       - (telemetry["aux_output_reservation"] or 0))
-        telemetry["aux_call_duration_ms"] = (telemetry.get("aux_call_duration_ms") or 0) + max(0, int(duration_ms))
-        for key in ("queue_wait_ms", "prompt_build_ms", "time_to_first_progress_ms", "summary_generation_ms", "commit_ms"):
-            if not isinstance(phase_timings, dict) or key not in phase_timings:
-                continue
-            value = _safe_int(phase_timings[key])
-            # Wait and generation phases accumulate across retries; the rest are point readings.
-            accumulate = key in {"queue_wait_ms", "summary_generation_ms"} and value is not None
-            telemetry[key] = (telemetry.get(key) or 0) + value if accumulate else value
 
     def _emit_init_summary_once(self) -> None:
         """Emit the init log line once, on first context-length resolution (keeps __init__ non-blocking)."""
@@ -3101,11 +3026,11 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             return False, self._compression_block_reason() or "blocked"
         return True, None
 
-    def _compression_block_reason(self) -> str | None:
-        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None."""
-        for label, until in (
-            ("cooldown", self._summary_failure_cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until),
-        ):
+    def _compression_block_reason(self, *, ignore_cooldown: bool = False) -> str | None:
+        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None (a cooldown the
+        gate's ``ignore_cooldown`` bypassed is never the reason)."""
+        cooldown_until = 0.0 if ignore_cooldown else self._summary_failure_cooldown_until
+        for label, until in (("cooldown", cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until)):
             remaining = until - time.monotonic()
             if remaining > 0:
                 return f"{label}:{remaining:.0f}"
@@ -5570,7 +5495,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _finalize_compressed(
         self, compressed: list[dict[str, Any]], messages: list[dict[str, Any]], n_messages: int,
-        spare_pending_images: bool,
+        spare_pending_images: bool, pruned_count: int = 0,
     ) -> list[dict[str, Any]]:
         """Post-assembly cleanup: orphan pairs, media, savings, markers, replay prune, mem trim."""
         # Single-prompt cron shape: the only live instruction sits in the protected head, BEFORE the
@@ -5607,6 +5532,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         _pruned_replay = _prune_stale_reasoning_replay(compressed)
         if _pruned_replay and not self.quiet_mode:
             logger.info("Pruned stale replay items from %d assistant message(s) during compaction", _pruned_replay)
+        self._record_compression_effect(n_messages, compressed, pre_estimate, pruned_count, _pruned_replay)
         self._last_compression_made_progress = True
 
         # Compaction frees the biggest allocation: hand pages back to the OS (glibc/config-gated,
@@ -5652,6 +5578,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         _raise_if_stale_attempt(self)
         telemetry = self._begin_compress_attempt(current_tokens, force)
+        telemetry["has_focus_topic"] = bool(focus_topic)
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
@@ -5733,7 +5660,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
-        return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images)
+        return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images, pruned_count)
 
     def _assemble_compressed(
         self, messages: list[dict[str, Any]], compress_start: int, compress_end: int, scan: _HandoffScan, summary: str,

@@ -227,7 +227,7 @@ def read_archive_bytes(key: str) -> bytes:
 def advance_stable(env: dict, release: dict, root: Path) -> dict:
     """Advance one published release from its immutable tag-scoped receipts."""
     creds, base, bucket = r2.credentials()
-    store = R2ChannelStore(creds, base, bucket)
+    R2ChannelStore(creds, base, bucket)
     public_base = r2.public_base_url()
     key = f"releases/tag/{release['claim_tag']}/release-candidates.json"
     digest = hashlib.sha256(read_archive_bytes(key)).hexdigest()

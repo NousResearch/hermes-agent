@@ -3188,7 +3188,7 @@ def edit_config():
         return
 
     print(f"Opening {config_path} in {editor}...")
-    subprocess.run([editor, str(config_path)])
+    subprocess.run([editor, str(config_path)], check=False)
 
 
 def _default_value_for_key(dotted_key: str):

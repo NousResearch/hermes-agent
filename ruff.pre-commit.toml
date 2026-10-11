@@ -55,11 +55,11 @@ select = [
   "ASYNC115",
   "ASYNC116",
   "ASYNC210",
-  #  "ASYNC220",
-  #  "ASYNC221",
+  "ASYNC220",
+  "ASYNC221",
   "ASYNC222",
-  #  "ASYNC230",
-  #  "ASYNC251",
+  "ASYNC230",
+  "ASYNC251",
   #  "S102",
   #  "S110",
   #  "S112",
@@ -276,7 +276,7 @@ select = [
   #  "F821",
   "F822",
   "F823",
-  #  "F841",
+  "F841",
   "F842",
   "F901",
   "PGH005",
@@ -284,9 +284,9 @@ select = [
   "PLC0131",
   "PLC0132",
   "PLC0205",
-  #  "PLC0206",
+  "PLC0206",
   "PLC0208",
-  #  "PLC0414",
+  "PLC0414",
   "PLC3002",
   "PLE0100",
   "PLE0101",
@@ -351,9 +351,9 @@ select = [
   "PLW1501",
   "PLW1507",
   #  "PLW1508",
-  #  "PLW1509",
-  #  "PLW1510",
-  #  "PLW2101",
+  "PLW1509",
+  "PLW1510",
+  "PLW2101",
   "UP001",
   "UP003",
   "UP004",
@@ -454,7 +454,21 @@ select = [
   #  "TRY201",
   #  "TRY203",
   #  "TRY401",
+  "TID251"
 ]
+
+[lint.flake8-tidy-imports.banned-api]
+"pm.uv".msg = "Use PM's semantic Python operations, not an installer executable."
+"pm.client.uv".msg = "Use PM's semantic Python operations."
+"pm.install.uv".msg = "The raw uv bridge was removed; use PM operations."
+"pm._uv".msg = "Tool acquisition is private to PM."
+"pm.environment".msg = "The environment engine is private; use PM operations."
+"pm.runtime_stage".msg = "PM stages its own worker runtime; consumers call pm operations."
+
+[lint.per-file-ignores]
+"apps/desktop/electron/fixtures/**" = ["TID251"]
+"pm/**" = ["TID251"]
+"tests/pm/**" = ["TID251"]
 
 [lint.mccabe]
 max-complexity = 20

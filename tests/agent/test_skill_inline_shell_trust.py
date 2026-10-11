@@ -4,6 +4,8 @@ gate — a ``--force`` or pre-scanner community install must not re-arm them."""
 import json
 from unittest.mock import patch
 
+import pytest
+
 from agent.skill_preprocessing import preprocess_skill_content
 
 CFG = {"inline_shell": True, "inline_shell_timeout": 5}
@@ -77,3 +79,35 @@ def test_slash_invocation_leaves_community_snippet_raw(tmp_path):
     # Executed output would be "Dynamic: SENTINEL"; the gate leaves the raw DSL.
     assert "Dynamic: SENTINEL" not in msg
     assert "!`printf SENTINEL`" in msg
+
+
+def _community_bundle_home(home, lock_text=None):
+    """A profile skills tree holding a --force community bundle with a nested SKILL.md,
+    plus a user-created skill; *lock_text* overrides the lock (corrupt/wrong shape)."""
+    skills = home / "skills"
+    _make_skill(skills, "outer")
+    _make_skill(skills, "outer/agents/inner")
+    _make_skill(skills, "mine")
+    lock = skills / ".hub" / "lock.json"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(lock_text if lock_text is not None else json.dumps({"version": 1, "installed": {
+        "outer": {"trust_level": "community", "install_path": "outer"}}}), encoding="utf-8")
+    return skills
+
+
+@pytest.mark.parametrize("lock_text, viewer, rel, expands", [
+    (None, "owner", "outer/agents/inner", False),  # nested SKILL.md inside a community bundle
+    (None, "other", "outer", False),  # another profile reaching it through external_dirs
+    (None, "other", "outer/agents/inner", False),
+    ('{"version": 1, "inst', "owner", "outer", False),  # truncated lock fails closed
+    ('{"version": 1, "installed": []}', "other", "outer", False),  # wrong shape fails closed
+    (None, "owner", "mine", True),  # user-created skill beside the install keeps the opt-in
+    (None, "other", "mine", True),
+])
+def test_community_provenance_follows_the_owning_lock(tmp_path, lock_text, viewer, rel, expands):
+    owner = _community_bundle_home(tmp_path / "owner", lock_text)
+    active = owner if viewer == "owner" else (tmp_path / "other" / "skills")
+    active.mkdir(parents=True, exist_ok=True)
+    with patch("tools.skills_tool.SKILLS_DIR", active):
+        rendered = preprocess_skill_content(SNIPPET, owner / rel, skills_cfg=dict(CFG))
+    assert rendered == ("Dynamic: SENTINEL" if expands else SNIPPET)

@@ -771,6 +771,7 @@ def test_marked_worker_boots_dependencies_before_cron_jobs(marked):
     child = subprocess.run(
         [sys.executable, "-c", _BOOT_ORDER_PROBE, worker_bootstrap.WORKER_MARKER],
         cwd=repo_root, env=env, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert child.returncode == 0, child.stderr
     result = json.loads(child.stdout.strip().splitlines()[-1])
@@ -832,6 +833,7 @@ def test_relaunch_replays_the_worker_before_its_ack(tmp_path, cause):
         [sys.executable, "-c", _RELAUNCH_PROBE, str(payload), str(ack), str(record),
          worker_bootstrap.WORKER_MARKER, cause],
         cwd=repo_root, env=env, capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert record.exists(), f"worker never relaunched (exit {child.returncode}): {child.stderr}"
     seen = json.loads(record.read_text())

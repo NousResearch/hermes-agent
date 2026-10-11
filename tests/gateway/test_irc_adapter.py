@@ -134,7 +134,6 @@ class TestIRCAdapterMessageParsing:
 
         # Mock handle_message to capture the event
         dispatched = []
-        original_dispatch = adapter._dispatch_message
 
         async def capture_dispatch(**kwargs):
             dispatched.append(kwargs)
@@ -377,7 +376,7 @@ class TestIRCStandaloneSend:
             try:
                 return await coro
             except asyncio.IncompleteReadError:
-                raise asyncio.TimeoutError()
+                raise TimeoutError()
 
         monkeypatch.setattr(_irc_mod.asyncio, "wait_for", _fast_timeout)
 

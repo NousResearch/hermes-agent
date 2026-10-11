@@ -2205,7 +2205,9 @@ def apply_terminal_config_to_env(
 def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, int, int]], Optional[tuple[int, ...]]]:
     """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
     The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
+    the merged result. A missing file signs as (0, 0, 0, 0) too, so a home with no config.yaml
+    caches its defaults instead of rebuilding them on every call; creating the file changes the
+    signature and invalidates. (Every test runs in a fresh home, so this was ~25% of suite time.)"""
     try:
         st = config_path.stat()
         user_sig: Optional[tuple[int, int, int, int]] = file_signature(st)
@@ -2217,8 +2219,6 @@ def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, 
         managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
         managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
-        return None, None
     return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
 
 

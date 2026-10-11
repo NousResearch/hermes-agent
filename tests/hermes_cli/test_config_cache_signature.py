@@ -30,3 +30,16 @@ def test_load_config_sees_replacement_with_pinned_mtime_and_size(tmp_path):
         assert config_mod._load_config_impl(want_deepcopy=False) is first  # unchanged file: cache hit
         _replace_pinning_mtime(cfg, "model:\n  default: bbbb-route\n")
         assert config_mod.load_config()["model"]["default"] == "bbbb-route"
+
+
+def test_load_config_caches_defaults_when_no_config_file_exists(tmp_path):
+    """A home without config.yaml serves cached defaults, and creating the file invalidates them."""
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        config_mod._LOAD_CONFIG_CACHE.clear()
+        config_mod._RAW_CONFIG_CACHE.clear()
+        cfg = tmp_path / "config.yaml"
+        assert not cfg.exists()
+        first = config_mod._load_config_impl(want_deepcopy=False)
+        assert config_mod._load_config_impl(want_deepcopy=False) is first  # no file: still a cache hit
+        cfg.write_text("model:\n  default: created-later\n", encoding="utf-8")
+        assert config_mod.load_config()["model"]["default"] == "created-later"

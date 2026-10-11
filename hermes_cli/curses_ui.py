@@ -435,15 +435,41 @@ _CONSUMED = object()  # ``_route_key`` result: key eaten by the search prompt; r
 _RESOLVING = frozenset({NAV_SELECT, NAV_TOGGLE, NAV_CANCEL, NAV_INTERRUPT, NAV_BACK})
 
 
+def init_color_pairs(curses, palette: Sequence[int]) -> None:
+    """Init pairs 1..N as ``palette[i]`` on the default background.
+
+    Some terminals (Synology DSM ssh, ``TERM=dumb``/unknown) report ``has_colors()`` yet
+    ``COLORS`` of 0 or -1, so ``init_pair`` raises ValueError. Those render uncoloured.
+    """
+    if not curses.has_colors():
+        return
+    curses.start_color()
+    if getattr(curses, "COLORS", 0) <= 0:
+        return
+    try:
+        curses.use_default_colors()
+    except curses.error:
+        return
+    for n, fg in enumerate(palette, 1):
+        try:
+            curses.init_pair(n, fg, -1)
+        except (curses.error, ValueError):
+            pass
+
+
+def dim_color(curses) -> int:
+    """Bright-black when the terminal has 16+ colours, else white."""
+    return 8 if getattr(curses, "COLORS", 0) > 8 else curses.COLOR_WHITE
+
+
 def _init_colors(curses, extra_color_pairs: bool) -> None:
     curses.curs_set(0)
-    if curses.has_colors():
-        curses.start_color()
-        curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_GREEN, -1)
-        curses.init_pair(2, curses.COLOR_YELLOW, -1)
-        if extra_color_pairs:
-            curses.init_pair(3, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)
+    if not curses.has_colors():
+        return
+    palette = [curses.COLOR_GREEN, curses.COLOR_YELLOW]
+    if extra_color_pairs:
+        palette.append(dim_color(curses))
+    init_color_pairs(curses, palette)
 
 
 def _route_key(curses, stdscr, key: int, search: _SearchState, use_search: bool):

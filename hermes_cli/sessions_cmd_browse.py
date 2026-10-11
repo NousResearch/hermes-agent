@@ -194,13 +194,9 @@ class _CursesBrowser:
     def run(self, stdscr):
         c = self.curses
         c.curs_set(0)
-        if c.has_colors():
-            c.start_color()
-            c.use_default_colors()
-            # 1 selected, 2 header, 3 search, 4 dim, 5 error/delete
-            palette = (c.COLOR_GREEN, c.COLOR_YELLOW, c.COLOR_CYAN, 8 if c.COLORS > 8 else c.COLOR_WHITE, c.COLOR_RED)
-            for n, color in enumerate(palette, 1):
-                c.init_pair(n, color, -1)
+        from hermes_cli.curses_ui import dim_color, init_color_pairs
+        # 1 selected, 2 header, 3 search, 4 dim, 5 error/delete
+        init_color_pairs(c, (c.COLOR_GREEN, c.COLOR_YELLOW, c.COLOR_CYAN, dim_color(c), c.COLOR_RED))
         while True:
             stdscr.clear()
             max_y, max_x = stdscr.getmaxyx()

@@ -120,6 +120,106 @@ class TestCredentialFingerprint:
         assert a is not None and b is not None
         assert a != b
 
+    def test_reads_adapter_declared_credential_identity(self):
+        """Email-like adapters keep their credential under attribute names the guard never
+        probes (_address/_password), so the adapter declares its exclusive resource via
+        credential_identity; without it two profiles polled one mailbox with no refusal,
+        doctor finding or status line (#134662)."""
+        import uuid
+
+        class _EmailLike:
+            def __init__(self, address):
+                self._address = address
+                # the guard must key on the address, not the password
+                self._password = uuid.uuid4().hex
+
+            def credential_identity(self):
+                return self._address
+
+        fp1 = GatewayRunner._adapter_credential_fingerprint(
+            _EmailLike("user@example.com")
+        )
+        fp2 = GatewayRunner._adapter_credential_fingerprint(
+            _EmailLike("user@example.com")
+        )
+        fp_other = GatewayRunner._adapter_credential_fingerprint(
+            _EmailLike("other@example.com")
+        )
+
+        assert fp1 is not None and fp1 == fp2  # same mailbox -> conflict detected
+        assert fp1 != fp_other
+        assert "user@example.com" not in fp1  # log-safe, never the raw identity
+        assert GatewayRunner._adapter_credential_fingerprint(_EmailLike("  ")) is None
+
+    def test_declared_identity_none_falls_back_to_probed_attributes(self):
+        """A declared-but-empty identity must not mask a credential the probed names see."""
+
+        class _TokenedWithIdentity:
+            def __init__(self):
+                self.token = "discord-bot-token"
+
+            def credential_identity(self):
+                return None
+
+        fp = GatewayRunner._adapter_credential_fingerprint(_TokenedWithIdentity())
+        assert fp is not None and "discord-bot-token" not in fp
+
+    def test_real_email_adapter_declares_its_mailbox(self):
+        """The real EmailAdapter against the guard: its mailbox is only visible through the
+        credential_identity it now declares (#134662)."""
+        import os
+        import uuid
+        from unittest.mock import patch
+
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        with patch.dict(
+            os.environ,
+            {
+                "EMAIL_ADDRESS": "user@example.com",
+                "EMAIL_PASSWORD": uuid.uuid4().hex,
+                "EMAIL_IMAP_HOST": "imap.example.com",
+                "EMAIL_SMTP_HOST": "smtp.example.com",
+            },
+        ):
+            fp1 = GatewayRunner._adapter_credential_fingerprint(
+                EmailAdapter(PlatformConfig(enabled=True))
+            )
+            fp2 = GatewayRunner._adapter_credential_fingerprint(
+                EmailAdapter(PlatformConfig(enabled=True))
+            )
+
+        assert fp1 is not None and fp1 == fp2
+        assert "user@example.com" not in fp1
+
+    def test_real_email_adapter_identity_is_case_insensitive(self):
+        """User@X.com and user@x.com are one inbox — mail providers treat the domain
+        (and in practice the local part) as case-insensitive — so their fingerprints
+        must collide or two profiles double-poll the same mailbox (#134662)."""
+        import os
+        import uuid
+        from unittest.mock import patch
+
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        def _fp(address: str):
+            with patch.dict(
+                os.environ,
+                {
+                    "EMAIL_ADDRESS": address,
+                    "EMAIL_PASSWORD": uuid.uuid4().hex,
+                    "EMAIL_IMAP_HOST": "imap.example.com",
+                    "EMAIL_SMTP_HOST": "smtp.example.com",
+                },
+            ):
+                return GatewayRunner._adapter_credential_fingerprint(
+                    EmailAdapter(PlatformConfig(enabled=True))
+                )
+
+        assert _fp("User@Example.Com") == _fp("user@example.com")
+
 
 class TestProfileMessageHandler:
     @pytest.mark.asyncio

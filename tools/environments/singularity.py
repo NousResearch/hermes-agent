@@ -78,6 +78,17 @@ def _get_scratch_dir() -> Path:
     return scratch_path
 
 
+def persistent_overlays_root() -> Path:
+    """Root of the persistent overlay tree (``persistent_filesystem=True``).
+
+    Overlays outlive their creating process by design — ``cleanup()`` preserves the
+    dir and registers it in the snapshots map for reuse — so the exit-time orphan
+    sweep in ``tools.terminal_tool_lifecycle`` must never delete this tree. Its
+    lifecycle belongs to this backend, not to any process's teardown.
+    """
+    return _get_scratch_dir() / "hermes-overlays"
+
+
 def _get_apptainer_cache_dir() -> Path:
     cache_dir = os.getenv("APPTAINER_CACHEDIR")
     cache_path = Path(cache_dir) if cache_dir else _get_scratch_dir() / ".apptainer"
@@ -161,7 +172,7 @@ class SingularityEnvironment(BaseEnvironment):
             # A raw session-key task_id carries colons etc. unsafe in host path components;
             # the shared sanitizer keeps all backends agreeing on the mapping.
             self._overlay_dir = (
-                _get_scratch_dir() / "hermes-overlays" / f"overlay-{sanitize_task_id_for_path(task_id)}")
+                persistent_overlays_root() / f"overlay-{sanitize_task_id_for_path(task_id)}")
             self._overlay_dir.mkdir(parents=True, exist_ok=True)
 
         self._start_instance()

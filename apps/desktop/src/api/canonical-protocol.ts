@@ -111,9 +111,11 @@ function canonicalBotDelivery(params: Record<string, unknown>): Record<string, u
 }
 
 // The legacy `prompt.submit` truncation keys (edit / regenerate / restore). The owner has no such
-// keys: the cut is a revision-fenced `rewind` mutation on the user row, then a plain submit.
-const TRUNCATE_KEYS = ['confirm_truncate', 'confirm_empty_truncate', 'truncate_before_row_id', 'truncate_before_message_id',
-  'truncate_before_user_ordinal', 'rebind_survivor_row_ids']
+// keys: the cut is a revision-fenced `rewind` mutation on the user row, then a plain submit. The
+// deep-cut confirm (#133716) guards the legacy sidecar's implicit cut; the owner's rewind names its
+// row explicitly and the user already confirmed before Desktop sent it, so it is dropped here too.
+const TRUNCATE_KEYS = ['confirm_truncate', 'confirm_empty_truncate', 'confirm_deep_truncate', 'truncate_before_row_id',
+  'truncate_before_message_id', 'truncate_before_user_ordinal', 'rebind_survivor_row_ids']
 
 export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Record<string, unknown> | null; submit: Record<string, unknown> } | null {
   if (!TRUNCATE_KEYS.some(key => key in params)) { return null }

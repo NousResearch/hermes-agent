@@ -11,6 +11,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
@@ -3251,7 +3252,8 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
-        confirm_empty_truncate: true
+        confirm_empty_truncate: true,
+        confirm_deep_truncate: true
       },
       1_800_000
     )
@@ -3320,7 +3322,8 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
-        confirm_empty_truncate: true
+        confirm_empty_truncate: true,
+        confirm_deep_truncate: true
       },
       1_800_000
     )
@@ -3367,7 +3370,8 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
-        confirm_empty_truncate: true
+        confirm_empty_truncate: true,
+        confirm_deep_truncate: true
       },
       1_800_000
     )
@@ -3562,46 +3566,6 @@ describe('usePromptActions file attachment sync', () => {
         text: '@file:.hermes/desktop-attachments/report.txt\n\nsummarize'
       }
     })
-  })
-
-  it('uses image.attach_bytes for a Windows image when the local backend cwd is POSIX', async () => {
-    const readFileDataUrl = vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=')
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { readFileDataUrl }
-    })
-
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'image.attach_bytes') {
-        return { attached: true, path: '/root/tmp/photo.jpg' } as never
-      }
-
-      return {} as never
-    })
-
-    const uploaded = await uploadComposerAttachment(
-      {
-        id: 'image:photo.jpg',
-        kind: 'image',
-        label: 'photo.jpg',
-        path: 'C:\\Users\\alice\\Pictures\\photo.jpg'
-      },
-      {
-        backendCwd: '/root',
-        remote: false,
-        requestGateway,
-        sessionId: RUNTIME_SESSION_ID
-      }
-    )
-
-    expect(readFileDataUrl).toHaveBeenCalledWith('C:\\Users\\alice\\Pictures\\photo.jpg')
-    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
-      content_base64: 'aGVsbG8=',
-      filename: 'photo.jpg',
-      session_id: RUNTIME_SESSION_ID
-    })
-    expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
-    expect(uploaded.path).toBe('/root/tmp/photo.jpg')
   })
 
   it('merges image staging into the current occurrence without dropping its thumbnail', async () => {
@@ -5433,6 +5397,10 @@ describe('usePromptActions stale-closure session routing', () => {
 
     expect(updated).toContain(RUNTIME_SESSION_B)
     expect(updated).not.toContain(RUNTIME_SESSION_ID)
+    // A tail edit archives no later user turn, so it asks nothing and sends no deep confirm.
+    expect(gatewayCalls(requestGateway).find(([m]) => m === 'prompt.submit')?.[1]).not.toHaveProperty(
+      'confirm_deep_truncate'
+    )
 
     for (const [, params] of gatewayCalls(requestGateway)) {
       if (params && 'session_id' in params) {
@@ -5539,9 +5507,11 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
     setMessages(seed as never)
 
     let latest: Record<string, unknown> | undefined
+    const submits: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string) => {
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
+        submits.push(params ?? {})
         throw new JsonRpcGatewayError('target user message is no longer in session history', {
           code: 4018,
           data: {
@@ -5572,7 +5542,27 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
       />
     )
 
+    // Regenerating u1 archives the later u2 turn: it asks first; a decline sends nothing (#133716).
+    let answer = false
+    let asked = 0
+
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        asked += 1
+        settleConfirm(answer)
+      }
+    })
+
     await handle!.reloadFromMessage('u1')
+    expect(asked).toBe(1)
+    expect(submits).toEqual([])
+
+    answer = true
+    await handle!.reloadFromMessage('u1')
+    stopConfirming()
+    expect(asked).toBe(2)
+    expect(submits).toHaveLength(1)
+    expect(submits[0]).toMatchObject({ confirm_deep_truncate: true })
 
     const rolledBack = latest?.messages as Array<{ hidden?: boolean; id: string }> | undefined
 

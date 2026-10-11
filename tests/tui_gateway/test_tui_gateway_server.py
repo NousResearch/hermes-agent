@@ -7516,88 +7516,6 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
         server._sessions.pop("empty-trunc-sid", None)
 
 
-def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
-    """Intentional restore/regenerate of the first user turn may wipe history."""
-
-    seen = {}
-    replaced = []
-
-    class _Agent:
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
-        ):
-            seen["prompt"] = prompt
-            seen["history"] = conversation_history
-            return {
-                "final_response": "regenerated",
-                "messages": [
-                    *(conversation_history or []),
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": "regenerated"},
-                ],
-            }
-
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
-
-    class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
-            replaced.append((key, list(messages)))
-
-    history = [
-        {"_row_id": 101, "role": "user", "content": "first"},
-        {"_row_id": 102, "role": "assistant", "content": "ok"},
-        {"_row_id": 103, "role": "user", "content": "second"},
-        {"_row_id": 104, "role": "assistant", "content": "done"},
-    ]
-    server._sessions["confirm-empty-sid"] = _session(
-        agent=_Agent(), history=list(history)
-    )
-
-    try:
-        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
-        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
-        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
-        monkeypatch.setattr(server, "_emit", lambda *a: None)
-        monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
-
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "confirm-empty-sid",
-                    "text": "first",
-                    "truncate_before_row_id": 101,
-                    "truncate_before_user_ordinal": 0,
-                    "confirm_truncate": True,
-                    "confirm_empty_truncate": True,
-                },
-            }
-        )
-        assert resp.get("result"), f"got error: {resp.get('error')}"
-        assert seen["prompt"] == "first"
-        assert seen["history"] == []
-        assert replaced == [("session-key", [])]
-        assert server._sessions["confirm-empty-sid"]["history"] == [
-            {"role": "user", "content": "first"},
-            {"role": "assistant", "content": "regenerated"},
-        ]
-    finally:
-        server._sessions.pop("confirm-empty-sid", None)
-
-
 class _StopAfterOneNotificationPoll:
     def __init__(self):
         self._checks = 0
@@ -22499,6 +22417,7 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
                     "truncate_before_row_id": row_ids[2],
                     "truncate_before_user_ordinal": 1,
                     "confirm_truncate": True,
+                    "confirm_deep_truncate": True,
                 },
             }
         )

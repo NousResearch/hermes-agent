@@ -147,6 +147,12 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     ['session.mutate', 'prompt.submit']
   ],
   [
+    'rewind.ts deep edit / regenerate (confirm_deep_truncate, #133716)',
+    'prompt.submit',
+    { session_id: 's', text: 'again', confirm_truncate: true, truncate_before_row_id: 9, confirm_deep_truncate: true },
+    ['session.mutate', 'prompt.submit']
+  ],
+  [
     'use-prompt-actions /handoff',
     'handoff.request',
     { session_id: 's', platform: 'telegram' },

@@ -102,7 +102,13 @@ class HostRecord:
     #: Stable process-start fingerprint. On Linux/WSL this is boot-relative /proc start ticks,
     #: so a wall-clock resync cannot make a live owner look like a recycled PID. Optional for
     #: records written by older Hermes versions, which still fall back to create_time.
+    #: NOT unique across reboots — pair it with ``boot_epoch``.
     start_time: Optional[int] = None
+    #: Instantiation epoch (boot id + PID 1 start). Distinguishes a pre-reboot owner from an
+    #: early-boot process that reused its PID and landed inside the start-tick drift tolerance.
+    #: Absent on older records; added WITHOUT a protocol bump, because a bump would make every
+    #: live owner's record read as stale and a second gateway would start.
+    boot_epoch: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -111,6 +117,7 @@ class HostRecord:
             "pid": self.pid,
             "createTime": self.create_time,
             "startTime": self.start_time,
+            "bootEpoch": self.boot_epoch,
             "host": self.host,
             "port": self.port,
             "protocolVersion": self.protocol_version,
@@ -141,6 +148,7 @@ class HostRecord:
                 if isinstance(start, int) and not isinstance(start, bool) and start > 0
                 else None
             ),
+            boot_epoch=str(payload.get("bootEpoch") or ""),
             host=str(payload.get("host") or ""),
             port=int(port) if isinstance(port, int) and 0 < port <= 65535 else None,
             protocol_version=version if isinstance(version, int) else 0,
@@ -236,22 +244,64 @@ def _pid_incarnation_matches(pid: int, create_time: Optional[float]) -> Optional
     return _pid_alive_matches(pid, create_time)
 
 
+# Wall-clock create_time drifts by seconds on WSL (#117505). A reboot moves it by minutes
+# and resets boot-relative start ticks, so a tick match within START_TIME_DRIFT_TOLERANCE
+# after reboot is a recycled early PID, not the owner. 120s is far outside that drift and
+# inside every reboot gap that has actually wedged a supervised gateway.
+_LEGACY_CREATE_TIME_REBOOT_GAP_S = 120.0
+
+
+def _current_boot_epoch() -> str:
+    """Identity of this boot. Empty when /proc is unreadable — then the check is a no-op."""
+    try:
+        from gateway.drain_control import current_instantiation_epoch
+
+        return current_instantiation_epoch() or ""
+    except Exception:
+        logger.debug("boot epoch unreadable; host liveness will not use it", exc_info=True)
+        return ""
+
+
 def _record_incarnation_matches(record: HostRecord) -> Optional[bool]:
     """Whether the record still names the same live process incarnation.
 
     New records prefer the canonical start fingerprint: on Linux/WSL it comes from /proc start
-    ticks and is immune to wall-clock shifts that move psutil.create_time(). Legacy records keep
-    the create-time check until their owner republishes them.
+    ticks and is immune to wall-clock shifts that move psutil.create_time(). Those ticks are
+    NOT unique across reboots — they reset, and an early-boot PID reused within the drift
+    tolerance looks like the dead owner. A published boot epoch, or (for legacy records with
+    no epoch) a create_time gap past reboot scale, is a mismatch. Empty epoch is a no-op so
+    macOS and pre-upgrade records are not false-staled. Do not infer identity from argv.
+    Legacy records without a start fingerprint keep the create-time check.
     """
+    recorded_epoch = getattr(record, "boot_epoch", "") or ""
+    epoch = _current_boot_epoch()
+    if recorded_epoch and epoch and recorded_epoch != epoch:
+        return False
     if record.start_time is None:
-        return _pid_incarnation_matches(record.pid, record.create_time)
-    alive = _pid_incarnation_matches(record.pid, None)
-    if alive is not True:
-        return alive
-    from gateway.status import get_process_start_time, start_time_fingerprints_match
+        matched = _pid_incarnation_matches(record.pid, record.create_time)
+    else:
+        alive = _pid_incarnation_matches(record.pid, None)
+        if alive is not True:
+            return alive
+        from gateway.status import get_process_start_time, start_time_fingerprints_match
 
-    current = get_process_start_time(record.pid)
-    return None if current is None else start_time_fingerprints_match(record.start_time, current)
+        current = get_process_start_time(record.pid)
+        matched = None if current is None else start_time_fingerprints_match(record.start_time, current)
+    if matched is not True:
+        return matched
+    if (
+        record.role == ROLE_GATEWAY
+        and not recorded_epoch
+        and record.start_time is not None
+        and record.create_time is not None
+    ):
+        live_create = process_create_time(record.pid)
+        if (
+            live_create is not None
+            and abs(float(live_create) - float(record.create_time)) > _LEGACY_CREATE_TIME_REBOOT_GAP_S
+        ):
+            return False
+    return True
 
 
 def record_is_stale(record: Optional[HostRecord]) -> bool:
@@ -485,6 +535,7 @@ def publish_record(
         pid=os.getpid(),
         create_time=process_create_time(),
         start_time=get_process_start_time(os.getpid()),
+        boot_epoch=_current_boot_epoch(),
         host=str(host or ""),
         port=int(port) if isinstance(port, int) and port > 0 else None,
         protocol_version=HOST_PROTOCOL_VERSION,

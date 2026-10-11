@@ -68,6 +68,7 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 
 import type { ClientSessionState } from '../../../types'
 
+import { insertLivePrompt, liveTurnUserMessages } from './live-prompt-chronology'
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
@@ -1216,34 +1217,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
 
   const sessionId = projection.session_id || 'session'
   const projected: ChatMessage[] = []
-  // A turn normally persists its user row before inference begins. session.resume
-  // then returns that stored row *and* the still-live inflight projection; adding
-  // both makes a backgrounded prompt appear twice when its session is reopened.
-  // Only suppress the projection when the latest authoritative user row is the
-  // same turn — older identical prompts must not hide a newly accepted repeat.
-  // A mid-turn redirect gives that turn a RUN of user rows (prompt +
-  // corrections). Arrival order seals already-streamed output BETWEEN those
-  // rows (#73793), so collect the run by walking back over the live tail:
-  // user rows count, live-tail assistant rows are skipped, and a committed
-  // assistant reply ends the turn.
-  const latestUserIndex = messages.map(message => message.role).lastIndexOf('user')
-  const latestUserRun: ChatMessage[] = []
-
-  for (let index = latestUserIndex; index >= 0; index -= 1) {
-    const candidate = messages[index]
-
-    if (candidate.role === 'user') {
-      latestUserRun.unshift(candidate)
-
-      continue
-    }
-
-    if (candidate.role === 'assistant' && isLiveTailRow(candidate)) {
-      continue
-    }
-
-    break
-  }
+  const latestUserRun = liveTurnUserMessages(messages, projection.turn_started_at)
 
   const persistedInLatestRun = (text: string): boolean =>
     latestUserRun.some(
@@ -1271,7 +1245,11 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       }
     ])
 
-    projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
+    messages = insertLivePrompt(
+      messages,
+      typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })),
+      projection.turn_started_at
+    )
   }
 
   // Keep a pending assistant boundary even before the first delta when a
@@ -1283,6 +1261,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // thinking as answer text and sandwiches the structured parts (#76444).
   // Only inspect the live tail after the latest user run — never a completed
   // historical tool-bearing reply earlier in the transcript (review feedback).
+  const latestUserIndex = messages.map(message => message.role).lastIndexOf('user')
   const liveStreamId = `assistant-stream-${sessionId}`
 
   const liveAssistantOfCurrentTurn = ((): ChatMessage | null => {

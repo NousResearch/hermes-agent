@@ -1,4 +1,4 @@
-import { registryBackendScopeKey } from '@hermes/shared'
+import { type GatewayEventName, registryBackendScopeKey } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
@@ -21,6 +21,7 @@ import {
   type SessionResumeResult,
   setSessionArchived
 } from '@/hermes'
+import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -108,6 +109,7 @@ import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unre
 import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 import { $retainedTodosBySession, $todosBySession, clearSessionTodos } from '@/store/todos'
 import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
+import type { SessionMessage } from '@/types/hermes'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -115,6 +117,7 @@ import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { pinnedOwnerCount, pinnedStoredSessionIdsForOwner, releaseStoredSessionPins } from './session-context-drift'
+import { renderMessageStream } from './use-message-stream/test-harness'
 import { applySessionInfoStatePatch, sessionInfoStatePatch } from './use-message-stream/utils'
 import { captureSteeringSession } from './use-prompt-actions/steering-session'
 import { useSessionActions } from './use-session-actions'
@@ -4390,6 +4393,199 @@ describe('resumeSession warm-cache mapping integrity', () => {
     })
     await resumePromise
     expect($messages.get()).toBe(paintedTranscript)
+  })
+
+  it.each(['cold', 'warm'] as const)(
+    'keeps the live prompt before its output across a task-restore boundary on %s resume',
+    async mode => {
+      const sid = 'rt-A'
+      const prompt = 'Investigate the chronology.'
+      const restoredTasks = '[Your active task list was preserved across context compression]'
+
+      const rows: SessionMessage[] = [
+        { id: 1, role: 'user', content: prompt, timestamp: 101 },
+        {
+          id: 2,
+          role: 'assistant',
+          content: 'Inspecting the first output.',
+          timestamp: 102,
+          tool_calls: [{ id: 'read', type: 'function', function: { name: 'read_file', arguments: '{}' } }]
+        },
+        { id: 3, role: 'tool', content: 'read', tool_call_id: 'read', timestamp: 103 },
+        { id: 4, role: 'user', content: restoredTasks, timestamp: 104 }
+      ]
+
+      setSessions([storedSession({ id: 'stored-A', message_count: rows.length })])
+      const states = new Map([[sid, { ...clientState('stored-A'), messages: toChatMessages(rows) }]])
+      const stream = renderMessageStream(null, { states })
+
+      const send = (type: GatewayEventName, payload: Record<string, unknown> = {}) =>
+        act(() => stream.handleEvent({ type, payload, session_id: sid }))
+
+      await send('message.start')
+      await send('tool.start', { name: 'terminal', tool_id: 'live-only', args: {} })
+      const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+      vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+      const requestGateway = vi.fn(
+        async () =>
+          ({
+            session_id: sid,
+            session_key: 'stored-A',
+            resumed: 'stored-A',
+            messages: rows,
+            running: true,
+            turn_started_at: 100,
+            info: {},
+            inflight: { user: prompt, assistant: '', streaming: true }
+          }) as never
+      )
+
+      let resume!: Parameters<Parameters<typeof ResumeHarness>[0]['onReady']>[0]
+      render(
+        <ResumeHarness
+          onReady={ready => (resume = ready)}
+          requestGateway={requestGateway}
+          runtimeIdByStoredSessionIdRef={{ current: new Map(mode === 'warm' ? [['stored-A', sid]] : []) }}
+          sessionStateByRuntimeIdRef={{ current: states }}
+        />
+      )
+      let refreshing!: Promise<unknown>
+      await act(async () => {
+        refreshing = resume('stored-A', true)
+      })
+      await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+      await send('tool.complete', {
+        name: 'terminal',
+        tool_id: 'live-only',
+        result: 'verified',
+        duration_s: 1.25
+      })
+      await act(async () => {
+        persisted.resolve({ session_id: 'stored-A', messages: rows })
+        await refreshing
+      })
+      const messages = states.get(sid)!.messages
+      expect(messages.filter(message => message.role === 'user').map(chatMessageText)).toEqual([prompt, restoredTasks])
+      expect(messages.findIndex(message => chatMessageText(message) === prompt)).toBeLessThan(
+        messages.findIndex(message =>
+          message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'read')
+        )
+      )
+      expect(messages.flatMap(message => message.parts).filter(part => part.type === 'tool-call')).toEqual([
+        expect.objectContaining({ toolCallId: 'read', result: 'read' }),
+        expect.objectContaining({
+          toolCallId: 'live-only',
+          result: 'verified',
+          completedAt: expect.any(Number),
+          toolResultMetadata: expect.objectContaining({ duration_s: 1.25 })
+        })
+      ])
+      await send('message.delta', { text: 'Finished the check.' })
+      await send('message.complete', { text: 'Finished the check.' })
+      expect(
+        states
+          .get(sid)!
+          .messages.filter(message => message.role === 'user')
+          .map(chatMessageText)
+      ).toEqual([prompt, restoredTasks])
+    }
+  )
+
+  it.each([
+    { mode: 'cold', kind: 'queued', rest: 'available' },
+    { mode: 'warm', kind: 'queued', rest: 'available' },
+    { mode: 'warm', kind: 'optimistic', rest: 'empty' },
+    { mode: 'warm', kind: 'optimistic', rest: 'failed' }
+  ] as const)('keeps one pre-turn-clock $kind prompt on $mode resume with $rest REST', async ({ mode, kind, rest }) => {
+    const sid = 'rt-A'
+
+    const rows: SessionMessage[] = [
+      { id: 10, role: 'user', content: 'Check.', timestamp: 99.99 },
+      { id: 11, role: 'assistant', content: 'Working.', timestamp: 101 }
+    ]
+
+    const cached = toChatMessages(kind === 'queued' ? rows : rows.slice(0, 1))
+
+    if (kind === 'optimistic') {
+      // Submit acknowledgement binds the row id without replacing client send time.
+      cached[0] = { ...cached[0], id: 'user-optimistic' }
+    }
+
+    setSessions([storedSession({ id: 'stored-A', message_count: rows.length })])
+    const states = new Map([[sid, { ...clientState('stored-A'), messages: cached }]])
+    const stream = renderMessageStream(null, { states })
+
+    const send = (type: GatewayEventName, payload: Record<string, unknown> = {}) =>
+      act(() => stream.handleEvent({ type, payload, session_id: sid }))
+
+    if (kind === 'optimistic') {
+      await send('message.start')
+      await send('tool.start', { name: 'terminal', tool_id: 'live', args: {} })
+      await send('tool.complete', { name: 'terminal', tool_id: 'live', result: 'ok' })
+      await send('message.delta', { text: 'Working.' })
+    }
+
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(
+      async () =>
+        ({
+          session_id: sid,
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          messages: kind === 'queued' ? rows : [],
+          messages_omitted: kind === 'optimistic',
+          running: true,
+          turn_started_at: 100,
+          info: {},
+          inflight: { user: 'Check.', assistant: 'Working.', streaming: true }
+        }) as never
+    )
+
+    let resume!: Parameters<Parameters<typeof ResumeHarness>[0]['onReady']>[0]
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onViewSync={(_sessionId, state) => setMessages(state.messages)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={{ current: new Map(mode === 'warm' ? [['stored-A', sid]] : []) }}
+        sessionStateByRuntimeIdRef={{ current: states }}
+      />
+    )
+    let refreshing!: Promise<unknown>
+    await act(async () => {
+      refreshing = resume('stored-A', true)
+    })
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+    await act(async () => {
+      if (rest === 'failed') {
+        persisted.reject(new Error('History unavailable'))
+      } else {
+        persisted.resolve({ session_id: 'stored-A', messages: rest === 'empty' ? [] : rows })
+      }
+
+      await refreshing
+    })
+
+    const messages = states.get(sid)!.messages
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant'])
+    expect(messages.map(chatMessageText)).toEqual(['Check.', 'Working.'])
+    expect(messages[0]).toMatchObject({ id: cached[0].id, rowId: 10, timestamp: 99.99 })
+    expect($messages.get().map(chatMessageText)).toEqual(['Check.', 'Working.'])
+
+    if (kind === 'optimistic') {
+      await send('message.complete', { text: 'Working.' })
+      expect(states.get(sid)!.messages.map(chatMessageText)).toEqual(['Check.', 'Working.'])
+      expect(states.get(sid)!.messages.some(message => message.pending)).toBe(false)
+      expect(
+        states
+          .get(sid)!
+          .messages.flatMap(message => message.parts)
+          .filter(part => part.type === 'tool-call')
+      ).toEqual([expect.objectContaining({ toolCallId: 'live', result: 'ok' })])
+    }
   })
 
   it('honours a warm cache entry whose stored id matches and refreshes its persisted transcript', async () => {

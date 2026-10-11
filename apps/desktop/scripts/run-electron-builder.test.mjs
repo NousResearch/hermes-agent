@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
 import { recordNativeInputs } from './prepared-native-deps.mjs'
+import { productOutput } from '../../../scripts/build/frontend-common.mjs'
 
 test('validate-only admits real prepared inputs without launching tools and rejects unsafe arguments', async () => {
   const source = path.resolve(import.meta.dirname, '../../..')
@@ -57,6 +58,21 @@ test('source multiarch prepares isolated native and packaging inputs before each
   assert.equal(calls.filter(args => args[0].endsWith('run-electron-builder.mjs')).length, 1)
   assert.throws(() => runElectronBuilder(['--mac', '--universal'], { spawn }), /No prepared universal native payload/)
   assert.equal(runElectronBuilder(['--mac', '--x64', '--arm64'], { spawn: () => ({ status: 7 }) }), 7)
+})
+
+test('source native destinations pass the real output guard for explicit and implicit targets', () => {
+  for (const flags of [[], ['--mac', '--arm64'], ['--mac', '--x64', '--arm64'], ['--linux', '--x64'], ['--win', '--arm64']]) {
+    const spawn = (_node, args) => {
+      if (args[0].endsWith('stage-native-deps.mjs')) {
+        const source = args[args.indexOf('--source') + 1]
+        const out = args[args.indexOf('--out') + 1]
+        // Exercise the staging boundary, rather than freezing a directory name.
+        assert.equal(productOutput(source, out, []).out, path.resolve(out))
+      }
+      return { status: 0 }
+    }
+    assert.equal(runElectronBuilder([...flags, '--dir'], { spawn }), 0)
+  }
 })
 
 test('strict builder refuses absent inputs before loading electron-builder', () => {

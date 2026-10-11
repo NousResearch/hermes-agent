@@ -291,5 +291,29 @@ class TestPatchStaleness(unittest.TestCase):
 
 
 
+class TestFileVersionSourceConsistency(unittest.TestCase):
+    """_file_version must stay computable and comparable with _file_metadata.
+
+    Regression: on Windows, os.stat() and os.fstat() report st_ctime_ns from
+    different sources, so the old fstat-vs-stat compare returned None for every
+    file, stamping full reads as partial and refusing write_file forever.
+    """
+
+    def test_version_round_trips_against_file_metadata(self):
+        from tools.file_tools_read_tracking import _file_metadata, _file_version
+
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
+            fh.write("some content\n")
+            path = fh.name
+        try:
+            version = _file_version(path)
+            self.assertIsNotNone(version, "file version must be computable")
+            self.assertEqual(
+                version[:-1], _file_metadata(path),
+                "version metadata must compare equal to _file_metadata() output")
+        finally:
+            os.unlink(path)
+
+
 if __name__ == "__main__":
     unittest.main()

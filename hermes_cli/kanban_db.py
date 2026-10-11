@@ -1668,22 +1668,9 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
 
 def task_graph_contexts(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, dict]:
     """Bulk-load compact direct graph state for graph-aware diagnostics."""
-    ordered_ids = list(dict.fromkeys(str(task_id) for task_id in task_ids if task_id))
-    contexts = {task_id: {"parents": [], "children": []} for task_id in ordered_ids}
-    if not ordered_ids:
-        return contexts
+    from hermes_cli.kanban_db_diagnostics import task_graph_contexts as load_contexts
 
-    placeholders = ",".join("?" for _ in ordered_ids)
-    for bucket, own, other in (("parents", "child_id", "parent_id"), ("children", "parent_id", "child_id")):
-        for row in conn.execute(
-            f"SELECT l.{own} AS owner_id, t.id, t.title, t.status "
-            f"FROM task_links l JOIN tasks t ON t.id = l.{other} "
-            f"WHERE l.{own} IN ({placeholders}) ORDER BY l.{own}, t.id", tuple(ordered_ids),
-        ).fetchall():
-            contexts[row["owner_id"]][bucket].append(
-                {"id": row["id"], "title": row["title"], "status": row["status"]}
-            )
-    return contexts
+    return load_contexts(conn, task_ids)
 
 
 def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict:

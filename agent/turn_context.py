@@ -294,11 +294,19 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
     scaffolding, not the active ask.
     """
     from agent.context_compressor import user_originated_turn_view
+    from agent.prompt_builder import STEER_DISPLAY_KIND
 
     fallback = -1
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
+            continue
+        # A typed /steer row is a mid-turn correction, never this turn's opening
+        # ask. When no exact match survives (e.g. alternation repair merged a
+        # model_switch marker into the prompt row after a model change), the
+        # fallback must not anchor on it or the #48677 persist override
+        # overwrites the correction's content with the opening prompt (#132165).
+        if msg.get("display_kind") == STEER_DISPLAY_KIND:
             continue
         # Typed synthetic current events keep their persistence anchor when raw
         # content is unchanged; not eligible for the human-only fallback below.

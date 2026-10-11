@@ -333,7 +333,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert calls[1][0] == "/Create"
     assert "/XML" in calls[1]
     assert "/SC" not in calls[1]
-    assert "<Delay>PT30S</Delay>" in xml_seen["text"]
+    assert "<Delay>PT5S</Delay>" in xml_seen["text"]
     assert "<StartWhenAvailable>true</StartWhenAvailable>" in xml_seen["text"]
     assert "<StopOnIdleEnd>false</StopOnIdleEnd>" in xml_seen["text"]
     assert "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in xml_seen["text"]
@@ -651,6 +651,34 @@ def test_scheduled_task_drift_is_silent_when_aligned_or_unqueryable(monkeypatch)
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
     gateway_windows._print_scheduled_task_drift("Hermes_Gateway")
     assert printed == []
+
+
+def test_scheduled_task_drift_names_a_stale_logon_delay(monkeypatch):
+    """A registration whose only mismatch is an outdated ``LogonTrigger/Delay`` value is reported
+    through the *equality* branch (``live[path] != want[path]``), not the ``missing:`` one — the
+    fixture below carries the leaf with the OLD value instead of omitting it. Every other drift leaf
+    is aligned, so the fragment list is exactly the one stale delay."""
+    launcher = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    # Same tree as the current template, but registered before the delay was shortened: the leaf is
+    # PRESENT (so it is not "missing") and merely differs.
+    assert f"<Delay>{gateway_windows._TASK_LOGON_DELAY}</Delay>" in template
+    stale = template.replace(
+        f"<Delay>{gateway_windows._TASK_LOGON_DELAY}</Delay>",
+        "<Delay>PT30S</Delay>",
+    )
+    assert stale != template
+
+    drift = gateway_windows.compare_scheduled_task_drift(stale, template)
+    assert drift == ["LogonTrigger Delay differs"]
+
+    printed: list[str] = []
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (0, stale if "/XML" in args else "", ""))
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: launcher.with_suffix(".cmd"))
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    gateway_windows._print_scheduled_task_drift("Hermes_Gateway")
+    assert printed[0].startswith("⚠ Scheduled Task registration predates the current template (LogonTrigger Delay differs)")
 
 
 def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_path):

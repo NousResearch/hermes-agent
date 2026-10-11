@@ -33,7 +33,7 @@ _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
 _LIST_GATEWAY_UNITS = [
-    "list-units", "hermes-gateway*", "hermes-serve*", "hermes-dashboard*",
+    "list-units", "hermes-gateway*", "hermes-serve*", "hermes-dashboard*", "hermes-webui*",
     "--plain", "--no-legend", "--no-pager",
 ]
 
@@ -562,7 +562,7 @@ def _unit_main_pid(scope_cmd: list, svc_name: str) -> int:
 
 
 def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
-    """Restart every hermes-gateway/serve unit ONCE PER LIVE HOST PROCESS.
+    """Restart every Hermes gateway/serve/dashboard/webui unit ONCE PER LIVE HOST PROCESS.
 
     One host runs one multiplexing gateway, so leftover per-profile units
     (``hermes-gateway-<profile>.service``) all point at the SAME live ``MainPID``; restarting
@@ -737,8 +737,7 @@ def _is_hermes_gateway_unit(unit: str) -> bool:
     """Exact base unit or hyphenated profile family only: ``startswith("hermes-serve")``
     would accept ``hermes-server.service``."""
     return (
-        # list-units is already pattern-filtered, but keep the name gate so a stray non-gateway/serve line
-        # cannot enter the restart path. See #83595.
+        # Reject unrelated service families even when list-units is pattern-filtered. See #83595.
         unit == "hermes-gateway.service"
         or unit.startswith("hermes-gateway-")
         or unit == "hermes-serve.service"
@@ -748,11 +747,13 @@ def _is_hermes_gateway_unit(unit: str) -> bool:
         # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
         or unit == "hermes-dashboard.service"
         or unit.startswith("hermes-dashboard-")
+        or unit == "hermes-webui.service"
+        or unit.startswith("hermes-webui-")
     )
 
 
 def _for_each_systemd_gateway_unit(list_units_stdout: str, *, process_unit, on_unit_timeout) -> None:
-    """Process each hermes-gateway*/hermes-serve* unit from ``systemctl list-units``.
+    """Process each Hermes gateway/serve/dashboard/webui unit from ``systemctl list-units``.
 
     ``TimeoutExpired`` from ``process_unit`` is isolated per unit via ``on_unit_timeout``
     so one wedged systemctl call cannot abort the rest of the fleet.
@@ -776,10 +777,11 @@ def _for_each_systemd_gateway_unit(list_units_stdout: str, *, process_unit, on_u
 def _service_unit_supports_graceful_sigusr1_restart(svc_name: str) -> bool:
     """Whether *svc_name* wires SIGUSR1 to a graceful drain-then-restart.
 
-    Only ``hermes-gateway*`` runs ``gateway/run.py`` (the handler); SIGUSR1 would just
-    kill ``hermes-serve*`` and burn the drain budget, so those go straight to the blunt
-    restart. Same exact/hyphenated shape as ``_for_each_systemd_gateway_unit`` so a
-    near-prefix unit like ``hermes-gatewayd`` is never signalled.
+    Only ``hermes-gateway*`` runs ``gateway/run.py`` (the graceful handler). Serve,
+    dashboard and WebUI units go straight to blunt restart because their SIGUSR1
+    semantics are not a gateway drain. The exact/hyphenated shape matches
+    ``_for_each_systemd_gateway_unit`` so a near-prefix unit like ``hermes-gatewayd``
+    is never signalled.
 
     See #83438.
     """
@@ -1228,7 +1230,7 @@ def _restart_one_systemd_gateway_unit(
     svc_name: str, *, scope: str, scope_cmd: list, drain_budget: float, _manage_cmd_cache: dict,
     restarted_services: list, failed_or_stale_units: list, self_restart_pending: set | None = None,
 ) -> None:
-    """Restart one active systemd gateway/serve unit: graceful SIGUSR1 drain, then forced restart.
+    """Restart one active Hermes unit; only gateways attempt graceful SIGUSR1 drain.
 
     Appends settled names to ``restarted_services`` and failures to ``failed_or_stale_units``.
     """
@@ -1244,7 +1246,7 @@ def _restart_one_systemd_gateway_unit(
     _manage_cmd = _resolve_manage_cmd(_manage_cmd_cache, scope, scope_cmd, svc_name)
 
     # Graceful SIGUSR1 first so in-flight runs drain: handler → request_restart(via_service=True)
-    # → drain → exit, Restart=always respawns. hermes-serve has no handler → blunt restart below.
+    # → drain → exit, Restart=always respawns. Other unit families use blunt restart below.
     _main_pid = 0
     if _service_unit_supports_graceful_sigusr1_restart(svc_name):
         try:
@@ -1335,7 +1337,7 @@ def _restart_one_systemd_gateway_unit(
 def _restart_systemd_gateway_units(
     restarted_services, failed_or_stale_units, restarted_scoped_units, drain_budget, self_restart_pending=None,
 ):
-    """Restart every active hermes-gateway*/hermes-serve* systemd unit (user + system).
+    """Restart active Hermes gateway/serve/dashboard/webui units (user + system).
 
     Settled units → ``restarted_services`` (bare) and ``restarted_scoped_units``
     (``scope/name``); failures → ``failed_or_stale_units``. Per-unit timeouts isolated.

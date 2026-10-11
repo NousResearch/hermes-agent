@@ -77,8 +77,9 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.matrix.media_inbound import classify_inbound_media, declared_media_filename
 from gateway.platforms.helpers import ThreadParticipationTracker
-from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
+from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, is_voice_event
 
 logger = logging.getLogger(__name__)
 
@@ -2230,7 +2231,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.warning("[Matrix] Rejecting inbound encrypted media %s with non-MXC URL", event_id)
                 return
         is_encrypted_media = bool(file_content and isinstance(file_content, dict) and file_content.get("url"))
-        msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
+        msg_type, media_type, is_voice_message = classify_inbound_media(msgtype, event_mimetype, source_content)
         # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
         # non-allowlisted room must not pull media onto the host only to drop it.
         # First await: mark a voice that may park in-flight so a concurrent bare mention waits for it.
@@ -2251,7 +2252,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 cached_path = await self._download_and_cache_media(
                     url, event_id, file_content if is_encrypted_media else None, msg_type, media_type,
-                    is_voice_message, body)
+                    is_voice_message, declared_media_filename(source_content, body))
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
         # Unencrypted media may fall back to the HTTP download URL when caching failed.
@@ -2263,23 +2264,11 @@ class MatrixAdapter(BasePlatformAdapter):
         if msg_event is not None:
             await self.handle_message(msg_event)
 
-    @staticmethod
-    def _classify_inbound_media(
-            msgtype: str, event_mimetype: str, source_content: dict) -> tuple[MessageType, str, bool]:
-        """Map a Matrix media msgtype to (MessageType, mime type, is_voice_message)."""
-        if msgtype == "m.image":
-            return MessageType.PHOTO, event_mimetype or "image/png", False
-        if msgtype == "m.audio":
-            is_voice = has_voice_marker(source_content)
-            return (MessageType.VOICE if is_voice else MessageType.AUDIO), event_mimetype or "audio/ogg", is_voice
-        if msgtype == "m.video":
-            return MessageType.VIDEO, event_mimetype or "video/mp4", False
-        return MessageType.DOCUMENT, event_mimetype or "application/octet-stream", False
-
     async def _download_and_cache_media(
         self, url: str, event_id: str, encrypted_file: Optional[dict], msg_type: MessageType, media_type: str,
-        is_voice_message: bool, body: str) -> Optional[str]:
-        """Download (and decrypt, when *encrypted_file* is given) media into the local cache."""
+        is_voice_message: bool, cache_name: str) -> Optional[str]:
+        """Download (and decrypt, when *encrypted_file* is given) media into the local cache.
+        *cache_name* is the declared file name, never a caption (#135898)."""
         file_bytes = await self._client.download_media(ContentURI(url))
         if file_bytes is None:
             return None
@@ -2304,9 +2293,9 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.info("[Matrix] Cached user image at %s", cached_path)
             return cached_path
         if msg_type in {MessageType.AUDIO, MessageType.VOICE}:
-            ext = Path(body or ("voice.ogg" if is_voice_message else "audio.ogg")).suffix or ".ogg"
+            ext = Path(cache_name or ("voice.ogg" if is_voice_message else "audio.ogg")).suffix or ".ogg"
             return await cache_audio_from_bytes_async(file_bytes, ext=ext)
-        filename = body or ("video.mp4" if msg_type == MessageType.VIDEO else "document")
+        filename = cache_name or ("video.mp4" if msg_type == MessageType.VIDEO else "document")
         return await cache_document_from_bytes_async(file_bytes, filename)
 
     async def _on_invite(self, event: Any) -> None:

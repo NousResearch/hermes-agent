@@ -24,6 +24,7 @@ from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
+from gateway.run_notifications_route_guard import GatewayNotificationRouteGuardMixin
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -122,7 +123,7 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
-class GatewayNotificationsMixin:
+class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
@@ -255,96 +256,6 @@ class GatewayNotificationsMixin:
             )
             return None
         return target_session_id
-
-    async def _resolve_async_delegation_session(
-        self, session_entry: SessionEntry, pinned_session_id: str,
-    ) -> Optional[SessionEntry]:
-        """Resolve an async completion to its verified owning gateway session.
-
-        Follow compression-rotation lineage (parent row ended, child continues), but never let a
-        late completion override an unrelated /new or restored route. Unknown ownership fails
-        closed; the result stays in the delegation records.
-        """
-        from gateway.run import _USER_BOUNDARY_END_REASONS
-        session_db = cast(Any, self._session_db)
-        if session_db is None:
-            logger.warning(
-                "Async-delegation completion has no session database; "
-                "dropping injection (#55578 fail-closed)."
-            )
-            return None
-        pinned_row = None
-        # Snapshot the run generation before the row lookup awaits: a /stop or /new landing while
-        # the lookup is pending must not let this completion re-point the route afterwards.
-        run_generation = self._current_session_run_generation(session_entry.session_key)
-        try:
-            pinned_row = await session_db.get_session(pinned_session_id)
-        except Exception:
-            logger.debug("Async-delegation parent lookup failed for %s", pinned_session_id, exc_info=True)
-        if pinned_row is None:
-            logger.warning(
-                "Async-delegation completion has unknown spawning session %s; "
-                "dropping injection (#55578 fail-closed).", pinned_session_id,
-            )
-            return None
-        target_session_id = pinned_session_id
-        follows_compression = False
-        if pinned_row.get("ended_at"):
-            _end_reason = str(pinned_row.get("end_reason") or "")
-            if _end_reason in _USER_BOUNDARY_END_REASONS:
-                logger.warning(
-                    "Async-delegation completion pinned to user-closed session %s "
-                    "(end_reason=%r); dropping injection instead of resurrecting it "
-                    "(#55578 fail-closed).", pinned_session_id, _end_reason,
-                )
-                return None
-            if _end_reason != "compression":
-                # Idle/timeout end (scale-to-zero norm): the chat route is still valid, so deliver to its
-                # current session rather than drop (the row would be acked then silently lost).
-                logger.info(
-                    "Async-delegation completion pinned to %s-ended session %s; "
-                    "retargeting to the chat's current session %s.",
-                    _end_reason or "idle", pinned_session_id, session_entry.session_id,
-                )
-                return session_entry
-            follows_compression = True
-            target_session_id = await self._resolve_compression_lineage_target(
-                session_db, session_entry, pinned_session_id,
-            )
-            if target_session_id is None:
-                return None
-        if target_session_id == session_entry.session_id:
-            return session_entry
-        prior_session_id = session_entry.session_id
-        if not self._is_session_run_current(session_entry.session_key, run_generation):
-            logger.warning(
-                "Async-delegation completion for routing key %s was invalidated while resolving pinned "
-                "session %s; leaving the route on %s and dropping injection.",
-                session_entry.session_key, pinned_session_id, prior_session_id,
-            )
-            return None
-        if follows_compression:
-            switched = await self.async_session_store.advance_compression_session(
-                session_entry.session_key, prior_session_id, target_session_id,
-            )
-        else:
-            # CAS on the session this completion resolved against: a route replaced meanwhile
-            # (/new, /resume) wins over the stale completion.
-            switched = await self.async_session_store.switch_session(
-                session_entry.session_key, target_session_id, expected_session_id=prior_session_id,
-            )
-        if switched is None:
-            logger.warning(
-                "Async-delegation completion could not bind routing key %s to "
-                "owning session %s (route moved or unknown); dropping injection.",
-                session_entry.session_key, target_session_id,
-            )
-            return None
-        logger.info(
-            "Pinned async-delegation completion to owning session %s (was %s) for routing key %s (#57498)",
-            target_session_id, prior_session_id, session_entry.session_key,
-        )
-        return switched
 
     async def _deliver_media_from_response(
         self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None

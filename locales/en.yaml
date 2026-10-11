@@ -3374,7 +3374,7 @@ cli:
     label_total_tokens: "Total tokens:"
     label_api_calls: "API calls:"
     label_session_duration: "Session duration:"
-    label_current_context: "Current context:"
+    label_current_context: "Current context (tokens):"
     label_messages: "Messages:"
     label_compressions: "Compressions:"
   verbose:

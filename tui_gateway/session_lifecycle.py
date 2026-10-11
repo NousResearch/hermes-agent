@@ -801,6 +801,15 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
         return True  # a transient registry/import failure must not become destructive cleanup
 
 
+def _session_awaits_process_completion(session: dict) -> bool:
+    """True while the session's agent owns a running ``notify_on_complete`` process, such as a
+    message_agent delivery runner waiting for the other bot's reply. Its completion is delivered
+    into this session, so reaping the session would drop the reply."""
+    from tools.process_registry import process_registry
+    owners = getattr(session.get("agent"), "_process_owner_task_ids", ())
+    return any(proc.notify_on_complete for owner in owners for proc in process_registry.running_owned_by(owner))
+
+
 # One pending WS-orphan reap Timer per live sid; guarded by _sessions_lock. Cancelled by _cancel_ws_orphan_reap from
 # every resume/reuse/transport-rebind path — else a reap on a reattached session triggers a reap->broadcast->resume storm.
 _pending_ws_reaps: dict[str, threading.Timer] = {}
@@ -934,7 +943,7 @@ def _schedule_ws_orphan_reap(
                 current.pop("_client_gone_interrupt_polls", None)
                 _pending_ws_reaps.pop(sid, None)
                 return
-            if _session_has_active_delegations(sid, current) or (
+            if _session_has_active_delegations(sid, current) or _session_awaits_process_completion(current) or (
                     not current.get("running")
                     and not current.get("_client_gone_interrupt_requested")
                     and _session_owns_live_wakeup_schedule(current)):

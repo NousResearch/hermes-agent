@@ -706,9 +706,11 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
     try:
         from tools.terminal_tool import terminal_tool
 
-        raw = terminal_tool(command, background=True, notify_on_complete=True, task_id=task_id,
-                            workdir=str(Path(__file__).resolve().parent.parent), _host_local=True,
-                            _completion_output_chars=REPLY_COMPLETION_CHARS)
+        # persist_on_release: closing the sender's agent (a detached Bot Chat reaped after its
+        # phone locked, /new, an idle reaper) must not SIGTERM the runner and the reply it awaits.
+        raw = terminal_tool(command, background=True, notify_on_complete=True, persist_on_release=True,
+                            task_id=task_id, workdir=str(Path(__file__).resolve().parent.parent),
+                            _host_local=True, _completion_output_chars=REPLY_COMPLETION_CHARS)
         try:
             parsed = json.loads(raw)
         except (ValueError, TypeError):

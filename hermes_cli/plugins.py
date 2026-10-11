@@ -186,13 +186,13 @@ VALID_HOOKS: set[str] = {
     # reconciled_orphans, crashed, stale, timed_out, auto_blocked, rate_limited, auto_assigned_default,
     # respawn_guarded, skipped_per_profile_capped, skipped_unassigned, skipped_nonspawnable,
     # skipped_locked). Privacy: result carries task ids, assignees, and workspace paths.
-    # Gateway platform-boundary observer hooks (#64176). Observer-only; each callback isolated by
-    # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Telegram
-    # "reaction" + "message_edited"; Discord "message_edited", "message_deleted", "thread_created",
-    # "thread_renamed". Each event type carries its own event-local additive payload contract (see
-    # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
-    # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
-    "gateway_platform_event",
+    # Gateway platform-boundary observer hooks (#64176): observer-only, no adapter handles or platform
+    # actions. gateway_platform_event (callbacks isolated by invoke_hook): Telegram "reaction" +
+    # "message_edited"; Discord "message_edited", "message_deleted", "thread_created", "thread_renamed";
+    # each event type has its own additive payload (hooks.md). gateway_ingress_observer: per-connection
+    # audit stream (Telegram start/fetched/observed/end) queued to one bounded thread. New event types and
+    # hook names land only with real fire-sites and payload contracts; no inert VALID_HOOKS surface.
+    "gateway_platform_event", "gateway_ingress_observer",
     # pre_command: BEFORE a recognized slash command's handler on CLI and gateway canonical dispatch;
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape

@@ -444,7 +444,7 @@ before it can be added.
 
 ### Shipped plugin-hook catalog
 
-Payload fields below are the exact event-specific fields supplied by each call site. For backward compatibility, `PluginManager` also adds `telemetry_schema_version="hermes.observer.v1"` to every plugin-hook callback. That legacy envelope marker does not mean all hook payloads share one semantic schema; new versioned contracts belong to their concrete event or capability family.
+Payload fields below are the exact event-specific fields supplied by each call site. For backward compatibility, `PluginManager` also adds `telemetry_schema_version="hermes.observer.v1"` to every plugin-hook callback except the gateway's event-local envelopes, `gateway_platform_event` and `gateway_ingress_observer`. That legacy envelope marker does not mean all hook payloads share one semantic schema; new versioned contracts belong to their concrete event or capability family.
 
 | Hook | Category | Exact timing and return behavior | Explicit payload fields | Privacy / sensitivity |
 |---|---|---|---|---|
@@ -478,6 +478,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `post_gateway_admission` | Directive/control (fail-open) | Admitted non-internal message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed session slot and the routed profile's scope; first `handled` result skips the agent turn, anything else (including a raise or timeout) runs it. | `session_key`, `platform`, `source` (dict snapshot), `message_id`, `text` | Inbound text is untrusted user data; no runner or session-store handles are passed. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
+| `gateway_ingress_observer` | Observer (queued) | Per adapter connection: `start`, every accepted `getUpdates` response (`fetched`), every update reaching the dispatch observer group (`observed`), and `end` after the bounded stop attempts (Telegram). Delivered by one background thread, each callback on its own read-only copy; never awaited; return ignored. | `platform`, `bot_id`, `epoch`, `event_no`, `kind`, `created_at`, `generation`, `epoch_state`, `prev`, `fault` plus per-kind fields | Chat and sender ids of every observed update; text and captions of authorized senders; raw update digests. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
@@ -1355,6 +1356,54 @@ Every payload is additive and event-specific; there is no monolithic gateway pay
 The bot's own progressive message edits (streaming) never fire `message_edited` on Discord — bot-authored events are dropped at the fire-site.
 
 This hook is observer-only: it does **not** add raw-event access or adapter access. **Raw SDK payload access is deliberately not shipped** — adapter SDK objects change shape without notice and would become un-evolvable API surface; where genuinely needed it requires its own explicit capability (`gateway.raw_events`) with a "no stability guarantee" label and its own design (tracked in #64228). For *acting* on a platform (adding a reaction, renaming a thread), use the capability-gated `ctx.platform_actions` facade documented in the [plugins guide](plugins.md#platform-actions) — it is gated off by default behind the `gateway.platform_actions` capability. `PluginContext.dispatch_tool()` can only call tools registered in the tool registry; `send_message` is intentionally not registered there (its transport is reserved for explicit CLI, cron, kanban, and MCP delivery paths). A future outbound-delivery contract must first provide stable delivered content/handles across all adapters; this slice does not pre-register an inert `gateway_message_delivered` hook.
+
+---
+
+### `gateway_ingress_observer`
+
+An audit stream of what a gateway adapter received, for plugins that keep their own durable record of inbound traffic (for example, to show that every inbound message was seen before acting on it). Fired today by the Telegram adapter.
+
+Callbacks run off the gateway's path: at the fire site the adapter numbers the event, builds its fields (digests, the sender check, bounded content) and appends it to a bounded queue under a short lock; one background thread delivers it. The gateway never waits for, retries for, or behaves differently because of an observer: acceptance, receipts, dedup, retries and cancellation are unchanged. An event confers no authority, and the stream alone does not prove completeness — that is for the consumer to establish from the guarantees below.
+
+Callbacks run on that thread, in the profile scope that connected the adapter; `async def` callbacks are run to completion there. Each callback receives its own deep, read-only copy of the payload (dicts reject edits, sequences are tuples), so nothing one callback does can change what another records. This hook's payload has no `telemetry_schema_version`.
+
+```python
+def on_ingress(epoch, event_no, kind, prev, fault, **event):
+    journal.append(epoch, event_no, kind, prev, fault, event)  # record durably first
+
+def register(ctx):
+    ctx.register_hook("gateway_ingress_observer", on_ingress)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `platform` | `str` | `"telegram"`. |
+| `bot_id` | `str` | The bot's id (Telegram: the token's numeric prefix). |
+| `epoch` | `str` | Random id of one connection, from `connect()` to `disconnect()`; Application rebuilds and polling restarts stay in it. |
+| `event_no` | `int` | 1, 2, … assigned gap-free at the fire site within the epoch, whether or not an observer is registered; never wraps. Order is defined only within `(bot_id, epoch)`. A number you never receive is an event you did not observe. |
+| `kind` | `str` | `start`, `fetched`, `observed` or `end` (below). |
+| `created_at` | `float` | Unix time at the fire site. |
+| `generation` | `int` | The adapter's polling generation when the event was created. |
+| `epoch_state` | `str` | `"live"`, or `"evicted"` when the epoch's delivery state was dropped (see bounds): such an event has no `prev` and must be treated as unknown. |
+| `prev` | `dict \| None` | `{event_no, outcome}` of the previous **delivered** event of this epoch; `outcome` is `ok`, `failed` (a callback raised, exited or was cancelled, or none was registered) or `late` (the callbacks together ran longer than 0.25 s; time spent queued does not count). One outcome covers every registered callback. `None` for the first delivery. |
+| `fault` | `dict \| None` | The epoch's sticky fault record `{first_event_no, kinds, dropped_count}`, `None` while clean. `kinds` only grows: `dropped` (an event could not be queued; its number is a gap), `saturated` (`dropped_count` stopped at 2³¹−1), `failed`, `late`. The first callback failure of an epoch is logged as a warning, later ones at debug. |
+
+**Kinds:**
+
+| `kind` | When | Fields |
+|--------|------|--------|
+| `start` | `connect()`, before polling starts; event 1. | — |
+| `fetched` | Every `getUpdates` response the adapter accepts as polling progress, including empty ones. Long polling only: in webhook mode there are no `fetched` events and every association is `missing`. | `updates: tuple[{update_id: int \| None, raw_sha256: str}]`: per element of the parsed raw `result`, the sha256 hex of `json.dumps(element, sort_keys=True, separators=(",", ":"))`, so fields the Telegram library does not model are included. |
+| `observed` | First thing in the catch-all handler group (99), i.e. for each update that passed admission and earlier groups. Deduplicated redeliveries and updates stopped by an earlier handler failure produce none. | `update_id: int`, `fetch_event_no: int \| None`, `raw_sha256: str \| None`, `refetches: int`, `association: "ok" \| "missing" \| "conflict"`, `chat_id: str \| None`, `user_id: str \| None`, `authorized: bool \| None` (the gateway's sender check for a `message`/`edited_message`; `None` for other updates or when no check is installed), `message: dict \| None` (only when `authorized` is `True`): `message_id`, `date`, `edit_date` (`None` if never edited), `text`, `caption`, `content_omitted`, `reply_to_message_id`, `is_forward`, `has_quote`, `media_kind`. Text and caption together over 64 KiB are omitted (`None`, `content_omitted: true`) — treat as unknown. |
+| `end` | `disconnect()`, after its bounded attempts to stop the updater and the application (`updater.stop()`, `app.stop()`, `app.shutdown()`); no later event of the epoch is accepted. | `steps_clean: bool` — `True` only if each of those steps finished normally; a step that timed out (and was abandoned), raised or was cancelled makes it `False`. Its `prev` is the last delivered event. |
+
+**Associations.** Each connection maps up to 4,096 fetched `update_id`s to the first fetch that has not been observed yet. An identical refetch keeps that fetch and increments `refetches`; a refetch with a different digest makes the association `conflict`; observing the update retires the entry; when full, the oldest entry is evicted (`missing`). An update fetched in one epoch and observed in another is `missing`. The same update can appear in several `fetched` and `observed` events: reconcile by `(bot_id, update_id, raw_sha256)`. Nothing promises at-most-once delivery.
+
+**Ordering.** Only `event_no` orders a stream. Telegram updates of different chats are dispatched concurrently (in order within a chat), so `observed` events can arrive out of fetch order: the `fetch_event_no` of a later `observed` event can be smaller than an earlier one's, and an update from an earlier batch can still be unobserved after later batches were observed. Neither is a loss.
+
+**Trust rule.** `prev` and `fault` are statements by the gateway: trust them once you have durably recorded the event that carries them, whatever that event's own outcome later turns out to be. An event's own outcome is published only by the next delivery of its epoch. If your callback fails before recording, the seal it carried is lost and the event before it stays unknown; nothing is re-sent. `end` has no successor: accept it on durable receipt and check everything else against your own records. No `end` (process exit, a stalled delivery thread, a reconnect without `disconnect()`) means the epoch is unclean.
+
+**Bounds.** The queue holds at most 1,024 events and 4 MiB of accounted payload (an estimate of payload size, not Python heap use); an event that does not fit is dropped and counted in `fault`. Delivery state is kept for open connections plus 16 closed epochs, enforced as each epoch closes; the oldest closed epoch beyond that is evicted, and its still-queued events are delivered with `epoch_state: "evicted"` and no `prev`, so it can never end cleanly. Queued events keep only their epoch's identity and profile scope, never the connection's own state. At most one delivery thread exists: it is started on demand, reused across reconnects, survives any callback failure, and exits after a minute idle. A callback itself is not bounded: while one blocks, delivery stalls for every epoch, the queue fills and drops are counted, and the gateway is unaffected. Shutdown never waits for delivery.
 
 ---
 

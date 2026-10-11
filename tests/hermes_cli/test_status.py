@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from hermes_cli.status import show_status
 import subprocess
 
+import pytest
+
 
 def test_show_status_all_does_not_print_keenable_key_value(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -225,6 +227,47 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+
+
+@pytest.mark.parametrize("invalid", ["last_activity_at", "nan", "inf", "-inf", "8.4e252"])
+@pytest.mark.parametrize("include_valid", [False, True])
+def test_show_status_ignores_legacy_non_numeric_gateway_last_activity(
+    monkeypatch, capsys, tmp_path, invalid, include_valid
+):
+    """A malformed legacy state.db timestamp must not crash ``hermes status``."""
+    from hermes_cli import status as status_mod
+    import hermes_state
+    import time
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _FakeDB:
+        def __init__(self, **_kwargs):
+            pass
+
+        def list_gateway_sessions(self, active_only=True):
+            rows = [{"id": "legacy", "last_active": invalid}]
+            if include_valid:
+                rows.extend([
+                    {"id": "older", "last_active": time.time() - 7200},
+                    {"id": "latest", "last_active": str(time.time() - 90)},
+                ])
+            return rows
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(hermes_state, "SessionDB", _FakeDB)
+
+    status_mod.show_status(SimpleNamespace(full=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert f"Active:       {3 if include_valid else 1} session(s)" in output
+    if include_valid:
+        assert "Last activity:" in output
+        assert "1m ago" in output
+    else:
+        assert "Last activity:" not in output
 
 
 def _status_args(*argv):

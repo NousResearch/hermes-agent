@@ -287,9 +287,10 @@ def _render_sessions(ctx):
 
     if gateway_rows:
         _kv("Active:", f"{len(gateway_rows)} session(s)")
-        freshest = max((float(r.get("last_active") or 0) for r in gateway_rows), default=0.0)
+        from hermes_cli.timefmt import coerce_epoch, relative_time
+        freshest = max((coerce_epoch(r.get("last_active"), session_id=r.get("id"), field="last_active")
+                        or 0.0 for r in gateway_rows), default=0.0)
         if freshest > 0:
-            from hermes_cli.timefmt import relative_time
             print(f"  Last activity:{relative_time(freshest):>13}")
     elif not (sessions_file := get_hermes_home() / "sessions" / "sessions.json").exists():
         _kv("Active:", 0)

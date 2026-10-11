@@ -396,8 +396,8 @@ def _slack_mention_detection_text(event: dict) -> str:
 
 
 def _rewrite_known_bang_command(text: str) -> str:
-    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
-    if not text.startswith("!"):
+    """Rewrite a known leading ``!cmd`` to ``/cmd``; ``! cmd`` is chat, as on Matrix."""
+    if not text.startswith("!") or text[1:2].isspace():
         return text
     try:
         from hermes_cli.commands import is_gateway_known_command

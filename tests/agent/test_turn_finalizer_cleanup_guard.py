@@ -197,4 +197,35 @@ def test_persist_disabled_turn_skips_session_end_hook(
 
     assert ("on_session_end" in calls) == ("on_session_end" in expected_calls)
 
+def test_partial_stream_recovery_defers_post_turn_micro_compaction():
+    class _MicroCompactingCompressor(_StubCompressor):
+        _micro_compact_enabled = True
 
+        def __init__(self):
+            self.calls = 0
+
+        def _micro_compact(self, messages):
+            self.calls += 1
+            return messages
+
+    agent = _StubAgent(raise_in=())
+    compressor = _MicroCompactingCompressor()
+    agent.context_compressor = compressor
+
+    result = _run(
+        agent,
+        final_response="partial answer recovered from the stream",
+        api_call_count=1,
+        turn_exit_reason="partial_stream_recovery",
+    )
+
+    assert result["turn_exit_reason"] == "partial_stream_recovery"
+    assert compressor.calls == 0
+
+    _run(
+        agent,
+        final_response="ordinary completed answer",
+        api_call_count=1,
+        turn_exit_reason="text_response(stop)",
+    )
+    assert compressor.calls == 1

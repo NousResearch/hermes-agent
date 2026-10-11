@@ -1256,12 +1256,18 @@ Or per-invocation via the CLI:
 hermes chat --run-budget 850 -q "..."
 ```
 
-When a budget is set, two things happen:
+When a budget is set, three things happen:
 
 1. **Wrap-up notice at 80%.** When 80% of the budget has elapsed, Hermes injects a **one-time** notice (delivered cache-safely, appended to the newest tool result like `/steer` messages) telling the model to stop new discovery/verification work and produce the final deliverable from the state it already has. It fires at most once per run and mirrors the existing iteration-budget wrap-up mechanism — there are no repeated pressure warnings.
 2. **Deadline-scaled stale timeouts.** Implicit non-streaming stale timeouts (the 90s default and the reasoning-model floors, e.g. 600s for DeepSeek reasoning models) are capped at `max(60, remaining_budget × 0.5)` so a single silently-hung provider call can never consume the rest of the run. The cap only ever *tightens* the timeout — it never raises it — and an explicitly configured `stale_timeout_seconds` (provider/model config or `HERMES_API_CALL_STALE_TIMEOUT`) always wins untouched.
+3. **The deadline stops the model.** A stale timeout cannot end a response that keeps producing tokens, so the deadline itself bounds the model:
+   - A response still streaming when the budget runs out is stopped there. The text it produced stays the reply, followed by a "⏱️ Run budget reached" notice, and the turn ends incomplete (`failure_reason: truncated`).
+   - After the deadline the model gets **one** more call, like the iteration budget's grace call. It carries the wrap-up notice if that never landed, so a deadline that passes inside a tool still gets an answer. A call after that does not start.
+   - Silence stays with the stale timeouts above. A local model still prefilling at the deadline keeps its full prefill grace, and the first output that arrives after the deadline ends the stream.
 
-The budget is per `run_conversation` turn (it resets on each user message) and the feature is completely dormant when unset — no clock reads, no injection, no timeout changes.
+   The live stop covers Chat Completions and Anthropic Messages streams. The before-call stop covers every provider. With `agent.run_budget_seconds` in `config.yaml`, gateway turns and cron jobs stop at the deadline too.
+
+The budget is per `run_conversation` turn (it resets on each user message) and the feature is completely dormant when unset — no clock reads, no injection, no timeout changes, nothing stopped.
 
 ## Verify-on-Stop (coding verification)
 

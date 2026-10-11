@@ -17846,7 +17846,6 @@ def test_session_active_list_excludes_finalized_sessions(monkeypatch):
     assert [row["id"] for row in session_rows] == ["sid-live"]
 
 
-
 def test_session_activate_returns_inflight_stream_before_completion(monkeypatch):
     """Switching into a still-running live session must hydrate partial output.
 

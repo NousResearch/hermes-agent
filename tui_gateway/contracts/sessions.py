@@ -270,7 +270,7 @@ class SessionActiveListParams(ProfileParams):
 
 
 class SessionActiveItem(Result):
-    """``server._session_live_item``."""
+    """``server._session_live_item`` (plus the DB-derived ``foreign`` rows)."""
 
     current: bool
     id: str
@@ -282,6 +282,13 @@ class SessionActiveItem(Result):
     started_at: float
     status: LiveSessionStatus
     title: str
+    # Foreign rows only: a session that exists in state.db, not this gateway's
+    # in-memory registry (cron run, CLI one-shot, another process's turn).
+    foreign: bool | None = None
+    # Durable mid-turn activity stamp the backend persists for cross-process
+    # liveness captions; empty on in-memory rows.
+    description: str | None = None
+    provider: str | None = None
 
 
 class SessionActiveListResult(Result):
@@ -289,7 +296,7 @@ class SessionActiveListResult(Result):
 
 
 method("session.active_list", params=SessionActiveListParams, result=SessionActiveListResult,
-       doc="Live sessions in this process, insertion order (not a DB browser).")
+       doc="Live sessions in this process, insertion order (not a DB browser), plus DB-derived foreign rows.")
 
 
 # ── stored-row mutation ───────────────────────────────────────────────────────────────────────

@@ -3104,7 +3104,7 @@
     },
     {
       "name": "session.active_list",
-      "summary": "Live sessions in this process, insertion order (not a DB browser).",
+      "summary": "Live sessions in this process, insertion order (not a DB browser), plus DB-derived foreign rows.",
       "params": [
         {
           "name": "params",
@@ -28996,7 +28996,7 @@
       },
       "SessionActiveItem": {
         "additionalProperties": false,
-        "description": "``server._session_live_item``.",
+        "description": "``server._session_live_item`` (plus the DB-derived ``foreign`` rows).",
         "properties": {
           "current": {
             "title": "Current",
@@ -29036,6 +29036,42 @@
           "title": {
             "title": "Title",
             "type": "string"
+          },
+          "foreign": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Foreign"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
           }
         },
         "required": [

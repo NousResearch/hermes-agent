@@ -57,10 +57,20 @@ class ActivityTrackingMixin:
         """
         from agent.session_activity import (
             bound_activity_description, is_terminal_compression_provenance,
-            normalize_activity_provenance, reset_session_activity_persist_window,
+            normalize_activity_provenance, provenance_for_source, reset_session_activity_persist_window,
         )
 
-        resolved_provenance = normalize_activity_provenance(provenance)
+        # Ordinary call sites pass no provenance; default it to the session's
+        # OWNER (the same HERMES_SESSION_SOURCE/platform resolution the DB row
+        # uses), so a cron run stamps 'cron', a subagent 'subagent' — not
+        # 'unknown'. An explicit provenance (compression writers) still wins.
+        def _source_default() -> ActivityProvenance:
+            from run_agent import _session_source_for_agent
+            return provenance_for_source(_session_source_for_agent(getattr(self, "platform", None)))
+
+        resolved_provenance = normalize_activity_provenance(
+            provenance if provenance is not None else _source_default()
+        )
         with _activity_lock(self):
             self._turn_liveness_activity_generation = (
                 getattr(self, "_turn_liveness_activity_generation", 0) + 1

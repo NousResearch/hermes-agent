@@ -28,6 +28,7 @@ import { computed } from 'nanostores'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
+import { $foreignLiveSessionIds } from './foreign-live'
 import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
   $attentionSessionIds,
@@ -109,9 +110,10 @@ export const $sessionDotStateById = computed(
     $unreadFinishedSessionIds,
     $draftSessionIds,
     $sessions,
-    $unreadWriteGuard
+    $unreadWriteGuard,
+    $foreignLiveSessionIds
   ],
-  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard) => {
+  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard, foreign) => {
     const next: Record<string, SessionDotState> = {}
 
     const claim = (ids: readonly string[], state: SessionDotState) => {
@@ -163,6 +165,14 @@ export const $sessionDotStateById = computed(
     // claim as background processes — and it yields to `working` below the
     // moment the parent turn itself is live (synchronous orchestrator children).
     claim(delegating, 'background')
+
+    // DB-derived liveness (weakest working rung): sessions with no runtime in
+    // this renderer but a fresh backend `is_active` row (cli one-shots, cron
+    // runs, other profiles, TUI). The predicate in foreign-live.ts excludes any
+    // id with a runtime, so the event-derived `working` claim below always
+    // outranks it — a real event can only ADD an id the fallback never held.
+    claim(foreign, 'working')
+
     claim(working, 'working')
 
     // Stalled REFINES working rather than rivalling it — the turn is still

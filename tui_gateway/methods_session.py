@@ -1149,20 +1149,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"cwd": target_cwd, "branch": branch, "git_repo_root": root})
 
 
-@method("session.active_list")
-def _(rid, params: dict) -> dict:
-    """Live TUI sessions in this process (not a DB browser)."""
-    snapshot, err = _snapshot_sessions(rid)
-    if err:
-        return err
-    current = str(params.get("current_session_id") or "")
-    # ``_finalized`` sessions linger until the reaper pops them (they inflated the footer). Do NOT filter on
-    # the WS-detached sentinel: detached is attachable until grace-reap, and ``hermes --tui`` rides stdio.
-    # Keep insertion order (focused must not jump).
-    rows = [_session_live_item(sid, session, current) for sid, session in snapshot if not session.get("_finalized")]
-    return _ok(rid, {"sessions": rows})
-
-
 @_session_method("session.activate")
 def _(rid, params: dict, session: dict) -> dict:
     """Attach the frontend to a live TUI session without closing the previously focused one."""

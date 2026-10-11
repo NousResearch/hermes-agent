@@ -63,10 +63,24 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  if (event.type === 'sessions.changed' || event.type === 'cron.changed') {
+    // The backend's on-disk signature moved — ANY profile's state.db writes
+    // (a background profile's own serve, a foreign CLI/cron process) move
+    // this profile's rows too: the change watcher hashes every served
+    // home's store and broadcasts on any of them, and the all-profiles
+    // sidebar lists every profile's sessions. Refresh regardless of which
+    // profile's socket delivered the broadcast.
+    if (event.type === 'cron.changed') {
+      notifyCronChanged()
+    } else {
+      notifySessionsChanged()
+    }
+
+    return true
+  }
+
   if (
     event.type === 'pet.changed' ||
-    event.type === 'cron.changed' ||
-    event.type === 'sessions.changed' ||
     event.type === 'projects.changed' ||
     event.type === 'platforms.changed' ||
     event.type === 'pairing.changed'
@@ -79,16 +93,12 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     if (fromActiveSource()) {
       if (event.type === 'pet.changed') {
         notifyPetChanged(payload as PetChangeMeta | undefined)
-      } else if (event.type === 'cron.changed') {
-        notifyCronChanged()
       } else if (event.type === 'projects.changed') {
         notifyProjectsChanged()
       } else if (event.type === 'platforms.changed') {
         notifyPlatformsChanged()
-      } else if (event.type === 'pairing.changed') {
-        notifyPairingChanged()
       } else {
-        notifySessionsChanged()
+        notifyPairingChanged()
       }
     }
 

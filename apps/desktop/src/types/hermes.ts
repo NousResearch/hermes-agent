@@ -591,6 +591,13 @@ export interface SessionInfo {
   actual_cost_usd?: null | number
   estimated_cost_usd?: null | number
   is_active: boolean
+  /** Durable mid-turn activity stamp from the backend (agent heartbeat) —
+   *  populated for sessions whose events this renderer never hears (cli
+   *  one-shots, cron runs, other processes), so the row can caption what
+   *  the foreign agent is doing. Undefined against older backends. */
+  last_activity_at?: number
+  last_activity_description?: string
+  last_activity_provenance?: string
   /** Cron run rows only (`source === 'cron'`): the scheduler still OWNS this
    *  never-closed run — its in-flight execution is held by a live process.
    *  Unlike {@link is_active} (a 300s activity window) it stays true through a

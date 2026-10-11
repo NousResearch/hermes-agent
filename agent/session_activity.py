@@ -31,6 +31,15 @@ class ActivityProvenance(str, Enum):
     AGENT_COMPRESSION_TIMEOUT = "agent.compression_timeout"
     AGENT_COMPRESSION_COOLDOWN = "agent.compression_cooldown"
     AGENT_COMPRESSION_TURNHOLD = "agent.compression_turnhold"
+    # Creator surfaces — lets consumers distinguish user-started sessions from
+    # agent/automated ones using only the DB row (#85302).
+    SOURCE_CLI = "cli"
+    SOURCE_CRON = "cron"
+    SOURCE_SUBAGENT = "subagent"
+    SOURCE_GATEWAY = "gateway"
+    SOURCE_ACP = "acp"
+    SOURCE_DESKTOP = "desktop"
+    SOURCE_TUI = "tui"
 
 
 # Provenances that END the user-visible "compressing" phase: the host's progress timeout, a cooldown/
@@ -71,6 +80,12 @@ def normalize_activity_provenance(provenance: Optional[ActivityProvenance | str]
         return ActivityProvenance((provenance or "").strip())
     except ValueError:
         return ActivityProvenance.UNKNOWN
+
+
+def provenance_for_source(source: Optional[str]) -> ActivityProvenance:
+    """Map a session ``source`` label (``desktop``/``cli``/``cron``/…) to a
+    known provenance, falling back to UNKNOWN for unrecognized labels."""
+    return normalize_activity_provenance(source)
 
 
 def format_iteration_progress(api_call_count: Any, max_iterations: Any) -> str:

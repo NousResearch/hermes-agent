@@ -388,6 +388,12 @@ class _CuaDriverSession:
     def _is_closed_session_error(exc: Exception) -> bool:
         """True for MCP/stdio failures that are recoverable by reconnecting."""
         name, module = exc.__class__.__name__, getattr(exc.__class__, "__module__", "")
+        # The MCP client surfaces a dead stdio peer (driver exited/killed) as
+        # MCPError(code=CONNECTION_CLOSED); without this the session stays dead.
+        error = getattr(exc, "error", None)
+        code = getattr(exc, "code", None) if error is None else getattr(error, "code", None)
+        if module.startswith("mcp") and code == -32000 and "closed" in str(exc).lower():
+            return True
         return (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
                 or (module.startswith("anyio") and "Resource" in name)
                 or isinstance(exc, (BrokenPipeError, EOFError)))

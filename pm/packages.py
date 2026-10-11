@@ -939,7 +939,7 @@ class CuaDriver(BinaryPackage):
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        return github_release_tags("trycua/cua", strip_prefix="cua-driver-rs-v")
+        return github_release_tags("trycua/cua", strip_prefix="cua-driver-rs-v", include_prerelease=True)
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         flatten_single_dir(staged)

@@ -249,6 +249,16 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'],
+  // Voice interaction mode: transcribe = keep the transcript in the detected
+  // language; translate = transcribe then translate to stt.local.target_language.
+  'stt.local.mode': ['transcribe', 'translate'],
+  // Translation targets: the 25 European languages the ASR backends are
+  // trained on (the source side of the two-stage parakeet → m2m100 path).
+  'stt.local.target_language': [
+    'en', 'it', 'de', 'fr', 'es', 'pt', 'nl', 'pl', 'ru', 'uk', 'cs',
+    'sk', 'sl', 'hr', 'bg', 'ro', 'hu', 'el', 'da', 'sv', 'fi', 'et',
+    'lt', 'lv', 'mt',
+  ],
   // Speech-to-text backends — kept in sync with BUILTIN_STT_PROVIDERS in
   // tools/transcription_common.py (local_command is auto-detected, not picked).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'deepinfra'],
@@ -494,7 +504,9 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     streaming: 'Live Transcription',
     local: {
       model: 'Local Transcription Model',
-      language: 'Transcription Language'
+      language: 'Transcription Language',
+      mode: 'Voice Interaction Mode',
+      targetLanguage: 'Translate To'
     },
     openai: {
       model: 'OpenAI STT Model',
@@ -695,6 +707,10 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     enabled: 'Enable local or provider-backed speech transcription.',
     echoTranscripts: 'Post the raw 🎙️ transcript of voice messages back to the chat.',
     streaming: 'Show text while you speak (OpenAI, xAI, ElevenLabs). Falls back to the recording on any failure.',
+    local: {
+      mode: 'Transcribe keeps the transcript in the detected language. Translate first transcribes, then translates it to "Translate To".',
+      targetLanguage: 'Language to translate spoken messages into (translation mode only; 25 European languages).'
+    },
     elevenlabs: {
       languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
     }
@@ -820,6 +836,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.deepinfra.voice',
       'stt.local.model',
       'stt.local.language',
+      'stt.local.mode',
+      'stt.local.target_language',
       'stt.openai.model',
       'stt.openai.streaming_model',
       'stt.groq.model',

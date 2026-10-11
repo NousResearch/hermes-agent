@@ -13,6 +13,7 @@ import socket
 import ssl
 import uuid
 from email.header import decode_header
+from email.errors import HeaderParseError
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -375,7 +376,17 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
         return False, _NO_AUTH_RESULTS_REASON
-    trusted = " ".join(str(headers[0]).split())
+    raw_header = " ".join(str(headers[0]).split())
+    # Decode only when the whole field consists of encoded-words. An encoded-word embedded in otherwise
+    # plain text may be sender-controlled (for example in a receiver-copied comment); decoding it can
+    # turn comment contents into a forged Authentication-Results clause.
+    try:
+        encoded_parts = decode_header(raw_header)
+    except HeaderParseError:  # malformed RFC 2047 structure; leave it opaque and fail closed during parsing
+        encoded_parts = []
+    if encoded_parts and all(charset is not None for _, charset in encoded_parts):
+        raw_header = _decode_header_value(raw_header)
+    trusted = " ".join(raw_header.split())
     # _ar_clauses removes RFC 8601 CFWS comments and ignores semicolons inside them, so supported
     # receiver variants remain valid without allowing a lower field or a related domain to satisfy the pin.
     if (clauses := _ar_clauses(trusted)) is None:

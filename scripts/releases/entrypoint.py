@@ -193,6 +193,26 @@ def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: s
     )
 
 
+def _abandon_confirmed(outstanding: tuple[str, int, str], confirm_abandon: Callable[[str], bool],
+                       refusal: ReleaseRefused, *, repo: Path, remote: str, repository: str,
+                       execute, inspect) -> None:
+    """Abandon exactly the attempt the person approved, or raise ``refusal``.
+
+    The prompt can sit open while another operator abandons it and cuts the
+    next one; ``abandon`` would then clear that new attempt too. So the remote
+    is read again after the answer and anything but the same single attempt
+    is refused.
+    """
+    version, attempt, ref = outstanding
+    if not confirm_abandon(ref):
+        raise refusal
+    if _outstanding_attempt(repo, remote) != outstanding:
+        raise ReleaseRefused(f"{ref} changed while waiting for an answer — nothing was abandoned")
+    print(abandon_steps([_abandon_attempt(version, attempt, ref, repo=repo, remote=remote,
+                                          repository=repository, execute=execute, inspect=inspect)]),
+          file=sys.stderr)
+
+
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             execute, autopublish: bool = False, no_changelog: bool = False,
             skip_bundles: bool = False, skip_tests: bool = False,
@@ -210,20 +230,20 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     ``run_wait`` is how many seconds to keep looking for the dispatched run;
     GitHub lists it a moment after the dispatch returns.
     ``confirm_abandon`` is asked about an outstanding attempt's ref; only a
-    caller with a person at the terminal passes one. A yes abandons the attempt
-    through ``abandon`` (so it needs ``inspect``, which cancels runs and deletes
-    the draft) and the cut goes on; no confirmer, or a no, is the refusal.
+    caller with a person at the terminal passes one. It is asked only after the
+    new cut has passed every check that can refuse it. A yes abandons that one
+    attempt (so it needs ``inspect``, which cancels runs and deletes the draft)
+    and the cut goes on; no confirmer, or a no, is the refusal.
     """
     _refresh_claims(repo, remote)
     _require_remote_main(repo, commit)
     outstanding = _outstanding_attempt(repo, remote)
+    refusal = None
     if outstanding is not None:
         refusal = _refuse_outstanding(outstanding, repo=repo, remote=remote,
                                       repository=repository, execute=execute)
-        if confirm_abandon is None or not confirm_abandon(outstanding[2]):
+        if confirm_abandon is None:
             raise refusal
-        print(abandon_steps(abandon(outstanding[0], repo=repo, remote=remote, repository=repository,
-                                    execute=execute, inspect=inspect)), file=sys.stderr)
     published_version, published_commit = published
     _require_ancestry(repo, commit, published_commit)
     version = derive_next_version(published=published_version, bump=bump)
@@ -251,6 +271,12 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             "     Do this before step 2: once the retry claims this attempt, changelog numbers the next one.\n"
             "  2. Re-run the same release command with --no-changelog.\n"
             "  3. Edit changelog.md down in your editor and paste it into the draft release body.")
+    if refusal is not None:
+        # Everything that can refuse the new cut has run, so a yes cannot
+        # destroy the old attempt and then fail to replace it. The attempt
+        # number ignores markers, so abandoning does not change ``tag``.
+        _abandon_confirmed(outstanding, confirm_abandon, refusal, repo=repo, remote=remote,
+                           repository=repository, execute=execute, inspect=inspect)
     claim_epoch = _next_claim_epoch(repo, claims)
     claim = json.dumps({
         "schema": 1,

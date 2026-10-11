@@ -207,6 +207,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     finish_delegation_unit(batch.task_list, results, background=not honor_parent_interrupt)
 
     combined: dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    # The desktop delegate card joins live subagent state by this id; without it
+    # a repeated goal string lets an older card claim this call's children (#136532).
+    if batch.live_deleg_id:
+        combined["delegation_id"] = batch.live_deleg_id
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
     from tools.process_registry_notifications import _process_accounting_lines
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]

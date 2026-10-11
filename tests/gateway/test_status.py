@@ -348,6 +348,108 @@ class TestGatewayRuntimeStatus:
         assert status.read_runtime_status()["platforms"] == {}
 
 
+    def test_platform_verdict_does_not_survive_a_life_boundary(self, tmp_path, monkeypatch):
+        """t_bca1c81e B1 (writer, negative control).
+
+        The first write of a NEW gateway life (gateway/run_startup.py: ``gateway_state="starting"``,
+        ``clear_profile_platforms=True``, ``reload_existing=True``) used to keep every key WITHOUT a
+        colon — the default profile's OWN adapters, ``api_server`` included — while restamping
+        ``pid``/``start_time``/``updated_at`` for the new process. The file then certified a dead API
+        server as ``connected`` beside a live pid and a fresh timestamp. Every inherited entry that
+        cannot prove it was written by THIS life must be re-stamped ``starting`` (not healthy), its old
+        verdict parked under ``stale_*``.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({
+                "pid": 4001, "start_time": 1000, "kind": "hermes-gateway",
+                "gateway_state": "running",
+                "platforms": {
+                    "api_server": {"state": "connected", "writer_pid": 4001,
+                                   "writer_start_time": 1000},
+                    # Colon-keyed entries keep their existing meaning: clear_profile_platforms
+                    # still drops them (the new rule is additive, not a replacement).
+                    "reviewer:discord": {"state": "connected", "writer_pid": 4001,
+                                         "writer_start_time": 1000},
+                    # Legacy entry, no writer stamps — fail closed at a life boundary.
+                    "legacy_flat": {"state": "connected"},
+                    # Flat key from a previous life with a non-healthy verdict.
+                    "reviewer_fatal": {"state": "fatal", "error_code": "missing_credentials",
+                                       "writer_pid": 4001, "writer_start_time": 1000},
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(
+            gateway_state="starting", clear_profile_platforms=True, reload_existing=True)
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == os.getpid(), "the new life's pid must be stamped"
+        # clear_profile_platforms keeps its current meaning.
+        assert "reviewer:discord" not in payload["platforms"]
+        for key in ("api_server", "legacy_flat", "reviewer_fatal"):
+            entry = payload["platforms"][key]
+            assert entry["state"] == "starting", key
+            # The old verdict is retained for diagnosis, never as current state.
+            assert entry["needs_attention"] is False, key
+            assert entry["error_code"] is None, key
+            assert entry["error_message"] is None, key
+        assert payload["platforms"]["api_server"]["stale_state"] == "connected"
+        assert payload["platforms"]["reviewer_fatal"]["stale_state"] == "fatal"
+        assert payload["platforms"]["api_server"]["stale_writer_pid"] == 4001
+        assert payload["platforms"]["api_server"]["stale_writer_start_time"] == 1000
+        # The downgraded entry now belongs to the CURRENT life (so it is not re-downgraded and
+        # readers serve it as ``starting``) — the old identity lives only under ``stale_*``.
+        assert payload["platforms"]["api_server"]["writer_pid"] == os.getpid()
+
+    def test_colon_and_flat_platform_keys_are_downgraded_identically(self, tmp_path, monkeypatch):
+        """The new rule is key-agnostic: a ``<profile>:`` entry crosses the life boundary too."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({
+                "pid": 4001, "start_time": 1000, "kind": "hermes-gateway",
+                "gateway_state": "running",
+                "platforms": {
+                    "api_server": {"state": "connected", "writer_pid": 4001,
+                                   "writer_start_time": 1000},
+                    "reviewer:discord": {"state": "connected", "writer_pid": 4001,
+                                         "writer_start_time": 1000},
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(gateway_state="starting", reload_existing=True)
+
+        platforms = status.read_runtime_status()["platforms"]
+        assert platforms["api_server"]["state"] == "starting"
+        assert platforms["reviewer:discord"]["state"] == "starting"
+        assert platforms["reviewer:discord"]["stale_state"] == "connected"
+
+    def test_platform_entry_stamped_by_the_current_life_is_untouched(self, tmp_path, monkeypatch):
+        """t_bca1c81e B1 (writer, no regression): the rule only fires across a life boundary."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        start = status._get_process_start_time(os.getpid())
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({
+                "pid": os.getpid(), "start_time": start, "kind": "hermes-gateway",
+                "gateway_state": "running",
+                "platforms": {
+                    "api_server": {"state": "connected", "writer_pid": os.getpid(),
+                                   "writer_start_time": start},
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(gateway_state="running", reload_existing=True)
+
+        entry = status.read_runtime_status()["platforms"]["api_server"]
+        assert entry["state"] == "connected"
+        assert "stale_state" not in entry
+
+
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
         """Regression: setdefault() preserved stale PID from previous process (#1631)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

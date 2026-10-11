@@ -145,17 +145,13 @@ def _owned_profile_platforms(writer_identity: Optional[tuple], platforms: dict) 
     Gateway startup preserves plain platform entries in gateway_state.json across restarts, so the
     raw map can carry fatal state for platforms since disabled/removed. Cross-profile aggregation
     has no config context to filter against, so it demands exact ``(pid, start_time)`` writer
-    identity instead. Fail closed: legacy entries without identity, or no live process, yield {} —
-    a false "degraded forever" is the worse failure mode.
+    identity instead. Delegates to the single shared predicate in ``gateway.status`` (the same one
+    the own-profile dashboard readers apply) so the two paths can never disagree.
     """
     if writer_identity is None:
         return {}
-    live_pid, live_start = writer_identity
-    return {
-        key: value for key, value in platforms.items()
-        if isinstance(value, dict)
-        and value.get("writer_pid") == live_pid
-        and value.get("writer_start_time") == live_start}
+    from gateway.status import runtime_platforms_owned_by
+    return runtime_platforms_owned_by(platforms, writer_identity[0], writer_identity[1])
 
 
 def _collect_profile_gateway_topology() -> dict[str, Any]:

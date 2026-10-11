@@ -1646,13 +1646,21 @@ def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_
     import os
 
     from gateway.config import GatewayConfig
+    from gateway.status import _get_process_start_time
     from tools.send_message_tool import _resolve_platform_config
 
     root = tmp_path / "hermes"
     profile = root / "profiles" / "coder"
     profile.mkdir(parents=True)
+    start = _get_process_start_time(os.getpid())
     (root / "gateway_state.json").write_text(
-        json.dumps({"pid": os.getpid(), "platforms": {"discord": {"state": "connected"}}}), encoding="utf-8")
+        json.dumps({
+            "pid": os.getpid(), "start_time": start,
+            # Every platform write is stamped with the writer's (pid, start_time); a gateway life's
+            # verdict only counts for the process that wrote it (card t_bca1c81e).
+            "platforms": {"discord": {"state": "connected", "writer_pid": os.getpid(),
+                                      "writer_start_time": start}},
+        }), encoding="utf-8")
     (profile / ".env").write_text("FIRECRAWL_API_KEY=x\n", encoding="utf-8")
     (profile / "config.yaml").write_text(
         "secrets:\n  bitwarden:\n    enabled: false\n    session_token: SECRET-VALUE\n", encoding="utf-8")
@@ -1664,3 +1672,34 @@ def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_
     assert str(os.getpid()) in err and str(profile) in err
     assert "bitwarden" in err
     assert "SECRET-VALUE" not in err
+
+
+def test_not_configured_error_ignores_a_foreign_life_gateway_entry(tmp_path, monkeypatch):
+    """A platform verdict written by a PREVIOUS gateway life must not vouch for the live process's
+    credentials (card t_bca1c81e). Startup preserves flat platform entries across a restart, so the
+    record's pid liveness alone is not enough: the ENTRY's writer identity must be the live life."""
+    import json
+    import os
+
+    from gateway.config import GatewayConfig
+    from gateway.status import _get_process_start_time
+    from tools.send_message_tool import _resolve_platform_config
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    start = _get_process_start_time(os.getpid())
+    (root / "gateway_state.json").write_text(
+        json.dumps({
+            "pid": os.getpid(), "start_time": start,
+            # Same flat key, a DIFFERENT (dead) life's writer identity.
+            "platforms": {"discord": {"state": "connected", "writer_pid": 4001,
+                                      "writer_start_time": 1000}},
+        }), encoding="utf-8")
+    (profile / ".env").write_text("FIRECRAWL_API_KEY=x\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+    _, _, _, err = _resolve_platform_config("discord", GatewayConfig())
+
+    assert "has discord connected" not in err

@@ -985,6 +985,18 @@ class TestBrowserExec:
         assert result["exit_code"] == 3
         assert "boom" in result["stderr"]
 
+    def test_truncated_stderr_keeps_final_exception_line(self, tmp_path, monkeypatch):
+        lines = [f'  File "<string>", line {i}, in frame_{i}' for i in range(400)]
+        big = "Traceback (most recent call last):\n" + "\n".join(lines) + "\nValueError: the real cause"
+        assert len(big) > bu_cli._STDERR_CAP_CHARS
+        (tmp_path / "err.txt").write_text(big, encoding="utf-8")
+        cli = _fake_cli(tmp_path, f'cat > /dev/null\ncat "{tmp_path / "err.txt"}" >&2\nexit 1\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        stderr = json.loads(bu_cli.browser_exec("print(1)"))["stderr"]
+        assert stderr.startswith("Traceback (most recent call last):")
+        assert "[STDERR TRUNCATED - " in stderr
+        assert stderr.endswith("ValueError: the real cause")
+
 
 
 

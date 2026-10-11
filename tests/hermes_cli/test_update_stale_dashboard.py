@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -140,6 +141,45 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
 
 class TestFindStaleDashboardPids:
     """Unit tests for the ps/wmic-based detection step."""
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-table scan")
+    def test_process_scan_uses_exact_hermes_entrypoints(self, monkeypatch):
+        import hermes_cli.process_identity as process_identity
+
+        rows = [
+            (12341, "herdr --session hermes server"),
+            (12342, "python worker.py --note 'hermes serve'"),
+            (12343, "python worker.py hermes serve --host 127.0.0.1 --port 0"),
+            (12344, "hermes serve --port 9119"),
+            (12345, "/venv/bin/python /venv/bin/hermes serve --port 9119"),
+            (12346, "python -m hermes_cli.main dashboard --port 9119"),
+        ]
+        monkeypatch.setattr(dashboard_procs, "_iter_process_table", lambda: rows)
+        monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
+        monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", lambda: [])
+        monkeypatch.setattr(dashboard_procs, "_is_caller_wrapper_shell", lambda *_: False)
+
+        assert _find_stale_dashboard_pids() == [12344, 12345, 12346]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-table scan")
+    def test_process_scan_recovers_argv_boundaries_for_paths_with_spaces(self, monkeypatch):
+        import hermes_cli.process_identity as process_identity
+        import hermes_cli.update_cmd_windows as update_cmd_windows
+
+        pid = 12347
+        argv = ["/Applications/Hermes Agent/venv/bin/python3", "-m", "hermes_cli.main", "serve"]
+        flattened = " ".join(argv)
+        proc = MagicMock()
+        proc.cmdline.return_value = argv
+        fake_psutil = SimpleNamespace(Process=lambda _pid: proc)
+
+        monkeypatch.setattr(update_cmd_windows, "_psutil", lambda: fake_psutil)
+        monkeypatch.setattr(dashboard_procs.subprocess, "run", _ps_runner(_ps_line(pid, flattened)))
+        monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
+        monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", lambda: [])
+        monkeypatch.setattr(dashboard_procs, "_is_caller_wrapper_shell", lambda *_: False)
+
+        assert _find_stale_dashboard_pids() == [pid]
 
 
 

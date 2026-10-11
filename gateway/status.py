@@ -557,7 +557,8 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
-    if command_line_runs_inline_source(cased_tokens):
+    from hermes_state_holders import _python_execution_target_at
+    if _python_execution_target_at(cased_tokens) is None and command_line_runs_inline_source(cased_tokens):
         # …unless the source is a Hermes bootstrap running the entry point in THIS process (store
         # launcher, launcher script, venv_sync re-entry): then its argv is this process's (#124318).
         cased_tokens = inline_bootstrap_argv(cased_tokens)
@@ -605,15 +606,11 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
 def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     """Gateway lifecycle subcommand a command line would EVENTUALLY launch, or None.
 
-    The identity matcher (``_gateway_command_subcommand``) deliberately refuses ``python -c <src>
-    …``: the trailing argv is the inline program's data, not that process's own identity (#107002).
-    Callers that inspect a command line as SPAWN INTENT — "if I launch this, does a gateway runtime
-    eventually appear?" — need the opposite answer, because
-    ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m hermes_cli.main gateway run``
-    behind exactly that wrapper. ``tests/_fixtures/live_system_guard.py`` is the canonical caller.
-
-    Still no substring matching: the wrapper is peeled token-wise and each remaining suffix is
-    handed to the same canonical matcher.
+    Unlike process identity, spawn intent follows ``gateway._spawn_gateway_restart_watcher``'s
+    inline-source argv to the gateway it will launch later (#107002). A selected Python module/script
+    owns its remaining arguments; only inline-source wrappers are peeled. Each suffix goes to the
+    canonical matcher, never substring matching. ``tests/_fixtures/live_system_guard.py`` is the
+    canonical caller.
     """
     direct = _gateway_command_subcommand(command)
     if direct is not None or not command:
@@ -623,6 +620,9 @@ def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     except ValueError:
         raw_tokens = command.split()
     cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    from hermes_state_holders import _python_execution_target_at
+    if _python_execution_target_at(cased_tokens) is not None:
+        return None
     flag_index = inline_source_flag_index(cased_tokens)
     if flag_index is None:
         return None

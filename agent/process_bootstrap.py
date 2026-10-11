@@ -16,7 +16,12 @@ from typing import Any, Optional
 
 from hermes_bootstrap import _happy_eyeballs_create_connection
 from utils import base_url_hostname, normalize_proxy_url
-from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
+from agent.proxy_bypass import (
+    first_proxy_env_value,
+    is_loopback_host,
+    should_bypass_proxy,
+    split_host_port,
+)
 
 
 _OPENAI_CLS_CACHE = None
@@ -180,6 +185,12 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     if not (proxy and base_url):
         return proxy
     raw = base_url.strip()
+    # Loopback endpoints (local Ollama/LM Studio/vLLM) never dial through a proxy, whatever
+    # NO_PROXY says — the same rule the CDP/websockets path applies (#110565). A bare
+    # HTTPS_PROXY with no loopback NO_PROXY entry used to tunnel the request into the proxy,
+    # and the stream hung with no error callback until the stale watchdog fired (#135208).
+    if is_loopback_host(split_host_port(raw)[0]):
+        return None
     return None if should_bypass_proxy(raw if "://" in raw else f"//{raw}") else proxy
 
 

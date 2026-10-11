@@ -2837,6 +2837,9 @@ Secret redaction and the website blocklist:
 ```yaml
 security:
   redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
+  terminal_secret_isolation: auto  # Linux: kernel-isolate secret stores from agent-run commands (auto|require|off)
+  reply_image_url_delivery: generated # Which reply image URLs the gateway fetches: generated|all|off
+  reply_image_allowed_hosts: []       # Extra trusted hosts for reply_image_url_delivery
   website_blocklist:             # See Website Blocklist section below
     enabled: false
     domains: []
@@ -2844,6 +2847,8 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
+- `terminal_secret_isolation` — Linux only, via Landlock: keeps `.env`, `auth.json`, token stores and other secrets out of the agent's shell, background processes, `execute_code` and cron scripts, and makes `config.yaml`, `hooks/` and `plugins/` read-only for them. `auto` (default) isolates when Landlock is available and otherwise runs commands unprotected with a one-time warning; `require` refuses them instead and is recommended for agents that read untrusted content; `off` disables it. macOS and Windows run unprotected with a warning. See [Secret isolation](security.md#secret-isolation).
+- `reply_image_url_delivery` — which image URLs in an agent reply the gateway may fetch and deliver: `generated` (default) only image-generation CDN hosts, `all` any image URL, `off` none. Other image URLs stay in the message as plain links. `reply_image_allowed_hosts` adds trusted hostnames (dotted FQDNs, suffix match).
 
 Earlier releases also had `tirith_*` keys for a bundled command scanner; it was removed and upgrading drops those keys. Content-level command checks are described in [Content-Level Command Checks](security.md#content-level-command-checks).
 

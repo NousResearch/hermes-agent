@@ -62,6 +62,12 @@ GATEWAY_RELAY_PLATFORMS MY_APP_KEY MY_CUSTOM_VAR
 """.split()
 
 
+AMBIENT_SECRETS_DROPPED = {
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE", "CLAUDE_CODE_OAUTH_TOKEN", "MY_APP_KEY",
+}
+
+
 def _running_site():
     return Path(sys.prefix) / ("Lib/site-packages" if os.name == "nt" else
                               f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
@@ -88,7 +94,10 @@ def test_terminal_child_observes_declared_policy(child_env, monkeypatch):
         observed = observe_terminal(env, sorted(blocked | set(OPERATOR_ALLOWED)))
     finally:
         env.cleanup()
-    assert observed == {**dict.fromkeys(blocked), **{k: "fake-" + k for k in OPERATOR_ALLOWED},
+    # Secret-shaped ambient names are deny-by-default (passthrough re-allows them);
+    # see tests/tools/test_terminal_secret_env_deny.py.
+    assert observed == {**dict.fromkeys(blocked | AMBIENT_SECRETS_DROPPED),
+                        **{k: "fake-" + k for k in set(OPERATOR_ALLOWED) - AMBIENT_SECRETS_DROPPED},
                         "MY_CUSTOM_VAR": "caller-value"}
     assert dict(os.environ) == before
 
@@ -124,7 +133,10 @@ def test_adapter_and_provider_profile_secrets_never_reach_children(child_env, mo
         "nonterminal": local.hermes_subprocess_env,
     }
     observed = observe_child(factories[builder](), sorted(secrets | set(OPERATOR_SECRETS)))
-    assert observed == {**dict.fromkeys(secrets), **{k: "fake-" + k for k in OPERATOR_SECRETS}}
+    # Terminal children (foreground, background) drop the operator's own secret-shaped ambient
+    # names until passthrough registers them; non-terminal factories keep them.
+    operator_value = (lambda k: None) if builder in ("foreground", "background") else (lambda k: "fake-" + k)
+    assert observed == {**dict.fromkeys(secrets), **{k: operator_value(k) for k in OPERATOR_SECRETS}}
     # Skill passthrough is what forwards a name into docker/ssh/modal and execute_code children.
     register_env_passthrough(sorted(secrets | set(OPERATOR_SECRETS)))
     assert not any(is_env_passthrough(name) for name in secrets)
@@ -935,7 +947,8 @@ class TestNativeEnvironmentContracts:
 
         def _fake_popen(cmd, **kwargs):
             captured["env"] = kwargs.get("env", {})
-            captured["staging"] = os.path.dirname(cmd[1])
+            real = cmd[cmd.index("--") + 1:] if "--" in cmd else cmd  # Linux: Landlock helper prefix
+            captured["staging"] = os.path.dirname(real[1])
             proc = MagicMock()
             # The kernel's reader threads drain with read1(); a bare MagicMock never returns
             # EOF there, so the stderr thread spins forever appending mocks (a 1 GB/min leak

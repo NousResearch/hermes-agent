@@ -567,6 +567,23 @@ terminal:
 #   # disable the gate; add fnmatch patterns on the basename to protect more files.
 #   protected_instruction_files: true
 #   protected_instruction_extra_patterns: []
+#   # Kernel-enforced isolation of Hermes secret stores (.env, auth.json, token
+#   # dirs) from every agent-driven child: terminal, background/PTY, execute_code,
+#   # cron scripts. Linux-only (Landlock); other OSes run unprotected with a warning.
+#   #   auto (default) - sandbox when Landlock is usable, otherwise run unprotected (warns once)
+#   #   require        - always sandbox; refuse commands if Landlock is unavailable
+#   #   off            - no isolation
+#   terminal_secret_isolation: auto
+#   # Which image URLs in an agent reply the gateway may fetch and auto-deliver.
+#   # A model-authored URL to an attacker host is an exfiltration channel, so only
+#   # image-generation CDNs auto-deliver by default; any other image URL is left in
+#   # the message as a text link and never fetched.
+#   #   generated (default) - image-generation CDN hosts only
+#   #   all                 - any image URL
+#   #   off                 - never auto-deliver
+#   reply_image_url_delivery: generated
+#   # Extra hostnames (FQDN suffixes) trusted for reply-image auto-delivery.
+#   reply_image_allowed_hosts: []
 
 # =============================================================================
 # LSP Diagnostics (post-write lint for write_file / patch)

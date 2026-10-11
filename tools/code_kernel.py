@@ -611,6 +611,7 @@ def _parent_process_handle(child_env: dict[str, str]):
 def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
            sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "") -> None:
     from tools.code_execution_env import _build_child_env
+    from tools.environments.secret_isolation import wrap_argv
     from tools.code_execution_tool import generate_hermes_tools_module
     kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_")
     kernel.rpc_token = secrets.token_urlsafe(32)
@@ -637,7 +638,7 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
         pass_fds = (death_r,)
     try:
         kernel.proc = subprocess.Popen(
-            [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")],
+            wrap_argv([child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")]),
             # Strict mode passes an empty cwd: the kernel's staging dir plays the per-call tmpdir's role.
             cwd=child_cwd or kernel.tmpdir, env=child_env, start_new_session=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,

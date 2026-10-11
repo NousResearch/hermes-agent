@@ -165,10 +165,12 @@ def test_no_agent_script_gets_owning_profiles_declared_secret_never_launch_resid
     assert output.splitlines() == ["JOB_SVC_TOKEN=set", "LAUNCH_ONLY_TOKEN=MISSING"]
 
 
-def test_no_agent_script_of_launch_profile_keeps_its_own_env_credential(hermes_env, monkeypatch):
-    """Single-profile documented flow: the launch profile's own script still inherits the
-    credential its .env put in the process env — nothing is stripped for a non-routed job."""
+def test_no_agent_script_of_launch_profile_gets_its_env_credential_only_via_passthrough(hermes_env, monkeypatch):
+    """Single-profile flow. The agent's cronjob tool can schedule a script job, so the
+    script is an agent-reachable child and a .env credential reaches it only when the name is declared
+    in terminal.env_passthrough (otherwise ``env | curl`` in a scheduled script would exfiltrate it)."""
     from cron.scheduler_script import _run_job_script
+    from tools import env_passthrough
 
     (hermes_env / ".env").write_text("LAUNCH_ONLY_TOKEN=launch-secret\n", encoding="utf-8")
     monkeypatch.setenv("LAUNCH_ONLY_TOKEN", "launch-secret")
@@ -176,7 +178,12 @@ def test_no_agent_script_of_launch_profile_keeps_its_own_env_credential(hermes_e
     (hermes_env / "scripts" / "probe.sh").write_text(_PRESENCE_PROBE, encoding="utf-8")
 
     ok, output = _run_job_script("probe.sh")
+    assert ok is True
+    assert output.splitlines() == ["JOB_SVC_TOKEN=MISSING", "LAUNCH_ONLY_TOKEN=MISSING"]
 
+    (hermes_env / "config.yaml").write_text("terminal:\n  env_passthrough: [LAUNCH_ONLY_TOKEN]\n", encoding="utf-8")
+    monkeypatch.setattr(env_passthrough, "_config_passthrough", {})
+    ok, output = _run_job_script("probe.sh")
     assert ok is True
     assert output.splitlines() == ["JOB_SVC_TOKEN=MISSING", "LAUNCH_ONLY_TOKEN=set"]
 
@@ -357,6 +364,8 @@ def test_a_routed_profile_script_never_receives_a_launch_only_name(hermes_env, m
 
     routed = launch / "profiles" / "ops"
     (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    # A secret-source value reaches a script only when declared for passthrough.
+    (routed / "config.yaml").write_text("terminal:\n  env_passthrough: [ROUTED_VAULT_ONLY]\n", encoding="utf-8")
     # Under the routed home override the runner resolves scripts against THAT profile's scripts dir.
     script = routed / "scripts" / "probe_launch_only.sh"
     script.write_text(
@@ -405,6 +414,8 @@ def test_a_routed_profile_script_keeps_administrator_managed_values_over_its_own
 
     routed = launch / "profiles" / "ops"
     (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    # A dotenv-supplied (here: managed) value reaches a script only when declared.
+    (routed / "config.yaml").write_text("terminal:\n  env_passthrough: [ORG_POLICY_FLAG]\n", encoding="utf-8")
     script = routed / "scripts" / "probe_policy.sh"
     script.write_text('#!/usr/bin/env bash\necho "${ORG_POLICY_FLAG:-<unset>}"\n')
 

@@ -207,8 +207,10 @@ def _probe_python(python_path: str, code: str, *, text: bool = False):
     """Run ``python_path -c code``; None if missing, unspawnable, or past the 5s timeout."""
     try:
         from agent.delegation_context import delegated_child_subprocess_env
+        from tools.environments.secret_isolation import wrap_argv
+        # The interpreter may be a project-venv file the agent can write: probe it sandboxed.
         return subprocess.run(
-            [python_path, "-c", code], timeout=5, capture_output=True, text=text,
+            wrap_argv([python_path, "-c", code]), timeout=5, capture_output=True, text=text,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL, env=delegated_child_subprocess_env(),
             check=False,

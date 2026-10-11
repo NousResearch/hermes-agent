@@ -3070,6 +3070,8 @@ class BasePlatformAdapter(ABC):
                   if any(m.group(2).lower().endswith(ext) or ext in m.group(2).lower()
                          for ext in markers)]
         images.extend((match.group(1), "") for match in re.finditer(html_pattern, content))
+        from gateway.platforms import base_reply_images  # #129975: other image URLs stay links, never fetched
+        images = [(url, alt) for url, alt in images if base_reply_images.auto_deliverable(url)]
         if not images:
             return images, content
         # Remove only the tags we extracted, not every markdown image.

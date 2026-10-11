@@ -10,6 +10,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from typing import Any
 from typing import Optional
@@ -20,9 +21,29 @@ def _dir_holds_board(d: Path) -> bool:
     # ``board.json`` is the identity marker: archive/hard-delete both leave the
     # directory without it, and a stale ``connect(board=slug)`` used to leave a
     # ``kanban.db``-only stub that resurfaced in the board list as an empty
-    # active board (#43243). Discovery must therefore require the metadata
-    # file; a DB-only directory is a stub to ignore, never a board.
-    return (d / "board.json").exists()
+    # active board (#43243). A DB-only directory therefore still counts as a
+    # board only when its kanban.db is a live database carrying at least one
+    # task — the shape boards created before per-board metadata have; nothing
+    # ever writes their ``board.json``, so requiring it alone dropped those
+    # boards from discovery permanently (#135556). 0-byte files, schema-only
+    # DBs (0 tasks) and anything unreadable stay stubs to ignore, never boards.
+    if (d / "board.json").exists():
+        return True
+    db = d / "kanban.db"
+    if not db.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+    except (sqlite3.Error, ValueError, OSError):
+        return False
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()
+        return bool(row) and bool(row[0])
+    except sqlite3.Error:
+        # Missing tasks table (schema-only stub) or an unreadable file.
+        return False
+    finally:
+        conn.close()
 
 
 def board_metadata_path(board: Optional[str] = None) -> Path:

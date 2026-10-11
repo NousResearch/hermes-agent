@@ -1,0 +1,15 @@
+name: digital-marketing-pro
+repo: https://github.com/indranilbanerjee/digital-marketing-pro
+sha: f06d2db3aad70893d958bd2d9a4a7ae20368c632
+description: "Open-source marketing plugin for agencies and in-house teams: 164 skills for strategy, SEO/AEO/GEO, paid media, content, CRM and analytics, registered as Hermes skills. Disclosure: optional stdlib scripts call third-party APIs (ad, CRM and email platforms, model providers) only when the user runs them with their own keys. A live write the plugin's own executor sends fires only against a single-use approval record for that exact request, created after the user types yes; writes through MCP tools rely on the skill's typed yes and Hermes's approval prompt; see PRIVACY.md."
+maintainer: Indranil Banerjee
+tier: community
+category: tools
+docs_url: https://github.com/indranilbanerjee/digital-marketing-pro#readme
+version: "3.35.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

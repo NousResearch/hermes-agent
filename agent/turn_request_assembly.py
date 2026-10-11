@@ -238,6 +238,22 @@ def assemble_api_request(
             agent, api_messages, pending_moa_prepared_request
         )
 
+    # Fork: guarantee the outbound payload opens with a genuine user turn.
+    # Runs last — after prefill insertion, thinking-only drops, and tool
+    # sanitization have settled the leading structure — on the API copy
+    # only, so persisted history is untouched. A resumed lineage whose
+    # history begins with a context-compaction summary merged into a
+    # leading assistant(tool_calls) turn otherwise trips OpenAI-compatible
+    # Qwen-derived chat templates (LM Studio / LMLink: "No user query found
+    # in messages.") and Anthropic's non-user-leading rejection. No-op on
+    # well-formed payloads.
+    from agent.agent_runtime_helpers import ensure_user_leads_api_messages
+    if ensure_user_leads_api_messages(api_messages):
+        request_logger.info(
+            "Inserted leading user bridge to keep payload well-formed (session=%s)",
+            getattr(agent, "session_id", None) or "-",
+        )
+
     # One image-stripped estimate feeds both figures; tools counted separately (50+
     # tools ≈ 20-30K tokens); total_chars is a rough proxy for logs/hooks only.
     # Charge stale thinking only when the active route replays it.

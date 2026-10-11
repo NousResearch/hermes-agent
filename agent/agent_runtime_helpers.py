@@ -374,6 +374,19 @@ def note_turn_persisted(agent):
     agent._inflight_turn_session_id = None
 
 
+# Bridge inserted ahead of a malformed leading assistant/tool turn so the
+# payload opens with a genuine user turn. Shared by ``repair_message_sequence``
+# (Pass 4, writes through to persisted history) and
+# ``ensure_user_leads_api_messages`` (send-time copy, belt-and-suspenders). Kept
+# short and framed as a continuation cue so weak local models don't treat it as
+# fresh input; the real current query is still the last user message.
+_LEADING_USER_BRIDGE = "(Conversation resumed — prior context follows below.)"
+
+# Non-conversational rows skipped when scanning for the leading turn:
+# provider envelopes (system) and Hermes transcript metadata (session_meta).
+_LEAD_SKIP_ROLES = ("system", "session_meta")
+
+
 def _is_codex_interim(m: dict) -> bool:
     """Codex Responses interim turn: carries its own continuation state, replayed verbatim."""
     return bool(
@@ -739,9 +752,48 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
     return merged, repairs
 
 
+def _ensure_user_leads(messages: List[Dict]) -> Tuple[List[Dict], int]:
+    """Pass 4: guarantee the first conversational message is a user turn.
+    A resumed lineage whose persisted history opens with a context-compaction
+    summary merged into a leading ``assistant(tool_calls)`` turn otherwise trips
+    OpenAI-compatible Qwen-derived chat templates ("No user query found in
+    messages.") and Anthropic's non-user-leading rejection on every request.
+    Inserting the bridge BEFORE the offending turn preserves assistant->tool
+    adjacency and every tool_call pairing (Pass 1 already dropped any orphan
+    leading ``tool``, so the first conversational turn here is user or
+    assistant). Unlike the send-time copy, this writes through to persisted
+    history, so a legacy malformed lineage is normalized once and stops
+    replaying the broken shape. No-op on histories that already lead with a
+    user turn — and on histories with no user turn at all, where a bridge
+    would fabricate context the session never had."""
+    repairs = 0
+    lead = 0
+    while (
+        lead < len(messages)
+        and isinstance(messages[lead], dict)
+        and messages[lead].get("role") in _LEAD_SKIP_ROLES
+    ):
+        lead += 1
+    if (
+        lead < len(messages)
+        and isinstance(messages[lead], dict)
+        and messages[lead].get("role") != "user"
+        and any(
+            isinstance(m, dict) and m.get("role") == "user"
+            for m in messages[lead + 1 :]
+        )
+    ):
+        messages.insert(
+            lead,
+            {"role": "user", "content": _LEADING_USER_BRIDGE, "timestamp": time.time()},
+        )
+        repairs += 1
+    return messages, repairs
+
+
 _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_assistants, _drop_stray_tool_results, _prune_unanswered_tool_calls,
-    _merge_consecutive_users,
+    _merge_consecutive_users, _ensure_user_leads,
 )
 
 def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
@@ -809,6 +861,48 @@ def repair_message_sequence_with_cursor(agent, messages: list[dict]) -> int:
             else:
                 agent._last_flushed_db_idx = min(agent._last_flushed_db_idx, len(messages))
     return repairs
+
+
+def ensure_user_leads_api_messages(api_messages: List[Dict]) -> int:
+    """Guarantee the first non-system message in an outbound payload is role=user.
+
+    OpenAI-compatible chat templates — notably the Qwen3-derived templates that
+    LM Studio and local gateways (LMLink) apply — resolve the "current user
+    query" by walking the turns, and raise ``"No user query found in messages."``
+    when the conversation leads with an ``assistant``/``tool`` turn instead of a
+    ``user`` turn. Anthropic likewise rejects a first message that is not
+    role=user. This shape is produced by a resumed lineage whose persisted
+    history opens with a context-compaction summary that an older compressor
+    merged into an ``assistant(tool_calls)`` message (the current compressor
+    pins that summary to role=user, but already-persisted histories replay the
+    malformed leading turn on every request).
+
+    Operates on the API-call-time copy only — never the persisted ``messages`` —
+    so nothing leaks into session persistence or the SessionDB flush cursor.
+    Inserts a minimal ``user`` bridge BEFORE the offending turn, which preserves
+    assistant->tool adjacency and every tool_call pairing (a leading ``tool`` or
+    ``assistant`` is invalid for these providers regardless, so this only fires
+    on already-broken payloads and is a no-op on well-formed ones).
+
+    Returns 1 if a bridge was inserted, else 0.
+    """
+    if not api_messages:
+        return 0
+    idx = 0
+    n = len(api_messages)
+    while idx < n and isinstance(api_messages[idx], dict) and api_messages[idx].get("role") in _LEAD_SKIP_ROLES:
+        idx += 1
+    if idx >= n:
+        return 0  # nothing but system/meta rows — no turn to lead
+    first = api_messages[idx]
+    if not isinstance(first, dict) or first.get("role") == "user":
+        return 0  # already well-formed
+    if not any(
+        isinstance(m, dict) and m.get("role") == "user" for m in api_messages[idx + 1 :]
+    ):
+        return 0  # no real user turn anywhere — a bridge would fabricate one
+    api_messages.insert(idx, {"role": "user", "content": _LEADING_USER_BRIDGE})
+    return 1
 
 
 def _flatten_content_text(content: Any) -> str:
@@ -3827,15 +3921,18 @@ def force_close_tcp_sockets(client: Any) -> int:
 
 
 __all__ = [
-    "_iter_pool_sockets",
+    "_LEAD_SKIP_ROLES",
+    "_LEADING_USER_BRIDGE",
     "anthropic_prompt_cache_policy",
     "apply_pending_steer_to_tool_results",
     "blank_cache_policy_stub",
+    "cleanup_dead_connections",
     "convert_to_trajectory_format",
     "copy_reasoning_content_for_api",
     "create_openai_client",
     "drop_thinking_only_and_merge_users",
     "dump_api_request_debug",
+    "ensure_user_leads_api_messages",
     "extract_api_error_context",
     "extract_reasoning",
     "force_close_tcp_sockets",

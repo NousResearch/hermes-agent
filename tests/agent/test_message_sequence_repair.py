@@ -1,17 +1,16 @@
 """Tests for pre-API-call message-sequence repair.
 
-Covers ``_repair_message_sequence`` and
-``_drop_trailing_empty_response_scaffolding`` (which keeps the executed
-tool pair under the scaffolding). Together these prevent the self-reinforcing empty-
+Covers ``_repair_message_sequence`` and the extended
+``_drop_trailing_empty_response_scaffolding`` behavior that rewinds past
+orphan tool-result tails. Together these prevent the self-reinforcing empty-
 response loop observed in session 20260507_044111_fa7e65, where a tool-result
 followed directly by a user message produced silent empty responses from
 providers (violating role alternation), which retriggered the empty-retry
 recovery every turn.
 """
 
-import pytest
-
 from run_agent import AIAgent
+import pytest
 
 
 def _bare_agent():
@@ -20,23 +19,35 @@ def _bare_agent():
 
 # ── _drop_trailing_empty_response_scaffolding ──────────────────────────────
 
-def test_drop_scaffolding_keeps_executed_tool_pair():
-    """Only the sentinel goes: the assistant+tool pair already ran and was saved."""
+def test_drop_scaffolding_pops_sentinel_keeps_orphan_tool_pair():
+    """Scaffolding strip pops the empty-response sentinel but keeps the orphan
+    assistant(tool_calls)+tool pair: they were saved before the tool ran, so
+    rewinding them would make the model repeat a side effect the durable
+    transcript already records (upstream contract)."""
     agent = _bare_agent()
-    executed = [
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "out"},
+        {"role": "assistant", "content": "(empty)",
+         "_empty_terminal_sentinel": True},
+    ]
+
+    AIAgent._drop_trailing_empty_response_scaffolding(agent, messages)
+
+    assert messages == [
         {"role": "user", "content": "task"},
         {"role": "assistant", "content": "",
          "tool_calls": [{"id": "t1", "type": "function",
                          "function": {"name": "f", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "t1", "content": "out"},
     ]
-    messages = executed + [
-        {"role": "assistant", "content": "(empty)",
-         "_empty_terminal_sentinel": True},
-    ]
 
-    AIAgent._drop_trailing_empty_response_scaffolding(agent, messages)
-    assert messages == executed
+
+
+
 
 
 # ── _repair_message_sequence ───────────────────────────────────────────────
@@ -66,69 +77,6 @@ def test_repair_preserves_user_content_when_one_side_empty():
     AIAgent._repair_message_sequence(agent, messages)
 
     assert messages == [{"role": "user", "content": "real message"}]
-
-
-def test_repair_marker_user_merge_keeps_plain_row_addressable():
-    """#94486: a display-marker user row (model-switch marker, persisted as
-    role=user on purpose per #48338) merging with the plain user row after it
-    must keep the pair addressable — the merged row drops the display
-    classification and carries the plain row's durable id, so rewind/submit
-    addressing (which indexes non-display user turns) can still resolve it.
-    """
-    agent = _bare_agent()
-    messages = [
-        {"role": "assistant", "content": "reply"},
-        {
-            "role": "user",
-            "display_kind": "model_switch",
-            "_row_id": 12134,
-            "content": "[System: The active model for this chat has changed to ds4.]",
-        },
-        {"role": "user", "_row_id": 12135, "content": "the user's real prompt"},
-    ]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs == 1
-    assert len(messages) == 2
-    merged = messages[1]
-    assert merged["role"] == "user"
-    assert not merged.get("display_kind")
-    assert merged["_row_id"] == 12135
-    assert "the user's real prompt" in merged["content"]
-    assert "[System:" in merged["content"]
-
-
-def test_repair_plain_user_then_marker_stays_addressable():
-    """The mirror shape (plain user, then a display marker) already keeps the
-    plain row's identity; pin that the merge does not resurrect a display
-    classification or swap in the marker's id.
-    """
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "_row_id": 12134, "content": "the user's real prompt"},
-        {
-            "role": "user",
-            "display_kind": "model_switch",
-            "_row_id": 12135,
-            "content": "[System: The active model for this chat has changed to ds4.]",
-        },
-    ]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs == 1
-    assert len(messages) == 1
-    survivor = messages[0]
-    # The plain row keeps its own identity; the marker's id is retired onto
-    # the absorbed list and no display classification is resurrected.
-    assert survivor["role"] == "user"
-    assert survivor["_row_id"] == 12134
-    assert not survivor.get("display_kind")
-    assert survivor["content"] == (
-        "the user's real prompt\n\n[System: The active model for this chat has changed to ds4.]"
-    )
-    assert 12135 in (survivor.get("_absorbed_row_ids") or [])
 
 
 def test_repair_does_not_rewind_ongoing_dialog_tool_pair():
@@ -217,6 +165,18 @@ def test_repair_keeps_tool_matching_only_call_id():
 
     assert repairs == 0
     assert any(m.get("role") == "tool" for m in messages)
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def test_repair_keeps_tool_result_keyed_by_response_item_id():
@@ -437,6 +397,7 @@ def test_repair_merge_preserves_api_content_sidecar_with_multimodal_content():
     assert messages[1]["api_content"] == "wire bytes"
 
 
+
 def test_sanitize_consumes_all_responses_id_variants_for_duplicate_result():
     """A sibling-id replay must not replace the first real result."""
     from agent.agent_runtime_helpers import sanitize_api_messages
@@ -476,6 +437,7 @@ def test_tool_executor_uses_canonical_responses_pairing_id():
     assert _pairing_tool_call_id(
         SimpleNamespace(id="call_ABC|fc_123")
     ) == "call_ABC"
+
 
 
 # ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
@@ -521,6 +483,9 @@ def test_cursor_rewinds_when_compaction_happens_before_cursor():
     assert messages[agent._last_flushed_db_idx] is unflushed_assistant
 
 
+
+
+
 def test_flush_guard_clamps_overshooting_cursor():
     """_flush_messages_to_session_db safety net: an overshooting cursor must
     not produce a negative-start slice that skips everything (#44837)."""
@@ -557,9 +522,19 @@ def test_flush_guard_clamps_overshooting_cursor():
 # ── Pass 0: merge consecutive assistant messages (issue #29148, #49147) ─────
 
 
+
+
+
+
+
+
+
+
 # ── tool_call_id de-duplication (#58327) ────────────────────────────────────
 # Strict providers (DeepSeek) reject a payload where the same tool_call_id
 # appears more than once with HTTP 400 "Duplicate value for 'tool_call_id'".
+
+
 
 
 def test_sanitize_deduplicates_duplicate_tool_results():
@@ -855,6 +830,10 @@ def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
     assert tool_msg["content"] == "file contents"
 
 
+
+
+
+
 # ── Self-recovery: heal empty-content non-final messages ──────────────────
 # Repro of the production incident: a dead stream persisted an empty-content
 # assistant stub mid-transcript, and every later request 400'd with
@@ -1104,6 +1083,14 @@ def test_compressor_sanitize_keeps_composite_keyed_pair():
 
 # ── _classify_tool_call_orphans ─────────────────────────────────────────
 
+def test_classify_orphans_empty():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    sv, rs, orphaned, missing = _classify_tool_call_orphans([])
+    assert sv == set()
+    assert rs == set()
+    assert orphaned == []
+    assert missing == []
+
 
 def test_classify_orphans_clean_pair():
     from agent.agent_runtime_helpers import _classify_tool_call_orphans
@@ -1116,6 +1103,26 @@ def test_classify_orphans_clean_pair():
     assert rs == {"call_1"}
     assert orphaned == []
     assert missing == []
+
+
+def test_classify_orphans_detects_orphaned_result():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    messages = [
+        {"role": "tool", "tool_call_id": "orphan_1", "content": "no matching call"},
+    ]
+    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
+    assert [m["tool_call_id"] for m in orphaned] == ["orphan_1"]
+    assert missing == []
+
+
+def test_classify_orphans_detects_missing_result():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+    ]
+    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
+    assert orphaned == []
+    assert [tc["id"] for tc in missing] == ["call_1"]
 
 
 def test_classify_orphans_mixed():
@@ -1391,137 +1398,211 @@ def test_sanitize_stubs_interrupted_first_occurrence_keeps_replay_pair():
     assert out[5]["content"] == "real result"
 
 
-# ── Bridged tool_call: wire-visible response name must echo the call name ──
-# Google matches functionResponse.name against functionCall.name and rejects a
-# mismatch with HTTP 400 INVALID_ARGUMENT. #72089 fixed this for the native
-# Gemini adapter; requests reaching Gemini through an OpenAI-compatible
-# gateway (OpenRouter, Vertex/LiteLLM proxies) skip that translation, so the
-# chokepoint sanitizer has to hold the same invariant.
+# ── ensure_user_leads_api_messages ─────────────────────────────────────────
+# Send-time invariant: the outbound payload must open with a genuine user turn.
+# A resumed lineage whose persisted history begins with a context-compaction
+# summary merged into a leading assistant(tool_calls) turn otherwise trips
+# OpenAI-compatible Qwen-derived chat templates (LM Studio / LMLink:
+# "No user query found in messages.") and Anthropic's non-user-leading reject.
+
+from agent.agent_runtime_helpers import ensure_user_leads_api_messages
 
 
-def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
-    """A tool_search-bridged result must go on the wire as ``tool_call``.
-
-    The executor labels the result with the unwrapped internal tool name for
-    dispatch/hooks/logging; Gemini sees that as a functionResponse whose name
-    does not match its functionCall and 400s.
-    """
-    from agent.agent_runtime_helpers import sanitize_api_messages
-
-    messages = [
-        {"role": "user", "content": "file an issue"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "call_1", "type": "function",
-                         "function": {
-                             "name": "tool_call",
-                             "arguments": ('{"name": "mcp__github__create_issue",'
-                                           ' "arguments": {"title": "Bug"}}'),
-                         }}]},
-        {"role": "tool", "name": "mcp__github__create_issue",
-         "tool_name": "mcp__github__create_issue",
-         "tool_call_id": "call_1", "content": '{"number": 123}'},
+def test_leading_assistant_summary_gets_user_bridge():
+    """system -> assistant(tool_calls) -> tool -> ... -> user  (resumed lineage)."""
+    api_messages = [
+        {"role": "system", "content": "SOUL"},
+        {"role": "assistant", "content": "[PRIOR CONTEXT ...]",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "todo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "{}"},
+        {"role": "assistant", "content": "Yes I can implement..."},
+        {"role": "user", "content": "move forward with all changes"},
     ]
-    out = sanitize_api_messages(list(messages))
-    result = next(m for m in out if m.get("role") == "tool")
-    assert result["name"] == "tool_call"
-    # The internal name stays available for the session DB / UI, and the
-    # caller's own message objects are untouched (per-call copy only).
-    assert result["tool_name"] == "mcp__github__create_issue"
-    assert messages[2]["name"] == "mcp__github__create_issue"
+
+    inserted = ensure_user_leads_api_messages(api_messages)
+
+    assert inserted == 1
+    assert api_messages[0]["role"] == "system"
+    assert api_messages[1]["role"] == "user"            # bridge now leads
+    assert api_messages[2]["role"] == "assistant"       # assistant->tool intact
+    assert api_messages[2]["tool_calls"][0]["id"] == "t1"
+    assert api_messages[3]["tool_call_id"] == "t1"      # pairing preserved
 
 
-def test_sanitize_leaves_already_matching_tool_result_name_alone():
-    """A directly-called tool already agrees — nothing to rewrite."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
-
-    messages = [
-        {"role": "user", "content": "weather?"},
-        {"role": "assistant", "content": None,
-         "tool_calls": [{"id": "call_1", "type": "function",
-                         "function": {"name": "get_weather", "arguments": "{}"}}]},
-        {"role": "tool", "name": "get_weather",
-         "tool_call_id": "call_1", "content": "sunny"},
+def test_well_formed_payload_is_noop():
+    api_messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "hi"},
     ]
-    out = sanitize_api_messages(list(messages))
-    assert [m["name"] for m in out if m.get("role") == "tool"] == ["get_weather"]
+    assert ensure_user_leads_api_messages(api_messages) == 0
+    assert len(api_messages) == 2
 
 
-def test_sanitize_does_not_invent_a_name_on_unnamed_tool_results():
-    """A result with no ``name`` is already valid — the id pairs it.
-
-    Adding the field would make clean transcripts non-identical on the wire
-    and needlessly perturb prompt caching.
-    """
-    from agent.agent_runtime_helpers import sanitize_api_messages
-
-    messages = [
-        {"role": "user", "content": "run it"},
-        {"role": "assistant", "content": None,
-         "tool_calls": [{"id": "call_1", "type": "function",
-                         "function": {"name": "terminal", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+def test_leading_orphan_tool_gets_bridge():
+    api_messages = [
+        {"role": "system", "content": "s"},
+        {"role": "tool", "tool_call_id": "x", "content": "{}"},
+        {"role": "user", "content": "q"},
     ]
-    out = sanitize_api_messages(list(messages))
-    assert out == messages
+    assert ensure_user_leads_api_messages(api_messages) == 1
+    assert api_messages[1]["role"] == "user"
 
 
-def test_sanitize_realigns_bridged_name_when_call_id_is_padded():
-    """Ids are stripped on both sides, so a padded id still pairs."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
-
-    messages = [
-        {"role": "user", "content": "file an issue"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": " call_1 ", "type": "function",
-                         "function": {"name": "tool_call", "arguments": "{}"}}]},
-        {"role": "tool", "name": "mcp__github__create_issue",
-         "tool_call_id": "call_1", "content": "{}"},
+def test_no_system_leading_assistant():
+    api_messages = [
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "q"},
     ]
-    out = sanitize_api_messages(list(messages))
-    assert [m["name"] for m in out if m.get("role") == "tool"] == ["tool_call"]
+    assert ensure_user_leads_api_messages(api_messages) == 1
+    assert api_messages[0]["role"] == "user"
 
 
-def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():
-    """A result cannot keep a stale name if it has no call frame to disagree
-    with: the orphan pass removes it before the realignment pass runs, so the
-    mismatch never reaches the provider."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
-
-    messages = [
-        {"role": "user", "content": "file an issue"},
-        # assistant tool_calls frame dropped by compression
-        {"role": "tool", "name": "mcp__github__create_issue",
-         "tool_call_id": "call_1", "content": "{}"},
-    ]
-    out = sanitize_api_messages(list(messages))
-    assert [m.get("role") for m in out] == ["user"]
+def test_system_only_and_empty_are_noops():
+    system_only = [{"role": "system", "content": "a"}]
+    assert ensure_user_leads_api_messages(system_only) == 0
+    assert system_only == [{"role": "system", "content": "a"}]
+    assert ensure_user_leads_api_messages([]) == 0
 
 
-# ── persist-marker contract: in-place mutations of stamped live dicts ──────
-#
-# ``_DB_PERSISTED_MARKER`` asserts the whole durable row (content, tool_calls,
-# reasoning sidecars) is already in session.db. Repair passes that mutate a
-# stamped survivor in place must pop it, or the flush scan identity-skips the
-# dict forever and the DB keeps the pre-repair row (silent live/DB divergence
-# on resume) — the same contract the micro-compaction defrag/merge sites honor.
+# ── repair_message_sequence Pass 3: leading-user invariant (persisted path) ──
+# Unlike ensure_user_leads_api_messages (send-time copy), Pass 3 writes through
+# to persisted history so a legacy malformed lineage is normalized once and
+# stops replaying the broken leading-assistant shape.
 
-from agent.context_compressor import _DB_PERSISTED_MARKER
+from agent.agent_runtime_helpers import _LEADING_USER_BRIDGE
 
 
-def test_repair_user_merge_pops_persist_marker_on_stamped_survivor():
-    """Two adjacent stamped user rows (an interrupted turn's flushed prompt plus
-    the next turn's prompt) merge in place; the survivor must lose its marker so
-    the merged text reaches session.db instead of the pre-merge row."""
+def test_pass3_bridges_leading_assistant_summary_in_history():
+    """Resumed lineage: system -> assistant(tool_calls) summary -> tool -> user."""
     agent = _bare_agent()
-    stamped = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
-    messages = [stamped, {"role": "user", "content": "second"}]
+    messages = [
+        {"role": "system", "content": "SOUL"},
+        {"role": "assistant", "content": "[PRIOR CONTEXT ...]",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "todo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "{}"},
+        {"role": "assistant", "content": "Yes I can implement..."},
+        {"role": "user", "content": "move forward"},
+    ]
 
     repairs = AIAgent._repair_message_sequence(agent, messages)
 
     assert repairs == 1
-    assert len(messages) == 1
-    assert messages[0]["content"] == "first\n\nsecond"
-    assert _DB_PERSISTED_MARKER not in messages[0]
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    assert messages[1]["content"] == _LEADING_USER_BRIDGE
+    # Write-through path stamps the bridge so persistence invariants
+    # (every DB-materialized row carries a numeric timestamp) hold.
+    assert isinstance(messages[1]["timestamp"], (int, float))
+    assert messages[2]["role"] == "assistant"          # assistant->tool intact
+    assert messages[2]["tool_calls"][0]["id"] == "t1"
+    assert messages[3]["tool_call_id"] == "t1"          # pairing preserved
+
+
+def test_pass3_skips_session_meta_rows():
+    """Hermes transcripts open with a session_meta row; the bridge must go
+    after it, and a transcript already leading with user stays untouched."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "session_meta", "tools": []},
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+    ]
+    assert AIAgent._repair_message_sequence(agent, messages) == 0
+    assert all(m.get("content") != _LEADING_USER_BRIDGE for m in messages)
+
+
+def test_pass3_no_bridge_without_any_user_turn():
+    """A history with no user turn at all (e.g. an ACP session holding a
+    single assistant message) is not the resumed-lineage case — inserting
+    a bridge would fabricate a user turn the session never had."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "assistant", "content": "hello", "reasoning": "step-by-step"},
+    ]
+    assert AIAgent._repair_message_sequence(agent, messages) == 0
+    assert messages == [
+        {"role": "assistant", "content": "hello", "reasoning": "step-by-step"},
+    ]
+
+
+def test_ensure_user_leads_no_bridge_without_any_user_turn():
+    api_messages = [
+        {"role": "system", "content": "s"},
+        {"role": "assistant", "content": "greeting only"},
+    ]
+    assert ensure_user_leads_api_messages(api_messages) == 0
+    assert [m["role"] for m in api_messages] == ["system", "assistant"]
+
+
+def test_pass3_noop_on_well_formed_history():
+    agent = _bare_agent()
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "y"},
+    ]
+    assert AIAgent._repair_message_sequence(agent, messages) == 0
+    assert len(messages) == 3
+    assert all(m["content"] != _LEADING_USER_BRIDGE for m in messages)
+
+
+def test_pass3_leading_orphan_tool_dropped_then_leads_with_user():
+    """Pass 1 drops the orphan leading tool; Pass 3 then sees a user lead (no
+    double-bridge)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "tool", "tool_call_id": "x", "content": "{}"},  # orphan
+        {"role": "user", "content": "q"},
+    ]
+    AIAgent._repair_message_sequence(agent, messages)
+    assert messages == [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "q"},
+    ]
+
+
+def test_pass3_idempotent_after_persisted_bridge():
+    """Once normalized+persisted, re-running repair must not add a second
+    bridge (the resumed history now leads with the bridge user turn)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "assistant", "content": "summary",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "{}"},
+        {"role": "user", "content": "go"},
+    ]
+    AIAgent._repair_message_sequence(agent, messages)
+    n_bridges_1 = sum(1 for m in messages if m.get("content") == _LEADING_USER_BRIDGE)
+    AIAgent._repair_message_sequence(agent, messages)  # simulate next turn / resume
+    n_bridges_2 = sum(1 for m in messages if m.get("content") == _LEADING_USER_BRIDGE)
+    assert n_bridges_1 == 1 and n_bridges_2 == 1
+
+
+def test_drop_scaffolding_keeps_executed_tool_pair():
+    """Only the sentinel goes: the assistant+tool pair already ran and was saved."""
+    agent = _bare_agent()
+    executed = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "out"},
+    ]
+    messages = executed + [
+        {"role": "assistant", "content": "(empty)",
+         "_empty_terminal_sentinel": True},
+    ]
+
+    AIAgent._drop_trailing_empty_response_scaffolding(agent, messages)
+    assert messages == executed
+
+
+# ── _repair_message_sequence ───────────────────────────────────────────────
 
 
 def test_repair_assistant_merge_pops_persist_marker_on_content_rewrite():
@@ -1538,33 +1619,6 @@ def test_repair_assistant_merge_pops_persist_marker_on_content_rewrite():
     assert repairs == 1
     assert messages[1]["content"] == "first reply\nsecond reply"
     assert _DB_PERSISTED_MARKER not in messages[1]
-
-
-def test_repair_prune_unanswered_tool_calls_pops_persist_marker():
-    """Pass 2 rewrites ``msg["tool_calls"]`` in place on a stamped assistant
-    row; the marker must go or the DB keeps the unpruned call list."""
-    agent = _bare_agent()
-    stamped = {
-        "role": "assistant", "content": "calling tools",
-        "tool_calls": [
-            {"id": "t1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
-            {"id": "t2", "type": "function", "function": {"name": "g", "arguments": "{}"}},
-        ],
-        _DB_PERSISTED_MARKER: True,
-    }
-    messages = [
-        {"role": "user", "content": "Q1"},
-        stamped,
-        {"role": "tool", "tool_call_id": "t1", "content": "out1"},
-        {"role": "user", "content": "next"},
-    ]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs >= 1
-    surviving = next(m for m in messages if m is stamped)
-    assert [tc["id"] for tc in surviving["tool_calls"]] == ["t1"]
-    assert _DB_PERSISTED_MARKER not in surviving
 
 
 def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
@@ -1584,39 +1638,6 @@ def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
 
 
 # ── sentinel-encoded multimodal content (#125299) ──────────────────────────
-
-def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
-    """A multimodal turn re-inserted as its ``\x00json:`` string (e.g. after a proactive prune
-    re-inserts history) must be decoded back to structured content, not glued onto an adjacent
-    text turn as a giant base64 blob; an undecodable one is left unmerged (#125299)."""
-    from hermes_state import SessionDB
-    from agent.agent_runtime_helpers import repair_message_sequence
-
-    parts = [
-        {"type": "text", "text": "look at this"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 4000}},
-    ]
-    encoded = SessionDB._encode_content(parts)
-    messages = [
-        {"role": "user", "content": encoded},
-        {"role": "user", "content": "any follow-up thoughts?"},
-    ]
-
-    repair_message_sequence(_bare_agent(), messages)
-
-    # The encoded turn is restored to structured content and left un-merged; the base64 image
-    # never leaks into the neighbouring text turn.
-    assert len(messages) == 2
-    assert messages[0]["content"] == parts
-    assert messages[1]["content"] == "any follow-up thoughts?"
-
-    # A body that no longer parses stays encoded and is never welded onto the next text turn.
-    corrupt = SessionDB._CONTENT_JSON_PREFIX + '[{"type": "text"} EXTRA garbage'
-    messages = [{"role": "user", "content": corrupt}, {"role": "user", "content": "still there?"}]
-
-    repair_message_sequence(_bare_agent(), messages)
-
-    assert [m["content"] for m in messages] == [corrupt, "still there?"]
 
 
 def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
@@ -1700,6 +1721,134 @@ _UNANSWERED_CALL = {"role": "assistant", "content": "", "_row_id": 21,
 _STRAY_RESULT = {"role": "tool", "tool_call_id": "orphan", "content": "out", "_row_id": 21}
 
 
+def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
+    """A multimodal turn re-inserted as its ``\x00json:`` string (e.g. after a proactive prune
+    re-inserts history) must be decoded back to structured content, not glued onto an adjacent
+    text turn as a giant base64 blob; an undecodable one is left unmerged (#125299)."""
+    from hermes_state import SessionDB
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    parts = [
+        {"type": "text", "text": "look at this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 4000}},
+    ]
+    encoded = SessionDB._encode_content(parts)
+    messages = [
+        {"role": "user", "content": encoded},
+        {"role": "user", "content": "any follow-up thoughts?"},
+    ]
+
+    repair_message_sequence(_bare_agent(), messages)
+
+    # The encoded turn is restored to structured content and left un-merged; the base64 image
+    # never leaks into the neighbouring text turn.
+    assert len(messages) == 2
+    assert messages[0]["content"] == parts
+    assert messages[1]["content"] == "any follow-up thoughts?"
+
+    # A body that no longer parses stays encoded and is never welded onto the next text turn.
+    corrupt = SessionDB._CONTENT_JSON_PREFIX + '[{"type": "text"} EXTRA garbage'
+    messages = [{"role": "user", "content": corrupt}, {"role": "user", "content": "still there?"}]
+
+    repair_message_sequence(_bare_agent(), messages)
+
+    assert [m["content"] for m in messages] == [corrupt, "still there?"]
+
+
+def test_repair_marker_user_merge_keeps_plain_row_addressable():
+    """#94486: a display-marker user row (model-switch marker, persisted as
+    role=user on purpose per #48338) merging with the plain user row after it
+    must keep the pair addressable — the merged row drops the display
+    classification and carries the plain row's durable id, so rewind/submit
+    addressing (which indexes non-display user turns) can still resolve it.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "assistant", "content": "reply"},
+        {
+            "role": "user",
+            "display_kind": "model_switch",
+            "_row_id": 12134,
+            "content": "[System: The active model for this chat has changed to ds4.]",
+        },
+        {"role": "user", "_row_id": 12135, "content": "the user's real prompt"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    # repairs == 2: one from merging the two user turns, one from Pass 3
+    # (`_ensure_user_leads`) bridging the leading assistant reply — raising a
+    # malformed leading-assistant history to the leading-user invariant.
+    assert repairs == 2
+    assert len(messages) == 3
+    # Pass 3 inserts the bridge at the front, so the merged row moves to index 2.
+    merged = messages[2]
+    assert merged["role"] == "user"
+    assert not merged.get("display_kind")
+    assert merged["_row_id"] == 12135
+    assert "the user's real prompt" in merged["content"]
+    assert "[System:" in merged["content"]
+
+
+def test_repair_plain_user_then_marker_stays_addressable():
+    """The mirror shape (plain user, then a display marker) already keeps the
+    plain row's identity; pin that the merge does not resurrect a display
+    classification or swap in the marker's id.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "_row_id": 12134, "content": "the user's real prompt"},
+        {
+            "role": "user",
+            "display_kind": "model_switch",
+            "_row_id": 12135,
+            "content": "[System: The active model for this chat has changed to ds4.]",
+        },
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    survivor = messages[0]
+    # The plain row keeps its own identity; the marker's id is retired onto
+    # the absorbed list and no display classification is resurrected.
+    assert survivor["role"] == "user"
+    assert survivor["_row_id"] == 12134
+    assert not survivor.get("display_kind")
+    assert survivor["content"] == (
+        "the user's real prompt\n\n[System: The active model for this chat has changed to ds4.]"
+    )
+    assert 12135 in (survivor.get("_absorbed_row_ids") or [])
+
+
+def test_repair_prune_unanswered_tool_calls_pops_persist_marker():
+    """Pass 2 rewrites ``msg["tool_calls"]`` in place on a stamped assistant
+    row; the marker must go or the DB keeps the unpruned call list."""
+    agent = _bare_agent()
+    stamped = {
+        "role": "assistant", "content": "calling tools",
+        "tool_calls": [
+            {"id": "t1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "t2", "type": "function", "function": {"name": "g", "arguments": "{}"}},
+        ],
+        _DB_PERSISTED_MARKER: True,
+    }
+    messages = [
+        {"role": "user", "content": "Q1"},
+        stamped,
+        {"role": "tool", "tool_call_id": "t1", "content": "out1"},
+        {"role": "user", "content": "next"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    surviving = next(m for m in messages if m is stamped)
+    assert [tc["id"] for tc in surviving["tool_calls"]] == ["t1"]
+    assert _DB_PERSISTED_MARKER not in surviving
+
+
 @pytest.mark.parametrize("ahead", [False, True], ids=["behind_survivor", "ahead_of_first_survivor"])
 @pytest.mark.parametrize("dropped", [_UNANSWERED_CALL, _STRAY_RESULT], ids=["unanswered_call", "stray_result"])
 def test_repair_records_dropped_tool_row_on_survivor(dropped, ahead):
@@ -1714,3 +1863,128 @@ def test_repair_records_dropped_tool_row_on_survivor(dropped, ahead):
     assert repairs == 1
     assert len(messages) == 1
     assert messages[0]["_absorbed_row_ids"] == [21]
+
+
+def test_repair_user_merge_pops_persist_marker_on_stamped_survivor():
+    """Two adjacent stamped user rows (an interrupted turn's flushed prompt plus
+    the next turn's prompt) merge in place; the survivor must lose its marker so
+    the merged text reaches session.db instead of the pre-merge row."""
+    agent = _bare_agent()
+    stamped = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
+    messages = [stamped, {"role": "user", "content": "second"}]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    assert messages[0]["content"] == "first\n\nsecond"
+    assert _DB_PERSISTED_MARKER not in messages[0]
+
+
+def test_sanitize_does_not_invent_a_name_on_unnamed_tool_results():
+    """A result with no ``name`` is already valid — the id pairs it.
+
+    Adding the field would make clean transcripts non-identical on the wire
+    and needlessly perturb prompt caching.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "run it"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "call_1", "type": "function",
+                         "function": {"name": "terminal", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert out == messages
+
+
+def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():
+    """A result cannot keep a stale name if it has no call frame to disagree
+    with: the orphan pass removes it before the realignment pass runs, so the
+    mismatch never reaches the provider."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "file an issue"},
+        # assistant tool_calls frame dropped by compression
+        {"role": "tool", "name": "mcp__github__create_issue",
+         "tool_call_id": "call_1", "content": "{}"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m.get("role") for m in out] == ["user"]
+
+
+# ── persist-marker contract: in-place mutations of stamped live dicts ──────
+#
+# ``_DB_PERSISTED_MARKER`` asserts the whole durable row (content, tool_calls,
+# reasoning sidecars) is already in session.db. Repair passes that mutate a
+# stamped survivor in place must pop it, or the flush scan identity-skips the
+# dict forever and the DB keeps the pre-repair row (silent live/DB divergence
+# on resume) — the same contract the micro-compaction defrag/merge sites honor.
+
+from agent.context_compressor import _DB_PERSISTED_MARKER
+
+
+def test_sanitize_leaves_already_matching_tool_result_name_alone():
+    """A directly-called tool already agrees — nothing to rewrite."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "call_1", "type": "function",
+                         "function": {"name": "get_weather", "arguments": "{}"}}]},
+        {"role": "tool", "name": "get_weather",
+         "tool_call_id": "call_1", "content": "sunny"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m["name"] for m in out if m.get("role") == "tool"] == ["get_weather"]
+
+
+def test_sanitize_realigns_bridged_name_when_call_id_is_padded():
+    """Ids are stripped on both sides, so a padded id still pairs."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "file an issue"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": " call_1 ", "type": "function",
+                         "function": {"name": "tool_call", "arguments": "{}"}}]},
+        {"role": "tool", "name": "mcp__github__create_issue",
+         "tool_call_id": "call_1", "content": "{}"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m["name"] for m in out if m.get("role") == "tool"] == ["tool_call"]
+
+
+def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
+    """A tool_search-bridged result must go on the wire as ``tool_call``.
+
+    The executor labels the result with the unwrapped internal tool name for
+    dispatch/hooks/logging; Gemini sees that as a functionResponse whose name
+    does not match its functionCall and 400s.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "file an issue"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "call_1", "type": "function",
+                         "function": {
+                             "name": "tool_call",
+                             "arguments": ('{"name": "mcp__github__create_issue",'
+                                           ' "arguments": {"title": "Bug"}}'),
+                         }}]},
+        {"role": "tool", "name": "mcp__github__create_issue",
+         "tool_name": "mcp__github__create_issue",
+         "tool_call_id": "call_1", "content": '{"number": 123}'},
+    ]
+    out = sanitize_api_messages(list(messages))
+    result = [m for m in out if m.get("role") == "tool"][0]
+    assert result["name"] == "tool_call"
+    # The internal name stays available for the session DB / UI, and the
+    # caller's own message objects are untouched (per-call copy only).
+    assert result["tool_name"] == "mcp__github__create_issue"
+    assert messages[2]["name"] == "mcp__github__create_issue"

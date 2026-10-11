@@ -844,6 +844,14 @@ def _restart_launchd_gateway_after_update(
     try:
         if not get_launchd_plist_path().exists():
             return [], []  # not a launchd install — nothing to do or warn
+        # The label is account-global and the plist path follows the REAL account home, so a
+        # scratch HERMES_HOME shaped like the native default derives the live install's label.
+        # Same ownership rule as the sibling loop (#93349): never refresh or restart another
+        # home's job.
+        from hermes_cli.update_fleet_scope import describe_skipped_runtime, launchd_label_foreign_home
+        if (foreign_home := launchd_label_foreign_home(current_label)) is not None:
+            print(describe_skipped_runtime("launchd job", current_label, foreign_home))
+            return [], []
         # Snapshot BEFORE the restart: "supervising some pid" was true before too, so only a pid that
         # actually changed distinguishes a restart from a no-op (the sibling loop's contract). Read-only
         # and verification-only — the restart itself is never gated on `launchctl list` (#74973).

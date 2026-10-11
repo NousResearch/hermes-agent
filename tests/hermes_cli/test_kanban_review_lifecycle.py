@@ -21,6 +21,7 @@ down:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +44,25 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+@pytest.fixture
+def reviewer_skill(kanban_home: Path) -> Path:
+    skill_file = (
+        kanban_home
+        / "profiles"
+        / "reviewer"
+        / "skills"
+        / "devops"
+        / "sdlc-review"
+        / "SKILL.md"
+    )
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text(
+        "---\nname: sdlc-review\ndescription: Review workflow\n---\n",
+        encoding="utf-8",
+    )
+    return skill_file
 
 
 def _row(conn, tid):
@@ -634,7 +654,9 @@ def test_dispatch_json_exposes_suppression_reasons(
 
 
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
-    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+    kanban_home: Path,
+    reviewer_skill: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import hermes_cli.config as cfgmod
     import hermes_cli.profiles as profmod
@@ -645,6 +667,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         "load_config",
         lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
     )
+    assert reviewer_skill.is_file()
     captured: list[list[str]] = []
 
     def spawn(task, workspace):
@@ -682,6 +705,66 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
 
     assert task_id in [task[0] for task in result.spawned]
     assert captured == [["domain-specific-review", "sdlc-review"]]
+
+
+@pytest.mark.parametrize("resolution_error", [False, True])
+def test_review_dispatch_without_resolvable_reviewer_skill_fails_open(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    resolution_error: bool,
+) -> None:
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    if resolution_error:
+        def deny_profile_resolution(_name: str) -> Path:
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(
+            profmod,
+            "get_profile_dir",
+            deny_profile_resolution,
+        )
+    captured: list[list[str]] = []
+
+    def spawn(task, workspace):
+        captured.append(list(task.skills or []))
+
+    with kbc.connect() as conn, caplog.at_level(logging.WARNING, logger=kbd.__name__):
+        task_id = kb.create_task(
+            conn,
+            title="review without shared skill",
+            assignee="quality",
+            skills=["domain-specific-review"],
+        )
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="ready",
+            expected_run_id=implementation.current_run_id,
+        )
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+
+    assert task_id in [task[0] for task in result.spawned]
+    assert captured == [["domain-specific-review"]]
+    warning_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    ]
+    assert any(
+        "quality" in message and "sdlc-review" in message
+        for message in warning_messages
+    )
 
 
 def test_review_dispatch_honors_global_and_per_profile_caps(

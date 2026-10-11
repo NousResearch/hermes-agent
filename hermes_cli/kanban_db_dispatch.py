@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import signal
@@ -31,6 +32,9 @@ if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
 
+logger = logging.getLogger(__name__)
+
+
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
@@ -38,6 +42,32 @@ DEFAULT_FAILURE_LIMIT = 2
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
+
+
+def _review_skill_resolvable(assignee: str) -> bool:
+    """Return whether the assignee profile can load the review skill."""
+    try:
+        from hermes_cli.profiles import get_profile_dir
+
+        skills_dir = get_profile_dir(assignee) / "skills"
+        resolvable = any(
+            skill_file.is_file()
+            for skill_file in skills_dir.glob("*/sdlc-review/SKILL.md")
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not resolve sdlc-review for profile %s; dispatching without it: %s",
+            assignee,
+            exc,
+            exc_info=True,
+        )
+        return False
+    if not resolvable:
+        logger.warning(
+            "Could not resolve sdlc-review for profile %s; dispatching without it",
+            assignee,
+        )
+    return resolvable
 
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
 # and make a terminal board call (kanban_block/kanban_complete/kanban_request_review)
@@ -2116,7 +2146,7 @@ def _dispatch_lane_task(
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-    if lane == "review":
+    if lane == "review" and _review_skill_resolvable(claimed.assignee or ""):
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
@@ -2740,43 +2770,6 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
-def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
-    """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
-    cmd = [
-        *_resolve_hermes_argv(),
-        "-p", profile_arg,
-        # A worker must NEVER boot the interactive TUI: its no-TTY bail-out
-        # exits 0 without doing the task → "protocol violation" every attempt.
-        "--cli",
-        # Workers run under a profile-scoped HERMES_HOME and so see that
-        # profile's shell-hook allowlist; pass --accept-hooks explicitly so
-        # configured hooks still register.
-        "--accept-hooks",
-    ]
-    # One `--skills X` pair per name: easier to read in `ps` and avoids quoting
-    # ambiguity if a skill name contains unusual chars.
-    for sk in task.skills or ():
-        if sk:
-            cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
-        # Pin the provider too so the worker resolves the model against the
-        # intended backend (model X with provider Y is the classic board-stall).
-        if task.provider_override:
-            cmd.extend(["--provider", task.provider_override])
-    # Independent of the model override — a task can run the profile's own
-    # model at a different depth.
-    if task.reasoning_effort:
-        cmd.extend(["--reasoning", task.reasoning_effort])
-    worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
-    if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
-    # goal_mode rides the same `-q` path: cli.py runs the judge loop there too, so the
-    # worker log keeps its live tool feed (forcing -Q blanked it).
-    return cmd
-
-
 def _open_worker_log(task: Task, board: Optional[str]):
     """Append-mode per-task log (a re-run on unblock appends, never overwrites),
     rotated first. Anchored at the board root (not the shared kanban root) so
@@ -2937,7 +2930,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
-    cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    from hermes_cli.kanban_db_dispatch_worker import worker_argv
+
+    cmd = worker_argv(task, profile_arg, env.get("HERMES_HOME"))
     # The module argv must carry the import context that made it resolvable:
     # the shim's in-process path injection is invisible to the bare child.
     _propagate_module_import_root(cmd, env)

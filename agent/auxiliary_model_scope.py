@@ -48,7 +48,7 @@ def _call_scoped_or_unscoped(fn: Any, *args: Any, model: Optional[str] = None, *
     return fn(*args, **kwargs)
 
 
-def _select_pool_entry(provider: str, model: Optional[str] = None) -> Tuple[bool, Optional[Any]]:
+def _select_pool_entry(provider: str, model: Optional[str] = None) -> tuple[bool, Optional[Any]]:
     """Return (pool_exists_for_provider, selected_entry)."""
     from agent.auxiliary_client import _load_pool_with_credentials
 

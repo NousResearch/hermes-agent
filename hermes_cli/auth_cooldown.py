@@ -13,8 +13,8 @@ from agent.credential_pool_cooldowns import _parse_absolute_timestamp
 
 
 def _merge_model_cooldown_state(
-    disk_entry: Dict[str, Any], entry: Dict[str, Any],
-) -> tuple[Dict[str, Any], float]:
+    disk_entry: dict[str, Any], entry: dict[str, Any],
+) -> tuple[dict[str, Any], float]:
     """Merge concurrent model cooldowns, never resurrecting one an explicit reset cleared (#128995).
 
     Returns the merged row and the disk-side clear timestamp. Model cooldowns are
@@ -62,7 +62,7 @@ def _merge_model_cooldown_state(
     return merged, disk_cleared_ts
 
 
-def _secret_fingerprint_changed(entry: Dict[str, Any], disk_entry: Dict[str, Any]) -> bool:
+def _secret_fingerprint_changed(entry: dict[str, Any], disk_entry: dict[str, Any]) -> bool:
     """Whether an env-backed/borrowed row's secret changed between memory and disk.
 
     Those rows are persisted without their secret, so both ``access_token`` sides are

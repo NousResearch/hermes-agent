@@ -376,7 +376,7 @@ def _next_priority(entries: list[PooledCredential]) -> int:
     return max((entry.priority for entry in entries), default=-1) + 1
 
 
-def _singleton_predates_entry(state: Any, entry: "PooledCredential") -> bool:
+def _singleton_predates_entry(state: Any, entry: PooledCredential) -> bool:
     """True only when the auth.json singleton is PROVABLY older than *entry*.
 
     Both sides stamp ``last_refresh`` on every successful rotation. When
@@ -1985,7 +1985,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             self._refresh_entry(entry, force=False)
 
     def _resync_stale_entry(
-        self, entry: PooledCredential, disk_rows: Optional[Dict[str, Any]] = None,
+        self, entry: PooledCredential, disk_rows: Optional[dict[str, Any]] = None,
     ) -> PooledCredential:
         """Re-read an exhausted/DEAD singleton-seeded entry from its token authority.
 
@@ -2033,7 +2033,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         sole_credential = self._is_sole_credential()
         from agent.credential_pool_cooldowns import (
             _exhausted_until, _is_manual_source, read_pool_rows_by_id)
-        disk_rows: Optional[Dict[str, Any]] = None
+        disk_rows: Optional[dict[str, Any]] = None
         for entry in self._entries:
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load; never lease an

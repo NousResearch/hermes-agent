@@ -26,7 +26,7 @@ MODEL_ENTITLEMENT_BENCH_SECONDS = 2 * 24 * 60 * 60
 LEGACY_MODEL_COOLDOWN_SENTINEL_S = 30 * 24 * 60 * 60
 
 
-def bound_rehydrated_model_cooldowns(cooldowns: Any) -> Dict[str, float]:
+def bound_rehydrated_model_cooldowns(cooldowns: Any) -> dict[str, float]:
     """Cap stale entitlement sentinels on load, leaving real provider windows intact.
 
     Only a value past ``LEGACY_MODEL_COOLDOWN_SENTINEL_S`` is a pre-bound bench; anything
@@ -73,9 +73,9 @@ def merge_model_cooldowns(*maps: Any) -> dict[str, float]:
 MODEL_COOLDOWN_OBSERVED_AT_KEY = "model_cooldown_observed_at"
 
 
-def merge_model_cooldown_observations(*maps: Any) -> Dict[str, float]:
+def merge_model_cooldown_observations(*maps: Any) -> dict[str, float]:
     """Latest observation epoch per model across concurrent pool snapshots."""
-    merged: Dict[str, float] = {}
+    merged: dict[str, float] = {}
     for observations in maps:
         if not isinstance(observations, dict):
             continue
@@ -87,7 +87,7 @@ def merge_model_cooldown_observations(*maps: Any) -> Dict[str, float]:
 
 def model_cooldowns_after_clear(
     cooldowns: Any, observations: Any, cleared_at: Optional[float],
-) -> tuple[Dict[str, float], Dict[str, float]]:
+) -> tuple[dict[str, float], dict[str, float]]:
     """Cooldown/observation maps that were recorded after *cleared_at*.
 
     A reset is a tombstone for every model observation that predates it. Legacy cooldown rows
@@ -125,8 +125,8 @@ class CredentialPoolModelCooldownMixin:
             )
 
     def _resync_model_cooldown_clear(
-        self, entry: "PooledCredential", disk_rows: Any = None,
-    ) -> "PooledCredential":
+        self, entry: PooledCredential, disk_rows: Any = None,
+    ) -> PooledCredential:
         """Honor a reset written by another process for a healthy, model-benched entry.
 
         Credential-wide exhausted/dead rows already resync through CredentialPool's status path.

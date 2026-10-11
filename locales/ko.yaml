@@ -2110,6 +2110,7 @@ cli:
     images_attached_preview_one: "[이미지 {count}개 첨부됨]"
     images_attached_preview_other: "[이미지 {count}개 첨부됨]"
     queued_next_turn: "다음 턴 대기열에 추가됨: {preview}"
+    queued_skill_next_turn: "다음 턴 대기열에 추가됨(스킬): {preview}"
     redirected_turn: "↪ 현재 턴 방향 변경: '{preview}'"
     model_selection_failed: "✗ 모델 선택 실패: {error}"
     auto_attached_image: "📎 이미지 자동 첨부: {name}"

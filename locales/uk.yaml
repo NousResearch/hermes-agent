@@ -2110,6 +2110,7 @@ cli:
     images_attached_preview_one: "[прикріплено {count} зображення]"
     images_attached_preview_other: "[прикріплено зображень: {count}]"
     queued_next_turn: "У черзі на наступний хід: {preview}"
+    queued_skill_next_turn: "У черзі на наступний хід (навичка): {preview}"
     redirected_turn: "↪ Поточний хід перенаправлено: '{preview}'"
     model_selection_failed: "✗ Не вдалося вибрати модель: {error}"
     auto_attached_image: "📎 Автоматично прикріплено зображення: {name}"

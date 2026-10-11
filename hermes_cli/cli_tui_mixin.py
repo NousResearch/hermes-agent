@@ -1468,6 +1468,18 @@ class CLITuiMixin:
             self._tui_enter_while_busy(text, images, payload)
         else:
             self._pending_input.put(payload)
+            if self._agent_running:
+                # A skill command carrying an instruction must not queue silently while the
+                # agent is busy: the user sees nothing happen, re-sends, and every send queues
+                # another full skill-expanded turn that replays after the run (#83209). Name
+                # the instruction so they know it is registered for the next turn. (Skills
+                # need a full turn - the expanded skill content must load into context - so
+                # mid-run steer is the wrong channel for them.)
+                from cli import _DIM, _RST, _cprint, _skill_command_instruction
+                skill_instruction = _skill_command_instruction(text)
+                if skill_instruction:
+                    preview = skill_instruction[:80] + ("..." if len(skill_instruction) > 80 else "")
+                    _cprint(f"  {_DIM}{t('cli.tui.queued_skill_next_turn', preview=preview)}{_RST}")
         # History stores real pasted content, not the placeholder, so up-arrow recall restores it.
         self._inline_pastes(buf)
         buf.reset(append_to_history=True)

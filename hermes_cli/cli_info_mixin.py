@@ -457,14 +457,14 @@ class CLIInfoMixin:
         next-turn message. Dispatching inline on the UI thread acts mid-run (``agent.steer()`` is
         thread-safe; ``/bg`` / ``/btw`` start their side session without touching the foreground turn).
         """
-        from cli import _looks_like_slash_command
+        from cli import _command_base, _looks_like_slash_command
         if not text or has_images or not _looks_like_slash_command(text):
             return False
         if not getattr(self, "_agent_running", False):
             return False
         try:
             from hermes_cli.commands import resolve_command
-            cmd = resolve_command(text.split(None, 1)[0].lower().lstrip('/'))
+            cmd = resolve_command(_command_base(text))
             return bool(cmd and cmd.name in names)
         except Exception:
             return False

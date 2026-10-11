@@ -2110,6 +2110,7 @@ cli:
     images_attached_preview_one: "[{count} صورة مرفقة]"
     images_attached_preview_other: "[{count} صور مرفقة]"
     queued_next_turn: "في قائمة الانتظار للدور التالي: {preview}"
+    queued_skill_next_turn: "في قائمة الانتظار للدور التالي (مهارة): {preview}"
     redirected_turn: "↪ أُعيد توجيه الدور الحالي: '{preview}'"
     model_selection_failed: "✗ فشل اختيار النموذج: {error}"
     auto_attached_image: "📎 صورة مرفقة تلقائيًا: {name}"

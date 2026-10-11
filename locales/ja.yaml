@@ -2110,6 +2110,7 @@ cli:
     images_attached_preview_one: "[画像 {count} 件を添付]"
     images_attached_preview_other: "[画像 {count} 件を添付]"
     queued_next_turn: "次のターンのキューに追加しました: {preview}"
+    queued_skill_next_turn: "次のターンのキューに追加しました（スキル）: {preview}"
     redirected_turn: "↪ 現在のターンをリダイレクトしました: '{preview}'"
     model_selection_failed: "✗ モデルの選択に失敗しました: {error}"
     auto_attached_image: "📎 画像を自動添付しました: {name}"

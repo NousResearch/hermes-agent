@@ -2374,6 +2374,7 @@ cli:
     images_attached_preview_one: "[{count} image jointe]"
     images_attached_preview_other: "[{count} images jointes]"
     queued_next_turn: "Mis en file pour le prochain tour : {preview}"
+    queued_skill_next_turn: "Mis en file pour le prochain tour (compétence) : {preview}"
     redirected_turn: "↪ Tour en cours redirigé : '{preview}'"
     model_selection_failed: "✗ Échec de la sélection du modèle : {error}"
     auto_attached_image: "📎 Image jointe automatiquement : {name}"

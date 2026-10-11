@@ -2127,6 +2127,7 @@ cli:
     images_attached_preview_one: "[{count} kép csatolva]"
     images_attached_preview_other: "[{count} kép csatolva]"
     queued_next_turn: "Sorba állítva a következő körre: {preview}"
+    queued_skill_next_turn: "Sorba állítva a következő körre (készség): {preview}"
     redirected_turn: "↪ Jelenlegi kör átirányítva: '{preview}'"
     model_selection_failed: "✗ A modell kiválasztása nem sikerült: {error}"
     auto_attached_image: "📎 Automatikusan csatolt kép: {name}"

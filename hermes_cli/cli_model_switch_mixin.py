@@ -919,12 +919,12 @@ class CLIModelSwitchMixin:
 
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
-        from cli import _looks_like_slash_command
+        from cli import _command_base, _looks_like_slash_command
         if not text or has_images or not _looks_like_slash_command(text):
             return False
         try:
             from hermes_cli.commands import resolve_command
-            cmd = resolve_command(text.split(None, 1)[0].lower().lstrip('/'))
+            cmd = resolve_command(_command_base(text))
             return bool(cmd and cmd.name == "model")
         except Exception:
             return False

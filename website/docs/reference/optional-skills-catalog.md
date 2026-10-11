@@ -137,6 +137,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**minecraft-modpack-server**](../user-guide/skills/optional/gaming/gaming-minecraft-modpack-server.md) | Host modded Minecraft servers (CurseForge, Modrinth). |
+| [**mod-any-game**](../user-guide/skills/optional/gaming/gaming-mod-any-game.md) | Mod a PC game you own, idea to in-game clip, upstream-kept. |
 | [**pokemon-player**](../user-guide/skills/optional/gaming/gaming-pokemon-player.md) | Play Pokemon via headless emulator + RAM reads. |
 
 ## health

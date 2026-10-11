@@ -1,6 +1,6 @@
 name: browserpaw
 repo: https://github.com/GoldenLoaf24h/browserpaw
-sha: 0f3c3b91070cb7601e4c6619d947f9495d4df3b0
+sha: 473121aaf7a3b6b817243eebc55b5056785fb58d
 subdir: "plugins/browserpaw"
 description: "Ultra-fast dual-brain Chrome browser automation with 1-based DOM indexing, visual fallbacks, Jev System 1 micro-loop, and local MCP bridge."
 maintainer: GoldenLoaf24h

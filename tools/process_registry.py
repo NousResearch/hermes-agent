@@ -1156,6 +1156,22 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         env["PYTHONUNBUFFERED"] = "1"
         return env
 
+    @staticmethod
+    def _sudo_nopasswd_locally() -> bool:
+        """``sudo -n true`` on the host, mirroring ``BaseEnvironment._sudo_nopasswd_works``
+        for spawns that bypass an environment (``spawn_local`` pipes straight to Popen).
+        Fails closed: any error or timeout means "assume a password is needed"."""
+        try:
+            proc = subprocess.run(
+                ["sudo", "-n", "true"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=10,
+            )
+            return proc.returncode == 0
+        except Exception:
+            return False
+
     def _track_started(self, session: ProcessSession, reader_target, reader_name: str, extra_args=()) -> None:
         """Register before the reader can publish completion, even for an exited child."""
         from contextvars import copy_context
@@ -1229,6 +1245,25 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                         ) from e
                     session.systemd_unit = ""
         # Pipe path (non-PTY or PTY fallback).
+        from tools.terminal_tool_sudo import (
+            _count_real_sudo_invocations,
+            _transform_sudo_command,
+        )
+
+        sudo_stdin = None
+        if _count_real_sudo_invocations(safe_command) > 0:
+            # stdin is /dev/null and no TTY is attached, so a background sudo can neither
+            # prompt nor read a password: it fails on EOF and each attempt still burns a
+            # PAM try (pam_faillock locks the account after 3, #133622). Apply the same
+            # rewrite the foreground path uses and pipe the password lines in, or refuse
+            # up front when no password source resolves (the probe also covers NOPASSWD
+            # and a live sudo timestamp, which must keep working unattended).
+            safe_command, sudo_stdin = _transform_sudo_command(safe_command)
+            if sudo_stdin is None and not self._sudo_nopasswd_locally():
+                raise RuntimeError(
+                    "background sudo cannot prompt for a password on the local pipe path; "
+                    "run it in the foreground or set SUDO_PASSWORD"
+                )
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
         spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
@@ -1242,8 +1277,18 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         # the scope attaches to the invoked process, not the spawning session.
         proc = subprocess.Popen(
             spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
-            errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-            start_new_session=True, **_popen_kwargs)
+            errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=(subprocess.PIPE if sudo_stdin is not None else subprocess.DEVNULL),
+            start_new_session=True, **_popen_kwargs
+        )
+        if sudo_stdin is not None:
+            # sudo -S consumes one line per invocation, then the closed pipe is EOF for
+            # the rest; the payload is tiny so the write cannot outlive the OS buffer.
+            try:
+                proc.stdin.write(sudo_stdin)
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
@@ -1301,9 +1346,21 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
+        # The backgrounded ``bash -lc`` is the process that actually reads sudo's stdin,
+        # but env.execute() feeds any returned password lines to the OUTER wrapper (mkdir
+        # && … &), where nobody reads them — and the sudo rewrite never reaches inside the
+        # single-quoted payload anyway. So rewrite here and embed the lines on the
+        # subshell's own stdin (mirroring managed_modal's embedded printf, #133622).
+        from tools.terminal_tool_sudo import _transform_sudo_command
+        inner_command = command
+        stdin_prefix = ""
+        transformed, sudo_stdin = _transform_sudo_command(command)
+        if sudo_stdin is not None:
+            inner_command = transformed
+            stdin_prefix = f"printf '%s\\n' {q(sudo_stdin.rstrip())} | "
         bg_command = (
             f"mkdir -p {q(temp_dir)} && "
-            f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
+            f"( {stdin_prefix}nohup bash -lc {q(inner_command)} > {q(log_path)} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
         try:

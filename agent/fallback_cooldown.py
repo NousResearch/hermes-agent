@@ -13,7 +13,7 @@ _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverRea
 
 def _provider_reset_delay(reset_at) -> float | None:
     """Seconds until the provider-declared reset, or None when missing/invalid/expired."""
-    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.credential_pool_cooldowns import _parse_absolute_timestamp
     parsed = _parse_absolute_timestamp(reset_at)
     delay = parsed - time.time() if parsed is not None else None
     if delay is not None and math.isfinite(delay) and delay > 0:
@@ -21,7 +21,108 @@ def _provider_reset_delay(reset_at) -> float | None:
     return None
 
 
-def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> bool:
+_BILLING_RECOVERY_PROBE_MIN_INTERVAL_S = 60.0
+
+
+def _probe_primary_billing_recovery(agent) -> bool:
+    """Clear billing-attributed primary state once the account is funded again (#126818).
+
+    A credit exhaustion benches the primary credential for the full hour and arms a
+    rate-limit cooldown on the session — but unlike a rate-limit window it can be cured
+    at ANY moment by a portal top-up, so a fixed bench pins a long-lived session to its
+    (often paid) fallback while the primary is usable again. When the primary is in
+    billing-backed cooldown, probe the provider's account status (throttled to one probe
+    a minute, everything fail-open) and on a funded answer clear the pool's
+    billing-attributed benches. Only a session cooldown explicitly armed for billing
+    loses its timer and backoff counter; independent 429/unknown cooldowns stay intact.
+
+    Returns True when billing pool benches were cleared this call, not necessarily
+    when the session can restore the primary.
+    """
+    primary = getattr(agent, "_primary_runtime", None) or {}
+    primary_provider = str(primary.get("provider") or "").strip().lower()
+    primary_model = str(primary.get("model") or "").strip()
+    if primary_provider != "nous" or not primary_model:
+        return False
+    # Only a session actually routed away from the primary probes; a session on the
+    # primary owns its own recovery through the normal per-turn restore.
+    if (getattr(agent, "provider", "") or "").strip().lower() == primary_provider:
+        return False
+    now = time.monotonic()
+    last_probe = getattr(agent, "_billing_recovery_probe_at", None)
+    if last_probe is not None and now - last_probe < _BILLING_RECOVERY_PROBE_MIN_INTERVAL_S:
+        return False
+    # Cheap pre-check before any network I/O: only probe when the primary actually sits in
+    # billing-backed cooldown — a pool bench attributed to billing, not merely an
+    # armed session cooldown. Rate-limit windows and auth benches are not ours to clear.
+    from agent.credential_pool import FAILURE_REASON_BILLING, load_pool
+
+    def _pool_has_billing_bench(p) -> bool:
+        try:
+            return any(
+                e.last_status == "exhausted" and e.failure_reason == FAILURE_REASON_BILLING
+                for e in p.entries()
+            )
+        except Exception:
+            logger.debug("billing bench check failed", exc_info=True)
+            return False
+
+    pool = getattr(agent, "_credential_pool", None)
+    pool_is_nous = pool is not None and (getattr(pool, "provider", "") or "").strip().lower() == "nous"
+    has_billing_bench = pool_is_nous and _pool_has_billing_bench(pool)
+    if not has_billing_bench:
+        # No pool attached (or the fallback walk rebound it to the fallback's provider):
+        # the primary's own pool, if any, lives on disk.
+        try:
+            disk_pool = load_pool("nous")
+            has_billing_bench = bool(disk_pool) and _pool_has_billing_bench(disk_pool)
+            if has_billing_bench:
+                pool = disk_pool
+        except Exception:
+            logger.debug("disk pool billing bench check failed", exc_info=True)
+            has_billing_bench = False
+    if not has_billing_bench:
+        return False
+    agent._billing_recovery_probe_at = now
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+        info = get_nous_portal_account_info(force_fresh=True)
+        access = getattr(info, "paid_service_access_info", None)
+        total = getattr(access, "total_usable_credits", None)
+        if isinstance(total, (int, float)) and math.isfinite(total):
+            # The portal reports a balance: funded means strictly positive usable credits.
+            usable = total > 0
+        else:
+            usable = bool(getattr(info, "is_paid", False))
+        if not usable:
+            return False
+    except Exception:
+        logger.debug("Billing-recovery probe failed; keeping billing cooldown", exc_info=True)
+        return False
+    cleared = False
+    try:
+        if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != "nous":
+            pool = load_pool("nous")
+        if pool is not None and pool.clear_billing_benches() > 0:
+            cleared = True
+    except Exception:
+        logger.debug("Billing-recovery pool unbench failed", exc_info=True)
+    # Pool recovery is independent of session ownership: another entry may have
+    # armed a live 429 after this billing bench. Unknown ownership stays intact.
+    if cleared and getattr(agent, "_rate_limit_cooldown_reason", None) == FailoverReason.billing:
+        if getattr(agent, "_rate_limited_until", 0) > now:
+            agent._rate_limited_until = now
+        agent._rate_limit_backoff_count = 0
+        agent._rate_limit_cooldown_reason = None
+    if cleared:
+        logger.info(
+            "Primary nous account is funded again (top-up detected); cleared billing benches; "
+            "primary restoration remains subject to independent cooldowns (#126818)"
+        )
+    return cleared
+
+
+def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -> bool:
     """Opt-in ``fallback.min_switch_reset_seconds`` (default 0 = off, #117484): when the primary's
     rate limit reopens sooner than N seconds, switching model mid-task costs more than waiting, so
     the fallback walk is skipped and the retry loop's own backoff rides out the window. Only for
@@ -69,6 +170,7 @@ def _arm_rate_limit_cooldown(
         backoff_seconds = min(60 * (2 ** backoff_count), 14400)
         source = "exponential fallback"
     agent._rate_limited_until = time.monotonic() + backoff_seconds
+    agent._rate_limit_cooldown_reason = reason
     logging.info(
         "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d, %s)",
         backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1, source,

@@ -64,15 +64,16 @@ def _resolve_model() -> tuple[str, dict[str, Any]]:
         GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
 
 
-def _read_codex_credential() -> tuple[Optional[str], Optional[str]]:
+def _read_codex_credential(model: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     """``(token, base_url)`` from one resolution (``agent.auxiliary_client`` owns expiry/pool/JWT):
     the image request goes to the host the token's credential routes to (pool row /
     ``model.base_url`` / profile override), never a default it does not belong to (#121486).
     ``(None, None)`` without a usable token."""
     try:
         from agent.auxiliary_client import _resolve_codex_credential_and_base
+        from agent.auxiliary_model_scope import _call_scoped_or_unscoped
 
-        token, base_url = _resolve_codex_credential_and_base()
+        token, base_url = _call_scoped_or_unscoped(_resolve_codex_credential_and_base, model=model)
         if isinstance(token, str) and token.strip():
             return token.strip(), base_url
         return None, None
@@ -270,14 +271,18 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("openai-codex", aspect)
-        token, base_url = _read_codex_credential()
+        tier_id, meta = _resolve_model()
+        # Scope by the wire model the request carries (API_MODEL, e.g. gpt-image-2),
+        # not the tier id: GPT_IMAGE_2_TIERS entries have no openai_model key, so the
+        # old meta.get("openai_model") fallback scoped cooldowns to a tier id that
+        # could never match model_cooldown_until (#130053).
+        token, base_url = _read_codex_credential(model=API_MODEL)
         if not token:
             return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
         if not _httpx_available():
             return error_factory("openai-codex", aspect)(
                 "httpx Python package not installed (pip install httpx)", "missing_dependency")
 
-        tier_id, meta = _resolve_model()
         size = size_for(aspect)
         fail = error_factory("openai-codex", aspect, model=tier_id, prompt=prompt)
         try:

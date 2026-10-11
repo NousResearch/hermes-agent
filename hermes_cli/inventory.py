@@ -380,7 +380,8 @@ def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
     import time
 
     from agent.account_usage_cache import _identity_id_for, cached_account_usage, has_account_usage, snapshot_is_stale
-    from agent.credential_pool import STATUS_DEAD, _exhausted_until, load_pool
+    from agent.credential_pool import STATUS_DEAD, load_pool
+    from agent.credential_pool_cooldowns import _exhausted_until
 
     try:
         pool = load_pool(slug)

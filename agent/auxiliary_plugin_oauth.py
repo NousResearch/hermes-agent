@@ -26,12 +26,13 @@ def resolve_plugin_oauth_client(req: Any) -> tuple[Any, Any]:
     An explicit key from the main runtime wins, so aux shares the session's bearer.
     """
     from agent import auxiliary_client as aux
+    from agent.auxiliary_model_scope import _select_pool_entry
 
     provider = req.provider
     api_key = aux._normalize_api_key(req.explicit_api_key)
     entry = None
     if not api_key:
-        _exists, entry = aux._select_pool_entry(provider)
+        _exists, entry = _select_pool_entry(provider)
         api_key = str(getattr(entry, "runtime_api_key", "") or "") if entry is not None else ""
     base_url = (req.explicit_base_url or str(getattr(entry, "runtime_base_url", "") or "")
                 or _configured_endpoint(provider)).strip().rstrip("/")

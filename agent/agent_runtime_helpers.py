@@ -26,9 +26,11 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
-    STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
-    credential_pool_matches_provider, resolve_runtime_pool_key,
+    STATUS_EXHAUSTED, credential_pool_entry_serves_endpoint,
+    credential_pool_matches_provider, load_pool, resolve_runtime_pool_key,
 )
+from agent.credential_pool_cooldowns import _parse_absolute_timestamp
+from agent.agent_runtime_pool import _rehydrate_credential_pool, _revert_credential_rotation
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.message_metadata import MERGED_TURN_PREFIX
@@ -1013,6 +1015,9 @@ def recover_with_credential_pool(
     rotating. ``classified_reason`` beats raw HTTP codes (e.g. Anthropic 400 "out of extra
     usage"); ``billing_unverified`` gives the entry a short cooldown, not the one-hour bench."""
     pool = agent._credential_pool
+    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+    if pool is None:
+        pool = _rehydrate_credential_pool(agent, current_provider)
     if pool is None:
         return False, has_retried_429
     # The pool belongs to the PRIMARY provider: acting on fallback errors would corrupt its state
@@ -1023,7 +1028,6 @@ def recover_with_credential_pool(
     # the primary's credential state (see #33088) and, via _swap_credential, overwrite the agent's base_url
     # back to the primary's endpoint — every subsequent request then goes to the wrong host and 404s (see
     # #33163). The pool should only act when the agent is still on the same provider that seeded the pool.
-    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if pool_provider and not credential_pool_matches_provider(
         pool, current_provider, base_url=getattr(agent, "base_url", None)
@@ -1361,33 +1365,6 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
         )
 
 
-def _revert_credential_rotation(agent) -> None:
-    """Move a live session back onto the credential a quota bench rotated it off, once the bench
-    lifts. New sessions already do this through ``select()``; without it a long-lived (gateway)
-    session keeps billing the fallback for its whole life (#114501). Credential-only: the
-    model/base_url/compressor restore stays gated on ``_fallback_activated``."""
-    revert_id = getattr(agent, "_credential_pool_revert_id", None)
-    if not revert_id:
-        return
-    pool = getattr(agent, "_credential_pool", None)
-    if pool is None or getattr(agent, "_credential_pool_entry_id", None) == revert_id:
-        agent._credential_pool_revert_id = None
-        return
-    try:
-        entry = pool.reclaim(revert_id, model=getattr(agent, "model", None))
-    except Exception as exc:
-        logger.warning("Credential revert check failed: %s", exc)
-        return
-    if entry is None:
-        return  # still cooling down; check again next turn
-    if agent._swap_credential(entry) is not False:
-        logger.info(
-            "Credential %s (%s) available again — reverted pool rotation",
-            getattr(entry, "id", "?"), getattr(entry, "label", "?"),
-        )
-    agent._credential_pool_revert_id = None
-
-
 def _primary_quota_reopened_early(agent, primary_provider, primary_model, matches_primary, load_primary_pool) -> bool:
     """True when a Codex quota window that the primary pool still has benched has reopened.
 
@@ -1451,13 +1428,21 @@ def restore_primary_runtime(agent) -> bool:
         return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url)
 
     def _load_primary_pool():
-        """Load the primary provider's pool; None when absent or provider-mismatched."""
-        from agent.credential_pool import load_pool
+        """Load the primary provider's pool; None when absent or provider-mismatched.
+
+        Reads ``load_pool`` off the defining module at call time so a test patching
+        ``agent.credential_pool.load_pool`` intercepts it.
+        """
+        from agent.credential_pool import load_pool as _pool_load
         key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
-        loaded = load_pool(key) if key else None
+        loaded = _pool_load(key) if key else None
         return loaded if loaded is not None and _matches_primary(loaded) else None
     if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
         agent._rate_limited_until = 0
+    # Both recovery paths run before the session and pool gates. The billing probe
+    # clears only billing-owned state; Codex retains its own quota-reopen policy.
+    from agent.fallback_cooldown import _probe_primary_billing_recovery
+    _probe_primary_billing_recovery(agent)
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
     blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(

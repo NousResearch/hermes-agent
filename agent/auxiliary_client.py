@@ -33,6 +33,7 @@ from agent.error_classifier import (
 )
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import remember_structured_output_rejection
+from agent import auxiliary_model_scope as _aux_scope
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -1027,40 +1028,6 @@ def _load_pool_with_credentials(provider: str, note: str = "") -> Optional[Any]:
     return pool if pool and pool.has_credentials() else None
 
 
-def _select_pool_entry(provider: str) -> tuple[bool, Optional[Any]]:
-    """Return (pool_exists_for_provider, selected_entry)."""
-    pool = _load_pool_with_credentials(provider)
-    if pool is None:
-        return False, None
-    try:
-        return True, pool.select()
-    except Exception as exc:
-        logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
-        return True, None
-
-
-def _peek_pool_entry(provider: str, pool: Any = None) -> Optional[Any]:
-    """Best-effort current/next pool entry without mutating selection order.
-
-    ``pool`` skips the disk re-read when the caller already loaded it.
-    """
-    if pool is None:
-        pool = _load_pool_with_credentials(provider, " (peek)")
-    if pool is None:
-        return None
-    try:
-        current_fn = getattr(pool, "current", None)
-        current = current_fn() if callable(current_fn) else None
-        if current is not None:
-            return current
-        peek_fn = getattr(pool, "peek", None)
-        if callable(peek_fn):
-            return peek_fn()
-    except Exception as exc:
-        logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
-    return None
-
-
 def _pool_runtime_api_key(entry: Any) -> str:
     # runtime_api_key handles provider-specific fallback (e.g. agent_key for nous); None entry → "".
     key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
@@ -1951,7 +1918,7 @@ def _maybe_wrap_anthropic(
 
 def _read_nous_auth() -> Optional[dict]:
     """Nous provider state dict from the credential pool or ~/.hermes/auth.json; None when not active with tokens."""
-    pool_present, entry = _select_pool_entry("nous")
+    pool_present, entry = _aux_scope._select_pool_entry("nous")
     if pool_present:
         if entry is None:
             return None
@@ -2102,13 +2069,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[tuple[str, str]]:
     return _creds_pair(creds)
 
 
-def _resolve_codex_credential_and_base() -> tuple[Optional[str], str]:
+def _resolve_codex_credential_and_base(model: Optional[str] = None) -> tuple[Optional[str], str]:
     """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
     it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled
     key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
     token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
     override = _codex_base_url_override()
-    pool_present, entry = _select_pool_entry("openai-codex")
+    pool_present, entry = _aux_scope._call_scoped_or_unscoped(_aux_scope._select_pool_entry, "openai-codex", model=model)
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
@@ -2164,7 +2131,8 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.auth import is_provider_explicitly_configured
                 if not is_provider_explicitly_configured("anthropic"):
                     continue
-            return _try_anthropic()
+            return _aux_scope._call_scoped_or_unscoped(
+                _try_anthropic, model=_get_aux_model_for_provider(provider_id) or None)
         if provider_id == "copilot":
             # Explicit-config gate: ambient gh-CLI credentials must not silently become aux fallback (#114740).
             with contextlib.suppress(ImportError):
@@ -2174,7 +2142,7 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         model = _get_aux_model_for_provider(provider_id) or None
         if model is None:
             continue  # skip provider if we don't know a valid aux model
-        pool_present, entry = _select_pool_entry(provider_id)
+        pool_present, entry = _aux_scope._call_scoped_or_unscoped(_aux_scope._select_pool_entry, provider_id, model=model)
         if pool_present:
             api_key = _pool_runtime_api_key(entry)
             if not api_key:
@@ -2312,7 +2280,7 @@ def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, 
     # A caller-supplied endpoint (fallback_providers entry, custom_providers entry) is
     # authoritative over both the pool row and the canonical host (#121359).
     override_url = (explicit_base_url or "").strip().rstrip("/")
-    pool_present, entry = _select_pool_entry("openrouter")
+    pool_present, entry = _aux_scope._call_scoped_or_unscoped(_aux_scope._select_pool_entry, "openrouter", model=or_model)
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if or_key:
@@ -2343,7 +2311,7 @@ def _describe_openrouter_unavailable(model: str | None = None) -> str:
             f"auxiliary.free_only rejected non-free model {or_model!r}; "
             "the request was skipped before provider availability checks"
         )
-    pool_present, entry = _select_pool_entry("openrouter")
+    pool_present, entry = _aux_scope._call_scoped_or_unscoped(_aux_scope._select_pool_entry, "openrouter", model=or_model)
     if pool_present:
         if entry is None:
             return "OpenRouter credential pool has no usable entries (credentials may be exhausted)"
@@ -2970,7 +2938,7 @@ def _build_codex_client(model: str) -> tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    codex_token, base_url = _resolve_codex_credential_and_base()
+    codex_token, base_url = _resolve_codex_credential_and_base(model=model)
     if not codex_token:
         return None, None
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
@@ -3039,19 +3007,21 @@ def _try_azure_foundry(
 
 
 def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
-                   explicit_base_url: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
+                   explicit_base_url: Optional[str] = None,
+                   model: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token
     except ImportError:
         return None, None
-    pool_present, entry = _select_pool_entry("anthropic")
+    target_model = model or _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    pool_present, entry = _aux_scope._call_scoped_or_unscoped(_aux_scope._select_pool_entry, "anthropic", model=target_model)
     if pool_present and entry is not None:
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
         # Pool absent/empty: legacy resolver so a dead pool entry can't wedge aux tasks when a standalone credential exists.
         entry = None
-        token = explicit_api_key or resolve_anthropic_token()
+        token = explicit_api_key or resolve_anthropic_token(model=target_model)
     if not token:
         return None, None
     # Honor config.yaml model.base_url only when provider is anthropic AND the URL is
@@ -3084,7 +3054,7 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
         base_url = override_url
     from agent.anthropic_credentials import _is_oauth_token
     is_oauth = _is_oauth_token(token)
-    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    model = target_model
     if _aux_probe_active():
         # Probe: token + adapter import resolved; skip real client construction.
         return _AuxProbeClientStub(api_key="", base_url=base_url), model
@@ -3641,7 +3611,7 @@ def _pool_cache_hint(provider: str, *, main_runtime: Optional[dict[str, Any]] = 
     pool = _load_pool_with_credentials(normalized, " (cache hint)")
     if pool is None:
         return ""
-    entry = _peek_pool_entry(normalized, pool)
+    entry = _aux_scope._peek_pool_entry(normalized, pool)
     digest = _pool_credential_digest(pool, entry)
     entry_id = str(getattr(entry, "id", "") or "").strip() if entry is not None else ""
     if not entry_id and not digest:
@@ -3719,7 +3689,9 @@ def _recoverable_pool_provider(
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
+def _recover_provider_pool(
+    provider: str, exc: Exception, *, failed_api_key: str = "", model: Optional[str] = None,
+) -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
     ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if
@@ -3741,7 +3713,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
             error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
-            error_context=error_context, api_key_hint=failed_api_key or None,
+            error_context=error_context, api_key_hint=failed_api_key or None, model=model,
         )
         if next_entry is None:
             return False
@@ -5053,7 +5025,8 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token, base_url = _resolve_codex_credential_and_base()
+        codex_token, base_url = _aux_scope._call_scoped_or_unscoped(
+            _resolve_codex_credential_and_base, model=model)
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
@@ -5276,8 +5249,9 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
     if provider == "anthropic":
-        client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key,
-                                               explicit_base_url=req.explicit_base_url)
+        client, default_model = _aux_scope._call_scoped_or_unscoped(
+            _try_anthropic, explicit_api_key=req.explicit_api_key,
+            explicit_base_url=req.explicit_base_url, model=req.model)
         return _route_or_warn(req, client, default_model,
                               "resolve_provider_client: anthropic requested but no Anthropic credentials found")
     creds = resolve_creds(provider)
@@ -5557,7 +5531,7 @@ _STRICT_VISION_BACKENDS: dict[str, Callable[[Optional[str]], tuple[Optional[Any]
     "openrouter": lambda model: _try_openrouter(model=model),
     "nous": lambda model: resolve_provider_client("nous", model, is_vision=True),
     "openai-codex": lambda model: resolve_provider_client("openai-codex", model, is_vision=True),
-    "anthropic": lambda model: _try_anthropic(),
+    "anthropic": lambda model: _try_anthropic(model=model),
     "deepinfra": _deepinfra_strict_vision_backend,
     "custom": lambda model: _try_custom_endpoint(),
 }
@@ -6056,7 +6030,7 @@ def _get_cached_client(
     # and retry an exhausted key.
     effective_api_key = api_key
     if not effective_api_key:
-        _pe = _peek_pool_entry(_normalize_aux_provider(provider))
+        _pe = _aux_scope._peek_pool_entry(_normalize_aux_provider(provider))
         if _pe is not None:
             effective_api_key = _pool_runtime_api_key(_pe) or api_key
     client, default_model = resolve_provider_client(
@@ -7451,7 +7425,8 @@ def _resolve_call_client(
                 if fb_client is None:
                     nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
                     raise AuxiliaryClientUnavailable(
-                        nous_detail or missing_provider_credentials_message(_explicit))
+                        nous_detail or missing_provider_credentials_message(
+                            _explicit, model=resolved_model))
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(
@@ -7812,7 +7787,10 @@ def _ladder_credential_rungs(
                 _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
             if recovery_err is None:
                 return resp, None
-        if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+        if _recover_provider_pool(
+            pool_provider, recovery_err, failed_api_key=_client_api_key,
+            model=route.resolved_model or route.final_model,
+        ):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
             try:
@@ -7823,7 +7801,9 @@ def _ladder_credential_rungs(
                 # then fall through to the provider fallback.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                         or _is_rate_limit_error(retry2_err)):
-                    _recover_provider_pool(pool_provider, retry2_err)
+                    _recover_provider_pool(
+                        pool_provider, retry2_err, model=route.resolved_model or route.final_model,
+                    )
                     first_err = retry2_err
                 else:
                     raise

@@ -26,7 +26,7 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
         """pool=(True, None) but a valid env token exists → client is built."""
         monkeypatch.setenv("ANTHROPIC_TOKEN", "«redacted:sk-…»-oauth-token")
         with patch(
-            "agent.auxiliary_client._select_pool_entry", return_value=(True, None)
+            "agent.auxiliary_model_scope._select_pool_entry", return_value=(True, None)
         ), patch(
             "agent.anthropic_adapter.build_anthropic_client"
         ) as mock_build:
@@ -50,7 +50,7 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         with patch(
-            "agent.auxiliary_client._select_pool_entry", return_value=(True, None)
+            "agent.auxiliary_model_scope._select_pool_entry", return_value=(True, None)
         ), patch(
             "agent.anthropic_credentials.resolve_anthropic_token", return_value=None
         ):
@@ -72,7 +72,7 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
             return MagicMock()
 
         with patch(
-            "agent.auxiliary_client._select_pool_entry", return_value=(True, None)
+            "agent.auxiliary_model_scope._select_pool_entry", return_value=(True, None)
         ), patch(
             "agent.anthropic_adapter.build_anthropic_client", side_effect=_fake_build
         ):

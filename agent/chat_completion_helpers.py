@@ -32,6 +32,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
+from agent import chat_completion_helpers_pool as _pool_helpers
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
@@ -1936,26 +1937,11 @@ def _fallback_chain_exhausted(agent, reason: FailoverReason | None) -> bool:
     context across every provider again."""
     from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
     if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
-        agent._rate_limited_until = max(
-            getattr(agent, "_rate_limited_until", 0) or 0, time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
+        cooldown_until = time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S
+        if cooldown_until > (getattr(agent, "_rate_limited_until", 0) or 0):
+            agent._rate_limited_until = cooldown_until
+            agent._rate_limit_cooldown_reason = reason
     return False
-
-
-def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
-    """True when every credential the candidate would use sits in an exhaustion cooldown longer
-    than the retry loop's longest wait (the 600s Retry-After cap): switching to it only fails the
-    turn the same way the primary just did (#89401). A short throttle still gets its chance."""
-    pool = getattr(agent, "_credential_pool", None)
-    if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != fb_provider:
-        try:
-            from agent.credential_pool import load_pool
-            pool = load_pool(fb_provider)
-        except Exception:
-            return False
-    if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
-        return False
-    until = pool.next_available_at(model=fb_model)
-    return until is None or until - time.time() > 600
 
 
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
@@ -1970,8 +1956,12 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
         return True
-    if _candidate_pool_exhausted(agent, fb_provider, fb_model):
+    pool_detail = _pool_helpers._pool_exhaustion_detail(agent, fb_provider, fb_model)
+    if pool_detail == "cooldown":
         logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
+        return True
+    if pool_detail is not None:
+        logger.warning("Fallback skip: %s/%s credential pool is exhausted (no wait information — unfilled borrowed row or empty pool)", fb_provider, fb_model)
         return True
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:

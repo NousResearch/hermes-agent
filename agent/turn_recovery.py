@@ -863,7 +863,7 @@ def _with_delivered_partial(final_response: str, error_summary: str, delivered: 
 def limit_reset_epoch(agent: Any, api_error: Exception) -> Optional[float]:
     """Epoch seconds when the provider says its limit lifts (Retry-After header, ``resets_at`` /
     ``retry_after`` body fields, "try again in N" text) — the same datum the backoff honours."""
-    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.credential_pool_cooldowns import _parse_absolute_timestamp
 
     try:
         return _parse_absolute_timestamp(agent._extract_api_error_context(api_error).get("reset_at"))
@@ -1432,7 +1432,7 @@ def reset_hint(api_error: Exception) -> str:
     A bare "Rate limited. Waiting 60s" hides the one fact that decides whether to wait or switch
     models (#26889): a per-minute throttle and a 13-minute plan window look identical without it."""
     from agent.agent_runtime_helpers import extract_api_error_context
-    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.credential_pool_cooldowns import _parse_absolute_timestamp
     from agent.usage_pricing import format_duration_compact
     reset_at = extract_api_error_context(api_error).get("reset_at")
     if reset_at is None:
@@ -1941,7 +1941,9 @@ def route_classified_error(
         # Fixes #11314.
         _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
         pool_may_recover = (
-            False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
+            False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(
+                agent._credential_pool, model=getattr(agent, "model", None)
+            )
         )
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))

@@ -172,12 +172,14 @@ def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False,
     stay visible (``raw_pool_present``); a real pool's availability is authoritative — an
     all-exhausted/dead pool is not authenticated. ``for_picker`` (human-facing pickers) also
     accepts a pool whose entries are all in cooldown: a rate-limited provider is not a signed-out
-    one, and limits are per-model for many providers, so another model may still work."""
+    one, and limits are per-model for many providers, so another model may still work.
+    A model-scoped cooldown benches one model, not the credential, so it must not demote
+    the provider (#127682)."""
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider)
         if pool.has_credentials():
-            return for_picker or pool.has_available()
+            return for_picker or pool.has_available(any_model=True)
     except Exception:
         pass
     return raw_pool_present

@@ -504,7 +504,7 @@ class TestResolveCodexCredentialToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)):
             result = _resolve_codex_credential_and_base()[0]
         assert result == "tok-123"
 
@@ -530,7 +530,7 @@ class TestResolveCodexCredentialToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)):
             result = _resolve_codex_credential_and_base()[0]
         assert result is None, "Expired JWT should return None"
 
@@ -555,7 +555,7 @@ class TestResolveCodexCredentialToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)):
             result = _resolve_codex_credential_and_base()[0]
         assert result == valid_jwt
 
@@ -651,7 +651,7 @@ class TestAnthropicOAuthFlag:
         """Regular API keys (sk-ant-api-*) should create client with is_oauth=False."""
         with patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-api03-testkey1234"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
-             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+             patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
             client, _model = _try_anthropic()
@@ -688,7 +688,7 @@ class TestAnthropicOAuthFlag:
 class TestBuildCodexClient:
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (
-            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
+            patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(True, None)),
             # A present pool with no usable row reads auth.json directly (no re-selection that
             # could pair another row's key with the default host, #121486).
             patch("agent.auxiliary_client._read_codex_singleton_token", return_value="codex-auth-token"),
@@ -711,7 +711,7 @@ class TestBuildCodexClient:
             runtime_base_url="https://chatgpt.com/backend-api/codex",
         )
         with (
-            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, entry)),
+            patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(True, entry)),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
@@ -727,7 +727,7 @@ class TestBuildCodexClient:
     def test_profile_codex_base_url_applies_to_raw_codex_client(self, monkeypatch):
         """The main agent's raw Codex client honours the same endpoint override."""
         with (
-            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)),
             patch("agent.auxiliary_client._read_codex_singleton_token", return_value="codex-auth-token"),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
@@ -837,7 +837,7 @@ class TestResolveProviderClientUniversalModelFallback:
                 return_value=(MagicMock(), "gpt-5.4"),
             ) as mock_build,
             patch(
-                "agent.auxiliary_client._select_pool_entry",
+                "agent.auxiliary_model_scope._select_pool_entry",
                 return_value=(True, None),
             ),
         ):
@@ -949,7 +949,7 @@ class TestExplicitProviderRouting:
         """provider='anthropic' + regular API key should work with is_oauth=False."""
         with patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-api-regular-key"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
-             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+             patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             client, _model = resolve_provider_client("anthropic")
             assert client is not None
@@ -961,7 +961,7 @@ class TestExplicitProviderRouting:
     def test_try_openrouter_pool_exhausted_falls_back_to_env(self, monkeypatch):
         """Pool present but exhausted → fall through to OPENROUTER_API_KEY env var."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env-fallback")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(True, None)), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
@@ -988,7 +988,7 @@ class TestOpenRouterPaidLaneGuard:
         covered by test_free_only_skips_paid_configured_model below.
         """
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
@@ -1000,7 +1000,7 @@ class TestOpenRouterPaidLaneGuard:
     def test_free_only_skips_paid_configured_model(self, monkeypatch):
         """free_only=true + user-configured PAID model → OpenRouter skipped."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True,
                                                "openrouter_model": "google/gemini-3.6-flash"}}), \
@@ -1013,7 +1013,7 @@ class TestOpenRouterPaidLaneGuard:
     def test_free_only_allows_free_model(self, monkeypatch):
         """free_only=true + :free model → OpenRouter used with that model."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True,
                                               "openrouter_model": "nvidia/nemotron-3-ultra-550b-a55b:free"}}), \
@@ -1027,7 +1027,7 @@ class TestOpenRouterPaidLaneGuard:
     def test_configured_model_overrides_hardcoded_default(self, monkeypatch):
         """auxiliary.openrouter_model replaces _OPENROUTER_MODEL."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"openrouter_model": "some/vendor-model"}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -1040,7 +1040,7 @@ class TestOpenRouterPaidLaneGuard:
     def test_explicit_caller_model_respects_free_only(self, monkeypatch):
         """Auxiliary.<task>.model (explicit) is also gated by free_only."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _try_openrouter(model="google/gemini-3.6-flash")
@@ -1051,7 +1051,7 @@ class TestOpenRouterPaidLaneGuard:
     def test_resolver_forwards_explicit_free_model_to_gate(self, monkeypatch):
         """The concrete OpenRouter route gates the caller's model, not its default."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -1066,7 +1066,7 @@ class TestOpenRouterPaidLaneGuard:
 
     def test_free_only_gate_does_not_mark_openrouter_unhealthy(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True}}), \
              patch("agent.auxiliary_client._mark_provider_unhealthy") as mark_unhealthy:
@@ -1091,7 +1091,7 @@ class TestOpenRouterPaidLaneGuard:
         _paid_cfg = {"auxiliary": {"openrouter_model": _paid_model}}
         _paid_lane_warned.discard(_paid_model)
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
@@ -1102,7 +1102,7 @@ class TestOpenRouterPaidLaneGuard:
         assert model == _paid_model
         assert any("PAID lane engaged" in r.getMessage() for r in caplog.records)
         # Second call logs nothing new.
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             caplog.clear()
@@ -2049,7 +2049,7 @@ class TestAuxiliaryFallbackLayering:
         real_client.api_key = "codex-oauth-token"
         real_client.base_url = "https://chatgpt.com/backend-api/codex"
 
-        with patch("agent.auxiliary_client._select_pool_entry",
+        with patch("agent.auxiliary_model_scope._select_pool_entry",
                    return_value=(True, pool_entry)), \
              patch("agent.auxiliary_client._read_codex_singleton_token",
                    side_effect=AssertionError("should use pool token")), \
@@ -2153,7 +2153,7 @@ def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
         pool_selected.append(provider_id)
         return False, None
 
-    monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", mock_select_pool_entry)
+    monkeypatch.setattr("agent.auxiliary_model_scope._select_pool_entry", mock_select_pool_entry)
     monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
@@ -4375,7 +4375,7 @@ class TestAnthropicExplicitApiKey:
         """resolve_provider_client(provider='anthropic', explicit_api_key=...) must propagate the key."""
         with patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="env-key"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
-             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+             patch("agent.auxiliary_model_scope._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             client, _model = resolve_provider_client(
                 provider="anthropic",

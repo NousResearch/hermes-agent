@@ -1052,20 +1052,16 @@ def _merge_disk_cooldown_state(
     if not isinstance(disk_entry, dict):
         return entry
     try:
-        from agent.credential_pool import (
-            PooledCredential, STATUS_DEAD, STATUS_EXHAUSTED, _exhausted_until, _parse_absolute_timestamp,
-        )
+        from agent.credential_pool import PooledCredential, STATUS_DEAD, STATUS_EXHAUSTED
+        from agent.credential_pool_cooldowns import _exhausted_until, _parse_absolute_timestamp
+        from hermes_cli.auth_cooldown import _merge_model_cooldown_state, _secret_fingerprint_changed
 
-        # Model cooldowns are independent observations: keep the latest reset per model so a
-        # writer that just cooled one model cannot erase another process's cooldown for another.
-        from agent.credential_pool_model_cooldowns import merge_model_cooldowns
-        merged_cooldowns = merge_model_cooldowns(disk_entry.get("model_cooldowns"), entry.get("model_cooldowns"))
-        merged = {**entry, "model_cooldowns": merged_cooldowns} if merged_cooldowns else entry
+        # Model cooldowns are independent observations, merged in _merge_model_cooldown_state so a
+        # snapshot older than an explicit reset never resurrects the map (#128995).
+        merged, disk_cleared_ts = _merge_model_cooldown_state(disk_entry, entry)
         disk_status_fields = {f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}
-
         mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
-        cleared_ts = _parse_absolute_timestamp(disk_entry.get("status_cleared_at")) or 0.0
-        if entry.get("last_status") in (STATUS_DEAD, STATUS_EXHAUSTED) and cleared_ts > mem_ts:
+        if entry.get("last_status") in (STATUS_DEAD, STATUS_EXHAUSTED) and disk_cleared_ts > mem_ts:
             return {**merged, **disk_status_fields}
         disk_status = disk_entry.get("last_status")
         if disk_status not in (STATUS_DEAD, STATUS_EXHAUSTED):
@@ -1075,6 +1071,9 @@ def _merge_disk_cooldown_state(
         mem_access = entry.get("access_token") or ""
         disk_access = disk_entry.get("access_token") or ""
         if mem_access and disk_access and mem_access != disk_access:
+            return entry
+        # Env-backed rows persist without their secret; secret_fingerprint is their rotation signal.
+        if _secret_fingerprint_changed(entry, disk_entry):
             return entry
         disk_ts = _parse_absolute_timestamp(disk_entry.get("last_status_at")) or 0.0
         if disk_ts <= mem_ts:

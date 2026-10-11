@@ -13,10 +13,14 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor, _LEAN_USER_MESSAGES_HEADING
+from agent.context_compressor import (
+    ContextCompressor,
+    _LEAN_ANCHOR_HEADING,
+    _LEAN_USER_MESSAGES_HEADING,
+)
 
-USER_A = "ALPHA-NEEDLE keep the alpha access code 1111"
-USER_B = "BRAVO-NEEDLE and the bravo access code is 2222"
+USER_A = "ALPHA-NEEDLE keep the alpha access code 1111 in src/alpha/access_code.py"
+USER_B = "BRAVO-NEEDLE and the bravo access code is 2222 in src/bravo/limits.py"
 NARRATIVE = "## Completed Actions\n1. prior work\n\n## Active State\nidle\n"
 
 
@@ -73,6 +77,13 @@ def _verbatim_section(summary: str) -> str:
     return summary.split(_LEAN_USER_MESSAGES_HEADING, 1)[1].split("(Every real user message", 1)[0]
 
 
+def _anchor_section(summary: str) -> str:
+    """The body of the anchor-index section, or "" when the summary carries no such section."""
+    if _LEAN_ANCHOR_HEADING not in summary:
+        return ""
+    return summary.split(_LEAN_ANCHOR_HEADING, 1)[1].split("(Exact identifiers from the compacted region", 1)[0]
+
+
 def _compact_twice(echoes_previous: bool) -> tuple[str, str]:
     """Two consecutive compactions on one compressor; returns (summary1, summary2).
 
@@ -90,6 +101,7 @@ def _compact_twice(echoes_previous: bool) -> tuple[str, str]:
         first = comp.compress(_first_transcript(USER_A), current_tokens=7000, force=True)
         summary1 = comp._previous_summary or ""
         assert USER_A in _verbatim_section(summary1), "fixture: compaction 1 must quote the first region"
+        assert "src/alpha/access_code.py" in _anchor_section(summary1), "fixture: compaction 1 must index it"
         comp.compress(_second_transcript(first), current_tokens=7000, force=True)
         return summary1, comp._previous_summary or ""
 
@@ -103,6 +115,10 @@ def test_obedient_summariser_still_quotes_the_new_region():
     section = _verbatim_section(summary2)
     assert USER_B in section, "the newest compacted region's user words are quoted verbatim"
     assert USER_A in section, "and the earlier region's quotes are still carried"
+    assert summary2.count(_LEAN_ANCHOR_HEADING) == 1, "one anchor index, never two"
+    anchors = _anchor_section(summary2)
+    assert "src/bravo/limits.py" in anchors, "the newest region's identifiers are harvested"
+    assert "src/alpha/access_code.py" in anchors, "and the earlier region's identifiers are carried"
 
 
 def test_rewriting_summariser_keeps_earlier_quotes():
@@ -113,6 +129,10 @@ def test_rewriting_summariser_keeps_earlier_quotes():
     section = _verbatim_section(summary2)
     assert USER_B in section, "the newest compacted region's user words are quoted verbatim"
     assert USER_A in section, "the earlier region's quotes are re-added, not lost with the rewrite"
+    assert summary2.count(_LEAN_ANCHOR_HEADING) == 1, "one anchor index, never two"
+    anchors = _anchor_section(summary2)
+    assert "src/bravo/limits.py" in anchors, "the newest region's identifiers are harvested"
+    assert "src/alpha/access_code.py" in anchors, "and the earlier region's identifiers are re-added"
 
 
 def test_single_compaction_quotes_a_user_message():

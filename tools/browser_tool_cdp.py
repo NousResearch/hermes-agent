@@ -6,15 +6,35 @@ import contextlib
 import os
 from typing import Tuple
 
-from agent.proxy_bypass import loopback_request_kwargs
+from agent.proxy_bypass import (
+    is_loopback_host,
+    loopback_request_kwargs,
+    split_host_port,
+)
 from tools.browser_tool_origin import origin_module as _origin
+
+
+def _loopback_version_url(raw: str) -> str:
+    """``/json/version`` discovery URL for a loopback ``/devtools/browser/<uuid>`` endpoint, or
+    "" for non-loopback hosts — remote/cloud endpoints (routed, possibly signed) pass through
+    verbatim. The ``ws(s)://host:port`` prefix is reused as written so bracketed IPv6 survives."""
+    prefix = raw.split("/devtools/", 1)[0]
+    if not is_loopback_host(split_host_port(prefix)[0]):
+        return ""
+    return (
+        prefix.replace("ws://", "http://", 1).replace("wss://", "https://", 1)
+        + "/json/version"
+    )
 
 
 def _resolve_cdp_override(cdp_url: str) -> str:
     """Normalize a user-supplied CDP endpoint into a concrete websocket URL.
 
-    Full ``ws://.../devtools/browser/...`` endpoints pass through; HTTP discovery roots and bare ``ws://host:port``
-    resolve via ``/json/version`` → ``webSocketDebuggerUrl`` (falls back to the raw value with a warning).
+    Loopback ``ws://.../devtools/browser/<uuid>`` endpoints embed a per-process browser UUID that
+    goes stale on every Chromium restart, so they are re-resolved via ``/json/version`` →
+    ``webSocketDebuggerUrl``; remote ``/devtools/browser/`` endpoints, HTTP discovery roots and
+    bare ``ws://host:port`` keep the old behaviour (remote passes through; the latter two resolve
+    via ``/json/version`` too). All discovery paths fall back to the raw value with a warning.
     """
     _bt = _origin()
     raw = (cdp_url or "").strip()
@@ -22,14 +42,17 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         return ""
     lowered = raw.lower()
     if "/devtools/browser/" in lowered:
-        return raw
-
-    discovery_url = raw
-    if lowered.startswith(("ws://", "wss://")):
-        if not (raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]):
+        # Persisted per-process UUID is stale after any browser restart (#123170).
+        version_url = _loopback_version_url(raw)
+        if not version_url:
             return raw
-        discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
-    version_url = discovery_url if discovery_url.lower().endswith("/json/version") else discovery_url.rstrip("/") + "/json/version"
+    else:
+        discovery_url = raw
+        if lowered.startswith(("ws://", "wss://")):
+            if not (raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]):
+                return raw
+            discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
+        version_url = discovery_url if discovery_url.lower().endswith("/json/version") else discovery_url.rstrip("/") + "/json/version"
 
     san = _bt._sanitize_url_for_logs
     try:

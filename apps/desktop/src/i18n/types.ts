@@ -867,6 +867,8 @@ export interface Translations extends NoticeTranslations {
       backdropDesc: string
       userBubbleTitle: string
       userBubbleDesc: string
+      fullMessagesTitle: string
+      fullMessagesDesc: string
       textDirectionTitle: string
       textDirectionDesc: string
       textDirection: { auto: string; rtl: string; ltr: string }

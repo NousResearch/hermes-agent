@@ -2546,6 +2546,8 @@
     "settings.appearance.embedsTitle",
     "settings.appearance.fileBrowserDesc",
     "settings.appearance.fileBrowserTitle",
+    "settings.appearance.fullMessagesDesc",
+    "settings.appearance.fullMessagesTitle",
     "settings.appearance.hideCodeDiffsDesc",
     "settings.appearance.hideCodeDiffsTitle",
     "settings.appearance.hideThreadTimelineDesc",

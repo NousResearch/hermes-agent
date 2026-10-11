@@ -1,4 +1,5 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
@@ -26,6 +27,7 @@ import { StopFilled } from '@/lib/icons'
 import { LruCache } from '@/lib/lru-cache'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
+import { $showFullUserMessages } from '@/store/show-full-user-messages'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
 
@@ -36,14 +38,21 @@ export function hasTextSelection(): boolean {
   return Boolean(selection && !selection.isCollapsed && selection.toString().length > 0)
 }
 
+// With Show full messages on, a prompt taller than this many lines renders as
+// ordinary flow content instead of pinning (#39721).
+const FULL_PIN_MAX_LINES = 4
+
 export function StickyHumanMessageContainer({
   attachments,
   children,
-  messageId
+  messageId,
+  pin = true
 }: {
   attachments?: ReactNode
   children: ReactNode
   messageId?: string
+  /** False renders the bubble as ordinary flow content (no sticky pin). */
+  pin?: boolean
 }) {
   return (
     // Fragment, not a wrapper: a wrapping element becomes the sticky's
@@ -52,7 +61,10 @@ export function StickyHumanMessageContainer({
     // while attachments below it scroll away.
     <>
       <div
-        className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible px-4 pb-(--conversation-turn-gap) pt-1"
+        className={cn(
+          'group/user-message -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible px-4 pb-(--conversation-turn-gap) pt-1',
+          pin ? 'sticky z-40' : 'relative'
+        )}
         data-message-id={messageId}
         data-role="user"
         data-slot="aui_user-message-root"
@@ -362,15 +374,23 @@ export const UserMessage: FC<{
   // changes, not on every frame while the outer max-height animates open.
   const clampInnerRef = useRef<HTMLDivElement | null>(null)
   const [bodyClamped, setBodyClamped] = useState(false)
+  const [bodyTall, setBodyTall] = useState(false)
   const lastClampHeightRef = useRef(-1)
   const lineHeightRef = useRef(0)
+
+  // Settings → Appearance → Show full messages (#42992): no clamp, every line
+  // at natural height. A prompt taller than FULL_PIN_MAX_LINES then drops the
+  // sticky pin so it scrolls away instead of eating the viewport its response
+  // needs (#39721).
+  const showFull = useStore($showFullUserMessages)
 
   // Watch windows spectate a subagent run driven elsewhere — prompts can't be
   // edited, restored, or stopped from here. The bubble stays a button that
   // toggles the 2-line clamp so long prompts are still fully readable.
   const readOnly = isWatchWindow()
   const [expanded, setExpanded] = useState(false)
-  const clampActive = !(readOnly && expanded)
+  const clampActive = !showFull && !(readOnly && expanded)
+  const canExpand = bodyClamped && !showFull
 
   const measureClamp = useCallback((entries: readonly ResizeObserverEntry[]) => {
     const inner = clampInnerRef.current
@@ -402,6 +422,7 @@ export const UserMessage: FC<{
 
     outer.style.setProperty('--human-msg-full', `${fullHeight}px`)
     setBodyClamped(fullHeight > lineHeightRef.current * 2 + 1)
+    setBodyTall(fullHeight > lineHeightRef.current * FULL_PIN_MAX_LINES + 1)
   }, [])
 
   useResizeObserver(measureClamp, clampInnerRef)
@@ -493,6 +514,7 @@ export const UserMessage: FC<{
           </>
         }
         messageId={messageId}
+        pin={!(showFull && bodyTall)}
       >
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
@@ -529,12 +551,12 @@ export const UserMessage: FC<{
                   // Spectator transcript: clicking only toggles the clamp so the
                   // full prompt is readable — never opens an edit composer.
                   <button
-                    aria-expanded={bodyClamped ? expanded : undefined}
-                    className={cn(bubbleClassName, !bodyClamped && 'cursor-default')}
+                    aria-expanded={canExpand ? expanded : undefined}
+                    className={cn(bubbleClassName, !canExpand && 'cursor-default')}
                     onClick={() => {
                       // Drag-select ends on mouseup→click; don't collapse the
                       // clamp just because the highlight finished.
-                      if (hasTextSelection() || !bodyClamped) {
+                      if (hasTextSelection() || !canExpand) {
                         return
                       }
 

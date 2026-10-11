@@ -114,6 +114,7 @@ export const SETTINGS_MANIFEST = {
       'composerPopout'
     ),
     userBubble: appearanceSetting('chat-display', ['opacity', 'transparent', 'message', 'bubble'], 'userBubble'),
+    fullMessages: appearanceSetting('chat-display', ['long', 'expand', 'collapse', 'clamp', 'full', 'message'], 'fullMessages'),
     textDirection: appearanceSetting(
       'chat-display',
       ['rtl', 'ltr', 'right to left', 'left to right', 'bidi', 'arabic', 'hebrew', 'persian', 'align'],

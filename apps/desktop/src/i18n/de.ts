@@ -1101,6 +1101,9 @@ export const deOverrides = {
       userBubbleTitle: 'Nachrichten-Blase',
       userBubbleDesc:
         'Wie durchsichtig Ihre eigenen Nachrichten sind. Bei 0 deckend; bei 100 bleibt nur die Kontur übrig.',
+      fullMessagesTitle: 'Vollständige Nachrichten anzeigen',
+      fullMessagesDesc:
+        'Zeigt deine langen Nachrichten in voller Länge, statt sie einzuklappen. Lange Nachrichten scrollen weg, statt oben angeheftet zu bleiben.',
       textDirectionTitle: 'Textrichtung',
       textDirectionDesc:
         'Legt die Schreibrichtung von Chatnachrichten und Eingabefeld fest. Auto richtet sich nach dem ersten Buchstaben jedes Absatzes; wählen Sie eine Richtung, wenn gemischter Text falsch ausgerichtet ist. Code bleibt immer linksläufig.',

@@ -830,6 +830,9 @@ export const zhOverrides = {
       backdropDesc: '对话后方那张淡淡的雕像图片。',
       userBubbleTitle: '消息气泡',
       userBubbleDesc: '你自己的消息有多透明。0 为不透明，100 时只保留边框。',
+      fullMessagesTitle: '显示完整消息',
+      fullMessagesDesc:
+        '完整显示你发送的长消息，而不是折叠。较长的消息会随滚动离开，而不是固定在顶部。',
       textDirectionTitle: '文本方向',
       textDirectionDesc:
         '设置聊天消息和输入框的文字方向。“自动”根据每段的第一个字母判断；混合文本排列不对时，可手动选择方向。代码始终从左到右显示。',

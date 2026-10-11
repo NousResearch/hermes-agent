@@ -1104,6 +1104,9 @@ export const frOverrides = {
       backdropDesc: "L'image de statue discrète derrière la conversation.",
       userBubbleTitle: 'Bulle des messages',
       userBubbleDesc: 'Transparence de vos messages : fond opaque à 0 ; seul le contour reste visible à 100.',
+      fullMessagesTitle: 'Afficher les messages en entier',
+      fullMessagesDesc:
+        'Affiche vos longs messages en entier au lieu de les replier. Les plus longs défilent au lieu de rester épinglés en haut.',
       textDirectionTitle: 'Sens du texte',
       textDirectionDesc:
         "Sens d'écriture des messages et du champ de saisie. Auto suit la première lettre de chaque paragraphe ; choisissez un sens quand un texte mixte s'aligne mal. Le code reste toujours de gauche à droite.",

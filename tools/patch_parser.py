@@ -285,10 +285,14 @@ def _written(result: Any, diff: str, path: str, read_sha256: Optional[str]) -> A
 
 
 def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
-    """Unified diff ``a/path`` -> ``b/path`` (``new=None`` = deletion, ``/dev/null``)."""
+    """Unified diff ``a/path`` -> ``b/path`` (``new=None`` = deletion, ``/dev/null``).
+
+    ``path`` may be absolute; the ``a/``/``b/`` prefixes join a relative label so
+    the header never reads ``a//home/...`` (#134718)."""
+    label = path.lstrip('/')
     return ''.join(difflib.unified_diff(
         old.splitlines(keepends=True), [] if new is None else new.splitlines(keepends=True),
-        fromfile=f"a/{path}", tofile="/dev/null" if new is None else f"b/{path}"))
+        fromfile=f"a/{label}", tofile="/dev/null" if new is None else f"b/{label}"))
 
 
 def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> PatchResult:
@@ -363,7 +367,7 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
         return _fail(f"{op.file_path}: could not confirm the path is free — {read_back.error}")
     content_lines = [line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+']
     result = file_ops.write_file(op.file_path, '\n'.join(content_lines))
-    diff = f"--- /dev/null\n+++ b/{op.file_path}\n" + '\n'.join(f"+{line}" for line in content_lines)
+    diff = f"--- /dev/null\n+++ b/{op.file_path.lstrip('/')}\n" + '\n'.join(f"+{line}" for line in content_lines)
     return _written(result, diff, op.file_path, "")
 
 

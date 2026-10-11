@@ -503,22 +503,28 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
 
 def _write_zip_entries(
-    zf: zipfile.ZipFile, files_to_add: list[tuple[Path, Path]], out_path: Path,
+    zf: zipfile.ZipFile, files_to_add: list[tuple[Path, Path]], out_path: Path, root: Path,
     *, on_db_failure, on_error, on_progress, track_bytes: bool) -> int:
-    """Add every ``(abs_path, rel_path)`` to *zf*, WAL-safe for ``*.db``; return bytes archived.
+    """Add every ``(abs_path, rel_path)`` (relative to *root*) to *zf*, WAL-safe for ``*.db``;
+    return bytes archived. Each cron store's jobs.json + runtime.db are archived as one pair under
+    that store's lock (``_copy_with_cron_pairs_locked``).
 
     ``on_db_failure(rel_path)`` runs when a SQLite snapshot fails (may raise to abort);
     ``on_error(rel_path, exc)`` records a read failure; ``on_progress(i)`` fires every 500 files;
     ``track_bytes`` stats plain files for the size total.
     """
     total_bytes = 0
-    for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
+    written = 0
+
+    def _add(abs_path: Path, rel_path: Path) -> None:
+        nonlocal total_bytes, written
+        written += 1
         try:
             if abs_path.suffix == ".db":
                 size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
                 if size is None:
                     on_db_failure(rel_path)
-                    continue
+                    return
                 total_bytes += size
             else:
                 _write_zip_file(zf, abs_path, str(rel_path))
@@ -526,9 +532,11 @@ def _write_zip_entries(
                     total_bytes += abs_path.stat().st_size
         except (PermissionError, OSError, ValueError) as exc:
             on_error(rel_path, exc)
-            continue
-        if i % 500 == 0:
-            on_progress(i)
+            return
+        if written % 500 == 0:
+            on_progress(written)
+
+    _copy_with_cron_pairs_locked(root, files_to_add, _add)
     return total_bytes
 
 
@@ -637,7 +645,7 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
     with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
             archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         total_bytes = _write_zip_entries(
-            zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
+            zf, files_to_add, out_path, hermes_root, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
             on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
         # External memory-provider state never includes ``.db`` files in practice, so no
@@ -1060,6 +1068,9 @@ def run_import(args) -> Optional[int]:
 # outside state.db, so it is listed explicitly — ``hermes update`` snapshots this set (#15733).
 _QUICK_STATE_FILES = (
     "state.db", "config.yaml", ".env", "auth.json", "cron/jobs.json", "cron/executions.db",
+    # Scheduler state split out of jobs.json (cron/runtime_state.py); a snapshot that took the
+    # definitions without it would restore every job with forgotten run history and repeat progress.
+    "cron/runtime.db",
     "gateway_state.json", "channel_directory.json", "channel_aliases.json", "processes.json",
     "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
     # Per-profile user stores, destroyed if the update flow replaces the file and the post-update
@@ -1194,6 +1205,68 @@ def create_pre_migration_backup(
 # Quick state snapshots (used by /snapshot slash command and hermes backup --quick)
 # ---------------------------------------------------------------------------
 
+@contextmanager
+def _cron_store_lock(home: Path):
+    """``home``'s cron job-store lock (cron.jobs._jobs_lock, scoped to that profile's store)."""
+    from cron.jobs import _jobs_lock, use_cron_store
+
+    with use_cron_store(home), _jobs_lock():
+        yield
+
+
+# One cron job store split in two files (cron/runtime_state.py): copied apart, they can form a pair
+# that never existed together — a definition whose runtime row a removal already deleted.
+_CRON_STORE_PAIR = (_CRON_JOBS_REL, "cron/runtime.db")
+
+
+def _cron_pair_home(root: Path, rel: Any) -> Optional[Path]:
+    """The home whose cron store pair ``rel`` (relative to ``root``) belongs to: ``root`` itself, or
+    a named profile under ``root/profiles/`` (a full backup of the hermes root holds every
+    profile's store); ``None`` for every other file."""
+    parts = Path(rel).parts
+    if "/".join(parts[-2:]) not in _CRON_STORE_PAIR:
+        return None
+    prefix = parts[:-2]
+    if not prefix or (len(prefix) == 2 and prefix[0] == "profiles"):
+        return root.joinpath(*prefix)
+    return None
+
+
+def _copy_with_cron_pairs_locked(root: Path, entries, copy) -> None:
+    """``copy(abs_path, rel)`` for every ``(abs_path, rel)`` entry, in order, except that each cron
+    store's pair (cron/jobs.json, cron/runtime.db) is copied back to back, at its first member's
+    position, under that store's ``_jobs_lock()``. Everything else — state.db,
+    cron/executions.db, cron/output/ — is copied without the lock, so it is held for two small
+    files, never across a large one: a hold longer than ``_jobs_lock``'s 30 s wait would let
+    another process's removal proceed degraded between the two copies.
+
+    Pair membership is decided under the lock, from the disk, not from the caller's earlier scan:
+    a concurrent first load can migrate a pre-split store in between, stripping jobs.json and
+    creating a runtime.db the scan never listed. A pair file present on disk is copied even if
+    the scan missed it; one that has disappeared is skipped. A store that is still pre-split
+    (no runtime.db: jobs.json carries all state) is copied exactly as before."""
+    pairs: Dict[Path, list] = {}
+    for entry in entries:
+        home = _cron_pair_home(root, entry[1])
+        if home is not None:
+            pairs.setdefault(home, []).append(entry)
+    for abs_path, rel in entries:
+        home = _cron_pair_home(root, rel)
+        if home is None:
+            copy(abs_path, rel)
+            continue
+        members = pairs.pop(home, None)
+        if members is None:  # this store's pair was already copied
+            continue
+        prefix = Path(members[0][1]).parent.parent
+        with _cron_store_lock(home):
+            for pair_rel in _CRON_STORE_PAIR:
+                member_path = home / pair_rel
+                if member_path.is_file():
+                    copy(member_path, (prefix / pair_rel).as_posix()
+                         if isinstance(members[0][1], str) else prefix / pair_rel)
+
+
 def create_quick_snapshot(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
@@ -1284,10 +1357,12 @@ def _create_quick_snapshot_locked(
     # recoverable database.
     oversized_skipped: list[str] = []
 
-    for rel in _QUICK_STATE_FILES:
-        src = home / rel
+    # cron/jobs.json and cron/runtime.db are one store split in two files: the helper copies them
+    # back to back under that store's lock, and every other entry (state.db, cron/executions.db)
+    # without it.
+    def _snapshot_entry(src: Path, rel: str) -> None:
         if not src.exists():
-            continue
+            return
 
         if src.is_dir():
             # Walk the directory and record each file individually in the
@@ -1330,15 +1405,15 @@ def _create_quick_snapshot_locked(
                     manifest[sub_rel] = dst.stat().st_size
                 except (OSError, PermissionError) as exc:
                     logger.warning("Could not snapshot %s: %s", sub_rel, exc)
-            continue
+            return
 
         if not src.is_file():
-            continue
+            return
 
         if _too_large(src, rel):
             if src.suffix == ".db":
                 oversized_skipped.append(rel)
-            continue
+            return
 
         dst = staging_dir / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1356,12 +1431,15 @@ def _create_quick_snapshot_locked(
                             f"  ⚠ Snapshot: {rel} looks ZEROED "
                             f"(no SQLite header; {src.stat().st_size} bytes)"
                         )
-                    continue
+                    return
             else:
                 shutil.copy2(src, dst)
             manifest[rel] = dst.stat().st_size
         except (OSError, PermissionError) as exc:
             logger.warning("Could not snapshot %s: %s", rel, exc)
+
+    _copy_with_cron_pairs_locked(
+        home, [(home / rel, rel) for rel in _QUICK_STATE_FILES], _snapshot_entry)
 
     if failed_dbs:
         # Critical: update path used to log-and-continue with exit 0, so a
@@ -1630,6 +1708,65 @@ def _count_cron_jobs(path: Path) -> Optional[int]:
     return None
 
 
+def _restore_cron_jobs_with_runtime(home: Path, snap_path: Path, live_path: Path) -> None:
+    """Restore ``live_path`` (cron/jobs.json) from a snapshot, under the store's lock, together
+    with the scheduler state of the jobs it brings back.
+
+    After the definition/runtime split a snapshot's jobs.json carries no run state: copied alone,
+    a lost job would return with its repeat progress, claims, next run and run history forgotten
+    whenever its live runtime row was deleted with it. So every snapshot job with no row in the
+    live runtime.db gets its snapshot row folded back into its record
+    as legacy scheduler fields (``cron.jobs._merge_job``), which the next ``load_jobs()`` migrates
+    into runtime.db. A job with a live row keeps it: live state is newer than the snapshot's. A
+    pre-split snapshot (no runtime.db) already carries the state in its jobs.json, and an
+    unreadable runtime.db falls back to the plain copy with a warning.
+
+    Every path, the plain copy included, writes jobs.json while holding the lock that the live
+    rows were read under: a removal slipping in between would otherwise have its definition
+    brought back without its runtime row."""
+    import copy
+
+    from cron.jobs import _merge_job, _parse_jobs_file, _write_definitions_file
+    from cron.runtime_state import RUNTIME_DB_NAME, read_store
+
+    snap_rows: Dict[str, Any] = {}
+    records: Any = None
+    if (snap_path.parent / RUNTIME_DB_NAME).is_file():
+        try:
+            snap_rows = read_store(snap_path.parent)[0]
+            data, _ = _parse_jobs_file(snap_path)
+            records = data.get("jobs") if isinstance(data, dict) else data
+        except Exception as exc:
+            logger.warning(
+                "Restoring cron/jobs.json without its run state: the snapshot's %s is unreadable (%s)",
+                RUNTIME_DB_NAME, exc)
+            snap_rows = {}
+    folded = 0
+    with _cron_store_lock(home):
+        restored = []
+        if snap_rows and isinstance(records, list):
+            try:
+                live_rows = read_store(live_path.parent)[0]
+            except Exception as exc:
+                logger.warning(
+                    "Restoring cron/jobs.json without its run state: the live %s is unreadable (%s)",
+                    RUNTIME_DB_NAME, exc)
+            else:
+                for record in records:
+                    job_id = str(record.get("id") or "") if isinstance(record, dict) else ""
+                    if job_id and job_id not in live_rows and job_id in snap_rows:
+                        record = _merge_job(copy.deepcopy(record), copy.deepcopy(snap_rows[job_id]))
+                        folded += 1
+                    restored.append(record)
+        if folded:
+            _write_definitions_file(live_path, restored)
+        else:
+            shutil.copy2(snap_path, live_path)
+    if folded:
+        logger.warning("Restored the run state of %d cron job(s) from the snapshot's %s",
+                       folded, RUNTIME_DB_NAME)
+
+
 def restore_cron_jobs_if_emptied(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
@@ -1644,7 +1781,8 @@ def restore_cron_jobs_if_emptied(
 
     This compares the *current* job count against the pre-update snapshot. If
     the live file now has **fewer** jobs than the snapshot, the snapshot copy
-    of ``cron/jobs.json`` is restored in place.
+    of ``cron/jobs.json`` is restored in place, with the snapshot's runtime.db
+    state for the jobs it brings back (``_restore_cron_jobs_with_runtime``).
 
     The check is deliberately conservative — it only ever restores when there
     is unambiguous evidence of loss (snapshot had more jobs than live file),
@@ -1688,7 +1826,7 @@ def restore_cron_jobs_if_emptied(
 
     try:
         live_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snap_path, live_path)
+        _restore_cron_jobs_with_runtime(home, snap_path, live_path)
     except (OSError, PermissionError) as exc:
         logger.error(
             "Cron jobs were emptied during update but auto-restore failed: %s", exc
@@ -2260,7 +2398,8 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         with _atomic_output_path(out_path, _publish_path) as archive_path, zipfile.ZipFile(
                 archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             _write_zip_entries(
-                zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
+                zf, files_to_add, out_path, hermes_root, on_db_failure=_db_failure,
+                track_bytes=False,
                 on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))

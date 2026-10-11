@@ -767,6 +767,26 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
     return image_url, reference_image_urls, None
 
 
+def _reproducibility_args(args) -> dict[str, Any]:
+    """Type-guarded ``seed`` / ``num_inference_steps`` / ``guidance_scale`` from tool args.
+
+    The schema advertises the first two as integers and the third as a number, but a caller can
+    still send a numeric string. ``_build_payload`` filters ``seed`` on ``isinstance(seed, int)``
+    and forwards the other two unchanged, so a non-numeric value would otherwise reach FAL.
+    Returns only the names that were supplied and parsed.
+    """
+    out: dict[str, Any] = {}
+    for name, spec in _REPRODUCIBILITY_PARAMS.items():
+        value = args.get(name)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            out[name] = float(value) if spec["type"] == "number" else int(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -784,13 +804,19 @@ def _handle_image_generate(args, **kw):
     sources = dict(image_url=image_url, reference_image_urls=reference_image_urls,
                    upscale=upscale if isinstance(upscale, bool) else None)
     controls = {name: args[name] for name in _CREATIVE_CONTROL_PARAMS if name in args}
+    # Reproducibility knobs (seed / num_inference_steps / guidance_scale). They reach the in-tree
+    # FAL helper only: the plugin and managed routes take the ``controls`` family above, and their
+    # ``generate(**kwargs)`` does not accept these three. Without them the FAL route falls back to
+    # a random seed and the model's default step count, so two identical calls cannot reproduce an
+    # image.
+    reproducibility = _reproducibility_args(args)
     raw = _dispatch_to_plugin_provider(prompt, aspect_ratio, controls=controls or None, **sources)
     if raw is None:
         raw = _maybe_route_managed_model(prompt, aspect_ratio, controls=controls or None, **sources)
         if raw is not None:
             raw = _fall_back_to_fal(raw, prompt, aspect_ratio, sources)
     if raw is None:
-        raw = image_generate_tool(prompt, aspect_ratio, **sources)
+        raw = image_generate_tool(prompt, aspect_ratio, **sources, **reproducibility)
     return _postprocess_image_generate_result(raw, task_id=task_id)
 
 
@@ -877,6 +903,9 @@ def _active_image_capabilities() -> dict[str, Any]:
     info["max_reference_images"] = int(meta.get("max_reference_images") or 1) if can_edit else 0
     # Clarity is available on request for ANY catalog model (``upscale`` is only the default).
     info["supports_upscale"] = True
+    # The in-tree helper takes the reproducibility knobs directly; a plugin/managed provider takes
+    # its own ``controls`` family instead, so only this route advertises them.
+    info["reproducibility_controls"] = list(_REPRODUCIBILITY_PARAMS)
     return info
 
 
@@ -908,6 +937,35 @@ _CREATIVE_CONTROL_PARAMS = {
     "movement": {
         "type": "integer", "minimum": -100, "maximum": 100,
         "description": "Motion in the scene, -100 static to 100 dynamic. 0 neutral.",
+    },
+}
+
+# Reproducibility knobs the in-tree FAL helper takes directly (``image_generate_tool``). Same
+# shape as _CREATIVE_CONTROL_PARAMS: a backend advertises the names it honors via
+# ``reproducibility_controls`` and only those reach the schema. Only the FAL route declares them
+# today — a plugin or managed provider takes the ``controls`` family above, and its
+# ``generate(**kwargs)`` does not accept these three.
+_REPRODUCIBILITY_PARAMS = {
+    "seed": {
+        "type": "integer",
+        "description": (
+            "Fixed seed for reproducible output: the same prompt and seed reproduce the image. "
+            "Omit for a random seed."
+        ),
+    },
+    "num_inference_steps": {
+        "type": "integer",
+        "description": (
+            "Sampling steps — higher is more detailed and slower, and each model has its own "
+            "default and cap. Omit for the model default."
+        ),
+    },
+    "guidance_scale": {
+        "type": "number",
+        "description": (
+            "Classifier-free guidance scale — how strictly the prompt is followed. "
+            "Model-specific; omit unless tuning deliberately."
+        ),
     },
 }
 
@@ -983,6 +1041,9 @@ def _build_dynamic_image_schema() -> dict[str, Any]:
     for name in info.get("creative_controls") or []:
         if name in _CREATIVE_CONTROL_PARAMS:
             properties[name] = _CREATIVE_CONTROL_PARAMS[name]
+    for name in info.get("reproducibility_controls") or []:
+        if name in _REPRODUCIBILITY_PARAMS:
+            properties[name] = _REPRODUCIBILITY_PARAMS[name]
     return {"description": base_desc.format(edit_clause=edit_clause),
             "parameters": {"type": "object", "properties": properties, "required": ["prompt"]}}
 

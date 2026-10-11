@@ -145,6 +145,38 @@ def _file_ops_uses_host_paths(file_ops) -> bool:
     return isinstance(env, LocalEnvironment)
 
 
+def _begin_skill_ledger_capture(resolved_paths, file_ops) -> list:
+    """Pre-write skill-ledger capture for resolved targets landing in a skills tree
+    (host backends only — a sandbox path is a different filesystem). Observability
+    only: never raises, [] when nothing qualifies. See tools/skill_ledger.py."""
+    if not resolved_paths or not _file_ops_uses_host_paths(file_ops):
+        return []
+    pending = []
+    try:
+        from tools import skill_ledger
+        for p in dict.fromkeys(resolved_paths):
+            if not p:
+                continue
+            capture = skill_ledger.begin_file_tool_write(p)
+            if capture is not None:
+                pending.append(capture)
+    except Exception:
+        logger.debug("skill-ledger pre-write capture failed", exc_info=True)
+    return pending
+
+
+def _finish_skill_ledger_capture(pending, source: str, ok: bool, session_id) -> None:
+    """Record the ledger entries for a completed file-tool write. Never raises."""
+    if not pending:
+        return
+    try:
+        from tools import skill_ledger
+        for capture in pending:
+            skill_ledger.finish_file_tool_write(capture, source, ok=ok, session_id=session_id)
+    except Exception:
+        logger.debug("skill-ledger write record failed", exc_info=True)
+
+
 # V4A file headers: group 1 = header prefix, 2 = op, 3 = path. ``\s*`` after
 # ``***`` mirrors patch_parser's leniency (``***Update File:`` applies, so it
 # must be checked).
@@ -899,7 +931,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result = _get_file_ops(task_id).write_file(_resolved or path, content)
+            file_ops = _get_file_ops(task_id)
+            # Ledger pre-capture BEFORE the write: a skills-tree target gets a real
+            # before-manifest so the mutation is recoverable, not just attributed.
+            _ledger_pending = _begin_skill_ledger_capture(
+                [_resolved] if _resolved else [], file_ops)
+            result = file_ops.write_file(_resolved or path, content)
             result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
@@ -912,6 +949,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             if result_dict.get("error"):
                 _update_read_timestamp(path, task_id)
             else:
+                _finish_skill_ledger_capture(_ledger_pending, "write_file", ok=True,
+                                             session_id=session_id)
                 if _resolved:
                     result_dict["files_modified"] = [_resolved]
                     # Own write = current whole-file content: consecutive
@@ -993,6 +1032,11 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
             # every baseline check it stats the host path, so a sandbox path carries nothing.
             _known = _known_full_content_sha256(_path_to_resolved.values(), task_id)
 
+            # Ledger pre-capture BEFORE any file changes: skills-tree targets get a
+            # real before-manifest so the mutation is recoverable, not just attributed.
+            _ledger_pending = _begin_skill_ledger_capture(
+                [*_path_to_resolved.values(), *_path_to_entry.values()], file_ops)
+
             # Hand the shell layer the RESOLVED targets so both layers agree on
             # which file is edited even when the shell's cwd differs.
             if mode == "replace":
@@ -1014,6 +1058,8 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
             if stale_warnings:
                 result_dict["_warning"] = " | ".join(stale_warnings)
             if not result_dict.get("error"):
+                _finish_skill_ledger_capture(_ledger_pending, "patch", ok=True,
+                                             session_id=session_id)
                 # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
                 # mismatch is visible instead of silently landing elsewhere.
                 _resolved_modified = [_path_to_entry.get(_p) or _path_to_resolved.get(_p) or _p

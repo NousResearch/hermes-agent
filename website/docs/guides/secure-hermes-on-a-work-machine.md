@@ -24,6 +24,8 @@ Fresh install, no configuration — these protections are active:
 
 **Secrets are redacted from output.** `security.redact_secrets` is on by default: patterns that look like API keys, tokens, and passwords in tool output are redacted before they enter the conversation context and logs.
 
+**Credentials never land in the prompt history.** The interactive CLI remembers what you typed in `~/.hermes/.hermes_history` for Up-arrow recall. A prompt that the redaction layer would mask (a vendor-prefixed token, a bearer header, a private key, a credential inside a URL) is answered normally but is not written to that file or offered by recall, and the file itself is created owner-only (`0600`). This holds even with `redact_secrets: false`.
+
 **Your data goes only where you point it.** API calls go **only to the LLM provider you configure**. Hermes Agent does not collect telemetry, usage data, or analytics. Your conversations, memory, and skills are stored locally in `~/.hermes/`. See the [FAQ](../reference/faq.md#is-my-data-sent-anywhere).
 
 :::info

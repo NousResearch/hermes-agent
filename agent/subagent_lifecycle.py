@@ -256,7 +256,12 @@ class SubagentLifecycleService:
             if request.correlation_id and correlation_key in _REGISTRY.correlations:
                 raise SubagentLifecycleError("Duplicate correlation_id for this parent session.")
         # Lazy: delegate construction stays internal, plugins never import private delegation helpers.
-        from tools.delegate_tool import _build_child_preserving_parent_tools, DEFAULT_MAX_ITERATIONS
+        from tools.delegate_tool import (
+            DEFAULT_MAX_ITERATIONS, _build_child_preserving_parent_tools, _oneshot_spawn_budget, _spawn_admission_error,
+        )
+        refusal = _spawn_admission_error(parent) or _oneshot_spawn_budget(parent, 1)
+        if refusal:
+            raise SubagentLifecycleError(refusal)
         child = _build_child_preserving_parent_tools(
             task_index=0, goal=request.goal, context=request.context,
             toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,

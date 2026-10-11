@@ -166,7 +166,12 @@ MCP_TOOL_NAME_PREFIX = "mcp__"
 # unaffected because handlers close over the original unprefixed tool name.
 _MCP_TOOL_NAME_MAX_LENGTH = 64
 _MCP_TOOL_NAME_HASH_LENGTH = 8
-_clamped_names_warned: set[str] = set()
+# Natural names already reported at DEBUG; the per-server count is what reaches WARNING (one line
+# per server per process, from ``_register_server_tools``), so a server with a thousand long
+# auto-generated endpoint names does not write a thousand warnings to errors.log.
+_clamped_names_seen: set[str] = set()
+_clamped_by_server: dict[str, set[str]] = {}
+_clamped_summary_logged: set[str] = set()
 
 
 def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
@@ -176,11 +181,26 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
     if len(full_name) <= _MCP_TOOL_NAME_MAX_LENGTH:
         return full_name
     suffix = "_" + hashlib.sha256(full_name.encode("utf-8")).hexdigest()[:_MCP_TOOL_NAME_HASH_LENGTH]
-    if full_name not in _clamped_names_warned:  # recomputed on every health refresh; warn once
-        _clamped_names_warned.add(full_name)
-        logger.warning("MCP tool name %r (%d chars) exceeds the %d-char provider limit; shortened to a "
-                       "deterministic hash-suffixed name", full_name, len(full_name), _MCP_TOOL_NAME_MAX_LENGTH)
+    if full_name not in _clamped_names_seen:  # recomputed on every health refresh; log once
+        _clamped_names_seen.add(full_name)
+        _clamped_by_server.setdefault(server_name, set()).add(full_name)
+        logger.debug("MCP tool name %r (%d chars) exceeds the %d-char provider limit; shortened to a "
+                     "deterministic hash-suffixed name", full_name, len(full_name), _MCP_TOOL_NAME_MAX_LENGTH)
     return full_name[:_MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
+
+
+def log_clamped_name_summary(server_name: str, registered_count: int) -> None:
+    """One WARNING per server per process naming how many of its tools were clamped, emitted after
+    registration so the count is complete. Nothing is logged for servers with no long names, and
+    the same server is not reported again on a list_changed refresh or reconnect."""
+    clamped = _clamped_by_server.get(server_name)
+    if not clamped or server_name in _clamped_summary_logged:
+        return
+    _clamped_summary_logged.add(server_name)
+    logger.warning("MCP server '%s': %d of %d tool name(s) exceed the %d-char provider limit and were "
+                   "shortened to deterministic hash-suffixed names (handlers keep the original tool "
+                   "names; the full list is at DEBUG level)",
+                   server_name, len(clamped), registered_count, _MCP_TOOL_NAME_MAX_LENGTH)
 
 
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:

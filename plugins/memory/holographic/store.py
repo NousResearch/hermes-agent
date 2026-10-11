@@ -199,6 +199,29 @@ class MemoryStore:
                    "ORDER BY trust_score DESC LIMIT ?")
             return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
 
+    def record_retrieval(self, fact_ids: list[int]) -> int:
+        """Increment retrieval_count for facts actually returned to a caller.
+
+        The column existed since the first schema and was SELECTed everywhere, but
+        nothing ever wrote to it — so every fact read 0 and "retrieval_count == 0"
+        was misread as "this fact is never used" when it only meant "the counter was
+        never wired". A metric that silently stays zero is worse than no metric: it
+        invites deleting facts that are in fact being retrieved.
+
+        Deliberately does NOT touch updated_at: that column feeds the temporal-decay
+        ranking, so bumping it on every read would make merely *reading* a fact look
+        like the fact was refreshed and quietly reorder search results.
+        """
+        if not fact_ids:
+            return 0
+        with self._lock:
+            placeholders = ",".join("?" * len(fact_ids))
+            cur = self._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                list(fact_ids))
+            self._conn.commit()
+            return cur.rowcount
+
     def record_feedback(self, fact_id: int, helpful: bool) -> dict:
         """Adjust trust asymmetrically: helpful -> +0.05 and helpful_count += 1; unhelpful -> -0.10.
         Returns {fact_id, old_trust, new_trust, helpful_count}. Raises KeyError if fact_id is unknown."""

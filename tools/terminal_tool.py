@@ -122,6 +122,7 @@ def _current_session_profile() -> str:
 
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
+    _USER_SUMMARY_OUTCOMES,
 )
 
 
@@ -992,6 +993,11 @@ def _fatal_error_json(e: BaseException) -> str:
     }, ensure_ascii=False)
 
 
+def _approval_outcome_fields(approval: dict) -> dict:
+    outcome = approval.get("outcome")
+    return {"approval_outcome": outcome} if outcome in _USER_SUMMARY_OUTCOMES else {}
+
+
 class _Rejected(Exception):
     """Carries a finished tool-result JSON out of the planning/guard helpers, so
     each early-return site is one ``raise`` instead of an isinstance-checked
@@ -1032,6 +1038,7 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
                 pattern_key=approval.get("pattern_key", ""),
                 smart_denied=approval.get("smart_denied", False),
                 allow_permanent=approval.get("allow_permanent", True),
+                **_approval_outcome_fields(approval),
             ))
         desc = approval.get("description", "command flagged")
         fallback_msg = (
@@ -1039,7 +1046,7 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
             "Use the approval prompt to allow it, or rephrase the command."
         )
         raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
-                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
+                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {}), **_approval_outcome_fields(approval)))
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):
         return _ApprovalVerdict(

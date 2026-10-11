@@ -9,7 +9,7 @@ name: Prompt surface diff
 #     change that alters the surface must carry the regenerated snapshot in the same PR;
 #   * this job summarises the snapshot's base->head diff (per-surface token deltas, prompt hunks,
 #     per-tool description/param changes) into the unified CI review comment;
-#   * the protect-main ruleset requires two hermes-agent-core approvals for that directory.
+#   * the prompt-surface-review ruleset requires one hermes-agent-core approval for that directory.
 #
 # Never blocking: the staleness test is the gate and the ruleset is the review requirement.
 # Reads only the two committed snapshots (no PR code runs), so it needs no secrets.
@@ -87,7 +87,7 @@ jobs:
                   "summary": "This PR changes the system prompt or tool schemas every session sends.",
                   "detail": detail,
                   "how_to_fix": "Read the rendered change below (full text under tests/fixtures/prompt_surface/ "
-                                "in the Files tab). Merging needs two hermes-agent-core approvals.",
+                                "in the Files tab). Merging needs a hermes-agent-core approval.",
               }]}]
           print("review_status=" + json.dumps(status))
           PY

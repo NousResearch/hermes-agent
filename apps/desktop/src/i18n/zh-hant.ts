@@ -11,6 +11,7 @@ import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
 import { zhHantFirstRun } from './zh-hant_first_run'
+import { zhHantMcpReload } from './zh-hant_mcp_reload'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
@@ -25,6 +26,7 @@ export const zhHantOverrides = {
       signInFailed: '連接失敗，點擊重試'
     }
   },
+  connectorsPage: { reload: zhHantMcpReload },
   skillDeepLink: {
     installTitle: (name: string) => `安裝「${name}」？`,
     installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',

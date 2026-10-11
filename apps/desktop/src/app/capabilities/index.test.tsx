@@ -496,3 +496,47 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     )
   })
 })
+
+describe('CapabilitiesView skills refresh', { timeout: 60_000 }, () => {
+  async function refreshWith(request: ReturnType<typeof vi.fn>) {
+    const { $gateway } = await import('@/store/gateway')
+    $gateway.set({ request } as never)
+    await renderSkills()
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'r' })
+    })
+  }
+
+  afterEach(async () => {
+    const { $gateway } = await import('@/store/gateway')
+    $gateway.set(null)
+  })
+
+  it('rescans skills on the backend before refetching them', async () => {
+    const request = vi.fn().mockResolvedValue({ output: '' })
+
+    await refreshWith(request)
+
+    await waitFor(() => expect(request).toHaveBeenCalledWith('skills.reload', expect.any(Object)))
+  })
+
+  it('stays quiet against a backend that has no skills.reload', async () => {
+    const { notifyError } = await import('@/store/notifications')
+    const request = vi.fn().mockRejectedValue(Object.assign(new Error('Method not found'), { code: -32601 }))
+
+    await refreshWith(request)
+
+    await waitFor(() => expect(request).toHaveBeenCalled())
+    expect(vi.mocked(notifyError)).not.toHaveBeenCalled()
+  })
+
+  it('reports a rescan that really failed', async () => {
+    const { notifyError } = await import('@/store/notifications')
+    const failure = new Error('skills dir unreadable')
+    const request = vi.fn().mockRejectedValue(failure)
+
+    await refreshWith(request)
+
+    await waitFor(() => expect(vi.mocked(notifyError)).toHaveBeenCalledWith(failure, 'Skills failed to reload'))
+  })
+})

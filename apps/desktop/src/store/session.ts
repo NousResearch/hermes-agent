@@ -219,6 +219,22 @@ export function knownSessionProfile(sessions: readonly SessionInfo[], sessionId:
   return typeof owner === 'string' ? owner : (owner?.targetProfile ?? owner?.profile)?.trim() || undefined
 }
 
+/**
+ * The session id only when its KNOWN owner is `profile`; otherwise null. An
+ * unknown owner is not assumed to be the active or launch profile (see
+ * knownSessionProfile): a profile-scoped reload must never carry a foreign id
+ * to another profile's compute host. Keys normalize locally — importing
+ * @/store/profile here would be circular — with the same '' → 'default' rule.
+ */
+export function sessionOfProfile(
+  sessionId: null | string | undefined,
+  profile: null | string | undefined
+): null | string {
+  const owner = sessionId ? knownSessionProfile($sessions.get(), sessionId) : undefined
+
+  return owner !== undefined && owner === ((profile ?? '').trim() || 'default') ? (sessionId ?? null) : null
+}
+
 function messagingListOwnerForOmittedProfile(session: SessionInfo | undefined): SessionOwnerScope {
   if (!session || !isMessagingSource(session.source) || !messagingListServer) {
     return undefined

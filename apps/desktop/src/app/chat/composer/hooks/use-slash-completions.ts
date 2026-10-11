@@ -7,7 +7,7 @@ import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
-  desktopSkinSlashCompletions,
+  desktopOwnedArgCompletions,
   desktopSlashDescription,
   type DesktopThemeCommandOption,
   filterDesktopCommandsCatalog,
@@ -111,18 +111,17 @@ export function useSlashCompletions(options: {
 
       const text = `/${query}`
 
-      // The desktop owns /skin entirely (client-side theme context). Surface its
-      // theme list inside this single popover instead of a bespoke one, and skip
-      // the backend skin completions (which describe CLI/TUI skins that don't
-      // apply here). Matches once we're past `/skin ` into the arg stage.
-      const skinArg = /^\/skin\s+(.*)$/is.exec(text)
+      // The desktop owns a few argument lists client-side (/skin, /reload-mcp):
+      // it answers them here instead of a backend round-trip, and outside the
+      // backend's `complete.slash` shape.
+      const owned = desktopOwnedArgCompletions(text, { activeSkin, skinThemes })
 
-      if (skinArg && skinThemes) {
-        const items = desktopSkinSlashCompletions(skinThemes, activeSkin ?? '', skinArg[1] ?? '').map(entry => ({
+      if (owned) {
+        const items = owned.items.map(entry => ({
           text: entry.text,
           display: entry.display,
           meta: entry.meta,
-          group: 'Themes'
+          group: owned.group
         }))
 
         return { items, query }
@@ -320,20 +319,24 @@ export function useSlashCompletions(options: {
     }
   }, [])
 
-  // Mirrors the fetcher's branching: the `/skin` and `/resume` arg stages are
-  // answered from client-side state, so they never wait on the network; every
-  // other query is served from the completion cache when it's still warm.
+  // Mirrors the fetcher's branching: the desktop-owned arg stages (/skin,
+  // /reload-mcp) and the /resume session list are answered from client-side
+  // state, so they never wait on the network; every other query is served from
+  // the completion cache when it's still warm.
   const isCached = useCallback(
     (query: string) => {
       const text = `/${query}`
 
-      if ((skinThemes && /^\/skin\s+/is.test(text)) || /^\/(?:resume|sessions|switch)\s+/is.test(text)) {
+      if (
+        desktopOwnedArgCompletions(text, { activeSkin, skinThemes }) !== null ||
+        /^\/(?:resume|sessions|switch)\s+/is.test(text)
+      ) {
         return true
       }
 
       return hasCachedSlashCompletion(query ? `slash:${scopeKey}:${text.toLowerCase()}` : catalogKey)
     },
-    [skinThemes, scopeKey, catalogKey]
+    [skinThemes, activeSkin, scopeKey, catalogKey]
   )
 
   return useLiveCompletionAdapter({ enabled, epoch: `${epoch}:${locale}`, fetcher, isCached, toItem })

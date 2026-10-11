@@ -66,7 +66,7 @@ def test_interrupt_abandons_noncooperative_tool(monkeypatch, fake_agent, _fast_p
         tool_executor, "_run_agent_tool_execution_middleware", _fake_middleware
     )
     monkeypatch.setattr(
-        tool_executor, "_resolve_sequential_tool_timeout", lambda: None
+        tool_executor, "_resolve_sequential_tool_timeout", lambda _name=None: None
     )
 
     def _interrupt_soon():
@@ -112,7 +112,7 @@ def test_interrupt_prefers_real_result_from_cooperative_tool(
         tool_executor, "_run_agent_tool_execution_middleware", _fake_middleware
     )
     monkeypatch.setattr(
-        tool_executor, "_resolve_sequential_tool_timeout", lambda: None
+        tool_executor, "_resolve_sequential_tool_timeout", lambda _name=None: None
     )
     fake_agent._interrupt_requested = True  # interrupted before first poll
 

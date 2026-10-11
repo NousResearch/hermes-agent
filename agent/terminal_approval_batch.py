@@ -28,6 +28,7 @@ class _TerminalSlot:
     def __init__(self, batch, parsed, index):
         self.batch, self.parsed, self.index = batch, parsed, index
         self.ready = threading.Event()
+        self.execution_started = threading.Event()
         self.release = threading.Event()
         self.future: Any = None
         self.tids = []
@@ -68,6 +69,11 @@ class _TerminalSlot:
             self.check_cancelled()
         self.check_cancelled()
 
+    def begin_execution(self, callback=None):
+        if callback is not None:
+            callback()
+            self.execution_started.set()
+
     def run(self):
         from agent import tool_executor as te
         token = _slot.set(self)
@@ -81,7 +87,7 @@ class _TerminalSlot:
                 return te._run_agent_tool_execution_middleware(
                     batch.agent, **ref.middleware_kwargs(), execute=dispatch.execute,
                     scope_block=pc.scope_block, display_index=self.index + 1,
-                    authorization_gate=batch.authorization_gate,
+                    authorization_gate=batch.authorization_gate, begin_execution=self.begin_execution,
                 )
         finally:
             self.ready.set()

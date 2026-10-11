@@ -1989,13 +1989,16 @@ class TestApprovalPromptRedaction:
             "print(api_key)"
         )
         cfg = {"approvals": {"mode": "manual"}}
+        # The ask bridge without a notifier is the one surface still served by the pending
+        # fallback: an attended gateway session with no notifier fails closed instead (#133514).
         with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
             with _patch("tools.approval._is_gateway_approval_context",
-                        return_value=True):
+                        return_value=False):
                 with _patch("tools.approval_context._get_approval_mode",
                             return_value="manual"):
-                    # No gateway notify callback registered -> pending fallback.
-                    result = check_execute_code_guard(code, "local")
+                    with _patch.dict("os.environ", {"HERMES_EXEC_ASK": "1"}):
+                        # Ask mode with no gateway notify callback -> pending fallback.
+                        result = check_execute_code_guard(code, "local")
 
         assert result.get("status") == "pending_approval"
         # The script's credential must not appear in the user-facing message.

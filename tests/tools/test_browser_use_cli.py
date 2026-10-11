@@ -909,6 +909,21 @@ class TestHeaderVariants:
         )
         assert bu_cli._description_header() == bu_cli._HEADER_BASE + bu_cli._HEADER_TEXT_ONLY
 
+    def test_text_only_header_claims_nothing_about_model_vision(self, monkeypatch):
+        """The text-only gate measures whether screenshots ride back in TOOL RESULTS, not whether
+        the model has vision; a vision-capable model on a provider without tool-result media must
+        not be told it "cannot view images" (#131568: it then skipped a user-attached image)."""
+        monkeypatch.setattr(
+            "tools.vision_tools._should_use_native_vision_fast_path", lambda: False
+        )
+        monkeypatch.setattr(
+            "tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (False, "")
+        )
+        header = bu_cli._description_header().lower()
+        assert "your model cannot" not in header
+        assert "cannot view images" not in header
+        assert "tool's results" in header and "text-first" in header
+
 
 class TestSkillTextDescription:
     """The schema description is fully pinned: header + _HELPERS_DIGEST.

@@ -743,10 +743,16 @@ _HEADER_VISION = (
     "with your own vision — never send browser screenshots to a separate vision tool."
 )
 
+# Chosen when screenshots cannot ride back inside THIS tool's results (provider/model
+# rejects tool-result media, or routing is not ``native``). That is a transport fact
+# about tool results, not a verdict on the model's vision: a vision-capable model still
+# sees images the user attaches to the conversation, so the header must never say
+# "your model cannot view images" — models quote that against themselves (#131568).
 _HEADER_TEXT_ONLY = (
-    " Your model cannot view images, so work text-first: page_info() for state, js() for "
-    "reading/extracting DOM text, fill_input(selector, text) for inputs, and "
-    "js(\"document.querySelector('…').click()\") for clicks — skip the screenshot-driven workflow described below."
+    " Screenshots will not reach you through this tool's results in this setup, so work text-first: "
+    "page_info() for state, js() for reading/extracting DOM text, fill_input(selector, text) for inputs, and "
+    "js(\"document.querySelector('…').click()\") for clicks — skip the screenshot-driven workflow described below. "
+    "This says nothing about images the user attaches to the conversation."
 )
 
 # Appended when the local engine is Lightpanda: no graphical renderer, and one CDP

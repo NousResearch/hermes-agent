@@ -321,6 +321,26 @@ class PtySessionRegistry:
         for session in sessions:
             await session.close()
 
+    def live_key_for_token(self, token: str, *, profile: str, holder_pid: Optional[int]) -> Optional[str]:
+        """The live key this attach token's tab already owns, when its PTY holds the
+        resume target's lease (#136713).
+
+        A same-tab reattach re-resolves the resume target to the lineage's newest
+        leaf, which a *running* turn may have advanced since the PTY spawned. When
+        the process holding that leaf's lease lives inside this tab's terminal, the
+        reattach is the same conversation and must land on that PTY — keying it on
+        the advanced target instead would send the close-paths after the old key
+        and hard-interrupt the in-flight turn. A target whose lease is held
+        elsewhere (another window) or not at all (idle chat) is a different
+        conversation: no live key, so the caller keys the attach on what it asked
+        for. Purely synchronous — safe outside ``_attach_lock``.
+        """
+        prefix = f"{token}\0{profile}\0"
+        for key, session in self._sessions.items():
+            if session.alive and key.startswith(prefix) and session.hosts_pid(holder_pid):
+                return key
+        return None
+
     def detach(self, key: str, ws) -> None:
         s = self._sessions.get(key)
         if s is not None:

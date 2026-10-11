@@ -460,7 +460,7 @@
   },
   {
     "path": "pm/shell.py",
-    "symbol": "bash",
+    "symbol": "_resolve_bash",
     "kind": "bare_which"
   },
   {

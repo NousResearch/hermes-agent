@@ -1066,12 +1066,20 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
-        proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True, cwd=self.cwd,
-            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        try:
+            proc = subprocess.Popen(
+                args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                start_new_session=True, cwd=self.cwd,
+                **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        except OSError:
+            # The resolved bash is memoised; a launch failure (quarantined or
+            # half-upgraded bash.exe) must re-resolve on the next command.
+            import pm.shell
+
+            pm.shell.forget()
+            raise
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)

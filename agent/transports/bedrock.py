@@ -26,7 +26,7 @@ class BedrockTransport(ProviderTransport):
     def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI messages to Bedrock Converse format."""
         from agent.bedrock_adapter import convert_messages_to_converse
-        return convert_messages_to_converse(messages)
+        return convert_messages_to_converse(messages, model=kwargs.get("model"))
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Bedrock Converse toolConfig."""
@@ -43,6 +43,7 @@ class BedrockTransport(ProviderTransport):
         kwargs = build_converse_kwargs(
             model=model, messages=messages, tools=tools, max_tokens=params.get("max_tokens"),
             temperature=params.get("temperature"), guardrail_config=params.get("guardrail_config"),
+            reasoning_config=params.get("reasoning_config"),
         )
         # Sentinel keys for dispatch — agent pops these before the boto3 call
         kwargs["__bedrock_converse__"] = True

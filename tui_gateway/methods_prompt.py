@@ -948,7 +948,7 @@ def _(rid, params: dict) -> dict:
             # thread on locale-mismatched Windows.
             res = subprocess.run(
                 argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
-                encoding="utf-8", errors="replace", creationflags=windows_hide_flags())
+                encoding="utf-8", errors="replace", creationflags=windows_hide_flags(), check=False)
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:

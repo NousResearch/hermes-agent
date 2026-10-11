@@ -67,7 +67,8 @@ _DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
 
 def _stdout(*argv: str) -> str:
     return subprocess.run(
-        list(argv), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
+        list(argv), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+        check=False,
     ).stdout
 
 
@@ -244,7 +245,7 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
             [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            creationflags=windows_hide_flags())
+            creationflags=windows_hide_flags(), check=False)
         if out.returncode != 0 or not out.stdout.strip():
             _gpu_query_cache = (now, None)
             return None
@@ -325,7 +326,7 @@ def _engine_device_pool() -> tuple[int, bool | None] | None:
             return None
         exe = engine.binary
         out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(exe.parent))
+                             text=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(exe.parent), check=False)
         if out.returncode != 0:
             return None
         for line in (out.stdout + out.stderr).splitlines():

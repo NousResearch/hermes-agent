@@ -423,6 +423,11 @@ def _build_gemini_contents(
             if (call_id := _tool_call_id(tool_call)) and tool_name:
                 tool_name_by_call_id[call_id] = tool_name
             parts.append(_translate_tool_call_to_gemini(tool_call, include_ids=include_tool_call_ids))
+        # Text-turn signature goes back on the last part, where it was received (a functionCall part
+        # keeps its own signature).
+        if role == "assistant" and parts and "functionCall" not in parts[-1] and (
+                sig := _tool_call_extra_signature(msg)):
+            parts[-1] = {**parts[-1], "thoughtSignature": sig}
         if parts:
             contents.append({"role": "model" if role == "assistant" else "user", "parts": parts})
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
@@ -611,6 +616,14 @@ def _part_text(part: dict[str, Any]) -> tuple[Optional[str], bool]:
     return (text, part.get("thought") is True) if isinstance(text, str) else (None, False)
 
 
+def _text_part_signature(part: dict[str, Any]) -> Optional[str]:
+    """``thoughtSignature`` on a non-functionCall part (a text turn's last part; in streams an empty-text
+    part). Replay is optional, but the server rehydrates the turn's thoughts from it (live: 31 -> 237
+    prompt tokens), so it is kept as the message-level ``extra_content`` signature."""
+    sig = part.get("thoughtSignature")
+    return sig if isinstance(sig, str) and sig and "functionCall" not in part else None
+
+
 def _part_function_call(part: dict[str, Any]) -> Optional[dict[str, Any]]:
     fc = part.get("functionCall")
     return fc if isinstance(fc, dict) and fc.get("name") else None
@@ -625,19 +638,22 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
         parts = content_obj.get("parts") if isinstance(content_obj, dict) else []
     pieces: dict[bool, list[str]] = {False: [], True: []}  # is_thought → text pieces
     tool_calls: list[SimpleNamespace] = []
+    text_signature = None
     for index, part in enumerate(parts or []):
         if not isinstance(part, dict):
             continue
         text, is_thought = _part_text(part)
         if text is not None:
             pieces[is_thought].append(text)
+            text_signature = _text_part_signature(part) or text_signature
         elif fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
     finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
     usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
-                              tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None)
+                              tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None,
+                              extra_content=_tool_call_extra_from_part({"thoughtSignature": text_signature}))
     return _envelope(model, "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason), usage)
 
 
@@ -646,13 +662,15 @@ class _GeminiStreamChunk(SimpleNamespace): ...
 
 def _make_stream_chunk(
     *, model: str, content: str = "", tool_call_delta: Optional[dict[str, Any]] = None, finish_reason: Optional[str] = None, reasoning: str = "",
+    text_signature: Optional[str] = None,
 ) -> _GeminiStreamChunk:
     d = tool_call_delta
     tool_calls = None if d is None else [
         _tool_call_ns(d.get("name") or "", d.get("arguments") or "", d.get("index", 0), _new_call_id(d), d.get("extra_content"))
     ]
     delta = SimpleNamespace(role="assistant", content=content or None, tool_calls=tool_calls, reasoning=reasoning or None,
-                            reasoning_content=reasoning or None)
+                            reasoning_content=reasoning or None,
+                            extra_content=_tool_call_extra_from_part({"thoughtSignature": text_signature}))
     choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
     return _envelope(model, "chat.completion.chunk", choice, None, cls=_GeminiStreamChunk)
 
@@ -735,6 +753,8 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
             continue
         if text:
             chunks.append(_make_stream_chunk(model=model, content=text))
+        if sig := _text_part_signature(part):
+            chunks.append(_make_stream_chunk(model=model, text_signature=sig))
         if fc := _part_function_call(part):
             name = str(fc["name"])
             args_str = _dump_call_args(fc, sort_keys=True)

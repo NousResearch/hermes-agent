@@ -100,7 +100,7 @@ class TestStaleInflightSelfHeal:
         # and the dispatch loop re-fires it.
         job = J.get_job(job_id)
         with mock.patch("cron.jobs.load_jobs", return_value=[job]):
-            n = S.tick(verbose=False, sync=True)
+            S.tick(verbose=False, sync=True)
 
         latest = E.latest_execution(job_id)
         assert job_id not in S.get_running_job_ids(), "stale claim must be released"

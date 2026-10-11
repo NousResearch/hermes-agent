@@ -113,7 +113,7 @@ def _remux_aac_to_m4a(aac_data: bytes) -> Optional[tuple[bytes, str]]:
         dst_path = src_path[:-4] + ".m4a"
         try:
             proc = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", src_path, "-c:a", "copy", "-movflags",
-                                   "+faststart", dst_path], capture_output=True, timeout=10)
+                                   "+faststart", dst_path], capture_output=True, timeout=10, check=False)
             if proc.returncode != 0:
                 logger.warning("Signal: AAC→M4A remux failed (ffmpeg exit %d): %s",
                                proc.returncode, proc.stderr.decode("utf-8", "replace")[:300])

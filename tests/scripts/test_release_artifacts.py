@@ -351,7 +351,7 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
             env[key] = expressions.get(value, value)
             assert '${{' not in env[key], (key, value)
         return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']], cwd=tmp_path,
-                              env=env, capture_output=True, text=True, encoding='utf-8', timeout=60)
+                              env=env, capture_output=True, text=True, encoding='utf-8', timeout=60, check=False)
 
     return jobs, run, body_file
 

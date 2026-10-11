@@ -429,6 +429,7 @@ def terminate_pid(
         result = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=10, creationflags=windows_hide_flags(),
+            check=False,
         )
     except FileNotFoundError:
         os.kill(pid, signal.SIGTERM)
@@ -528,6 +529,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
             result = subprocess.run(
                 ["ps", "-p", str(pid), "-o", "command="],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                check=False,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()

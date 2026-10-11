@@ -28,6 +28,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { launchMarkerNeedsReprobe } from './launch-build-identity'
 import { alreadyHasDisableGpu, isHermesDesktopGpuOverrideOff } from './windows-stack-cookie-fallback'
 
 export const LINUX_GPU_FALLBACK_MARKER_FILENAME = 'linux-gpu-fallback.json'
@@ -55,6 +56,10 @@ export interface LinuxGpuMarker {
   reason?: LinuxGpuFallbackReason
   /** App version that entered fallback — a version change triggers a re-probe. */
   version?: string
+  /** Build identity that entered fallback (see launch-build-identity.ts). On a
+   *  source install the version never moves, so this is what clears a
+   *  promoted marker left by a launch the app did not fail at. */
+  build?: string
   /** Consecutive aborted boots observed so far (state === 'booting'). */
   bootAborts?: number
   /** This boot is a GPU re-probe after an app update; an abort returns
@@ -88,6 +93,10 @@ export function parseLinuxGpuMarker(raw: unknown): LinuxGpuMarker | null {
 
   if (typeof record.version === 'string' && record.version) {
     marker.version = record.version
+  }
+
+  if (typeof record.build === 'string' && record.build) {
+    marker.build = record.build
   }
 
   const aborts = Number(record.bootAborts)
@@ -137,11 +146,19 @@ export function writeLinuxGpuMarker(
   writeFileSync(linuxGpuMarkerPath(dir), `${JSON.stringify(marker)}\n`, 'utf8')
 }
 
-export function linuxGpuFallbackMarker(reason: LinuxGpuFallbackReason, appVersion?: string): LinuxGpuMarker {
+export function linuxGpuFallbackMarker(
+  reason: LinuxGpuFallbackReason,
+  appVersion?: string,
+  buildIdentity?: string
+): LinuxGpuMarker {
   const marker: LinuxGpuMarker = { state: 'fallback', reason }
 
   if (appVersion) {
     marker.version = appVersion
+  }
+
+  if (buildIdentity && buildIdentity !== appVersion) {
+    marker.build = buildIdentity
   }
 
   return marker
@@ -155,12 +172,13 @@ export function linuxGpuFallbackMarker(reason: LinuxGpuFallbackReason, appVersio
 export function linuxGpuMarkerAfterSuccessfulBoot(options: {
   fallbackActive: boolean
   appVersion?: string
+  buildIdentity?: string
 }): LinuxGpuMarker {
   if (!options.fallbackActive) {
     return { state: 'ok' }
   }
 
-  return linuxGpuFallbackMarker('gpu-launch-failure', options.appVersion)
+  return linuxGpuFallbackMarker('gpu-launch-failure', options.appVersion, options.buildIdentity)
 }
 
 export interface LinuxGpuLaunchDecision {
@@ -184,11 +202,13 @@ export function decideLinuxGpuLaunch(
     env?: NodeJS.ProcessEnv
     marker?: LinuxGpuMarker | null
     appVersion?: string
+    buildIdentity?: string
     remoteDisplayReason?: string | null
     nvidiaFallbackActive?: boolean
   } = {}
 ): LinuxGpuLaunchDecision {
   const appVersion = String(options.appVersion || '')
+  const buildIdentity = String(options.buildIdentity || '')
 
   if ((options.platform ?? process.platform) !== 'linux') {
     return { enable: false, reason: null, nextMarker: { state: 'booting' } }
@@ -221,8 +241,10 @@ export function decideLinuxGpuLaunch(
   }
 
   if (marker?.state === 'fallback') {
-    if (marker.version && appVersion && marker.version !== appVersion) {
-      // App updated since the fallback engaged — re-probe the GPU once.
+    if (launchMarkerNeedsReprobe(marker, { appVersion, buildIdentity })) {
+      // This build differs from the one that entered fallback — re-probe the
+      // GPU once. A source install never moves its version, so the build
+      // identity is what finally clears a promoted marker there.
       return {
         enable: false,
         reason: null,
@@ -233,7 +255,11 @@ export function decideLinuxGpuLaunch(
     return {
       enable: true,
       reason: `sticky-fallback (${marker.reason ?? 'gpu-launch-failure'})`,
-      nextMarker: { ...marker, version: marker.version || appVersion || undefined }
+      nextMarker: {
+        ...marker,
+        version: marker.version || appVersion || undefined,
+        build: marker.build || (buildIdentity === appVersion ? undefined : buildIdentity) || undefined
+      }
     }
   }
 
@@ -245,7 +271,7 @@ export function decideLinuxGpuLaunch(
       return {
         enable: true,
         reason: 'reprobe-failed (boot-loop)',
-        nextMarker: linuxGpuFallbackMarker('boot-loop', appVersion)
+        nextMarker: linuxGpuFallbackMarker('boot-loop', appVersion, buildIdentity)
       }
     }
 
@@ -253,7 +279,7 @@ export function decideLinuxGpuLaunch(
       return {
         enable: true,
         reason: 'boot-loop',
-        nextMarker: linuxGpuFallbackMarker('boot-loop', appVersion)
+        nextMarker: linuxGpuFallbackMarker('boot-loop', appVersion, buildIdentity)
       }
     }
 
@@ -331,24 +357,34 @@ export function linuxGpuChildDeathPath(options: {
   alreadySoftware?: boolean
   sandboxRelaunchAttempted?: boolean
   softwareRelaunchAttempted?: boolean
+  /** Linux: this host sandboxes Chromium with user namespaces, where
+   *  `--no-sandbox` is the crash rather than the recovery (#131055). */
+  userNamespaceSandbox?: boolean
 }): LinuxGpuDeathPath {
   if ((options.platform ?? process.platform) !== 'linux') {
     return null
   }
 
-  const type = String(options.details?.type || '').toLowerCase()
+  const type = String(options.details?.type ?? '').toLowerCase()
 
   if (type !== 'gpu') {
     return null
   }
 
-  const reason = String(options.details?.reason || '').toLowerCase()
+  const reason = String(options.details?.reason ?? '').toLowerCase()
 
   const sandboxSignature =
     options.details?.exitCode === GPU_CHILD_SANDBOX_SIGTERM_EXIT &&
-    String(options.details?.signalName || '').toUpperCase() === 'SIGTERM'
+    String(options.details?.signalName ?? '').toUpperCase() === 'SIGTERM'
 
-  if (sandboxSignature && !options.alreadyNoSandbox && !options.sandboxRelaunchAttempted) {
+  // #131055: on a userns host the renderer's chroot is what makes /dev/shm
+  // reachable, so `--no-sandbox` does not recover this death — it starts the
+  // SIGILL loop the boot-abort ladder refuses to enter. That ladder's escape
+  // hatch ("leave no marker, the GPU-child signature is the real witness")
+  // hands the decision straight to this rung, so the gate has to hold here
+  // too or it only moves the escalation one launch later. Software rendering
+  // keeps the sandbox, so it is still a bounded recovery.
+  if (sandboxSignature && !options.userNamespaceSandbox && !options.alreadyNoSandbox && !options.sandboxRelaunchAttempted) {
     return 'no-sandbox'
   }
 

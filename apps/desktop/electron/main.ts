@@ -426,6 +426,7 @@ import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-pro
 import { bundledPayload, installIdForRoot, type PayloadInfo, payloadPythonPath } from './payload-backend'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
+import { locallyReadable } from './picker-default-path'
 import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
@@ -17881,6 +17882,14 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
     } catch {
       resolvedDefaultPath = undefined
     }
+
+    // The picker browses THIS machine, but defaultPath may come from another
+    // one (a remote gateway's cwd, a backend running as another user) — e.g.
+    // a remote session rooted at /root is unreadable locally and made GTK
+    // fail the whole dialog with "Could not read the contents of root".
+    // Seed the dialog only when a local process can actually read the path;
+    // otherwise drop the hint and let the dialog open at its native default.
+    resolvedDefaultPath = locallyReadable(resolvedDefaultPath)
   }
 
   const result = await dialog.showOpenDialog(mainWindow, {

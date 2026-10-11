@@ -1939,6 +1939,13 @@ DEFAULT_CONFIG = {
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,
+        # Opt-in: spawn an automatic `verify:` CHILD task when the completion-summary scan
+        # finds a task-id citation that resolves on no board at all. Default OFF — the detector
+        # still records `suspected_hallucinated_references` (flag the reference), but it does not
+        # manufacture a task nobody requested: one misread citation on a shared board otherwise
+        # cascades into one child card per unresolved id. Turn on where the automated re-check is
+        # wanted; the suppressed spawn is logged at debug level either way.
+        "auto_verify_phantom_refs": False,
         # Max triage tasks decomposed per tick, bounding the aux-LLM burst from a bulk load. Excess
         # defers to the next tick.
         "auto_decompose_per_tick": 3,

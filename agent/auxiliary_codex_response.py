@@ -1,19 +1,19 @@
 """Codex Responses → chat.completions normalization for auxiliary callers.
 
 Aux consumers speak Chat Completions, so a Responses result is mapped onto
-``(text_parts, tool_calls, usage, finish_reason)`` through the main loop's shared
-normalizer, keeping its phase and completion gates.
+Chat Completions through the main loop's shared normaliser, with the same
+phase and completion gates.
 """
 
 from types import SimpleNamespace
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional
 
 
 def _parse_codex_final_response(
     final: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
-) -> tuple[list[str], list[Any], Any, str]:
+) -> SimpleNamespace:
     """Normalize Responses output without losing phase or completion state for aux callers."""
-    from agent.codex_responses_adapter import _lower_or_none, _normalize_codex_response
+    from agent.codex_responses_adapter import _field, _lower_or_none, _normalize_codex_response
 
     # The shared normalizer reads SDK-style items. Keep support for compatible hosts
     # returning dict items, and the aux adapter's legacy empty completed response.
@@ -41,15 +41,37 @@ def _parse_codex_final_response(
         finish_reason == "incomplete" or _lower_or_none(normalized_final.status) == "incomplete"
     ):
         finish_reason = "length"
-    text_parts = [message.content] if message.content else []
-    tool_calls_raw = message.tool_calls
+    refusals = [
+        _field(part, "refusal")
+        for item in output if _field(item, "type") == "message"
+        and _lower_or_none(_field(item, "phase")) not in {"commentary", "analysis"}
+        for part in (_field(item, "content") or [])
+        if _field(part, "type") == "refusal" and isinstance(_field(part, "refusal"), str)
+    ]
+    message.refusal = "\n".join(refusals) if refusals else None
+    message.role = "assistant"
+    message.content = message.content.strip() or None
+    message.tool_calls = message.tool_calls or None
     usage = None
     resp_usage = getattr(final, "usage", None)
     if resp_usage:
-        def _u(key: str) -> int:
-            return getattr(resp_usage, key, 0) or (resp_usage.get(key, 0) if isinstance(resp_usage, dict) else 0)
         usage = SimpleNamespace(
-            prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
-            total_tokens=_u("total_tokens"))
-    return text_parts, tool_calls_raw, usage, finish_reason
+            prompt_tokens=_field(resp_usage, "input_tokens") or 0,
+            completion_tokens=_field(resp_usage, "output_tokens") or 0,
+            total_tokens=_field(resp_usage, "total_tokens") or 0,
+        )
+        if (details := _field(resp_usage, "input_tokens_details")) is not None:
+            usage.prompt_tokens_details = SimpleNamespace(cached_tokens=_field(details, "cached_tokens") or 0)
+            cache_write = _field(details, "cache_write_tokens")
+            if cache_write is None:
+                cache_write = _field(details, "cache_creation_tokens")
+            if cache_write is not None:
+                usage.prompt_tokens_details.cache_write_tokens = cache_write
+        if (details := _field(resp_usage, "output_tokens_details")) is not None:
+            usage.completion_tokens_details = SimpleNamespace(reasoning_tokens=_field(details, "reasoning_tokens") or 0)
+    choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
+    return SimpleNamespace(
+        id=getattr(final, "id", None), model=getattr(final, "model", None),
+        choices=[choice], usage=usage,
+    )
 

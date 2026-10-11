@@ -8,6 +8,119 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.fixture(params=[False, True], ids=["feedback-only", "with-metadata"])
+def blocked_prompt_response(request, block_reason):
+    native = {"promptFeedback": {"blockReason": block_reason}}
+    expected_usage = None
+
+    if request.param:
+        native.update({
+            "candidates": [],
+            "responseId": "blocked-response",
+            "modelVersion": "served-gemini",
+            "usageMetadata": {
+                "promptTokenCount": 4,
+                "candidatesTokenCount": 0,
+                "totalTokenCount": 4,
+            },
+        })
+        expected_usage = SimpleNamespace(
+            prompt_tokens=4,
+            completion_tokens=0,
+            total_tokens=4,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=0),
+        )
+
+    return native, expected_usage
+
+
+@pytest.mark.parametrize("block_reason", ["SAFETY", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "IMAGE_SAFETY"])
+def test_native_client_preserves_prompt_blocking(blocked_prompt_response, monkeypatch):
+    import httpx
+
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    native, expected_usage = blocked_prompt_response
+    monkeypatch.setattr("agent.gemini_native_adapter.time.time", lambda: 100)
+
+    with GeminiNativeClient(
+        api_key="fixture",
+        http_client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=native))),
+    ) as client:
+        response = client.chat.completions.create(
+            model="requested-model", messages=[{"role": "user", "content": "Answer."}],
+        )
+
+    assert response == SimpleNamespace(
+        id=native.get("responseId"),
+        object="chat.completion",
+        created=100,
+        model=native.get("modelVersion"),
+        choices=[SimpleNamespace(
+            index=0,
+            message=SimpleNamespace(
+                role="assistant", content="", tool_calls=None, reasoning=None,
+                reasoning_content=None, reasoning_details=None, extra_content=None,
+            ),
+            finish_reason="content_filter",
+        )],
+        usage=expected_usage,
+    )
+
+
+@pytest.mark.parametrize("block_reason", ["SAFETY", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "IMAGE_SAFETY"])
+def test_native_client_preserves_streamed_prompt_blocking(blocked_prompt_response, monkeypatch):
+    import httpx
+
+    from agent.auxiliary_client import _aggregate_chat_stream
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    native, expected_usage = blocked_prompt_response
+    body = "data: " + json.dumps(native) + "\n\ndata: [DONE]\n\n"
+    monkeypatch.setattr("agent.gemini_native_adapter.time.time", lambda: 100)
+
+    with GeminiNativeClient(
+        api_key="fixture",
+        http_client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=body))),
+    ) as client:
+        chunks = list(client.chat.completions.create(
+            model="requested-model", messages=[{"role": "user", "content": "Answer."}], stream=True,
+        ))
+
+    assert chunks == [SimpleNamespace(
+        id=native.get("responseId"),
+        object="chat.completion.chunk",
+        created=100,
+        model=native.get("modelVersion"),
+        choices=[SimpleNamespace(
+            index=0,
+            delta=SimpleNamespace(
+                role="assistant", content=None, tool_calls=None, reasoning=None, reasoning_content=None,
+                extra_content=None,
+            ),
+            finish_reason="content_filter",
+        )],
+        usage=expected_usage,
+    )]
+
+    response = _aggregate_chat_stream(chunks, model="requested-model")
+
+    assert response == SimpleNamespace(
+        id=native.get("responseId"),
+        model=native.get("modelVersion"),
+        object="chat.completion",
+        choices=[SimpleNamespace(
+            index=0,
+            message=SimpleNamespace(
+                role="assistant", content="", tool_calls=None, reasoning=None, reasoning_details=None,
+            ),
+            finish_reason="content_filter",
+        )],
+        usage=expected_usage,
+    )
+
+
 class DummyResponse:
     def __init__(self, status_code=200, payload=None, headers=None, text=None):
         self.status_code = status_code

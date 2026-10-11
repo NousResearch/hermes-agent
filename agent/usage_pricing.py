@@ -619,7 +619,10 @@ def normalize_usage(
     mode = (api_mode or "").strip().lower()
     u = response_usage
 
-    if mode == "anthropic_messages" or provider_name == "anthropic":
+    chat_prompt = u.get("prompt_tokens") if isinstance(u, dict) else getattr(u, "prompt_tokens", None)
+    if chat_prompt is not None:
+        shape = _CHAT_USAGE_SHAPE
+    elif mode == "anthropic_messages" or provider_name == "anthropic":
         shape = _ANTHROPIC_USAGE_SHAPE
     elif mode == "codex_responses":
         shape = _CODEX_USAGE_SHAPE

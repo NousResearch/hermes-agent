@@ -29,6 +29,7 @@ from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
     credential_pool_matches_provider, resolve_runtime_pool_key,
 )
+from agent.credential_pool_recovery_policy import rotate_anthropic_oauth_on_first_429
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.message_metadata import MERGED_TURN_PREFIX
@@ -998,6 +999,8 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
         usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
             t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
         )
+    if rotate_anthropic_oauth_on_first_429(pool, current_entry):
+        return (True, False) if rotate_and_swap(429, "anthropic OAuth rate limit") else (False, True)
     if not has_retried_429 and not usage_limit_reached:
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
@@ -1015,14 +1018,9 @@ def recover_with_credential_pool(
     pool = agent._credential_pool
     if pool is None:
         return False, has_retried_429
-    # The pool belongs to the PRIMARY provider: acting on fallback errors would corrupt its state
-    # and reset base_url to the primary endpoint. Empty pool provider means unscoped; empty agent
-    # provider is a mismatch (swap would leave provider="" model="").
-    # Defensive guard: if a fallback provider is active and its provider name doesn't match the pool's
-    # provider, the pool belongs to the PRIMARY provider. Mutating it based on fallback errors would corrupt
-    # the primary's credential state (see #33088) and, via _swap_credential, overwrite the agent's base_url
-    # back to the primary's endpoint — every subsequent request then goes to the wrong host and 404s (see
-    # #33163). The pool should only act when the agent is still on the same provider that seeded the pool.
+    # A fallback must not mutate the primary provider's pool or inherit its endpoint:
+    # doing so corrupts credentials (#33088) and can redirect requests to the wrong host
+    # (#33163). Unscoped pools are permitted; empty agent provider is not.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if pool_provider and not credential_pool_matches_provider(

@@ -228,10 +228,25 @@ def _settings() -> dict:
             "dashboard.basic_auth in config.yaml to enable username/password dashboard "
             "login, or use the OAuth provider, or pass --insecure to skip the auth gate.")
     if not password_hash and not plaintext:
+        # The username resolved but no password reached this process. Outside the
+        # dashboard that is the normal state, not a misconfiguration: the password is
+        # a secret and is deliberately absent from subprocess environments, so the
+        # dashboard's own process is the only one holding it. State the scope, so the
+        # line cannot be read as evidence of an unprotected dashboard.
+        username_src = (
+            "env"
+            if os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "").strip()
+            else "config"
+        )
         raise SkipRegistration(
-            "dashboard.basic_auth.username is set but neither password_hash nor password "
-            "is configured. Provide one of them (password_hash is preferred — compute it "
-            "with plugins.dashboard_auth.basic.hash_password).",
+            "dashboard.basic_auth.username is set (from "
+            f"{username_src}) but neither password_hash nor password is configured for "
+            "this process: no credential was found in this process's environment or in "
+            "config.yaml. Outside the dashboard this is expected — the dashboard holds "
+            "the secret in its own environment — so this line alone does not mean the "
+            "auth gate is off. Provide password_hash (preferred — compute it with "
+            "plugins.dashboard_auth.basic.hash_password) if this process must register "
+            "the provider.",
             level="warning")
     # Precedence: env password (hashed in-memory) overrides any config password_hash so
     # operators can rotate without editing config; a config password_hash wins over a

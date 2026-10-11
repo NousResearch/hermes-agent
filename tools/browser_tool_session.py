@@ -425,13 +425,19 @@ def _discard_timed_out_browser_session(task_id: str, session_info: dict[str, Any
     with _bt._cleanup_lock:
         if _bt._active_sessions.get(task_id) is not session_info:
             return
-        _cdp._stop_cdp_supervisor(task_id)
         if session_info.get("bb_session_id") or session_info.get("cdp_url"):
+            # Only this client generation is stuck — the browser endpoint behind
+            # ``cdp_url`` survives, so the CDP supervisor (and the dialog responder a
+            # pending JS dialog still needs, #134648) stays attached. The next dispatch
+            # re-ensures it idempotently; full session teardown still stops it.
             replacement = dict(session_info)
             replacement["session_name"] = f"h_{uuid.uuid4().hex[:10]}"
             replacement.pop("_first_nav", None)
             _bt._active_sessions[task_id] = replacement
         else:
+            # Local daemon teardown below tree-kills the browser the supervisor
+            # would talk to — drop the supervisor with it.
+            _cdp._stop_cdp_supervisor(task_id)
             _bt._active_sessions.pop(task_id, None)
             _bt._session_last_activity.pop(task_id, None)
 

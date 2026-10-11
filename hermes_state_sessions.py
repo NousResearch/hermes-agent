@@ -1334,15 +1334,11 @@ class SessionSessionsMixin:
         if not include_hidden and not archived_only:
             where_clauses.append("s.hidden = 0")
         heads = {}
+        from hermes_state_local import exclude_superseded_segments
         if not include_children:
             # A local reset lineage is one conversation (hermes_state_local.local_lineage_index):
             # earlier segments leave the page in SQL, before LIMIT/OFFSET, not after it.
-            from hermes_state_local import local_lineage_index
-            with self._read_ctx() as conn:
-                superseded, heads = local_lineage_index(conn)
-            if superseded:
-                where_clauses.append("s.id NOT IN (SELECT value FROM json_each(?))")
-                params.append(json.dumps(sorted(superseded)))
+            heads = exclude_superseded_segments(self, where_clauses, params)
         where_sql = _where_sql(where_clauses)
         # Shared projection head of the three list queries (whitespace is part of the SQL text).
         select_head = (
@@ -1418,8 +1414,7 @@ class SessionSessionsMixin:
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")
             if heads:
-                pinned_clauses.append("s.id NOT IN (SELECT value FROM json_each(?))")
-                pinned_params.append(json.dumps(sorted(superseded)))
+                exclude_superseded_segments(self, pinned_clauses, pinned_params)
             pinned_clauses.append("s.pinned = 1")
             pinned_where = _where_sql(pinned_clauses)
             pinned_query = f"""
@@ -1560,6 +1555,9 @@ class SessionSessionsMixin:
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         )
+        if exclude_children:
+            from hermes_state_local import exclude_superseded_segments
+            exclude_superseded_segments(self, where_clauses, params)
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
     def session_count_ge(self, n: int = 1) -> bool:
@@ -1575,6 +1573,9 @@ class SessionSessionsMixin:
             exclude_children=exclude_children, archived_only=archived_only,
             include_archived=include_archived,
         )
+        if exclude_children:
+            from hermes_state_local import exclude_superseded_segments
+            exclude_superseded_segments(self, where_clauses, params)
         with self._read_ctx() as conn:
             if self._conn is None:
                 raise RuntimeError("SessionDB connection is closed")

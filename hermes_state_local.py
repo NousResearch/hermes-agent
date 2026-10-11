@@ -150,6 +150,17 @@ def local_lineage_index(conn):
     return superseded, heads
 
 
+def exclude_superseded_segments(db, where_clauses, params):
+    """Drop earlier reset segments from a listing or count query (one conversation, one row),
+    in SQL before paging; returns ``heads`` for :func:`annotate_local_lineages`."""
+    with db._read_ctx() as conn:
+        superseded, heads = local_lineage_index(conn)
+    if superseded:
+        where_clauses.append("s.id NOT IN (SELECT value FROM json_each(?))")
+        params.append(json.dumps(sorted(superseded)))
+    return heads
+
+
 def annotate_local_lineages(sessions, heads):
     """Name every segment on the conversation's representative row (``_lineage_ids``, which the
     Desktop matches deletes, tombstones and stored ids against). ``_lineage_root_id`` stays the

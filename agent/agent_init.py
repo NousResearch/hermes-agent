@@ -2156,11 +2156,19 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
     # model.ollama_num_ctx overrides; model.context_length caps the detected value (VRAM).
     agent._ollama_num_ctx: int | None = None
     _override = _model_cfg.get("ollama_num_ctx") if isinstance(_model_cfg, dict) else None
-    if _override is not None:
+    if _override is not None and agent.base_url and is_local_endpoint(agent.base_url):
         try:
             agent._ollama_num_ctx = int(_override)
         except (TypeError, ValueError):
             _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _override)
+    elif _override is not None:
+        # Only a local endpoint can honour num_ctx, so a stale override never admits or
+        # clamps a hosted model (#134140) — a pin meant for a sibling local alias in the
+        # same model block must not shrink the hosted default's compressor window.
+        _ra().logger.debug(
+            "Ignoring model.ollama_num_ctx=%s: %s is not a local endpoint",
+            _override, agent.base_url,
+        )
     if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
         try:
             # api_key may be a callable (Entra token provider); detection needs a string.

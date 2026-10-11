@@ -1,4 +1,4 @@
-"""Live scheduler handoffs must not make full backups incomplete."""
+"""Consumed native handoffs and restart notices must not make full backups incomplete."""
 
 from argparse import Namespace
 from pathlib import Path
@@ -15,6 +15,9 @@ def _cron_tree(home: Path) -> tuple[set[str], list[Path]]:
         cron = home / prefix / "cron"
         scratch = cron / "external-workers"
         scratch.mkdir(parents=True)
+        marker = home / prefix / ".restart_pending.json"
+        marker.write_text('{"delivered_targets": []}', encoding="utf-8")
+        handoffs.append(marker)
         for name in ("attempt.json", "attempt.ready", "attempt.ready.tmp123", "attempt.stderr"):
             path = scratch / name
             path.write_text("synthetic handoff", encoding="utf-8")
@@ -30,10 +33,13 @@ def _cron_tree(home: Path) -> tuple[set[str], list[Path]]:
                 db.execute("CREATE TABLE evidence (value TEXT)")
                 db.execute("INSERT INTO evidence VALUES ('synthetic')")
             durable.add(path.relative_to(home).as_posix())
-    owner_path = home / "skills/example/cron/external-workers/notes.stderr"
-    owner_path.parent.mkdir(parents=True)
-    owner_path.write_text("owner artifact", encoding="utf-8")
-    durable.add(owner_path.relative_to(home).as_posix())
+    for name in ("skills/example/cron/external-workers/notes.stderr",
+                 "skills/example/.restart_pending.json",
+                 "profiles/research/skills/example/.restart_pending.json"):
+        owner_path = home / name
+        owner_path.parent.mkdir(parents=True, exist_ok=True)
+        owner_path.write_text("owner artifact", encoding="utf-8")
+        durable.add(owner_path.relative_to(home).as_posix())
     return durable, handoffs
 
 

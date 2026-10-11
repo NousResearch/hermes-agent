@@ -749,3 +749,19 @@ def test_delivery_env_single_profile_host_passes_the_process_env_through(tmp_pat
     monkeypatch.setenv("OPENROUTER_API_KEY", "from-shell")
 
     assert bot_relay.delivery_env(None, None)["OPENROUTER_API_KEY"] == "from-shell"
+
+
+@pytest.mark.parametrize(
+    ("value", "kept"),
+    [(True, False), (1, False), ("true", False), ("yes", False), ("on", False), ("1", False),
+     (False, True), (0, True), ("false", True), ("no", True), ("0", True), ("", True), (None, True), ("maybe", True)],
+)
+def test_the_remote_roster_drops_a_private_agent_however_the_flag_is_spelled(value, kept):
+    """Enforced on the consuming side too: a peer on an older build advertises every managed profile
+    unconditionally and must not put a private agent back into our roster; an unrecognised value
+    fails open so it cannot hide a working teammate."""
+    from tools.bot_relay import _normalize_roster_row
+
+    row = {"profile": "lucky", "handle": "lucky", "connection_id": "mini", "private": value}
+
+    assert (_normalize_roster_row(row) is not None) is kept

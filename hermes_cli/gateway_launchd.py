@@ -49,7 +49,7 @@ def _probe_launchd_domain_for_label(label: str) -> str:
     # Not loaded anywhere: Aqua → gui/<uid>; anything else (Background, loginwindow) → user/<uid>,
     # the pre-probing default and the recommended domain on macOS 26+.
     try:
-        result = subprocess.run(["launchctl", "managername"], timeout=5, **_gw()._CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "managername"], timeout=5, **_gw()._CAPTURE_TEXT, check=False)
         if "Aqua" in (result.stdout or ""):
             return gui_domain
     except launchctl_errors:
@@ -902,7 +902,7 @@ def launchd_status(deep: bool = False):
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     try:
-        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT, check=False)
         service_listed = result.returncode == 0
         list_output = result.stdout
     except subprocess.TimeoutExpired:
@@ -960,4 +960,4 @@ def launchd_status(deep: bool = False):
         if log_file.exists():
             print()
             print("Recent logs:")
-            subprocess.run(["tail", "-20", str(log_file)], timeout=10)
+            subprocess.run(["tail", "-20", str(log_file)], timeout=10, check=False)

@@ -37,6 +37,7 @@ def git(*args, cwd=None):
         ["git"] + list(args),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"git {' '.join(args)} failed: {result.stderr}", file=sys.stderr)
@@ -51,6 +52,7 @@ def git_result(*args, cwd=None):
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
 
 
@@ -92,6 +94,7 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"  ✗ Could not start the release pipeline: {result.stderr.strip()}")
@@ -110,6 +113,7 @@ def _default_branch(gh_repo: str | None) -> str | None:
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         return None
@@ -432,6 +436,7 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
     view = subprocess.run(
         ["gh", "release", "view", tag, "--repo", repository, "--json", "tagName,isDraft,isPrerelease,url"],
         cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+        check=False,
     )
     # A draft is served at an untagged-* URL, never releases/tag/<tag>; gh's
     # answer is the only working link to it.
@@ -444,6 +449,7 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
         create.extend(["--notes-file", str(notes_file)] if notes_file else ["--generate-notes"])
         created = subprocess.run(
             create, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+            check=False,
         )
         if created.returncode != 0:
             raise ValueError(created.stderr.strip() or "Canary draft could not be recovered")
@@ -597,6 +603,7 @@ def prune_old_canaries(args) -> None:
         result = subprocess.run(
             gh_cmd, capture_output=True, text=True, encoding="utf-8",
             errors="replace", cwd=str(REPO_ROOT),
+            check=False,
         )
         if result.returncode == 0:
             print(f"✓ Deleted {tag}")

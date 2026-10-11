@@ -106,8 +106,8 @@ class ConnectorExecuteCall(_Wire):
     connector: str
     tool: str
     arguments: dict[str, Any] = Field(default_factory=dict)
-    # On the wire for the multi-account switch; never sent by hermes today, because the vendor answers
-    # 400 to any value while multi-account is off (contract probe F2).
+    # Never sent by hermes: the model picks an account with the ``connector_alias`` argument, which
+    # the gateway strips and resolves itself.
     account: Optional[str] = None
 
 
@@ -125,6 +125,8 @@ class ConnectorExecuteResult(_Wire):
     tool: str = ""
     data: Any = None
     error: Optional[ConnectorToolError] = None
+    # The alias of the account the call ran under; null when that account has no alias.
+    account: Optional[str] = None
 
 
 class ConnectorExecuteResponse(_Wire):
@@ -138,6 +140,8 @@ class ConnectorConnectionsRequest(_Wire):
     connectors: list[str]
     reinitiate: bool = False
     alias: Optional[str] = None
+    # The existing account a reinitiate repairs; sent instead of ``alias`` when known.
+    connection_id: Optional[str] = Field(default=None, alias="connectionId")
     return_to: Optional[ConnectorReturnTarget] = Field(default=None, alias="returnTo")
     # The caller's operation id, echoed on the hermes://connections/done link.
     op: Optional[str] = Field(default=None, min_length=1, max_length=128)
@@ -180,6 +184,8 @@ class ConnectorAccount(_Wire):
     alias: Optional[str] = None
     # The newest active account for this connector: the one the vendor executes with.
     active: bool
+    # Retired by a reconnect that replaced it; kept, never selectable.
+    disabled: bool = False
     created_at: str = Field(alias="createdAt")
     updated_at: str = Field(alias="updatedAt")
 

@@ -440,6 +440,7 @@ def _kill_tree(proc: subprocess.Popen, pgid: int | None = None) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
+                check=False,
             )  # windows-footgun: ok
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
@@ -921,7 +922,7 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError):
         print("[ERROR] Failed to load json durations file! {e}")
         return {}
 

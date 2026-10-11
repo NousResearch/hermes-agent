@@ -22,6 +22,7 @@ from unittest import mock
 
 from tools.read_extract import (
     ExtractionError,
+    extract_document_bytes,
     extract_document_text,
     is_extractable_document,
 )
@@ -59,6 +60,53 @@ _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _NS_S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
 
+def _write_pdf(path, texts):
+    """Hermetic minimal PDF (correct xref) so tests run without any PDF toolchain but pdftotext."""
+    import shutil
+
+    if shutil.which("pdftotext") is None:
+        raise unittest.SkipTest("pdftotext not installed")
+    objs = {1: b"<< /Type /Catalog /Pages 2 0 R >>"}
+    page_ids = [f"{3 + i * 2} 0 R" for i in range(len(texts))]
+    objs[2] = (f"<< /Type /Pages /Kids [{' '.join(page_ids)}] /Count {len(texts)} >>").encode()
+    n = 3
+    for i, text in enumerate(texts):
+        objs[n] = (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {n + 1} 0 R "
+                   f"/Resources << /Font << /F1 99 0 R >> >> >>").encode()
+        content = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+        objs[n + 1] = f"<< /Length {len(content)} >>\nstream\n".encode() + content + b"\nendstream"
+        n += 2
+    objs[99] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    order = [1, 2] + list(range(3, n)) + [99]
+    parts = [b"%PDF-1.4\n"]
+    offsets = {}
+    for num in order:
+        offsets[num] = sum(len(p) for p in parts)
+        parts.append(f"{num} 0 obj\n".encode() + objs[num] + b"\nendobj\n")
+    xref = sum(len(p) for p in parts)
+    parts.append(f"xref\n0 {n}\n".encode() + b"0000000000 65535 f \n")
+    for num in range(1, n):
+        parts.append(f"{offsets[num]:010d} 00000 n \n".encode())
+    parts.append(f"trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    with open(path, "wb") as fh:
+        fh.write(b"".join(parts))
+
+
+_PPTX_SLIDE_XML = (
+    '<?xml version="1.0"?>'
+    '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+    "<p:cSld><p:spTree><p:sp><p:txBody>{body}</p:txBody></p:sp></p:spTree></p:cSld></p:sld>")
+
+
+def _write_pptx(path, slide_paragraphs):
+    """slide_paragraphs: list of list[str] — each slide's text lines."""
+    with zipfile.ZipFile(path, "w") as z:
+        for i, lines in enumerate(slide_paragraphs, 1):
+            body = "".join(f"<a:p><a:r><a:t>{line}</a:t></a:r></a:p>" for line in lines)
+            z.writestr(f"ppt/slides/slide{i}.xml", _PPTX_SLIDE_XML.format(body=body))
+
+
 # ---------------------------------------------------------------------------
 # is_extractable_document
 # ---------------------------------------------------------------------------
@@ -75,18 +123,98 @@ class TestIsExtractable(unittest.TestCase):
         self.assertFalse(is_extractable_document("a.mp4"))
 
     def test_anydoc_extensions_track_availability(self):
-        """PDF (and the other anydoc formats) are extractable exactly when
-        the optional `anydoc` converter is importable."""
+        """PDF and PPTX are always extractable now (stdlib), while the other anydoc
+        formats (ODF, RTF, EPUB, ...) are extractable exactly when `anydoc` is importable."""
         from tools import read_extract
 
         available = read_extract._anydoc() is not None
-        self.assertEqual(is_extractable_document("a.pdf"), available)
+        self.assertTrue(is_extractable_document("a.pdf"))
+        self.assertTrue(is_extractable_document("a.pptx"))
         self.assertEqual(is_extractable_document("a.odt"), available)
         self.assertEqual(is_extractable_document("a.epub"), available)
 
 
 # ---------------------------------------------------------------------------
-# Optional anydoc-backed formats (PDF, legacy Office, ODF, RTF, EPUB)
+# Stdlib PDF / PPTX extraction (machine-parseable page/slide markers)
+# ---------------------------------------------------------------------------
+
+class TestStdlibPdfPptx(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rex_stdlib_")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_pdf_pages_labeled(self):
+        from tools.read_extract import _extract_pdf
+
+        path = os.path.join(self.tmp, "r.pdf")
+        _write_pdf(path, ["Q1 revenue 42M", "Q2 revenue 55M"])
+        text = _extract_pdf(path)
+        self.assertIn("===== 页1（page 1）=====\nQ1 revenue 42M", text)
+        self.assertIn("===== 页2（page 2）=====\nQ2 revenue 55M", text)
+
+    def test_pdf_bytes_routing(self):
+        path = os.path.join(self.tmp, "r.pdf")
+        _write_pdf(path, ["Bytes page"])
+        with open(path, "rb") as fh:
+            data = fh.read()
+        text = extract_document_bytes(data, path)
+        self.assertIn("===== 页1（page 1）=====", text)
+        self.assertIn("Bytes page", text)
+
+    def test_pdf_missing_pdftotext_raises(self):
+        from tools import read_extract
+
+        path = os.path.join(self.tmp, "r.pdf")
+        _write_pdf(path, ["Anything"])
+        with mock.patch.object(read_extract.shutil, "which", return_value=None):
+            with self.assertRaises(ExtractionError):
+                read_extract._extract_pdf(path)
+
+    def test_pdf_malformed_raises(self):
+        path = os.path.join(self.tmp, "junk.pdf")
+        with open(path, "wb") as fh:
+            fh.write(b"\x00\x01 not a pdf at all")
+        with self.assertRaises(ExtractionError):
+            extract_document_text(path)
+
+    def test_pptx_slides_labeled(self):
+        from tools.read_extract import _extract_pptx
+
+        path = os.path.join(self.tmp, "s.pptx")
+        _write_pptx(path, [["Pipeline slide", "Latency 3.2s"], ["Budget notes"]])
+        text = _extract_pptx(path)
+        self.assertIn("# ── Slide 1 ──\nPipeline slide\nLatency 3.2s", text)
+        self.assertIn("# ── Slide 2 ──\nBudget notes", text)
+
+    def test_pptx_bytes_routing(self):
+        path = os.path.join(self.tmp, "s.pptx")
+        _write_pptx(path, [["Bytes slide"]])
+        with open(path, "rb") as fh:
+            data = fh.read()
+        text = extract_document_bytes(data, path)
+        self.assertIn("# ── Slide 1 ──", text)
+        self.assertIn("Bytes slide", text)
+
+    def test_pptx_without_slides_raises(self):
+        path = os.path.join(self.tmp, "bad.pptx")
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("docProps/core.xml", "<x/>")
+        with self.assertRaises(ExtractionError):
+            extract_document_text(path)
+
+    def test_pptx_not_a_zip_raises(self):
+        path = os.path.join(self.tmp, "junk.pptx")
+        with open(path, "wb") as fh:
+            fh.write(b"not a zip")
+        with self.assertRaises(ExtractionError):
+            extract_document_text(path)
+
+
+# ---------------------------------------------------------------------------
+# Optional anydoc-backed formats (legacy Office, ODF, RTF, EPUB)
 # ---------------------------------------------------------------------------
 
 class TestAnydocExtraction(unittest.TestCase):
@@ -211,9 +339,13 @@ class TestAnydocAbsent(unittest.TestCase):
 
         read_extract._anydoc_module = self._saved
 
-    def test_pdf_not_extractable_without_anydoc(self):
-        self.assertFalse(is_extractable_document("a.pdf"))
+    def test_anydoc_gated_ext_not_extractable_without_anydoc(self):
         self.assertFalse(is_extractable_document("a.rtf"))
+        self.assertFalse(is_extractable_document("a.odt"))
+
+    def test_stdlib_pdf_pptx_extractable_without_anydoc(self):
+        self.assertTrue(is_extractable_document("a.pdf"))
+        self.assertTrue(is_extractable_document("a.pptx"))
 
     def test_extract_raises_unsupported_without_anydoc(self):
         from tools.read_extract import _extract_anydoc
@@ -611,7 +743,7 @@ class TestReadFileToolIntegration(unittest.TestCase):
         rex._anydoc_module = _FakeAnydoc()
         rex.MAX_ANYDOC_BYTES = 10
         try:
-            p = os.path.join(self.tmp, "big.pdf")
+            p = os.path.join(self.tmp, "big.odt")
             with open(p, "wb") as fh:
                 fh.write(b"x" * 11)
             res = json.loads(read_file_tool(p))
@@ -631,17 +763,17 @@ class TestReadFileToolIntegration(unittest.TestCase):
         saved_module = rex._anydoc_module
         saved_failed_at = rex._anydoc_failed_at
         # Simulate "converter unavailable and in cooldown": _anydoc() returns
-        # None, the .pdf is not treated as extractable, and read_file keeps
+        # None, the .rtf is not treated as extractable, and read_file keeps
         # its historical raw-read fallthrough (no extraction error surfaced).
         rex._anydoc_module = None
         rex._anydoc_failed_at = time.monotonic()
         try:
-            p = os.path.join(self.tmp, "doc.pdf")
+            p = os.path.join(self.tmp, "doc.rtf")
             with open(p, "wb") as fh:
-                fh.write(b"%PDF-1.4 fake")
+                fh.write(b"{\\rtf1 hello}")
             res = json.loads(read_file_tool(p))
             self.assertNotIn("error", res)
-            self.assertIn("%PDF-1.4 fake", res.get("content", ""))
+            self.assertIn("hello", res.get("content", ""))
         finally:
             rex._anydoc_module = saved_module
             rex._anydoc_failed_at = saved_failed_at

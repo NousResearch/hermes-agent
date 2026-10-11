@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "score_report.v1",
+  "type": "object",
+  "required": ["schema_version", "task_id", "candidate_id", "split",
+               "passed", "tokens", "steps", "time", "trajectory_ref"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "task_id":        {"type": "string"},
+    "candidate_id":   {"type": "string"},
+    "split":          {"enum": ["train", "heldout"]},
+    "passed":         {"type": "boolean"},
+    "tokens":         {"type": "integer"},
+    "steps":          {"type": "integer"},
+    "time":           {"type": "number"},
+    "failure_reason": {"type": ["string", "null"]},
+    "trajectory_ref": {"type": "string"}
+  }
+}

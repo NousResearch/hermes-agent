@@ -111,15 +111,49 @@ describe('TUI i18n loader', () => {
       return { lang: 'pl', surface: 'tui', messages: { 'status.ready': 'gotowy' } }
     }
 
-    await syncTuiLocale({ request } as never, 'pl')
+    const gw = { request } as never
+    await syncTuiLocale(gw, 'pl')
     expect(calls).toEqual([['i18n.catalog', { lang: 'pl', surface: 'tui' }]])
     expect(t('status.ready')).toBe('gotowy')
 
-    await syncTuiLocale({ request } as never, 'pl')
+    await syncTuiLocale(gw, 'pl')
     expect(calls).toHaveLength(1)
 
-    await syncTuiLocale({ request } as never, 'en')
+    await syncTuiLocale(gw, 'en')
     expect(calls).toHaveLength(1)
     expect(t('status.ready')).toBe(en.status.ready)
   })
+})
+
+it('retries a failed pack request without requiring a different language', async () => {
+  let attempts = 0
+
+  const gw = {
+    request: async () => {
+      if (++attempts === 1) {
+        throw new Error('temporary transport failure')
+      }
+
+      return { lang: 'pl', messages: { 'status.ready': 'retried' } }
+    }
+  } as never
+
+  await syncTuiLocale(gw, 'pl')
+  await syncTuiLocale(gw, 'pl')
+  expect(attempts).toBe(2)
+  expect(t('status.ready')).toBe('retried')
+})
+it('reloads the same language for a new session and ignores the cancelled response', async () => {
+  const pending: Array<(v: unknown) => void> = []
+  const gw = { request: () => new Promise(resolve => pending.push(resolve)) } as never
+  const oldScope = new AbortController()
+  const newScope = new AbortController()
+  const oldLoad = syncTuiLocale(gw, 'pl', oldScope.signal)
+  oldScope.abort()
+  const newLoad = syncTuiLocale(gw, 'pl', newScope.signal)
+  pending[1]({ lang: 'pl', messages: { 'status.ready': 'new profile' } })
+  await newLoad
+  pending[0]({ lang: 'pl', messages: { 'status.ready': 'old profile' } })
+  await oldLoad
+  expect(t('status.ready')).toBe('new profile')
 })

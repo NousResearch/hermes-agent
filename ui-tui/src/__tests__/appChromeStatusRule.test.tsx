@@ -98,10 +98,14 @@ const baseProps = {
   sessionStartedAt: null,
   status: 'ready',
   statusColor: DEFAULT_THEME.color.ok,
+
   t: DEFAULT_THEME,
   turnStartedAt: null,
   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
-  voiceLabel: ''
+  voiceEnabled: false,
+  voiceProcessing: false,
+  voiceRecording: false,
+  voiceTts: false
 }
 
 describe('StatusRule model label', () => {
@@ -185,6 +189,7 @@ describe('StatusRule background-subagent indicator', () => {
   it('spells out the auto-resume hint when idle with subagents in flight', () => {
     const element = StatusRule({
       ...baseProps,
+      cols: 260,
       usage: { ...baseProps.usage, active_subagents: 1 }
     })
 
@@ -238,10 +243,14 @@ describe('StatusRule session count click target', () => {
       sessionStartedAt: null,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
+
       t: DEFAULT_THEME,
       turnStartedAt: null,
       usage: { total: 0 },
-      voiceLabel: ''
+      voiceEnabled: false,
+      voiceProcessing: false,
+      voiceRecording: false,
+      voiceTts: false
     })
 
     const clickableSessionCount = findClickableWithText(element, '1 session')
@@ -263,6 +272,7 @@ describe('StatusRule session count click target', () => {
       sessionStartedAt: Date.now() - 60_000,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
+
       t: DEFAULT_THEME,
       turnStartedAt: null,
       usage: {
@@ -274,7 +284,10 @@ describe('StatusRule session count click target', () => {
         output: 0,
         total: 50_000
       },
-      voiceLabel: 'voice off'
+      voiceEnabled: false,
+      voiceProcessing: false,
+      voiceRecording: false,
+      voiceTts: false
     })
 
     const rendered = textContent(element)
@@ -291,6 +304,7 @@ describe('StatusRule credits notice render priority', () => {
   it('replaces the idle status with the notice text and keeps model + context', () => {
     const element = StatusRule({
       ...baseProps,
+
       notice: { key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ credits exhausted' }
     })
 
@@ -308,6 +322,7 @@ describe('StatusRule credits notice render priority', () => {
     const element = StatusRule({
       ...baseProps,
       busy: true,
+
       notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' },
       turnStartedAt: Date.now()
     })
@@ -393,6 +408,7 @@ describe('StatusRule idle-since read-out', () => {
 
     const element = StatusRule({
       ...baseProps,
+
       lastTurnEndedAt: endedAt,
       sessionStartedAt: Date.now() - 60_000
     })
@@ -407,6 +423,7 @@ describe('StatusRule idle-since read-out', () => {
     const element = StatusRule({
       ...baseProps,
       busy: true,
+
       lastTurnEndedAt: Date.now() - 42_000,
       turnStartedAt: Date.now()
     })
@@ -417,6 +434,7 @@ describe('StatusRule idle-since read-out', () => {
   it('is hidden before the first turn completes', () => {
     const element = StatusRule({
       ...baseProps,
+
       lastTurnEndedAt: null,
       sessionStartedAt: Date.now() - 60_000
     })
@@ -458,6 +476,7 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     const element = StatusRule({
       ...baseProps,
       cols: 160,
+
       statusBarFields: new Set(['model', 'context_pct', 'cache_hit']),
       usage: perfUsage
     })
@@ -473,6 +492,7 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     const element = StatusRule({
       ...baseProps,
       cols: 160,
+
       sessionTitle: 'weekly-digest',
       statusBarFields: new Set(['model', 'context_pct'])
     })

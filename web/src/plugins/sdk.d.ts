@@ -68,10 +68,7 @@ export type AuthedFetch = (url: string, init?: RequestInit) => Promise<Response>
  * gated OAuth mode, ``token`` in loopback). Plugins MUST use this for any
  * WebSocket instead of hand-assembling the URL + reading the session token.
  */
-export type BuildWsUrl = (
-  path: string,
-  params?: Record<string, string>,
-) => Promise<string>;
+export type BuildWsUrl = (path: string, params?: Record<string, string>) => Promise<string>;
 
 /** Lower-level: just the ``[authParamName, authParamValue]`` pair. */
 export type BuildWsAuthParam = () => Promise<[string, string]>;
@@ -121,7 +118,7 @@ export interface HermesPluginSDK {
      * pendingId }``. Pair with the ``ConfirmDialog`` primitive (passed as
      * ``open={isOpen}`` etc.) or any custom dialog.
      */
-    useConfirmDelete: <TId,>(opts: { onDelete: (id: TId) => Promise<void> }) => {
+    useConfirmDelete: <TId>(opts: { onDelete: (id: TId) => Promise<void> }) => {
       requestDelete: (id: TId) => void;
       confirm: () => Promise<void>;
       cancel: () => void;
@@ -160,10 +157,10 @@ export interface HermesPluginSDK {
 
   utils: {
     cn: (...classes: Array<string | false | null | undefined>) => string;
-    /** Relative-time formatter. Accepts an epoch-ms number. */
-    timeAgo: (ts: number) => string;
+    /** Relative-time formatter. Accepts a Unix epoch timestamp in seconds. */
+    timeAgo: (ts: number, locale?: import("@/i18n").Locale) => string;
     /** Relative-time formatter for an ISO-8601 string. */
-    isoTimeAgo: (iso: string) => string;
+    isoTimeAgo: (iso: string, locale?: import("@/i18n").Locale, unknown?: string) => string;
   };
 
   /**

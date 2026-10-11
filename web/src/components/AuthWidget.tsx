@@ -29,6 +29,7 @@ import { ApiError } from "@/lib/api-error";
 import { shouldHideAuthWidget } from "./auth-widget-visibility";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
+import { useI18n } from "@/i18n";
 
 interface AuthWidgetProps {
   className?: string;
@@ -43,9 +44,10 @@ function truncateUserId(id: string): string {
 }
 
 export function AuthWidget({ className }: AuthWidgetProps) {
+  const { format, t } = useI18n();
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [hidden, setHidden] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,7 +72,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           setHidden(true);
           return;
         }
-        setError("auth status unavailable");
+        setError(true);
       });
     return () => {
       cancelled = true;
@@ -83,11 +85,19 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     return (
       <div
         className={cn(
-          "px-5 py-2 text-[0.65rem] tracking-[0.05em] text-muted-foreground/70",
+          "flex flex-col gap-1 px-5 py-2 text-[0.65rem] tracking-[0.05em] text-muted-foreground/70",
           className,
         )}
+        role="status"
       >
-        {error}
+        <span>{t.auth.statusUnavailable}</span>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="self-start underline underline-offset-2 hover:text-foreground"
+        >
+          {t.chatSidebar.reloadPage}
+        </button>
       </div>
     );
   }
@@ -96,13 +106,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     // Loading. Reserve the row height so the sidebar doesn't flicker
     // when the data arrives.
     return (
-      <div
-        className={cn(
-          "h-9 px-5 py-2 text-[0.65rem] text-muted-foreground/40",
-          className,
-        )}
-        aria-busy="true"
-      >
+      <div className={cn("h-9 px-5 py-2 text-[0.65rem] text-muted-foreground/40", className)} aria-busy="true">
         …
       </div>
     );
@@ -127,14 +131,14 @@ export function AuthWidget({ className }: AuthWidgetProps) {
         className,
       )}
       role="status"
-      aria-label={`Logged in as ${label}`}
+      aria-label={format(t.auth.loggedInAs, { user: label })}
     >
       <div className="flex min-w-0 flex-col">
         <span className="truncate font-mono text-foreground/90" title={me.user_id}>
           {label}
         </span>
         <span className="truncate text-muted-foreground/70">
-          via {me.provider}
+          {format(t.auth.viaProvider, { provider: me.provider })}
         </span>
       </div>
       <button
@@ -145,8 +149,8 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           "transition-colors hover:bg-current/10 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
         )}
-        aria-label="Log out"
-        title="Log out"
+        aria-label={t.auth.logout}
+        title={t.auth.logout}
       >
         <LogOut className="h-3.5 w-3.5" />
       </button>

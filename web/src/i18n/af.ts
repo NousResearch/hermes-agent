@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const af: Translations = {
+export const af: TranslationOverlay = {
   common: {
     save: "Stoor",
     saving: "Besig om te stoor...",
@@ -230,8 +230,7 @@ export const af: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "Dit verwyder die taak van die skedule. Dit kan nie ongedaan gemaak word nie.",
+    confirmDeleteMessage: "Dit verwyder die taak van die skedule. Dit kan nie ongedaan gemaak word nie.",
     confirmDeleteTitle: "Skrap geskeduleerde taak?",
     newJob: "Nuwe Cron-taak",
     nameOptional: "Naam (opsioneel)",
@@ -260,8 +259,7 @@ export const af: Translations = {
       onceAt: "Hardloop op",
       customLabel: "Cron-uitdrukking",
       customPlaceholder: "0 9 * * *",
-      customHint:
-        "Cron-uitdrukking met vyf velde (minuut, uur, dag, maand, weekdag).",
+      customHint: "Cron-uitdrukking met vyf velde (minuut, uur, dag, maand, weekdag).",
       preview: "Word gestuur as",
       previewEmpty: "(onvolledig)",
     },
@@ -297,9 +295,9 @@ export const af: Translations = {
     name: "Naam",
     namePlaceholder: "bv. coder, writer, ens.",
     nameRequired: "Naam word vereis",
-    nameRule:
-      "Slegs kleinletters, syfers, _ en -; moet met 'n letter of syfer begin; tot 64 karakters.",
-    invalidName: "Ongeldige profielnaam",    cloneFrom: "Kloon konfigurasie vanaf profiel",
+    nameRule: "Slegs kleinletters, syfers, _ en -; moet met 'n letter of syfer begin; tot 64 karakters.",
+    invalidName: "Ongeldige profielnaam",
+    cloneFrom: "Kloon konfigurasie vanaf profiel",
     cloneFromNone: "Geen (leeg)",
     allProfiles: "Profiele",
     noProfiles: "Geen profiele gevind nie.",
@@ -330,11 +328,9 @@ export const af: Translations = {
     disableRuntime: "Deaktiveer",
     enableAfterInstall: "Aktiveer ná installasie",
     enableRuntime: "Aktiveer",
-    toggleTakesEffectAfterRestart:
-      "Gestoor — herbegin die gateway om die verandering toe te pas.",
+    toggleTakesEffectAfterRestart: "Gestoor — herbegin die gateway om die verandering toe te pas.",
     forceReinstall: "Forseer herinstallasie (skrap eers bestaande gids)",
-    headline:
-      "Ontdek, installeer, aktiveer en werk Hermes-inproppe op (`hermes plugins` ekwivalent).",
+    headline: "Ontdek, installeer, aktiveer en werk Hermes-inproppe op (`hermes plugins` ekwivalent).",
     identifierLabel: "Git-URL of owner/repo",
     inactive: "onaktief",
     installBtn: "Installeer",
@@ -395,7 +391,8 @@ export const af: Translations = {
     importConfig: "Voer konfigurasie in vanaf JSON",
     resetDefaults: "Stel terug na verstek",
     resetScopeTooltip: "Stel {scope} terug na verstek",
-    confirmResetScope: "Stel alle {scope}-instellings terug na hul verstek? Dit werk slegs die vorm op — veranderinge word nie na config.yaml geskryf voordat jy Stoor druk nie.",
+    confirmResetScope:
+      "Stel alle {scope}-instellings terug na hul verstek? Dit werk slegs die vorm op — veranderinge word nie na config.yaml geskryf voordat jy Stoor druk nie.",
     resetScopeToast: "{scope} teruggestel na verstek — kontroleer en Stoor om te behou",
     rawYaml: "Rou YAML-konfigurasie",
     searchResults: "Soekresultate",
@@ -448,7 +445,8 @@ export const af: Translations = {
     showValue: "Wys werklike waarde",
     hideValue: "Versteek waarde",
     customTitle: "Pasgemaakte sleutels",
-    customHint: "Arbitrêre omgewingsveranderlikes wat in jou .env gestoor is en wat Hermes nie herken nie. Gebruik dit om omgewingsveranderlikes vir vaardighede, MCP-bedieners of jou eie gereedskap in te spuit.",
+    customHint:
+      "Arbitrêre omgewingsveranderlikes wat in jou .env gestoor is en wat Hermes nie herken nie. Gebruik dit om omgewingsveranderlikes vir vaardighede, MCP-bedieners of jou eie gereedskap in te spuit.",
     customConfigured: "{count} pasgemaakte sleutel(s) gestel",
     addCustomKey: "Voeg 'n pasgemaakte sleutel by",
     customKeyName: "Veranderlike naam",
@@ -551,8 +549,7 @@ export const af: Translations = {
     },
     scan: {
       building_headline: "Prestasieprofiel word gebou…",
-      building_detail:
-        "Sessies, gereedskaproepe, modelmetadata en ontsluitstatus word gelees.",
+      building_detail: "Sessies, gereedskaproepe, modelmetadata en ontsluitstatus word gelees.",
       starting_headline: "Prestasieskandering begin…",
       progress_detail:
         "{scanned} van {total} sessies geskandeer · {pct}%. Kentekens ontsluit soos meer geskiedenis instroom.",
@@ -568,8 +565,7 @@ export const af: Translations = {
       scan_status_body:
         "Hermes skandeer plaaslike geskiedenis een keer, daarna verskyn kaarte outomaties. Niks is vasgevang as dit 'n paar sekondes neem nie.",
       what_scanned_header: "Wat geskandeer word",
-      what_scanned_body:
-        "Sessies, gereedskaproepe, modelmetadata, foute, prestasies en plaaslike ontsluitstatus.",
+      what_scanned_body: "Sessies, gereedskaproepe, modelmetadata, foute, prestasies en plaaslike ontsluitstatus.",
     },
     card: {
       share_title: "Deel hierdie prestasie",
@@ -609,11 +605,10 @@ export const af: Translations = {
       copy_button: "Kopieer beeld",
       copied: "Gekopieer ✓",
       download_button: "Laai PNG af",
-      hint:
-        "Deel op X maak 'n vooraf-ingevulde plasing in 'n nuwe oortjie oop. Klik eers op Kopieer beeld as jy die 1200×630-kenteken aangeheg wil hê — X laat jou dit direk in die tweet-skrywer plak. Laai PNG af stoor die lêer om enige plek te gebruik.",
+      hint: "Deel op X maak 'n vooraf-ingevulde plasing in 'n nuwe oortjie oop. Klik eers op Kopieer beeld as jy die 1200×630-kenteken aangeheg wil hê — X laat jou dit direk in die tweet-skrywer plak. Laai PNG af stoor die lêer om enige plek te gebruik.",
       clipboard_unsupported:
         "Beeldkopiëring na knipbord word nie in hierdie blaaier ondersteun nie — gebruik eerder Aflaai.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -628,12 +623,6 @@ export const af: Translations = {
       "Borde laat u toe om onverwante werkstrome te skei — een per projek, repositorium of domein. Werkers op een bord sien nooit 'n ander bord se take nie.",
     slug: "Slug",
     slugHint: "— kleinletters, koppeltekens, bv. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Vertoonnaam",
     displayNameHint: "(opsioneel)",
     description: "Beskrywing",
@@ -676,8 +665,7 @@ export const af: Translations = {
     runHistory: "Uitvoergeskiedenis",
     workerLog: "Werker-log",
     loadingLog: "Log word gelaai…",
-    noWorkerLog:
-      "— nog geen werker-log nie (taak is nog nie ontketen nie of die log is geroteer) —",
+    noWorkerLog: "— nog geen werker-log nie (taak is nog nie ontketen nie of die log is geroteer) —",
     noDescription: "— geen beskrywing —",
     noComments: "— geen opmerkings —",
     edit: "redigeer",
@@ -708,8 +696,7 @@ export const af: Translations = {
     reassign: "Hertoeken",
     renderingError: "Kanban-oortjie het 'n weergawefout teëgekom",
     reloadView: "Herlaai aansig",
-    wsAuthFailed:
-      "WebSocket-verifikasie het misluk — herlaai die bladsy om die sessietoken te verfris.",
+    wsAuthFailed: "WebSocket-verifikasie het misluk — herlaai die bladsy om die sessietoken te verfris.",
     markDone: "Merk {n} take as klaar?",
     markArchived: "Argiveer {n} take?",
     warning: "Waarskuwing",
@@ -760,27 +747,20 @@ export const af: Translations = {
       done: "Voltooi",
       archived: "Gearchiveer",
     },
-    confirmDone:
-      "Merk hierdie taak as klaar? Die werker se eis word vrygestel en afhanklike kinders word gereed.",
-    confirmArchive:
-      "Argiveer hierdie taak? Dit verdwyn uit die verstek-bordaansig.",
-    confirmBlocked:
-      "Merk hierdie taak as geblokkeer? Die werker se eis word vrygestel.",
-    completionSummary:
-      "Voltooiingsopsomming vir {label}. Dit word as die taak se result gestoor.",
-    completionSummaryRequired:
-      "'n Voltooiingsopsomming is verpligtend voordat 'n taak as klaar gemerk word.",
+    confirmDone: "Merk hierdie taak as klaar? Die werker se eis word vrygestel en afhanklike kinders word gereed.",
+    confirmArchive: "Argiveer hierdie taak? Dit verdwyn uit die verstek-bordaansig.",
+    confirmBlocked: "Merk hierdie taak as geblokkeer? Die werker se eis word vrygestel.",
+    completionSummary: "Voltooiingsopsomming vir {label}. Dit word as die taak se result gestoor.",
+    completionSummaryRequired: "'n Voltooiingsopsomming is verpligtend voordat 'n taak as klaar gemerk word.",
     triagePlaceholder: "Rowwe idee — KI sal dit spesifiseer…",
     taskTitlePlaceholder: "Nuwe taaktitel…",
     specifier: "spesifiseerder",
     assigneePlaceholder: "toegewysde",
     priority: "Prioriteit",
-    skillsPlaceholder:
-      "vaardighede (opsioneel, kommageskei): translation, github-code-review",
+    skillsPlaceholder: "vaardighede (opsioneel, kommageskei): translation, github-code-review",
     noParent: "— geen ouer —",
     workspacePathDir: "werkruimtepad (verpligtend, bv. ~/projects/my-app)",
-    workspacePathOptional:
-      "werkruimtepad (opsioneel, afgelei van toegewysde indien leeg)",
+    workspacePathOptional: "werkruimtepad (opsioneel, afgelei van toegewysde indien leeg)",
     logTruncated: "(toon laaste 100 KB — volledige log by ",
     logAt: ")",
   },

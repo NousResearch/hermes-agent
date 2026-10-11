@@ -14,7 +14,7 @@ import type {
   SessionUndoResponse,
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
-import { t } from '../../../i18n/runtime.js'
+import { getLocale, t, translateOptional } from '../../../i18n/runtime.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import {
@@ -27,6 +27,39 @@ import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
+
+const formatSessionStatus = (response: SessionStatusResponse): string => {
+  const details = response.details
+
+  if (!details) {
+    return response.output || t('slashCmd.core.status.empty')
+  }
+
+  const lines = [
+    t('sessionStatus.heading'),
+    '',
+    t('sessionStatus.sessionId', details.session_id),
+    t('sessionStatus.path', details.path)
+  ]
+
+  if (details.project) {
+    lines.push(t('sessionStatus.project', details.project))
+  }
+
+  if (details.title) {
+    lines.push(t('sessionStatus.title', details.title))
+  }
+
+  lines.push(
+    t('sessionStatus.model', details.model, details.provider),
+    t('sessionStatus.created', details.created),
+    t('sessionStatus.lastActivity', details.last_activity),
+    t('sessionStatus.tokens', details.tokens.toLocaleString(getLocale())),
+    t('sessionStatus.agentRunning', t(details.agent_running ? 'common.yes' : 'common.no'))
+  )
+
+  return lines.join('\n')
+}
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -88,8 +121,14 @@ export const coreCommands: SlashCommand[] = [
     name: 'help',
     run: (_arg, ctx) => {
       const sections: PanelSection[] = (ctx.local.catalog?.categories ?? []).map(cat => ({
-        rows: cat.pairs,
-        title: cat.name
+        rows: cat.pairs.map(([command, description]) => [
+          command,
+          translateOptional(
+            `slash.${ctx.local.catalog?.descriptionKeys?.[command.split(' ')[0]]}`,
+            description
+          )
+        ]),
+        title: translateOptional(cat.id ? `slashCategory.${cat.id}` : undefined, cat.name)
       }))
 
       if (ctx.local.catalog?.skillCount) {
@@ -230,7 +269,7 @@ export const coreCommands: SlashCommand[] = [
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
         .then(
           ctx.guarded<SessionStatusResponse>(r =>
-            ctx.transcript.page(r.output || t('slashCmd.core.status.empty'), t('slashCmd.core.status.pageTitle'))
+            ctx.transcript.page(formatSessionStatus(r), t('slashCmd.core.status.pageTitle'))
           )
         )
         .catch(ctx.guardedErr)

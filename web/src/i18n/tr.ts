@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const tr: Translations = {
+export const tr: TranslationOverlay = {
   common: {
     save: "Kaydet",
     saving: "Kaydediliyor...",
@@ -144,8 +144,7 @@ export const tr: Translations = {
     untitledSession: "Başlıksız oturum",
     deleteSession: "Oturumu sil",
     confirmDeleteTitle: "Oturum silinsin mi?",
-    confirmDeleteMessage:
-      "Bu, konuşmayı ve tüm mesajlarını kalıcı olarak siler. Bu işlem geri alınamaz.",
+    confirmDeleteMessage: "Bu, konuşmayı ve tüm mesajlarını kalıcı olarak siler. Bu işlem geri alınamaz.",
     sessionDeleted: "Oturum silindi",
     failedToDelete: "Oturum silinemedi",
     deleteEmpty: "Boşları sil",
@@ -230,8 +229,7 @@ export const tr: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "Bu, görevi zamanlamadan kaldırır. Bu işlem geri alınamaz.",
+    confirmDeleteMessage: "Bu, görevi zamanlamadan kaldırır. Bu işlem geri alınamaz.",
     confirmDeleteTitle: "Zamanlanmış görev silinsin mi?",
     newJob: "Yeni Cron Görevi",
     nameOptional: "Ad (isteğe bağlı)",
@@ -260,8 +258,7 @@ export const tr: Translations = {
       onceAt: "Çalıştırma zamanı",
       customLabel: "Cron ifadesi",
       customPlaceholder: "0 9 * * *",
-      customHint:
-        "Beş alanlı cron ifadesi (dakika, saat, gün, ay, haftanın günü).",
+      customHint: "Beş alanlı cron ifadesi (dakika, saat, gün, ay, haftanın günü).",
       preview: "Gönderilecek olan",
       previewEmpty: "(eksik)",
     },
@@ -299,7 +296,8 @@ export const tr: Translations = {
     nameRequired: "Ad gereklidir",
     nameRule:
       "Yalnızca küçük harfler, rakamlar, _ ve - kullanılabilir; harf veya rakamla başlamalı; en fazla 64 karakter.",
-    invalidName: "Geçersiz profil adı",    cloneFrom: "Profilden yapılandırmayı klonla",
+    invalidName: "Geçersiz profil adı",
+    cloneFrom: "Profilden yapılandırmayı klonla",
     cloneFromNone: "Hiçbiri (boş)",
     allProfiles: "Profiller",
     noProfiles: "Profil bulunamadı.",
@@ -330,11 +328,9 @@ export const tr: Translations = {
     disableRuntime: "Devre dışı bırak",
     enableAfterInstall: "Yüklemeden sonra etkinleştir",
     enableRuntime: "Etkinleştir",
-    toggleTakesEffectAfterRestart:
-      "Kaydedildi — değişikliği uygulamak için ağ geçidini yeniden başlatın.",
+    toggleTakesEffectAfterRestart: "Kaydedildi — değişikliği uygulamak için ağ geçidini yeniden başlatın.",
     forceReinstall: "Yeniden yüklemeyi zorla (önce mevcut klasörü sil)",
-    headline:
-      "Hermes eklentilerini keşfedin, yükleyin, etkinleştirin ve güncelleyin (`hermes plugins` ile eşdeğer).",
+    headline: "Hermes eklentilerini keşfedin, yükleyin, etkinleştirin ve güncelleyin (`hermes plugins` ile eşdeğer).",
     identifierLabel: "Git URL veya owner/repo",
     inactive: "pasif",
     installBtn: "Yükle",
@@ -395,7 +391,8 @@ export const tr: Translations = {
     importConfig: "Yapılandırmayı JSON'dan içe aktar",
     resetDefaults: "Varsayılanlara sıfırla",
     resetScopeTooltip: "{scope} varsayılanlara sıfırla",
-    confirmResetScope: "{scope} ayarlarının tümü varsayılanlara sıfırlansın mı? Bu yalnızca formu günceller — değişiklikler Kaydet'e basılana kadar config.yaml'a yazılmaz.",
+    confirmResetScope:
+      "{scope} ayarlarının tümü varsayılanlara sıfırlansın mı? Bu yalnızca formu günceller — değişiklikler Kaydet'e basılana kadar config.yaml'a yazılmaz.",
     resetScopeToast: "{scope} varsayılanlara sıfırlandı — gözden geçirip kalıcı kılmak için Kaydet'e basın",
     rawYaml: "Ham YAML Yapılandırması",
     searchResults: "Arama Sonuçları",
@@ -448,7 +445,8 @@ export const tr: Translations = {
     showValue: "Gerçek değeri göster",
     hideValue: "Değeri gizle",
     customTitle: "Özel Anahtarlar",
-    customHint: ".env dosyanızda saklanan ve Hermes'in tanımadığı rastgele ortam değişkenleri. Bunları beceriler, MCP sunucuları veya kendi araçlarınız için ortam değişkenleri eklemek için kullanın.",
+    customHint:
+      ".env dosyanızda saklanan ve Hermes'in tanımadığı rastgele ortam değişkenleri. Bunları beceriler, MCP sunucuları veya kendi araçlarınız için ortam değişkenleri eklemek için kullanın.",
     customConfigured: "{count} özel anahtar ayarlandı",
     addCustomKey: "Özel anahtar ekle",
     customKeyName: "Değişken adı",
@@ -516,8 +514,7 @@ export const tr: Translations = {
       title: "Hermes Achievements",
       subtitle:
         "Gerçek oturum geçmişinden kazanılan, koleksiyonluk Hermes rozetleri. Bilinen ama henüz tamamlanmamış başarılar Keşfedildi olarak gösterilir; Gizli başarılar ilk eşleşen davranış görünene kadar saklı kalır.",
-      scan_subtitle:
-        "Hermes oturum geçmişi taranıyor. Büyük geçmişlerde ilk tarama 5–10 saniye sürebilir.",
+      scan_subtitle: "Hermes oturum geçmişi taranıyor. Büyük geçmişlerde ilk tarama 5–10 saniye sürebilir.",
     },
     actions: {
       rescan: "Yeniden tara",
@@ -551,11 +548,9 @@ export const tr: Translations = {
     },
     scan: {
       building_headline: "Başarı profili oluşturuluyor…",
-      building_detail:
-        "Oturumlar, araç çağrıları, model meta verileri ve açılma durumu okunuyor.",
+      building_detail: "Oturumlar, araç çağrıları, model meta verileri ve açılma durumu okunuyor.",
       starting_headline: "Başarı taraması başlatılıyor…",
-      progress_detail:
-        "{total} oturumun {scanned} tanesi tarandı · %{pct}. Daha fazla geçmiş aktıkça rozetler açılır.",
+      progress_detail: "{total} oturumun {scanned} tanesi tarandı · %{pct}. Daha fazla geçmiş aktıkça rozetler açılır.",
       idle_detail:
         "Oturumlar, araç çağrıları, model meta verileri ve açılma durumu okunuyor. Rozetler açıldıkça burada görünür.",
     },
@@ -568,8 +563,7 @@ export const tr: Translations = {
       scan_status_body:
         "Hermes yerel geçmişi bir kez tarıyor; sonra kartlar otomatik olarak görünür. Birkaç saniye sürmesi normaldir, hiçbir şey takılmadı.",
       what_scanned_header: "Neler taranır",
-      what_scanned_body:
-        "Oturumlar, araç çağrıları, model meta verileri, hatalar, başarılar ve yerel açılma durumu.",
+      what_scanned_body: "Oturumlar, araç çağrıları, model meta verileri, hatalar, başarılar ve yerel açılma durumu.",
     },
     card: {
       share_title: "Bu başarıyı paylaş",
@@ -609,11 +603,9 @@ export const tr: Translations = {
       copy_button: "Görseli kopyala",
       copied: "Kopyalandı ✓",
       download_button: "PNG indir",
-      hint:
-        "X'te paylaş, yeni sekmede önceden doldurulmuş bir gönderi açar. 1200×630 rozetin eklenmesini istiyorsan önce Görseli kopyala'ya tıkla — X, görseli doğrudan tweet düzenleyiciye yapıştırmana izin verir. PNG indir, dosyayı her yerde kullanmak üzere kaydeder.",
-      clipboard_unsupported:
-        "Bu tarayıcıda panoya görsel kopyalama desteklenmiyor — bunun yerine İndir'i kullanın.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "X'te paylaş, yeni sekmede önceden doldurulmuş bir gönderi açar. 1200×630 rozetin eklenmesini istiyorsan önce Görseli kopyala'ya tıkla — X, görseli doğrudan tweet düzenleyiciye yapıştırmana izin verir. PNG indir, dosyayı her yerde kullanmak üzere kaydeder.",
+      clipboard_unsupported: "Bu tarayıcıda panoya görsel kopyalama desteklenmiyor — bunun yerine İndir'i kullanın.",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -628,12 +620,6 @@ export const tr: Translations = {
       "Panolar, ilgisiz iş akışlarını ayırmanızı sağlar — proje, depo veya alan başına bir pano. Bir panodaki worker'lar başka bir panonun görevlerini asla görmez.",
     slug: "Slug",
     slugHint: "— küçük harf, tire, ör. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Görünen ad",
     displayNameHint: "(isteğe bağlı)",
     description: "Açıklama",
@@ -676,8 +662,7 @@ export const tr: Translations = {
     runHistory: "Çalıştırma geçmişi",
     workerLog: "Worker günlüğü",
     loadingLog: "Günlük yükleniyor…",
-    noWorkerLog:
-      "— henüz worker günlüğü yok (görev başlatılmadı veya günlük döndürüldü) —",
+    noWorkerLog: "— henüz worker günlüğü yok (görev başlatılmadı veya günlük döndürüldü) —",
     noDescription: "— açıklama yok —",
     noComments: "— yorum yok —",
     edit: "düzenle",
@@ -708,8 +693,7 @@ export const tr: Translations = {
     reassign: "Yeniden ata",
     renderingError: "Kanban sekmesinde bir oluşturma hatası oluştu",
     reloadView: "Görünümü yeniden yükle",
-    wsAuthFailed:
-      "WebSocket kimlik doğrulaması başarısız — oturum jetonunu yenilemek için sayfayı yeniden yükleyin.",
+    wsAuthFailed: "WebSocket kimlik doğrulaması başarısız — oturum jetonunu yenilemek için sayfayı yeniden yükleyin.",
     markDone: "{n} görev tamamlandı olarak işaretlensin mi?",
     markArchived: "{n} görev arşivlensin mi?",
     warning: "Uyarı",
@@ -762,25 +746,19 @@ export const tr: Translations = {
     },
     confirmDone:
       "Bu görev tamamlandı olarak işaretlensin mi? Worker'ın sahiplenmesi serbest bırakılır ve bağımlı altlar hazır hale gelir.",
-    confirmArchive:
-      "Bu görev arşivlensin mi? Varsayılan pano görünümünden kaybolur.",
-    confirmBlocked:
-      "Bu görev engellendi olarak işaretlensin mi? Worker'ın sahiplenmesi serbest bırakılır.",
-    completionSummary:
-      "{label} için tamamlanma özeti. Görev result'ı olarak saklanır.",
-    completionSummaryRequired:
-      "Bir görevi tamamlandı olarak işaretlemeden önce tamamlanma özeti gereklidir.",
+    confirmArchive: "Bu görev arşivlensin mi? Varsayılan pano görünümünden kaybolur.",
+    confirmBlocked: "Bu görev engellendi olarak işaretlensin mi? Worker'ın sahiplenmesi serbest bırakılır.",
+    completionSummary: "{label} için tamamlanma özeti. Görev result'ı olarak saklanır.",
+    completionSummaryRequired: "Bir görevi tamamlandı olarak işaretlemeden önce tamamlanma özeti gereklidir.",
     triagePlaceholder: "Kabataslak fikir — yapay zeka şartnameyi yazacak…",
     taskTitlePlaceholder: "Yeni görev başlığı…",
     specifier: "specifier",
     assigneePlaceholder: "atanan",
     priority: "Öncelik",
-    skillsPlaceholder:
-      "beceriler (isteğe bağlı, virgülle ayrılmış): translation, github-code-review",
+    skillsPlaceholder: "beceriler (isteğe bağlı, virgülle ayrılmış): translation, github-code-review",
     noParent: "— üst yok —",
     workspacePathDir: "workspace yolu (zorunlu, ör. ~/projects/my-app)",
-    workspacePathOptional:
-      "workspace yolu (isteğe bağlı, boşsa atanan kişiden türetilir)",
+    workspacePathOptional: "workspace yolu (isteğe bağlı, boşsa atanan kişiden türetilir)",
     logTruncated: "(son 100 KB gösteriliyor — tam günlük şurada: ",
     logAt: ")",
   },

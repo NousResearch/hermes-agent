@@ -1281,3 +1281,242 @@ userMessages.turn.layer.streaming.hintNoRetry: "用 /model 选择其他模型。
 userMessages.turn.layer.streaming.title: "与模型提供方的连接在回复中途断开"
 userMessages.turn.notAnswered: "{0}。你的消息未得到回复。"
 userMessages.turn.withProvider: "{0}（{1}）"
+
+# 目标、交互反馈及内置小组件
+command.ambiguous: "命令有歧义：{0}"
+command.emptyMessage: "/{0}：空消息"
+command.noOutput: "/{0}：没有输出"
+command.noOutputParen: "（没有输出）"
+command.skillPayloadMissing: "/{0}：技能载荷缺少消息"
+common.warning: "警告"
+connection.notConnected: "未连接"
+connection.skipped: "已跳过"
+errors.invalidResponse: "错误：无效响应：{0}"
+errors.rpc: "错误：{0}"
+goal.active: "目标"
+goal.parked: "目标等待中"
+goal.paused: "目标已暂停"
+goal.turns: "{0}/{1} 轮"
+goal.until: "等待至 {0}"
+goal.waiting: "等待 {0} {1}"
+process.ago: "{0} · {1} 秒前"
+process.background: "后台进程"
+process.done: "{0} 个已完成"
+process.exit: "退出码 {0}"
+process.killed: "已终止"
+process.last: "最新：{0}"
+process.lost: "已失联"
+process.title: "进程"
+submission.sessionNotReady: "会话尚未就绪"
+submission.shellExit: "退出码 {0}"
+submission.steerFailedQueued: "引导失败，消息已排入下一轮"
+submission.steerRejectedQueued: "引导被拒绝，消息已排入下一轮"
+sys.off: "关"
+sys.on: "开"
+usage.bar.neverExpires: "{0} · 永不过期"
+usage.bar.percentUsed: "已使用 {0}%"
+usage.bar.planFallback: "套餐"
+usage.bar.remainingOfTotal: "剩余 {0} / {1}{2}"
+usage.bar.topUpLabel: "充值"
+usage.bar.totalSpendable: "可用总额：{0}"
+widget.dialog.body: "这是一个带背景遮罩的视口级浮层。\n\n区域：{0}\n可尝试：/dialog-test top-right · bottom · left · ..."
+widget.dialog.hint: "Esc/q/Enter 关闭 · Ctrl+C 关闭"
+widget.dialog.title: "对话框组件"
+widget.dialog.usage: "用法：/dialog-test [区域]   区域：bottom、bottom-left、bottom-right、center、left、right、top、top-left、top-right"
+widget.grid.areasOn: "开（首列 2fr · c1 跨行 · c2 跨列）"
+widget.grid.auto: "自动"
+widget.grid.controlsHint: "方向键/hjkl 移动 · Enter 放大 · d 对话框 · a 区域 · s 数据流 · +/- 列 · [] 行 · g 间距 · p 内边距 · n 嵌套 · q 关闭"
+widget.grid.dialogBody: "对话框覆盖在 /grid-test 上方。\n\n背景遮罩会调暗后方网格。"
+widget.grid.dialogHint: "Esc/q/Enter 关闭"
+widget.grid.dialogTitle: "浮层组件"
+widget.grid.dimensions: "{0}x{1} 网格"
+widget.grid.help: "打开可交互的 Widget 网格演示浮层"
+widget.grid.main: "主面板：{0}"
+widget.grid.missionControl: "Hermes 任务控制台"
+widget.grid.nestedChild: "嵌套子网格"
+widget.grid.parent: "父单元格 {0}"
+widget.grid.status: "间距 {0} · 内边距 {1} · 嵌套 {2} · 区域 {3}"
+widget.grid.stream.latency: "延迟"
+widget.grid.stream.memory: "内存"
+widget.grid.stream.throughput: "吞吐量"
+widget.grid.stream.tokens: "Token 流"
+widget.grid.stream.tools: "工具动态"
+widget.grid.streamHint: "方向键/hjkl 聚焦 · Enter 提升 · d 对话框 · Esc/q 返回 · Ctrl+C 关闭"
+widget.grid.streams: "数据流"
+widget.grid.ticks: "{0} 次刷新"
+widget.grid.tokenStream: "Hermes 将 token 流式传入提升后的单元格，同时网格会随之重排。单元格按 id 保持身份，因此提升面板不会重置；历史、光标和计时器都会跨布局保留。每次变化都会把行列轨道重新计算为整数终端单元，跨区会覆盖所经过的间距，密集自动布局则会回填提升面板留下的空位。"
+widget.grid.uptime: "已运行 {0} 分 {1} 秒"
+widget.grid.usage: "用法：/grid-test [列]x[行] · /grid-test [列] [行] · /grid-test streams"
+widget.grid.zoomHint: "方向键/hjkl 切换单元格 · Esc/q 返回 · Ctrl+C 关闭"
+widget.ticker.help: "显示带实时迷你折线的模拟点值图表"
+widget.ticker.usage: "用法：/ticker [代码]"
+widget.unknownApp: "未知 Widget 应用：{0}"
+widget.usage: "用法：/{0}"
+widget.weather.error: "无法加载天气：{0}"
+widget.weather.feels: "（体感 {0}）"
+widget.weather.help: "当前天气与主题字符画（Open-Meteo）"
+widget.weather.here: "当前位置"
+widget.weather.humidity: "湿度 {0}%"
+widget.weather.title: "天气"
+widget.weather.unknown: "天气状况未知"
+widget.weather.usage: "用法：/weather [地点]（留空则按 IP 定位）"
+widget.weather.wind: "风速 {0}"
+
+clipboard.extractionFailed: "无法读取剪贴板图片，请先保存图片再添加文件。"
+clipboard.noImage: "剪贴板中没有图片。"
+
+sessionStatus.heading: Hermes TUI 状态
+sessionStatus.sessionId: 会话 ID：{0}
+sessionStatus.path: 路径：{0}
+sessionStatus.project: 项目：{0}
+sessionStatus.title: 标题：{0}
+sessionStatus.model: 模型：{0}（{1}）
+sessionStatus.created: 创建时间：{0}
+sessionStatus.lastActivity: 最后活动：{0}
+sessionStatus.tokens: Token：{0}
+sessionStatus.agentRunning: Agent 运行中：{0}
+compression.aborted: 压缩已中止：保留了 {0} 条消息
+compression.fallback: 已使用降级方案压缩：{0} → {1} 条消息
+compression.noop: 压缩未产生变化：仍为 {0} 条消息
+compression.done: 已压缩：{0} → {1} 条消息
+compression.tokensUnchanged: 预计请求大小：约 {0} 个 token（未变化）
+compression.tokensChanged: 预计请求大小：约 {0} → 约 {1} 个 token
+compression.abortedNote: 摘要生成失败，未移除任何消息。
+compression.refused: 已拒绝压缩（摘要会使对话变大）：保留了 {0} 条消息
+compression.refusedNote: 生成的摘要比待替换内容更大，未移除任何消息。
+compression.fallbackNote: 摘要生成失败；Hermes 使用有限的降级上下文并移除了 {0} 条消息。
+compression.denseNote: 注意：压缩会把记录改写成更密集的摘要，因此消息变少后估算值仍可能升高。
+compression.reason: 原因：{0}
+completion.unavailableMeta: 不可用
+completion.gitDiff: Git 差异
+completion.stagedDiff: 已暂存差异
+completion.attachFile: 附加文件
+completion.attachFolder: 附加文件夹
+completion.fetchUrl: 获取 URL
+completion.gitLog: Git 日志
+completion.directory: 目录
+completion.globalMode: 全局模式
+completion.cycleGlobalMode: 切换全局模式
+completion.sectionOverride: 分区覆盖
+completion.setSection: 设置 {0}
+completion.clearSectionOverride: 清除 {0} 覆盖
+
+slashCategory.session: 会话
+slashCategory.configuration: 配置
+slashCategory.tools: 工具与技能
+slashCategory.info: 信息
+slashCategory.exit: 退出
+slashCategory.tui: TUI
+slashCategory.userCommands: 用户命令
+slash.start: 确认平台启动探测，不发送回复
+slash.new: 开始全新会话（新会话 ID 和历史）
+slash.topic: 启用或检查 Telegram 私聊话题会话
+slash.clear: 清空屏幕并开始新会话
+slash.redraw: 强制重绘整个界面（修复终端显示错位）
+slash.history: 显示对话历史
+slash.save: 保存当前对话
+slash.retry: 重试上一条消息
+slash.prompt: 在 $EDITOR 中编写下一条 Markdown 提示并发送
+slash.undo: 回退 N 个用户轮次并重新提示（默认 1）
+slash.title: 设置当前会话标题
+slash.handoff: 将会话移交到消息平台
+slash.branch: 分支当前会话（Discord/Telegram/Slack/Matrix 会新建会话；--here 保留在当前会话）
+slash.compress: 压缩对话上下文；可保留最近轮次或预览结果
+slash.rollback: 列出或恢复文件系统检查点
+slash.snapshot: 创建或恢复 Hermes 配置与状态快照
+slash.stop: 终止所有后台进程
+slash.approve: 批准待处理的危险命令
+slash.deny: 拒绝待处理的危险命令，可附原因
+slash.background: 在后台运行一条提示
+slash.bg: 在独立后台会话中运行一条提示
+slash.btw: 基于当前对话快照回答旁支问题，不中断当前工作
+slash.agents: 显示活动 Agent 和运行中的任务
+slash.journey: 打开学习历程时间线
+slash.queue: 把提示排入下一轮，不中断当前工作
+slash.steer: 在下一次工具调用后注入消息，不中断当前工作
+slash.goal: 设置 Hermes 跨轮持续处理的目标
+slash.moa: 用默认多 Agent 混合预设处理一次提示，然后恢复模型
+slash.subgoal: 为活动目标添加或管理额外验收条件
+slash.status: 显示会话、模型、token 和上下文信息
+slash.egress: 显示 Docker 出站代理状态
+slash.context: 显示上下文窗口详细视图，包括用量仪表、分类明细、压缩统计和吞吐量
+slash.whoami: 显示你的斜杠命令权限
+slash.profile: 显示活动配置档案名称和主目录
+slash.sethome: 将当前聊天设为主频道
+slash.resume: 恢复已命名的会话
+slash.config: 显示当前配置
+slash.model: 切换模型（默认持久保存）
+slash.codex-runtime: 切换 OpenAI/Codex 模型的 Codex app-server 运行时
+slash.personality: 设置预定义人格
+slash.statusbar: 切换上下文/模型状态栏
+slash.battery: 切换状态栏中的彩色电量指示器
+slash.timestamps: 切换消息和历史中的时间戳
+slash.verbose: 循环切换工具进度显示级别
+slash.diff: 显示工作目录中的 Git 变更
+slash.focus: 切换聚焦视图——仅显示你的提示词和最终回复
+slash.footer: 切换最终回复中的网关运行信息页脚
+slash.yolo: 切换 YOLO 模式（跳过危险命令审批）
+slash.approvals: 显示或设置持久生效的危险命令审批模式
+slash.reasoning: 管理推理强度和显示方式
+slash.fast: 切换 OpenAI 优先处理或 Anthropic 快速模式
+slash.skin: 显示或更换界面皮肤
+slash.indicator: 选择 TUI 忙碌指示器样式
+slash.voice: 切换语音模式
+slash.wake: 切换“Hey Hermes”唤醒词监听器
+slash.busy: 控制 Hermes 工作时按回车的行为
+slash.tools: 管理工具：列出、禁用或启用
+slash.toolsets: 列出可用工具集
+slash.skills: 搜索、安装、检查或管理技能
+slash.memory: 审查待写入记忆或切换审批门控
+slash.bundles: 列出技能包及其快捷别名
+slash.pet: 切换或领养 Petdex 宠物
+slash.hatch: 根据描述生成新的 Petdex 宠物
+slash.learn: 从目录、URL、当前会话或笔记学习可复用技能
+slash.init: 扫描仓库并生成或更新 AGENTS.md 项目说明
+slash.cron: 管理定时任务
+slash.suggestions: 审查建议的自动化并接受或忽略
+slash.blueprint: 从蓝图模板设置自动化
+slash.curator: 管理后台技能维护
+slash.kanban: 管理多配置档案协作看板
+slash.reload: 重新读取当前会话中的 .env 变量
+slash.reload-mcp: 从配置重新加载 MCP 服务器
+slash.reload-skills: 重新扫描新增或删除的技能
+slash.browser: 通过 CDP 将浏览器工具连接到当前 Chromium 浏览器
+slash.plugins: 列出已安装插件及状态
+slash.commands: 分页浏览全部命令和技能
+slash.help: 显示可用命令
+slash.restart: 排空活动任务后平滑重启网关
+slash.usage: 显示 token 用量和速率限制
+slash.subscription: 查看 Nous 套餐并在浏览器中进行变更
+slash.topup: 查看 Nous 余额并在门户中管理计费
+slash.insights: 显示用量洞察和分析
+slash.platforms: 显示网关和消息平台状态
+slash.platform: 暂停、恢复或列出故障消息平台
+slash.copy: 把上一条助手回复复制到剪贴板
+slash.paste: 从剪贴板附加图片
+slash.image: 为下一条提示附加本地图片
+slash.update: 将 Hermes Agent 更新到最新版本
+slash.version: 显示 Hermes Agent 版本
+slash.debug: 上传调试报告并获取可分享链接
+slash.quit: 退出 CLI；可同时删除会话历史
+slash.density: 切换紧凑显示模式
+slash.details: 控制 Agent 详情可见性
+slash.logs: 显示最近的网关日志
+slash.mouse: 设置鼠标追踪预设 [on|off|toggle|wheel|buttons|all]
+slash.sessions: 浏览并恢复之前的实时 TUI 会话
+
+content.thinkingVerbs.analyzing: 分析
+content.thinkingVerbs.brainstorming: 头脑风暴
+content.thinkingVerbs.cogitating: 推敲
+content.thinkingVerbs.computing: 计算
+content.thinkingVerbs.contemplating: 沉思
+content.thinkingVerbs.deliberating: 权衡
+content.thinkingVerbs.formulating: 构想
+content.thinkingVerbs.mulling: 琢磨
+content.thinkingVerbs.musing: 静思
+content.thinkingVerbs.pondering: 思考
+content.thinkingVerbs.processing: 处理
+content.thinkingVerbs.reasoning: 推理
+content.thinkingVerbs.reflecting: 反思
+content.thinkingVerbs.ruminating: 斟酌
+content.thinkingVerbs.synthesizing: 整合

@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const pt: Translations = {
+export const pt: TranslationOverlay = {
   common: {
     save: "Guardar",
     saving: "A guardar...",
@@ -230,8 +230,7 @@ export const pt: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "Esta ação remove a tarefa do agendamento. Não é possível anular.",
+    confirmDeleteMessage: "Esta ação remove a tarefa do agendamento. Não é possível anular.",
     confirmDeleteTitle: "Eliminar tarefa agendada?",
     newJob: "Nova tarefa cron",
     nameOptional: "Nome (opcional)",
@@ -260,8 +259,7 @@ export const pt: Translations = {
       onceAt: "Executar em",
       customLabel: "Expressão cron",
       customPlaceholder: "0 9 * * *",
-      customHint:
-        "Expressão cron de cinco campos (minuto, hora, dia, mês, dia da semana).",
+      customHint: "Expressão cron de cinco campos (minuto, hora, dia, mês, dia da semana).",
       preview: "Enviado como",
       previewEmpty: "(incompleta)",
     },
@@ -297,8 +295,7 @@ export const pt: Translations = {
     name: "Nome",
     namePlaceholder: "ex: coder, writer, etc.",
     nameRequired: "O nome é obrigatório",
-    nameRule:
-      "Apenas letras minúsculas, dígitos, _ e -; deve começar com letra ou dígito; até 64 caracteres.",
+    nameRule: "Apenas letras minúsculas, dígitos, _ e -; deve começar com letra ou dígito; até 64 caracteres.",
     invalidName: "Nome de perfil inválido",
     cloneFrom: "Clonar a partir do perfil",
     cloneFromNone: "Nenhum (vazio)",
@@ -331,11 +328,9 @@ export const pt: Translations = {
     disableRuntime: "Desativar",
     enableAfterInstall: "Ativar após instalação",
     enableRuntime: "Ativar",
-    toggleTakesEffectAfterRestart:
-      "Salvo — reinicie o gateway para aplicar a alteração.",
+    toggleTakesEffectAfterRestart: "Salvo — reinicie o gateway para aplicar a alteração.",
     forceReinstall: "Forçar reinstalação (eliminar pasta existente primeiro)",
-    headline:
-      "Descobrir, instalar, ativar e atualizar plugins Hermes (paridade com `hermes plugins`).",
+    headline: "Descobrir, instalar, ativar e atualizar plugins Hermes (paridade com `hermes plugins`).",
     identifierLabel: "URL Git ou owner/repo",
     inactive: "inativo",
     installBtn: "Instalar",
@@ -396,7 +391,8 @@ export const pt: Translations = {
     importConfig: "Importar configuração de JSON",
     resetDefaults: "Repor predefinições",
     resetScopeTooltip: "Repor {scope} para predefinições",
-    confirmResetScope: "Repor todas as definições de {scope} para os valores predefinidos? Isto apenas atualiza o formulário — as alterações só são escritas em config.yaml quando premir Guardar.",
+    confirmResetScope:
+      "Repor todas as definições de {scope} para os valores predefinidos? Isto apenas atualiza o formulário — as alterações só são escritas em config.yaml quando premir Guardar.",
     resetScopeToast: "{scope} reposto para predefinições — reveja e Guarde para persistir",
     rawYaml: "Configuração YAML em bruto",
     searchResults: "Resultados da pesquisa",
@@ -429,7 +425,8 @@ export const pt: Translations = {
   },
 
   env: {
-    changesNote: "As alterações são guardadas em disco imediatamente. As sessões ativas detetam novas chaves automaticamente.",
+    changesNote:
+      "As alterações são guardadas em disco imediatamente. As sessões ativas detetam novas chaves automaticamente.",
     confirmClearMessage:
       "O valor armazenado para esta variável será removido do seu ficheiro .env. Esta ação não pode ser anulada a partir da UI.",
     confirmClearTitle: "Limpar esta chave?",
@@ -449,7 +446,8 @@ export const pt: Translations = {
     showValue: "Mostrar valor real",
     hideValue: "Ocultar valor",
     customTitle: "Chaves personalizadas",
-    customHint: "Variáveis de ambiente arbitrárias armazenadas no seu .env que o Hermes não reconhece. Use-as para injetar variáveis de ambiente para skills, servidores MCP ou suas próprias ferramentas.",
+    customHint:
+      "Variáveis de ambiente arbitrárias armazenadas no seu .env que o Hermes não reconhece. Use-as para injetar variáveis de ambiente para skills, servidores MCP ou suas próprias ferramentas.",
     customConfigured: "{count} chave(s) personalizada(s) definida(s)",
     addCustomKey: "Adicionar uma chave personalizada",
     customKeyName: "Nome da variável",
@@ -552,8 +550,7 @@ export const pt: Translations = {
     },
     scan: {
       building_headline: "A construir perfil de conquistas…",
-      building_detail:
-        "A ler sessões, chamadas de ferramentas, metadados de modelos e estado de desbloqueio.",
+      building_detail: "A ler sessões, chamadas de ferramentas, metadados de modelos e estado de desbloqueio.",
       starting_headline: "A iniciar análise de conquistas…",
       progress_detail:
         "Analisadas {scanned} de {total} sessões · {pct}%. Os distintivos são desbloqueados à medida que mais histórico é processado.",
@@ -610,11 +607,10 @@ export const pt: Translations = {
       copy_button: "Copiar imagem",
       copied: "Copiado ✓",
       download_button: "Transferir PNG",
-      hint:
-        "Partilhar no X abre uma publicação pré-preenchida num novo separador. Clique primeiro em Copiar imagem se quiser anexar o distintivo 1200×630 — o X permite colá-lo diretamente no compositor da publicação. Transferir PNG guarda o ficheiro para utilização em qualquer lado.",
+      hint: "Partilhar no X abre uma publicação pré-preenchida num novo separador. Clique primeiro em Copiar imagem se quiser anexar o distintivo 1200×630 — o X permite colá-lo diretamente no compositor da publicação. Transferir PNG guarda o ficheiro para utilização em qualquer lado.",
       clipboard_unsupported:
         "A cópia de imagens para a área de transferência não é suportada neste navegador — utilize Transferir.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -629,12 +625,6 @@ export const pt: Translations = {
       "Os quadros permitem-lhe separar fluxos de trabalho não relacionados — um por projeto, repositório ou domínio. Os workers de um quadro nunca veem as tarefas de outro quadro.",
     slug: "Slug",
     slugHint: "— minúsculas, hífenes, p. ex. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nome a apresentar",
     displayNameHint: "(opcional)",
     description: "Descrição",
@@ -677,8 +667,7 @@ export const pt: Translations = {
     runHistory: "Histórico de execuções",
     workerLog: "Registo do worker",
     loadingLog: "A carregar registo…",
-    noWorkerLog:
-      "— ainda não há registo do worker (a tarefa não foi iniciada ou o registo foi rotacionado) —",
+    noWorkerLog: "— ainda não há registo do worker (a tarefa não foi iniciada ou o registo foi rotacionado) —",
     noDescription: "— sem descrição —",
     noComments: "— sem comentários —",
     edit: "editar",
@@ -709,8 +698,7 @@ export const pt: Translations = {
     reassign: "Reatribuir",
     renderingError: "O separador Kanban encontrou um erro de renderização",
     reloadView: "Recarregar vista",
-    wsAuthFailed:
-      "Falha de autenticação WebSocket — recarregue a página para atualizar o token de sessão.",
+    wsAuthFailed: "Falha de autenticação WebSocket — recarregue a página para atualizar o token de sessão.",
     markDone: "Marcar {n} tarefa(s) como concluídas?",
     markArchived: "Arquivar {n} tarefa(s)?",
     warning: "Aviso",
@@ -763,25 +751,19 @@ export const pt: Translations = {
     },
     confirmDone:
       "Marcar esta tarefa como concluída? A reivindicação do worker é libertada e os filhos dependentes ficam prontos.",
-    confirmArchive:
-      "Arquivar esta tarefa? Desaparece da vista padrão do quadro.",
-    confirmBlocked:
-      "Marcar esta tarefa como bloqueada? A reivindicação do worker é libertada.",
-    completionSummary:
-      "Resumo de conclusão para {label}. Será guardado como o resultado da tarefa.",
-    completionSummaryRequired:
-      "É necessário um resumo de conclusão antes de marcar uma tarefa como concluída.",
+    confirmArchive: "Arquivar esta tarefa? Desaparece da vista padrão do quadro.",
+    confirmBlocked: "Marcar esta tarefa como bloqueada? A reivindicação do worker é libertada.",
+    completionSummary: "Resumo de conclusão para {label}. Será guardado como o resultado da tarefa.",
+    completionSummaryRequired: "É necessário um resumo de conclusão antes de marcar uma tarefa como concluída.",
     triagePlaceholder: "Ideia aproximada — a IA irá especificá-la…",
     taskTitlePlaceholder: "Título da nova tarefa…",
     specifier: "specifier",
     assigneePlaceholder: "responsável",
     priority: "Prioridade",
-    skillsPlaceholder:
-      "competências (opcional, separadas por vírgulas): translation, github-code-review",
+    skillsPlaceholder: "competências (opcional, separadas por vírgulas): translation, github-code-review",
     noParent: "— sem pai —",
     workspacePathDir: "caminho do espaço de trabalho (obrigatório, p. ex. ~/projects/my-app)",
-    workspacePathOptional:
-      "caminho do espaço de trabalho (opcional, derivado do responsável se vazio)",
+    workspacePathOptional: "caminho do espaço de trabalho (opcional, derivado do responsável se vazio)",
     logTruncated: "(a mostrar os últimos 100 KB — registo completo em ",
     logAt: ")",
   },

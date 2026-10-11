@@ -7,6 +7,7 @@ import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
+import { t as tr } from '../i18n/index.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
@@ -138,7 +139,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           const r = asRpcResult<ShellExecResponse>(raw)
 
           if (!r) {
-            return sys('error: invalid response: shell.exec')
+            return sys(tr('errors.invalidResponse', 'shell.exec'))
           }
 
           const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
@@ -148,10 +149,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
           }
 
           if (r.code !== 0 || !out) {
-            sys(`exit ${r.code}`)
+            sys(tr('submission.shellExit', r.code))
           }
         })
-        .catch((e: Error) => sys(`error: ${e.message}`))
+        .catch((e: Error) => sys(tr('errors.rpc', e.message)))
         .finally(() => patchUiState({ busy: false, status: 'ready' }))
     },
     [appendMessage, gw, sys]
@@ -234,10 +235,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
             const r = asRpcResult<SessionSteerResponse>(raw)
 
             if (r?.status !== 'queued') {
-              fallback('steer rejected — message queued for next turn')
+              fallback(tr('submission.steerRejectedQueued'))
             }
           })
-          .catch(() => fallback('steer failed — message queued for next turn'))
+          .catch(() => fallback(tr('submission.steerFailedQueued')))
 
         return
       }

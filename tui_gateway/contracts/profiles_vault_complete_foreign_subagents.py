@@ -27,6 +27,8 @@ class CompletionItem(Result):
     text: str
     display: str = ""
     meta: str = ""
+    meta_key: str | None = None
+    meta_vars: dict[str, str | int | float] | None = None
     kind: str | None = None
 
 

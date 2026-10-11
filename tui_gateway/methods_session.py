@@ -1977,7 +1977,7 @@ def _try_get_session(db, key: str) -> dict:
 
 @_session_method("session.status")
 def _(rid, params: dict, session: dict) -> dict:
-    from hermes_cli.status_report import build_status_fields, status_lines
+    from hermes_cli.status_report import build_status_fields
     key = session.get("session_key") or params.get("session_id") or ""
     mirror = _metadata_mirror(session)
     # Under turn isolation the compute host owns the live route: a stale in-process agent object
@@ -1985,19 +1985,17 @@ def _(rid, params: dict, session: dict) -> dict:
     # mirror, the in-process agent is still the only route we know (same order as _session_info).
     live_agent = session.get("agent")
     agent = None if session.get("_compute_host_active") else live_agent
+    usage = _session_usage_snapshot(session)
     fields = build_status_fields(
         key, agent, _status_row(session, params, key),
         model=mirror.get("model") or getattr(live_agent, "model", None),
         provider=mirror.get("provider") or getattr(live_agent, "provider", None),
-        tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
+        tokens=usage.get("total"), agent_running=bool(session.get("running")),
         home=session.get("profile_home"),
     )
     project = _project_info_for_cwd(_display_session_cwd(session))
-    lines = [
-        "Hermes TUI Status", "", *status_lines(fields, "session_id", "path"),
-        *([f"Project: {project['name']}"] if project else []),
-        *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
-    return _ok(rid, {"output": "\n".join(lines)})
+    from .methods_session_status import session_status_result
+    return _ok(rid, session_status_result(fields, usage, project))
 
 
 @_session_method("session.history")

@@ -5,6 +5,8 @@ import type {
 } from '@hermes/shared/gateway-events'
 import { atom } from 'nanostores'
 
+import { t as tr } from '../i18n/index.js'
+
 import { patchOverlayState } from './overlayStore.js'
 
 export interface ConnectionOperationSnapshot {
@@ -43,10 +45,10 @@ export const isDismissedOperation = (opId: string): boolean => dismissedOperatio
 
 const outcomeWord = (target: ConnectionOperationTarget): string => {
   if (target.state === 'connected') {
-    return 'connected'
+    return tr('chatBits.branding.connected')
   }
 
-  return target.state === 'skipped' ? 'skipped' : 'not connected'
+  return target.state === 'skipped' ? tr('connection.skipped') : tr('connection.notConnected')
 }
 
 export function applyConnectionRequest(payload: ConnectionRequestPayload): void {

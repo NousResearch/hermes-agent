@@ -9,6 +9,7 @@ import contextlib
 import sys
 from pathlib import Path
 
+from .methods_tools_catalog import Catalog
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -425,39 +426,28 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Command catalog / dispatch ──────────────────────────────────────────────
-class _Catalog:
-    """Accumulator for commands.catalog: ``pairs`` (every [key, desc]), ``canon`` (lowercase
-    key/alias → canonical key), ``commands`` (key → desktop meta) and ordered categories."""
-
-    def __init__(self) -> None:
-        self.pairs: list[list[str]] = []
-        self.canon: dict[str, str] = {}
-        self.commands: dict[str, dict[str, str | None]] = {}
-        self.cat_map: dict[str, list[list[str]]] = {}  # insertion order = category order
-
-    def add(self, key: str, desc: str, cat: str) -> None:
-        self.canon[key.lower()] = key
-        self.pairs.append([key, desc])
-        self.cat_map.setdefault(cat, []).append([key, desc])
-
-
-def _catalog_registry(cat: _Catalog) -> None:
+def _catalog_registry(cat: Catalog) -> None:
     commands = _tools_mod("hermes_cli.commands")
     for cmd in commands.COMMAND_REGISTRY:
         meta = commands.command_desktop_meta(cmd)
         cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
         if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
             continue
-        cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category)
+        cat.add(
+            f"/{cmd.name}",
+            commands._build_description(cmd),
+            cmd.category,
+            description_key=cmd.name,
+        )
         for a in cmd.aliases:
             cat.canon[f"/{a}".lower()] = f"/{cmd.name}"
     for name, desc, category in _TUI_EXTRA:
         # Registry command/alias wins over a colliding TUI extra (e.g. /compact, /sessions).
         if name.lower() not in cat.canon:
-            cat.add(name, desc, category)
+            cat.add(name, desc, category, description_key=name.lstrip("/"))
 
 
-def _catalog_quick_commands(cat: _Catalog) -> None:
+def _catalog_quick_commands(cat: Catalog) -> None:
     qcmds = _load_cfg().get("quick_commands", {}) or {}
     if not (isinstance(qcmds, dict) and qcmds):
         return
@@ -471,7 +461,7 @@ def _catalog_quick_commands(cat: _Catalog) -> None:
         cat.add(f"/{qname}", desc, "User commands")
 
 
-def _catalog_plugin_commands(cat: _Catalog) -> None:
+def _catalog_plugin_commands(cat: Catalog) -> None:
     plugin_cmds = _tools_mod("hermes_cli.plugins").get_plugin_commands() or {}
     if plugin_cmds:
         cat.cat_map.setdefault("Plugin commands", [])
@@ -486,7 +476,7 @@ def _catalog_plugin_commands(cat: _Catalog) -> None:
         cat.commands[key] = {"argument_mode": mode, "desktop": None}
 
 
-def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
+def _catalog_skills(cat: Catalog, skills: dict[str, dict]) -> str:
     """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them).
     Returns the one-line notice for skills whose name is a built-in command (no ``/<name>`` entry;
     ``agent.skill_commands`` guard), ``""`` when none."""
@@ -510,7 +500,8 @@ def _(rid, params: dict) -> dict:
     session would be seeded with) so project-local skills register for the repo the session is
     actually in (#114359); a session-less draft is bound to ``params['profile']`` (#124651), and an
     unknown profile is 4064 like ``complete.slash`` — never a launch-profile palette."""
-    cat = _Catalog()
+    from .methods_tools_catalog import Catalog, _command_category_key
+    cat = Catalog()
     _catalog_registry(cat)
     warning = ""
     skills: dict[str, dict] = {}
@@ -533,7 +524,11 @@ def _(rid, params: dict) -> dict:
         "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
         "commands": cat.commands,
-        "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
+        "categories": [
+            {"name": c, "key": _command_category_key(c), "pairs": rows}
+            for c, rows in cat.cat_map.items()
+        ],
+        "description_keys": cat.description_keys,
         "skills": skills, "skill_count": len(skills), "warning": warning})
 
 

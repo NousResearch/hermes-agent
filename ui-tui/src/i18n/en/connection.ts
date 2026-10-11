@@ -54,7 +54,9 @@ export const connectionEn = {
       answerNotDelivered: 'That answer did not reach Hermes. Try again.',
       restartFailed: 'Hermes could not start that again. Try again.',
       browserDidNotOpen: 'The browser did not open. Copy the link above.'
-    }
+    },
+    notConnected: 'not connected',
+    skipped: 'skipped'
   },
   journey: {
     title: 'Journey',

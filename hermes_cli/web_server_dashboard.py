@@ -541,7 +541,9 @@ def _dashboard_plugin_entry(data: dict[str, Any], name: str, dashboard_dir: Path
     return {
         "name": name,
         "label": data.get("label", name),
+        "labelKey": data.get("labelKey"),
         "description": data.get("description", ""),
+        "descriptionKey": data.get("descriptionKey"),
         "icon": data.get("icon", "Puzzle"),
         "version": data.get("version", "0.0.0"),
         "tab": tab_info,

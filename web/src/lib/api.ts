@@ -1,8 +1,4 @@
-import {
-  buildHermesWebSocketUrl,
-  type ModelOptionProvider,
-  type ModelOptionsResult,
-} from "@hermes/shared";
+import { buildHermesWebSocketUrl, type ModelOptionProvider, type ModelOptionsResult } from "@hermes/shared";
 
 import type { AuxiliaryModelsResponse } from "./api-aux";
 import type {
@@ -32,10 +28,7 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
-import {
-  attemptDashboardTokenReloadOnce,
-  clearDashboardTokenReloadAttempt,
-} from "@/lib/dashboard-auth-reload";
+import { attemptDashboardTokenReloadOnce, clearDashboardTokenReloadAttempt } from "@/lib/dashboard-auth-reload";
 import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
 import type { AutomationBlueprint } from "@/lib/automation-blueprints";
 
@@ -158,11 +151,7 @@ function withManagementProfile(url: string): string {
   return `${url}${sep}profile=${encodeURIComponent(scope)}`;
 }
 
-export async function fetchJSON<T>(
-  url: string,
-  init?: RequestInit,
-  options?: FetchJSONOptions,
-): Promise<T> {
+export async function fetchJSON<T>(url: string, init?: RequestInit, options?: FetchJSONOptions): Promise<T> {
   url = withManagementProfile(url);
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
@@ -202,10 +191,7 @@ export async function fetchJSON<T>(
     } catch {
       /* non-JSON 401 — let it fall through */
     }
-    if (
-      (body.error === "unauthenticated" || body.error === "session_expired") &&
-      body.login_url
-    ) {
+    if ((body.error === "unauthenticated" || body.error === "session_expired") && body.login_url) {
       // Preserve where the user was so /auth/callback can land them back
       // after re-auth. The gate's login_url already carries a ``next=``
       // built from the request path, but the SPA may be deep inside a
@@ -213,10 +199,7 @@ export async function fetchJSON<T>(
       // /sessions/<id> deep link. Save the current location as a
       // fallback the post-login handler can read.
       try {
-        sessionStorage.setItem(
-          "hermes.lastLocation",
-          window.location.pathname + window.location.search,
-        );
+        sessionStorage.setItem("hermes.lastLocation", window.location.pathname + window.location.search);
       } catch {
         /* SSR / privacy mode — ignore */
       }
@@ -313,10 +296,7 @@ export async function buildWsAuthParam(): Promise<[string, string]> {
  * navigation targets). Callers that want the redirect behaviour should use
  * ``fetchJSON``.
  */
-export async function authedFetch(
-  url: string,
-  init?: RequestInit,
-): Promise<Response> {
+export async function authedFetch(url: string, init?: RequestInit): Promise<Response> {
   // Same management scope as fetchJSON: a binary endpoint under a profile-scoped
   // family (``/api/ops/backup/download``) must read the SELECTED profile's archive,
   // not the launch profile's, and an unprofiled back door beside a family that now
@@ -347,10 +327,7 @@ export async function authedFetch(
  * applied here. Extra query params can be supplied via ``params`` and are
  * merged before the auth param.
  */
-export async function buildWsUrl(
-  path: string,
-  params?: Record<string, string>,
-): Promise<string> {
+export async function buildWsUrl(path: string, params?: Record<string, string>): Promise<string> {
   return buildHermesWebSocketUrl({
     authParam: await buildWsAuthParam(),
     basePath: BASE,
@@ -449,23 +426,15 @@ export const api = {
   ) => {
     const options = normalizeSessionQueryOptions(profileOrOptions, order);
     return fetchJSON<PaginatedSessions>(
-      appendSessionFilters(
-        `/api/sessions?limit=${limit}&offset=${offset}&order=${options.order ?? order}`,
-        options,
-      ),
+      appendSessionFilters(`/api/sessions?limit=${limit}&offset=${offset}&order=${options.order ?? order}`, options),
     );
   },
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
-      appendProfileParam(
-        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`,
-        profile,
-      ),
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`, profile),
     ),
   getSessionDetail: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<SessionInfo>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
-    ),
+    fetchJSON<SessionInfo>(appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile)),
   /**
    * Directories a FRESH dashboard chat may start in: the profile's explicit
    * projects plus discovered git repos (session-derived + scanned). ``scan``
@@ -474,37 +443,22 @@ export const api = {
    */
   getChatWorkspaces: (profile = getManagementProfile(), scan = false) =>
     fetchJSON<ChatWorkspacesResponse>(
-      appendQueryParam(
-        appendProfileParam("/api/chat/workspaces", profile),
-        "scan",
-        scan ? "1" : undefined,
-      ),
+      appendQueryParam(appendProfileParam("/api/chat/workspaces", profile), "scan", scan ? "1" : undefined),
     ),
   getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
-      appendProfileParam(
-        `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
-        profile,
-      ),
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/latest-descendant`, profile),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
-      {
-        method: "DELETE",
-      },
-    ),
+    fetchJSON<{ ok: boolean }>(appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile), {
+      method: "DELETE",
+    }),
   getEmptySessionsCount: (profile = getManagementProfile()) =>
-    fetchJSON<{ count: number }>(
-      appendProfileParam("/api/sessions/empty/count", profile),
-    ),
+    fetchJSON<{ count: number }>(appendProfileParam("/api/sessions/empty/count", profile)),
   deleteEmptySessions: (profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; deleted: number }>(
-      appendProfileParam("/api/sessions/empty", profile),
-      {
-        method: "DELETE",
-      },
-    ),
+    fetchJSON<{ ok: boolean; deleted: number }>(appendProfileParam("/api/sessions/empty", profile), {
+      method: "DELETE",
+    }),
   bulkDeleteSessions: (ids: string[], profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean; deleted: number; skipped_active?: string[] }>("/api/sessions/bulk-delete", {
       method: "POST",
@@ -512,52 +466,36 @@ export const api = {
       body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; title: string }>(
-      `/api/sessions/${encodeURIComponent(id)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, profile: profile || undefined }),
-      },
-    ),
+    fetchJSON<{ ok: boolean; title: string }>(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, profile: profile || undefined }),
+    }),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
     appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/export`, profile),
-  importSessions: (
-    sessions: Array<Record<string, unknown>>,
-    profile = getManagementProfile(),
-  ) =>
+  importSessions: (sessions: Array<Record<string, unknown>>, profile = getManagementProfile()) =>
     fetchJSON<SessionImportResponse>("/api/sessions/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessions, profile: profile || undefined }),
     }),
-  pruneSessions: (
-    older_than_days: number,
-    source?: string,
-    profile = getManagementProfile(),
-  ) =>
-    fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>(
-      "/api/sessions/prune",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          older_than_days,
-          source,
-          profile: profile || undefined,
-        }),
-      },
-    ),
+  pruneSessions: (older_than_days: number, source?: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>("/api/sessions/prune", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        older_than_days,
+        source,
+        profile: profile || undefined,
+      }),
+    }),
   listFiles: (path?: string) => {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
   },
-  readFile: (path: string) =>
-    fetchJSON<ManagedFileReadResponse>(
-      `/api/files/read?path=${encodeURIComponent(path)}`,
-    ),
+  readFile: (path: string) => fetchJSON<ManagedFileReadResponse>(`/api/files/read?path=${encodeURIComponent(path)}`),
   uploadFile: (path: string, file: File, overwrite = true) => {
     // Stream the raw bytes as multipart/form-data. Do NOT set Content-Type —
     // the browser adds the multipart boundary automatically. Sending the file
@@ -594,28 +532,20 @@ export const api = {
     return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
   getAnalytics: (days: number, profile = getManagementProfile()) =>
-    fetchJSON<AnalyticsResponse>(
-      appendProfileParam(`/api/analytics/usage?days=${days}`, profile),
-    ),
+    fetchJSON<AnalyticsResponse>(appendProfileParam(`/api/analytics/usage?days=${days}`, profile)),
   getModelsAnalytics: (days: number, profile = getManagementProfile()) =>
-    fetchJSON<ModelsAnalyticsResponse>(
-      appendProfileParam(`/api/analytics/models?days=${days}`, profile),
-    ),
+    fetchJSON<ModelsAnalyticsResponse>(appendProfileParam(`/api/analytics/models?days=${days}`, profile)),
   getConfig: (profile = getManagementProfile()) =>
     fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
+  getConfigRevision: (profile = getManagementProfile()) =>
+    fetchJSON<ConfigRevisionResponse>(appendProfileParam("/api/config/revision", profile)),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: (profile = getManagementProfile()) =>
     fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
-  getModelOptions: (
-    profileOrOptions?: string | { profile?: string; refresh?: boolean },
-  ) => {
-    const profile =
-      typeof profileOrOptions === "string"
-        ? profileOrOptions
-        : profileOrOptions?.profile;
-    const refresh =
-      typeof profileOrOptions === "object" && !!profileOrOptions.refresh;
+  getModelOptions: (profileOrOptions?: string | { profile?: string; refresh?: boolean }) => {
+    const profile = typeof profileOrOptions === "string" ? profileOrOptions : profileOrOptions?.profile;
+    const refresh = typeof profileOrOptions === "object" && !!profileOrOptions.refresh;
     const qs = new URLSearchParams();
     if (profile) qs.set("profile", profile);
     if (refresh) qs.set("refresh", "1");
@@ -628,9 +558,7 @@ export const api = {
     return fetchJSON<ModelOptionsResult>(`/api/model/options${suffix}`);
   },
   getAuxiliaryModels: (profile = getManagementProfile()) =>
-    fetchJSON<AuxiliaryModelsResponse>(
-      appendProfileParam("/api/model/auxiliary", profile),
-    ),
+    fetchJSON<AuxiliaryModelsResponse>(appendProfileParam("/api/model/auxiliary", profile)),
   getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
   saveMoaModels: (body: MoaConfigResponse) =>
     fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
@@ -638,18 +566,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
-  setModelAssignment: (
-    body: ModelAssignmentRequest,
-    profile = getManagementProfile(),
-  ) =>
-    fetchJSON<ModelAssignmentResponse>(
-      appendProfileParam("/api/model/set", profile),
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    ),
+  setModelAssignment: (body: ModelAssignmentRequest, profile = getManagementProfile()) =>
+    fetchJSON<ModelAssignmentResponse>(appendProfileParam("/api/model/set", profile), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   getSharedMetricsConsent: (profile = getManagementProfile()) =>
     fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile)),
   saveSharedMetricsConsent: (answer: { enabled: boolean; send: boolean }, profile = getManagementProfile()) =>
@@ -665,9 +587,7 @@ export const api = {
       body: JSON.stringify({ config }),
     }),
   getConfigRaw: (profile = getManagementProfile()) =>
-    fetchJSON<{ yaml: string; path?: string }>(
-      appendProfileParam("/api/config/raw", profile),
-    ),
+    fetchJSON<{ yaml: string; path?: string }>(appendProfileParam("/api/config/raw", profile)),
   saveConfigRaw: (yaml_text: string, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config/raw", profile), {
       method: "PUT",
@@ -695,12 +615,9 @@ export const api = {
     }),
 
   // Cron jobs
-  getCronJobs: (profile = "all") =>
-    fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
+  getCronJobs: (profile = "all") => fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
   getCronDeliveryTargets: (profile = "default") =>
-    fetchJSON<{ targets: CronDeliveryTarget[] }>(
-      `/api/cron/delivery-targets?profile=${encodeURIComponent(profile)}`,
-    ),
+    fetchJSON<{ targets: CronDeliveryTarget[] }>(`/api/cron/delivery-targets?profile=${encodeURIComponent(profile)}`),
   createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
@@ -708,36 +625,32 @@ export const api = {
       body: JSON.stringify(job),
     }),
   pauseCronJob: (id: string, profile = "default") =>
-    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
-  updateCronJob: (
-    id: string,
-    updates: CronJobMutation,
-    profile = "default",
-  ) =>
-    fetchJSON<CronJob>(
-      `/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates }),
-      },
-    ),
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, {
+      method: "POST",
+    }),
+  updateCronJob: (id: string, updates: CronJobMutation, profile = "default") =>
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates }),
+    }),
   resumeCronJob: (id: string, profile = "default") =>
-    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/resume?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/resume?profile=${encodeURIComponent(profile)}`, {
+      method: "POST",
+    }),
   triggerCronJob: (id: string, profile = "default") =>
-    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/trigger?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/trigger?profile=${encodeURIComponent(profile)}`, {
+      method: "POST",
+    }),
   deleteCronJob: (id: string, profile = "default") =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
+    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, {
+      method: "DELETE",
+    }),
 
   // Automation Blueprints — parameterized automation blueprints
   getAutomationBlueprints: (profile = "default") =>
-    fetchJSON<{ blueprints: AutomationBlueprint[] }>(
-      `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
-    ),
-  instantiateAutomationBlueprint: (
-    body: { blueprint: string; values: Record<string, string> },
-    profile = "default",
-  ) =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>(`/api/cron/blueprints?profile=${encodeURIComponent(profile)}`),
+  instantiateAutomationBlueprint: (body: { blueprint: string; values: Record<string, string> }, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/blueprints/instantiate?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -745,10 +658,8 @@ export const api = {
     }),
 
   // Profiles
-  getProfiles: () =>
-    fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
-  getActiveProfile: () =>
-    fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
+  getProfiles: () => fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+  getActiveProfile: () => fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
   setActiveProfile: (name: string) =>
     fetchJSON<{ ok: boolean; active: string }>("/api/profiles/active", {
       method: "POST",
@@ -791,62 +702,42 @@ export const api = {
       },
     ),
   describeProfileAuto: (name: string, overwrite = true) =>
-    fetchJSON<ProfileDescribeAutoResult>(
-      `/api/profiles/${encodeURIComponent(name)}/describe-auto`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ overwrite }),
-      },
-    ),
+    fetchJSON<ProfileDescribeAutoResult>(`/api/profiles/${encodeURIComponent(name)}/describe-auto`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite }),
+    }),
   setProfileModel: (name: string, provider: string, model: string) =>
-    fetchJSON<{ ok: boolean; provider: string; model: string }>(
-      `/api/profiles/${encodeURIComponent(name)}/model`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, model }),
-      },
-    ),
+    fetchJSON<{ ok: boolean; provider: string; model: string }>(`/api/profiles/${encodeURIComponent(name)}/model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, model }),
+    }),
   renameProfile: (name: string, newName: string) =>
-    fetchJSON<{ ok: boolean; name: string; path: string }>(
-      `/api/profiles/${encodeURIComponent(name)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ new_name: newName }),
-      },
-    ),
+    fetchJSON<{ ok: boolean; name: string; path: string }>(`/api/profiles/${encodeURIComponent(name)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_name: newName }),
+    }),
   deleteProfile: (name: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/profiles/${encodeURIComponent(name)}`,
-      { method: "DELETE" },
-    ),
+    fetchJSON<{ ok: boolean }>(`/api/profiles/${encodeURIComponent(name)}`, { method: "DELETE" }),
   getProfileSetupCommand: (name: string) =>
-    fetchJSON<{ command: string }>(
-      `/api/profiles/${encodeURIComponent(name)}/setup-command`,
-    ),
+    fetchJSON<{ command: string }>(`/api/profiles/${encodeURIComponent(name)}/setup-command`),
   getProfileSoul: (name: string) =>
-    fetchJSON<{ content: string; exists: boolean }>(
-      `/api/profiles/${encodeURIComponent(name)}/soul`,
-    ),
+    fetchJSON<{ content: string; exists: boolean }>(`/api/profiles/${encodeURIComponent(name)}/soul`),
   updateProfileSoul: (name: string, content: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/profiles/${encodeURIComponent(name)}/soul`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      },
-    ),
+    fetchJSON<{ ok: boolean }>(`/api/profiles/${encodeURIComponent(name)}/soul`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    }),
 
   // Skills & Toolsets
   //
   // All calls accept an optional ``profile`` so the Skills page can manage
   // any profile's skills/toolsets — not just the one the dashboard process
   // runs under. Omitted/empty profile = the dashboard's own profile.
-  getSkills: (profile?: string) =>
-    fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
+  getSkills: (profile?: string) => fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
   toggleSkill: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
       method: "PUT",
@@ -869,8 +760,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, content, profile: profile || undefined }),
     }),
-  getToolsets: (profile?: string) =>
-    fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
+  getToolsets: (profile?: string) => fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
   toggleToolset: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; platform: string; enabled: boolean }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}`,
@@ -881,9 +771,7 @@ export const api = {
       },
     ),
   getToolsetConfig: (name: string, profile?: string) =>
-    fetchJSON<ToolsetConfig>(
-      `/api/tools/toolsets/${encodeURIComponent(name)}/config${profileQuery(profile)}`,
-    ),
+    fetchJSON<ToolsetConfig>(`/api/tools/toolsets/${encodeURIComponent(name)}/config${profileQuery(profile)}`),
   selectToolsetProvider: (name: string, provider: string, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; provider: string }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
@@ -894,81 +782,55 @@ export const api = {
       },
     ),
   saveToolsetEnv: (name: string, env: Record<string, string>, profile?: string) =>
-    fetchJSON<ToolsetEnvResult>(
-      `/api/tools/toolsets/${encodeURIComponent(name)}/env`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ env, profile: profile || undefined }),
-      },
-    ),
+    fetchJSON<ToolsetEnvResult>(`/api/tools/toolsets/${encodeURIComponent(name)}/env`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ env, profile: profile || undefined }),
+    }),
   runToolsetPostSetup: (name: string, key: string, profile?: string) =>
-    fetchJSON<ActionResponse & { key: string }>(
-      `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, profile: profile || undefined }),
-      },
-    ),
+    fetchJSON<ActionResponse & { key: string }>(`/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, profile: profile || undefined }),
+    }),
 
   // Session search (FTS5)
-  searchSessions: (
-    q: string,
-    profileOrOptions: string | SessionQueryOptions = getManagementProfile(),
-  ) => {
+  searchSessions: (q: string, profileOrOptions: string | SessionQueryOptions = getManagementProfile()) => {
     const options = normalizeSessionQueryOptions(profileOrOptions);
     return fetchJSON<SessionSearchResponse>(
-      appendSessionFilters(
-        `/api/sessions/search?q=${encodeURIComponent(q)}`,
-        options,
-      ),
+      appendSessionFilters(`/api/sessions/search?q=${encodeURIComponent(q)}`, options),
     );
   },
 
   // OAuth provider management
-  getOAuthProviders: () =>
-    fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
+  getOAuthProviders: () => fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
   disconnectOAuthProvider: (providerId: string) =>
-    fetchJSON<{ ok: boolean; provider: string }>(
-      `/api/providers/oauth/${encodeURIComponent(providerId)}`,
-      {
-        method: "DELETE",
-      },
-    ),
+    fetchJSON<{ ok: boolean; provider: string }>(`/api/providers/oauth/${encodeURIComponent(providerId)}`, {
+      method: "DELETE",
+    }),
   startOAuthLogin: (providerId: string) =>
-    fetchJSON<OAuthStartResponse>(
-      `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      },
-    ),
+    fetchJSON<OAuthStartResponse>(`/api/providers/oauth/${encodeURIComponent(providerId)}/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }),
   submitOAuthCode: (providerId: string, sessionId: string, code: string) =>
-    fetchJSON<OAuthSubmitResponse>(
-      `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, code }),
-      },
-    ),
+    fetchJSON<OAuthSubmitResponse>(`/api/providers/oauth/${encodeURIComponent(providerId)}/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, code }),
+    }),
   pollOAuthSession: (providerId: string, sessionId: string) =>
     fetchJSON<OAuthPollResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`,
     ),
   cancelOAuthSession: (sessionId: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
-      {
-        method: "DELETE",
-      },
-    ),
+    fetchJSON<{ ok: boolean }>(`/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    }),
 
   // Messaging platforms (gateway channels)
-  getMessagingPlatforms: () =>
-    fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
+  getMessagingPlatforms: () => fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
   // `hot_served`: a live multiplexer serving the selected named profile rebuilt its adapters from the
   // new credentials right away (no gateway restart needed).
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
@@ -981,27 +843,18 @@ export const api = {
       },
     ),
   testMessagingPlatform: (id: string) =>
-    fetchJSON<MessagingPlatformTestResult>(
-      `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
-      { method: "POST" },
-    ),
+    fetchJSON<MessagingPlatformTestResult>(`/api/messaging/platforms/${encodeURIComponent(id)}/test`, {
+      method: "POST",
+    }),
   startTelegramOnboarding: (body: { bot_name?: string }) =>
-    fetchJSON<TelegramOnboardingStartResponse>(
-      "/api/messaging/telegram/onboarding/start",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    ),
+    fetchJSON<TelegramOnboardingStartResponse>("/api/messaging/telegram/onboarding/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   getTelegramOnboardingStatus: (pairingId: string) =>
-    fetchJSON<TelegramOnboardingStatusResponse>(
-      `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
-    ),
-  applyTelegramOnboarding: (
-    pairingId: string,
-    body: { allowed_user_ids: string[]; profile?: string },
-  ) =>
+    fetchJSON<TelegramOnboardingStatusResponse>(`/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`),
+  applyTelegramOnboarding: (pairingId: string, body: { allowed_user_ids: string[]; profile?: string }) =>
     fetchJSON<TelegramOnboardingApplyResponse>(
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
       {
@@ -1011,26 +864,17 @@ export const api = {
       },
     ),
   cancelTelegramOnboarding: (pairingId: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
-      { method: "DELETE" },
-    ),
-  startWhatsAppOnboarding: (body: {
-    mode?: "bot" | "self-chat";
-    allowed_users?: string;
-  }) =>
-    fetchJSON<WhatsAppOnboardingStartResponse>(
-      "/api/messaging/whatsapp/onboarding/start",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    ),
+    fetchJSON<{ ok: boolean }>(`/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`, {
+      method: "DELETE",
+    }),
+  startWhatsAppOnboarding: (body: { mode?: "bot" | "self-chat"; allowed_users?: string }) =>
+    fetchJSON<WhatsAppOnboardingStartResponse>("/api/messaging/whatsapp/onboarding/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   getWhatsAppOnboardingStatus: (pairingId: string) =>
-    fetchJSON<WhatsAppOnboardingStatusResponse>(
-      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
-    ),
+    fetchJSON<WhatsAppOnboardingStatusResponse>(`/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`),
   applyWhatsAppOnboarding: (
     pairingId: string,
     body: { mode?: "bot" | "self-chat"; allowed_users?: string; profile?: string },
@@ -1044,39 +888,27 @@ export const api = {
       },
     ),
   cancelWhatsAppOnboarding: (pairingId: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
-      { method: "DELETE" },
-    ),
+    fetchJSON<{ ok: boolean }>(`/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`, {
+      method: "DELETE",
+    }),
 
   // Gateway / update actions
-  restartGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
-  getGatewayMigratePlan: () =>
-    fetchJSON<GatewayMigratePlan>("/api/gateway/migrate/plan"),
-  migrateGatewayToMultiplex: () =>
-    fetchJSON<ActionResponse>("/api/gateway/migrate", { method: "POST" }),
-  updateHermes: () =>
-    fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
+  restartGateway: () => fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  getGatewayMigratePlan: () => fetchJSON<GatewayMigratePlan>("/api/gateway/migrate/plan"),
+  migrateGatewayToMultiplex: () => fetchJSON<ActionResponse>("/api/gateway/migrate", { method: "POST" }),
+  updateHermes: () => fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   checkHermesUpdate: (force = false) =>
-    fetchJSON<UpdateCheckResponse>(
-      `/api/hermes/update/check${force ? "?force=true" : ""}`,
-    ),
+    fetchJSON<UpdateCheckResponse>(`/api/hermes/update/check${force ? "?force=true" : ""}`),
   getActionStatus: (name: string, lines = 200) =>
-    fetchJSON<ActionStatusResponse>(
-      `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
-    ),
+    fetchJSON<ActionStatusResponse>(`/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`),
 
   // Dashboard plugins
-  getPlugins: () =>
-    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
-  rescanPlugins: () =>
-    fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
+  getPlugins: () => fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  rescanPlugins: () => fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
   getPluginsHub: () => fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
 
-  getPluginsCatalog: () =>
-    fetchJSON<CatalogResponse>("/api/dashboard/plugins/catalog"),
+  getPluginsCatalog: () => fetchJSON<CatalogResponse>("/api/dashboard/plugins/catalog"),
 
   installAgentPlugin: (body: AgentPluginInstallRequest) =>
     fetchJSON<AgentPluginInstallResponse>("/api/dashboard/agent-plugins/install", {
@@ -1106,20 +938,14 @@ export const api = {
     }),
 
   updateAgentPlugin: (name: string, acceptCapabilities = false) =>
-    fetchJSON<AgentPluginUpdateResponse>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
-      },
-    ),
+    fetchJSON<AgentPluginUpdateResponse>(`/api/dashboard/agent-plugins/${pluginPath(name)}/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+    }),
 
   removeAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}`,
-      { method: "DELETE" },
-    ),
+    fetchJSON<{ ok: boolean; name: string }>(`/api/dashboard/agent-plugins/${pluginPath(name)}`, { method: "DELETE" }),
 
   savePluginProviders: (body: PluginProvidersPutRequest) =>
     fetchJSON<{ ok: boolean }>("/api/dashboard/plugin-providers", {
@@ -1129,26 +955,21 @@ export const api = {
     }),
 
   setPluginVisibility: (name: string, hidden: boolean) =>
-    fetchJSON<{ ok: boolean; name: string; hidden: boolean }>(
-      `/api/dashboard/plugins/${pluginPath(name)}/visibility`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hidden }),
-      },
-    ),
+    fetchJSON<{ ok: boolean; name: string; hidden: boolean }>(`/api/dashboard/plugins/${pluginPath(name)}/visibility`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hidden }),
+    }),
 
   // Dashboard themes
-  getThemes: () =>
-    fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
+  getThemes: () => fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
   setTheme: (name: string) =>
     fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
-  getFontPref: () =>
-    fetchJSON<DashboardFontResponse>("/api/dashboard/font"),
+  getFontPref: () => fetchJSON<DashboardFontResponse>("/api/dashboard/font"),
   setFontPref: (font: string) =>
     fetchJSON<{ ok: boolean; font: string }>("/api/dashboard/font", {
       method: "PUT",
@@ -1165,49 +986,28 @@ export const api = {
       body: JSON.stringify(body),
     }),
   authMcpServer: (name: string) =>
-    fetchJSON<McpOAuthFlow>(
-      `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
-      { method: "POST" },
-    ),
-  getMcpOAuthFlow: (flowId: string) =>
-    fetchJSON<McpOAuthFlow>(
-      `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,
-    ),
+    fetchJSON<McpOAuthFlow>(`/api/mcp/servers/${encodeURIComponent(name)}/auth`, { method: "POST" }),
+  getMcpOAuthFlow: (flowId: string) => fetchJSON<McpOAuthFlow>(`/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`),
   removeMcpServer: (name: string) =>
     fetchJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
       method: "DELETE",
     }),
   testMcpServer: (name: string) =>
-    fetchJSON<McpTestResult>(
-      `/api/mcp/servers/${encodeURIComponent(name)}/test`,
-      { method: "POST" },
-    ),
+    fetchJSON<McpTestResult>(`/api/mcp/servers/${encodeURIComponent(name)}/test`, { method: "POST" }),
   setMcpServerEnabled: (name: string, enabled: boolean) =>
-    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
-      `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      },
-    ),
+    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}/enabled`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
   getMcpCatalog: () =>
-    fetchJSON<{ entries: McpCatalogEntry[]; diagnostics: McpCatalogDiagnostic[] }>(
-      "/api/mcp/catalog",
-    ),
-  installMcpCatalogEntry: (
-    name: string,
-    env: Record<string, string> = {},
-    enable = true,
-  ) =>
-    fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string }>(
-      "/api/mcp/catalog/install",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, env, enable }),
-      },
-    ),
+    fetchJSON<{ entries: McpCatalogEntry[]; diagnostics: McpCatalogDiagnostic[] }>("/api/mcp/catalog"),
+  installMcpCatalogEntry: (name: string, env: Record<string, string> = {}, enable = true) =>
+    fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string }>("/api/mcp/catalog/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, env, enable }),
+    }),
 
   // ── Admin: Pairing ──────────────────────────────────────────────────
   // The mutating endpoints read the profile off the BODY, so the query-param
@@ -1241,8 +1041,7 @@ export const api = {
 
   // ── Admin: Webhooks ─────────────────────────────────────────────────
   getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
-  enableWebhooks: () =>
-    fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
+  enableWebhooks: () => fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
   createWebhook: (body: WebhookCreate) =>
     fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
       method: "POST",
@@ -1254,31 +1053,20 @@ export const api = {
       method: "DELETE",
     }),
   setWebhookEnabled: (name: string, enabled: boolean) =>
-    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
-      `/api/webhooks/${encodeURIComponent(name)}/enabled`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      },
-    ),
+    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(`/api/webhooks/${encodeURIComponent(name)}/enabled`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
 
   // ── Admin: Credential pool ──────────────────────────────────────────
-  getCredentialPool: () =>
-    fetchJSON<{ providers: CredentialPoolProvider[] }>("/api/credentials/pool"),
-  addCredentialPoolEntry: (
-    provider: string,
-    api_key: string,
-    label?: string,
-  ) =>
-    fetchJSON<{ ok: boolean; provider: string; count: number }>(
-      "/api/credentials/pool",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, api_key, label }),
-      },
-    ),
+  getCredentialPool: () => fetchJSON<{ providers: CredentialPoolProvider[] }>("/api/credentials/pool"),
+  addCredentialPoolEntry: (provider: string, api_key: string, label?: string) =>
+    fetchJSON<{ ok: boolean; provider: string; count: number }>("/api/credentials/pool", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, api_key, label }),
+    }),
   removeCredentialPoolEntry: (provider: string, index: number) =>
     fetchJSON<{ ok: boolean; provider: string; count: number }>(
       `/api/credentials/pool/${encodeURIComponent(provider)}/${index}`,
@@ -1288,27 +1076,19 @@ export const api = {
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
   getMemoryProviderConfig: (provider: string) =>
-    fetchJSON<MemoryProviderConfig>(
-      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
-    ),
+    fetchJSON<MemoryProviderConfig>(`/api/memory/providers/${encodeURIComponent(provider)}/config`),
   updateMemoryProviderConfig: (provider: string, values: Record<string, unknown>) =>
-    fetchJSON<{ ok: boolean; active: string }>(
-      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ values }),
-      },
-    ),
+    fetchJSON<{ ok: boolean; active: string }>(`/api/memory/providers/${encodeURIComponent(provider)}/config`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values }),
+    }),
   setupMemoryProvider: (provider: string, values: Record<string, unknown> = {}) =>
-    fetchJSON<MemoryProviderSetupResponse>(
-      `/api/memory/providers/${encodeURIComponent(provider)}/setup`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ values }),
-      },
-    ),
+    fetchJSON<MemoryProviderSetupResponse>(`/api/memory/providers/${encodeURIComponent(provider)}/setup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values }),
+    }),
   setMemoryProvider: (provider: string) =>
     fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
       method: "PUT",
@@ -1323,26 +1103,19 @@ export const api = {
     }),
 
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
-  startGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
-  stopGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
+  startGateway: () => fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
+  stopGateway: () => fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
 
   // ── Admin: Operations ───────────────────────────────────────────────
-  runDoctor: () =>
-    fetchJSON<ActionResponse>("/api/ops/doctor", { method: "POST" }),
-  runSecurityAudit: () =>
-    fetchJSON<ActionResponse>("/api/ops/security-audit", { method: "POST" }),
+  runDoctor: () => fetchJSON<ActionResponse>("/api/ops/doctor", { method: "POST" }),
+  runSecurityAudit: () => fetchJSON<ActionResponse>("/api/ops/security-audit", { method: "POST" }),
   runBackup: (output?: string) =>
     fetchJSON<ActionResponse>("/api/ops/backup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ output }),
     }),
-  downloadBackup: (archive: string) =>
-    authedFetch(
-      `/api/ops/backup/download?archive=${encodeURIComponent(archive)}`,
-    ),
+  downloadBackup: (archive: string) => authedFetch(`/api/ops/backup/download?archive=${encodeURIComponent(archive)}`),
   runImport: (archive: string, force = false) =>
     fetchJSON<ActionResponse>("/api/ops/import", {
       method: "POST",
@@ -1360,14 +1133,11 @@ export const api = {
   },
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>
-    fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>(
-      "/api/ops/hooks",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    ),
+    fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>("/api/ops/hooks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   deleteHook: (event: string, command: string) =>
     fetchJSON<{ ok: boolean }>("/api/ops/hooks", {
       method: "DELETE",
@@ -1384,18 +1154,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paused }),
     }),
-  runCurator: () =>
-    fetchJSON<ActionResponse>("/api/curator/run", { method: "POST" }),
+  runCurator: () => fetchJSON<ActionResponse>("/api/curator/run", { method: "POST" }),
 
   // ── Admin: Portal ───────────────────────────────────────────────────
   getPortal: () => fetchJSON<PortalStatus>("/api/portal"),
 
   // ── Admin: Diagnostics (backgrounded) ───────────────────────────────
-  runPromptSize: () =>
-    fetchJSON<ActionResponse>("/api/ops/prompt-size", { method: "POST" }),
+  runPromptSize: () => fetchJSON<ActionResponse>("/api/ops/prompt-size", { method: "POST" }),
   runDump: () => fetchJSON<ActionResponse>("/api/ops/dump", { method: "POST" }),
-  runConfigMigrate: () =>
-    fetchJSON<ActionResponse>("/api/ops/config-migrate", { method: "POST" }),
+  runConfigMigrate: () => fetchJSON<ActionResponse>("/api/ops/config-migrate", { method: "POST" }),
   runDebugShare: (opts?: { redact?: boolean; lines?: number }) =>
     fetchJSON<DebugShareResponse>("/api/ops/debug-share", {
       method: "POST",
@@ -1406,10 +1173,8 @@ export const api = {
       }),
     }),
 
-
   getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
-  pruneCheckpoints: () =>
-    fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
+  pruneCheckpoints: () => fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
 
   // ── Admin: Skills hub ───────────────────────────────────────────────
   // ``profile`` scopes install/uninstall/update and the installed-state
@@ -1437,17 +1202,11 @@ export const api = {
       `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
     ),
   getSkillHubSources: (profile?: string) =>
-    fetchJSON<SkillHubSourcesResponse>(
-      `/api/skills/hub/sources${profileQuery(profile)}`,
-    ),
+    fetchJSON<SkillHubSourcesResponse>(`/api/skills/hub/sources${profileQuery(profile)}`),
   previewSkillFromHub: (identifier: string) =>
-    fetchJSON<SkillHubPreview>(
-      `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
-    ),
+    fetchJSON<SkillHubPreview>(`/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`),
   scanSkillFromHub: (identifier: string) =>
-    fetchJSON<SkillHubScan>(
-      `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
-    ),
+    fetchJSON<SkillHubScan>(`/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -1640,7 +1399,6 @@ export interface McpCatalogDiagnostic {
   kind: string;
   message: string;
 }
-
 
 export type McpHttpAuth = "none" | "header" | "oauth";
 
@@ -2062,6 +1820,12 @@ export interface StatusResponse {
   version: string;
 }
 
+export interface ConfigRevisionResponse {
+  mtime_ns: number;
+  path: string;
+  size: number;
+}
+
 /** NS-656: coarse memory telemetry served by /api/status. */
 export interface MemoryPressureStatus {
   pressure: "ok" | "elevated" | "critical" | "unknown";
@@ -2194,14 +1958,7 @@ export interface TelegramOnboardingApplyResponse {
 
 export interface WhatsAppOnboardingStartResponse {
   pairing_id: string;
-  status:
-    | "starting"
-    | "installing"
-    | "waiting"
-    | "connected"
-    | "error"
-    | "expired"
-    | "cancelled";
+  status: "starting" | "installing" | "waiting" | "connected" | "error" | "expired" | "cancelled";
   qr_payload?: string | null;
   expires_at: string;
   mode: "bot" | "self-chat";
@@ -2469,7 +2226,9 @@ export interface SkillWriteResult {
 export interface ToolsetInfo {
   name: string;
   label: string;
+  labelKey?: string;
   description: string;
+  descriptionKey?: string;
   platform: string;
   platform_label: string;
   enabled: boolean;
@@ -2557,18 +2316,21 @@ export interface MoaModelSlot {
 export interface MoaConfigResponse {
   default_preset: string;
   active_preset: string;
-  presets: Record<string, {
-    reference_models: MoaModelSlot[];
-    aggregator: MoaModelSlot;
-    reference_temperature: number;
-    aggregator_temperature: number;
-    reference_timeout: number | null;
-    degraded_reference_policy: "loud" | "silent";
+  presets: Record<
+    string,
+    {
+      reference_models: MoaModelSlot[];
+      aggregator: MoaModelSlot;
+      reference_temperature: number;
+      aggregator_temperature: number;
+      reference_timeout: number | null;
+      degraded_reference_policy: "loud" | "silent";
 
-    /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
-    fanout?: string;
-    enabled: boolean;
-  }>;
+      /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
+      fanout?: string;
+      enabled: boolean;
+    }
+  >;
   reference_models: MoaModelSlot[];
   aggregator: MoaModelSlot;
   reference_temperature: number;
@@ -2697,7 +2459,9 @@ export interface DashboardFontResponse {
 export interface PluginManifestResponse {
   name: string;
   label: string;
+  labelKey?: string;
   description: string;
+  descriptionKey?: string;
   icon: string;
   version: string;
   tab: {

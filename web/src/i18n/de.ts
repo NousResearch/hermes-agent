@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const de: Translations = {
+export const de: TranslationOverlay = {
   common: {
     save: "Speichern",
     saving: "Speichern...",
@@ -260,8 +260,7 @@ export const de: Translations = {
       onceAt: "Ausführen am",
       customLabel: "Cron-Ausdruck",
       customPlaceholder: "0 9 * * *",
-      customHint:
-        "Cron-Ausdruck mit fünf Feldern (Minute, Stunde, Tag, Monat, Wochentag).",
+      customHint: "Cron-Ausdruck mit fünf Feldern (Minute, Stunde, Tag, Monat, Wochentag).",
       preview: "Wird gesendet als",
       previewEmpty: "(unvollständig)",
     },
@@ -299,7 +298,8 @@ export const de: Translations = {
     nameRequired: "Name ist erforderlich",
     nameRule:
       "Nur Kleinbuchstaben, Ziffern, _ und -; muss mit einem Buchstaben oder einer Ziffer beginnen; maximal 64 Zeichen.",
-    invalidName: "Ungültiger Profilname",    cloneFrom: "Konfiguration klonen von",
+    invalidName: "Ungültiger Profilname",
+    cloneFrom: "Konfiguration klonen von",
     cloneFromNone: "Keine (leer)",
     allProfiles: "Profile",
     noProfiles: "Keine Profile gefunden.",
@@ -330,11 +330,9 @@ export const de: Translations = {
     disableRuntime: "Deaktivieren",
     enableAfterInstall: "Nach Installation aktivieren",
     enableRuntime: "Aktivieren",
-    toggleTakesEffectAfterRestart:
-      "Gespeichert — Gateway neu starten, um die Änderung anzuwenden.",
+    toggleTakesEffectAfterRestart: "Gespeichert — Gateway neu starten, um die Änderung anzuwenden.",
     forceReinstall: "Neuinstallation erzwingen (bestehenden Ordner zuerst löschen)",
-    headline:
-      "Hermes-Plugins entdecken, installieren, aktivieren und aktualisieren (entspricht `hermes plugins`).",
+    headline: "Hermes-Plugins entdecken, installieren, aktivieren und aktualisieren (entspricht `hermes plugins`).",
     identifierLabel: "Git-URL oder owner/repo",
     inactive: "inaktiv",
     installBtn: "Installieren",
@@ -354,7 +352,8 @@ export const de: Translations = {
     removeConfirm: "Dieses Plugin aus ~/.hermes/plugins/ entfernen?",
     removeHint: "Nur vom Benutzer installierte Plugins unter ~/.hermes/plugins können entfernt werden.",
     rescanHeading: "SPA-Plugin-Registry",
-    rescanHint: "Nach dem Hinzufügen von Dateien auf dem Datenträger erneut scannen, damit die Sidebar neue Manifeste erkennt.",
+    rescanHint:
+      "Nach dem Hinzufügen von Dateien auf dem Datenträger erneut scannen, damit die Sidebar neue Manifeste erkennt.",
     runtimeHeading: "Gateway-Laufzeit (YAML-Plugins)",
     saveProviders: "Anbieter-Einstellungen speichern",
     savedProviders: "Anbieter-Einstellungen gespeichert.",
@@ -395,7 +394,8 @@ export const de: Translations = {
     importConfig: "Konfiguration aus JSON importieren",
     resetDefaults: "Auf Standardwerte zurücksetzen",
     resetScopeTooltip: "{scope} auf Standardwerte zurücksetzen",
-    confirmResetScope: "Alle {scope}-Einstellungen auf ihre Standardwerte zurücksetzen? Dies aktualisiert nur das Formular — Änderungen werden erst in config.yaml geschrieben, wenn du auf Speichern drückst.",
+    confirmResetScope:
+      "Alle {scope}-Einstellungen auf ihre Standardwerte zurücksetzen? Dies aktualisiert nur das Formular — Änderungen werden erst in config.yaml geschrieben, wenn du auf Speichern drückst.",
     resetScopeToast: "{scope} auf Standardwerte zurückgesetzt — überprüfen und Speichern, um zu übernehmen",
     rawYaml: "Rohe YAML-Konfiguration",
     searchResults: "Suchergebnisse",
@@ -428,7 +428,8 @@ export const de: Translations = {
   },
 
   env: {
-    changesNote: "Änderungen werden sofort auf der Festplatte gespeichert. Aktive Sitzungen übernehmen neue Schlüssel automatisch.",
+    changesNote:
+      "Änderungen werden sofort auf der Festplatte gespeichert. Aktive Sitzungen übernehmen neue Schlüssel automatisch.",
     confirmClearMessage:
       "Der gespeicherte Wert für diese Variable wird aus deiner .env-Datei entfernt. Dies kann über die UI nicht rückgängig gemacht werden.",
     confirmClearTitle: "Diesen Schlüssel löschen?",
@@ -448,13 +449,15 @@ export const de: Translations = {
     showValue: "Echten Wert anzeigen",
     hideValue: "Wert ausblenden",
     customTitle: "Benutzerdefinierte Schlüssel",
-    customHint: "Beliebige Umgebungsvariablen in deiner .env, die Hermes nicht erkennt. Verwende sie, um Umgebungsvariablen für Skills, MCP-Server oder eigene Tools einzuschleusen.",
+    customHint:
+      "Beliebige Umgebungsvariablen in deiner .env, die Hermes nicht erkennt. Verwende sie, um Umgebungsvariablen für Skills, MCP-Server oder eigene Tools einzuschleusen.",
     customConfigured: "{count} benutzerdefinierte Schlüssel gesetzt",
     addCustomKey: "Benutzerdefinierten Schlüssel hinzufügen",
     customKeyName: "Variablenname",
     customKeyNamePlaceholder: "z. B. MY_SERVICE_API_KEY",
     add: "Hinzufügen",
-    invalidKeyName: "Nur Buchstaben, Zahlen und Unterstriche verwenden (muss mit einem Buchstaben oder Unterstrich beginnen).",
+    invalidKeyName:
+      "Nur Buchstaben, Zahlen und Unterstriche verwenden (muss mit einem Buchstaben oder Unterstrich beginnen).",
   },
 
   oauth: {
@@ -550,8 +553,7 @@ export const de: Translations = {
     },
     scan: {
       building_headline: "Achievement-Profil wird erstellt…",
-      building_detail:
-        "Sitzungen, Tool-Aufrufe, Modell-Metadaten und Freischaltstatus werden gelesen.",
+      building_detail: "Sitzungen, Tool-Aufrufe, Modell-Metadaten und Freischaltstatus werden gelesen.",
       starting_headline: "Achievement-Scan wird gestartet…",
       progress_detail:
         "{scanned} von {total} Sitzungen gescannt · {pct}%. Abzeichen werden freigeschaltet, sobald mehr Verlauf eingelesen wird.",
@@ -608,11 +610,10 @@ export const de: Translations = {
       copy_button: "Bild kopieren",
       copied: "Kopiert ✓",
       download_button: "PNG herunterladen",
-      hint:
-        "Auf X teilen öffnet einen vorgefertigten Post in einem neuen Tab. Klicke zuerst auf Bild kopieren, wenn du das 1200×630-Abzeichen anhängen möchtest – X lässt dich es direkt in den Tweet-Editor einfügen. PNG herunterladen speichert die Datei zur Nutzung an beliebiger Stelle.",
+      hint: "Auf X teilen öffnet einen vorgefertigten Post in einem neuen Tab. Klicke zuerst auf Bild kopieren, wenn du das 1200×630-Abzeichen anhängen möchtest – X lässt dich es direkt in den Tweet-Editor einfügen. PNG herunterladen speichert die Datei zur Nutzung an beliebiger Stelle.",
       clipboard_unsupported:
         "Bildkopie über die Zwischenablage wird in diesem Browser nicht unterstützt – nutze stattdessen Herunterladen.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -627,12 +628,6 @@ export const de: Translations = {
       "Mit Boards kannst du voneinander unabhängige Arbeitsabläufe trennen — eines pro Projekt, Repository oder Domäne. Worker auf einem Board sehen niemals die Aufgaben eines anderen Boards.",
     slug: "Slug",
     slugHint: "— Kleinbuchstaben, Bindestriche, z. B. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Anzeigename",
     displayNameHint: "(optional)",
     description: "Beschreibung",
@@ -675,8 +670,7 @@ export const de: Translations = {
     runHistory: "Ausführungsverlauf",
     workerLog: "Worker-Log",
     loadingLog: "Log wird geladen…",
-    noWorkerLog:
-      "— noch kein Worker-Log (Aufgabe wurde nicht gestartet oder Log wurde rotiert) —",
+    noWorkerLog: "— noch kein Worker-Log (Aufgabe wurde nicht gestartet oder Log wurde rotiert) —",
     noDescription: "— keine Beschreibung —",
     noComments: "— keine Kommentare —",
     edit: "bearbeiten",
@@ -761,12 +755,9 @@ export const de: Translations = {
     },
     confirmDone:
       "Diese Aufgabe als erledigt markieren? Der Anspruch des Workers wird freigegeben und abhängige untergeordnete Aufgaben werden bereit.",
-    confirmArchive:
-      "Diese Aufgabe archivieren? Sie verschwindet aus der Standard-Board-Ansicht.",
-    confirmBlocked:
-      "Diese Aufgabe als blockiert markieren? Der Anspruch des Workers wird freigegeben.",
-    completionSummary:
-      "Abschluss-Zusammenfassung für {label}. Diese wird als Ergebnis der Aufgabe gespeichert.",
+    confirmArchive: "Diese Aufgabe archivieren? Sie verschwindet aus der Standard-Board-Ansicht.",
+    confirmBlocked: "Diese Aufgabe als blockiert markieren? Der Anspruch des Workers wird freigegeben.",
+    completionSummary: "Abschluss-Zusammenfassung für {label}. Diese wird als Ergebnis der Aufgabe gespeichert.",
     completionSummaryRequired:
       "Eine Abschluss-Zusammenfassung ist erforderlich, bevor eine Aufgabe als erledigt markiert werden kann.",
     triagePlaceholder: "Grobe Idee — die KI wird die Spezifikation erstellen…",
@@ -774,12 +765,10 @@ export const de: Translations = {
     specifier: "Specifier",
     assigneePlaceholder: "Zuständige Person",
     priority: "Priorität",
-    skillsPlaceholder:
-      "Fähigkeiten (optional, kommagetrennt): translation, github-code-review",
+    skillsPlaceholder: "Fähigkeiten (optional, kommagetrennt): translation, github-code-review",
     noParent: "— keine übergeordnete Aufgabe —",
     workspacePathDir: "Arbeitsbereichs-Pfad (erforderlich, z. B. ~/projects/my-app)",
-    workspacePathOptional:
-      "Arbeitsbereichs-Pfad (optional, wird aus zuständiger Person abgeleitet, wenn leer)",
+    workspacePathOptional: "Arbeitsbereichs-Pfad (optional, wird aus zuständiger Person abgeleitet, wenn leer)",
     logTruncated: "(zeige die letzten 100 KB — vollständiges Log unter ",
     logAt: ")",
   },

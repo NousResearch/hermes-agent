@@ -2,6 +2,7 @@ import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
+import { t as tr } from '../i18n/index.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
@@ -57,7 +58,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, type
 
     const guardedErr = (e: unknown) => {
       if (!stale()) {
-        sys(`error: ${rpcErrorMessage(e)}`)
+        sys(tr('errors.rpc', rpcErrorMessage(e)))
       }
     }
 
@@ -114,7 +115,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, type
         }
 
         if (matches.length > 1) {
-          sys(`ambiguous command: ${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`)
+          sys(tr('command.ambiguous', `${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`))
 
           return true
         }
@@ -125,11 +126,11 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, type
       const d = parseCommandDispatch(raw)
 
       if (!d) {
-        return sys('error: invalid response: command.dispatch')
+        return sys(tr('errors.invalidResponse', 'command.dispatch'))
       }
 
       if (d.type === 'exec' || d.type === 'plugin') {
-        return sys(d.output || '(no output)')
+        return sys(d.output || tr('command.noOutputParen'))
       }
 
       if (d.type === 'alias') {
@@ -151,7 +152,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, type
       if (d.type === 'skill') {
         return d.message?.trim()
           ? sendDispatch(d.display, d.message)
-          : sys(`/${parsed.name}: skill payload missing message`)
+          : sys(tr('command.skillPayloadMissing', parsed.name))
       }
 
       if (d.type === 'send') {
@@ -159,7 +160,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, type
           sys(d.notice)
         }
 
-        return d.message?.trim() ? sendDispatch(d.display, d.message) : sys(`/${parsed.name}: empty message`)
+        return d.message?.trim() ? sendDispatch(d.display, d.message) : sys(tr('command.emptyMessage', parsed.name))
       }
 
       if (d.type === 'prefill') {
@@ -187,8 +188,8 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, type
           return handleDispatch(r)
         }
 
-        const body = r?.output || `/${parsed.name}: no output`
-        const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+        const body = r?.output || tr('command.noOutput', parsed.name)
+        const text = r?.warning ? `${tr('common.warning')}: ${r.warning}\n${body}` : body
         const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
         long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)

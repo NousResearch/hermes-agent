@@ -1,5 +1,6 @@
 import type { UsageModelData } from '@hermes/shared/billing'
 import type {
+  CompressionSummary,
   ConnectionRequestPayload,
   GatewayEvent,
   GatewayEventName,
@@ -20,6 +21,8 @@ export type GatewaySkin = HermesSkin
 export type AnyGatewayEvent = { [K in GatewayEventName]: GatewayEvent<K> }[GatewayEventName]
 
 export interface GatewayCompletionItem {
+  meta_key?: string
+  meta_vars?: Record<string, string | number>
   display: string
   /** Completion class, set by the gateway. `skill` covers skill commands and
    *  skill bundles — the only kind offered for an inline `/skill` reference. */
@@ -31,6 +34,7 @@ export interface GatewayCompletionItem {
 // ── Commands / completion ────────────────────────────────────────────
 
 export interface CommandsCatalogResponse {
+  description_keys?: Record<string, string>
   canon?: Record<string, string>
   categories?: SlashCategory[]
   pairs?: [string, string][]
@@ -271,6 +275,18 @@ export interface SessionUsageResponse {
 }
 
 export interface SessionStatusResponse {
+  details?: {
+    agent_running: boolean
+    created: string
+    last_activity: string
+    model: string
+    path: string
+    project?: string
+    provider: string
+    session_id: string
+    title?: string
+    tokens: number
+  }
   output?: string
 }
 
@@ -282,12 +298,7 @@ export interface SessionCompressResponse {
   info?: SessionInfo
   messages?: TranscriptMessage[]
   removed?: number
-  summary?: {
-    headline?: string
-    noop?: boolean
-    note?: null | string
-    token_line?: string
-  }
+  summary?: Partial<CompressionSummary>
   usage?: Usage
 }
 
@@ -340,6 +351,7 @@ export interface ShellExecResponse {
 }
 
 export interface ClipboardPasteResponse {
+  reason?: string
   attached?: boolean
   count?: number
   height?: number

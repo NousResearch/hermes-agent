@@ -1,3 +1,4 @@
+import type { Translations } from "@/i18n";
 import {
   Clock,
   Database,
@@ -61,10 +62,10 @@ export function sourceBelongsToCategory(
   return !isAutomationSource(source);
 }
 
-export function sourceLabel(source: string): string {
+export function sourceLabel(source: string, translations: Translations["sessions"]): string {
   switch (source) {
     case "api_server":
-      return "API server";
+      return translations.sourceApiServer;
     case "acp":
       return "ACP";
     case "cli":
@@ -84,13 +85,13 @@ export function sourceLabel(source: string): string {
     case "sms":
       return "SMS";
     case "cron":
-      return "Cron";
+      return translations.sourceCron;
     case "tool":
-      return "Tool";
+      return translations.sourceTool;
     case "hermes_flow":
-      return "Hermes Flow";
+      return translations.sourceHermesFlow;
     case "vulcan_delegate":
-      return "Vulcan delegate";
+      return translations.sourceVulcanDelegate;
     case "webhook":
       return "Webhook";
     default:

@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import {
@@ -37,10 +30,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
-import {
-  Select,
-  SelectOption,
-} from "@nous-research/ui/ui/components/select";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -57,24 +47,15 @@ function ProfilesLoadingSpinner() {
   const [frameIndex, setFrameIndex] = useState(0);
 
   useEffect(() => {
-    if (
-      typeof window !== "undefined" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       return;
     }
-    const id = window.setInterval(
-      () => setFrameIndex((i) => (i + 1) % frames.length),
-      interval,
-    );
+    const id = window.setInterval(() => setFrameIndex((i) => (i + 1) % frames.length), interval);
     return () => window.clearInterval(id);
   }, [frames.length, interval]);
 
   return (
-    <span
-      aria-hidden
-      className="inline-block select-none font-mono text-xl leading-none text-muted-foreground"
-    >
+    <span aria-hidden className="inline-block select-none font-mono text-xl leading-none text-muted-foreground">
       {frames[frameIndex]}
     </span>
   );
@@ -161,40 +142,17 @@ function ProfileActionsMenu({
             </button>
           )}
 
-          <button
-            type="button"
-            role="menuitem"
-            className={itemClass}
-            onClick={run(onEditModel)}
-          >
-            {isEditingModel ? (
-              <ChevronDown className="h-4 w-4" />
-            ) : (
-              <Cpu className="h-4 w-4" />
-            )}
+          <button type="button" role="menuitem" className={itemClass} onClick={run(onEditModel)}>
+            {isEditingModel ? <ChevronDown className="h-4 w-4" /> : <Cpu className="h-4 w-4" />}
             {labels.editModel}
           </button>
 
-          <button
-            type="button"
-            role="menuitem"
-            className={itemClass}
-            onClick={run(onEditDescription)}
-          >
-            {isEditingDesc ? (
-              <ChevronDown className="h-4 w-4" />
-            ) : (
-              <AlignLeft className="h-4 w-4" />
-            )}
+          <button type="button" role="menuitem" className={itemClass} onClick={run(onEditDescription)}>
+            {isEditingDesc ? <ChevronDown className="h-4 w-4" /> : <AlignLeft className="h-4 w-4" />}
             {labels.editDescription}
           </button>
 
-          <button
-            type="button"
-            role="menuitem"
-            className={itemClass}
-            onClick={run(onEditSoul)}
-          >
+          <button type="button" role="menuitem" className={itemClass} onClick={run(onEditSoul)}>
             {isEditingSoul ? (
               <ChevronDown className="h-4 w-4" />
             ) : (
@@ -205,22 +163,12 @@ function ProfileActionsMenu({
             {labels.editSoul}
           </button>
 
-          <button
-            type="button"
-            role="menuitem"
-            className={itemClass}
-            onClick={run(onManageSkills)}
-          >
+          <button type="button" role="menuitem" className={itemClass} onClick={run(onManageSkills)}>
             <Package className="h-4 w-4" />
             {labels.manageSkills}
           </button>
 
-          <button
-            type="button"
-            role="menuitem"
-            className={itemClass}
-            onClick={run(onCopyCommand)}
-          >
+          <button type="button" role="menuitem" className={itemClass} onClick={run(onCopyCommand)}>
             <Terminal className="h-4 w-4" />
             {labels.openInTerminal}
           </button>
@@ -260,58 +208,13 @@ export default function ProfilesPage() {
   const [activeInfo, setActiveInfo] = useState<ActiveProfileInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
+  const { format, t } = useI18n();
   const { setEnd } = usePageHeader();
   const { setProfile } = useProfileScope();
 
-  // Locale strings with English fallbacks. The enriched keys are optional in
-  // the i18n type so untranslated locales don't break the build — they render
-  // the English literal until translated.
-  const L = useMemo(() => {
-    const p = t.profiles;
-    return {
-      activeProfile: p.activeProfile ?? "Active profile",
-      activeBadge: p.activeBadge ?? "active",
-      setActive: p.setActive ?? "Set as active",
-      activeSet: p.activeSet ?? "Active profile set",
-      gatewayRunning: p.gatewayRunning ?? "Gateway running",
-      gatewayStopped: p.gatewayStopped ?? "Gateway stopped",
-      gatewayRunningWarning:
-        p.gatewayRunningWarning ??
-        "This profile's gateway is running — it will be stopped.",
-      aliasBadge: p.aliasBadge ?? "alias",
-      description: p.description ?? "Description",
-      descriptionPlaceholder:
-        p.descriptionPlaceholder ??
-        "What is this profile good at? Used to route kanban tasks by role.",
-      noDescription: p.noDescription ?? "No description",
-      editDescription: p.editDescription ?? "Edit description",
-      descriptionSaved: p.descriptionSaved ?? "Description saved",
-      reviewBadge: p.reviewBadge ?? "review",
-      autoGenerate: p.autoGenerate ?? "Auto-generate",
-      generating: p.generating ?? "Generating…",
-      describeFailed: p.describeFailed ?? "Could not generate description",
-      distribution: p.distribution ?? "Distribution",
-      advancedOptions: p.advancedOptions ?? "Advanced options",
-      cloneAll:
-        p.cloneAll ?? "Clone everything (memories, sessions, skills, state)",
-      noSkillsOption: p.noSkillsOption ?? "Don't seed bundled skills",
-      descriptionOptional: p.descriptionOptional ?? "Description (optional)",
-      modelOptional: p.modelOptional ?? "Model (optional)",
-      modelInherit: p.modelInherit ?? "Inherit from clone / default",
-      modelLoading: p.modelLoading ?? "Loading models…",
-      modelNone:
-        p.modelNone ?? "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
-      editModel: p.editModel ?? "Change model",
-      modelSaved: p.modelSaved ?? "Model updated",
-      modelSelect: p.modelSelect ?? "Select a model",
-      actions: p.actions ?? "Actions",
-      manageSkills: p.manageSkills ?? "Manage skills & tools",
-      activeSetHint:
-        p.activeSetHint ??
-        "Dashboard switched to manage {name}. New CLI/gateway runs will use this profile too.",
-    };
-  }, [t.profiles]);
+  // Every locale is resolved against the complete English catalog at the
+  // i18n boundary, so components never need their own fallback copy.
+  const L = t.profiles;
 
   // Create modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -323,9 +226,7 @@ export default function ProfilesPage() {
   const [creating, setCreating] = useState(false);
   // Model picker (lazy-loaded the first time a picker is opened). modelChoice
   // is a "slug\u0000model" key, or "" to inherit from clone/default.
-  const [modelChoices, setModelChoices] = useState<
-    { provider: string; model: string; label: string }[] | null
-  >(null);
+  const [modelChoices, setModelChoices] = useState<{ provider: string; model: string; label: string }[] | null>(null);
   const modelChoicesLoading = useRef(false);
   const [modelChoice, setModelChoice] = useState("");
   const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
@@ -400,7 +301,7 @@ export default function ProfilesPage() {
         setProfiles(res.profiles);
         setActiveInfo(active);
       })
-      .catch((e) => showToast(`${t.status.error}: ${errorMessage(e)}`, "error"))
+      .catch((e) => showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error"))
       .finally(() => setLoading(false));
   }, [showToast, t.status.error]);
 
@@ -415,9 +316,7 @@ export default function ProfilesPage() {
 
   const isActive = useCallback(
     (p: ProfileInfo) =>
-      activeInfo != null &&
-      (activeInfo.active === p.name ||
-        (activeInfo.active === "default" && p.is_default)),
+      activeInfo != null && (activeInfo.active === p.name || (activeInfo.active === "default" && p.is_default)),
     [activeInfo],
   );
 
@@ -435,9 +334,7 @@ export default function ProfilesPage() {
     try {
       const cloning = cloneFrom !== null;
       const picked = modelChoice
-        ? modelChoices?.find(
-            (c) => `${c.provider}\u0000${c.model}` === modelChoice,
-          )
+        ? modelChoices?.find((c) => `${c.provider}\u0000${c.model}` === modelChoice)
         : undefined;
       const res = await api.createProfile({
         name,
@@ -450,10 +347,7 @@ export default function ProfilesPage() {
       });
       showToast(`${t.profiles.created}: ${name}`, "success");
       if (picked && res.model_set === false) {
-        showToast(
-          `Profile created, but the model could not be saved — set it from the profile editor.`,
-          "error",
-        );
+        showToast(t.profiles.modelSaveAfterCreateFailed, "error");
       }
       setNewName("");
       setNewDescription("");
@@ -464,7 +358,7 @@ export default function ProfilesPage() {
       setCreateModalOpen(false);
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
     } finally {
       setCreating(false);
     }
@@ -489,7 +383,7 @@ export default function ProfilesPage() {
       setRenameTo("");
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
     }
   };
 
@@ -500,15 +394,10 @@ export default function ProfilesPage() {
       // value it returns rather than the raw input.
       const { active } = await api.setActiveProfile(name);
       setProfile(active);
-      showToast(
-        `${L.activeSet}: ${active} — ${L.activeSetHint.replace("{name}", active)}`,
-        "success",
-      );
-      setActiveInfo((prev) =>
-        prev ? { ...prev, active } : { active, current: active },
-      );
+      showToast(format(L.activeSetToast, { name: active }), "success");
+      setActiveInfo((prev) => (prev ? { ...prev, active } : { active, current: active }));
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
     } finally {
       setSettingActive(null);
     }
@@ -543,7 +432,7 @@ export default function ProfilesPage() {
         }
       } catch (e) {
         if (activeSoulRequest.current === name) {
-          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+          showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
         }
       }
     },
@@ -558,7 +447,7 @@ export default function ProfilesPage() {
       activeSoulRequest.current = null;
       setEditingSoulFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
     } finally {
       setSoulSaving(false);
     }
@@ -604,7 +493,7 @@ export default function ProfilesPage() {
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+        showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
       }
     } finally {
       descSavingCount.current -= 1;
@@ -638,7 +527,7 @@ export default function ProfilesPage() {
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+        showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
       }
     } finally {
       describingCount.current -= 1;
@@ -663,9 +552,7 @@ export default function ProfilesPage() {
 
   const handleSaveModel = async (name: string) => {
     const picked = modelEditChoice
-      ? modelChoices?.find(
-          (c) => `${c.provider}\u0000${c.model}` === modelEditChoice,
-        )
+      ? modelChoices?.find((c) => `${c.provider}\u0000${c.model}` === modelEditChoice)
       : undefined;
     if (!picked) return;
     setModelSaving(true);
@@ -673,15 +560,11 @@ export default function ProfilesPage() {
       await api.setProfileModel(name, picked.provider, picked.model);
       showToast(`${L.modelSaved}: ${picked.model}`, "success");
       setProfiles((prev) =>
-        prev.map((p) =>
-          p.name === name
-            ? { ...p, model: picked.model, provider: picked.provider }
-            : p,
-        ),
+        prev.map((p) => (p.name === name ? { ...p, model: picked.model, provider: picked.provider } : p)),
       );
       setEditingModelFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
     } finally {
       setModelSaving(false);
     }
@@ -708,7 +591,7 @@ export default function ProfilesPage() {
       const res = await api.getProfileSetupCommand(name);
       cmd = res.command;
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
       return;
     }
     if (await copyTextToClipboard(cmd)) {
@@ -726,7 +609,7 @@ export default function ProfilesPage() {
           showToast(`${t.profiles.deleted}: ${name}`, "success");
           load();
         } catch (e) {
-          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+          showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
           throw e;
         }
       },
@@ -735,34 +618,21 @@ export default function ProfilesPage() {
   });
 
   const pendingName = profileDelete.pendingId;
-  const pendingProfile = pendingName
-    ? profiles.find((p) => p.name === pendingName)
-    : undefined;
+  const pendingProfile = pendingName ? profiles.find((p) => p.name === pendingName) : undefined;
   const deleteMessage = (() => {
     if (!pendingName) return t.profiles.confirmDeleteMessage;
     const base = t.profiles.confirmDeleteMessage.replace("{name}", pendingName);
-    return pendingProfile?.gateway_running
-      ? `${base}\n\n${L.gatewayRunningWarning}`
-      : base;
+    return pendingProfile?.gateway_running ? `${base}\n\n${L.gatewayRunningWarning}` : base;
   })();
 
   // Put "Build" (full builder) + "Create" (quick modal) buttons in header
   useLayoutEffect(() => {
     setEnd(
       <div className="flex items-center gap-2">
-        <Button
-          className="uppercase"
-          size="sm"
-          outlined
-          onClick={() => navigate("/profiles/new")}
-        >
-          Build
+        <Button className="uppercase" size="sm" outlined onClick={() => navigate("/profiles/new")}>
+          {t.profiles.build}
         </Button>
-        <Button
-          className="uppercase"
-          size="sm"
-          onClick={() => setCreateModalOpen(true)}
-        >
+        <Button className="uppercase" size="sm" onClick={() => setCreateModalOpen(true)}>
           {t.common.create}
         </Button>
       </div>,
@@ -770,17 +640,13 @@ export default function ProfilesPage() {
     return () => {
       setEnd(null);
     };
-  }, [setEnd, t.common.create, loading, navigate]);
+  }, [navigate, setEnd, t.common.create, t.profiles.build]);
 
   const cloning = cloneFrom !== null;
 
   if (loading) {
     return (
-      <div
-        aria-busy="true"
-        aria-live="polite"
-        className="flex items-center justify-center py-24"
-      >
+      <div aria-busy="true" aria-live="polite" className="flex items-center justify-center py-24">
         <span className="sr-only">{t.common.loading}</span>
 
         <ProfilesLoadingSpinner />
@@ -806,9 +672,7 @@ export default function ProfilesPage() {
         <div
           ref={createModalRef}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-          onClick={(e) =>
-            e.target === e.currentTarget && setCreateModalOpen(false)
-          }
+          onClick={(e) => e.target === e.currentTarget && setCreateModalOpen(false)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-profile-title"
@@ -824,16 +688,13 @@ export default function ProfilesPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
 
             <header className="p-5 pb-3 border-b border-border">
-              <h2
-                id="create-profile-title"
-                className="font-mondwest text-display text-base tracking-wider"
-              >
+              <h2 id="create-profile-title" className="font-mondwest text-display text-base tracking-wider">
                 {t.profiles.newProfile}
               </h2>
             </header>
@@ -851,15 +712,10 @@ export default function ProfilesPage() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleCreate();
                   }}
-                  aria-invalid={
-                    newName.trim() !== "" &&
-                    !PROFILE_NAME_RE.test(newName.trim())
-                  }
+                  aria-invalid={newName.trim() !== "" && !PROFILE_NAME_RE.test(newName.trim())}
                 />
 
-                <p className="text-xs text-muted-foreground">
-                  {t.profiles.nameRule}
-                </p>
+                <p className="text-xs text-muted-foreground">{t.profiles.nameRule}</p>
               </div>
 
               <div className="grid gap-2">
@@ -883,9 +739,7 @@ export default function ProfilesPage() {
               </div>
 
               <div className="grid gap-2">
-                <Label htmlFor="profile-description">
-                  {L.descriptionOptional}
-                </Label>
+                <Label htmlFor="profile-description">{L.descriptionOptional}</Label>
 
                 <textarea
                   id="profile-description"
@@ -905,15 +759,10 @@ export default function ProfilesPage() {
                   disabled={modelChoices === null}
                   onValueChange={setModelChoice}
                 >
-                  <SelectOption value="">
-                    {modelChoices === null ? L.modelLoading : L.modelInherit}
-                  </SelectOption>
+                  <SelectOption value="">{modelChoices === null ? L.modelLoading : L.modelInherit}</SelectOption>
 
                   {(modelChoices ?? []).map((c) => (
-                    <SelectOption
-                      key={`${c.provider}\u0000${c.model}`}
-                      value={`${c.provider}\u0000${c.model}`}
-                    >
+                    <SelectOption key={`${c.provider}\u0000${c.model}`} value={`${c.provider}\u0000${c.model}`}>
                       {c.label}
                     </SelectOption>
                   ))}
@@ -969,12 +818,7 @@ export default function ProfilesPage() {
               </fieldset>
 
               <div className="flex justify-end">
-                <Button
-                  className="uppercase"
-                  size="sm"
-                  onClick={handleCreate}
-                  disabled={creating}
-                >
+                <Button className="uppercase" size="sm" onClick={handleCreate} disabled={creating}>
                   {creating ? t.common.creating : t.common.create}
                 </Button>
               </div>
@@ -991,17 +835,12 @@ export default function ProfilesPage() {
               <Check className="h-3.5 w-3.5 text-success" />
 
               <span>
-                {L.activeProfile}:{" "}
-                <span className="font-medium text-foreground">
-                  {activeInfo.active}
-                </span>
+                {L.activeProfile}: <span className="font-medium text-foreground">{activeInfo.active}</span>
               </span>
             </span>
 
             {activeInfo.current !== activeInfo.active && (
-              <span className="font-mono text-muted-foreground/80">
-                ({activeInfo.current})
-              </span>
+              <span className="font-mono text-muted-foreground/80">({activeInfo.current})</span>
             )}
           </CardContent>
         </Card>
@@ -1009,10 +848,7 @@ export default function ProfilesPage() {
 
       {/* List */}
       <div className="flex flex-col gap-3">
-        <H2
-          variant="sm"
-          className="flex items-center gap-2 text-muted-foreground"
-        >
+        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
           <Users className="h-4 w-4" />
           {t.profiles.allProfiles} ({profiles.length})
         </H2>
@@ -1046,30 +882,16 @@ export default function ProfilesPage() {
                           if (e.key === "Escape") setRenamingFrom(null);
                         }}
                         aria-invalid={
-                          renameTo.trim() !== "" &&
-                          renameTo.trim() !== p.name &&
-                          !PROFILE_NAME_RE.test(renameTo.trim())
+                          renameTo.trim() !== "" && renameTo.trim() !== p.name && !PROFILE_NAME_RE.test(renameTo.trim())
                         }
                       />
 
                       {(() => {
                         const trimmed = renameTo.trim();
-                        const invalid =
-                          trimmed !== "" &&
-                          trimmed !== p.name &&
-                          !PROFILE_NAME_RE.test(trimmed);
+                        const invalid = trimmed !== "" && trimmed !== p.name && !PROFILE_NAME_RE.test(trimmed);
                         return (
-                          <p
-                            className={cn(
-                              "text-xs",
-                              invalid
-                                ? "text-destructive"
-                                : "text-muted-foreground",
-                            )}
-                          >
-                            {invalid
-                              ? `${t.profiles.invalidName}: ${t.profiles.nameRule}`
-                              : t.profiles.nameRule}
+                          <p className={cn("text-xs", invalid ? "text-destructive" : "text-muted-foreground")}>
+                            {invalid ? `${t.profiles.invalidName}: ${t.profiles.nameRule}` : t.profiles.nameRule}
                           </p>
                         );
                       })()}
@@ -1079,11 +901,7 @@ export default function ProfilesPage() {
                           {t.common.save}
                         </Button>
 
-                        <Button
-                          size="sm"
-                          ghost
-                          onClick={() => setRenamingFrom(null)}
-                        >
+                        <Button size="sm" ghost onClick={() => setRenamingFrom(null)}>
                           {t.common.cancel}
                         </Button>
                       </div>
@@ -1096,31 +914,19 @@ export default function ProfilesPage() {
                             {p.display_name?.trim() ? `${p.display_name.trim()} (${p.name})` : p.name}
                           </span>
 
-                          {active && (
-                            <Badge tone="success">{L.activeBadge}</Badge>
-                          )}
+                          {active && <Badge tone="success">{L.activeBadge}</Badge>}
 
-                          {p.is_default && (
-                            <Badge tone="secondary">
-                              {t.profiles.defaultBadge}
-                            </Badge>
-                          )}
+                          {p.is_default && <Badge tone="secondary">{t.profiles.defaultBadge}</Badge>}
 
-                          {p.has_alias && (
-                            <Badge tone="outline">{L.aliasBadge}</Badge>
-                          )}
+                          {p.has_alias && <Badge tone="outline">{L.aliasBadge}</Badge>}
 
-                          {p.has_env && (
-                            <Badge tone="outline">{t.profiles.hasEnv}</Badge>
-                          )}
+                          {p.has_env && <Badge tone="outline">{t.profiles.hasEnv}</Badge>}
 
                           {p.distribution_name && (
                             <Badge tone="outline" className="gap-1">
                               <Package className="h-3 w-3" />
                               {p.distribution_name}
-                              {p.distribution_version
-                                ? `@${p.distribution_version}`
-                                : ""}
+                              {p.distribution_version ? `@${p.distribution_version}` : ""}
                             </Badge>
                           )}
                         </div>
@@ -1143,18 +949,12 @@ export default function ProfilesPage() {
                             rename: t.profiles.rename,
                             delete: t.common.delete,
                           }}
-                          onCopyCommand={() =>
-                            handleCopyTerminalCommand(p.name)
-                          }
+                          onCopyCommand={() => handleCopyTerminalCommand(p.name)}
                           onDelete={() => profileDelete.requestDelete(p.name)}
                           onEditDescription={() => openDescEditor(p)}
                           onEditModel={() => openModelEditor(p)}
                           onEditSoul={() => openSoulEditor(p.name)}
-                          onManageSkills={() =>
-                            navigate(
-                              `/skills?profile=${encodeURIComponent(p.name)}`,
-                            )
-                          }
+                          onManageSkills={() => navigate(`/skills?profile=${encodeURIComponent(p.name)}`)}
                           onRename={() => {
                             setRenamingFrom(p.name);
                             setRenameTo(p.name);
@@ -1167,22 +967,12 @@ export default function ProfilesPage() {
                         <span
                           className={cn(
                             "h-1.5 w-1.5 rounded-full",
-                            p.gateway_running
-                              ? "bg-success"
-                              : "bg-muted-foreground/40",
+                            p.gateway_running ? "bg-success" : "bg-muted-foreground/40",
                           )}
                         />
 
-                        <span
-                          className={cn(
-                            p.gateway_running
-                              ? "text-success"
-                              : "text-muted-foreground",
-                          )}
-                        >
-                          {p.gateway_running
-                            ? L.gatewayRunning
-                            : L.gatewayStopped}
+                        <span className={cn(p.gateway_running ? "text-success" : "text-muted-foreground")}>
+                          {p.gateway_running ? L.gatewayRunning : L.gatewayStopped}
                         </span>
                       </div>
 
@@ -1190,9 +980,7 @@ export default function ProfilesPage() {
                         <span
                           className={cn(
                             "line-clamp-2",
-                            p.description
-                              ? "text-muted-foreground"
-                              : "text-muted-foreground/60 italic",
+                            p.description ? "text-muted-foreground" : "text-muted-foreground/60 italic",
                           )}
                         >
                           {p.description || L.noDescription}
@@ -1249,31 +1037,19 @@ export default function ProfilesPage() {
               size="icon"
               onClick={closeEditor}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
 
             <header className="p-5 pb-3 border-b border-border">
-              <h2
-                id="profile-editor-title"
-                className="font-mondwest text-display text-base tracking-wider"
-              >
-                {editorKind === "model"
-                  ? L.editModel
-                  : editorKind === "desc"
-                    ? L.description
-                    : t.profiles.soulSection}
+              <h2 id="profile-editor-title" className="font-mondwest text-display text-base tracking-wider">
+                {editorKind === "model" ? L.editModel : editorKind === "desc" ? L.description : t.profiles.soulSection}
                 <span className="text-muted-foreground"> · {editorName}</span>
               </h2>
             </header>
 
-            <div
-              className={cn(
-                "p-5 grid gap-4",
-                editorKind === "soul" && "min-h-0 overflow-y-auto",
-              )}
-            >
+            <div className={cn("p-5 grid gap-4", editorKind === "soul" && "min-h-0 overflow-y-auto")}>
               {editorKind === "model" &&
                 (modelChoices !== null && modelChoices.length === 0 ? (
                   <p className="text-xs text-muted-foreground">{L.modelNone}</p>
@@ -1282,16 +1058,11 @@ export default function ProfilesPage() {
                     <Select
                       value={modelEditChoice}
                       disabled={modelChoices === null}
-                      placeholder={
-                        modelChoices === null ? L.modelLoading : L.modelSelect
-                      }
+                      placeholder={modelChoices === null ? L.modelLoading : L.modelSelect}
                       onValueChange={setModelEditChoice}
                     >
                       {(modelChoices ?? []).map((c) => (
-                        <SelectOption
-                          key={`${c.provider}\u0000${c.model}`}
-                          value={`${c.provider}\u0000${c.model}`}
-                        >
+                        <SelectOption key={`${c.provider}\u0000${c.model}`} value={`${c.provider}\u0000${c.model}`}>
                           {c.label}
                         </SelectOption>
                       ))}
@@ -1303,12 +1074,7 @@ export default function ProfilesPage() {
                         className="uppercase"
                         onClick={() => handleSaveModel(editorName)}
                         disabled={
-                          modelSaving ||
-                          !modelChoices?.some(
-                            (c) =>
-                              `${c.provider}\u0000${c.model}` ===
-                              modelEditChoice,
-                          )
+                          modelSaving || !modelChoices?.some((c) => `${c.provider}\u0000${c.model}` === modelEditChoice)
                         }
                       >
                         {modelSaving ? t.common.saving : t.common.save}

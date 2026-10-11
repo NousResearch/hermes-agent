@@ -1,3 +1,10 @@
+import { afterEach } from 'vitest'
+
+import { resetLocale } from '../i18n/runtime.js'
+
+import { buildCtx, ref } from './gatewayEventFixture.js'
+import { activateZh } from './localeFixture.js'
+afterEach(resetLocale)
 import type { ConnectionOperationTarget } from '@hermes/shared/gateway-events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -14,6 +21,7 @@ import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { ZERO } from '../domain/usage.js'
+import { t } from '../i18n/runtime.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -23,48 +31,6 @@ const openExternalUrlMock = vi.fn((_url: string) => true)
 vi.mock('../lib/openExternalUrl.js', () => ({
   openExternalUrl: (url: string) => openExternalUrlMock(url)
 }))
-
-const ref = <T>(current: T) => ({ current })
-
-const buildCtx = (appended: Msg[]) =>
-  ({
-    composer: {
-      dequeue: () => undefined,
-      queueEditRef: ref<null | number>(null),
-      sendQueued: vi.fn(),
-      setInput: vi.fn()
-    },
-    gateway: {
-      gw: { request: vi.fn(async () => null) },
-      rpc: vi.fn(async () => null)
-    },
-    session: {
-      STARTUP_RESUME_ID: '',
-      colsRef: ref(80),
-      newSession: vi.fn(),
-      resetSession: vi.fn(),
-      resumeById: vi.fn(),
-      setCatalog: vi.fn()
-    },
-    submission: {
-      submitRef: { current: vi.fn() }
-    },
-    system: {
-      bellOnComplete: false,
-      sys: vi.fn()
-    },
-    transcript: {
-      appendMessage: (msg: Msg) => appended.push(msg),
-      panel: (title: string, sections: any[]) =>
-        appended.push({ kind: 'panel', panelData: { sections, title }, role: 'system', text: '' }),
-      setHistoryItems: vi.fn()
-    },
-    voice: {
-      setProcessing: vi.fn(),
-      setRecording: vi.fn(),
-      setVoiceEnabled: vi.fn()
-    }
-  }) as any
 
 /** Deliver one server→client request (`tui_gateway/server_requests.py`) to the TUI's request handler. */
 const serverRequest = (method: string, params: Record<string, unknown>, id = `srq-${method}`) => {
@@ -1663,6 +1629,14 @@ describe('createGatewayEventHandler', () => {
 
   it('an interrupted reply whose every delta landed after Ctrl+C still shows the persisted partial', () => {
     expect(interruptedTranscript([], ['alpha', ' beta'], 'alpha beta')).toEqual(['alpha beta\n\n*[interrupted]*'])
+  })
+
+  it('keeps localized interruption markers when reconciling persisted reply text', () => {
+    activateZh()
+    const marker = `*[${t('session.turn.interrupted')}]*`
+
+    expect(interruptedTranscript(['alpha'], [' beta'], 'alpha beta')).toEqual([`alpha beta\n\n${marker}`])
+    expect(interruptedTranscript([], ['gamma'], 'gamma')).toEqual([`gamma\n\n${marker}`])
   })
 
   it('keepBusy interrupt holds busy until the gateway settles and suppresses the cancelled turn’s final_response', () => {

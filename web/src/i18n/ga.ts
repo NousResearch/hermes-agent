@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const ga: Translations = {
+export const ga: TranslationOverlay = {
   common: {
     save: "Sábháil",
     saving: "Á shábháil...",
@@ -230,8 +230,7 @@ export const ga: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "Baineann sé seo an post ón sceideal. Ní féidir é seo a chealú.",
+    confirmDeleteMessage: "Baineann sé seo an post ón sceideal. Ní féidir é seo a chealú.",
     confirmDeleteTitle: "Scrios an post sceidealta?",
     newJob: "Post Cron Nua",
     nameOptional: "Ainm (roghnach)",
@@ -255,21 +254,12 @@ export const ga: Translations = {
       unitDays: "lá",
       timeOfDay: "Am an lae",
       weekdays: "Laethanta na seachtaine",
-      weekdaysShort: [
-        "Domh",
-        "Luan",
-        "Máirt",
-        "Céad",
-        "Déar",
-        "Aoine",
-        "Sath",
-      ],
+      weekdaysShort: ["Domh", "Luan", "Máirt", "Céad", "Déar", "Aoine", "Sath"],
       dayOfMonth: "Lá den mhí",
       onceAt: "Rith ag",
       customLabel: "Slonn cron",
       customPlaceholder: "0 9 * * *",
-      customHint:
-        "Slonn cron cúig réimse (nóiméad, uair, lá, mí, lá den tseachtain).",
+      customHint: "Slonn cron cúig réimse (nóiméad, uair, lá, mí, lá den tseachtain).",
       preview: "Seoltar mar",
       previewEmpty: "(neamhiomlán)",
     },
@@ -307,7 +297,8 @@ export const ga: Translations = {
     nameRequired: "Tá ainm riachtanach",
     nameRule:
       "Litreacha cás íochtair, digití, _ agus - amháin; caithfidh tús a chur le litir nó digit; suas le 64 carachtar.",
-    invalidName: "Ainm próifíle neamhbhailí",    cloneFrom: "Clónáil cumraíocht ón bpróifíl",
+    invalidName: "Ainm próifíle neamhbhailí",
+    cloneFrom: "Clónáil cumraíocht ón bpróifíl",
     cloneFromNone: "Dada (folamh)",
     allProfiles: "Próifílí",
     noProfiles: "Níor aimsíodh próifílí.",
@@ -338,11 +329,9 @@ export const ga: Translations = {
     disableRuntime: "Díchumasaigh",
     enableAfterInstall: "Cumasaigh tar éis suiteála",
     enableRuntime: "Cumasaigh",
-    toggleTakesEffectAfterRestart:
-      "Sábháilte — atosaigh an gateway chun an t-athrú a chur i bhfeidhm.",
+    toggleTakesEffectAfterRestart: "Sábháilte — atosaigh an gateway chun an t-athrú a chur i bhfeidhm.",
     forceReinstall: "Cuir iallach ar athshuiteáil (scrios an fillteán atá ann ar dtús)",
-    headline:
-      "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Hermes (paireacht le `hermes plugins`).",
+    headline: "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Hermes (paireacht le `hermes plugins`).",
     identifierLabel: "URL Git nó owner/repo",
     inactive: "neamhghníomhach",
     installBtn: "Suiteáil",
@@ -362,7 +351,8 @@ export const ga: Translations = {
     removeConfirm: "Bain an plugin seo ó ~/.hermes/plugins/?",
     removeHint: "Ní féidir ach plugins atá suiteáilte ag an úsáideoir faoi ~/.hermes/plugins a bhaint.",
     rescanHeading: "Clár plugin SPA",
-    rescanHint: "Athscan tar éis comhaid a chur leis an diosca ionas go n-aimseoidh barra taoibh an dashboard manifests nua.",
+    rescanHint:
+      "Athscan tar éis comhaid a chur leis an diosca ionas go n-aimseoidh barra taoibh an dashboard manifests nua.",
     runtimeHeading: "Runtime gateway (plugins YAML)",
     saveProviders: "Sábháil socruithe an tsoláthraí",
     savedProviders: "Socruithe an tsoláthraí sábháilte.",
@@ -403,7 +393,8 @@ export const ga: Translations = {
     importConfig: "Iompórtáil cumraíocht ó JSON",
     resetDefaults: "Athshocraigh chuig réamhshocruithe",
     resetScopeTooltip: "Athshocraigh {scope} chuig réamhshocruithe",
-    confirmResetScope: "Athshocraigh socruithe uile {scope} chuig a réamhshocruithe? Nuashonraíonn sé seo an fhoirm amháin — ní scríobhfar athruithe chuig config.yaml go dtí go mbrúnn tú Sábháil.",
+    confirmResetScope:
+      "Athshocraigh socruithe uile {scope} chuig a réamhshocruithe? Nuashonraíonn sé seo an fhoirm amháin — ní scríobhfar athruithe chuig config.yaml go dtí go mbrúnn tú Sábháil.",
     resetScopeToast: "{scope} athshocraithe chuig réamhshocruithe — athbhreithnigh agus Sábháil chun é a choinneáil",
     rawYaml: "Cumraíocht YAML amh",
     searchResults: "Torthaí cuardaigh",
@@ -436,7 +427,8 @@ export const ga: Translations = {
   },
 
   env: {
-    changesNote: "Sábháiltear athruithe chuig an diosca láithreach. Aimsíonn seisiúin ghníomhacha eochracha nua go huathoibríoch.",
+    changesNote:
+      "Sábháiltear athruithe chuig an diosca láithreach. Aimsíonn seisiúin ghníomhacha eochracha nua go huathoibríoch.",
     confirmClearMessage:
       "Bainfear an luach stóráilte don athróg seo ó do chomhad .env. Ní féidir é seo a chealú ón UI.",
     confirmClearTitle: "Glan an eochair seo?",
@@ -456,7 +448,8 @@ export const ga: Translations = {
     showValue: "Taispeáin an fíorluach",
     hideValue: "Folaigh an luach",
     customTitle: "Eochracha Saincheaptha",
-    customHint: "Athróga timpeallachta treallach atá stóráilte i do .env nach n-aithníonn Hermes. Úsáid iad chun athróga timpeallachta a instealladh do scileanna, freastalaithe MCP, nó d'uirlisí féin.",
+    customHint:
+      "Athróga timpeallachta treallach atá stóráilte i do .env nach n-aithníonn Hermes. Úsáid iad chun athróga timpeallachta a instealladh do scileanna, freastalaithe MCP, nó d'uirlisí féin.",
     customConfigured: "{count} eochair shaincheaptha socraithe",
     addCustomKey: "Cuir eochair shaincheaptha leis",
     customKeyName: "Ainm na hathróige",
@@ -559,8 +552,7 @@ export const ga: Translations = {
     },
     scan: {
       building_headline: "Próifíl ghnóthachtála á tógáil…",
-      building_detail:
-        "Sessions, glaonna ar uirlisí, meiteashonraí samhla agus staid díghlasála á léamh.",
+      building_detail: "Sessions, glaonna ar uirlisí, meiteashonraí samhla agus staid díghlasála á léamh.",
       starting_headline: "Scan ghnóthachtála á thosú…",
       progress_detail:
         "{scanned} as {total} session scanta · {pct}%. Díghlasáiltear suaitheantais de réir mar a shníonn níos mó staire isteach.",
@@ -617,11 +609,10 @@ export const ga: Translations = {
       copy_button: "Cóipeáil íomhá",
       copied: "Cóipeáilte ✓",
       download_button: "Íoslódáil PNG",
-      hint:
-        "Osclaíonn Comhroinn ar X post réamhlíonta i gcluaisín nua. Cliceáil Cóipeáil íomhá ar dtús más mian leat an suaitheantas 1200×630 a bheith ceangailte — ligeann X duit é a ghreamú díreach isteach i scríbhneoir an tweet. Sábhálann Íoslódáil PNG an comhad le húsáid áit ar bith.",
+      hint: "Osclaíonn Comhroinn ar X post réamhlíonta i gcluaisín nua. Cliceáil Cóipeáil íomhá ar dtús más mian leat an suaitheantas 1200×630 a bheith ceangailte — ligeann X duit é a ghreamú díreach isteach i scríbhneoir an tweet. Sábhálann Íoslódáil PNG an comhad le húsáid áit ar bith.",
       clipboard_unsupported:
         "Ní thacaítear le cóipeáil íomhá chuig an ngearrthaisce sa bhrabhsálaí seo — úsáid Íoslódáil ina ionad sin.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -636,12 +627,6 @@ export const ga: Translations = {
       "Ligeann boards duit sruthanna oibre neamhghaolmhara a scaradh — ceann amháin in aghaidh an tionscadail, an repo nó an fhearainn. Ní fheiceann workers ar bhord amháin tascanna board eile riamh.",
     slug: "Slug",
     slugHint: "— litreacha beaga, fleiscíní, m.sh. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Ainm taispeána",
     displayNameHint: "(roghnach)",
     description: "Cur síos",
@@ -684,8 +669,7 @@ export const ga: Translations = {
     runHistory: "Stair na rití",
     workerLog: "Loga an worker",
     loadingLog: "Loga á luchtú…",
-    noWorkerLog:
-      "— níl loga worker ann fós (níor sheol an tasc nó rinneadh an loga a rothlú) —",
+    noWorkerLog: "— níl loga worker ann fós (níor sheol an tasc nó rinneadh an loga a rothlú) —",
     noDescription: "— gan cur síos —",
     noComments: "— gan nótaí tráchta —",
     edit: "cuir in eagar",
@@ -770,25 +754,19 @@ export const ga: Translations = {
     },
     confirmDone:
       "Marcáil an tasc seo mar críochnaithe? Scaoiltear éileamh an worker agus éiríonn leanaí spleácha ready.",
-    confirmArchive:
-      "Cartlannaigh an tasc seo? Imíonn sé as an réamhradharc cláir.",
-    confirmBlocked:
-      "Marcáil an tasc seo mar bactha? Scaoiltear éileamh an worker.",
-    completionSummary:
-      "Achoimre chríochnaithe ar {label}. Stóráiltear é seo mar result an taisc.",
-    completionSummaryRequired:
-      "Tá achoimre chríochnaithe riachtanach sula marcáiltear tasc mar críochnaithe.",
+    confirmArchive: "Cartlannaigh an tasc seo? Imíonn sé as an réamhradharc cláir.",
+    confirmBlocked: "Marcáil an tasc seo mar bactha? Scaoiltear éileamh an worker.",
+    completionSummary: "Achoimre chríochnaithe ar {label}. Stóráiltear é seo mar result an taisc.",
+    completionSummaryRequired: "Tá achoimre chríochnaithe riachtanach sula marcáiltear tasc mar críochnaithe.",
     triagePlaceholder: "Smaoineamh garbh — déanfaidh AI an spec…",
     taskTitlePlaceholder: "Teideal taisc nua…",
     specifier: "specifier",
     assigneePlaceholder: "sannaí",
     priority: "Tosaíocht",
-    skillsPlaceholder:
-      "scileanna (roghnach, scartha le camóga): translation, github-code-review",
+    skillsPlaceholder: "scileanna (roghnach, scartha le camóga): translation, github-code-review",
     noParent: "— gan tuismitheoir —",
     workspacePathDir: "conair workspace (riachtanach, m.sh. ~/projects/my-app)",
-    workspacePathOptional:
-      "conair workspace (roghnach, díorthaithe ón sannaí má tá sé folamh)",
+    workspacePathOptional: "conair workspace (roghnach, díorthaithe ón sannaí má tá sé folamh)",
     logTruncated: "(taispeántar an 100 KB deireanach — loga iomlán ag ",
     logAt: ")",
   },

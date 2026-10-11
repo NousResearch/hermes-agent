@@ -9858,33 +9858,6 @@ def test_complete_slash_returns_plain_string_fields():
         assert isinstance(item["meta"], str), item
 
 
-
-
-
-
-def test_complete_slash_details_args():
-    resp_root = server.handle_request(
-        {"id": "0", "method": "complete.slash", "params": {"text": "/details"}}
-    )
-    resp_section = server.handle_request(
-        {"id": "1", "method": "complete.slash", "params": {"text": "/details t"}}
-    )
-    resp_mode = server.handle_request(
-        {
-            "id": "2",
-            "method": "complete.slash",
-            "params": {"text": "/details thinking e"},
-        }
-    )
-
-    assert resp_root["result"]["replace_from"] == len("/details")
-    assert any(item["text"] == " thinking" for item in resp_root["result"]["items"])
-    assert any(item["text"] == "thinking" for item in resp_section["result"]["items"])
-    assert any(item["text"] == "expanded" for item in resp_mode["result"]["items"])
-
-
-
-
 _SLASH_FILLER_COUNT = 60
 
 
@@ -12337,6 +12310,16 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
     out = resp["result"]["output"]
     for value in ("session-key", "Live TUI", "live-model", "live-provider", "1,234"):
         assert value in out
+    details = resp["result"]["details"]
+    assert details["session_id"] == "session-key"
+    assert details["project"] == ""
+    assert details["title"] == "Live TUI"
+    assert details["model"] == "live-model"
+    assert details["provider"] == "live-provider"
+    assert details["tokens"] == 1234
+    assert details["agent_running"] is True
+    assert details["created"]
+    assert details["last_activity"]
 
 
 def test_session_status_reads_live_compute_host_metadata(monkeypatch):

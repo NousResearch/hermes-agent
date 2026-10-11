@@ -1,4 +1,5 @@
-import { applyDocumentLocale, isRecord } from '@hermes/shared/i18n'
+import { isRecord } from '@hermes/shared/i18n'
+import { applyDocumentLocale } from '@hermes/shared/document-locale'
 import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 

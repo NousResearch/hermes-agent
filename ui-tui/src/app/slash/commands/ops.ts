@@ -511,6 +511,7 @@ export const opsCommands: SlashCommand[] = [
                   }
 
                   ctx.local.setCatalog({
+                    descriptionKeys: catalog.description_keys ?? {},
                     canon: (catalog.canon ?? {}) as Record<string, string>,
                     categories: catalog.categories ?? [],
                     pairs: catalog.pairs as [string, string][],

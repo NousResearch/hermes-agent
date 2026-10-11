@@ -5,10 +5,10 @@
 // maps of strings; a string overriding a function-valued en leaf is wrapped into
 // `(...args) => format(str, args)` with positional `{0}`, `{1}` placeholders.
 
+import { isRecord, mergeTranslations, type TranslationOverride } from '@hermes/shared/i18n'
 import { atom } from 'nanostores'
 
 import { en } from './en.js'
-import { isRecord, mergeTranslations, type TranslationOverride } from './merge.js'
 import type { CatalogPack, TranslationKey, Translations } from './types.js'
 
 export const DEFAULT_LOCALE = 'en'
@@ -136,4 +136,13 @@ export const messages = (): Translations => $catalog.get()
 /** Resolve one key for non-React code. Function-valued leaves take `args`. */
 export function t(key: TranslationKey, ...args: unknown[]): string {
   return translateFrom(locale => (locale === DEFAULT_LOCALE ? en : $catalog.get()), $locale.get(), key, args)
+}
+
+/** Gateway-provided ids are optional: an older client keeps the server text. */
+export function translateOptional(key: string | undefined, fallback: string, ...args: unknown[]): string {
+  if (!key) {
+    return fallback
+  }
+
+  return render(resolvePath(messages(), key), args) ?? fallback
 }

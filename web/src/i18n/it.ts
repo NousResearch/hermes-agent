@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const it: Translations = {
+export const it: TranslationOverlay = {
   common: {
     save: "Salva",
     saving: "Salvataggio...",
@@ -230,8 +230,7 @@ export const it: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "Questa operazione rimuove l'attività dalla pianificazione. Non può essere annullata.",
+    confirmDeleteMessage: "Questa operazione rimuove l'attività dalla pianificazione. Non può essere annullata.",
     confirmDeleteTitle: "Eliminare l'attività pianificata?",
     newJob: "Nuova attività cron",
     nameOptional: "Nome (facoltativo)",
@@ -260,8 +259,7 @@ export const it: Translations = {
       onceAt: "Esegui il",
       customLabel: "Espressione cron",
       customPlaceholder: "0 9 * * *",
-      customHint:
-        "Espressione cron a cinque campi (minuto, ora, giorno, mese, giorno della settimana).",
+      customHint: "Espressione cron a cinque campi (minuto, ora, giorno, mese, giorno della settimana).",
       preview: "Inviato come",
       previewEmpty: "(incompleta)",
     },
@@ -297,9 +295,9 @@ export const it: Translations = {
     name: "Nome",
     namePlaceholder: "es. coder, writer, ecc.",
     nameRequired: "Il nome è obbligatorio",
-    nameRule:
-      "Solo lettere minuscole, cifre, _ e -; deve iniziare con una lettera o cifra; fino a 64 caratteri.",
-    invalidName: "Nome del profilo non valido",    cloneFrom: "Clona configurazione dal profilo",
+    nameRule: "Solo lettere minuscole, cifre, _ e -; deve iniziare con una lettera o cifra; fino a 64 caratteri.",
+    invalidName: "Nome del profilo non valido",
+    cloneFrom: "Clona configurazione dal profilo",
     cloneFromNone: "Nessuno (vuoto)",
     allProfiles: "Profili",
     noProfiles: "Nessun profilo trovato.",
@@ -330,11 +328,9 @@ export const it: Translations = {
     disableRuntime: "Disabilita",
     enableAfterInstall: "Abilita dopo l'installazione",
     enableRuntime: "Abilita",
-    toggleTakesEffectAfterRestart:
-      "Salvato: riavvia il gateway per applicare la modifica.",
+    toggleTakesEffectAfterRestart: "Salvato: riavvia il gateway per applicare la modifica.",
     forceReinstall: "Forza reinstallazione (elimina prima la cartella esistente)",
-    headline:
-      "Scopri, installa, abilita e aggiorna i plugin Hermes (parità con `hermes plugins`).",
+    headline: "Scopri, installa, abilita e aggiorna i plugin Hermes (parità con `hermes plugins`).",
     identifierLabel: "URL Git o owner/repo",
     inactive: "inattivo",
     installBtn: "Installa",
@@ -395,7 +391,8 @@ export const it: Translations = {
     importConfig: "Importa configurazione da JSON",
     resetDefaults: "Ripristina predefiniti",
     resetScopeTooltip: "Ripristina {scope} ai valori predefiniti",
-    confirmResetScope: "Ripristinare tutte le impostazioni di {scope} ai valori predefiniti? Questa operazione aggiorna solo il modulo — le modifiche non vengono scritte in config.yaml finché non premi Salva.",
+    confirmResetScope:
+      "Ripristinare tutte le impostazioni di {scope} ai valori predefiniti? Questa operazione aggiorna solo il modulo — le modifiche non vengono scritte in config.yaml finché non premi Salva.",
     resetScopeToast: "{scope} ripristinato ai valori predefiniti — controlla e Salva per rendere persistente",
     rawYaml: "Configurazione YAML grezza",
     searchResults: "Risultati della ricerca",
@@ -428,7 +425,8 @@ export const it: Translations = {
   },
 
   env: {
-    changesNote: "Le modifiche vengono salvate immediatamente su disco. Le sessioni attive rilevano automaticamente le nuove chiavi.",
+    changesNote:
+      "Le modifiche vengono salvate immediatamente su disco. Le sessioni attive rilevano automaticamente le nuove chiavi.",
     confirmClearMessage:
       "Il valore memorizzato per questa variabile sarà rimosso dal tuo file .env. Non può essere annullato dall'interfaccia.",
     confirmClearTitle: "Cancellare questa chiave?",
@@ -448,7 +446,8 @@ export const it: Translations = {
     showValue: "Mostra valore reale",
     hideValue: "Nascondi valore",
     customTitle: "Chiavi personalizzate",
-    customHint: "Variabili d'ambiente arbitrarie salvate nel tuo .env che Hermes non riconosce. Usale per iniettare variabili d'ambiente per skill, server MCP o i tuoi strumenti.",
+    customHint:
+      "Variabili d'ambiente arbitrarie salvate nel tuo .env che Hermes non riconosce. Usale per iniettare variabili d'ambiente per skill, server MCP o i tuoi strumenti.",
     customConfigured: "{count} chiave/i personalizzata/e impostata/e",
     addCustomKey: "Aggiungi una chiave personalizzata",
     customKeyName: "Nome della variabile",
@@ -550,8 +549,7 @@ export const it: Translations = {
     },
     scan: {
       building_headline: "Costruzione del profilo achievement…",
-      building_detail:
-        "Lettura di sessioni, chiamate agli strumenti, metadati del modello e stato di sblocco.",
+      building_detail: "Lettura di sessioni, chiamate agli strumenti, metadati del modello e stato di sblocco.",
       starting_headline: "Avvio della scansione achievement…",
       progress_detail:
         "Scansionate {scanned} di {total} sessioni · {pct}%. I badge si sbloccano man mano che viene elaborata altra cronologia.",
@@ -608,11 +606,10 @@ export const it: Translations = {
       copy_button: "Copia immagine",
       copied: "Copiato ✓",
       download_button: "Scarica PNG",
-      hint:
-        "Condividi su X apre un post precompilato in una nuova scheda. Clicca prima su Copia immagine se vuoi allegare il badge 1200×630 — X ti permette di incollarlo direttamente nell'editor del tweet. Scarica PNG salva il file per l'uso ovunque.",
+      hint: "Condividi su X apre un post precompilato in una nuova scheda. Clicca prima su Copia immagine se vuoi allegare il badge 1200×630 — X ti permette di incollarlo direttamente nell'editor del tweet. Scarica PNG salva il file per l'uso ovunque.",
       clipboard_unsupported:
         "La copia delle immagini negli appunti non è supportata in questo browser — usa Scarica invece.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -627,12 +624,6 @@ export const it: Translations = {
       "Le bacheche ti permettono di separare flussi di lavoro non correlati — una per progetto, repository o dominio. I worker su una bacheca non vedono mai le attività di un'altra.",
     slug: "Slug",
     slugHint: "— minuscolo, trattini, ad es. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nome visualizzato",
     displayNameHint: "(facoltativo)",
     description: "Descrizione",
@@ -675,8 +666,7 @@ export const it: Translations = {
     runHistory: "Cronologia esecuzioni",
     workerLog: "Log del worker",
     loadingLog: "Caricamento log…",
-    noWorkerLog:
-      "— nessun log del worker ancora (l'attività non è stata avviata o il log è stato ruotato) —",
+    noWorkerLog: "— nessun log del worker ancora (l'attività non è stata avviata o il log è stato ruotato) —",
     noDescription: "— nessuna descrizione —",
     noComments: "— nessun commento —",
     edit: "modifica",
@@ -707,8 +697,7 @@ export const it: Translations = {
     reassign: "Riassegna",
     renderingError: "La scheda Kanban ha avuto un errore di rendering",
     reloadView: "Ricarica vista",
-    wsAuthFailed:
-      "Autenticazione WebSocket non riuscita — ricarica la pagina per aggiornare il token di sessione.",
+    wsAuthFailed: "Autenticazione WebSocket non riuscita — ricarica la pagina per aggiornare il token di sessione.",
     markDone: "Contrassegnare {n} attività come completate?",
     markArchived: "Archiviare {n} attività?",
     warning: "Avviso",
@@ -761,12 +750,9 @@ export const it: Translations = {
     },
     confirmDone:
       "Contrassegnare questa attività come completata? La presa in carico del worker viene rilasciata e i figli dipendenti diventano pronti.",
-    confirmArchive:
-      "Archiviare questa attività? Sparirà dalla vista predefinita della bacheca.",
-    confirmBlocked:
-      "Contrassegnare questa attività come bloccata? La presa in carico del worker viene rilasciata.",
-    completionSummary:
-      "Riepilogo di completamento per {label}. Memorizzato come result dell'attività.",
+    confirmArchive: "Archiviare questa attività? Sparirà dalla vista predefinita della bacheca.",
+    confirmBlocked: "Contrassegnare questa attività come bloccata? La presa in carico del worker viene rilasciata.",
+    completionSummary: "Riepilogo di completamento per {label}. Memorizzato come result dell'attività.",
     completionSummaryRequired:
       "Il riepilogo di completamento è obbligatorio prima di contrassegnare un'attività come completata.",
     triagePlaceholder: "Idea approssimativa — l'IA la specificherà…",
@@ -774,12 +760,10 @@ export const it: Translations = {
     specifier: "specifier",
     assigneePlaceholder: "assegnatario",
     priority: "Priorità",
-    skillsPlaceholder:
-      "competenze (facoltative, separate da virgole): translation, github-code-review",
+    skillsPlaceholder: "competenze (facoltative, separate da virgole): translation, github-code-review",
     noParent: "— nessun padre —",
     workspacePathDir: "percorso del workspace (richiesto, ad es. ~/projects/my-app)",
-    workspacePathOptional:
-      "percorso del workspace (facoltativo, derivato dall'assegnatario se vuoto)",
+    workspacePathOptional: "percorso del workspace (facoltativo, derivato dall'assegnatario se vuoto)",
     logTruncated: "(mostrando ultimi 100 KB — log completo in ",
     logAt: ")",
   },

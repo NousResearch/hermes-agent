@@ -50,4 +50,3 @@ class BaseAuthorizationMixin:
         logger.warning("[%s] Authorization check returned %s for user %s; treating as unknown",
                        self.name, type(result).__name__, user_id)
         return None
-

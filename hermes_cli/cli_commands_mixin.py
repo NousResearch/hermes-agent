@@ -896,10 +896,25 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if not self._session_db:
             return _cp(_db_unavailable_line())
         # Ensure the session row exists (an empty session has flushed nothing yet): the gateway
-        # needs a row to switch_session onto; set_session_title's INSERT OR IGNORE creates it.
+        # needs a row to switch_session onto. set_session_title never inserts — on a missing row it
+        # is a silent no-op, and request_handoff's UPDATE then matched nothing and reported the
+        # handoff as "already in flight" (#133726). Create the row first (mirroring /new), then
+        # stamp the title; the title is display-only, so a conflict must not block the handoff.
         try:
             if not self._session_db.get_session(self.session_id):
-                self._session_db.set_session_title(self.session_id, f"handoff-{self.session_id[:8]}")
+                self._session_db.create_session(
+                    session_id=self.session_id,
+                    source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                    model=self.model,
+                    model_config={
+                        "max_iterations": self.max_turns,
+                        "reasoning_config": self.reasoning_config,
+                    },
+                )
+                with suppress(Exception):
+                    self._session_db.set_session_title(
+                        self.session_id, f"handoff-{self.session_id[:8]}"
+                    )
         except Exception as exc:
             return _cp(f"  {_t('handoff.session_row_failed', error=exc)}")
         session_title = ""

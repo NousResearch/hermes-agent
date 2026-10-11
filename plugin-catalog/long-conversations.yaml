@@ -1,0 +1,25 @@
+name: long-conversations
+version: "0.1.0"
+repo: https://github.com/cspears32/hermes-long-conversations
+sha: 5a05ba470595622dacf5ad3450d5a13432dd4f06
+description: "Persistent long-term conversations across session boundaries via structured handoff briefs and token monitoring."
+maintainer: cspears32
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/cspears32/hermes-long-conversations#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - long_conv_handoff
+    - long_conv_load
+    - long_conv_list
+    - long_conv_config_get
+    - long_conv_config_set
+  provides_hooks:
+    - pre_llm_call
+    - post_api_request
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

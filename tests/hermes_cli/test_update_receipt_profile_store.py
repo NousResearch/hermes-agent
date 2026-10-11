@@ -48,7 +48,7 @@ def test_named_profile_sees_update_and_pm_receipts_in_both_directions(tmp_path):
                HERMES_RUNTIME_DIR=str(tmp_path / "tools"), PYTHONDONTWRITEBYTECODE="1",
                PYTHONPATH=os.pathsep.join([str(ROOT), *filter(None, sys.path)]))
     done = subprocess.run([sys.executable, str(script), str(ROOT), str(profile)], env=env, cwd=tmp_path,
-                          text=True, capture_output=True, timeout=60)
+                          text=True, capture_output=True, timeout=60, check=False)
     assert done.returncode == 0, done.stdout + done.stderr
     result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 

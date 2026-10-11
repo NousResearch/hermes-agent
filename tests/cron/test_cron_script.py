@@ -97,6 +97,26 @@ class TestRunJobScript:
         assert success is True
         assert output == "hello from script"
 
+    def test_script_stdin_is_devnull(self, cron_env, monkeypatch):
+        """Scripts must not inherit the scheduler's stdin (a read would hang until timeout)."""
+        import cron.scheduler_script as mod
+
+        seen = {}
+        real_popen = subprocess.Popen
+
+        def spy(*args, **kwargs):
+            seen.update(kwargs)
+            return real_popen(*args, **kwargs)
+
+        monkeypatch.setattr(mod.subprocess, "Popen", spy)
+        script = cron_env / "scripts" / "stdin_probe.py"
+        script.write_text("import sys\nprint(repr(sys.stdin.read()))\n")
+
+        success, output = mod._run_job_script(str(script))
+        assert success is True
+        assert output == "''"
+        assert seen["stdin"] == subprocess.DEVNULL
+
     @pytest.mark.platforms("posix")
     @pytest.mark.parametrize("make_interpreter, expected", [
         (lambda d: "python3", "absolute or ~-prefixed"),

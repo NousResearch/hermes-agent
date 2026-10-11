@@ -37,15 +37,22 @@ def _now_ms() -> int:
 class StreamJsonEmitter:
     """Agent-callback sink that writes JSONL events to stdout and flushes each line."""
 
-    def __init__(self, model: str = "", session_id: str = ""):
+    def __init__(self, model: str = "", session_id: str = "", binding: Any = None):
         self._session_id = session_id
         self._start = time.time()
         self._tool_started: dict[str, float] = {}
-        self._emit({"type": "system", "subtype": "init", "model": model, "session_id": session_id})
+        self._binding = binding
+        self._agent: Any = None
+        init: dict[str, Any] = {"type": "system", "subtype": "init", "model": model, "session_id": session_id}
+        if binding is not None:  # requested-only: nothing about the serving account is known yet
+            init["invocation_binding"] = {
+                "invocation_id": binding.invocation_id, "digest": binding.digest, "status": "requested"}
+        self._emit(init)
 
     def attach(self, agent) -> StreamJsonEmitter:
         """Route the agent's streaming/tool callbacks into this emitter (``init`` was already written at
         construction, before credentials/agent init, so a failed start still yields init + result)."""
+        self._agent = agent
         agent.stream_delta_callback = self.on_text_delta
         agent.tool_progress_callback = self.on_tool_progress
         return self
@@ -91,6 +98,9 @@ class StreamJsonEmitter:
                    "duration_ms": int((time.time() - self._start) * 1000)}
         if data.get("error"):
             payload["error"] = str(data["error"])
+        if self._binding is not None:
+            from agent.invocation_binding import result_reference
+            payload["invocation_binding"] = result_reference(self._agent, self._binding, session_id or self._session_id)
         self._emit(payload)
         print(f"\nsession_id: {session_id or self._session_id}", file=sys.stderr)  # same stderr contract as -Q
         return exit_code

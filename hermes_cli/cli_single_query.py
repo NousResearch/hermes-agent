@@ -534,7 +534,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                 # Built BEFORE credentials/agent init so a failed start still closes the protocol
                 # (init + result) instead of exiting 1 with an empty stdout.
                 from hermes_cli.stream_json import StreamJsonEmitter
-                emitter = StreamJsonEmitter(model=getattr(cli, "model", "") or "", session_id=cli.session_id or "")
+                emitter = StreamJsonEmitter(
+                    model=getattr(cli, "model", "") or "", session_id=cli.session_id or "",
+                    binding=getattr(cli, "_invocation_binding", None))
             if cli._ensure_runtime_credentials():
                 effective_query: Any = _route_single_query_images(
                     cli, query, query, single_query_images, single_query_image_urls

@@ -991,8 +991,33 @@ def _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url
                                             explicit_base_url=explicit_base_url), requested_provider)
 
 
+def _resolve_bound_runtime(binding, requested: Optional[str]) -> dict[str, Any]:
+    """Runtime for a strict invocation binding: exactly the pool entry ``binding.credential_id``. No
+    ``pool.select()``, env/singleton/OAuth ladder, fallback or app-server overlay can substitute another account."""
+    from agent.credential_pool import STATUS_DEAD
+    from agent.invocation_binding import SUPPORTED_API_MODES, InvocationBindingError
+
+    if requested and resolve_requested_provider(requested) not in (binding.provider, "auto"):
+        raise InvocationBindingError("provider_mismatch")
+    pool = load_pool(binding.provider)
+    entry = next((e for e in pool.entries() if e.id == binding.credential_id), None)
+    if entry is None:
+        raise InvocationBindingError("credential_not_found")
+    if entry.last_status == STATUS_DEAD or not has_usable_secret(_pool_entry_api_key(entry)):
+        raise InvocationBindingError("credential_missing")
+    if not credential_pool_matches_provider(pool, binding.provider, base_url=_pool_entry_base_url(entry)):
+        raise InvocationBindingError("provider_mismatch")
+    runtime = _resolve_runtime_from_pool_entry(
+        provider=binding.provider, entry=entry, requested_provider=binding.provider, pool=pool,
+        target_model=binding.model)
+    if runtime.get("api_mode") not in SUPPORTED_API_MODES:
+        raise InvocationBindingError("api_mode_unsupported")
+    return runtime
+
+
 def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
-                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> dict[str, Any]:
+                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None,
+                             invocation_binding=None) -> dict[str, Any]:
     """Resolve runtime provider credentials for agent execution. Ladder (order is behavior — each
     rung returns or raises, else falls to the next):
       1. disabled-provider guard (``providers.<name>.enabled: false``)
@@ -1008,7 +1033,10 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
       9. ``model.openai_runtime`` overlay (openai/openai-codex, named custom providers): rewrites the picked rung's
          api_mode to ``codex_app_server``; the rung's credential/endpoint is then not used
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
-    OpenCode Zen/Go where different models route through different API surfaces)."""
+    OpenCode Zen/Go where different models route through different API surfaces).
+    ``invocation_binding`` (strict mode) bypasses the ladder entirely: see ``_resolve_bound_runtime``."""
+    if invocation_binding is not None:
+        return _resolve_bound_runtime(invocation_binding, requested)
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
     # Same alias expansion the auxiliary client applies, so ``provider: openai`` means one thing on

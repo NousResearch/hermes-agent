@@ -449,6 +449,9 @@ class ClientLifecycleMixin:
         # No SDK retry loop: the outer loop owns retries/rotation/fallback, and SDK retries stretch a hung
         # request ~3x past our stale detector.
         request_kwargs["max_retries"] = 0
+        if getattr(self, "_invocation_binding", None) is not None:
+            from agent.invocation_binding import verify_client_material
+            verify_client_material(self, request_kwargs.get("api_key"), request_kwargs.get("base_url"))
         is_copilot = base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
         if is_copilot and self._api_kwargs_have_image_parts(api_kwargs or {}):
             from hermes_cli.copilot_auth import copilot_request_headers
@@ -517,6 +520,12 @@ class ClientLifecycleMixin:
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
         key = self._request_anthropic_client_key()
+        if getattr(self, "_invocation_binding", None) is not None:
+            # After refresh, on the exact key the client is built from or checked out against.
+            from agent.invocation_binding import InvocationBindingError, verify_client_material
+            if key[0] != "direct":
+                raise InvocationBindingError("api_mode_unsupported")
+            verify_client_material(self, key[1], key[2])
         cached, stale = self._checkout_request_slot(_ANTHROPIC_SLOT, key)
         if cached is not None:
             return cached
@@ -563,6 +572,8 @@ class ClientLifecycleMixin:
 
     def _adopt_openai_credentials(self, api_key: str, base_url: str, *, reason: str) -> bool:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
+        if getattr(self, "_invocation_binding", None) is not None:
+            return False  # singleton/env/vertex tokens are not the bound pool entry; refresh goes through the pool
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
         self._sync_client_kwargs_credentials()
         return self._replace_primary_openai_client(reason=reason)
@@ -807,6 +818,8 @@ class ClientLifecycleMixin:
         return ok
 
     def _apply_copilot_token(self, token: str, enterprise_base_url: Any, *, reason: str) -> bool:
+        if getattr(self, "_invocation_binding", None) is not None:
+            return False
         self.api_key = token
         if enterprise_base_url:
             self.base_url = enterprise_base_url.rstrip("/")
@@ -879,6 +892,8 @@ class ClientLifecycleMixin:
         return ok
 
     def _try_refresh_anthropic_client_credentials(self) -> bool:
+        if getattr(self, "_invocation_binding", None) is not None:
+            return False  # resolve_anthropic_token() reads shared env/~/.claude state: an account swap, not a refresh
         # Only native Anthropic rotates OAuth tokens; other anthropic_messages providers (MiniMax, Alibaba, ...)
         # and Azure use static keys — a refresh would pick up the ~/.claude OAuth token and break auth.
         anthropic_base_url = getattr(self, "_anthropic_base_url", "") or ""
@@ -973,7 +988,12 @@ class ClientLifecycleMixin:
     def _swap_credential(self, entry) -> bool:
         """Adopt *entry* as the live credential. Returns False, changing nothing, when the entry's
         route cannot serve this conversation's model (a conversation's model is never rewritten by a
-        rotation; the caller treats a refused swap as "no entry")."""
+        rotation; the caller treats a refused swap as "no entry"). A strict invocation binding only ever
+        accepts its own credential (a same-id refresh); any other entry is account substitution."""
+        binding = getattr(self, "_invocation_binding", None)
+        if binding is not None and getattr(entry, "id", None) != binding.credential_id:
+            logger.warning("Credential swap refused: invocation binding pins credential %s", binding.credential_id)
+            return False
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
         from hermes_cli.providers import is_actual_route

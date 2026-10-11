@@ -276,14 +276,19 @@ class AIAgent(
         capabilities: dict[str, bool] | None = None, cwd: str | None = None,
         side_agent: bool = False, memory_manager=None,
         tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+        invocation_binding=None,
     ):
-        """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
-        init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
+        """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay`` and
+        ``invocation_binding``, which arms strict mode via ``agent.invocation_binding`` once the clients exist)."""
+        init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay", "invocation_binding")}
         if tool_delay is not None:
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
         from agent.agent_init import init_agent
         init_agent(self, **init_kwargs)
+        if invocation_binding is not None:
+            from agent.invocation_binding import bind_agent
+            bind_agent(self, invocation_binding)
 
     def _get_session_db_for_recall(self):
         """SessionDB for recall, opening the default state DB when no ``session_db`` was passed so the
@@ -1217,8 +1222,9 @@ class AIAgent(
     _split_responses_tool_id = staticmethod(_codex_split_responses_tool_id)
     _derive_responses_function_call_id = staticmethod(_codex_derive_responses_function_call_id)
 
-    _interruptible_api_call = _forward("agent.chat_completion_helpers", "interruptible_api_call")
-    _interruptible_streaming_api_call = _forward("agent.chat_completion_helpers", "interruptible_streaming_api_call")
+    # Strict invocation binding wraps the helpers (identity pass-through when unbound).
+    _interruptible_api_call = _forward("agent.invocation_binding", "interruptible_api_call")
+    _interruptible_streaming_api_call = _forward("agent.invocation_binding", "interruptible_streaming_api_call")
     _try_activate_fallback = _forward("agent.chat_completion_helpers", "try_activate_fallback")
 
     def _has_pending_fallback(self) -> bool:

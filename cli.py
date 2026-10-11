@@ -1676,6 +1676,7 @@ def main(
     output_format: str = "text",
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    invocation_binding_file: str | None = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -1703,7 +1704,8 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
-    
+        invocation_binding_file: Strict mode — JSON file pinning credential/provider/model/reasoning (agent.invocation_binding)
+
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
@@ -1726,6 +1728,9 @@ def main(
         _run_legacy_gateway()
         return
 
+    from agent.invocation_binding import load_cli_binding
+    invocation_binding = load_cli_binding(invocation_binding_file)
+
     if not (list_tools or list_toolsets):
         from hermes_cli.process_identity import register_self
         from hermes_cli.shared_profile_warning import shared_profile_warning
@@ -1744,6 +1749,7 @@ def main(
         quiet = True
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+    cli._invocation_binding = invocation_binding  # None unless --invocation-binding (strict mode)
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.

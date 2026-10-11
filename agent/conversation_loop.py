@@ -1288,6 +1288,7 @@ def _apply_context_engine_selection(
     # Structural clones: the engine must not be able to write through nested
     # containers into persisted history; only the request list is acted on (#80498).
     try:
+        from agent.context_engine_host_state import host_state_kwargs
         selected = engine.select_context(
             api_messages,
             conversation_messages=(
@@ -1299,6 +1300,7 @@ def _apply_context_engine_selection(
                 if isinstance(incoming_message, dict) else incoming_message
             ),
             budget_tokens=getattr(engine, "context_length", 0) or 0,
+            **host_state_kwargs(engine.select_context, agent),
         )
     except Exception:
         logger.warning(

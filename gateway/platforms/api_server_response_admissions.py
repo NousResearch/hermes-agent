@@ -82,27 +82,35 @@ def admitted_context(admitted, *, replay=False):
                 terminal_replay=replay or row['status'] == 'terminal')
 
 
-def _admit(adapter, durable_key, request_id, binding, run_kwargs, model):
-    """No await between the final lookup and admission: simultaneous observers converge."""
-    from gateway.session_api_turn import admit_api_turn
+def _admit_steps(adapter, durable_key, request_id, binding, run_kwargs, model):
+    """The final lookup and the admission are one API admission drive (``run_steps_off_loop``
+    serializes them per authority): simultaneous observers converge on one admission."""
+    from gateway.session_api_turn import admit_api_steps
     store = adapter._current_response_store()
     if not store.bind_request_key(durable_key[0], binding, model=model):
         raise RuntimeStoreError('admission_conflict')
     admitted = find_admission(adapter, durable_key, request_id)
-    replay = admitted is not None
-    if admitted is None:
-        try:
-            admitted = admit_api_turn(adapter, request_id=request_id,
-                **{'route_source': 'global', 'confirmed_runtime_lock': False,
-                   'session_history_delivery': '', **run_kwargs})
-        except Exception:
-            # A definite pre-admission refusal does not reserve a poisoned identity. If storage
-            # cannot prove absence, leave the binding intact for later recovery.
-            if find_admission(adapter, durable_key, request_id) is None:
-                store.forget_unadmitted_request(durable_key[0])
-            raise
-        store.bind_request_admission(durable_key[0], admitted[2]['admission_id'])
-    return admitted_context(admitted, replay=replay)
+    if admitted is not None:
+        return (*admitted, True)
+    try:
+        admitted = yield from admit_api_steps(adapter, request_id=request_id,
+            **{'route_source': 'global', 'confirmed_runtime_lock': False,
+               'session_history_delivery': '', **run_kwargs})
+    except Exception:
+        # A definite pre-admission refusal does not reserve a poisoned identity. If storage
+        # cannot prove absence, leave the binding intact for later recovery.
+        if find_admission(adapter, durable_key, request_id) is None:
+            store.forget_unadmitted_request(durable_key[0])
+        raise
+    store.bind_request_admission(durable_key[0], admitted[2]['admission_id'])
+    return (*admitted, False)
+
+
+async def _admit(adapter, durable_key, request_id, binding, run_kwargs, model):
+    from gateway.session_api_turn import admit_api_turn_async
+    *admitted, replay = await admit_api_turn_async(
+        adapter, _admit_steps(adapter, durable_key, request_id, binding, run_kwargs, model))
+    return admitted_context(tuple(admitted), replay=replay)
 
 
 def _stored_owner(adapter, session_id):
@@ -168,7 +176,7 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         gateway_session_key=gateway_session_key, bind_declared_conversation=declared_selected,
         **overrides, route=route, relay_metadata=_request_relay_metadata(body))
     if durable_key:
-        return _admit(adapter, durable_key, request_id, request_binding(adapter, request, durable_key),
-                      run_kwargs, body.get('model', adapter._model_name)), None
+        return await _admit(adapter, durable_key, request_id, request_binding(adapter, request, durable_key),
+                            run_kwargs, body.get('model', adapter._model_name)), None
     return dict(session_id=session_id, user_message=user_message, conversation_history=history,
                 instructions=instructions, run_kwargs=run_kwargs, run_agent=adapter._run_agent), None

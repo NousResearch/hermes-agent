@@ -660,16 +660,16 @@ def _run_user_message(raw_input, _openai_error) -> tuple:
     return user_message, None
 
 
-def _admit_run_to_authority(
+async def _admit_run_to_authority(
     self, launch, run_id, session_history_delivery, _declared_selected,
     idempotency_scope, idempotency_key, _openai_error,
 ) -> Optional[web.Response]:
     """Admit a /v1/runs turn to the session authority FIFO -> ``None``, or the 409 refusal."""
-    from gateway.session_api_turn import admit_api_turn
+    from gateway.session_api_turn import admit_api_turn_async
     from hermes_state_runtime import RuntimeStoreError
     try:
         with self._profile_scope(launch.request_profile):
-            launch.admission = admit_api_turn(self, user_message=launch.user_message,
+            launch.admission = await admit_api_turn_async(self, user_message=launch.user_message,
                 conversation_history=launch.conversation_history, active_run_id=run_id,
                 run_owner_scope=self._run_owners[run_id],
                 turn_author=launch.turn_author,
@@ -808,7 +808,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     # why it is decided BEFORE ``admit_api_turn`` would bind the chat as an API conversation.
     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
     if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
-        refused = _admit_run_to_authority(
+        refused = await _admit_run_to_authority(
             self, launch, run_id, session_history_delivery, _declared_selected,
             idempotency_scope, idempotency_key, _openai_error)
         if refused is not None:

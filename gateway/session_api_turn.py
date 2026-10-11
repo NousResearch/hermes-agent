@@ -9,7 +9,7 @@ import re
 import uuid
 
 from gateway.config import Platform
-from gateway.session_api import bind_api_session, restore_api_session
+from gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
 from gateway.session_results import admission_result
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, _epoch, _json
 
@@ -138,6 +138,28 @@ def api_policy_scope():
 
 
 def admit_api_turn(adapter, **kwargs):
+    """Admit inline (sync callers and tests); the HTTP doors use ``admit_api_turn_async``."""
+    return run_steps(admit_api_steps(adapter, **kwargs))
+
+
+async def admit_api_turn_async(adapter, steps=None, **kwargs):
+    """``admit_api_turn`` (or *steps*, a generator ending in ``admit_api_steps``) with every SQLite
+    write off the owner loop, in admission order."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(adapter.gateway_runner)
+    if authority is None:
+        raise RuntimeStoreError('profile_mismatch')
+    return await run_steps_off_loop(authority, steps or admit_api_steps(adapter, **kwargs), orphaned=schedule_orphan)
+
+
+def schedule_orphan(admitted):
+    """A caller cancelled while its admission committed never observes it: its drain runs anyway."""
+    authority, ref, row = admitted[:3]
+    if row['status'] == 'queued':
+        authority._schedule(ref)
+
+
+def admit_api_steps(adapter, **kwargs):
     # ``/p/<profile>/`` middleware scoped this request; the routed home's authority admits it.
     from gateway.session_authorities import active_authority
     authority = active_authority(adapter.gateway_runner)
@@ -188,17 +210,21 @@ def admit_api_turn(adapter, **kwargs):
         payload['api_turn_v1']['turn_author'] = author
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
     if not isinstance(kwargs['user_message'], list):
-        return _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
+        return (yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs))
     from gateway.session_api_media import commit_api_images
     from gateway.session_ingress_media import release_unheld_media
     payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
+    # Retained bytes belong to an accepted admission. A refused request (or an exact retry of a
+    # retired one, whose references were erased) owns nothing, so its bytes are collected unless
+    # another admission holds them.
+    release = partial(release_unheld_media, authority.db, payload['api_turn_v1']['media'])
     try:
-        return _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
-    finally:
-        # Retained bytes belong to an accepted admission. A refused request (or an exact retry of
-        # a retired one, whose references were erased) owns nothing, so its bytes are collected
-        # unless another admission holds them. Capture, admission and release share this loop.
-        release_unheld_media(authority.db, payload['api_turn_v1']['media'])
+        admitted = yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
+    except Exception:
+        yield release
+        raise
+    yield release
+    return admitted
 
 
 def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs):
@@ -209,11 +235,11 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
         check_api_settings(adapter, settings)
         from gateway.session_contract import SessionRef
         return authority, SessionRef(authority.profile_id, sid), row
-    ref = bind_api_session(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
+    ref = yield from bind_api_steps(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
     check_api_turn(authority, ref, payload)
-    row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
-                              session_id=sid, request_id=request_id, payload=payload,
-                              _authorize_write=partial(_one_target, sid, request_id))
+    row = yield partial(admit_session_input, authority.db, epoch=authority.epoch, principal_id='api',
+                        session_id=sid, request_id=request_id, payload=payload,
+                        _authorize_write=authority._admission_gate(partial(_one_target, sid, request_id)))
     return authority, ref, row
 
 
@@ -279,7 +305,7 @@ def _recover_api_turns(adapter, authority):
 
 
 async def run_api_turn(adapter, *, approval_notify_callback=None, approval_session_key=None, **kwargs):
-    admitted = admit_api_turn(adapter, **kwargs)
+    admitted = await admit_api_turn_async(adapter, **kwargs)
     if approval_notify_callback is None or not approval_session_key:
         return await observe_api_turn(admitted, **kwargs)
     # A streaming surface advertises its own run id (``chatcmpl-*`` / ``run_*``): bind it to this

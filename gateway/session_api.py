@@ -1,6 +1,8 @@
 """Server-only binding of API transcript identities to the existing TurnRunner."""
-import json
+import asyncio
+from functools import partial
 import hashlib
+import json
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource, _is_path_unsafe
@@ -35,8 +37,63 @@ def _pin_api_identity(runner, source, *, transport_profile=None):
     return identity.transport_profile if identity is not None else None
 
 
+def run_steps(steps):
+    """Drive a write-step generator (see ``run_steps_off_loop``) inline: tests and sync callers."""
+    result = error = None
+    while True:
+        try:
+            write = steps.throw(error) if error is not None else steps.send(result)
+        except StopIteration as done:
+            return done.value
+        try:
+            result, error = write(), None
+        except Exception as exc:  # thrown back into the steps, which decide
+            result, error = None, exc
+
+
+async def run_steps_off_loop(authority, steps, *, orphaned=None):
+    """Drive a write-step generator on the owner loop, each yielded SQLite write in a worker thread
+    in admission order (``tracked_write(ordered=True)``): a held writer must not freeze every session.
+    The whole drive is one tracked, shielded task, so a cancelled caller cannot separate a commit
+    from the steps after it; ``orphaned(result)`` then runs when the drive completes."""
+    from gateway.session_runtime_workers import track_mutation, tracked_write
+
+    async def drive():
+        result = error = None
+        while True:
+            try:
+                write = steps.throw(error) if error is not None else steps.send(result)
+            except StopIteration as done:
+                return done.value
+            try:
+                result, error = await tracked_write(authority, write, ordered=True), None
+            except Exception as exc:  # thrown back into the steps, which decide
+                result, error = None, exc
+    async def serialized():
+        # One API admission drive at a time per authority: its lookups, binding and admission stay
+        # one step relative to every other API door, as they were when admission ran on the loop.
+        lock = getattr(authority, '_api_admissions', None)
+        if lock is None:
+            lock = authority._api_admissions = asyncio.Lock()
+        async with lock:
+            return await drive()
+    task = track_mutation(authority, serialized())
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if orphaned is not None:
+            task.add_done_callback(lambda done: done.cancelled() or done.exception() or orphaned(done.result()))
+        raise
+
+
 def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None):
     """Only the authenticated API edge may reserve an API source; never public RPC."""
+    return run_steps(bind_api_steps(authority, session_id, hosted_dispatch=hosted_dispatch,
+                                    declared_key=declared_key))
+
+
+def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=None):
+    """``bind_api_session`` as write steps (``run_steps``): the binding transaction is yielded."""
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
         raise RuntimeStoreError('invalid_params')
@@ -75,6 +132,7 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
 
     def write(conn):
         _epoch(conn, authority.epoch)
+        authority._require_admission_open()  # a drain that began while this waited on the writer wins
         from hermes_state_mutation_retirement import RETIRED_PREFIX
         if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone():
             raise RuntimeStoreError('not_found')
@@ -118,7 +176,7 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
                      (route, _json(entry.to_dict()), now.timestamp()))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (_BINDING_PREFIX + session_id, _json(receipt)))
-    authority.db._execute_write(write)
+    yield partial(authority.db._execute_write, write)
     return restore_api_session(authority, session_id)
 
 

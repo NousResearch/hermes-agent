@@ -1,0 +1,50 @@
+name: telegram-stickers
+title: Telegram Stickers
+repo: https://github.com/churnast/hermes-telegram-stickers
+sha: 4fac790631daffa5013629ddd2bb257dd11d2bf0
+description: >-
+  Lets your agent answer in Telegram with a sticker, the way a person reacts to a joke or good news: four
+  default packs made by Telegram out of the box, then packs you list or send the bot in a direct chat; picked
+  by emoji or by meaning, sent as a reply in the current chat and forum topic, paced per chat, with a per-chat
+  off switch the agent cannot undo. Pace and packs can be set in words in your direct chat.
+  Disclosure: calls only the Telegram Bot API (api.telegram.org or the configured api_base) with the
+  gateway's TELEGRAM_BOT_TOKEN, read through Hermes' secret scope: getStickerSet for the packs in use (during the first-run setup also from a
+  short background thread), sendSticker, and getFile plus one download per sticker for /stickers describe,
+  which the owner starts and which sends each sticker image to the vision model configured in Hermes. A
+  native Telegram handler sees stickers sent to the bot in direct chats (not in groups), skips forwarded ones
+  and keeps pack name, sticker kind and sender id in memory for up to an hour; everyone the bot answers in a
+  direct chat can add packs, with no cap on their number (learn_packs: false turns this off). A pre_llm_call
+  hook appends fixed text to the user message of Telegram turns: a sticker hint of about 540 characters, a
+  settings note of about 310 characters when the message mentions stickers, or a setup paragraph during the
+  first-run setup. Writes catalog.json, descriptions.json and state.json under
+  plugin-data/telegram-stickers/ and reads Hermes' sticker_cache.json. A tool_execution middleware
+  (hide_tool_progress, on by default) runs the plugin's own tools on Telegram turns without calling
+  next_call, after running Hermes' pre_tool_call dispatch (hooks and the approval gate) and argument
+  coercion itself, so no tool progress line comes before a sticker; for those calls the tool-loop
+  guardrail's before-call check, transform_tool_result hooks, later plugins' tool_execution middleware and
+  Hermes' tool start step do not run. Uses Hermes functions outside the plugin API
+  (hermes_cli.plugins._dispatch_pre_tool_call_hooks, model_tools.coerce_tool_args,
+  tools.vision_tools.vision_analyze_tool, gateway.session_context.get_session_env) and reads the call stack
+  to tell the agent's tool loop and the local CLI or TUI from other callers. No shell commands, telemetry or
+  self-update.
+maintainer: churnast
+tier: community
+category: tools
+requires_hermes: ">=0.20.6"
+docs_url: https://github.com/churnast/hermes-telegram-stickers#readme
+version: "1.1.2"
+image: https://raw.githubusercontent.com/churnast/hermes-telegram-stickers/4fac790631daffa5013629ddd2bb257dd11d2bf0/docs/card.png
+screenshots:
+  - https://raw.githubusercontent.com/churnast/hermes-telegram-stickers/4fac790631daffa5013629ddd2bb257dd11d2bf0/docs/screenshots/03-paced-like-a-person.png
+  - https://raw.githubusercontent.com/churnast/hermes-telegram-stickers/4fac790631daffa5013629ddd2bb257dd11d2bf0/docs/screenshots/05-owner-commands.png
+platforms: [linux, macos, windows]
+known_issues:
+  - "Needs plugins.isolation: in_process (the default). Under plugins.isolation: host it cannot see the current chat, so it sends no stickers, learns no packs and adds no hint."
+  - "Every person the bot answers in a direct chat adds packs, which the agent then uses in every chat. Keep the gateway allowlist to yourself, or set learn_packs: false."
+  - "Before Hermes 0.21.5, /stickers in Telegram only shows the status and reloads packs; the owner's other /stickers commands work in the Hermes CLI on the server."
+  - "A tool_search or tool_describe lookup before a sticker still gets Hermes' own progress line; display.platforms.telegram.tool_progress: off hides every tool's lines in Telegram."
+capabilities:
+  provides_tools: [telegram_sticker_find, telegram_sticker_send, telegram_sticker_mute, telegram_sticker_settings]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: [tool_execution]
+  requires_env: [TELEGRAM_BOT_TOKEN]

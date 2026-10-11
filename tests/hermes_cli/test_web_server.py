@@ -1145,12 +1145,17 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             assert resp.status_code == expected_status, (bad, resp.status_code)
 
     def test_media_proxy_fetches_allowlisted_image_and_returns_data_url(self, monkeypatch):
+        from contextlib import asynccontextmanager
+
         png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 8
 
         class _Resp:
             status_code = 200
             headers = {"content-type": "image/png"}
             content = png_bytes
+
+            async def aiter_bytes(self):
+                yield self.content
 
         class _Client:
             def __init__(self, *a, **k):
@@ -1165,6 +1170,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             async def get(self, url):
                 assert url == "https://v3.fal.media/media/abc123"
                 return _Resp()
+
+            @asynccontextmanager
+            async def stream(self, method, url):
+                assert method == "GET"
+                yield await self.get(url)
 
         import hermes_cli.web_routers.files as files_router
 
@@ -1185,6 +1195,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         )
 
     def test_media_proxy_rejects_non_image_content_type(self, monkeypatch):
+        from contextlib import asynccontextmanager
+
         class _Resp:
             status_code = 200
             headers = {"content-type": "text/html"}
@@ -1202,6 +1214,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
             async def get(self, url):
                 return _Resp()
+
+            @asynccontextmanager
+            async def stream(self, method, url):
+                assert method == "GET"
+                yield await self.get(url)
 
         import httpx
 

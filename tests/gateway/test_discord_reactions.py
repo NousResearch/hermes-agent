@@ -141,3 +141,63 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     adapter.send.assert_awaited_once()
 
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured", [False, None, "", "   ", 123])
+async def test_invalid_processing_emoji_falls_back_to_default(configured):
+    config = PlatformConfig(enabled=True, token="***", extra={"processing_emoji": configured})
+    adapter = DiscordAdapter(config)
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999))
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("invalid-processing-emoji", raw_message)
+
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
+    assert raw_message.remove_reaction.await_args_list[0].args == ("👀", adapter._client.user)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome,final_emoji", [
+    (ProcessingOutcome.SUCCESS, "✅"),
+    (ProcessingOutcome.FAILURE, "❌"),
+])
+async def test_processing_emoji_from_profile_yaml(tmp_path, monkeypatch, outcome, final_emoji):
+    from agent.secret_scope import set_multiplex_active
+    from gateway.config import load_gateway_config
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    homes = [tmp_path / "a", tmp_path / "b"]
+    for home, setting in zip(homes, ['  processing_emoji: "🛠️"\n', '']):
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            'discord:\n  enabled: true\n  token: "test-token"\n' + setting,
+            encoding="utf-8",
+        )
+    set_multiplex_active(True)
+    try:
+        for home, expected in [(homes[0], "🛠️"), (homes[1], "👀"), (homes[0], "🛠️")]:
+            token = set_hermes_home_override(str(home))
+            try:
+                config = load_gateway_config().platforms[Platform.DISCORD]
+                adapter = DiscordAdapter(config)
+            finally:
+                reset_hermes_home_override(token)
+            adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999))
+            calls = []
+
+            async def add(emoji):
+                calls.append(("add", emoji))
+
+            async def remove(emoji, user):
+                assert user is adapter._client.user
+                calls.append(("remove", emoji))
+
+            event = _make_event("1", SimpleNamespace(add_reaction=add, remove_reaction=remove))
+            await adapter.on_processing_start(event)
+            await adapter.on_processing_complete(event, outcome)
+            assert calls == [("add", expected), ("remove", expected), ("add", final_emoji)]
+    finally:
+        set_multiplex_active(False)

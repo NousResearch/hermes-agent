@@ -1,4 +1,4 @@
-"""Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
+"""Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""  # health: allow FILE_LINES -- MCP-isolation patches added for plugin toolset merge fix (#134311)
 
 import contextlib
 import contextvars
@@ -96,12 +96,14 @@ class TestPerJobToolsetMcpMerge:
     def _enabled_names(self):
         return {"finnhub", "playwright", "string_enabled"}
 
-    def test_native_only_list_gets_all_enabled_mcp_servers(self):
+    @patch("toolsets._get_plugin_toolset_names", return_value=set())
+    def test_native_only_list_gets_all_enabled_mcp_servers(self, _):
         result = _merge_mcp_into_per_job_toolsets(["web", "terminal"], self.CFG)
         assert result[:2] == ["web", "terminal"]
         assert set(result) == {"web", "terminal"} | self._enabled_names()
 
-    def test_explicit_mcp_name_is_treated_as_allowlist(self):
+    @patch("toolsets._get_plugin_toolset_names", return_value=set())
+    def test_explicit_mcp_name_is_treated_as_allowlist(self, _):
         # User named one server -> add nothing further.
         result = _merge_mcp_into_per_job_toolsets(["web", "finnhub"], self.CFG)
         assert result == ["web", "finnhub"]
@@ -129,7 +131,8 @@ class TestPerJobToolsetMcpMerge:
             result = _resolve_cron_enabled_toolsets(job, {})
         assert result == ["file", "memory", "web"]
 
-    def test_resolver_failure_fails_closed_instead_of_every_toolset(self):
+    @patch("toolsets._get_plugin_toolset_names", return_value=set())
+    def test_resolver_failure_fails_closed_instead_of_every_toolset(self, _):
         """An unreadable cron-platform restriction must not become ``None`` (= all toolsets,
         #111380): the resolver raises and run_job records the failure. A malformed
         ``platform_toolsets`` block is the real-world trigger, so no patching of the resolver."""

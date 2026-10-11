@@ -152,6 +152,12 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    capacity_full: bool = False
+    """True when this tick spawned nothing solely because the configured
+    concurrency cap (``max_spawn`` and/or ``max_in_progress``) was already
+    saturated by running tasks — a healthy, fully-loaded queue, NOT an
+    operator-actionable stall. Health telemetry (the embedded gateway
+    dispatcher's "stuck" warning) must not fire on this alone (#DRE-223)."""
 
 
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
@@ -166,6 +172,7 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
+    capacity_full = False
     for res in results:
         if res is None:
             continue
@@ -177,10 +184,64 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
+        if res.capacity_full:
+            capacity_full = True
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
     if pressure:
         parts.append(f"memory_pressure={pressure}")
+    if capacity_full:
+        parts.append("capacity_full=1")
     return ", ".join(parts)
+
+
+def any_capacity_full(results: Iterable[Optional["DispatchResult"]]) -> bool:
+    """True iff any tick's zero-spawn outcome was solely due to the configured
+    concurrency cap being saturated (``DispatchResult.capacity_full``).
+
+    Used by health telemetry to tell "fully and correctly loaded" from a
+    genuine stall (broken PATH/venv/credentials) so a saturated queue never
+    raises a false ``dispatcher stuck`` alarm (#DRE-223).
+
+    NOTE: this is intentionally an ``any()``, not an ``all()`` — it answers
+    "is there a healthy reason a board held back", which is exactly the
+    wrong question for a MULTI-board tick: one saturated board must not
+    excuse a different, uncapped board's genuine zero-spawn stall. Health
+    telemetry across multiple boards must use :func:`any_genuine_stall`
+    instead, which judges each board against its OWN capacity state
+    (#DRE-292).
+    """
+    return any(res is not None and res.capacity_full for res in results)
+
+
+def any_genuine_stall(
+    entries: Iterable[tuple[bool, Optional["DispatchResult"]]],
+) -> bool:
+    """True iff some board has ready work pending, spawned nothing THIS tick,
+    and its own zero-spawn is not explained by ITS OWN concurrency cap.
+
+    ``entries`` is one ``(board_ready_pending, result)`` pair per dispatched
+    board for the tick. Judging capacity per board (rather than collapsing
+    every board's ``capacity_full`` into one ``any()`` — the pre-fix bug) is
+    required because ``max_spawn`` is a per-board cap: a board that is full
+    on ITS OWN budget must not suppress health telemetry for a different,
+    uncapped board whose zero spawn has no such excuse (broken PATH/venv/
+    credentials) (#DRE-292). A board with no ready work, or that spawned
+    something, or whose own result reports ``capacity_full``, is excused;
+    a board the dispatcher never even reached (``result is None``, e.g. a
+    quarantined/corrupt DB — already logged separately) is also excused
+    here to avoid double-alarming.
+    """
+    for ready_pending, res in entries:
+        if not ready_pending:
+            continue
+        if res is None:
+            continue
+        if res.spawned:
+            continue
+        if res.capacity_full:
+            continue
+        return True
+    return False
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -2232,12 +2293,14 @@ def _tick_spawn_budget(
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
         if running_count >= max_spawn:
+            result.capacity_full = True
             return False, None
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
+            result.capacity_full = True
             return False, None
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:

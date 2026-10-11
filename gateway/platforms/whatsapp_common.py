@@ -250,7 +250,6 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             return True
         body = str(data.get("body") or "").strip()
         # Without the bot's identity (or the quoted author) we cannot rule out an address.
-        # A bare question may be aimed at the bot even in a free-response group.
         if not self._bot_ids_from_message(data) or (data.get("hasQuotedMessage") and not data.get("quotedParticipant")):
             return None
         # Opening with a mention of, or quoting, someone else (bot ruled out above) is addressed
@@ -259,6 +258,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         mentioned = {self._normalize_whatsapp_id(m).split("@", 1)[0] for m in data.get("mentionedIds") or ()}
         if (lead and lead.group(1) in mentioned) or data.get("quotedParticipant"):
             return False
+        # A bare question may be aimed at the bot even in a free-response group.
         return None if "?" in body else False
 
     def _clean_bot_mention_text(self, text: str, data: dict[str, Any]) -> str:

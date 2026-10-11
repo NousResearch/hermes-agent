@@ -193,6 +193,10 @@ needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the 
 message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
 bot, or `/commands` (groups in `free_response_chats` are exempt).
 
+:::note Silence markers in groups
+When the bot answers a human message with only a [silence token](index.md#intentional-silence-tokens), Hermes normally posts a short notice instead so a question never goes unanswered. In a WhatsApp group the token is allowed to stand for chatter that is not addressed to the bot: a statement with no question mark, a message that opens by @mentioning another member, or a reply quoting another member's message. A DM, a mention of or reply to the bot, a `mention_patterns` match, a `/command`, a bare question, or a message where the bot's own identity or the quoted author is unknown still gets the notice.
+:::
+
 Then start the gateway:
 
 ```bash

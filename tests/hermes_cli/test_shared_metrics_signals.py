@@ -468,6 +468,7 @@ def test_api_key_env_maps_to_provider_only():
 
 
 def test_web_forms_count_only_a_new_provider_key_or_endpoint(marks, monkeypatch):
+    from hermes_cli.credential_lifecycle import remove_provider_env_credential
     from hermes_cli.web_models import CustomEndpointUpdate
     from hermes_cli.web_routers import config_env
 
@@ -475,10 +476,11 @@ def test_web_forms_count_only_a_new_provider_key_or_endpoint(marks, monkeypatch)
     monkeypatch.setattr(setup_metrics, "record_provider_setup_done", lambda _s, provider, **_k: done.append(provider))
     monkeypatch.setattr(setup_metrics, "web_setup_surface", lambda: "dashboard")
     marks.home.mkdir(parents=True, exist_ok=True)
-    for key, value in (("OPENROUTER_API_KEY", "sk-or-a"), ("OPENROUTER_API_KEY", "sk-or-a"),  # re-save
-                       ("OPENROUTER_API_KEY", ""), ("OPENROUTER_API_KEY", "sk-or-b"),  # clear, then a new key
-                       ("GITHUB_TOKEN", "ghp_" + "b" * 36)):
-        config_env._save_env_credential(key, value)
+    config_env._save_env_credential("OPENROUTER_API_KEY", "sk-or-a")
+    config_env._save_env_credential("OPENROUTER_API_KEY", "sk-or-a")  # re-save
+    remove_provider_env_credential("OPENROUTER_API_KEY")  # clear (DELETE /api/env), then a new key
+    config_env._save_env_credential("OPENROUTER_API_KEY", "sk-or-b")
+    config_env._save_env_credential("GITHUB_TOKEN", "ghp_" + "b" * 36)
     config_env._save_env_credential("GEMINI_API_KEY", "gm-a")  # Keys page: could be the TTS tool's key
     config_env._save_env_credential("GEMINI_API_KEY", "gm-b", provider_setup=True)  # a provider-connection form
     body = {"name": "Acme LLM", "base_url": "http://10.0.0.5:8080/v1", "model": "acme-70b"}

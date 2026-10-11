@@ -253,6 +253,12 @@ export const opsCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.ops.rollback.noSession'))
       }
 
+      // Checkpoints live in the legacy sidecar's per-session map, which never holds a
+      // shared-gateway session; the owner serves no rollback verb yet.
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'rollback'))
+      }
+
       const trimmed = arg.trim()
       const [first = '', ...rest] = trimmed.split(/\s+/).filter(Boolean)
       const lower = first.toLowerCase()

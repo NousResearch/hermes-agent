@@ -97,7 +97,7 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/resume` | refused | refused: not available yet | local | picker: session | refused | switches the messaging chat's session; local clients resume by id |
 | `/retry` | refused | session.mutate rewind + resubmit | canonical route | slash.exec: refused | refused |  |
 | `/review` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/rollback` | refused | refused: not available yet | sidecar: rollback.diff, rollback.list, rollback.restore | slash.exec: refused | refused | restores filesystem checkpoints |
+| `/rollback` | refused | refused: not available yet | refused: not available yet | slash.exec: refused | refused | restores filesystem checkpoints |
 | `/save` | refused | refused: not available yet | refused: not available yet | slash.exec: refused | refused | writes an export file on the gateway host |
 | `/sessions` | refused | refused: not available yet | local | picker: session | refused | messaging origin-scoped listing (`/sessions all` needs a messaging admin) |
 | `/sethome` (/set-home) | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | messaging-only |

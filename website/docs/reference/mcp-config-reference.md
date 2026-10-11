@@ -367,7 +367,12 @@ an actionable error rather than silently falling back to a different flow.
 Device login requests the device and refresh grants during dynamic registration, or uses
 your configured `oauth.client_id`, `oauth.client_secret`, and `oauth.token_endpoint_auth_method`.
 The registered client must permit device authorization. The browser CIMD document is not used.
-`oauth.scope` is sent on the device authorization request; `oauth.user_agent` also applies
+`oauth.scope` is sent on the device authorization request; without one, the device request
+asks for the scopes the resource (then the authorization server) advertises, the same priority
+the browser flow uses. Either way, when the authorization server's metadata lists
+`offline_access` in `scopes_supported` and does not exclude the `refresh_token` grant, the
+request also carries `offline_access` so servers that gate refresh tokens behind it mint one;
+the persisted token records the scope actually requested. `oauth.user_agent` also applies
 to token polling. Tokens, registration, and issuer metadata stay in the active profile's
 MCP token store and the existing runtime refresh path reuses them after a restart.
 Failed device grants do not replace previously saved credentials.

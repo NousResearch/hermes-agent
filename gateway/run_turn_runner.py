@@ -757,13 +757,25 @@ class TurnRunner:
                 last_edit_ts = time.monotonic()
                 await self._progress_restore_typing(st)
             except queue.Empty:
-                await asyncio.sleep(0.3)
+                # A cancel raised inside this handler cannot reach the sibling
+                # `except CancelledError` clause below, and this sleep is where the
+                # loop idles — so catch it here, or the end-of-turn drain and final
+                # edit are skipped and throttled tool lines are never shown.
+                try:
+                    await asyncio.sleep(0.3)
+                except asyncio.CancelledError:
+                    await self._drain_progress_on_cancel(st)
+                    return
             except asyncio.CancelledError:
                 await self._drain_progress_on_cancel(st)
                 return
             except Exception as e:
                 logger.error("Progress message error: %s", e)
-                await asyncio.sleep(1)
+                try:
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    await self._drain_progress_on_cancel(st)
+                    return
 
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 

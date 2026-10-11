@@ -47,7 +47,7 @@ def run_steps(steps):
             return done.value
         try:
             result, error = write(), None
-        except Exception as exc:  # thrown back into the steps, which decide
+        except Exception as exc:  # health: allow BLE001 -- not swallowed: thrown back into the steps, which re-raise it
             result, error = None, exc
 
 
@@ -67,7 +67,7 @@ async def run_steps_off_loop(authority, steps, *, orphaned=None):
                 return done.value
             try:
                 result, error = await tracked_write(authority, write, ordered=True), None
-            except Exception as exc:  # thrown back into the steps, which decide
+            except Exception as exc:  # health: allow BLE001 -- not swallowed: thrown back into the steps, which re-raise it
                 result, error = None, exc
     async def serialized():
         # One API admission drive at a time per authority: its lookups, binding and admission stay

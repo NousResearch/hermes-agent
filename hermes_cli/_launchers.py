@@ -298,10 +298,35 @@ def mint_launcher(
     import base64
     encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
     code = f"import base64; exec(base64.b64decode('{encoded}'))"
-    body = (
-        "@echo off\r\n"
-        f'"{python_exe}" -I -c "{code}" %*\r\n'
-    )
+    # cmd.exe parses a .cmd with the console's OEM code page, so a literal
+    # non-ASCII interpreter path (a profile holding "、" or any CJK character)
+    # is corrupted before the line ever runs ("The system cannot find the path
+    # specified.") -- the desktop's `--version` probe then reads the install as
+    # missing and its first-run bootstrap re-runs. And cmd.exe copies a line
+    # that carries a variable reference into a bounded (~8191 char)
+    # post-expansion batch buffer, while the payload makes this line ~9 KB: an
+    # inline `%~dp0` there exits 255 ("The input line is too long."). So
+    # re-point through the launcher's own directory only when the literal is
+    # non-ASCII, and do it behind a delayed reference (not buffered); an ASCII
+    # literal is valid at any length and keeps a literal "!" in arguments
+    # intact (delayed expansion would drop it: "a!b" -> "ab").
+    literal = str(python_exe)
+    try:
+        relative = os.path.relpath(python_exe, out_dir)
+    except ValueError:  # different drive: no relative form exists
+        relative = None
+    if not literal.isascii() and relative is not None and relative.isascii():
+        body = (
+            "@echo off\r\n"
+            "setlocal EnableDelayedExpansion\r\n"
+            f'set "HPY=%~dp0{relative}"\r\n'
+            f'"!HPY!" -I -c "{code}" %*\r\n'
+        )
+    else:
+        body = (
+            "@echo off\r\n"
+            f'"{literal}" -I -c "{code}" %*\r\n'
+        )
     return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
 
 

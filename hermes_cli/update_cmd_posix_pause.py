@@ -26,7 +26,12 @@ when this process dies.
   their recorded argv + home.
 * the updater never kills itself: a unit whose cgroup holds this process (``/update`` from
   chat: the update runs in the gateway unit's cgroup, which ``systemctl stop`` kills) is
-  stopped only after this process moved into a transient scope of its own. A launchd job
+  stopped only after this process moved into a transient scope of its own. Stopping a unit
+  also tears down every unit following it (``PartOf``/``Upstreams``/``BindsTo`` — e.g. a
+  ``hermes-dashboard`` lifecycle drop-in follows ``hermes-gateway``), so being outside the
+  target unit's cgroup is safety only when this process is outside EVERY Hermes unit's cgroup:
+  a desktop-terminal update runs inside the dashboard unit and the cascade would SIGKILL it
+  mid-update, leaving the fleet stopped with no updater alive to restart it. A launchd job
   whose coalition holds it, or any gateway whose stop would take the updater down, is left
   running for the post-commit restart.
 """
@@ -253,36 +258,52 @@ def _ppid(pid: int) -> int:
     return 0
 
 
+def _inside_hermes_unit(cgroup: str | None) -> bool:
+    """True when *cgroup* sits inside a Hermes service unit (a ``hermes-*.service`` path
+    component). The updater can run inside the gateway unit (``/update`` from chat) or inside a
+    SIBLING unit — a desktop-terminal update runs in ``hermes-dashboard.service`` — and a
+    ``PartOf``/``Upstreams``/``BindsTo`` cascade of the gateway stop tears the sibling's cgroup
+    down too. Membership of ANY Hermes unit is the risk, not just membership of the unit about
+    to be stopped."""
+    return bool(cgroup) and any(part.startswith("hermes-") and part.endswith(".service")
+                                for part in cgroup.strip("/").split("/"))
+
+
+def _start_transient_update_scope(bus: str, pids: list[int], unit_name: str) -> None:
+    cmd = ["busctl", bus, "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+           "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",
+           f"hermes-update-{os.getpid()}.scope", "fail", "2", "PIDs", "au", str(len(pids)), *map(str, pids),
+           "Description", "s", f"hermes update (outside {unit_name} while it is paused)", "0"]
+    with suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                   stdin=subprocess.DEVNULL, timeout=15, check=False)
+
+
 def _escape_cgroup(unit: dict) -> bool:
-    """Move this process (and its ancestors in the same unit, e.g. ``/update``'s bash wrapper)
-    into a transient scope so stopping *unit* cannot kill it. True only when proven out: a
+    """Move this process (and its ancestors inside any Hermes unit's cgroup, e.g. ``/update``'s
+    bash wrapper) into a transient scope so stopping *unit* — nor any unit its stop cascades to
+    through ``PartOf``/``Upstreams``/``BindsTo`` — cannot kill it. True only when proven out: a
     membership that cannot be read (either side) keeps the unit running, since its stop would take
     this update down with it."""
     own, unit_cgroup = _pid_cgroup(), unit.get("cgroup")
     if own is None or not unit_cgroup:
         return False
-    if not _inside(own, unit_cgroup):
-        return True
+    if not _inside(own, unit_cgroup) and not _inside_hermes_unit(own):
+        return True  # outside every Hermes unit's cgroup: no stop or cascade can reach this process
     from gateway.status import looks_like_gateway_command_line
     pids, pid = [], os.getpid()
-    while pid > 1 and pid != unit["pid"] and _inside(_pid_cgroup(pid), unit["cgroup"]):
+    while pid > 1 and pid != unit["pid"] and _inside_hermes_unit(_pid_cgroup(pid)):
         with suppress(OSError):
             cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
             if pid != os.getpid() and looks_like_gateway_command_line(cmdline):
                 break
         pids.append(pid)
         pid = _ppid(pid)
-    bus = "--user" if unit["scope"] == "user" else "--system"
-    cmd = ["busctl", bus, "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
-           "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",
-           f"hermes-update-{os.getpid()}.scope", "fail", "2", "PIDs", "au", str(len(pids)), *map(str, pids),
-           "Description", "s", f"hermes update (outside {unit['unit']} while it is paused)", "0"]
-    with suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                   stdin=subprocess.DEVNULL, timeout=15, check=False)
+    _start_transient_update_scope("--user" if unit["scope"] == "user" else "--system", pids, unit["unit"])
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
-        if (now := _pid_cgroup()) is not None and not _inside(now, unit_cgroup):
+        now = _pid_cgroup()
+        if now is not None and not _inside(now, unit_cgroup) and not _inside_hermes_unit(now):
             return True
         time.sleep(0.1)
     return False

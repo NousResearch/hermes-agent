@@ -113,6 +113,28 @@ def _interrupted_turn(_agent):
     raise KeyboardInterrupt
 
 
+@pytest.mark.parametrize("reason, failed, expected_code", [
+    ("text_response(stop)", False, 0),
+    ("all_retries_exhausted_no_response", True, 1),
+    ("max_iterations_reached(5/5)", True, 1),
+])
+def test_chat_stream_json_preserves_turn_exit_reason(monkeypatch, capsys, reason, failed, expected_code):
+    def turn(_agent):
+        return {"final_response": "answer", "failed": failed, "turn_exit_reason": reason,
+                "input_tokens": 3, "output_tokens": 2, "total_tokens": 5,
+                "cache_read_tokens": 1, "cache_write_tokens": 0}
+
+    code, events = _run_stream_json_chat(monkeypatch, capsys, turn)
+    assert code == expected_code
+    assert [event["type"] for event in events] == ["system", "result"]
+    result = events[-1]
+    assert result["turn_exit_reason"] == reason
+    assert result["exit_code"] == expected_code
+    assert result["text"] == "answer" and result["session_id"] == "session-123"
+    assert result["tokens"] == {"input": 3, "output": 2, "total": 5, "cache_read": 1, "cache_write": 0}
+    assert isinstance(result["duration_ms"], int) and isinstance(result["timestamp"], int)
+
+
 @pytest.mark.parametrize("turn, credentials_ok, exit_code, types", [
     (_ok_turn, True, 0, ["system", "text", "tool_use", "tool_result", "result"]),
     (_interrupted_turn, True, 130, ["system", "result"]),

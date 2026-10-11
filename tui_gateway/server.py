@@ -2256,7 +2256,16 @@ def _probe_config_health(cfg: dict) -> str:
     if not isinstance(cfg, dict):
         return ""
     warnings: list[str] = []
-    if null_keys := sorted(k for k, v in cfg.items() if v is None):
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    # Only keys whose default is a dict are sections. Top-level null *scalars* such as
+    # max_concurrent_sessions/context_file_max_chars ship as null in the example config and
+    # DEFAULT_CONFIG, and the empty-section advice ("set them to {}") would be wrong for them.
+    if null_keys := sorted(
+        k
+        for k, v in cfg.items()
+        if v is None and isinstance(DEFAULT_CONFIG.get(k), dict)
+    ):
         keys = ", ".join(f"`{k}`" for k in null_keys)
         warnings.append(f"config.yaml has empty section(s): {keys}. Remove the line(s) or set them to `{{}}` — "
                         f"empty sections silently drop nested settings.")

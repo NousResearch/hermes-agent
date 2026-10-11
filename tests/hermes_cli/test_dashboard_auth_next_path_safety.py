@@ -19,15 +19,14 @@ import pytest
 
 from fastapi.testclient import TestClient
 
+from hermes_cli import web_server
+from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.request_utils import is_safe_next_path
-from hermes_cli.dashboard_auth.routes import _validate_post_login_target
-
-# Cross-file fixture reuse: the password-login E2E harness (provider registration,
-# auth_required flip, TestClient) lives with its flow's tests.
-from tests.hermes_cli.test_dashboard_auth_password_login import (
-    gated_app,
-    pw_provider,
+from hermes_cli.dashboard_auth.routes import (
+    _reset_password_rate_limit,
+    _validate_post_login_target,
 )
+from tests.hermes_cli.test_dashboard_auth_password_login import PasswordProvider
 
 # Values that must be rejected: each resolves off-origin (or into the auth/API flow)
 # once a browser parses it, so none may survive the gate as a post-login target.
@@ -89,10 +88,30 @@ class TestValidatePostLoginTarget:
 
 
 class TestPasswordLoginNextTainted:
-    def test_backslash_escaped_next_falls_back_to_root(self, gated_app: TestClient):
+    @pytest.fixture
+    def authed_client(self):
+        """The gated dashboard app with the in-test password provider (admin/hunter2),
+        mirroring the password-login flow's E2E harness."""
+        clear_providers()
+        register_provider(PasswordProvider())
+        _reset_password_rate_limit()
+        prev_host = getattr(web_server.app.state, "bound_host", None)
+        prev_port = getattr(web_server.app.state, "bound_port", None)
+        prev_required = getattr(web_server.app.state, "auth_required", None)
+        web_server.app.state.bound_host = "fly-app.fly.dev"
+        web_server.app.state.bound_port = 443
+        web_server.app.state.auth_required = True
+        yield TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+        clear_providers()
+        _reset_password_rate_limit()
+        web_server.app.state.bound_host = prev_host
+        web_server.app.state.bound_port = prev_port
+        web_server.app.state.auth_required = prev_required
+
+    def test_backslash_escaped_next_falls_back_to_root(self, authed_client: TestClient):
         """The reported end-to-end repro: POST the URL-safe form of ``/\\evil.example`` and the
         JSON body must NOT hand it to ``window.location.assign``."""
-        resp = gated_app.post(
+        resp = authed_client.post(
             "/auth/password-login",
             json={
                 "provider": "testpw",

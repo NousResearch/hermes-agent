@@ -1496,22 +1496,11 @@ class _CodexCompletionsAdapter:
             service_tier = extra_body.get("service_tier")
             if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
                 resp_kwargs["service_tier"] = service_tier.strip()
-            reasoning_cfg = extra_body.get("reasoning")
-            if isinstance(reasoning_cfg, dict):
-                # Shared per-model vocabulary with the main transport ("max" only where the model publishes it; "minimal"/"ultra"
-                # clamp to a listed level; ``()`` = the model takes no ``reasoning`` field at all — gpt-4o/4.1 on api.openai.com,
-                # #76255). ``enabled: False`` goes on the wire as ``effort: none`` where the vocabulary has it,
-                # since an omitted field leaves the model's default effort on (#75227).
-                from agent.reasoning_effort import clamp_effort
-                from agent.transports.codex import _codex_efforts_for_route
-                supported = _codex_efforts_for_route(model, host, is_codex_backend=route.is_codex_backend)
-                if supported and reasoning_cfg.get("enabled") is not False:
-                    # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default.
-                    effort = clamp_effort(reasoning_cfg.get("effort") or "medium", supported)
-                    resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
-                elif "none" in supported and not is_xai:
-                    resp_kwargs["reasoning"] = {"effort": "none"}
+            from agent.auxiliary_adapter_reasoning import _codex_aux_reasoning_kwargs
+            resp_kwargs.update(_codex_aux_reasoning_kwargs(
+                extra_body, kwargs.get("reasoning_effort"),
+                model=model, host=host, is_codex_backend=route.is_codex_backend, is_xai=is_xai,
+            ))
         if wire_tools:
             resp_kwargs["tools"] = wire_tools
         if wire_aliases:
@@ -1725,13 +1714,13 @@ class _AnthropicCompletionsAdapter:
             max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
         temperature = kwargs.get("temperature")
         # Reasoning priority: explicit per-call _reasoning_config (MoA per-slot) wins over
-        # extra_body.reasoning; build_anthropic_kwargs translates to ``thinking``.
+        # extra_body.reasoning, then top-level reasoning_effort (a keyed ``providers:`` entry that
+        # declares anthropic_messages on a /v1 URL gets only that); build_anthropic_kwargs
+        # translates to ``thinking``.
         reasoning_cfg = kwargs.get("_reasoning_config")
         if reasoning_cfg is None:
-            _eb = kwargs.get("extra_body")
-            _rc = _eb.get("reasoning") if isinstance(_eb, dict) else None
-            if isinstance(_rc, dict):
-                reasoning_cfg = _rc
+            from agent.auxiliary_adapter_reasoning import _requested_reasoning
+            reasoning_cfg = _requested_reasoning(kwargs.get("extra_body"), kwargs.get("reasoning_effort"))
         # OpenAI tool_choice (str or dict) → Anthropic-style name/mode string.
         tool_choice = kwargs.get("tool_choice")
         if isinstance(tool_choice, dict):

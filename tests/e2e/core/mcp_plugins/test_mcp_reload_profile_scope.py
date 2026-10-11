@@ -36,6 +36,7 @@ from tests.e2e.core.mcp_plugins._helpers import (
     script,
     stdio_server,
     tool_name,
+    tool_results,
 )
 from tests.e2e.core.mcp_plugins._plugin_helpers import tui_host
 from tests.e2e.core.parity._drive_rpc import READY_TIMEOUT
@@ -188,3 +189,35 @@ def test_slash_exec_reload_reaches_the_live_session_and_names_failed_servers(tmp
             assert "Did not connect: broken" in output, output
             assert set(_server_pids(work_log)) - set(work_pids), (
                 "slash.exec /reload-mcp never restarted the live session's server (it ran in the slash worker)")
+
+
+GAMMA = "gamma"
+CALL_GAMMA_RE = re.compile(r"CALL-GAMMA:([A-Za-z0-9]+)")
+
+
+def _call_gamma_on_demand(record: dict[str, Any]):
+    match = CALL_GAMMA_RE.search(_last_user(record["body"]))
+    return script(*(((tool_name(GAMMA, "ro_probe"), {"nonce": match.group(1)}),) if match else ()))(record)
+
+
+def test_a_server_added_mid_chat_is_usable_in_that_chat_after_reload(tmp_path: Path) -> None:
+    """The issue's own scenario: a server is added to config while a chat is open. That chat cannot
+    reach it until ``/reload-mcp``; after the reload the same chat's next turn calls it."""
+    gamma_log = tmp_path / "gamma.jsonl"
+    with provider(_call_gamma_on_demand) as srv:
+        eh = _home_with_profile(tmp_path, srv.base_url)
+        with tui_host(eh) as host:
+            sid = host.new_session()
+            assert FINAL in host.turn(sid, "ADD-ONE warm up")
+            eh.update_config(lambda cfg: cfg["mcp_servers"].__setitem__(
+                GAMMA, stdio_server(GAMMA, gamma_log, eh.tag, MCPE2E_CANARY="GAMMA-LIVE")))
+
+            assert FINAL in host.turn(sid, "ADD-TWO CALL-GAMMA:beforereload")
+            assert calls_received(gamma_log, "ro_probe") == [], "the new server was reachable before /reload-mcp"
+
+            result = _reload(host, sid)
+            assert result["status"] == "reloaded" and result["failed"] == [], result
+
+            assert FINAL in host.turn(sid, "ADD-THREE CALL-GAMMA:afterreload")
+            assert [c.get("arguments") for c in calls_received(gamma_log, "ro_probe")] == [{"nonce": "afterreload"}]
+            assert any("RO:GAMMA-LIVE:afterreload" in r for r in tool_results(srv)), tool_results(srv)

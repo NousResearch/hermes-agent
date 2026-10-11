@@ -194,6 +194,7 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registryDialConnectionId,
+  registryTargetProfile,
   rememberSshEnumeration,
   removeConnection,
   type ResolvedConnectionDescriptor,
@@ -11368,7 +11369,7 @@ async function connectRegistryBackend(
       // The remote process runs as this profile; the desktop-side profile key
       // is only the routing label. hermes:api uses it to translate explicit
       // self-profile query filters into the backend's namespace.
-      remoteProfile: sshConfig.remoteProfile || '',
+      remoteProfile: registryTargetProfile({ kind: 'ssh', remoteProfile: sshConfig.remoteProfile }, profileKey),
       logs: hermesLog.slice(-80),
       ...getWindowState()
     }

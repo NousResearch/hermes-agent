@@ -23,7 +23,7 @@ import stat
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -54,7 +54,7 @@ def _make_ledger(tmp_path: Path, monkeypatch, cfg: dict | None = None):
 class TestIsEnabled:
     def test_absent_key_is_false(self, monkeypatch):
         import agent.action_receipts as ar
-        monkeypatch.setattr(ar, "_load_config", lambda: {})
+        monkeypatch.setattr(ar, "_load_config", dict)
         assert ar.is_enabled() is False
 
     def test_enabled_false_is_false(self, monkeypatch):
@@ -431,7 +431,7 @@ class TestRetention:
         cfg = _cfg(max_age_days=30)
         monkeypatch.setattr(ar, "_load_config", lambda: cfg)
         ledger = ar.ActionReceiptLedger(db_path=tmp_path / "r.db")
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        old_ts = (datetime.now(UTC) - timedelta(days=60)).isoformat()
         # Write one old receipt directly (bypass auto-timestamp).
         ledger.record_receipt(tool_name="old", args={}, created_at=old_ts)
         # Write one fresh receipt — this triggers pruning.
@@ -834,38 +834,38 @@ class TestCookieRedaction:
 
     def test_top_level_cookie_redacted(self, monkeypatch):
         import agent.action_receipts as ar
-        monkeypatch.setattr(ar, "_load_config", lambda: {})
+        monkeypatch.setattr(ar, "_load_config", dict)
         result = self._summary({"cookie": "session=abc123; auth=xyz"})
         assert result["cookie"] == "[redacted]"
 
     def test_top_level_set_cookie_redacted(self, monkeypatch):
         import agent.action_receipts as ar
-        monkeypatch.setattr(ar, "_load_config", lambda: {})
+        monkeypatch.setattr(ar, "_load_config", dict)
         result = self._summary({"set-cookie": "id=secret; Path=/"})
         assert result["set-cookie"] == "[redacted]"
 
     def test_nested_cookie_redacted_depth_1(self, monkeypatch):
         import agent.action_receipts as ar
-        monkeypatch.setattr(ar, "_load_config", lambda: {})
+        monkeypatch.setattr(ar, "_load_config", dict)
         result = self._summary({"headers": {"cookie": "tok=abc"}})
         assert result["headers"]["cookie"] == "[redacted]"
 
     def test_nested_cookie_redacted_depth_2(self, monkeypatch):
         import agent.action_receipts as ar
-        monkeypatch.setattr(ar, "_load_config", lambda: {})
+        monkeypatch.setattr(ar, "_load_config", dict)
         result = self._summary({"req": {"headers": {"set-cookie": "s=x"}}})
         assert result["req"]["headers"]["set-cookie"] == "[redacted]"
 
     def test_cookie_inside_list_redacted(self, monkeypatch):
         import agent.action_receipts as ar
-        monkeypatch.setattr(ar, "_load_config", lambda: {})
+        monkeypatch.setattr(ar, "_load_config", dict)
         result = self._summary({"items": [{"Cookie": "user=jack"}]})
         assert result["items"][0]["Cookie"] == "[redacted]"
 
     def test_innocent_cookie_string_value_not_double_redacted(self, monkeypatch):
         """The word 'cookie' inside an innocent value should not be redacted."""
         import agent.action_receipts as ar
-        monkeypatch.setattr(ar, "_load_config", lambda: {})
+        monkeypatch.setattr(ar, "_load_config", dict)
         result = self._summary({"description": "fortune cookie recipe"})
         assert "fortune cookie recipe" in result["description"]
 
@@ -901,7 +901,6 @@ class TestNonConfirmableHashes:
         candidates and comparing to the stored value.
         """
         import agent.action_receipts as ar
-        import hashlib
         from agent.task_envelope import canonical_json
 
         ledger, _ = _make_ledger(tmp_path, monkeypatch)
@@ -924,7 +923,6 @@ class TestNonConfirmableHashes:
     def test_output_hash_is_hmac_not_raw_sha256(self, tmp_path, monkeypatch):
         """output_hash stored in DB must not match the raw SHA-256 of the output."""
         import agent.action_receipts as ar
-        import hashlib
 
         ledger, _ = _make_ledger(tmp_path, monkeypatch)
         output = "command output here"
@@ -989,7 +987,6 @@ class TestNonConfirmableHashes:
         must replace it with an ephemeral HMAC before storing.
         """
         import json
-        import hashlib
         import agent.action_receipts as ar
         from agent.task_envelope import canonical_json as te_canonical_json
 
@@ -1014,7 +1011,6 @@ class TestNonConfirmableHashes:
 
     def test_envelope_hash_does_not_expose_raw_input_hash(self, tmp_path, monkeypatch):
         """envelope_hash must be computed over the scrubbed dict, not the raw envelope."""
-        import hashlib
         import agent.action_receipts as ar
         from agent.task_envelope import canonical_hash, canonical_json as te_canonical_json, build_shadow_envelope
 
@@ -1463,3 +1459,40 @@ def test_retention_failure_rolls_back_rows_boundary_and_trigger(tmp_path, monkey
             conn.execute("DELETE FROM action_receipts")
     finally:
         conn.close()
+
+def test_default_config_registers_action_receipts_as_disabled():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["observability"]["action_receipts"] == {
+        "enabled": False,
+        "max_rows": None,
+        "max_age_days": None,
+        "max_size_mb": None,
+    }
+
+
+def test_default_ledger_path_is_context_profile_scoped(tmp_path):
+    from agent.action_receipts import ActionReceiptLedger
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    first_home = tmp_path / "profiles" / "first"
+    second_home = tmp_path / "profiles" / "second"
+
+    first_context = set_hermes_home_override(first_home)
+    try:
+        first = ActionReceiptLedger()
+        first.record_receipt(tool_name="first")
+    finally:
+        reset_hermes_home_override(first_context)
+
+    second_context = set_hermes_home_override(second_home)
+    try:
+        second = ActionReceiptLedger()
+        second.record_receipt(tool_name="second")
+    finally:
+        reset_hermes_home_override(second_context)
+
+    assert first.db_path == first_home / "action_receipts.db"
+    assert second.db_path == second_home / "action_receipts.db"
+    assert [row["tool_name"] for row in first.read_all()] == ["first"]
+    assert [row["tool_name"] for row in second.read_all()] == ["second"]

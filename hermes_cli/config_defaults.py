@@ -2281,8 +2281,7 @@ DEFAULT_CONFIG = {
         "auto_archive": False,
         # Idle days before auto-archive hides a session (only when auto_archive is true).
         "auto_archive_days": 3,
-        # List delegate_task subagent runs in session lists (desktop sidebar, dashboard, session.list),
-        # nested under their parent. Off by default: they are machinery, not conversations.
+        # List delegate_task runs under their parent in session UIs; off because they are machinery.
         "show_subagents": False,
         # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE). VACUUM
         # blocks writes (~seconds per 100MB), so it runs only at startup, only when ≥1 session was
@@ -2292,8 +2291,7 @@ DEFAULT_CONFIG = {
         "vacuum_after_prune": True,
         # Minimum days between VACUUM rewrites; pruning keeps its normal cadence.
         "min_vacuum_interval_days": 30,
-        # Minimum hours between auto-maintenance runs (tracked in state.db state_meta, shared across
-        # processes).
+        # Minimum hours between auto-maintenance runs (state.db state_meta, shared across processes).
         "min_interval_hours": 24,
 
         # Notice about the compact FTS layout (reclaims ~60%+ of state.db). OPT-IN: legacy indexes
@@ -2315,25 +2313,27 @@ DEFAULT_CONFIG = {
         # once; 0 disables). Max active messages (across the compression lineage) for interactive
         # resume.
         "max_resume_messages": 20000,
-        # Max active messages per session for in-memory export (`hermes sessions export`); checked
-        # per session, so full-DB backups of small sessions work.
+        # Max messages per session for export; checked per session so small-session backups work.
         "max_export_messages": 20000,
     },
-    # First-touch onboarding hints (agent/onboarding.py). Each hint shows once and is latched under
-    # `seen`; wipe the section to re-see all hints.
+    # First-touch hints show once and latch under `seen`; wipe the section to re-see them.
     "onboarding": {
         "seen": {},
         # First-ever message: ask = offer; off = plain intro only.
         "profile_build": "ask",
     },
-    # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
-    # and transmission to Nous (`send`) are SEPARATE opt-ins; see
+    # Local profile-scoped evidence; default-off. None means an unlimited retention dimension.
+    "observability": {
+        "action_receipts": {
+            "enabled": False, "max_rows": None, "max_age_days": None, "max_size_mb": None,
+        },
+    },
+    # Privacy-safe local aggregates. Collection and transmission are separate opt-ins; see
     # website/docs/developer-guide/relay-shared-metrics.md Appendix A for consent/retention.
     "telemetry": {
         "shared_metrics": {
             "enabled": False,
-            # Requires `enabled` (`send` alone logs an error). A package is sent only if its whole
-            # period is inside a recorded consent window.
+            # Requires `enabled`; packages send only when wholly inside a recorded consent window.
             "send": False,
             # Ingest endpoint (override for staging/local). Deliberately NOT env- overridable.
             # Non-HTTPS refused unless the host is localhost.

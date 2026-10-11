@@ -17,7 +17,7 @@ import math
 import json
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Optional
 
 
@@ -110,7 +110,7 @@ class TaskEnvelope:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _json_safe(payload: Any, *, depth: int = 0) -> Any:

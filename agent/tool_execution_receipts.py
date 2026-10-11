@@ -42,7 +42,7 @@ def _maybe_record_action_receipt(
 
         try:
             cwd = getattr(get_active_env(effective_task_id), "cwd", None)
-        except Exception:
+        except Exception:  # health: allow BLE001 -- ambient task lookup is optional receipt metadata
             cwd = None
 
         session_id = getattr(agent, "session_id", "") or None
@@ -67,5 +67,7 @@ def _maybe_record_action_receipt(
             cwd=receipt_cwd,
             envelope=envelope,
         )
-    except Exception as exc:
-        logger.warning("action receipt write failed for %s: %s", function_name, exc)
+    except Exception as exc:  # health: allow BLE001 -- observability must never alter the executed tool result
+        logger.warning(
+            "action receipt write failed for %s: %s", function_name, exc, exc_info=True
+        )

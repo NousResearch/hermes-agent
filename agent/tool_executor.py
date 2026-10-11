@@ -307,15 +307,20 @@ class _ToolCallRef:
             **outcome,
         )
 
-    def emit_cancelled(self, agent, start_time: float) -> str:
-        """Synthesize the ``cancelled`` result for a KeyboardInterrupt mid-tool and emit its hook."""
+    def cancelled_result(self, agent) -> _ToolCancelledResult:
+        """Synthesize the stable model-visible result for a mid-tool user interrupt."""
         message = f"Tool execution cancelled. {interrupt_skip_wording(agent)}"
-        result = _ToolCancelledResult(
+        return _ToolCancelledResult(
             json.dumps({"error": message, "status": "cancelled"}, ensure_ascii=False)
         )
+
+    def emit_cancelled(self, agent, start_time: float) -> str:
+        """Synthesize a cancelled result and emit its one terminal hook."""
+        result = self.cancelled_result(agent)
         self.emit_post(
             agent, result, duration_ms=int((time.time() - start_time) * 1000),
-            status="cancelled", error_type="keyboard_interrupt", error_message=message,
+            status="cancelled", error_type="keyboard_interrupt",
+            error_message=json.loads(result)["error"],
         )
         return result
 
@@ -1336,7 +1341,7 @@ class _ConcurrentBatch:
             with contextlib.suppress(Exception):
                 agent.interrupt("keyboard interrupt", tool_reason=_REASON_USER_INTERRUPT)
             dispatched = execution_state.apply_to(ref)
-            result = ref.emit_cancelled(agent, start)
+            result = ref.cancelled_result(agent)
             duration = time.time() - start
             logger.info("tool %s cancelled (%.2fs)", ref.name, duration)
             return _ToolOutcome(ref, result, duration, True, False, dispatched)
@@ -1774,17 +1779,18 @@ def _run_sequential_call(
                     "cancelled",
                 )
             raise
+        if not dispatched:
+            raise
         # Publish the user-interrupt reason before emitting, so the hook sees it.
         with contextlib.suppress(Exception):
             agent.interrupt("keyboard interrupt", tool_reason=_REASON_USER_INTERRUPT)
         _spinner_result = ref.emit_cancelled(agent, tool_start_time)
-        if dispatched:
-            ref.record_receipt(
-                agent,
-                _spinner_result,
-                time.time() - tool_start_time,
-                "cancelled",
-            )
+        ref.record_receipt(
+            agent,
+            _spinner_result,
+            time.time() - tool_start_time,
+            "cancelled",
+        )
         _append_skipped_tool_results(
             agent, messages, remaining_calls, ref.task_id,
             content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",

@@ -11,6 +11,14 @@ tail truncation. Any actor with write access to the database file can rebuild
 a fully valid chain. The chain is a corruption detector, not a cryptographic
 proof of custody or tamper-evidence against a privileged local attacker.
 
+**Semantics caveat**: a receipt is a local observation that Hermes dispatched a
+tool and observed an outcome. It is not an authority grant, a durable effect
+settlement, or an exactly-once guarantee. Absence of a receipt does not prove
+that no external effect occurred. In particular, cancellation and timeout can
+leave the effect indeterminate because the remote action may have completed
+after local observation stopped. These in-process controls are hardening, not
+an OS isolation boundary.
+
 **Privacy design**: ``args_hash``, ``output_hash``, and body fingerprints are
 HMAC-SHA-256 values keyed by a per-process ephemeral secret that is never
 persisted or logged.  The chain still provides corruption detection (the same
@@ -81,7 +89,7 @@ import sqlite3
 import stat
 import threading
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -174,7 +182,7 @@ def _receipts_section() -> dict[str, Any]:
         if not isinstance(receipts, dict):
             return {}
         return receipts
-    except Exception:
+    except Exception:  # health: allow BLE001 -- config readers are optional plugins; any failure keeps receipts disabled
         return {}
 
 
@@ -184,10 +192,7 @@ def is_enabled() -> bool:
     Any missing key, non-mapping section, or config read failure yields
     ``False``: telemetry never fails open into being on.
     """
-    try:
-        return _receipts_section().get("enabled") is True
-    except Exception:
-        return False
+    return _receipts_section().get("enabled") is True
 
 
 def _retention_config() -> tuple[Optional[int], Optional[int], Optional[int]]:
@@ -221,7 +226,7 @@ def default_db_path() -> Path:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _receipt_hmac(data: bytes) -> str:
@@ -247,7 +252,7 @@ def _body_fingerprint(value: Any) -> dict[str, Any]:
     else:
         try:
             encoded = canonical_json(value).encode("utf-8")
-        except Exception:
+        except Exception:  # health: allow BLE001 -- hostile custom values are quarantined without invoking repr
             return {"type": type(value).__name__, "hmac": _receipt_hmac(b"")}
     return {"bytes": len(encoded), "hmac": _receipt_hmac(encoded)}
 
@@ -320,7 +325,7 @@ def redacted_args_summary(args: Any) -> str:
     """A bounded, secrets-stripped rendering of the call arguments."""
     try:
         summary = canonical_json(_redact(args if args is not None else {}))
-    except Exception:
+    except Exception:  # health: allow BLE001 -- untrusted argument containers must degrade to a constant summary
         summary = "[unserializable]"
     if len(summary) > MAX_ARGS_SUMMARY_CHARS:
         return summary[: MAX_ARGS_SUMMARY_CHARS - 3] + "..."
@@ -335,7 +340,7 @@ def _output_text(output: Any) -> str:
     if isinstance(output, (bool, int, float, dict, list, tuple)):
         try:
             return canonical_json(_redact(output))
-        except Exception:
+        except Exception:  # health: allow BLE001 S110 -- untrusted output containers fall through to a type-only marker
             pass
     return f"[unsupported:{type(output).__name__}]"
 
@@ -358,7 +363,7 @@ def _harden_db_permissions(path: Path) -> None:
             if not stat.S_ISREG(st.st_mode):
                 continue
             os.chmod(target, stat.S_IRUSR | stat.S_IWUSR, follow_symlinks=False)
-        except Exception:
+        except Exception:  # health: allow BLE001 S110 -- optional permission hardening must not change tool execution
             pass
 
 
@@ -608,7 +613,7 @@ class ActionReceiptLedger:
             try:
                 if max_age_days is not None:
                     cutoff = (
-                        datetime.now(timezone.utc) - timedelta(days=max_age_days)
+                        datetime.now(UTC) - timedelta(days=max_age_days)
                     ).isoformat()
                     conn.execute(
                         "DELETE FROM action_receipts WHERE created_at < ?", (cutoff,)
@@ -826,10 +831,10 @@ class ActionReceiptLedger:
                 # incoming receipt and describes the committed ledger state.
                 self._apply_retention(conn)
                 conn.execute("COMMIT")
-            except Exception:
+            except (OSError, sqlite3.Error, TypeError, ValueError):
                 try:
                     conn.execute("ROLLBACK")
-                except Exception:
+                except sqlite3.Error:  # health: allow S110 -- preserve the original transaction failure
                     pass
                 raise
             finally:
@@ -896,7 +901,7 @@ class ActionReceiptLedger:
                 ).fetchall()
             finally:
                 conn.close()
-        except Exception as exc:
+        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
             return [f"verification failed: {type(exc).__name__}"]
 
         rows = [dict(r) for r in raw_rows]
@@ -923,9 +928,9 @@ class ActionReceiptLedger:
 
 
 __all__ = [
-    "ActionReceiptLedger",
     "MAX_ARGS_SUMMARY_CHARS",
     "RECEIPT_SCHEMA_VERSION",
+    "ActionReceiptLedger",
     "default_db_path",
     "is_enabled",
     "redacted_args_summary",

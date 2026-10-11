@@ -162,6 +162,30 @@ def _str_map(value: object) -> bool:
     return isinstance(value, dict) and _all_str(value) and _all_str(value.values())
 
 
+def _metadata_map(value: object, depth: int = 0) -> bool:
+    """String-keyed tree; leaves are strings, string lists, or (``hermes.config``)
+    declaration lists. Nesting tops out at ``metadata.hermes.<namespace>.*`` — the
+    canonical frontmatter shape the consumers read, all isinstance-guarded."""
+    if not isinstance(value, dict) or depth > 2:
+        return False
+    for key, leaf in value.items():
+        if not isinstance(key, str):
+            return False
+        if isinstance(leaf, str):
+            continue
+        if isinstance(leaf, list):
+            if all(isinstance(item, str) for item in leaf):
+                continue
+            if depth < 2 and all(
+                isinstance(item, dict) and _metadata_map(item, 2) for item in leaf
+            ):
+                continue
+        elif isinstance(leaf, dict) and _metadata_map(leaf, depth + 1):
+            continue
+        return False
+    return True
+
+
 def _read_json_object(path: Path, *, label: str) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -220,8 +244,8 @@ def _valid_skill_frontmatter(frontmatter: Mapping[str, Any], directory_name: str
         compatibility = frontmatter["compatibility"]
         if not isinstance(compatibility, str) or not 1 <= len(compatibility) <= 500:
             return "compatibility must be a string of 1 to 500 characters"
-    if "metadata" in frontmatter and not _str_map(frontmatter["metadata"]):
-        return "metadata must map string keys to string values"
+    if "metadata" in frontmatter and not _metadata_map(frontmatter["metadata"]):
+        return "metadata must map string keys to strings, string lists, or one nested mapping"
     if "allowed-tools" in frontmatter and not isinstance(frontmatter["allowed-tools"], str):
         return "allowed-tools must be a string"
     return None

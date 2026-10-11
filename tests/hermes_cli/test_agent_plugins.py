@@ -199,6 +199,9 @@ def test_invalid_skill_does_not_hide_valid_sibling(tmp_path: Path) -> None:
         ("compatibility", ""),
         ("compatibility", 1),
         ("metadata", []),
+        ("metadata", {"hermes": {"tags": [1, "Notes"]}}),
+        ("metadata", {"hermes": {"upstream": {"inner": {"repo": "x"}}}}),
+        ("metadata", {"hermes": {"config": [{"key": 1, "description": "d"}]}}),
         ("allowed-tools", ["terminal"]),
     ],
 )
@@ -209,6 +212,42 @@ def test_rejects_invalid_optional_skill_fields(
     _write_skill(tmp_path, "bad-skill", **{field: value})
     package = load_agent_plugin(tmp_path, tmp_path / "data")
     assert package.skills == ()
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"author": "somebody"},
+        {"hermes": {"tags": ["Notes", "Apple"], "related_skills": ["obsidian"]}},
+        {"author": "somebody", "hermes": {"tags": ["Notes"]}},
+        {
+            "hermes": {
+                "tags": ["Notes"],
+                "upstream": {"repo": "x/brag", "path": "skills/brag"},
+            }
+        },
+        {
+            "hermes": {
+                "config": [{"key": "PRICE_ALERTS", "description": "Watched symbols"}]
+            }
+        },
+        {"standard": "anthropic", "hermes": {"tags": ["Notes"]}},
+    ],
+)
+def test_flat_and_nested_skill_metadata_stay_discoverable(
+    tmp_path: Path, metadata: dict
+) -> None:
+    """metadata.hermes.* (string-list leaves, namespace mappings, config declaration
+    lists) is the canonical SKILL.md shape the consumers read (#133771); flat string
+    maps keep working."""
+    _write_json(tmp_path / "plugin.json", _manifest())
+    _write_skill(tmp_path, "summarize", metadata=metadata)
+
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+
+    assert [skill.name for skill in package.skills] == ["summarize"]
+    assert package.skills[0].frontmatter["metadata"] == metadata
+    assert not package.diagnostics
 
 
 @pytest.mark.require_symlinks

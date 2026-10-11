@@ -219,6 +219,10 @@ export class CanonicalDesktopProtocol {
 
     if (method === 'approval.respond' || method === 'clarify.respond') { return this.preparePromptResponse(method, params) }
 
+    // The owner has no revision-fenced reasoning verb yet (`config.set` admits busy / verbose /
+    // yolo / model): refuse by name before the wire, like Ink, instead of a bare invalid_params.
+    if (method === 'config.set' && params.key === 'reasoning') { throw new Error('Changing reasoning is not available on the shared gateway yet') }
+
     return method === 'bot_relay.deliver' ? canonicalBotDelivery(params) : params
   }
 

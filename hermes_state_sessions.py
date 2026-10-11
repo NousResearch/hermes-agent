@@ -1426,7 +1426,7 @@ class SessionSessionsMixin:
                 {select_head}{_sql_session_last_active("s")} AS last_active
                 {from_sessions}
                 {where_sql}
-                ORDER BY s.started_at DESC
+                ORDER BY s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
             params.extend([limit, offset])
@@ -1451,7 +1451,7 @@ class SessionSessionsMixin:
                 {select_head}{_sql_session_last_active("s")} AS last_active
                 {from_sessions}
                 {pinned_where}
-                ORDER BY s.started_at DESC
+                ORDER BY s.started_at DESC, s.id DESC
             """
             for row in self._read_all(pinned_query, pinned_params):
                 s = self._list_row(row)

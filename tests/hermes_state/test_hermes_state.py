@@ -3588,6 +3588,35 @@ class TestExcludeSources:
         assert "tool" not in sources
 
 
+class TestListSessionsRichPagingTies:
+    """Test pagination tiebreaking for list_sessions_rich (#126760)."""
+
+    def test_list_sessions_rich_pages_tied_started_at_by_id(self, db):
+        for sid in ("sess-a", "sess-b", "sess-c"):
+            db.create_session(sid, "cli")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (1000.0, sid))
+        db._conn.commit()
+
+        p1 = [s["id"] for s in db.list_sessions_rich(source="cli", limit=2, offset=0, order_by_last_active=False)]
+        assert p1 == ["sess-c", "sess-b"]
+
+        p2 = [s["id"] for s in db.list_sessions_rich(source="cli", limit=2, offset=2, order_by_last_active=False)]
+        assert p2 == ["sess-a"]
+
+        assert p1 + p2 == ["sess-c", "sess-b", "sess-a"]
+
+    def test_pinned_sessions_tied_started_at_ordered_by_id(self, db):
+        for sid in ("pin-a", "pin-b", "pin-c"):
+            db.create_session(sid, "cli")
+            db.set_session_pinned(sid, True)
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (1000.0, sid))
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=0, offset=0, include_pinned=True, order_by_last_active=False)
+        ids = [s["id"] for s in sessions]
+        assert ids == ["pin-c", "pin-b", "pin-a"]
+
+
 
 
 

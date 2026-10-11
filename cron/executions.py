@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
+# A worker must publish its ready acknowledgement only after this transition commits. SQLite can
+# briefly reject the first write while the gateway is finishing a schema/WAL transaction; retry the
+# adoption gate rather than exiting before the acknowledgement deadline.
+ADOPTION_LOCK_RETRIES = 4
+ADOPTION_LOCK_RETRY_BASE_SECONDS = 0.05
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
@@ -269,23 +274,35 @@ def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
 
     The dispatching gateway creates the row before spawning a restart-safe
     worker.  Adoption is the single ``claimed`` → ``running`` gate: only the
-    winner may acknowledge ownership or run side effects.
+    winner may acknowledge ownership or run side effects.  A short-lived SQLite
+    lock is retried because this function runs before the worker publishes its
+    ready acknowledgement; failing immediately makes a successful dispatch look
+    like a dead worker.
     """
     pid = os.getpid()
     process_started_at = _process_start_time(pid)
     now = _hermes_now().isoformat()
-    with _transaction() as conn:
-        cur = conn.execute(
-            """UPDATE executions
-               SET process_id=?, pid=?, process_started_at=?,
-                   status='running', started_at=?, handoff_pending=0,
-                   handoff_started_at=NULL
-               WHERE id=? AND status='claimed' AND handoff_pending=1""",
-            (_PROCESS_ID, pid, process_started_at, now, execution_id),
-        )
-        if cur.rowcount != 1:
-            return None
-        record = _fetch(conn, execution_id)
+    record: Optional[Dict[str, Any]] = None
+    for attempt in range(ADOPTION_LOCK_RETRIES):
+        try:
+            with _transaction() as conn:
+                cur = conn.execute(
+                    """UPDATE executions
+                       SET process_id=?, pid=?, process_started_at=?,
+                           status='running', started_at=?, handoff_pending=0,
+                           handoff_started_at=NULL
+                       WHERE id=? AND status='claimed' AND handoff_pending=1""",
+                    (_PROCESS_ID, pid, process_started_at, now, execution_id),
+                )
+                if cur.rowcount != 1:
+                    return None
+                record = _fetch(conn, execution_id)
+            break
+        except sqlite3.OperationalError as exc:
+            locked = "database is locked" in str(exc).lower()
+            if not locked or attempt + 1 >= ADOPTION_LOCK_RETRIES:
+                raise
+            time.sleep(ADOPTION_LOCK_RETRY_BASE_SECONDS * (2 ** attempt))
     _emit_execution_state(record)
     return record
 

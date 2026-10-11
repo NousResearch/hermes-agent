@@ -440,6 +440,18 @@ def _sigkill(kill, pid: int) -> bool:
         return False
 
 
+def _reap_browser_sessions_owned_by_pid(pid: int) -> int:
+    """Best-effort cleanup of browser daemons owned by a reclaimed worker PID."""
+    try:
+        from tools.browser_tool_lifecycle import _reap_browser_sessions_owned_by_pid as reap
+    except Exception:
+        return 0
+    try:
+        return int(reap(pid) or 0)
+    except Exception:
+        return 0
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
@@ -459,6 +471,7 @@ def _terminate_reclaimed_worker(
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "browser_sessions_reaped": 0,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -466,13 +479,19 @@ def _terminate_reclaimed_worker(
         return info
     info["host_local"] = True
 
+    def terminated_info() -> dict[str, Any]:
+        info["terminated"] = True
+        info["browser_sessions_reaped"] = _reap_browser_sessions_owned_by_pid(int(pid))
+        return info
+
     kill = _kill_fn(signal_fn)
     if kill is None:
         return info
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         # Never signal by bare number: a dead PID is "gone" (reclaim proceeds), a live one is held.
         info["signal_refused"] = True
-        info["terminated"] = not _kb._pid_alive(pid)
+        if not _kb._pid_alive(pid):
+            return terminated_info()
         return info
     if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
         info["terminated"] = True
@@ -485,19 +504,18 @@ def _terminate_reclaimed_worker(
     except ProcessLookupError:
         # Already gone = successful termination. Leaving terminated=False would
         # make the reclaim guard misread a dead worker as alive and defer forever.
-        info["terminated"] = True
-        return info
+        return terminated_info()
     except OSError:
         return info
 
     if _poll_worker_exit(pid, started_at):
-        info["terminated"] = True
-        return info
+        return terminated_info()
     if _worker_alive(pid, started_at):
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
-    info["terminated"] = not _worker_alive(pid, started_at)
+    if not _worker_alive(pid, started_at):
+        return terminated_info()
     return info
 
 

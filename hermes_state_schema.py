@@ -374,10 +374,20 @@ class SessionSchemaMixin:
             cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
 
         if not has_messages:
-            # Nothing indexed and nothing to index: swap the shape in place, no rebuild authority needed.
+            # Nothing indexed and nothing to index: swap the shape in place, no rebuild
+            # authority needed. Run the DDL through the transactional executor, NOT
+            # _ensure_fts_schema: executescript issues an implicit COMMIT that releases
+            # fts_align_empty mid-swap ("no such savepoint" on empty misaligned DBs;
+            # regression from 42e97f3808 - the pre-refactor code used this call).
             cursor.execute("SAVEPOINT fts_align_empty")
             try:
-                do_align()
+                for name in _FTS_BASE_TRIGGERS:
+                    cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+                cursor.execute("DROP TABLE IF EXISTS messages_fts")
+                self._execute_ddl_script_transactional(cursor, FTS_SQL)
+                cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
+                cursor.execute(_DROP_RETIRED_TOOL_HIGH_WATER_SQL)
+                cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
                 cursor.execute("RELEASE SAVEPOINT fts_align_empty")
             except BaseException:
                 cursor.execute("ROLLBACK TO SAVEPOINT fts_align_empty")

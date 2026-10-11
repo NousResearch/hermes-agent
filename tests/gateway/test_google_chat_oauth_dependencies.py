@@ -12,7 +12,7 @@ from plugins.platforms.google_chat import oauth
 
 def test_stale_google_transitives_are_reported_missing(monkeypatch):
     installed = {
-        "google-cloud-pubsub": "2.39.0",
+        "google-cloud-pubsub": "2.39.2",
         "google-api-python-client": "2.194.0",
         "google-auth": "2.55.0",
         "google-auth-oauthlib": "1.3.1",
@@ -31,6 +31,30 @@ def test_stale_google_transitives_are_reported_missing(monkeypatch):
 
     stale = {spec.split("==")[0] for spec in oauth._missing_required_packages()}
     assert {"google-auth", "httplib2", "pyasn1"} <= stale
+    assert "google-cloud-pubsub" not in stale
+
+
+def test_required_pins_match_the_declared_extras():
+    """The staleness probe must pin exactly what the extras install: pm.sync_venv lands
+    the extra's version and _missing_required_packages then reports it missing forever,
+    so ``--install-deps`` never converges (#132200)."""
+    import tomllib
+    from pathlib import Path
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    with pyproject.open("rb") as fh:
+        extras = tomllib.load(fh)["project"]["optional-dependencies"]
+    pinned = {}
+    for extra in oauth._DEPENDENCY_EXTRAS:
+        for spec in extras[extra]:
+            name, _, version = spec.split(";")[0].strip().partition("==")
+            pinned[name] = version
+    for spec in oauth._REQUIRED_PACKAGES:
+        name, _, version = spec.partition("==")
+        assert name in pinned, f"{name} is probed but no declared extra pins it"
+        assert version == pinned[name], (
+            f"{name}=={version} drifted from the declared extras (=={pinned[name]})"
+        )
 
 
 def test_installer_repairs_stale_transitives_through_pm(monkeypatch, capsys):

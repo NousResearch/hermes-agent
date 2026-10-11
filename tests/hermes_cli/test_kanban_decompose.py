@@ -158,6 +158,83 @@ def test_decompose_fanout_children_inherit_root_assignee_when_unrouted(kanban_ho
     assert root.assignee == "zdr"
 
 
+def _decompose_capturing_prompt(tid, llm_payload, profiles, cfg=None):
+    """Run decompose_task with a mocked LLM; return (outcome, user_prompt, system_prompt)."""
+    patches = _patch_list_profiles(profiles)
+    for p in patches:
+        p.start()
+    try:
+        with patch(
+            "agent.auxiliary_client.call_llm", return_value=_fake_aux_response(llm_payload),
+        ) as call_llm, _patch_extra_body(), patch(
+            "hermes_cli.config.load_config_readonly", return_value=cfg or {},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+    messages = call_llm.call_args.kwargs["messages"]
+    system = next(m["content"] for m in messages if m["role"] == "system")
+    user = next(m["content"] for m in messages if m["role"] == "user")
+    return outcome, user, system
+
+
+def test_decompose_prompt_names_current_assignee_as_owner(kanban_home):
+    """The LLM must be told who already owns the card. Without it, a roster
+    entry literally named ``default`` (the default profile, often
+    undescribed) reads as "the default choice", and the model routes every
+    child there explicitly — an explicit valid pick that no fallback can
+    catch — moving a card assigned to ``secretary`` onto ``default``."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="ship it", assignee="secretary", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True, "rationale": "split",
+        "tasks": [{"title": "a", "body": "b", "assignee": None, "parents": []}],
+    })
+    outcome, user, system = _decompose_capturing_prompt(
+        tid, llm_payload, ["default", "secretary", "researcher"],
+    )
+    assert outcome.ok, outcome.reason
+    assert "Current assignee (owner of this task): secretary" in user
+    assert "owns the" in system and "keep each child on it" in system
+
+
+def test_decompose_prompt_marks_unassigned_task(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="ship it", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True, "rationale": "split",
+        "tasks": [{"title": "a", "body": "b", "assignee": None, "parents": []}],
+    })
+    outcome, user, _ = _decompose_capturing_prompt(tid, llm_payload, ["default", "secretary"])
+    assert outcome.ok, outcome.reason
+    assert "Current assignee (owner of this task): (none)" in user
+
+
+def test_decompose_children_stay_with_owner_but_keep_explicit_valid_pick(kanban_home):
+    """Parent on ``secretary``: unrouted children stay on ``secretary``;
+    a child the LLM explicitly routes to another real profile keeps it."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="ship it", assignee="secretary", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True, "rationale": "split",
+        "tasks": [
+            {"title": "do the work", "body": "b", "assignee": None, "parents": []},
+            {"title": "read papers", "body": "b", "assignee": "researcher", "parents": []},
+        ],
+    })
+    outcome, _, _ = _decompose_capturing_prompt(tid, llm_payload, ["default", "secretary", "researcher"])
+    assert outcome.ok, outcome.reason
+    with kbc.connect() as conn:
+        c0 = kb.get_task(conn, outcome.child_ids[0])
+        c1 = kb.get_task(conn, outcome.child_ids[1])
+    assert c0.assignee == "secretary"
+    assert c1.assignee == "researcher"
+
+
 def test_decompose_explicit_default_assignee_wins_over_root_assignee(kanban_home):
     """An explicitly configured ``kanban.default_assignee`` stays
     authoritative for unroutable children; the root task's assignee only

@@ -105,6 +105,30 @@ def _display_name(obj: dict, profile_key: str, default: str = "") -> str:
     return obj.get("localDisplayName", "") or (obj.get(profile_key, {}) or {}).get("displayName", default)
 
 
+def _decode_data_uri_image(data_uri: str) -> Optional[str]:
+    """Decode an inline ``data:image/<fmt>;base64,<payload>`` image into a file.
+
+    SimpleX mobile clients attach photos inline as a data URI on ``msgContent.image``
+    rather than as an XFTP file transfer. Returns the decoded file path under the
+    Hermes scratch dir, or ``None`` when the URI is malformed or undecodable.
+    """
+    try:
+        header, _, payload = data_uri.partition(",")
+        if not payload or ";base64" not in header:
+            return None
+        raw = base64.b64decode(payload)
+        ext = ".jpg"  # SimpleX inline images are always JPEG thumbnails/photos
+        from hermes_constants import get_scratch_dir
+        out_dir = Path(get_scratch_dir()) / "simplex-images"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"rcv-{int(time.time() * 1000)}{ext}"
+        out_path.write_bytes(raw)
+        return str(out_path)
+    except Exception:
+        logger.exception("SimpleX: failed to decode inline image data URI")
+        return None
+
+
 def _send_cmd(chat_id: str, items: list) -> str:
     """Structured ``/_send <target> json …`` addressing *chat_id* by ID. The bare ``@name`` / ``#[id]``
     syntax is a display-name lookup that silently drops unresolved names; json.dumps escapes text."""
@@ -358,6 +382,12 @@ class SimplexAdapter(BasePlatformAdapter):
         media_urls: list[str] = []
         media_types: list[str] = []
         file_info = chat_item_data.get("file")
+        # Image delivery: mobile clients attach photos BOTH as msgContent.image (a low-res
+        # thumbnail data URI) AND as an XFTP file carrying the full-resolution original.
+        # The XFTP file wins: when its download hasn't started/completed we defer the message
+        # (start /freceive, deliver on rcvFileComplete). The inline thumbnail is only a
+        # fallback for messages with no XFTP file sibling at all.
+        inline_image = msg_content.get("image") or ""
         if file_info and isinstance(file_info, dict):
             file_source = file_info.get("fileSource", {}) or {}
             file_path = file_source.get("filePath") if isinstance(file_source, dict) else None
@@ -365,16 +395,26 @@ class SimplexAdapter(BasePlatformAdapter):
             ext = Path(file_path).suffix.lower() if file_path else ""
             if not ext and file_info.get("fileName", ""):
                 ext = Path(file_info["fileName"]).suffix.lower()
-            # Voice notes typically arrive before the file finishes downloading; defer until
-            # rcvFileComplete. /freceive gets no corrId reply, so awaiting one would block the loop.
-            if not file_path and _is_audio_ext(ext) and file_id is not None:
-                logger.info("SimpleX: voice file %d not yet received, accepting transfer", file_id)
+            # Voice notes and images typically arrive before the file finishes downloading;
+            # defer until rcvFileComplete. /freceive gets no corrId reply, so awaiting one
+            # would block the loop. Images matter most: the inline ``image`` data URI is a
+            # low-res thumbnail, the XFTP file is the full-resolution original.
+            if not file_path and file_id is not None and (
+                _is_audio_ext(ext) or msg_type_str == "image" or _is_image_ext(ext)
+            ):
+                logger.info("SimpleX: file %d not yet received, accepting transfer", file_id)
                 self._pending_file_transfers[file_id] = chat_item
                 await self._send_fire_and_forget(f"/freceive {file_id}")
                 return
             if file_path:
                 media_urls.append(file_path)
                 media_types.append(_mime_for_ext(ext))
+        elif msg_type_str == "image" and inline_image.startswith("data:image/"):
+            # No XFTP file sibling at all: fall back to the inline thumbnail.
+            decoded_path = _decode_data_uri_image(inline_image)
+            if decoded_path:
+                media_urls.append(decoded_path)
+                media_types.append("image/jpeg")
         source = self.build_source(
             chat_id=chat_id, chat_name=chat_name, chat_type="group" if is_group else "dm",
             user_id=sender_id, user_name=sender_name or sender_id)

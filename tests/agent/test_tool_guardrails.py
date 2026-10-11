@@ -2,13 +2,34 @@
 
 import json
 
+import pytest
+
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
+    ToolGuardrailDecision,
+    append_toolguard_guidance,
     canonical_tool_args,
     classify_tool_failure,
 )
+
+
+@pytest.mark.parametrize("existing", [{"source": "tool"}, ["tool advisory"], None, "tool advisory"])
+def test_guidance_preserves_json_fields_and_existing_advisories_in_order(existing):
+    original = {"success": True, "content": "# Example\n\n日本語", "guardrail": existing}
+    warning = ToolGuardrailDecision(action="warn", code="repeat", message="Use the existing result.", count=2)
+    halt = ToolGuardrailDecision(action="halt", code="stop", message="Stop repeating this call.", count=5)
+
+    result = append_toolguard_guidance(json.dumps(original), warning)
+    result = append_toolguard_guidance(result, halt)
+    parsed = json.loads(result)
+
+    assert {key: value for key, value in parsed.items() if key != "guardrail"} == {
+        key: value for key, value in original.items() if key != "guardrail"
+    }
+    previous = existing if isinstance(existing, list) else [existing]
+    assert parsed["guardrail"] == [*previous, warning.to_metadata(), halt.to_metadata()]
 
 
 def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposing_raw_args():

@@ -171,10 +171,19 @@ export const describeRpcError = (err: unknown): string => {
   return text
 }
 
+/** The shared owner's slash.exec refuses every command outside its reviewed reads with
+ *  `unsupported_command` (gateway/session_commands.py): name the command, as the classic CLI does. */
+export const isUnsupportedCommand = (err: unknown): boolean =>
+  (err as { data?: { reason?: string } } | null)?.data?.reason === 'unsupported_command'
+
 /** The slash worker (built-in command helper) failed; name the command, not the helper. */
 export const describeSlashExecError = (command: string, err: unknown): string => {
   const { message } = rpcShape(err)
   const text = message ?? ''
+
+  if (isUnsupportedCommand(err)) {
+    return t('canonical.controls.notAvailable', command)
+  }
 
   if (/slash worker timed out/.test(text)) {
     return t('userMessages.rpc.slashTimedOut', command)

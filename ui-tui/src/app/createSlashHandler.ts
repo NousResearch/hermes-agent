@@ -12,7 +12,7 @@ import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { getUiState } from './uiStore.js'
-import { describeSlashExecError, shouldFallbackToDispatch } from './userMessages.js'
+import { describeSlashExecError, isUnsupportedCommand, shouldFallbackToDispatch } from './userMessages.js'
 
 /** Shared metrics count each user-typed command once, from the client: the gateway no longer
  *  counts slash.exec, so locally handled commands (/resume, /skin, overlays) land too.
@@ -59,7 +59,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
 
     const guardedErr = (e: unknown) => {
       if (!stale()) {
-        sys(`error: ${rpcErrorMessage(e)}`)
+        sys(isUnsupportedCommand(e) ? describeSlashExecError(parsed.name, e) : `error: ${rpcErrorMessage(e)}`)
       }
     }
 
@@ -209,6 +209,10 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
         // be shown as itself — the fallback's "not a quick/plugin/bundle/skill
         // command" refusal used to bury the real cause and imply the command
         // did not exist.
+        if (isUnsupportedCommand(execErr)) {
+          return sys(describeSlashExecError(parsed.name, execErr))
+        }
+
         if (!shouldFallbackToDispatch(execErr)) {
           sys(`error: ${describeSlashExecError(parsed.name, execErr)}`)
 

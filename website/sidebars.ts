@@ -563,6 +563,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-initiate-setup',
                     'user-guide/skills/optional/productivity/productivity-live-dashboard',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
+                    'user-guide/skills/optional/productivity/productivity-open-steps',
                     'user-guide/skills/optional/productivity/productivity-property-listings',
                     'user-guide/skills/optional/productivity/productivity-shop',
                     'user-guide/skills/optional/productivity/productivity-shopify',

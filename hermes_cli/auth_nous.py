@@ -1490,6 +1490,24 @@ def step_up_nous_billing_scope(
     return isinstance(granted, str) and NOUS_BILLING_MANAGE_SCOPE in granted.split()
 
 
+def _login_picker_defaults() -> tuple[str, bool]:
+    """``(current_model, skip_by_default)`` for the post-login model picker.
+
+    Signing in must not switch an existing setup on a bare Enter (#102943): the cursor starts on
+    the configured model when Nous already serves it, otherwise on Skip. A fresh install with no
+    model configured keeps the first curated row as the default.
+    """
+    from hermes_cli.config import load_config_readonly
+    model_cfg = load_config_readonly().get("model")
+    if isinstance(model_cfg, dict):
+        model, provider = model_cfg.get("default"), model_cfg.get("provider")
+    else:
+        model, provider = model_cfg, ""
+    model = model.strip() if isinstance(model, str) else ""
+    on_nous = isinstance(provider, str) and provider.strip().lower() == "nous"
+    return (model if on_nous else ""), bool(model)
+
+
 def _pick_nous_model_after_login(
     auth_state: dict[str, Any], inference_base_url: str) -> Optional[str]:
     """Fetch the curated Nous model list (tier/policy-filtered) and run the interactive picker.
@@ -1552,10 +1570,13 @@ def _pick_nous_model_after_login(
         print(
             f"Showing {len(model_ids)} curated models — "
             "use \"Enter custom model name\" for others.")
+        current_model, skip_by_default = _login_picker_defaults()
         return _prompt_model_selection(
-            model_ids, pricing=pricing, unavailable_models=unavailable_models, portal_url=_portal,
+            model_ids, current_model=current_model, pricing=pricing,
+            unavailable_models=unavailable_models, portal_url=_portal,
             unavailable_message=unavailable_message, confirm_provider="nous",
-            confirm_base_url=inference_base_url, confirm_api_key=runtime_key)
+            confirm_base_url=inference_base_url, confirm_api_key=runtime_key,
+            skip_by_default=skip_by_default)
     if unavailable_models:
         _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         print("No free models currently available.")

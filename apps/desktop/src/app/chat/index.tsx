@@ -55,6 +55,7 @@ import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcr
 import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
+import { resolveLiveEditSourceId } from '../session/hooks/use-prompt-actions/rewind'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
@@ -420,6 +421,7 @@ export function ChatRuntimeBoundary({
   const isHistorical = Boolean(history.page)
   const newerAvailable = history.page?.newerAvailable ?? false
   const { revealRow, returnToLatest } = history
+  const historyPage = history.page
 
   const transcriptWindow = useMemo(
     () => ({
@@ -432,6 +434,46 @@ export function ChatRuntimeBoundary({
       newerAvailable
     }),
     [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
+  )
+
+  // Edits stay available on a history page (see onEdit below), but the page's
+  // synthetic renderer ids never match the live store `planEdit` resolves
+  // against — the same durable row carries a different id per array. Translate
+  // the target through its durable rowId first, then drop the page so the
+  // rewind paints on the live tail instead of stranding the view mid-transcript
+  // with the edit silently lost (#130629).
+  const handleEdit = useCallback(
+    async (edited: AppendMessage) => {
+      const page = historyPage
+      let mapped = edited
+      let translated = false
+
+      if (page) {
+        const rawId = edited.sourceId || edited.parentId
+        const liveId = resolveLiveEditSourceId(page.messages, storeMessages, rawId ?? undefined)
+
+        if (liveId && rawId) {
+          mapped = { ...edited }
+
+          if (mapped.sourceId === rawId) {
+            mapped.sourceId = liveId
+          }
+
+          if (mapped.parentId === rawId) {
+            mapped.parentId = liveId
+          }
+
+          translated = true
+        }
+      }
+
+      await onEdit(mapped)
+
+      if (translated) {
+        returnToLatest()
+      }
+    },
+    [historyPage, returnToLatest, onEdit, storeMessages]
   )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
@@ -450,9 +492,10 @@ export function ChatRuntimeBoundary({
     // (the throw "Runtime does not support editing", infectious downward,
     // healed only by the floating jump button's returnToLatest). `editMessage`
     // already resolves its target against the live session store
-    // (use-prompt-actions), never the display page, so the edit is correct;
-    // sending one rewinds the live transcript and drops the page.
-    onEdit,
+    // (use-prompt-actions), never the display page — and `handleEdit` above
+    // translates the page's synthetic id to the live one first — so the edit
+    // is correct; sending one rewinds the live transcript and drops the page.
+    onEdit: handleEdit,
     onCancel: isHistorical ? undefined : async () => onCancel(),
     onReload: isHistorical ? undefined : onReload
   })

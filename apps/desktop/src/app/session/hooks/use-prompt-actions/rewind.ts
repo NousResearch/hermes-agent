@@ -667,6 +667,53 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
   }
 }
 
+/**
+ * Translate an edit composed on a HISTORICAL display page to the live store.
+ *
+ * A history page hydrates the same backend rows as the live transcript, but
+ * `toChatMessages` mints synthetic renderer ids (`${timestamp}-${index}-${role}`)
+ * per array — so the same durable row carries a DIFFERENT id on the page than
+ * in the live store. `planEdit` matches `edited.sourceId` against the live
+ * store by id, so an edit sent from a historical page never resolves and
+ * `editMessage` returns silently: the composer closes, the typed edit is lost,
+ * the page stays put (a trapped middle with missing newer rows), and retrying
+ * repeats the same silent no-op (#130629).
+ *
+ * Both sides carry the durable `rowId`, so map the page id to the live id
+ * through it. Returns the live id, or undefined when no translation applies
+ * (already a live id, or no live user turn shares the row).
+ */
+export function resolveLiveEditSourceId(
+  pageMessages: readonly ChatMessage[],
+  liveMessages: readonly ChatMessage[],
+  sourceId: string | null | undefined
+): string | undefined {
+  if (!sourceId) {
+    return undefined
+  }
+
+  if (liveMessages.some(message => message.id === sourceId)) {
+    return undefined
+  }
+
+  const pageMessage = pageMessages.find(message => message.id === sourceId)
+
+  if (!pageMessage || pageMessage.role !== 'user' || pageMessage.rowId === undefined) {
+    return undefined
+  }
+
+  // Newest match wins: a duplicated durable row would address the latest turn.
+  for (let index = liveMessages.length - 1; index >= 0; index--) {
+    const candidate = liveMessages[index]
+
+    if (candidate?.role === 'user' && candidate.rowId === pageMessage.rowId) {
+      return candidate.id
+    }
+  }
+
+  return undefined
+}
+
 /** Optimistic rewind-to state for restore/edit: drop everything after the
  *  source turn (edit swaps in the edited message; restore keeps the original). */
 export function applyRewindOptimistic(

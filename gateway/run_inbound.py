@@ -1438,6 +1438,11 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             # See #17916.
             if source.platform == Platform.SLACK and source.user_id:
                 _safe_user_name = f"{_safe_user_name} | Slack user <@{source.user_id}>"
+            # Matrix: likewise expose the speaker's verifiable MXID so identity in a
+            # shared room rests on the server-set id, not the mutable display name.
+            # The MXID already carries its leading '@' (@user:server).
+            elif source.platform == Platform.MATRIX and source.user_id:
+                _safe_user_name = f"{_safe_user_name} | Matrix user <{source.user_id}>"
             message_text = f"[{_safe_user_name}] {message_text}"
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
         if getattr(event, "channel_context", None):

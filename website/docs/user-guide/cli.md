@@ -58,6 +58,32 @@ hermes -w                         # Interactive mode in worktree
 hermes -w -z "Fix issue #123"     # Single query in worktree
 ```
 
+### Sharing prompt-cache routing across single queries
+
+Applications that launch Hermes once per request can explicitly reuse a cache
+scope for a stable instruction/tool prefix:
+
+```bash
+hermes chat -Q --provider openai-codex --cache-scope article-drafts --query-file prompt.txt
+```
+
+Repeat calls with the same label, profile, and working directory use the same
+logical cache scope. Instructions and tool schemas still contribute to the
+content-addressed cache key; a changed prefix is not treated as the old one.
+On the Codex backend, the scope also controls the `session_id` routing header.
+Provider cache hits are not guaranteed: keep the instructions and enabled tools
+stable, and inspect the provider's cached-token usage to measure the benefit.
+
+This is a routing hint, **not shared conversation state**. Every invocation
+retains its own transcript/session ID, history, and memory-provider session
+mapping. The label and profile/workspace paths are hashed before transmission;
+do not use secrets as labels. Other profiles and working directories remain
+isolated even with the same label. Omitting the flag preserves per-conversation
+routing. The flag requires a fresh single query (`-Q`, `--oneshot`, stream-JSON,
+or non-TTY input) and rejects `--resume`, `--continue`, and the TUI. It applies to
+OpenAI-wire transports; it does not add cross-process caching to other providers.
+No persistent setting or new environment variable is introduced.
+
 ### Worktree cleanup
 
 `hermes -w` sessions create disposable worktrees under `<repo>/.worktrees/`.

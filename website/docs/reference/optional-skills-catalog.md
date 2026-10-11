@@ -87,6 +87,7 @@ hermes skills uninstall <skill-name>
 | [**system-atlas**](../user-guide/skills/optional/creative/creative-system-atlas.md) | Build explorable isometric architecture atlases as HTML. |
 | [**tldraw-offline**](../user-guide/skills/optional/creative/creative-tldraw-offline.md) | Drive and script tldraw offline canvases with an agent. |
 | [**unreal-mcp**](../user-guide/skills/optional/creative/creative-unreal-mcp.md) | Automate Unreal Engine editor scenes, actors, and renders. |
+| [**yomiyasu**](../user-guide/skills/optional/creative/creative-yomiyasu.md) | Fix AI-sounding Japanese into natural prose, upstream-kept. |
 
 ## data-science
 

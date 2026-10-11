@@ -71,9 +71,8 @@ def _read_codex_credential(model: Optional[str] = None) -> tuple[Optional[str], 
     ``(None, None)`` without a usable token."""
     try:
         from agent.auxiliary_client import _resolve_codex_credential_and_base
-        from agent.auxiliary_model_scope import _call_scoped_or_unscoped
 
-        token, base_url = _call_scoped_or_unscoped(_resolve_codex_credential_and_base, model=model)
+        token, base_url = _resolve_codex_credential_and_base(model=model)
         if isinstance(token, str) and token.strip():
             return token.strip(), base_url
         return None, None

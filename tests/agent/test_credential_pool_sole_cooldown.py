@@ -77,33 +77,52 @@ def test_sole_credential_429_recovers_after_short_cooldown(tmp_path, monkeypatch
     assert entry.last_status == "ok"
 
 
-def test_sole_credential_subscription_429_reset_recovers_after_short_cooldown(tmp_path, monkeypatch):
-    """A subscription-period reset must not outrank the sole-credential cap.
+def test_sole_credential_subscription_429_reset_is_reprobed_not_locked_out(tmp_path, monkeypatch):
+    """A subscription-period reset must not lock a lone credential out for the whole window.
 
     A monthly/weekly 429 (``GoUsageLimitError``) persists an absolute
-    ``last_error_reset_at`` days out.  ``_exhausted_until`` returned it verbatim
-    before consulting ``_exhausted_ttl``, so the documented short cooldown was
-    unreachable and the profile's only key stayed benched for the whole period
-    (``failure_reason`` is ``rate_limit``, not billing, so the short cap is
-    exactly the branch that should apply).
+    ``last_error_reset_at`` days out. ``_exhausted_until`` returned it verbatim, so
+    the profile's only key stayed benched for the whole period even when the key
+    was healthy (#119163). The row now re-probes after a share of the window, and
+    a probe that fails again is re-stamped with a shorter window rather than
+    retried every minute.
     """
-    pool = _load(
-        tmp_path,
-        monkeypatch,
-        [
-            _entry(
-                429,
-                age_seconds=90,
-                error_reason="GoUsageLimitError",
-                failure_reason="rate_limit",
-                reset_at=time.time() + 15 * 24 * 60 * 60,
-            )
-        ],
-    )
-    entry = pool.select()
+    window = 15 * 24 * 60 * 60
+    due_after = window * 0.02
+
+    def pool_for(age_seconds):
+        return _load(
+            tmp_path,
+            monkeypatch,
+            [
+                _entry(
+                    429,
+                    age_seconds=age_seconds,
+                    error_reason="GoUsageLimitError",
+                    failure_reason="rate_limit",
+                    reset_at=time.time() + window - age_seconds,
+                )
+            ],
+        )
+
+    # A minute in: the provider just said the window is days out, so do not hammer it.
+    early = pool_for(90)
+    assert early.has_available() is False
+    assert early.select() is None
+    # Past the re-probe point the key is handed out again, well before the reset.
+    entry = pool_for(due_after + 60).select()
     assert entry is not None
     assert entry.id == "cred-1"
     assert entry.last_status == "ok"
+
+
+def test_sole_credential_reprobe_gap_never_outlives_the_reset(tmp_path, monkeypatch):
+    """The re-probe point is capped at the provider reset; short windows keep the TTL floor."""
+    from agent.credential_pool_cooldowns import _exhausted_until
+
+    pool = _load(tmp_path, monkeypatch, [_entry(429, age_seconds=10, reset_at=time.time() + 20)])
+    (entry,) = pool.entries()
+    assert _exhausted_until(entry, sole_credential=True) == pytest.approx(entry.last_error_reset_at)
 
 
 def test_sole_credential_reset_inside_the_bench_is_still_honoured(tmp_path, monkeypatch):
@@ -121,17 +140,14 @@ def test_sole_credential_reset_inside_the_bench_is_still_honoured(tmp_path, monk
     assert pool.select() is None
 
 
-def test_sole_credential_reset_without_status_stamp_is_still_clamped(tmp_path, monkeypatch):
-    """A stale row with an absolute reset but no status stamp must not bench the
-    sole credential for the whole window.
+def test_sole_credential_reset_without_status_stamp_is_due_and_selectable(tmp_path, monkeypatch):
+    """A legacy row with a reset but no status stamp must not stay benched for the window.
 
-    ``_exhausted_until`` previously needed ``last_status_at`` to build the TTL
-    bench; without it the provider reset stood unclamped — the #119163 symptom
-    on a legacy row. The clamp now measures the bench from now.
+    The bench cannot be anchored without ``last_status_at``. Measuring it from
+    ``now`` on every call never expires (the bound slides forward with the clock),
+    so the row is due immediately: one probe is cheap and re-stamps the row.
+    Goes through ``select()``, the path that skipped the entry before.
     """
-    from agent.credential_pool import EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
-    from agent.credential_pool_cooldowns import _exhausted_until
-
     stale = _entry(
         429,
         age_seconds=90,
@@ -141,10 +157,34 @@ def test_sole_credential_reset_without_status_stamp_is_still_clamped(tmp_path, m
     )
     stale.pop("last_status_at")
     pool = _load(tmp_path, monkeypatch, [stale])
-    (entry,) = pool.entries()
-    until = _exhausted_until(entry, sole_credential=True)
-    assert until is not None
-    assert until <= time.time() + EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS + 5
+    entry = pool.select()
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
+def test_sole_credential_cleared_row_is_not_resurrected_on_disk(tmp_path, monkeypatch):
+    """The persist-time merge must agree with selection about a due sole credential.
+
+    Selection clears the lone row once its re-probe point passes and persists it. The disk
+    row still says exhausted until the provider reset, so a merge that read the provider
+    reset (not the sole-credential rule) wrote the exhausted status back and every process
+    repeated the clear-and-persist cycle.
+    """
+    from hermes_cli.auth import read_credential_pool
+
+    window = 7 * 24 * 60 * 60
+    age = window * 0.02 + 60
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(429, age_seconds=age, failure_reason="rate_limit",
+                reset_at=time.time() + window - age)],
+    )
+    assert pool.select() is not None
+    (row,) = read_credential_pool("openrouter")
+    assert row["last_status"] == "ok"
+    assert not row.get("last_error_reset_at")
 
 
 def test_sole_credential_billing_429_keeps_provider_reset(tmp_path, monkeypatch):
@@ -360,18 +400,12 @@ def test_unverified_billing_survives_reload(tmp_path, monkeypatch):
     assert entry.failure_reason == "billing_unverified"
 
 
-def test_sole_credential_reset_is_clamped_to_the_short_cooldown(tmp_path, monkeypatch):
-    """A subscription-period reset on a lone credential keeps the short cooldown.
+def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
+    """A provider-stated weekly reset still outranks the default 429 TTL shortly after the failure.
 
-    Issue #119163: this fixture is a sole non-billing credential (one entry,
-    ``device_code_exhausted`` 429, ``last_error_reset_at`` a week out), so the
-    clamp in ``_exhausted_until`` caps the bench at the sole-credential short
-    cooldown instead of honouring the absolute reset.
-
-    This test replaces ``test_explicit_reset_timestamp_overrides_default_429_ttl``,
-    which pinned the old rule that an explicit reset timestamp always overrides
-    the default 429 TTL. That rule is preserved for billing failures and for
-    pools with siblings to rotate to — only the lone non-billing case changed.
+    Same fixture as ``main``'s pinned test: a lone credential, exhausted two hours ago
+    with a reset a week out. Only the re-probe point (2% of the window) lets it back in,
+    not the 60s sole-credential cap.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent auto-seeding from Codex CLI tokens on the host
@@ -406,23 +440,19 @@ def test_sole_credential_reset_is_clamped_to_the_short_cooldown(tmp_path, monkey
     from agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
-    assert pool.has_available() is True
-    entry = pool.select()
-    assert entry is not None
-    assert entry.id == "cred-1"
+    assert pool.has_available() is False
+    assert pool.select() is None
 
 
-def test_subscription_retry_after_429_is_recorded_then_clamped_for_a_sole_credential(tmp_path, monkeypatch):
-    """End-to-end: the 429 the transport sees reaches the clamp, not just a hand-built row.
+def test_subscription_retry_after_429_is_recorded_then_reprobed_for_a_sole_credential(tmp_path, monkeypatch):
+    """End-to-end: the 429 the transport sees reaches the re-probe rule, not just a hand-built row.
 
-    The tests above start from a persisted entry. This one starts from the
-    error: ``extract_api_error_context`` reads the subscription-period
-    ``Retry-After`` header, ``_normalize_error_context`` turns it into the stored
-    ``last_error_reset_at``, and ``_exhausted_until`` caps the bench for a lone
-    non-billing credential (#119163).
+    ``extract_api_error_context`` reads the subscription-period ``Retry-After`` header,
+    ``_normalize_error_context`` turns it into the stored ``last_error_reset_at``, and
+    ``_exhausted_until`` schedules the lone non-billing credential's re-probe (#119163).
     """
     from agent.agent_runtime_helpers import extract_api_error_context
-    from agent.credential_pool import EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS, _normalize_error_context
+    from agent.credential_pool import _normalize_error_context
     from agent.credential_pool_cooldowns import _exhausted_until
 
     three_days = 3 * 24 * 60 * 60
@@ -441,6 +471,5 @@ def test_subscription_retry_after_429_is_recorded_then_clamped_for_a_sole_creden
     (entry,) = pool.entries()
     until = _exhausted_until(entry, sole_credential=True)
     assert until is not None
-    assert until <= time.time() + EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS + 5
-    assert pool.has_available() is True
-    assert pool.select().id == "cred-1"
+    assert entry.last_status_at + 60 < until < reset_at
+    assert pool.select() is None  # a minute in, the window is still closed

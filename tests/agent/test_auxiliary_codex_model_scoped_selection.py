@@ -109,31 +109,6 @@ def test_backward_compat_when_model_is_none(codex_pool_home, monkeypatch):
     assert pool_present is True
     assert entry is None
 
-    # A 1-arg monkeypatched _select_pool_entry still works via fallback.
-    real_select = aux_model_scope._select_pool_entry
-    monkeypatch.setattr(aux_model_scope, "_select_pool_entry", lambda provider: (False, None))
-    token, _base = aux._resolve_codex_credential_and_base(model=ENTITLED_MODEL)
-    assert token is None
-
-    # A mock pool whose select() takes no kwargs falls back cleanly.
-    monkeypatch.setattr(aux_model_scope, "_select_pool_entry", real_select)
-
-    class _NoKwargPool:
-        def has_credentials(self):
-            return True
-
-        def select(self):
-            return SimpleNamespace(
-                runtime_api_key="tok", runtime_base_url="https://example.test"
-            )
-
-    monkeypatch.setattr(
-        aux, "_load_pool_with_credentials", lambda provider, note="": _NoKwargPool()
-    )
-    pool_present, entry = aux_model_scope._select_pool_entry("openai-codex", model=ENTITLED_MODEL)
-    assert pool_present is True
-    assert entry is not None
-
 
 def test_scoped_select_internal_typeerror_does_not_silently_downgrade(
     codex_pool_home, monkeypatch
@@ -156,32 +131,6 @@ def test_scoped_select_internal_typeerror_does_not_silently_downgrade(
     pool_present, entry = aux_model_scope._select_pool_entry("openai-codex", model=ENTITLED_MODEL)
     assert pool_present is True
     assert entry is None
-
-
-def test_legacy_pool_without_model_kwarg_falls_back_with_warning(
-    codex_pool_home, monkeypatch, caplog
-):
-    """A legacy pool whose select() takes no model kwarg still works, but loudly (#130053)."""
-    real_select = aux_model_scope._select_pool_entry
-    monkeypatch.setattr(aux_model_scope, "_select_pool_entry", real_select)
-
-    class _NoKwargPool:
-        def has_credentials(self):
-            return True
-
-        def select(self):
-            return SimpleNamespace(
-                runtime_api_key="tok", runtime_base_url="https://example.test"
-            )
-
-    monkeypatch.setattr(
-        aux, "_load_pool_with_credentials", lambda provider, note="": _NoKwargPool()
-    )
-    with caplog.at_level("WARNING", logger=aux.logger.name):
-        pool_present, entry = aux_model_scope._select_pool_entry("openai-codex", model=ENTITLED_MODEL)
-    assert pool_present is True
-    assert entry is not None
-    assert any("does not accept a model scope" in r.message for r in caplog.records)
 
 
 def test_compression_model_selects_despite_sibling_cooldown(codex_pool_home, monkeypatch):
@@ -212,3 +161,25 @@ def test_compression_model_selects_despite_sibling_cooldown(codex_pool_home, mon
     pool_present, entry = aux_model_scope._select_pool_entry("openai-codex")
     assert pool_present is True
     assert entry is None
+
+
+def test_plugin_oauth_and_nous_aux_selection_are_scoped_to_the_requested_model(monkeypatch):
+    """Neither route may use an unscoped pool pick: a cooldown on any other model of the
+    credential would otherwise block every auxiliary call routed through it."""
+    from agent.auxiliary_plugin_oauth import resolve_plugin_oauth_client
+
+    picks = []
+
+    def _record(provider, model=None):
+        picks.append((provider, model))
+        return False, None
+
+    monkeypatch.setattr(aux_model_scope, "_select_pool_entry", _record)
+    req = SimpleNamespace(
+        provider="some-oauth", model="plugin-model", explicit_api_key=None, explicit_base_url=None)
+    monkeypatch.setattr(aux, "_normalize_resolved_model", lambda model, provider: model)
+    resolve_plugin_oauth_client(req)
+    monkeypatch.setattr(aux, "_get_aux_model_for_provider", lambda provider: "nous-aux-model")
+    aux._read_nous_auth(model=aux._get_aux_model_for_provider("nous"))
+    assert ("some-oauth", "plugin-model") in picks
+    assert ("nous", "nous-aux-model") in picks

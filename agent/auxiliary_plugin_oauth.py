@@ -29,10 +29,13 @@ def resolve_plugin_oauth_client(req: Any) -> tuple[Any, Any]:
     from agent.auxiliary_model_scope import _select_pool_entry
 
     provider = req.provider
+    model = aux._normalize_resolved_model(req.model or aux._get_aux_model_for_provider(provider), provider)
     api_key = aux._normalize_api_key(req.explicit_api_key)
     entry = None
     if not api_key:
-        _exists, entry = _select_pool_entry(provider)
+        # Scope the pick to the model this call will use: an unscoped pick is blocked by a cooldown
+        # on ANY model of the credential, which would take all aux use of this provider offline.
+        _exists, entry = _select_pool_entry(provider, model=model or None)
         api_key = str(getattr(entry, "runtime_api_key", "") or "") if entry is not None else ""
     base_url = (req.explicit_base_url or str(getattr(entry, "runtime_base_url", "") or "")
                 or _configured_endpoint(provider)).strip().rstrip("/")
@@ -42,5 +45,4 @@ def resolve_plugin_oauth_client(req: Any) -> tuple[Any, Any]:
                             "resolve_provider_client: OAuth provider %s has no signed-in credential or "
                             "plugin transport, try 'auto'", provider)
         return None, None
-    model = aux._normalize_resolved_model(req.model or aux._get_aux_model_for_provider(provider), provider)
     return aux._route_client(req, client, model)

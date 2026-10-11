@@ -20,11 +20,11 @@ def store(tmp_path, monkeypatch):
     return tmp_path / "auth.json"
 
 
-def _row(cid, reason="billing", status="exhausted"):
+def _row(cid, reason="billing", status="exhausted", source="device_code"):
     claims = {"scope": NOUS_INFERENCE_INVOKE_SCOPE, "exp": time.time() + 86400}
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
     return {
-        "id": cid, "source": "manual", "auth_type": "api_key",
+        "id": cid, "source": source, "auth_type": "api_key",
         "access_token": "eyJhbGciOiJub25lIn0." + payload + ".test", "priority": 0,
         "label": "manual", "request_count": 0,
         "last_error_message": None, "last_error_reason": None, "last_error_reset_at": None,
@@ -267,3 +267,46 @@ def test_billing_owned_timer_restores_primary_in_same_turn(store, monkeypatch):
     assert agent._rate_limit_backoff_count == 0
     assert agent._rate_limit_cooldown_reason is None
     assert load_pool("nous").has_available()
+
+
+def test_clear_billing_benches_keeps_unrelated_model_cooldowns(store):
+    """A top-up lifts the credential-wide bench only; a model cooldown stays binding in every process."""
+    until = time.time() + 3600
+    observed = time.time() - 10
+    row = _row("billing")
+    row["model_cooldowns"] = {"model-x": until}
+    row["model_cooldown_observed_at"] = {"model-x": observed}
+    write_credential_pool("nous", [row])
+    assert load_pool("nous").clear_billing_benches() == 1
+    disk = read_credential_pool("nous")[0]
+    assert disk["last_status"] == "ok"
+    assert disk["model_cooldowns"] == {"model-x": until}
+    # A second process reloading and selecting still sees the cooldown, not the tombstone wiping it.
+    reloaded = load_pool("nous")
+    assert reloaded.select(model="model-x") is None
+    assert reloaded.select(model="model-y") is not None
+    assert read_credential_pool("nous")[0]["model_cooldowns"] == {"model-x": until}
+
+
+def test_funded_recovery_clears_only_the_signed_in_account_entry(store, monkeypatch):
+    """The portal balance is the signed-in login's: a manual key may belong to another, unfunded account."""
+    write_credential_pool("nous", [
+        _row("signed-in", source="device_code"), _row("other-account", source="manual")])
+    _portal(monkeypatch)
+    agent = _agent(load_pool("nous"))
+    assert _probe_primary_billing_recovery(agent) is True
+    disk = {r["id"]: r for r in read_credential_pool("nous")}
+    assert disk["signed-in"]["last_status"] == "ok"
+    assert disk["other-account"]["last_status"] == "exhausted"
+    assert disk["other-account"]["failure_reason"] == "billing"
+
+
+def test_probe_throttle_is_stamped_even_when_nothing_is_billing_benched(store, monkeypatch):
+    """A session parked on a fallback must not reload the primary's pool from disk every turn."""
+    write_credential_pool("nous", [_row("rate", "rate_limit")])
+    loads = Mock(wraps=load_pool)
+    monkeypatch.setattr("agent.credential_pool.load_pool", loads)
+    agent = _agent(pool=None)
+    assert _probe_primary_billing_recovery(agent) is False
+    assert _probe_primary_billing_recovery(agent) is False
+    assert loads.call_count == 1

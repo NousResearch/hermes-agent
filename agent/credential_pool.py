@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import (
+    MODEL_COOLDOWN_OBSERVED_AT_KEY,
     CredentialPoolModelCooldownMixin,
     bound_rehydrated_model_cooldowns,
+    has_active_model_cooldown,
     model_cooldown_until,
+    prune_expired_model_cooldowns,
 )
 
 import logging
@@ -2042,7 +2045,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 continue
             # Read the store at most once per pass, only when a resync path needs it.
             rows = None
-            if entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD} or entry.model_cooldowns:
+            if entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD} or has_active_model_cooldown(entry):
                 if disk_rows is None:
                     disk_rows = read_pool_rows_by_id(self.provider)
                 rows = disk_rows
@@ -2050,6 +2053,15 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 self._resync_stale_entry(entry, rows), rows)
             if synced is not entry:
                 entry = synced
+                cleared_any = True
+            if entry.model_cooldowns and not has_active_model_cooldown(entry):
+                # Elapsed cooldowns carry no information: drop them so they stop costing a
+                # store read per selection, and let the next persist clean the row.
+                kept, observed = prune_expired_model_cooldowns(entry)
+                extra = {k: v for k, v in entry.extra.items() if k != MODEL_COOLDOWN_OBSERVED_AT_KEY}
+                entry = self._adopt(
+                    entry, persist=False, model_cooldowns=kept or None,
+                    extra={**extra, **({MODEL_COOLDOWN_OBSERVED_AT_KEY: observed} if observed else {})})
                 cleared_any = True
             if entry.last_status == STATUS_DEAD:
                 # Manual DEAD credentials are pruned after a 24h quiet window;
@@ -2175,29 +2187,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             with self._lock:
                 available, _pending = self._available_entries(clear_expired=True, refresh=True, model=model)
         return next((e for e in available if e.id == credential_id), None)
-
-    def clear_billing_benches(self) -> int:
-        """Clear every ``STATUS_EXHAUSTED`` bench attributed to billing; return how many.
-
-        A credit exhaustion — unlike a rate-limit window — can be cured mid-session by a
-        portal top-up at any moment (#126818): the full bench would keep a live session
-        pinned to its (paid) fallback long after the primary is funded again. Only
-        billing-attributed benches clear here; rate-limit windows, auth failures and
-        unverified-billing benches keep their cooldowns."""
-        with self._lock:
-            cleared_ids = []
-            for entry in self._entries:
-                if entry.last_status != STATUS_EXHAUSTED or entry.failure_reason != FAILURE_REASON_BILLING:
-                    continue
-                self._adopt(
-                    entry, persist=False, **_MARK_OK, status_cleared_at=time.time(),
-                    extra={k: v for k, v in entry.extra.items() if k != "failure_reason"},
-                )
-                cleared_ids.append(entry.id)
-            if cleared_ids:
-                # Declare the reset so the disk-recency merge cannot restore the bench.
-                self._persist(status_cleared_ids=cleared_ids)
-            return len(cleared_ids)
 
     # ---- rotation ----------------------------------------------------------
 

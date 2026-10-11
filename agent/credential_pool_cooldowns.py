@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
-import time
 from typing import Any, Optional
 
 from agent.credential_pool import (
@@ -110,15 +109,25 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
     return None
 
 
+# A lone credential re-probes a provider-stated reset after this share of the window that was
+# still open when the failure was recorded (floored at the TTL bench). Each failed probe
+# re-stamps the row with a shorter remaining window, so probes thin out geometrically.
+SOLE_CREDENTIAL_REPROBE_FRACTION = 0.02
+
+
 def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
     """Epoch when an exhausted entry may re-enter rotation, else ``None``.
 
-    Clamp rule: a sole non-billing credential's persisted absolute
-    ``last_error_reset_at`` is capped at the TTL bench, so a subscription-period
-    429 (monthly/weekly window) cannot bench it for the whole window (#119163).
-    Confirmed billing and pools with siblings keep the provider-stated reset.
-    When the status stamp is missing (stale row), the bench is measured from now
-    rather than letting the provider reset stand unclamped.
+    The provider-stated ``last_error_reset_at`` wins, with one exception: a sole
+    non-billing credential has nothing to rotate to, so a subscription-period 429
+    (weekly/monthly window) must not bench it silently for the whole window (#119163).
+    It re-probes after ``max(TTL bench, 2% of the window open at failure)``, never past
+    the reset. A failed probe re-stamps the row with a shorter window, so a 5-day reset
+    costs a handful of probes a day rather than one per minute. Confirmed billing and
+    pools with siblings keep the provider-stated reset. A sole row with a reset but no
+    status stamp (legacy row) is due immediately: one probe re-stamps it.
+
+    Shared by selection and the persist-time merge so both agree on "still exhausted".
     """
     if entry.last_status != STATUS_EXHAUSTED:
         return None
@@ -128,14 +137,11 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
         return bench_until
     if sole_credential and not _is_billing_failure(entry.last_error_code, entry.failure_reason):
         if bench_until is None:
-            # No status stamp (stale persisted row): bench from now so a missing
-            # stamp cannot resurrect the whole-window provider reset (#119163).
-            bench_until = time.time() + _exhausted_ttl(
-                entry.last_error_code,
-                sole_credential=True,
-                failure_reason=entry.failure_reason,
-            )
-        return min(reset_at, bench_until)
+            return 0.0
+        window = max(0.0, reset_at - entry.last_status_at)
+        reprobe_at = entry.last_status_at + max(
+            bench_until - entry.last_status_at, window * SOLE_CREDENTIAL_REPROBE_FRACTION)
+        return min(reset_at, reprobe_at)
     return reset_at
 
 

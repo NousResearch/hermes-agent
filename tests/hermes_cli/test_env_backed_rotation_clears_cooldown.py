@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from hermes_cli.auth import _merge_disk_cooldown_state
+from hermes_cli.auth_cooldown import _merge_disk_cooldown_state
 
 FINGERPRINT_OLD = "sha256:1111111111111111"
 FINGERPRINT_NEW = "sha256:2222222222222222"

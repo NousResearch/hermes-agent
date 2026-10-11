@@ -284,6 +284,8 @@ def _apply_limits(rows: list[dict]) -> None:
             row["limit"] = {"scope": "account", "resets_at": iso(state["resets_at"])}
         else:
             row["limit"] = {"scope": "models", "models": {m: iso(at) for m, at in state["models"].items()}}
+            if state.get("not_entitled"):
+                row["limit"]["not_entitled"] = list(state["not_entitled"])
 
 
 def _apply_usage(rows: list[dict]) -> None:

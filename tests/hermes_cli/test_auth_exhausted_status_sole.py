@@ -1,4 +1,4 @@
-"""Sole-credential exhausted-status display clamp (#119163 follow-up)."""
+"""Sole-credential exhausted-status display: the re-probe wait, not the whole window (#119163 follow-up)."""
 
 from __future__ import annotations
 
@@ -21,11 +21,11 @@ def _exhausted_429(*, reset_at: float, code=429, reason="rate_limit",
     )
 
 
-def test_sole_far_future_nonbilling_429_shows_short_wait():
+def test_sole_far_future_nonbilling_429_shows_reprobe_wait():
     now = time.time()
     entry = _exhausted_429(reset_at=now + 30 * 24 * 3600, status_at=now)
     status = _format_exhausted_status(entry, sole_credential=True)
-    assert "1m" in status
+    assert "14h" in status  # 2% of the 30d window, not the full reset
     assert "30d" not in status
 
 
@@ -93,14 +93,14 @@ def _list_openrouter_output(capsys) -> str:
     return capsys.readouterr().out
 
 
-def test_auth_list_sole_pool_clamps_displayed_reset(tmp_path, monkeypatch, capsys):
+def test_auth_list_sole_pool_shows_reprobe_wait(tmp_path, monkeypatch, capsys):
     now = time.time()
     _write_pool_store(tmp_path, monkeypatch, [
         _persisted_exhausted_entry(entry_id="k1", label="key-one",
                                    reset_at=now + 30 * 24 * 3600, status_at=now),
     ])
     out = _list_openrouter_output(capsys)
-    assert "1m" in out
+    assert "14h" in out
     assert "30d" not in out
 
 
@@ -116,7 +116,7 @@ def test_auth_list_two_entry_pool_preserves_displayed_reset(tmp_path, monkeypatc
     assert "30d" in out
 
 
-def test_interactive_remove_sole_pool_clamps_displayed_reset(tmp_path, monkeypatch, capsys):
+def test_interactive_remove_sole_pool_shows_reprobe_wait(tmp_path, monkeypatch, capsys):
     now = time.time()
     _write_pool_store(tmp_path, monkeypatch, [
         _persisted_exhausted_entry(entry_id="k1", label="key-one",
@@ -127,5 +127,5 @@ def test_interactive_remove_sole_pool_clamps_displayed_reset(tmp_path, monkeypat
     monkeypatch.setattr(auth_commands_mod, "_ask", lambda *a, **k: "")
     auth_commands_mod._interactive_remove()
     out = capsys.readouterr().out
-    assert "1m" in out
+    assert "14h" in out
     assert "30d" not in out

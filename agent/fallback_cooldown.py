@@ -23,6 +23,10 @@ def _provider_reset_delay(reset_at) -> float | None:
 
 _BILLING_RECOVERY_PROBE_MIN_INTERVAL_S = 60.0
 
+# The portal balance belongs to the signed-in login, which seeds the ``device_code`` pool entry.
+# Manual keys may belong to other accounts, so their billing benches are not ours to lift.
+_NOUS_SIGNED_IN_SOURCES = frozenset({"device_code"})
+
 
 def _probe_primary_billing_recovery(agent) -> bool:
     """Clear billing-attributed primary state once the account is funded again (#126818).
@@ -52,6 +56,9 @@ def _probe_primary_billing_recovery(agent) -> bool:
     last_probe = getattr(agent, "_billing_recovery_probe_at", None)
     if last_probe is not None and now - last_probe < _BILLING_RECOVERY_PROBE_MIN_INTERVAL_S:
         return False
+    # Stamp before the bench check: a session parked on a fallback with nothing benched for billing
+    # would otherwise reload the primary's pool from disk on every turn.
+    agent._billing_recovery_probe_at = now
     # Cheap pre-check before any network I/O: only probe when the primary actually sits in
     # billing-backed cooldown — a pool bench attributed to billing, not merely an
     # armed session cooldown. Rate-limit windows and auth benches are not ours to clear.
@@ -61,6 +68,7 @@ def _probe_primary_billing_recovery(agent) -> bool:
         try:
             return any(
                 e.last_status == "exhausted" and e.failure_reason == FAILURE_REASON_BILLING
+                and e.source in _NOUS_SIGNED_IN_SOURCES
                 for e in p.entries()
             )
         except Exception:
@@ -83,7 +91,6 @@ def _probe_primary_billing_recovery(agent) -> bool:
             has_billing_bench = False
     if not has_billing_bench:
         return False
-    agent._billing_recovery_probe_at = now
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
         info = get_nous_portal_account_info(force_fresh=True)
@@ -103,7 +110,7 @@ def _probe_primary_billing_recovery(agent) -> bool:
     try:
         if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != "nous":
             pool = load_pool("nous")
-        if pool is not None and pool.clear_billing_benches() > 0:
+        if pool is not None and pool.clear_billing_benches(sources=_NOUS_SIGNED_IN_SOURCES) > 0:
             cleared = True
     except Exception:
         logger.debug("Billing-recovery pool unbench failed", exc_info=True)

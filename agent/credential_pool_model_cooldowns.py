@@ -9,6 +9,7 @@ auth, billing and payment failures keep benching the whole credential with.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING
 
@@ -32,6 +33,8 @@ def bound_rehydrated_model_cooldowns(cooldowns: Any) -> dict[str, float]:
     Only a value past ``LEGACY_MODEL_COOLDOWN_SENTINEL_S`` is a pre-bound bench; anything
     nearer is a genuine provider-stated window and survives untouched.
     """
+    if not isinstance(cooldowns, dict):
+        return {}
     now = time.time()
     deadline = now + MODEL_ENTITLEMENT_BENCH_SECONDS
     return {
@@ -41,6 +44,21 @@ def bound_rehydrated_model_cooldowns(cooldowns: Any) -> dict[str, float]:
         for model, until in cooldowns.items()
         if isinstance(until, (int, float))
     }
+
+
+def has_active_model_cooldown(entry: PooledCredential) -> bool:
+    """Whether *entry* carries a model cooldown that has not yet elapsed."""
+    return model_cooldown_until(entry, None) is not None
+
+
+def prune_expired_model_cooldowns(entry: PooledCredential) -> tuple[dict[str, float], dict[str, float]]:
+    """Cooldown/observation maps of *entry* without elapsed cooldowns."""
+    now = time.time()
+    kept = {m: u for m, u in (entry.model_cooldowns or {}).items()
+            if isinstance(u, (int, float)) and u > now}
+    observed = entry.extra.get(MODEL_COOLDOWN_OBSERVED_AT_KEY)
+    observed = observed if isinstance(observed, dict) else {}
+    return kept, {m: at for m, at in observed.items() if m in kept}
 
 
 def model_cooldown_until(entry: PooledCredential, model: Optional[str]) -> Optional[float]:
@@ -57,13 +75,17 @@ def model_cooldown_until(entry: PooledCredential, model: Optional[str]) -> Optio
 
 
 def merge_model_cooldowns(*maps: Any) -> dict[str, float]:
-    """Latest reset per model across snapshots — each writer only observed its own model."""
+    """Latest reset per model across snapshots — each writer only observed its own model.
+
+    Elapsed cooldowns are dropped: they no longer bind, and keeping them would force a store
+    read on every selection."""
     merged: dict[str, float] = {}
+    now = time.time()
     for cooldowns in maps:
         if not isinstance(cooldowns, dict):
             continue
         for model, until in cooldowns.items():
-            if isinstance(until, (int, float)):
+            if isinstance(until, (int, float)) and until > now:
                 merged[model] = max(float(until), merged.get(model, 0.0))
     return merged
 
@@ -71,6 +93,20 @@ def merge_model_cooldowns(*maps: Any) -> dict[str, float]:
 # Per-model observation epochs let the persistence boundary order a cooldown against an
 # explicit reset. The map lives in PooledCredential.extra so older rows round-trip unchanged.
 MODEL_COOLDOWN_OBSERVED_AT_KEY = "model_cooldown_observed_at"
+
+
+# Models rejected by a plan-entitlement 400, mapped to the cooldown epoch written with them. Lets a
+# picker say "not entitled" instead of showing a countdown for a model the plan never includes.
+MODEL_ENTITLEMENT_KEY = "model_entitlement_until"
+
+
+def entitlement_rejected_models(entry: PooledCredential) -> set[str]:
+    """Models whose active cooldown on *entry* is an entitlement bench, not a rate-limit window."""
+    marks = entry.extra.get(MODEL_ENTITLEMENT_KEY)
+    cooldowns = entry.model_cooldowns or {}
+    if not isinstance(marks, dict):
+        return set()
+    return {model for model, until in marks.items() if cooldowns.get(model) == until}
 
 
 def merge_model_cooldown_observations(*maps: Any) -> dict[str, float]:
@@ -226,6 +262,9 @@ class CredentialPoolModelCooldownMixin:
             )
             updated_extra = dict(scoped.extra)
             updated_extra[MODEL_COOLDOWN_OBSERVED_AT_KEY] = observations
+            if failure_reason == "model_entitlement":
+                updated_extra[MODEL_ENTITLEMENT_KEY] = {
+                    **(updated_extra.get(MODEL_ENTITLEMENT_KEY) or {}), model: until}
             self._adopt(
                 scoped,
                 persist=False,
@@ -242,23 +281,78 @@ class CredentialPoolModelCooldownMixin:
         {model: epoch}}`` for the given *models* no usable entry can serve until a model cooldown
         ends. Every active model cooldown is reported: with the bench bounded to
         ``MODEL_ENTITLEMENT_BENCH_SECONDS`` a long window is a real wait, not a plan
-        property that never resets. Read-only: never clears or persists a cooldown.
+        property that never resets. Models benched only by an entitlement rejection are also listed
+        under ``not_entitled`` so a picker can say so rather than count down. Read-only: never
+        clears or persists a cooldown.
         """
         from agent.credential_pool import STATUS_DEAD
-        from agent.credential_pool_cooldowns import _exhausted_until
+        from agent.credential_pool_cooldowns import _exhausted_until, _parse_absolute_timestamp
 
         now = time.time()
         with self._lock:
             live = [entry for entry in self._entries if entry.last_status != STATUS_DEAD]
             sole = len(live) <= 1
-            benched = {entry.id: until for entry in live
-                       if (until := _exhausted_until(entry, sole_credential=sole)) and until > now}
+            # A benched row is shown at the provider's stated reset when it has one: a lone credential
+            # may re-probe sooner, but the limit the user is told about is the provider's window.
+            benched = {
+                entry.id: _parse_absolute_timestamp(entry.last_error_reset_at) or until
+                for entry in live
+                if (until := _exhausted_until(entry, sole_credential=sole)) and until > now}
             if live and len(benched) == len(live):
                 return {"scope": "account", "resets_at": min(benched.values())}
             usable = [entry for entry in live if entry.id not in benched]
             cooled: dict[str, float] = {}
+            not_entitled: list[str] = []
             for model in models:
                 waits = [model_cooldown_until(entry, model) for entry in usable]
                 if waits and all(waits):
                     cooled[model] = min(waits)
-        return {"scope": "models", "models": cooled} if cooled else None
+                    if all(model in entitlement_rejected_models(entry) for entry in usable):
+                        not_entitled.append(model)
+        if not cooled:
+            return None
+        state: dict[str, Any] = {"scope": "models", "models": cooled}
+        if not_entitled:
+            state["not_entitled"] = not_entitled
+        return state
+
+    def clear_billing_benches(self, *, sources: Optional[Iterable[str]] = None) -> int:
+        """Clear ``STATUS_EXHAUSTED`` benches attributed to billing; return how many.
+
+        *sources* limits the clear to entries seeded from those sources: a caller that confirmed
+        one account's balance must not lift the bench on entries it cannot attribute to that
+        account. ``None`` clears every billing bench.
+
+        A credit exhaustion — unlike a rate-limit window — can be cured mid-session by a
+        portal top-up at any moment (#126818): the full bench would keep a live session
+        pinned to its (paid) fallback long after the primary is funded again. Only
+        billing-attributed benches clear here; rate-limit windows, auth failures and
+        unverified-billing benches keep their cooldowns."""
+        from agent.credential_pool import FAILURE_REASON_BILLING, STATUS_EXHAUSTED, _MARK_OK
+
+        allowed_sources = None if sources is None else set(sources)
+        with self._lock:
+            cleared_ids = []
+            for entry in self._entries:
+                if entry.last_status != STATUS_EXHAUSTED or entry.failure_reason != FAILURE_REASON_BILLING:
+                    continue
+                if allowed_sources is not None and entry.source not in allowed_sources:
+                    continue
+                cleared_at = time.time()
+                extra = {k: v for k, v in entry.extra.items() if k != "failure_reason"}
+                # ``status_cleared_at`` doubles as the tombstone for every model cooldown observed
+                # before it. A billing top-up lifts only the credential-wide bench, so re-stamp the
+                # model cooldowns that are still active as observed just after the clear.
+                kept, _ = prune_expired_model_cooldowns(entry)
+                if kept:
+                    extra[MODEL_COOLDOWN_OBSERVED_AT_KEY] = {
+                        model: math.nextafter(cleared_at, math.inf) for model in kept}
+                self._adopt(
+                    entry, persist=False, **_MARK_OK, status_cleared_at=cleared_at,
+                    model_cooldowns=kept or None, extra=extra,
+                )
+                cleared_ids.append(entry.id)
+            if cleared_ids:
+                # Declare the reset so the disk-recency merge cannot restore the bench.
+                self._persist(status_cleared_ids=cleared_ids)
+            return len(cleared_ids)

@@ -16,8 +16,8 @@ const state: ChatBarState = {
   voice: { active: false, enabled: false }
 }
 
-function renderControls(overrides: Partial<React.ComponentProps<typeof ComposerControls>> = {}) {
-  return render(
+function controls(overrides: Partial<React.ComponentProps<typeof ComposerControls>> = {}) {
+  return (
     <I18nProvider configClient={null} initialLocale="en">
       <ComposerControls
         autoSpeak={false}
@@ -45,6 +45,10 @@ function renderControls(overrides: Partial<React.ComponentProps<typeof ComposerC
       />
     </I18nProvider>
   )
+}
+
+function renderControls(overrides: Partial<React.ComponentProps<typeof ComposerControls>> = {}) {
+  return render(controls(overrides))
 }
 
 async function expectShortcutTooltip(label: string, shortcut: string) {
@@ -222,5 +226,42 @@ describe('wake-word ear visibility', () => {
 
     const ear = screen.getByLabelText('Wake word: "hey hermes" — paused during voice chat')
     expect((ear as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('Stop does not turn into a microphone', () => {
+  it.each([
+    { foldVoice: false, minimal: false },
+    { foldVoice: true, minimal: false },
+    { foldVoice: true, minimal: true }
+  ])('retains the submit control across busy → idle at width mode %o', mode => {
+    const onStart = vi.fn()
+
+    const conversation = {
+      active: false,
+      level: 0,
+      muted: false,
+      onEnd: vi.fn(),
+      onStart,
+      onStopTurn: vi.fn(),
+      onToggleMute: vi.fn(),
+      status: 'idle' as const
+    }
+
+    const props = { ...mode, conversation, hasComposerPayload: false }
+    const view = renderControls({ ...props, busy: true })
+    const stop = screen.getByRole('button', { name: 'Stop' })
+    fireEvent.click(stop)
+    view.rerender(controls({ ...props, busy: false, canSubmit: false }))
+    const send = screen.getByRole('button', { name: 'Send' })
+    expect(send).toBe(stop)
+    expect(send).toHaveProperty('disabled', true)
+    fireEvent.click(send)
+    expect(onStart).not.toHaveBeenCalled()
+
+    if (!mode.foldVoice) {
+      fireEvent.click(screen.getByRole('button', { name: 'Start voice conversation' }))
+      expect(onStart).toHaveBeenCalledOnce()
+    }
   })
 })

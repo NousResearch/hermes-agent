@@ -748,13 +748,15 @@ def _make_run_env(env: dict) -> dict:
     # ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module missing) →
     # the seat env passes through untouched.
     try:
-        from tools.bot_desktop.runtime import published_env
+        from tools.bot_desktop.runtime import _screen_env_fixups, published_env
         published = published_env()
     except Exception:
         published = {}
     if published:
         run_env.update(published)
-        run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+        # X11 desktop: drop the leaked Wayland socket, cap TMPDIR for Chromium's singleton
+        # socket, and park XDG_RUNTIME_DIR on a screen-owned dir (#125830, #136677).
+        _screen_env_fixups(run_env)
     return run_env
 
 

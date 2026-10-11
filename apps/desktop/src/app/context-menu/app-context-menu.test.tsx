@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -51,6 +51,7 @@ afterEach(() => {
   $connection.set(null)
   closeRightRail()
   cleanup()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   document.body.innerHTML = ''
   delete desktopWindow.hermesDesktop
@@ -320,6 +321,199 @@ describe('AppContextMenu', () => {
     })
     expect(contextMenuEdit).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(textarea)
+  })
+
+  it.each(
+    ['contenteditable', 'textarea', 'input'].flatMap(kind =>
+      ['teardown', 'pointerdown elsewhere', 'keydown elsewhere', 'pointerdown caret', 'keydown caret'].map(action => ({ kind, action }))
+    )
+  )('respects $action after $kind select all', async ({ kind, action }) => {
+    installBridge()
+    mountMenu()
+
+    const html = {
+      contenteditable: '<div contenteditable="true" tabindex="0">alpha <span>beta gamma</span></div>',
+      textarea: '<textarea>alpha beta gamma</textarea>',
+      input: '<input value="alpha beta gamma">'
+    }
+
+    const host = attach(html[kind as keyof typeof html] + '<button>Other focus</button>')
+    const editable = host.firstElementChild as HTMLElement
+    const other = host.querySelector('button')!
+
+    if (kind === 'contenteditable') {
+      Object.defineProperty(editable, 'isContentEditable', { value: true })
+    }
+
+    const expectSelected = () => {
+      expect(document.activeElement).toBe(editable)
+
+      if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+        expect(editable.selectionStart).toBe(0)
+        expect(editable.selectionEnd).toBe(editable.value.length)
+      } else {
+        const selection = window.getSelection()!
+
+        expect(selection.toString()).toBe(editable.textContent)
+        expect(editable.contains(selection.anchorNode)).toBe(true)
+        expect(editable.contains(selection.focusNode)).toBe(true)
+      }
+    }
+
+    const stealSelection = () => {
+      other.focus()
+
+      if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+        editable.setSelectionRange(0, 0)
+      } else {
+        window.getSelection()!.removeAllRanges()
+      }
+    }
+
+    fireEvent.contextMenu(editable)
+    const item = await screen.findByText('Select all')
+
+    vi.useFakeTimers()
+    fireEvent.click(item)
+    act(() => vi.advanceTimersToNextFrame())
+    expectSelected()
+
+    stealSelection()
+    act(() => vi.advanceTimersToNextFrame())
+    expectSelected()
+
+    // Presence can remove the menu after the old twelve-frame limit.
+    act(() => vi.advanceTimersByTime(300))
+
+    if (action !== 'teardown') {
+      const destination = action.endsWith('caret') ? editable : other
+
+      // New user intent must win even when a control stops event bubbling.
+      destination.addEventListener(action.split(' ')[0], event => event.stopPropagation(), { once: true })
+
+      if (action.startsWith('pointerdown')) {
+        fireEvent.pointerDown(destination)
+      } else {
+        fireEvent.keyDown(destination, { key: 'ArrowRight' })
+      }
+
+      destination.focus()
+
+      if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+        editable.setSelectionRange(2, 2)
+      } else {
+        window.getSelection()!.collapse(editable.firstChild, 2)
+      }
+
+      act(() => vi.advanceTimersByTime(1000))
+      expect(document.activeElement).toBe(destination)
+
+      if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+        expect(editable.selectionStart).toBe(2)
+        expect(editable.selectionEnd).toBe(2)
+      } else {
+        expect(window.getSelection()!.isCollapsed).toBe(true)
+        expect(window.getSelection()!.anchorOffset).toBe(2)
+      }
+
+      expect(vi.getTimerCount()).toBe(0)
+
+      return
+    }
+
+    stealSelection()
+    act(() => vi.advanceTimersToNextFrame())
+    expectSelected()
+    act(() => vi.advanceTimersByTime(250))
+    expectSelected()
+
+    stealSelection()
+    act(() => vi.advanceTimersByTime(1000))
+    expect(document.activeElement).toBe(other)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(
+    ['contenteditable', 'textarea', 'input'].flatMap(kind =>
+      ['pointerdown', 'keydown'].map(event => ({ kind, event }))
+    )
+  )('cancels $kind select all on $event before the initial frame', async ({ kind, event }) => {
+    installBridge()
+    mountMenu()
+
+    const html = {
+      contenteditable: '<div contenteditable="true" tabindex="0">alpha <span>beta gamma</span></div>',
+      textarea: '<textarea>alpha beta gamma</textarea>',
+      input: '<input value="alpha beta gamma">'
+    }
+
+    const host = attach(html[kind as keyof typeof html] + '<button>Other focus</button>')
+    const editable = host.firstElementChild as HTMLElement
+    const other = host.querySelector('button')!
+
+    if (kind === 'contenteditable') {
+      Object.defineProperty(editable, 'isContentEditable', { value: true })
+    } else {
+      (editable as HTMLInputElement | HTMLTextAreaElement).setSelectionRange(0, 0)
+    }
+
+    window.getSelection()!.removeAllRanges()
+    fireEvent.contextMenu(editable)
+    const item = await screen.findByText('Select all')
+
+    vi.useFakeTimers()
+    fireEvent.click(item)
+    const focus = vi.spyOn(editable, 'focus')
+
+    if (event === 'pointerdown') {
+      fireEvent.pointerDown(other)
+    } else {
+      fireEvent.keyDown(other, { key: 'Tab' })
+    }
+
+    other.focus()
+    act(() => vi.advanceTimersToNextFrame())
+    act(() => vi.advanceTimersByTime(1000))
+    expect(document.activeElement).toBe(other)
+    expect(focus).not.toHaveBeenCalled()
+
+    if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+      expect(editable.selectionStart).toBe(0)
+      expect(editable.selectionEnd).toBe(0)
+    } else {
+      expect(window.getSelection()!.toString()).toBe('')
+    }
+
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['before initial frame', 'during guard'])('stops select all on disconnection %s', async timing => {
+    installBridge()
+    mountMenu()
+    const host = attach('<textarea>alpha beta gamma</textarea>')
+    const editable = host.querySelector('textarea')!
+
+    fireEvent.contextMenu(editable)
+    const item = await screen.findByText('Select all')
+
+    vi.useFakeTimers()
+    fireEvent.click(item)
+
+    if (timing === 'during guard') {
+      act(() => vi.advanceTimersToNextFrame())
+      expect(document.activeElement).toBe(editable)
+    }
+
+    const focus = vi.spyOn(editable, 'focus')
+    const select = vi.spyOn(editable, 'select')
+
+    editable.remove()
+    act(() => vi.advanceTimersToNextFrame())
+    host.appendChild(editable)
+    act(() => vi.advanceTimersByTime(1000))
+    expect(focus).not.toHaveBeenCalled()
+    expect(select).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('grays out cut, copy, and select all in an empty field', async () => {

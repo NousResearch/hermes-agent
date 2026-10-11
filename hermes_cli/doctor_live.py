@@ -161,6 +161,7 @@ def run_live_checks(issues: list[str]) -> list[ProbeResult]:
     """Run one bounded, read-only probe per configured tool backend — sequential by design (predictable output
     ordering). Appends a remediation line to ``issues`` per failed probe; skipped backends never append."""
     from hermes_cli.config import load_config_readonly
+    from tools.mcp_tool_common import mcp_server_enabled
     config = load_config_readonly()
     try:
         timeout = float((config.get("doctor") or {}).get("live_probe_timeout", DEFAULT_PROBE_TIMEOUT))
@@ -179,6 +180,8 @@ def run_live_checks(issues: list[str]) -> list[ProbeResult]:
             def _probe(n=name, e=servers[name]) -> ProbeResult:
                 if not isinstance(e, dict):
                     return ProbeResult(f"MCP: {n}", "skip", "(malformed config entry)")
+                if not mcp_server_enabled(e):
+                    return ProbeResult(f"MCP: {n}", "skip", "(disabled in config)")
                 return ProbeResult(f"MCP: {n}", "pass", f"({len(_probe_mcp_server(n, e, timeout))} tool(s))")
             results.append(_run_one(f"MCP: {name}", _probe, issues))
     else:

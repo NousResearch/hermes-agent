@@ -5,11 +5,13 @@ import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -1281,7 +1283,7 @@ def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool =
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
-    _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
+    _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir), dirs_exist_ok=True)
     materialized = _materialize_symlinked_files(profile_dir)
     if materialized:
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
@@ -1462,14 +1464,50 @@ def create_profile(
 
 
 def _clone_staging_dir(profile_dir: Path) -> Path:
-    """Fresh ``profiles/.<name>.staging-<pid>`` beside the final dir (same filesystem, so the publish
-    rename is atomic). A leftover from a crashed create is discarded."""
+    """Build off the watched home on Windows when temp shares the destination volume."""
     staging = profile_dir.parent / f".{profile_dir.name}.staging-{os.getpid()}"
     profile_dir.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        temp_root = Path(tempfile.gettempdir())
+        home = profile_dir.parent.parent.resolve()
+        if (os.stat(temp_root).st_dev != os.stat(profile_dir.parent).st_dev
+                or temp_root.resolve().is_relative_to(home)):
+            temp_root = home.parent
+        if (temp_root.resolve().is_relative_to(home)
+                or os.stat(temp_root).st_dev != os.stat(profile_dir.parent).st_dev):
+            raise OSError("No same-volume staging directory outside the Hermes home")
+        # A watcher holding a copied skill open prevents renaming its ancestor on Windows.
+        # Stage outside the watched home on the destination volume, then publish once.
+        return _private_windows_staging(temp_root, profile_dir.name)
     if staging.is_symlink() or staging.is_file():
         staging.unlink()
     elif staging.is_dir():
         shutil.rmtree(staging, ignore_errors=True)
+    return staging
+
+
+def _private_windows_staging(parent: Path, name: str) -> Path:
+    """Create the staging directory with a protected DACL before copying credentials."""
+    import ntsecuritycon
+    import win32api
+    import win32con
+    import win32file
+    import win32security
+
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    owner = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+    system = win32security.ConvertStringSidToSid("S-1-5-18")
+    acl = win32security.ACL()
+    for sid in (owner, system):
+        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, ntsecuritycon.FILE_ALL_ACCESS, sid)
+    descriptor = win32security.SECURITY_DESCRIPTOR()
+    descriptor.SetSecurityDescriptorOwner(owner, False)
+    descriptor.SetSecurityDescriptorDacl(True, acl, False)
+    descriptor.SetSecurityDescriptorControl(win32security.SE_DACL_PROTECTED, win32security.SE_DACL_PROTECTED)
+    attributes = win32security.SECURITY_ATTRIBUTES()
+    attributes.SECURITY_DESCRIPTOR = descriptor
+    staging = parent / f".hermes-{name}-staging-{secrets.token_hex(16)}"
+    win32file.CreateDirectory(str(staging), attributes)
     return staging
 
 

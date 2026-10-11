@@ -167,6 +167,7 @@ import {
 } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
+import { releaseArchivedRuntime, snapshotArchivedRuntime } from './archive-runtime'
 import { branchCreateKey } from './branch-create-key'
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
@@ -3390,6 +3391,8 @@ export function useSessionActions({
       }
 
       const wasSelected = selectedStoredSessionIdRef.current === storedSessionId
+      const refs = { activeSessionIdRef, busyRef, runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef }
+      const runtime = snapshotArchivedRuntime(storedSessionId, wasSelected, refs)
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
@@ -3411,16 +3414,8 @@ export function useSessionActions({
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedIds, profile)
-        // An archived session is hidden from the sidebar; its tile must go too.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
-
-        if (tiledRuntimeId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
-          dropSessionState(tiledRuntimeId)
-        }
-
+        // Not awaited: finalize runs memory commits and plugin hooks, and the archive shouldn't wait on them.
+        void releaseArchivedRuntime(storedSessionId, runtime, { profile, row: archived }, requestGateway, refs)
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
@@ -3435,7 +3430,10 @@ export function useSessionActions({
       }
     },
     [
+      activeSessionIdRef,
+      busyRef,
       copy,
+      requestGateway,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,
       sessionStateByRuntimeIdRef,

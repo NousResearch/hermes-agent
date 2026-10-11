@@ -2,6 +2,10 @@
 
 Inspired by 686f6c61's queue proposal (#100319). Unlike retrying failed CLI
 turns, only pending requests are eligible: a persisted claim never expires.
+A lease-free visible Desktop owner only defers the CLI fallback for a bounded
+window (_DEFER_TTL_SECONDS / _MAX_DEFER_TICKS); afterwards the drain delivers
+anyway, so output left behind by a walked-away user is late, never silently
+dropped (#129892).
 """
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ import contextvars
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 
 from hermes_cli.active_sessions import _FileLock
@@ -19,6 +24,11 @@ logger = logging.getLogger(__name__)
 _warned_unreadable: set[Path] = set()
 _running: set[Path] = set()
 _running_lock = threading.Lock()
+
+# Deferral ceiling for a lease-free visible Desktop owner (review on #129892):
+# without one, a resumed-but-untyped Desktop chat parks cron output forever.
+_DEFER_TTL_SECONDS = 2 * 3600
+_MAX_DEFER_TICKS = 120
 
 
 def _root() -> Path:
@@ -74,7 +84,8 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
             return record
         sequence = max((record["sequence"] for _, record in _records(root)), default=0) + 1
         record = dict(id=key, status="suppressed" if suppressed else "queued", job=job, content=content,
-                      profile=profile, home=str(home), sequence=sequence)
+                      profile=profile, home=str(home), sequence=sequence,
+                      created_at=time.time(), defer_count=0)
         if for_failure:
             record["for_failure"] = True
         if degraded:
@@ -120,7 +131,20 @@ def _drain(root: Path) -> None:
             try:
                 owner = find_canonical_owner(home)
                 if owner is not None and find_canonical_live_owner(home) is None:
-                    continue
+                    # Lease-free visible Desktop owner: defer, but bounded. A missing
+                    # created_at (pre-ceiling record) counts as fresh, never as expired.
+                    now = time.time()
+                    defer_count = int(record.get("defer_count") or 0) + 1
+                    created_at = record.get("created_at") or now
+                    record.update(defer_count=defer_count, created_at=created_at)
+                    atomic_json_write(path, record, fsync_dir=True, mode=0o600)
+                    if (defer_count < _MAX_DEFER_TICKS
+                            and now - created_at < _DEFER_TTL_SECONDS):
+                        continue
+                    logger.warning(
+                        "Deferred Bot Chat delivery %s outwaited its deferral ceiling "
+                        "(%d ticks / %.0fs); delivering via fallback",
+                        record["id"], defer_count, now - created_at)
             except Exception:
                 # Discovery uncertainty is not permission to launch.
                 continue

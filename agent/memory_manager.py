@@ -321,6 +321,10 @@ class StreamingContextScrubber:
 # A markdown bullet: a marker, whitespace, then content. The whitespace matters — it is what keeps
 # ``**Preferences**`` (a bold heading) and ``*emphasis*`` out of the rule.
 _RECALL_BULLET_RE = re.compile(r"[-*+]\s+\S")
+# A dated recall entry (mnemosyne-family providers render one line per slot/row as
+# ``[YYYY-MM-DD...]`` at any indent). These are ENTRIES, not continuations: replay-
+# dedupe matches them whole-line, exactly like core treats column-0 bullets.
+_DATED_ENTRY_RE = re.compile(r"\[\d{4}-\d{2}-\d{2}[^\]]*\]")
 
 
 def _drop_repeated_recall_lines(text: str) -> str:
@@ -369,7 +373,46 @@ def _drop_repeated_recall_lines(text: str) -> str:
     return "\n".join(kept)
 
 
-def build_memory_context_block(raw_context: str) -> str:
+def _live_recall_bullets(messages, skip=None, cap: int = 60) -> set:
+    """Stripped top-level bullet texts from ``<memory-context>`` blocks already live in
+    the message window (``api_content`` sidecar first, then content).
+
+    REPLAY-DEDUPE (vendored patch, astraea hand 2026-10-02): a block stamped on an
+    earlier turn replays verbatim on every request while that row stays in context —
+    ``_drop_repeated_recall_lines``'s own docstring prices each duplicate as "paid
+    once per turn, forever"; this extends that accounting ACROSS turns. ``skip``
+    excludes the current turn's row so a stamp can never dedupe against itself.
+    Bullets carrying indented continuation lines are excluded from consideration —
+    same carve-out as in-block dedupe: shared headlines with different provenance
+    underneath must not re-parent. Forward-only: never mutates historical rows.
+    """
+    live: set[str] = set()
+    if cap is None or cap <= 0:
+        return live  # kill switch: set agent._memory_replay_dedupe_cap = 0 to disable dedupe
+    scanned = 0
+    for msg in reversed(list(messages or [])):
+        if msg is skip or not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        hit = None
+        for src in (msg.get("api_content"), msg.get("content")):
+            if isinstance(src, str) and _INTERNAL_CONTEXT_RE.search(src):
+                hit = src
+                break
+        if hit:
+            for block in _INTERNAL_CONTEXT_RE.findall(hit):
+                for line in block.split("\n"):
+                    s = line.strip()
+                    if not s:
+                        continue
+                    if _DATED_ENTRY_RE.search(s) or (not line[0].isspace() and _RECALL_BULLET_RE.match(s)):
+                        live.add(s)
+        scanned += 1
+        if scanned >= cap:
+            break
+    return live
+
+
+def build_memory_context_block(raw_context: str, live_bullets: "set[str] | None" = None) -> str:
     """Wrap prefetched memory in a fenced block with system note."""
     if not raw_context or not raw_context.strip():
         return ""
@@ -378,6 +421,54 @@ def build_memory_context_block(raw_context: str) -> str:
         # Stays keyed on sanitization alone: a deduped bullet is routine, not a provider fault.
         logger.warning("memory provider returned pre-wrapped context; stripped")
     clean = _drop_repeated_recall_lines(sanitized)
+    if live_bullets:
+        _lines = clean.split("\n")
+        _kept: list[str] = []
+        _i = 0
+        while _i < len(_lines):
+            _line = _lines[_i]
+            _s = _line.strip()
+            if _s and _s in live_bullets:
+                _is_entry = bool(_DATED_ENTRY_RE.search(_s))
+                _is_bullet0 = (not _line[0].isspace()) and bool(_RECALL_BULLET_RE.match(_s))
+                if _is_entry or _is_bullet0:
+                    _nxt = _lines[_i + 1] if _i + 1 < len(_lines) else ""
+                    # A dated line is never a CONTINUATION — it is the next entry, even
+                    # if indented under a bullet (same carve-out as the swallow rule).
+                    _has_cont = bool(_nxt.strip()) and _nxt[0].isspace() and not _DATED_ENTRY_RE.match(_nxt.strip())
+                    if _is_entry:
+                        # Dated entry already live in the window — drop it and swallow its
+                        # indented continuation lines up to the next unindented row. A
+                        # continuation that itself opens with a dated bracket is the NEXT
+                        # entry (mnemosyne-family blocks indent every entry), so it ends
+                        # the swallow and gets its own live/new verdict.
+                        _i += 1
+                        while _i < len(_lines):
+                            _c = _lines[_i]
+                            _cs = _c.strip()
+                            if _cs and (not _c[0].isspace() or _DATED_ENTRY_RE.match(_cs)):
+                                break
+                            _i += 1
+                        continue
+                    if not _has_cont:
+                        _i += 1
+                        continue  # self-contained bullet already says it; adds nothing
+            _kept.append(_line)
+            _i += 1
+        _body = "\n".join(_kept)
+        _has_new = any(
+            _l.strip()
+            and (
+                bool(_DATED_ENTRY_RE.search(_l.strip()))
+                or (not _l[0].isspace() and bool(_RECALL_BULLET_RE.match(_l.strip())))
+            )
+            for _l in _body.split("\n")
+        )
+        if not _has_new:
+            # No NEW recall lines survived: the live block already says it all. Skip the
+            # stamp; the earlier row keeps replaying the same bytes (prefix stays stable).
+            return ""
+        clean = _body
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "

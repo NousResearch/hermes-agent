@@ -106,6 +106,33 @@ describe('useComposerUndo', () => {
     editor.remove()
   })
 
+  it('applies one stack step when keydown undo and historyUndo both fire', () => {
+    const { editor, ref } = makeEditor('base')
+    editor.focus()
+    placeCaretAtEnd(editor)
+
+    const { api, view } = mountUndo(ref, () => editor.textContent || '')
+
+    api.current!.recordUndoPoint()
+    editor.append(document.createTextNode(' one'))
+    api.current!.recordUndoPoint()
+    editor.append(document.createTextNode(' two'))
+    expect(editor.textContent).toBe('base one two')
+
+    expect(api.current!.undo()).toBe(true)
+    expect(editor.textContent).toBe('base one')
+
+    const event = new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'historyUndo' })
+    editor.dispatchEvent(event)
+
+    // Same physical ⌘Z — do not take the next stack entry.
+    expect(event.defaultPrevented).toBe(true)
+    expect(editor.textContent).toBe('base one')
+
+    view.unmount()
+    editor.remove()
+  })
+
   it('ignores a historyUndo while another editor holds focus', () => {
     const { editor, ref } = makeEditor('mine')
     const { editor: other } = makeEditor('theirs')

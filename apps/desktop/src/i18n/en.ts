@@ -10,6 +10,7 @@ import { enConnectorCard } from './en_connector_card'
 import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
 import { enFirstRun } from './en_first_run'
 import { enLocalModels } from './en_local_models'
+import { enMcpReload } from './en_mcp_reload'
 import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
@@ -204,6 +205,7 @@ export const en: Translations = {
     },
 
     accounts: enConnectorAccounts,
+    reload: enMcpReload,
 
     tools: {
       title: 'Tools',
@@ -1658,9 +1660,7 @@ export const en: Translations = {
         paymentAndCredits: 'Payment & credits',
         usage: 'Usage'
       },
-      usage: {
-        title: 'Usage'
-      },
+      usage: { title: 'Usage' },
       buyCredits: {
         customAmount: 'Custom credit amount',
         title: 'Buy credits now',

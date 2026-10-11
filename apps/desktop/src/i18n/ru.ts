@@ -5,6 +5,7 @@ import { ruBoot } from './ru_boot'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruFirstRun } from './ru_first_run'
+import { ruMcpReload } from './ru_mcp_reload'
 import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
@@ -38,6 +39,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 
 export const ruOverrides = {
   connectors: ruConnectors.connectors,
+  connectorsPage: { reload: ruMcpReload },
   sharedMetrics: ruSharedMetrics,
   firstRun: ruFirstRun,
   sessionImport: ruConnectors.sessionImport,
@@ -694,9 +696,7 @@ export const ruOverrides = {
         maxLines: 'Лимит страниц файла',
         maxLineLength: 'Лимит длины строки'
       },
-      codeExecution: {
-        mode: 'Режим выполнения кода'
-      },
+      codeExecution: { mode: 'Режим выполнения кода' },
       approvals: {
         mode: 'Режим подтверждения',
         timeout: 'Тайм-аут подтверждения',

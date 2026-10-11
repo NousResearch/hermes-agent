@@ -24,6 +24,7 @@ import {
   RECENT_INTERRUPT_COOLDOWN_MS,
   releaseSubmitInFlight,
   renderRpcResult,
+  renderSlashRpcResult,
   SessionRecoveryAborted,
   shouldInterruptBeforeRewind,
   slashStatusText,
@@ -500,6 +501,48 @@ describe('renderRpcResult', () => {
           'agents'
         )
       ).toBe(['• [running] npm test (42s · s-1)', '• [completed] vitest (s-2)'].join('\n'))
+    })
+  })
+
+  describe('reload-mcp (renderSlashRpcResult)', () => {
+    it('shows the backend confirm-required message', () => {
+      expect(renderSlashRpcResult({ message: 'reply now to proceed', status: 'confirm_required' }, 'reload-mcp')).toBe(
+        'reply now to proceed'
+      )
+    })
+
+    it('reports a clean reload, tolerating a backend that omits failed', () => {
+      expect(renderSlashRpcResult({ status: 'reloaded' }, 'reload-mcp')).toBe('MCP servers reloaded')
+    })
+
+    it('names the servers that did not connect', () => {
+      expect(renderSlashRpcResult({ failed: ['alpha', 'beta'], status: 'reloaded' }, 'reload-mcp')).toBe(
+        ['MCP servers reloaded', 'Did not connect: alpha, beta'].join('\n')
+      )
+    })
+
+    it('notes the confirmation opt-out only when always was used', () => {
+      expect(renderSlashRpcResult({ status: 'reloaded' }, 'reload-mcp', 'always')).toBe(
+        'MCP servers reloaded · /reload-mcp will no longer ask for confirmation in this profile'
+      )
+      expect(renderSlashRpcResult({ status: 'reloaded' }, 'reload-mcp', 'now')).toBe('MCP servers reloaded')
+    })
+  })
+
+  describe('reload-skills', () => {
+    it('passes the backend output through', () => {
+      const output = 'Reloading skills...\nAdded skills:\n  - demo\n2 skill(s) available'
+
+      expect(renderSlashRpcResult({ output, result: {} }, 'reload-skills')).toBe(output)
+    })
+
+    it('answers the underscore aliases like the canonical names', () => {
+      expect(renderSlashRpcResult({ output: 'ok' }, 'reload_skills')).toBe('ok')
+      expect(renderSlashRpcResult({ status: 'reloaded' }, 'reload_mcp')).toBe('MCP servers reloaded')
+    })
+
+    it('falls back to the generic renderer for a non-object result', () => {
+      expect(renderSlashRpcResult('done', 'reload-skills')).toBe(renderRpcResult('done', 'reload-skills'))
     })
   })
 

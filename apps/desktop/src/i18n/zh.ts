@@ -6,6 +6,7 @@ import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
 import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
+import { zhMcpReload } from './zh_mcp_reload'
 import { zhModelMenu } from './zh_model_menu'
 import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
@@ -16,6 +17,7 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  connectorsPage: { reload: zhMcpReload },
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
@@ -933,9 +935,7 @@ export const zhOverrides = {
         maxLines: '文件分页上限',
         maxLineLength: '行长度上限'
       },
-      codeExecution: {
-        mode: '代码执行模式'
-      },
+      codeExecution: { mode: '代码执行模式' },
       approvals: {
         mode: '审批模式',
         timeout: '审批超时',

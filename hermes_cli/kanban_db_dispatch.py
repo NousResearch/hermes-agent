@@ -957,6 +957,36 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
+def _transient_resource_streak(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count the task's trailing run of clean-exit transient-resource requeues.
+
+    Backstop for the log-based ``_transient_resource_line`` booking: a log can
+    misread (a stale wall inside the current segment's window, a wall the SDK
+    already recovered from), and ``rate_limited`` is neutral everywhere —
+    neither streak nor breaker ever counts it — so without a cap one task could
+    cycle the rate-limit cooldown forever. Once this streak reaches the
+    protocol-violation budget the next transient-looking exit falls through to
+    a counted, operator-visible protocol violation instead (#133795). Real
+    quota walls (``KANBAN_RATE_LIMIT_EXIT_CODE``) never carry the
+    ``transient_resource`` marker and are not affected.
+    """
+    streak = 0
+    rows = conn.execute(
+        "SELECT outcome, metadata FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
+    ).fetchall()
+    for row in rows:
+        if row["outcome"] == "rate_limited" and _kb._json_dict(row["metadata"]).get(
+            "transient_resource"
+        ):
+            streak += 1
+            continue
+        break
+    return streak
+
+
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
     # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
@@ -972,6 +1002,65 @@ _PROTOCOL_VIOLATION_ERROR = (
     "a run without a terminal kanban call counts as failed no "
     "matter what it did."
 )
+
+
+# Transient provider/capacity wall as it lands in a worker's log: the rendered
+# provider error or the SDK exception text (``Error code: 429``, ``overloaded_error``,
+# ``Connection reset by peer``). Anchored to error shapes on purpose — a worker whose
+# log merely *discusses* these words must keep the protocol-violation budget (an
+# operator-visible block) instead of silently retrying forever on the rate-limit
+# cooldown (#133795).
+_TRANSIENT_RESOURCE_EXIT_RE = re.compile(
+    r"error(?:\s+code)?\s*[:=]\s*(?:429|502|503|504)\b"
+    r"|\b(?:429|502|503|504)\b\s*[-–—:]\s*(?:too many requests|rate limit|quota"
+    r"|service unavailable|bad gateway|gateway timeout|overloaded)"
+    r"|\b(?:too many requests|rate limit exceeded|rate_limit_error"
+    r"|overloaded_error|provider busy|temporarily unavailable"
+    r"|temporarily overloaded|service unavailable)\b"
+    r"|\bconnection\s+(?:reset|refused)\b",
+    re.IGNORECASE,
+)
+
+_TRANSIENT_EXIT_TAIL_BYTES = 65536
+
+# A wall that actually stopped the turn sits near the end of the run's segment
+# (the error render, then exit); a wall the SDK retried past is followed by the
+# rest of the turn's output, which pushes it out of this window.
+_TRANSIENT_EXIT_TAIL_LINES = 80
+
+
+def _transient_resource_line(task_id: str, board: Optional[str] = None) -> str:
+    """First line of the dead worker's CURRENT run's log segment that names a transient
+    provider/capacity wall (trimmed), or ``""`` when the segment is unreadable, absent
+    or says nothing.
+
+    A clean-exit worker usually skipped only the terminal board call, but one that
+    burned its retries against a 429/503 wall can also end its turn "completed" and
+    exit 0 without ever reaching the kanban tools — the wall is then only in the log
+    (#133795). The worker log is append-mode across re-runs (size-rotated only), so
+    only the lines between the previous ``KANBAN_WORKER_EXIT_TRAILER`` and this run's
+    trailer belong to the run being classified: a wall from an earlier run must not
+    requeue later runs forever. Best-effort by design: an unreadable or
+    trailer-less log (and a mid-turn wall the SDK already recovered from) falls
+    through to the protocol-violation booking, whose budget backstops misreads.
+    """
+    try:
+        raw = _kb.read_worker_log(
+            task_id, tail_bytes=_TRANSIENT_EXIT_TAIL_BYTES, board=board
+        )
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    lines = raw.splitlines()
+    trailer_idx = [i for i, line in enumerate(lines) if _EXIT_TRAILER_RE.match(line)]
+    if not trailer_idx:  # no trailer: the current run's segment is unknowable
+        return ""
+    seg_start = trailer_idx[-2] + 1 if len(trailer_idx) >= 2 else 0
+    for line in lines[seg_start : trailer_idx[-1]][-_TRANSIENT_EXIT_TAIL_LINES:]:
+        if _TRANSIENT_RESOURCE_EXIT_RE.search(line):
+            return line.strip()[:200]
+    return ""
 
 
 # Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
@@ -1046,6 +1135,7 @@ class _DeadWorker:
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
+    transient_streak_exhausted: bool = False,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -1053,7 +1143,13 @@ def _classify_dead_worker(
     in the event payload, appended to the error text) so the board and the retry
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
-    dead = _classify_dead_worker_exit(pid, claimer, task_id=task_id, board=board)
+    dead = _classify_dead_worker_exit(
+        pid,
+        claimer,
+        task_id=task_id,
+        board=board,
+        transient_streak_exhausted=transient_streak_exhausted,
+    )
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
@@ -1068,6 +1164,7 @@ def _classify_dead_worker_exit(
     *,
     task_id: Optional[str] = None,
     board: Optional[str] = None,
+    transient_streak_exhausted: bool = False,
 ) -> _DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in.
 
@@ -1086,6 +1183,35 @@ def _classify_dead_worker_exit(
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
         # worker via ``build_worker_context``.
+        if task_id:
+            wall = (
+                ""
+                if transient_streak_exhausted
+                else _transient_resource_line(task_id, board=board)
+            )
+            if wall:
+                # The turn "completed" against a 429/503-style provider wall and the
+                # worker exited 0 without a terminal board call (#133795): same
+                # booking as the ``KANBAN_RATE_LIMIT_EXIT_CODE`` path — requeue
+                # without counting, cooldown via ``check_respawn_guard``. Once the
+                # trailing streak of these bookings reaches the violation budget
+                # (``_transient_resource_streak``) the classification is no longer
+                # trusted and falls through to the counted booking below, so a
+                # misread can never requeue one task forever.
+                return _DeadWorker(
+                    "rate_limited",
+                    code,
+                    f"pid {pid} exited cleanly but its log tail shows a transient provider wall "
+                    f"({wall!r}) — requeued without counting a failure",
+                    "rate_limited",
+                    {
+                        "pid": pid,
+                        "claimer": claimer,
+                        "exit_code": code,
+                        "transient_resource": True,
+                    },
+                    rate_limited=True,
+                )
         return _DeadWorker(
             kind, code, _PROTOCOL_VIOLATION_ERROR, "protocol_violation",
             # ``protocol_violation`` is the durable marker for
@@ -1166,7 +1292,20 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            # Backstop budget computed BEFORE this run is booked: once the task's
+            # trailing transient-resource requeues reach the violation limit, the
+            # next transient-looking clean exit is booked as a protocol violation.
+            transient_spent = (
+                _transient_resource_streak(conn, row["id"])
+                >= _PROTOCOL_VIOLATION_FAILURE_LIMIT
+            )
+            dead = _classify_dead_worker(
+                pid,
+                row["claim_lock"],
+                task_id=row["id"],
+                board=board,
+                transient_streak_exhausted=transient_spent,
+            )
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(

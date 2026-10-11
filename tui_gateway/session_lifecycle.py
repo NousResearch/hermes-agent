@@ -954,11 +954,19 @@ def _schedule_ws_orphan_reap(
                 polls = current["_client_gone_interrupt_polls"] = int(current.get("_client_gone_interrupt_polls") or 0) + 1
                 # See #85578.
                 if polls > _WS_ORPHAN_INTERRUPT_REAP_MAX_POLLS:
-                    # Never settled inside the budget — force-reap rather than park forever.
-                    logger.error(
-                        "client_gone sid=%s: turn did not settle after %d interrupt polls (%.0fs) — force-reaping detached session",
-                        sid, polls - 1, (polls - 1) * _WS_ORPHAN_INTERRUPT_REAP_POLL_S)
-                    session = _pop_session_by_id(sid)
+                    # Never settled inside the budget. The turn is still producing
+                    # the work the user asked for, so ending the row underneath it
+                    # is the "completed while still running" lie — keep the detached
+                    # session open and slow the poll down instead of force-reaping.
+                    # A genuinely hung agent thread stays visible (and closable)
+                    # rather than silently ending a live session's row.
+                    if not current.get("_client_gone_slow_poll_logged"):
+                        current["_client_gone_slow_poll_logged"] = True
+                        logger.warning(
+                            "client_gone sid=%s: turn did not settle after %d interrupt polls (%.0fs); "
+                            "keeping the detached session open until the turn settles",
+                            sid, polls - 1, (polls - 1) * _WS_ORPHAN_INTERRUPT_REAP_POLL_S)
+                    reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
                 else:
                     if not current.get("_client_gone_interrupt_requested"):
                         current["_client_gone_interrupt_requested"] = True

@@ -24,6 +24,15 @@ vi.mock('@/store/gateway', async importOriginal => ({
   openSecondaryCount: warmMocks.openSecondaryCount
 }))
 
+// host.sessions.startDrag delegates to the app's own pointer drag; observe the
+// payload it resolves without running the drag machinery.
+const dragMocks = vi.hoisted(() => ({ startSessionDrag: vi.fn() }))
+
+vi.mock('@/app/chat/session-drag', async importOriginal => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  startSessionDrag: dragMocks.startSessionDrag
+}))
+
 vi.mock('@/store/pool-limits', async () => {
   const { atom } = await import('nanostores')
 
@@ -447,5 +456,41 @@ describe('host.sessions session-list mutations', () => {
 
     host.sessions.setColor('row-1', null)
     expect($sessionColorOverrides.get()).toEqual({})
+  })
+
+  it('startDrag hands the sidebar drag the loaded row: live id, profile, title', async () => {
+    const { $sessions } = await import('@/store/session')
+    const { makeSessionInfo } = await import('@/test/session-info')
+
+    dragMocks.startSessionDrag.mockClear()
+    // The plugin holds the durable root; the drag (tile, @session chip) keys
+    // off the live row like a sidebar drag does. A loaded row's own profile and
+    // title win over the caller's fallbacks.
+    $sessions.set([
+      makeSessionInfo({ _lineage_root_id: 'd-root', id: 'd-tip', profile: 'work', title: 'Loaded title' })
+    ])
+    const event = { button: 0 } as never
+    const onTap = vi.fn()
+
+    host.sessions.startDrag('d-root', event, { onTap, profile: 'other', title: 'Fallback' })
+
+    expect(dragMocks.startSessionDrag).toHaveBeenCalledWith(
+      { id: 'd-tip', profile: 'work', title: 'Loaded title' },
+      event,
+      { onTap }
+    )
+  })
+
+  it('startDrag labels an unloaded session from the caller, defaulting the profile', () => {
+    dragMocks.startSessionDrag.mockClear()
+    const event = { button: 0 } as never
+
+    host.sessions.startDrag('not-loaded', event, { title: 'From plugin' })
+    host.sessions.startDrag('bare', event)
+
+    expect(dragMocks.startSessionDrag.mock.calls.map(call => call[0])).toEqual([
+      { id: 'not-loaded', profile: 'default', title: 'From plugin' },
+      { id: 'bare', profile: 'default', title: '' }
+    ])
   })
 })

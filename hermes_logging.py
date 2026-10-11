@@ -15,6 +15,7 @@ import os
 import queue
 import sys
 import threading
+from datetime import datetime, timezone
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
 from time import monotonic as _monotonic
@@ -323,6 +324,59 @@ def _adopt_secondary_home(home: Path) -> bool:
     return enable_profile_log_routing([*sorted(known), resolved])
 
 
+# Sidecar logs that no rotating handler owns: they are written by raw append handles
+# (``open(..., "ab")``) or by other processes — the Rust bootstrap installer, the respawned
+# detached gateway's stdio sidecar, the updater and its Desktop hand-off, MCP server stderr —
+# so they grow for the life of the install (#135812).
+_UNCAPPED_SIDECAR_LOGS = (
+    "gateway-stdio.log",
+    "bootstrap-installer.log",
+    "update.log",
+    "desktop-update-handoff.log",
+    "mcp-stderr.log",
+)
+_SIDECAR_LOG_MAX_BYTES = 8 * 1024 * 1024  # cap trigger
+_SIDECAR_LOG_KEEP_BYTES = 1 * 1024 * 1024  # tail kept once the trigger trips
+
+
+def cap_uncapped_sidecar_logs(log_dir: Path) -> list[tuple[str, int]]:
+    """Shrink sidecar logs past the cap, in place; returns the (name, old_size) pairs capped.
+
+    Truncation is in place (``r+b`` + ``truncate``), never a rename: a live writer holds an
+    append handle, and renaming would leave that handle pointing at the renamed file so the
+    growth simply moves there. Append handles always continue at EOF, so a shrunken file is
+    safe. The cut lands on a line boundary and a first-line marker records what was dropped.
+    Fail-safe by design: a missing or locked file is skipped, never an error.
+    """
+    capped: list[tuple[str, int]] = []
+    for name in _UNCAPPED_SIDECAR_LOGS:
+        path = log_dir / name
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size <= _SIDECAR_LOG_MAX_BYTES:
+            continue
+        try:
+            with path.open("r+b") as fh:
+                fh.seek(max(0, size - _SIDECAR_LOG_KEEP_BYTES))
+                fh.readline()  # resume at the next line boundary
+                tail = fh.read()
+                fh.seek(0)
+                stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                dropped = size - len(tail)
+                marker = (
+                    f"[hermes] log capped in place on {stamp}: dropped {dropped} of {size}"
+                    " head bytes; live append handles continue at the new EOF\n"
+                ).encode()
+                fh.write(marker + tail)
+                fh.truncate()
+        except OSError:
+            continue
+        capped.append((name, size))
+    return capped
+
+
 def setup_logging(
     *,
     hermes_home: Optional[Path] = None,
@@ -348,6 +402,11 @@ def setup_logging(
     # (#92281). Runs before the initialized check so every entry mode that
     # reaches this function gets it; a no-op once this stdout is line-buffered.
     _line_buffer_piped_stdout()
+
+    # Sidecar logs with no rotating handler grew since the last entry; cap them before the
+    # secondary-home early return so every home of a multi-profile process gets its own
+    # sidecars bounded (idempotent — files under the cap are left alone).
+    cap_uncapped_sidecar_logs(log_dir)
 
     # A second Hermes home in a process that already logs for another one — a dashboard or
     # ``hermes serve`` backend building agents for several profiles, a multiplexed gateway —

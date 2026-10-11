@@ -179,13 +179,14 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 px-4 pb-2">
-      <ManualMcpReload gateway={gateway} profile={profile} />
-
       <ConnectorsDirectory
         addYourOwn={
-          <Button disabled={mcp.profilePending} onClick={() => setAddOpen(true)} size="xs" variant="outline">
-            {copy.add.action}
-          </Button>
+          <>
+            <ManualMcpReload gateway={gateway} profile={profile} />
+            <Button disabled={mcp.profilePending} onClick={() => setAddOpen(true)} size="xs" variant="outline">
+              {copy.add.action}
+            </Button>
+          </>
         }
         busyKey={busyKey}
         cards={cards}

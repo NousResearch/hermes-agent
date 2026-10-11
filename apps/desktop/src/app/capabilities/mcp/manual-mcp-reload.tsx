@@ -36,11 +36,9 @@ export function ManualMcpReload({ gateway, profile }: ManualMcpReloadProps) {
 
   return (
     <>
-      <div className="flex shrink-0 items-center justify-end">
-        <Button disabled={!gateway} onClick={() => setOpen(true)} size="xs" variant="outline">
-          {copy.action}
-        </Button>
-      </div>
+      <Button disabled={!gateway} onClick={() => setOpen(true)} size="xs" variant="outline">
+        {copy.action}
+      </Button>
       <ConfirmDialog
         confirmLabel={copy.confirm}
         description={copy.description}

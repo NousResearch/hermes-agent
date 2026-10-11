@@ -232,6 +232,8 @@ def _cfg_get_fast(params):
     agent = session.get("agent")
     tier = (getattr(agent, "service_tier", None) if agent is not None
             else session.get("create_service_tier_override"))
+    if tier is None and agent is None:
+        tier = _metadata_mirror(session).get("service_tier")
     if tier is None:
         tier = _load_service_tier()
     return {"value": {"priority": "fast", "ultrafast": "ultrafast"}.get(tier, "normal")}

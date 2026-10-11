@@ -2336,23 +2336,6 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     return str(model or default[0]), str(provider or default[1])
 
 
-def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, tier: str | None = None) -> bool:
-    """Whether a priority tier reaches this session's route. Every request builder asks the same gate, so a
-    profile-wide ``service_tier: fast`` sends nothing to a local server or a proxy, and the session must not
-    report Fast there either. ``route_known`` is False while a switch is pending: the agent's base URL still
-    belongs to the old route."""
-    from hermes_cli.models import resolve_fast_mode_overrides
-    base_url = None
-    if route_known and agent is not None:
-        if getattr(agent, "api_mode", None) == "anthropic_messages":
-            base_url = getattr(agent, "_anthropic_base_url", None)
-        base_url = base_url or getattr(agent, "base_url", None)
-    try:
-        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url, tier=tier) is not None
-    except Exception:
-        return False
-
-
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
@@ -2368,6 +2351,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         # Disabled must differ from unset ("" = provider default) or the desktop loses "thinking off" after turn 1.
         reasoning_effort = "none" if reasoning_config.get("enabled") is False else str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or mirror.get("service_tier") or ""
+    if agent is None and sess.get("create_service_tier_override") is not None:
+        service_tier = sess["create_service_tier_override"]  # requested tier beats an older child snapshot
     # yolo ORs the same three sources check_all_command_guards() does (approvals.mode=off, the process
     # --yolo env, the per-session flag): the session flag alone would show "off" while config auto-approves.
     try:

@@ -208,9 +208,9 @@ def test_status_reports_the_headed_browser_or_its_absence(monkeypatch):
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: None)
     monkeypatch.setattr(runtime, "published_env", dict)
     monkeypatch.setattr(runtime, "geometry", lambda: "1440x900")
-    monkeypatch.setattr(browser, "executable", lambda: None)
+    monkeypatch.setattr(browser, "executable", lambda **_: None)
     assert runtime.status().as_dict()["browser"] is None
-    monkeypatch.setattr(browser, "executable", lambda: "/usr/bin/chromium")
+    monkeypatch.setattr(browser, "executable", lambda **_: "/usr/bin/chromium")
     assert runtime.status().browser == "/usr/bin/chromium"
 
 

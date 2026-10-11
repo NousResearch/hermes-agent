@@ -86,6 +86,30 @@ def _get_direct_firecrawl_config() -> Optional[tuple]:
     return None
 
 
+_FIRECRAWL_DEFAULT_TIMEOUT_S = 60.0
+
+
+def _firecrawl_request_timeout() -> float:
+    """Bound the keyed SDK client's HTTP calls (the SDK forwards ``timeout`` verbatim to ``requests`` and
+    its retry loop only covers HTTP 502, so ``None`` lets a stalled upstream hold the tool until the
+    dispatch deadline instead of failing fast, #136720). Mirrors the keyless client's 60s bound;
+    override with FIRECRAWL_TIMEOUT (seconds)."""
+    raw = _env("FIRECRAWL_TIMEOUT")
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            return value
+        logger.warning(
+            "Ignoring invalid FIRECRAWL_TIMEOUT=%r; using the %.0fs default",
+            raw,
+            _FIRECRAWL_DEFAULT_TIMEOUT_S,
+        )
+    return _FIRECRAWL_DEFAULT_TIMEOUT_S
+
+
 def _is_explicit_firecrawl_selection() -> bool:
     from plugins.web.keyless_mcp import _web_config_selects
     return _web_config_selects("firecrawl")
@@ -216,7 +240,11 @@ def _get_firecrawl_client(capability: Optional[str] = None) -> Any:
     cached = getattr(wt, "_firecrawl_client", None)
     if cached is not None and getattr(wt, "_firecrawl_client_config", None) == client_config:
         return cached
-    wt._firecrawl_client = _KeylessFirecrawlClient(api_url=kwargs["api_url"]) if client_mode == "keyless" else Firecrawl(**kwargs)
+    wt._firecrawl_client = (
+        _KeylessFirecrawlClient(api_url=kwargs["api_url"])
+        if client_mode == "keyless"
+        else Firecrawl(**kwargs, timeout=_firecrawl_request_timeout())
+    )
     wt._firecrawl_client_config = client_config
     return wt._firecrawl_client
 

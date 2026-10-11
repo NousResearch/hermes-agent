@@ -417,3 +417,34 @@ def test_finalize_turn_starts_the_title_upgrade_the_prologue_held_back():
     _finalize(agent, final_response="done", exit_reason="text_response(1)", api_call_count=1)
     assert ran.wait(timeout=5), "deferred title upgrade never started"
     assert agent._deferred_title_upgrade is None
+
+
+def test_budget_exhausted_review_fork_does_not_record_parent_kanban_timeout(monkeypatch):
+    """A persistence-isolated background-review fork (persistence disabled) must not
+    record budget exhaustion against the inherited task either (#112817 follow-up;
+    real incidents: t_915be37e "(16/16)" and t_02f64e70 "(50/50)" archived while the
+    parent 250/300-budget task was healthy)."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+    from agent import delegation_context as dc
+
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+
+    monkeypatch.setattr(dc, "is_dispatcher_owned_worker_context", lambda: True)
+
+    class _ReviewForkAgent(_LimitAgent):
+        _persist_disabled = True
+
+        def _emit_diagnostic_status(self, *_a, **_kw):
+            pass
+
+        def _handle_max_iterations(self, messages, api_call_count):
+            return "child summary"
+
+    agent = _ReviewForkAgent()
+    result = _finalize(agent, final_response=None, exit_reason="unknown")
+    assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+    record.assert_not_called()

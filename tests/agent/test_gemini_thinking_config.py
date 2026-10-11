@@ -1,9 +1,15 @@
-"""Disabling reasoning must actually stop Gemini thinking (#91927).
+"""Disabling reasoning must actually stop (or floor) Gemini thinking.
 
 ``includeThoughts: False`` only hides thought parts; the model still reasons
 internally and bills thought tokens against maxOutputTokens, starving small
-budgets (title generation's 64 tokens). ``thinkingBudget: 0`` is the real
-off switch on families that document it.
+budgets (title generation's 64 tokens).
+
+- Gemini 2.5 documents ``thinkingBudget: 0`` as the real off switch (#91927).
+- Gemini 3 cannot disable thinking at all: Flash-Lite tiers reject
+  ``thinkingBudget: 0`` with 400 INVALID_ARGUMENT (#123512), and the rest of
+  the generation only tolerate the field undocumented. ``thinkingLevel:
+  "minimal"`` is the documented closest-to-zero level and is accepted across
+  the generation, including where the budget is rejected.
 """
 
 import pytest
@@ -15,23 +21,30 @@ from agent.transports.chat_completions import (
 
 
 @pytest.mark.parametrize(
-    "model,expect_budget_zero",
+    "model,mode",
     [
-        ("gemini-2.5-flash", True),
-        ("gemini-3.6-flash", True),
-        ("gemini-3.1-pro", True),
-        ("gemini-flash-latest", True),
-        ("gemini-1.5-flash", False),  # pre-2.5: thinkingBudget undocumented
+        ("gemini-2.5-flash", "budget0"),        # documented off switch (#91927)
+        ("gemini-3.6-flash", "minimal"),        # 3.x: cannot disable (#123512)
+        ("gemini-3.1-pro", "minimal"),
+        ("gemini-3.5-flash-lite", "minimal"),   # rejects budget 0 with 400
+        ("gemini-flash-latest", "minimal"),
+        ("gemini-1.5-flash", "hidden-only"),    # pre-2.5: thinkingBudget undocumented
     ],
 )
-def test_disabled_reasoning_zeroes_thinking_budget_where_supported(model, expect_budget_zero):
+def test_disabled_reasoning_sends_the_closest_supported_off(model, mode):
     for reasoning in ({"enabled": False}, {"effort": "none"}):
         config = _build_gemini_thinking_config(model, reasoning)
         assert config is not None
         assert config.get("includeThoughts") is False
-        assert (config.get("thinkingBudget") == 0) is expect_budget_zero
-        if not expect_budget_zero:
+        if mode == "budget0":
+            assert config.get("thinkingBudget") == 0
+            assert "thinkingLevel" not in config
+        elif mode == "minimal":
+            assert config.get("thinkingLevel") == "minimal"
             assert "thinkingBudget" not in config
+        else:
+            assert "thinkingBudget" not in config
+            assert "thinkingLevel" not in config
 
 
 def test_enabled_reasoning_never_zeroes_budget_and_non_gemini_gets_nothing():

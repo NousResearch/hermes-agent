@@ -265,6 +265,13 @@ _SPECS = [
              help="Release any active claim before reassigning (required if task is running)"),
         _RECLAIM_REASON,
     ], help="Reassign a task to a different profile, optionally reclaiming first"),
+    _cmd("authorize-existing-pr", [
+        _TASK_ID,
+        _arg("--pr", required=True, help="Exact existing PR URL (https://github.com/OWNER/REPO/pull/N)"),
+        _arg("--repo", required=True, help="Exact repository OWNER/REPO of the PR"),
+        _arg("--branch", required=True, help="Exact head branch of the PR"),
+        _arg("--reason", required=True, help="Why this card may amend the existing PR (audited)"),
+    ], help="Let this card's next dispatch amend its existing open PR (single use, lifts active_pr)"),
     _cmd("diagnostics", [
         _arg("--severity", choices=["warning", "error", "critical"],
              help="Only show diagnostics at or above this severity"),

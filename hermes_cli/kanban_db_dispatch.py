@@ -25,6 +25,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli import kanban_pr_authorization as _pra
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -1619,12 +1620,9 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
-    #    now work on THAT PR — a closer or the implementer finishing it, not a
-    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
-    #    so the worker that opened the PR is still not re-spawned against it.
+    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR. Lifted by a handoff
+    #    AFTER the newest PR comment (reassign, changes_requested, review reopen: #111910; not a crash
+    #    or reclaim) or by an unexpired single-use grant naming every PR URL (kanban_pr_authorization).
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "
@@ -1641,7 +1639,8 @@ def check_respawn_guard(
             "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
             (task_id, int(c["created_at"] or 0)),
         ).fetchall()
-        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events) or _pra.permits_active_pr_bypass(
+                conn, task_id, pr_cutoff):
             return None
         return "active_pr"
 
@@ -2099,6 +2098,7 @@ def _dispatch_lane_task(
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
         return False
+    _pra.record_consumed(conn, claimed.id, claimed.current_run_id)
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":

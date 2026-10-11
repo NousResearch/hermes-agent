@@ -70,19 +70,23 @@ jobs:
           echo "Base SHA: ${BASE_SHA}"
           echo "Base ref: ${BASE_REF}"
 
+      # Reports live under $RUNNER_TEMP, not the checkout: the clean-worktree step at the end of
+      # every job fails (or warns) on untracked files, and .lint-reports/ is not gitignored.
       - name: Run ruff + ty on HEAD
         run: |
-          mkdir -p .lint-reports/head
+          R="$RUNNER_TEMP/lint-reports"
+          mkdir -p "$R/head"
           ruff check --output-format json --exit-zero \
-            > .lint-reports/head/ruff.json || true
+            > "$R/head/ruff.json" || true
           ty check --output-format gitlab --exit-zero \
-            > .lint-reports/head/ty.json || true
-          echo "HEAD ruff: $(wc -c < .lint-reports/head/ruff.json) bytes"
-          echo "HEAD ty:   $(wc -c < .lint-reports/head/ty.json) bytes"
+            > "$R/head/ty.json" || true
+          echo "HEAD ruff: $(wc -c < "$R/head/ruff.json") bytes"
+          echo "HEAD ty:   $(wc -c < "$R/head/ty.json") bytes"
 
       - name: Run ruff + ty on base (via git worktree)
         run: |
-          mkdir -p .lint-reports/base
+          R="$RUNNER_TEMP/lint-reports"
+          mkdir -p "$R/base"
           # Use a worktree so we don't clobber the main checkout. If the basex
           # SHA is identical to HEAD (e.g. first commit), skip and leave the
           # base reports empty — the diff script handles missing files.
@@ -90,35 +94,43 @@ jobs:
           BASE_SHA="${{ steps.base.outputs.sha }}"
           if [ "$BASE_SHA" = "$HEAD_SHA" ]; then
             echo "Base SHA == HEAD SHA, skipping base scan."
-            echo '[]' > .lint-reports/base/ruff.json
-            echo '[]' > .lint-reports/base/ty.json
+            echo '[]' > "$R/base/ruff.json"
+            echo '[]' > "$R/base/ty.json"
           else
             git worktree add --detach /tmp/lint-base "$BASE_SHA"
             (
               cd /tmp/lint-base
               ruff check --output-format json --exit-zero \
-                > "$GITHUB_WORKSPACE/.lint-reports/base/ruff.json" || true
+                > "$R/base/ruff.json" || true
               ty check --output-format gitlab --exit-zero \
-                > "$GITHUB_WORKSPACE/.lint-reports/base/ty.json" || true
+                > "$R/base/ty.json" || true
             )
             git worktree remove --force /tmp/lint-base
           fi
-          echo "base ruff: $(wc -c < .lint-reports/base/ruff.json) bytes"
-          echo "base ty:   $(wc -c < .lint-reports/base/ty.json) bytes"
+          echo "base ruff: $(wc -c < "$R/base/ruff.json") bytes"
+          echo "base ty:   $(wc -c < "$R/base/ty.json") bytes"
 
       - name: Generate diff summary
         env:
           HEAD_REF: ${{ inputs.event_name == 'pull_request' && github.head_ref || github.ref_name }}
         run: |
+          R="$RUNNER_TEMP/lint-reports"
           python scripts/lint_diff.py \
-            --base-ruff .lint-reports/base/ruff.json \
-            --head-ruff .lint-reports/head/ruff.json \
-            --base-ty   .lint-reports/base/ty.json \
-            --head-ty   .lint-reports/head/ty.json \
+            --base-ruff "$R/base/ruff.json" \
+            --head-ruff "$R/head/ruff.json" \
+            --base-ty   "$R/base/ty.json" \
+            --head-ty   "$R/head/ty.json" \
             --base-ref  "${{ steps.base.outputs.ref }}" \
             --head-ref  "$HEAD_REF" \
-            --output    .lint-reports/summary.md
-          cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+            --output    "$R/summary.md"
+          cat "$R/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree
 
   ruff-blocking:
     # Enforce the rules in pyproject.toml [tool.ruff.lint.select]. Currently
@@ -151,6 +163,13 @@ jobs:
         run: |
           ruff check .
 
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree
+
   code-health:
     # Per-unit ratchet: every function and file keeps its own cap (its value on main when it is
     # already over target, else the target) and pattern rules compare fingerprints, so a PR
@@ -178,6 +197,13 @@ jobs:
 
       - name: Ratchet the PR against the base branch tip
         run: python scripts/check --only health --base HEAD^1
+
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree
 
   windows-footguns:
     # Static guardrails on Windows-unsafe Python primitives — os.kill(pid, 0),
@@ -272,3 +298,9 @@ jobs:
             git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" "$PR_HEAD"
           done
           python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head origin/pr-head
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree

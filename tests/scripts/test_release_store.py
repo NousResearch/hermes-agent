@@ -14,15 +14,18 @@ class _Cli:
     def __call__(self, argv):
         name = " ".join(argv)
         if argv[:3] == ["msstore", "submission", "status"]:
+            # The real CLI prints Spectre markup for an MSIX app, never JSON, and nothing
+            # when no submission is pending (rc.12-v0.21.7: "unreadable submission status: ''").
             self.events.append(("status", name))
-            return json.dumps(
-                {"status": "Certification"} if self.pending
-                else {"status": "Published"})
+            return "Submission Status = Certification\n" if self.pending else ""
         if argv[:3] == ["msstore", "submission", "get"]:
             self.events.append(("get", name))
+            uploaded = any(kind == "submit" for kind, _ in self.events)
+            # Before the upload: the last submission (in flight or published). After: the new draft.
+            status = "PendingCommit" if uploaded else ("Certification" if self.pending else "Published")
             return json.dumps({
-                "targetPublishMode": "Immediate", "friendlyName": "Submission 2",
-                "listings": {}})
+                "status": status, "targetPublishMode": "Immediate",
+                "friendlyName": "Submission 2", "listings": {}})
         if argv[:3] == ["msstore", "submission", "delete"]:
             self.events.append(("delete-pending", name))
             return ""

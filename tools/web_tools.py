@@ -299,6 +299,165 @@ def _finish_debug(call_name: str, debug_call_data: dict, error_msg: Optional[str
     return None if error_msg is None else tool_error(error_msg)
 
 
+def _get_fallback_backends(capability: str, primary: Optional[str] = None) -> List[str]:
+    """Return the ordered fallback chain for a capability ("search"|"extract").
+
+    Reads ``web.{capability}_fallbacks`` from config.yaml — an ordered list of
+    provider names tried in sequence when the primary backend fails (returns
+    ``{"success": False}`` or raises). Example::
+
+        web:
+          search_backend: brave-free
+          search_fallbacks: [exa, tavily]
+
+    Normalization rules:
+    - Non-list values (a bare string, null) are coerced: a comma/space-separated
+      string is split, anything else yields an empty chain.
+    - Entries are lowercased, stripped, and de-duplicated (first occurrence wins).
+    - The *primary* backend name is dropped so a misconfigured chain that repeats
+      the primary never retries the same provider that just failed.
+    - Empty / whitespace-only entries are discarded.
+
+    Availability is NOT filtered here — the dispatcher probes each candidate at
+    call time and skips unavailable ones, so a chain can name a provider whose
+    key is added later without a config edit.
+    """
+    cfg = _load_web_config()
+    raw = cfg.get(f"{capability}_fallbacks")
+
+    if raw is None:
+        items: List[str] = []
+    elif isinstance(raw, str):
+        # Tolerate a comma/space-separated string written by hand or by a tool
+        # that can't emit a YAML list (``hermes config set`` writes scalars).
+        # Strip list-literal brackets and surrounding quotes so both
+        # ``"exa, tavily"`` and ``"[exa, tavily]"`` parse cleanly.
+        cleaned = raw.strip().strip("[]").replace(",", " ")
+        items = [part.strip("'\"") for part in cleaned.split()]
+    elif isinstance(raw, (list, tuple)):
+        items = [str(item) for item in raw]
+    else:
+        items = []
+
+    primary_norm = (primary or "").lower().strip()
+    seen = set()
+    chain: List[str] = []
+    for item in items:
+        name = item.lower().strip()
+        if not name or name == primary_norm or name in seen:
+            continue
+        seen.add(name)
+        chain.append(name)
+    return chain
+def _run_search_fallbacks(
+    query: str,
+    limit: int,
+    primary_result: Dict[str, Any],
+    *,
+    primary: Optional[str],
+    _wsp_get_provider,
+) -> Dict[str, Any]:
+    """Walk ``web.search_fallbacks`` after the primary search provider failed.
+
+    Called only when the primary returned ``success=False`` (or raised, which
+    the dispatcher normalizes to a failure dict). Each candidate is resolved
+    via the registry; unavailable / unregistered / search-incapable candidates
+    are skipped. The first candidate that returns ``success=True`` wins and its
+    result is returned. If every candidate fails, the *primary's* original
+    error is returned (it names the configured backend the user actually set up,
+    which is more actionable than the last fallback's error).
+
+    ``_wsp_get_provider`` is the registry ``get_provider`` callable, passed in so
+    this helper shares the dispatcher's already-imported registry handle.
+    """
+    chain = _get_fallback_backends("search", primary=primary)
+    if not chain:
+        return primary_result
+
+    errors = [f"{primary}: {primary_result.get('error', 'unknown error')}"]
+    for name in chain:
+        candidate = _wsp_get_provider(name)
+        if candidate is None or not candidate.supports_search():
+            logger.debug("search fallback '%s' unavailable (unregistered/search-incapable); skipping", name)
+            continue
+        try:
+            available = bool(candidate.is_available())
+        except Exception as exc:  # noqa: BLE001 — a broken provider is "unavailable"
+            logger.debug("search fallback '%s'.is_available() raised: %s", name, exc)
+            available = False
+        if not available:
+            logger.debug("search fallback '%s' not available (missing credentials); skipping", name)
+            continue
+
+        logger.info("Web search falling back to %s: '%s'", name, query)
+        try:
+            result = candidate.search(query, limit)
+        except Exception as exc:  # noqa: BLE001 — a raising fallback is a failure
+            logger.warning("search fallback %s raised: %s", name, exc)
+            errors.append(f"{name}: {exc}")
+            continue
+        if result.get("success"):
+            return result
+        errors.append(f"{name}: {result.get('error', 'unknown error')}")
+
+    logger.warning("All web search fallbacks exhausted: %s", "; ".join(errors))
+    return primary_result
+async def _dispatch_extract(provider, safe_urls, format):
+    """Call a provider's extract(), handling async and sync implementations.
+
+    Mirrors the inline dispatch in :func:`web_extract_tool`: parallel +
+    firecrawl expose ``async def extract()``, exa + keenable are sync. Sync
+    implementations run in a thread so blocking network I/O doesn't stall
+    the event loop.
+    """
+    import inspect
+    if inspect.iscoroutinefunction(provider.extract):
+        return await provider.extract(safe_urls, format=format)
+    return await asyncio.to_thread(provider.extract, safe_urls, format=format)
+async def _run_extract_fallbacks(safe_urls, format, primary, primary_exc, _wsp_get_provider):
+    """Walk ``web.extract_fallbacks`` after the primary extract provider failed.
+
+    Extract providers signal a hard failure by *raising* (unreachable backend,
+    missing SDK, auth error); per-URL ``error`` entries in a returned list are
+    normal and do NOT trigger a fallback. So this helper is only invoked when
+    the primary raised ``primary_exc`` (or its whole batch failed).
+
+    Each candidate must be registered, support extract, and report
+    ``is_available()``. The first candidate whose ``extract()`` returns without
+    raising wins; its results are returned. Returns ``None`` when every
+    candidate raises (or none is usable) — the caller then proceeds to the
+    keyless-ring rescue or surfaces the primary failure, exactly as it would
+    with no chain configured.
+    """
+    chain = _get_fallback_backends("extract", primary=getattr(primary, "name", None))
+    if not chain:
+        return None
+
+    for name in chain:
+        candidate = _wsp_get_provider(name)
+        if candidate is None or not candidate.supports_extract():
+            logger.debug("extract fallback '%s' unavailable (unregistered/extract-incapable); skipping", name)
+            continue
+        try:
+            available = bool(candidate.is_available())
+        except Exception as exc:  # noqa: BLE001 — a broken provider is "unavailable"
+            logger.debug("extract fallback '%s'.is_available() raised: %s", name, exc)
+            available = False
+        if not available:
+            logger.debug("extract fallback '%s' not available (missing credentials); skipping", name)
+            continue
+
+        logger.info("Web extract falling back to %s: %d URL(s)", name, len(safe_urls))
+        try:
+            return await _dispatch_extract(candidate, safe_urls, format)
+        except Exception as exc:  # noqa: BLE001 — try the next candidate
+            logger.warning("extract fallback %s raised: %s", name, exc)
+            continue
+
+    logger.warning("All web extract fallbacks exhausted; surfacing primary error")
+    return None
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """Search the web via the configured backend.
 
@@ -337,6 +496,28 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         else:
             logger.info("Web search via %s: '%s' (limit: %d)", provider.name, query, limit)
             response_data = _memoized_search(provider, query, limit)
+            # Keyed fallback chain (see _get_fallback_backends): gated on a
+            # non-empty chain — with no chain configured the memoized call
+            # already applied rescue per its own eligibility rules.
+            if (
+                isinstance(response_data, dict)
+                and not response_data.get("success")
+                and not response_data.get("rescued_from")
+                and _get_fallback_backends("search", primary=provider.name)
+            ):
+                from agent.web_search_registry import get_provider as _wsp
+                response_data = _run_search_fallbacks(
+                    query, limit, response_data,
+                    primary=provider.name, _wsp_get_provider=_wsp,
+                )
+                if not response_data.get("success") and _keyless_rescue_enabled():
+                    from tools.web_tools_rescue import _rescue_search as _rs
+                    try:
+                        _rescued = _rs(provider.name, str(response_data.get("error", "")), query, limit)
+                        if _rescued.get("success"):
+                            response_data = _rescued
+                    except Exception:  # noqa: BLE001
+                        pass
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -425,7 +606,15 @@ async def web_extract_tool(urls: list[Any], format: str | None = None, char_limi
             provider, error_json = _resolve_extract_provider(backend)
             if error_json is not None:
                 return error_json
-            results = await _extract_safe_urls(provider, safe_urls, format)
+            try:
+                results = await _extract_safe_urls(provider, safe_urls, format)
+            except Exception as _primary_exc:
+                # Keyed fallback chain: extract providers signal hard failure by raising.
+                from agent.web_search_registry import get_provider as _wsp
+                _chained = await _run_extract_fallbacks(safe_urls, format, provider, _primary_exc, _wsp)
+                if _chained is None:
+                    raise
+                results = _chained
         # Reconstruct input order across invalid, blocked, and provider entries (providers preserve
         # the order of the safe URL list they receive).
         if invalid_urls or ssrf_blocked:

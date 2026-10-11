@@ -289,7 +289,24 @@ The default. Commands run directly on your machine with no isolation. No special
 ```yaml
 terminal:
   backend: local
+  local_memory_max_mb: ""  # Optional foreground-command limit in MiB
 ```
+
+On Linux hosts with a working systemd user manager, set
+`local_memory_max_mb` to a positive integer to run foreground local commands
+in transient systemd scopes with `MemoryMax`. The default is unset, so local
+commands keep the existing direct-spawn behavior. If systemd user scopes are
+unavailable, Hermes also falls back to direct spawning. A configured limit
+can tighten but never widen the native safe worker bound (enclosing cgroup,
+half physical RAM, maximum 4 GiB). Background workers keep their existing
+native scope lifecycle and policy.
+
+`local_memory_swap_max_mb` is optional: unset inherits the host swap policy,
+`0` disables swap in guarded foreground scopes, and a positive integer limits
+swap in MiB. It does not change native background swap policy. If a scope
+cannot be spawned, Hermes retries direct spawning once; an already-launched
+wrapper is never replayed, even if it fails. This is a best-effort resource
+boundary, not a fail-closed security sandbox.
 
 By default, local tool subprocesses keep your real OS-user `HOME`. This lets
 external CLIs such as `git`, `ssh`, `gh`, `az`, `npm`, Claude Code, and Codex

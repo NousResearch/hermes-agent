@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -35,6 +36,62 @@ from tools.environments.local_pythonpath import (
 _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
+
+def _local_memory_max_bytes() -> int | None:
+    """Return the opt-in foreground-command limit, or None when disabled."""
+    raw = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
+    if not raw:
+        return None
+    try:
+        value_mb = int(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; expected a positive integer",
+            raw,
+        )
+        return None
+    if value_mb <= 0:
+        return None
+    return value_mb * 1024 * 1024
+
+
+def _local_memory_swap_max_bytes() -> int | None:
+    """Unset/invalid inherits swap; explicit zero disables swap."""
+    raw = os.getenv("TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB", "").strip()
+    if not raw:
+        return None
+    try:
+        value_mb = int(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB=%r", raw)
+        return None
+    return value_mb * 1024 * 1024 if value_mb >= 0 else None
+
+
+def _maybe_guard_foreground_argv(args: list[str]) -> tuple[list[str], bool]:
+    """Wrap an opted-in foreground command in the shared systemd scope."""
+    memory_max = _local_memory_max_bytes()
+    if memory_max is None or _IS_WINDOWS:
+        return args, False
+
+    # Lazy import avoids the module cycle: process_registry imports local shell
+    # helpers for its existing background process implementation.
+    from tools.process_registry import (
+        _build_systemd_scope_argv,
+        _systemd_run_user_scope_available,
+        _worker_memory_max_bytes,
+    )
+
+    if not _systemd_run_user_scope_available():
+        return args, False
+    guarded = _build_systemd_scope_argv(
+        args,
+        unit_suffix=uuid.uuid4().hex[:12],
+        memory_max_bytes=min(memory_max, _worker_memory_max_bytes()),
+        unit_prefix="hermes-terminal",
+        memory_swap_max_bytes=_local_memory_swap_max_bytes(),
+    )
+    return guarded, guarded != args
 
 # --- Terminal temp-cache pruning ---
 # get_temp_dir() defaults to HERMES_HOME/cache/terminal (real storage, not tmpfs), so
@@ -1144,13 +1201,31 @@ class LocalEnvironment(BaseEnvironment):
         self._recover_cwd()
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.
-        proc = subprocess.Popen(
-            args, text=True, env=run_env, encoding="utf-8", errors="replace",
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            # detached-spawn: ok — owned via own_process_groups right below
-            start_new_session=True, cwd=self.cwd,
-            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        guarded_args, guard_enabled = _maybe_guard_foreground_argv(args)
+        unscoped_env = run_env
+        if guard_enabled:
+            from tools.process_registry import systemd_user_bus_env
+            run_env = systemd_user_bus_env(run_env)
+
+        def _spawn(spawn_args):
+            return subprocess.Popen(
+                spawn_args, text=True, env=run_env, encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                # detached-spawn: ok — owned via own_process_groups right below
+                start_new_session=True, cwd=self.cwd,
+                **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+
+        try:
+            proc = _spawn(guarded_args)
+        except OSError:
+            if not guard_enabled:
+                raise
+            # No process was returned: retry direct once. Never replay an exited
+            # wrapper, whose child might already have performed side effects.
+            logger.warning("Could not spawn foreground memory scope; retrying unguarded", exc_info=True)
+            run_env = unscoped_env
+            proc = _spawn(args)
         if not _IS_WINDOWS:
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
             # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).

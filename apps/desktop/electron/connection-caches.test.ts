@@ -7,6 +7,7 @@ import {
   evictConnectionCaches,
   rosterSourceErrors,
   sshInventoryAttemptedAt,
+  sshInventoryFailureCounts,
   sshRosterCache
 } from './connection-caches'
 import { shouldRetrySshInventory } from './connection-registry'
@@ -14,6 +15,7 @@ import { shouldRetrySshInventory } from './connection-registry'
 beforeEach(() => {
   sshRosterCache.clear()
   sshInventoryAttemptedAt.clear()
+  sshInventoryFailureCounts.clear()
   connectionInstallIds.clear()
   rosterSourceErrors.clear()
 })
@@ -21,6 +23,7 @@ beforeEach(() => {
 function seed(id: string) {
   sshRosterCache.set(id, ['default', 'dixie'])
   sshInventoryAttemptedAt.set(id, Date.now())
+  sshInventoryFailureCounts.set(id, 3)
   connectionInstallIds.set(id, { id: 'aaa', ts: Date.now() })
   rosterSourceErrors.set(id, 'previous failure')
 }
@@ -35,11 +38,13 @@ test('evicting a connection id forgets every cache keyed by it', () => {
   // and not registered in the module would fail this by omission.
   assert.equal(sshRosterCache.has('mac-mini'), false)
   assert.equal(sshInventoryAttemptedAt.has('mac-mini'), false)
+  assert.equal(sshInventoryFailureCounts.has('mac-mini'), false)
   assert.equal(connectionInstallIds.has('mac-mini'), false)
   assert.equal(rosterSourceErrors.has('mac-mini'), false)
 
   // Its neighbours are untouched.
   assert.deepEqual(sshRosterCache.get('spark'), ['default', 'dixie'])
+  assert.equal(sshInventoryFailureCounts.get('spark'), 3)
   assert.equal(connectionInstallIds.get('spark')?.id, 'aaa')
   assert.equal(rosterSourceErrors.get('spark'), 'previous failure')
 })

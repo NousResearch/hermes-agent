@@ -682,13 +682,18 @@ export function rememberSshEnumeration(
 }
 
 /** Whether an undialed SSH source should be inventoried again. Cached
- *  successes never retry. Failures retry after `retryAfterMs` so a cold box
- *  does not stay seeded as `default` until the user hits Test. */
+ *  successes never retry. Failures retry after `retryAfterMs`, doubling per
+ *  consecutive failure up to `maxRetryAfterMs`, so a cold box does not stay
+ *  seeded as `default` until the user hits Test — while a remote whose Hermes
+ *  is gone (every attempt fails the same way) backs off instead of redialing
+ *  every cooldown forever. */
 export function shouldRetrySshInventory(
   hasCache: boolean,
   lastAttemptMs: null | number | undefined,
   nowMs: number,
-  retryAfterMs = 60_000
+  retryAfterMs = 60_000,
+  consecutiveFailures: null | number | undefined = 0,
+  maxRetryAfterMs = 8 * 60_000
 ): boolean {
   if (hasCache) {
     return false
@@ -698,7 +703,13 @@ export function shouldRetrySshInventory(
     return true
   }
 
-  return nowMs - lastAttemptMs >= retryAfterMs
+  if (consecutiveFailures == null || consecutiveFailures <= 0) {
+    return nowMs - lastAttemptMs >= retryAfterMs
+  }
+
+  const backoffMs = Math.min(retryAfterMs * 2 ** Math.min(consecutiveFailures - 1, 16), maxRetryAfterMs)
+
+  return nowMs - lastAttemptMs >= backoffMs
 }
 
 const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/

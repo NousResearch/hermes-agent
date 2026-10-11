@@ -605,11 +605,19 @@ class GatewaySessionCommandsMixin:
         _checkpoint_required = _is_truthy(
             ((_load_cfg() or {}).get("compression") or {}).get("checkpoint_required"),
             default=False)
-        tmp_agent = AIAgent(**runtime_kwargs, model=model, max_iterations=4, quiet_mode=True,
+        # Construction loads the context engine and can block for tens of seconds when other
+        # worker turns hold that load lock. Built inline it stalls the event loop past the
+        # adapter heartbeat ACK window, so the socket closes mid-conversation (#123702).
+        # asyncio.to_thread copies the current context, so profile-scoped contextvars still apply.
+        def _build_compression_agent():
+            agent = AIAgent(**runtime_kwargs, model=model, max_iterations=4, quiet_mode=True,
                             skip_memory=not _checkpoint_required, enabled_toolsets=["memory"],
                             session_id=session_id,
                             session_db=getattr(self._session_db, "_db", self._session_db))
-        _seed_hygiene_system_prompt(tmp_agent, session_row)
+            _seed_hygiene_system_prompt(agent, session_row)
+            return agent
+
+        tmp_agent = await asyncio.to_thread(_build_compression_agent)
         # Real platform during construction (context engines bind correctly); the stamp afterwards
         # only marks this agent as no real surface. Since #104414 Platform is not a restore-identity
         # field, so it no longer forces the next live turn to rebuild; the seed's retain flag is what

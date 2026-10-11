@@ -175,6 +175,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
     add("--resume", "-r", metavar="SESSION", default=None, help=(
         "Resume a previous session by ID or title, or pass 'latest' for "
         "the most recent session (workspace-scoped, like -c with no name)"))
+    inherited(parser, "--no-streaming", action="store_true", default=False,
+              help="Disable streaming output; wait for the full response before displaying (classic CLI only)")
     add("--no-restore-cwd", action="store_true", default=False,
         help="Don't cd into a resumed session's recorded working directory.")
     add("--in", dest="in_dir", metavar="DIR", default=None, help=(
@@ -296,6 +298,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "budget so one hung call can't consume the run. Unset = off. "
         "Also configurable as agent.run_budget_seconds in config.yaml. "
         "Intended for one-shot/eval invocations with a hard ceiling."))
+    inherited(chat_parser, "--no-streaming", action="store_true", default=SUPPRESS,
+              help="Disable streaming output; wait for the full response before displaying (classic CLI only)")
     inherited(chat_parser, "--yolo", action="store_true", default=SUPPRESS,
               help="Bypass all dangerous command approval prompts (use at your own risk)")
     inherited(chat_parser, "--pass-session-id", action="store_true", default=SUPPRESS,

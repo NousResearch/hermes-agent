@@ -1786,6 +1786,14 @@ def cmd_chat(args):
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}
     if use_tui:
+        # --no-streaming is a classic-CLI-only flag — the TUI uses full-screen
+        # differential rendering where streaming vs batch has negligible UX
+        # impact (tool-call segments and reasoning are always progressive).
+        if getattr(args, "no_streaming", False):
+            print(
+                "Warning: --no-streaming is not supported in TUI mode; ignoring.",
+                file=sys.stderr,
+            )
         _launch_tui(
             passthrough.pop("resume"),
             tui_dev=getattr(args, "tui_dev", False),
@@ -1794,6 +1802,7 @@ def cmd_chat(args):
             accept_hooks=getattr(args, "accept_hooks", False),
             **passthrough,
         )
+        return
 
     _read_query_file(args)
 
@@ -1809,6 +1818,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),
+        "no_streaming": getattr(args, "no_streaming", False),
         **{k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH},
     }
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -3298,20 +3308,7 @@ def _try_termux_fast_tui_launch() -> bool:
     return True
 
 
-def _advertise_agent_env() -> None:
-    """Advertise the agent harness to child processes.
-
-    ``AI_AGENT`` is the cross-agent standard (huggingface_hub reads it); the
-    value must be our id in the public agent-harness registry
-    (``hermes-agent``) — matching is exact. ``HERMES_AGENT`` is the
-    Hermes-specific marker. setdefault: never clobber an outer harness.
-
-    ``AI_AGENT`` is the emerging cross-agent standard (huggingface_hub's agent detection reads it; pi and
-    other agents set it — earendil-works/pi#7493) so generic tooling can attribute subprocesses to the
-    harness that spawned them. Hermes running inside another agent's terminal).
-    """
-    os.environ.setdefault("AI_AGENT", "hermes-agent")
-    os.environ.setdefault("HERMES_AGENT", "true")
+from hermes_cli.main_process import _advertise_agent_env
 
 
 def _attach_plugin_cli_command(subparsers, cmd_info) -> None:

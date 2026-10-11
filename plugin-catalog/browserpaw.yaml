@@ -1,0 +1,32 @@
+name: browserpaw
+repo: https://github.com/GoldenLoaf24h/browserpaw
+sha: 473121aaf7a3b6b817243eebc55b5056785fb58d
+subdir: "plugins/browserpaw"
+description: "Ultra-fast dual-brain Chrome browser automation with 1-based DOM indexing, visual fallbacks, Jev System 1 micro-loop, and local MCP bridge."
+maintainer: GoldenLoaf24h
+tier: community
+category: web
+requires_hermes: ">=0.19"
+docs_url: "https://github.com/GoldenLoaf24h/browserpaw#readme"
+version: "4.0.0"
+capabilities:
+  provides_tools:
+    - browserpaw_act_toward_goal
+    - browserpaw_navigate
+    - browserpaw_read_dom
+    - browserpaw_interact_index
+    - browserpaw_fill_index
+    - browserpaw_batch_actions
+    - browserpaw_screenshot
+    - browserpaw_smart_scroll
+    - browserpaw_scroll_until_found
+    - browserpaw_inspect_media
+    - browserpaw_grep
+    - browserpaw_get_markdown
+    - browserpaw_switch_tab
+    - browserpaw_close_tabs
+    - browserpaw_get_windows_and_tabs
+    - browserpaw_tool_docs
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

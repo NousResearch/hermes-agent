@@ -798,10 +798,11 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                         return f"fts5 read probe failed on {fts_table}: {exc}"
             # FTS write probe: drive a row through the messages_fts* triggers in a transaction that is always
             # rolled back. The trigger INSERT alone only buffers the row in FTS5's in-memory segment; the
-            # ``flush`` command writes that segment to ``<fts>_idx``/``_data`` exactly as a committed append
-            # would, so a stale ``_idx`` row at the next segid (IntegrityError "constraint failed", the #100227
-            # class: integrity_check and MATCH both clean, every real append fails) is hit here rather than
-            # by the user's next message.
+            # ``flush`` (available in SQLite 3.44+) writes that segment to ``<fts>_idx``/``_data`` exactly as
+            # a committed append would, so a stale ``_idx`` row at the next segid (IntegrityError "constraint
+            # failed", the #100227 class: integrity_check and MATCH both clean, every real append fails) is hit
+            # here rather than by the user's next message. Older FTS5 builds reject the command despite a
+            # healthy index, so they retain the trigger write probe but skip the unsupported flush.
             probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -809,12 +810,13 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                              (probe_session_id, "_health_probe", time.time()))
                 conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
                              (probe_session_id, "user", "_fts_health_probe", time.time()))
-                for fts_table in _FTS_TABLES:
-                    try:
-                        conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('flush')")
-                    except sqlite3.OperationalError as exc:
-                        if not (SessionDB._is_fts5_unavailable_error(exc) or _schema_not_built(exc)):
-                            raise
+                if sqlite3.sqlite_version_info >= (3, 44, 0):
+                    for fts_table in _FTS_TABLES:
+                        try:
+                            conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('flush')")
+                        except sqlite3.OperationalError as exc:
+                            if not (SessionDB._is_fts5_unavailable_error(exc) or _schema_not_built(exc)):
+                                raise
             except sqlite3.DatabaseError as exc:
                 # IntegrityError is a DatabaseError sibling of OperationalError, not a child: catching only the
                 # latter let the trigram-segment collision report "healthy".

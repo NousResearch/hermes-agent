@@ -75,6 +75,37 @@ async def test_web_extract_dispatches_urls_from_search_result_objects(extract_pr
     assert [entry["url"] for entry in result["results"]] == extract_provider.received_urls
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["token=opaque", "api_key=opaque", "%74oken=opaque"])
+async def test_web_extract_refuses_whole_call_for_sensitive_query_key(
+    extract_provider,
+    query,
+):
+    result = json.loads(await web_tools.web_extract_tool([
+        "https://example.com/ordinary",
+        f"https://example.org/callback?{query}",
+    ]))
+
+    assert result == {
+        "success": False,
+        "error": (
+            "Blocked: URL contains what appears to be an API key or token. "
+            "Secrets must not be sent in URLs."
+        ),
+    }
+    assert extract_provider.received_urls == []
+
+
+@pytest.mark.asyncio
+async def test_web_extract_dispatches_ordinary_query_key(extract_provider):
+    url = "https://example.com/search?topic=token"
+
+    result = json.loads(await web_tools.web_extract_tool([url]))
+
+    assert extract_provider.received_urls == [url]
+    assert result["results"][0]["url"] == url
+
+
 def test_web_extract_registry_dispatch_accepts_search_result_objects(
     extract_provider,
 ):
@@ -87,3 +118,55 @@ def test_web_extract_registry_dispatch_accepts_search_result_objects(
 
     assert extract_provider.received_urls == ["https://example.net/from-registry"]
     assert result["results"][0]["url"] == "https://example.net/from-registry"
+
+
+@pytest.mark.parametrize(
+    "secret_item, marker",
+    [
+        (
+            "https://example.org/callback#ACCESS_TOKEN=opaque-fragment-one",
+            "opaque-fragment-one",
+        ),
+        (
+            {"href": "HTTPS://münich.example/回调#%74oKeN=opaque-fragment-two"},
+            "opaque-fragment-two",
+        ),
+        (
+            {"url": "https://example.net/callback?ＴＯＫＥＮ=opaque-query-three"},
+            "opaque-query-three",
+        ),
+    ],
+)
+def test_web_extract_registry_refuses_canonical_sensitive_parameter_before_cache_or_dispatch(
+    extract_provider,
+    monkeypatch,
+    secret_item,
+    marker,
+):
+    """Credential URL parameters must never reach a cache or extraction vendor."""
+    from tools import web_result_cache
+
+    cache_reads = []
+    monkeypatch.setattr(
+        web_result_cache,
+        "extract_cache_get",
+        lambda *args, **kwargs: cache_reads.append((args, kwargs)),
+    )
+
+    raw = web_tools.registry.dispatch(
+        "web_extract",
+        {"urls": ["https://example.com/ordinary", secret_item]},
+    )
+    assert isinstance(raw, str)
+    result = json.loads(raw)
+
+    assert result == {
+        "success": False,
+        "error": (
+            "Blocked: URL contains what appears to be an API key or token. "
+            "Secrets must not be sent in URLs."
+        ),
+    }
+    assert marker not in raw
+    assert cache_reads == []
+    assert extract_provider.received_urls == []

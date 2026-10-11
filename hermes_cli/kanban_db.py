@@ -2158,12 +2158,15 @@ def _claim_and_open_run(
            SET status        = 'running',
                claim_lock    = ?,
                claim_expires = ?,
+               -- A fresh claim gets this run's baseline, rather than inheriting
+               -- an older run or leaving the stale-worker backstop unarmed.
+               last_heartbeat_at = ?,
                started_at    = COALESCE(started_at, ?)
          WHERE id = ?
            AND status = '{source_status}'
            AND claim_lock IS NULL
         """,
-        (lock, expires, now, task_id),
+        (lock, expires, now, now, task_id),
     )
     if cur.rowcount != 1:
         return None

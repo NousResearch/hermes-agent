@@ -12,6 +12,7 @@ import hashlib
 import json
 from contextlib import ExitStack, suppress
 import logging
+import secrets
 import re
 import shutil
 from pathlib import Path
@@ -34,6 +35,7 @@ from tools.skill_manager_guards import (
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+from tools.skill_evidence import EvidenceMergeError, content_digest, merge_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -393,25 +395,35 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
 
 
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,
-                   content: str) -> Optional[dict[str, Any]]:
+                   content: str, *, expected_source_digest: Optional[str] = None) -> Optional[dict[str, Any]]:
     """Read-before-write guard (existing targets only), atomic write, then the security scan;
-    a blocked scan restores the original (or unlinks a new file). Error dict or None."""
-    original = None
-    if target.exists():
-        if read_guard := _background_review_read_before_write_guard(name, target, action, label):
-            return read_guard
-        original = target.read_text(encoding="utf-8-sig")
-    from hermes_constants import mkdir_under_hermes_home
-    mkdir_under_hermes_home(target.parent)
-    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
-    scan_error = _security_scan_skill(skill_dir)
-    if not scan_error:
-        return None
-    if original is not None:
-        atomic_write_text(target, original, preserve_mode=True)
-    else:
-        target.unlink(missing_ok=True)
-    return _err(scan_error)
+    a blocked scan restores the original (or unlinks a new file). Error dict or None.
+
+    ``expected_source_digest`` is the optimistic-concurrency token for an approved replay: the
+    candidate was computed against that exact source, so a file that moved since approval is
+    rejected as stale instead of silently overwriting a concurrent writer's evidence. The
+    re-entrant per-skill file lock (not a second lock domain) holds the compare-and-write
+    together; a nested acquire on the same thread is a no-op.
+    """
+    with _skill_mutation_locks([name]):
+        original = None
+        if target.exists():
+            if read_guard := _background_review_read_before_write_guard(name, target, action, label):
+                return read_guard
+            original = target.read_text(encoding="utf-8-sig")
+            if expected_source_digest and content_digest(original) != expected_source_digest:
+                return _err(f"Skill changed before guarded write; {label} replay is stale and was rejected.")
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(target.parent)
+        atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
+        scan_error = _security_scan_skill(skill_dir)
+        if not scan_error:
+            return None
+        if original is not None:
+            atomic_write_text(target, original, preserve_mode=True)
+        else:
+            target.unlink(missing_ok=True)
+        return _err(scan_error)
 
 
 def _add_description_prompt_preview(result: dict[str, Any], content: str) -> dict[str, Any]:
@@ -491,13 +503,14 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
     return result
 
 
-def _edit_skill(name: str, content: str) -> dict[str, Any]:
+def _edit_skill(name: str, content: str, *, expected_source_digest: Optional[str] = None) -> dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
     if err := _validate_frontmatter(content) or _validate_content_size(content):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "edit")
     # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
-    if guard := guard or _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content):
+    if guard := guard or _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content,
+                                        expected_source_digest=expected_source_digest):
         return guard
     result = {
         "success": True, "message": f"Skill '{name}' updated (full rewrite).",
@@ -674,17 +687,54 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     """Flat-shape gate: stage the full kwargs so approval can replay them; bypassed during replay."""
     if action not in _ACTION_HANDLERS or _skill_gate_bypass.get():
         return None
+    if payload_kwargs.get("evidence_merge") is not None and action != "patch":
+        return tool_error("evidence_merge is supported only with action 'patch'.", success=False)
     def _staging(wa):
+        return _build_staged(wa)
+
+    def _build_staged(wa):
+        staged_kwargs = dict(payload_kwargs)
+        if (evidence_merge := staged_kwargs.get("evidence_merge")) is not None:
+            # Compute the merged candidate NOW, against the current source, and bind it to that
+            # source's digest. Approval then previews exactly what the replay will write, and the
+            # replay refuses to write if the skill changed in between. (The digest is over the text
+            # as read with utf-8-sig, which strips a BOM and normalises newlines, so it identifies
+            # the decoded content rather than the raw bytes on disk.)
+            skill = _find_skill(name)
+            if skill is None:
+                raise ValueError(f"Skill '{name}' was not found.")
+            target = Path(skill["path"]) / "SKILL.md"
+            current = target.read_text(encoding="utf-8-sig")
+            # An already-staged payload carries its own private keys. Strip them before merging:
+            # they are staging metadata, not merge input, and merge_evidence rejects unknown
+            # fields by design. Idempotent re-staging is then safe rather than a hard error.
+            public_delta = {k: v for k, v in evidence_merge.items() if not k.startswith("_")}
+            try:
+                candidate = merge_evidence(current, public_delta)
+            except EvidenceMergeError as exc:
+                raise ValueError(f"cannot stage evidence_merge: {exc}") from exc
+            staged_kwargs["evidence_merge"] = {
+                **evidence_merge,
+                "_source_digest": content_digest(current),
+                "_candidate_content": candidate,
+                "_staged_by": _mint_staging_token(),
+            }
+            if wa.skill_pending_diff is not None:
+                staged_kwargs["evidence_merge"]["_preview"] = wa.skill_pending_diff(
+                    {"payload": {"action": "patch", "name": name,
+                                 "evidence_merge": staged_kwargs["evidence_merge"]}})
         payload = {"action": action, "name": name,
-                   **{k: v for k, v in payload_kwargs.items() if v is not None}}
-        gist_kw = {k: payload_kwargs.get(k) or ""
-                   for k in ("content", "file_path", "old_string", "new_string")}
+                   **{k: v for k, v in staged_kwargs.items() if v is not None}}
+        gist_kw = {k: payload_kwargs.get(k) or "" for k in ("content", "file_path", "old_string", "new_string")}
+        if (evidence_merge := staged_kwargs.get("evidence_merge")) is not None:
+            # The gist must show the candidate, not the delta: the reviewer approves resulting bytes.
+            gist_kw["content"] = evidence_merge["_candidate_content"]
         return payload, wa.skill_gist(action, name, **gist_kw)
     return _run_write_gate(_staging)
 
 
 _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
-                 "absorbed_into", "operations")
+                 "absorbed_into", "evidence_merge", "operations")
 
 
 def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
@@ -704,9 +754,67 @@ def apply_skill_pending(payload: dict[str, Any]) -> str:
         _skill_gate_bypass.reset(token)
 
 
+
+# Tokens for candidates this process froze. A ContextVar cannot be used: staging and the later
+# approval replay are separate requests, so the value would be unset at replay time and a forged
+# payload would compare equal to nothing. Instead every staging pass mints a fresh random token,
+# records it here, and stamps it into the payload. A caller cannot guess a token (secrets, minted
+# per pass, never reused), and public ingress rejects the "_staged_by" key outright, so an injected
+# _candidate_content can never be written verbatim. The set is bounded, and cleared when the cap is reached.
+_STAGED_TOKENS: "set[str]" = set()
+_STAGED_TOKENS_MAX = 512
+
+
+def _mint_staging_token() -> str:
+    token = secrets.token_hex(16)
+    if len(_STAGED_TOKENS) >= _STAGED_TOKENS_MAX:
+        _STAGED_TOKENS.clear()
+    _STAGED_TOKENS.add(token)
+    return token
+
+
+def _is_ours(token: Optional[str]) -> bool:
+    return isinstance(token, str) and token in _STAGED_TOKENS
 def _act_patch(a):
-    """Two shapes: old_string/new_string = targeted replacement (validated in _patch_skill so the
-    tool and the helper give the same guidance); content alone = full rewrite (the old 'edit')."""
+    """Three shapes: evidence_merge (additive evidence counters), old_string/new_string
+    replacement (validated in _patch_skill so the tool and the helper give the same guidance),
+    or content alone = full rewrite (the old 'edit'). Mutually exclusive by construction."""
+    if a["evidence_merge"] is not None:
+        if a["content"] is not None or a["old_string"] is not None or a["new_string"] is not None:
+            return tool_error("evidence_merge is mutually exclusive with content/old_string/new_string.", success=False)
+        found = _find_skill(a["name"])
+        if not found:
+            return _err(f"Skill '{a['name']}' was not found.")
+        target = Path(found["path"]) / "SKILL.md"
+        merged = a["evidence_merge"]
+        try:
+            # Replay of an APPROVED candidate: write exactly what was previewed, and refuse if the
+            # source moved since approval (a concurrent writer would be lost).
+            #
+            # A set bypass token does NOT by itself mean "approved": the batch path also sets it
+            # while running its own already-staged ops, and a caller could otherwise hand us a
+            # frozen candidate and skip merge_evidence's fail-closed validation. So the candidate is
+            # honoured only when it carries a `_staged_by` token that this module issued. The
+            # module keeps a live set of the tokens it minted (ContextVars do not survive the
+            # staging -> approval -> replay round trip, which is a separate request), and a caller
+            # cannot guess one: tokens are minted per staging pass and never reused.
+            if "_candidate_content" in merged and _is_ours(merged.get("_staged_by")):
+                current = target.read_text(encoding="utf-8-sig")
+                if content_digest(current) != merged.get("_source_digest"):
+                    return _err("Skill changed since approval; evidence_merge replay is stale and was rejected.")
+                candidate = merged["_candidate_content"]
+                return _edit_skill(a["name"], candidate, expected_source_digest=merged.get("_source_digest"))
+            # Read, merge and write as ONE critical section. Merging outside the lock would let two
+            # concurrent updates both read 11 and both write 12, silently losing a success — the one
+            # thing additive counters exist to prevent. The lock is re-entrant, so the nested acquire
+            # inside _guarded_write is a no-op and the digest compare still runs there.
+            with _skill_mutation_locks([a["name"]]):
+                current = target.read_text(encoding="utf-8-sig")
+                public_delta = {k: v for k, v in merged.items() if not k.startswith("_")}
+                candidate = merge_evidence(current, public_delta)
+                return _edit_skill(a["name"], candidate, expected_source_digest=content_digest(current))
+        except EvidenceMergeError as exc:
+            return _err(f"evidence_merge rejected: {exc}")
     if a["content"] and (a["old_string"] or a["new_string"] is not None):
         return tool_error(_PATCH_EITHER_OR, success=False)
     if a["content"]:
@@ -765,8 +873,8 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
 def skill_manage(
     action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
     file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
-    replace_all: bool = False, absorbed_into: str | None = None, task_id: str | None = None,
-    session_id: str | None = None, operations=None) -> str:
+    replace_all: bool = False, absorbed_into: str | None = None, evidence_merge: dict | None = None,
+    task_id: str | None = None, session_id: str | None = None, operations=None) -> str:
     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
     see _skill_manage_batch) overrides the flat fields."""
     if operations is not None:
@@ -778,7 +886,7 @@ def skill_manage(
     # of origin; bypassed when replaying an approved staged write.
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
                 old_string=old_string, new_string=new_string, replace_all=replace_all,
-                absorbed_into=absorbed_into)
+                absorbed_into=absorbed_into, evidence_merge=evidence_merge)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
     if (shape_err := _op_shape_error(action, args)) is not None:
@@ -825,7 +933,9 @@ def _skill_manage_description() -> str:
         "the profile's skills directory or configured skills.create_dir; must precede that skill's other "
         "ops), patch (targeted old_string/new_string fix — preferred; "
         "content alone REPLACES the whole file, read it via skill_view() "
-        "first), write_file/remove_file (supporting files), delete (sole "
+        "first; evidence_merge ACCUMULATES ok/fail counters into the skill's `evidence:` "
+        "frontmatter without touching its body, so whether it worked is recorded "
+        "across edits), write_file/remove_file (supporting files), delete (sole "
         "op only). Existing skills are modified wherever they live. Keep "
         "the description's first 57 chars a self-contained trigger: 'Use "
         "when <trigger>. <one-line behavior>.' Write lessons, not logs: "
@@ -892,6 +1002,43 @@ SKILL_MANAGE_SCHEMA = {
                         "content": {"type": "string",
                                     "description": "Full SKILL.md rewrite (REPLACES the whole file; last resort)."},
                     }, ("content",)),
+                    _op_schema("patch", {
+                        "evidence_merge": {
+                            "type": "object",
+                            "description": (
+                                "Additive evidence update: merge ok/fail counters into the skill's "
+                                "`evidence:` frontmatter block. Counters ACCUMULATE (never overwrite) "
+                                "and the markdown body is untouched, so a run's success/failure survives "
+                                "later edits. Mutually exclusive with content/old_string/new_string."
+                            ),
+                            "additionalProperties": False,
+                            "properties": {
+                                "success_count": {"type": "integer", "minimum": 0,
+                                                  "description": "Successes to ADD (not set)."},
+                                "fail_count": {"type": "integer", "minimum": 0,
+                                               "description": "Failures to ADD (not set)."},
+                                "steps": {"type": "array", "items": {
+                                    "type": "object", "additionalProperties": False,
+                                    "properties": {
+                                        "name": {"type": "string", "description": "Step identifier."},
+                                        "ok": {"type": "integer", "minimum": 0},
+                                        "fail": {"type": "integer", "minimum": 0}},
+                                    "required": ["name", "ok", "fail"]}},
+                                "evolution": {"type": "array", "items": {
+                                    "type": "object", "additionalProperties": False,
+                                    "properties": {
+                                        "from": {"type": "integer", "minimum": 0},
+                                        "to": {"type": "integer", "minimum": 0},
+                                        "date": {"type": "string", "description": "YYYY-MM-DD."},
+                                        "reason": {"type": "string",
+                                                   "description": "Why the version changed."}},
+                                    "required": ["from", "to", "date", "reason"]}},
+                            },
+                            # An evidence op with an empty object validates the branch but carries no
+                            # delta, so require at least one field.
+                            "minProperties": 1,
+                        },
+                    }, ("evidence_merge",)),
                     _op_schema("write_file", {
                         "file_path": _FILE_PATH,
                         "file_content": {"type": "string", "description": "Full text of the supporting file."},

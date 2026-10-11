@@ -10,6 +10,12 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from tools.skill_evidence import (
+    EvidenceMergeError as _EvidenceMergeError,
+    content_digest as _content_digest,
+    merge_evidence as _merge_evidence,
+)
+
 logger = logging.getLogger("tools.skill_manager_tool")
 
 _BATCH_OP_ACTIONS = {"create", "patch", "write_file", "remove_file"}
@@ -74,6 +80,16 @@ def _op_shape_error(action: str, args: dict):
     if action == "patch":
         # Every patch shape miss is decided here, not in the handler, so a batch never applies
         # op[0] only to roll it back over op[1]'s missing new_string or content+old_string mix.
+        # evidence_merge is a third valid shape: it is self-contained (no text to read back),
+        # so it must not be steered toward old_string or a full rewrite.
+        if args.get("evidence_merge") is not None:
+            if args.get("content") is not None or args.get("old_string") is not None \
+                    or args.get("new_string") is not None:
+                return _PATCH_EITHER_OR
+            if not isinstance(args["evidence_merge"], dict) or not args["evidence_merge"]:
+                return ("evidence_merge must be a non-empty object, e.g. "
+                        "{'success_count': 1}.")
+            return None
         if args.get("content") and (args.get("old_string") or args.get("new_string") is not None):
             return _PATCH_EITHER_OR
         if not args.get("old_string") and not args.get("content"):
@@ -90,6 +106,7 @@ def _validate_batch_ops(operations, default_name, tool_error):
     def fail(i, msg):
         return None, tool_error(f"operations[{i}]{msg}", success=False)
     names = []
+    evidence_names = set()
     for i, op in enumerate(operations):
         if not isinstance(op, dict) or not op.get("action"):
             return fail(i, " needs an 'action'.")
@@ -104,6 +121,53 @@ def _validate_batch_ops(operations, default_name, tool_error):
         # op[1] would first apply op[0] and then roll the whole batch back.
         if (shape_err := _op_shape_error(act, op)) is not None:
             return fail(i, f" ({act} on '{nm}'): {shape_err}")
+        # Staging metadata is private to this module. A caller-supplied _candidate_content or
+        # _source_digest would let a batch write a frozen candidate verbatim and skip
+        # merge_evidence entirely — and because the batch path sets the same gate-bypass token as
+        # an approved replay, the injected candidate would be honoured as if approved. Verified:
+        # 11 -> 0 through this interface. Reject at the public ingress instead of trusting a
+        # later layer to tell an approved replay from an ordinary batch.
+        if isinstance(op.get("evidence_merge"), dict):
+            private = sorted(k for k in op["evidence_merge"] if k.startswith("_"))
+            # Scope the rejection to the UNTRUSTED path. An approved replay legitimately carries the
+            # writer's own staging keys (_source_digest/_staged_by/_candidate_content/_preview), so
+            # rejecting them unconditionally made every approved BATCH evidence write fail — the
+            # feature was dead whenever the write gate was on, via the advertised operations=[...]
+            # shape. A forged payload cannot pass: the candidate is honoured downstream only when
+            # _staged_by is a token this module minted (_act_patch, `_is_ours`), and an unminted
+            # token falls through to the public-delta re-merge. Rejecting here is about not
+            # silently accepting caller-supplied internals, not about the trust decision itself.
+            ours = False
+            if private:
+                from tools.skill_manager_tool import _is_ours
+                ours = _is_ours(op["evidence_merge"].get("_staged_by"))
+            if private and not ours:
+                return fail(i, f" (patch on '{nm}'): evidence_merge must not carry internal "
+                               f"staging keys {private}; they are set by the writer, not the caller.")
+        # evidence_merge is a third, mutually-exclusive patch shape: it must not ride along with
+        # a replacement or a full rewrite, or the reviewed result is not what gets written.
+        if op.get("evidence_merge") is not None:
+            if act != "patch":
+                return fail(i, f" ({act} on '{nm}'): evidence_merge is supported only with action 'patch'.")
+            if any(op.get(k) is not None for k in ("content", "old_string", "new_string")):
+                return fail(i, f" (patch on '{nm}'): evidence_merge is mutually exclusive with "
+                               f"content/old_string/new_string.")
+            if not isinstance(op["evidence_merge"], dict) or not op["evidence_merge"]:
+                return fail(i, f" (patch on '{nm}'): evidence_merge must be a non-empty object.")
+            if nm in names or nm in evidence_names:
+                # Its candidate is frozen from the PRE-batch source at staging time, so a sibling
+                # op on the same skill would make the approved diff describe a file that no longer
+                # exists. Evidence updates are single-op by construction; keep it that way.
+                return fail(i, f" (patch on '{nm}'): evidence_merge must be the only op for "
+                               f"'{nm}' in this batch — its merged candidate is computed against the "
+                               f"skill's pre-batch content, so a sibling op would invalidate what "
+                               f"the reviewer approved. Send it as its own batch.")
+            evidence_names.add(nm)
+        elif nm in evidence_names:
+            # The reverse order: this op follows an evidence op on the same skill. Equally unsafe —
+            # the frozen candidate and this op were both derived from the pre-batch source.
+            return fail(i, f" ({act} on '{nm}'): cannot follow an evidence_merge op on the same "
+                           f"skill in one batch. Send the evidence update as its own batch.")
         # create's category is resolved to a target dir before the snapshot: reject a bad one here
         # so it returns a JSON error (not a TypeError) and never leaks the snapshot tempdir.
         if act == "create" and (cat_err := _validate_category(op.get("category"))) is not None:
@@ -244,9 +308,44 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     if not _smt._skill_gate_bypass.get():
         # Approval gate for the WHOLE batch as one pending write.
         def _staging(wa):
+            return _build_staged(wa)
+
+        def _build_staged(wa):
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
-            return {"action": "batch", "operations": operations}, gist
+            # Freeze each evidence candidate into the staged payload, bound to its source digest.
+            # The reviewer then approves the exact resulting bytes, and a later replay refuses to
+            # write if the skill moved in between. Done here — before the batch runs — so the
+            # preview cannot be invalidated by the batch's own earlier ops.
+            staged_ops = []
+            for op, nm in zip(operations, names):
+                evidence = op.get("evidence_merge")
+                if not isinstance(evidence, dict) or "_candidate_content" in evidence:
+                    staged_ops.append(op)
+                    continue
+                skill = _smt._find_skill(nm)
+                if skill is None:
+                    return ({"action": "batch", "operations": operations}, gist)
+                target = Path(skill["path"]) / "SKILL.md"
+                try:
+                    current = target.read_text(encoding="utf-8-sig")
+                    # Private keys are staging metadata, not merge input (see the flat gate).
+                    public_delta = {k: v for k, v in evidence.items() if not k.startswith("_")}
+                    candidate = _merge_evidence(current, public_delta)
+                except _EvidenceMergeError as exc:
+                    return ({"action": "batch", "operations": operations,
+                             "error": f"operations[{len(staged_ops)}] ({op['action']} on '{nm}'): "
+                                       f"evidence_merge rejected: {exc}"}, gist)
+                staged_ops.append({**op, "evidence_merge": {
+                    **evidence,
+                    "_source_digest": _content_digest(current),
+                    "_staged_by": _smt._mint_staging_token(),
+                    "_candidate_content": candidate}})
+                if getattr(wa, "skill_pending_diff", None) is not None:
+                    staged_ops[-1]["evidence_merge"]["_preview"] = wa.skill_pending_diff(
+                        {"payload": {"action": "patch", "name": nm,
+                                     "evidence_merge": staged_ops[-1]["evidence_merge"]}})
+            return {"action": "batch", "operations": staged_ops}, gist
         staged = _smt._run_write_gate(_staging)
         if staged is not None:
             return staged

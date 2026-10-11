@@ -314,7 +314,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     original_owner = _preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = mkstemp_beside(path, prefix=prefix, suffix=".tmp")
     try:
-        with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
+        with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding, newline='') as f:
             if mode is not None and hasattr(os, "fchmod"):
                 os.fchmod(f.fileno(), mode)
             write(f)

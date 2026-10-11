@@ -681,17 +681,35 @@ export function rememberSshEnumeration(
   return enumeration
 }
 
-/** Whether an undialed SSH source should be inventoried again. Cached
- *  successes never retry. Failures retry after `retryAfterMs` so a cold box
- *  does not stay seeded as `default` until the user hits Test. */
+/** Whether an undialed SSH source should be inventoried again. Failures retry after `retryAfterMs`
+ *  so a cold box does not stay seeded as `default` until the user hits Test. A cached roster is
+ *  re-read once it is older than `successTtlMs`, because a profile created or deleted on the remote
+ *  leaves the cached list describing a machine that no longer exists — and never more often than
+ *  `retryAfterMs`, so a host that stops answering is not redialed on every roster poll. */
 export function shouldRetrySshInventory(
   hasCache: boolean,
   lastAttemptMs: null | number | undefined,
   nowMs: number,
-  retryAfterMs = 60_000
+  retryAfterMs = 60_000,
+  lastSuccessMs: null | number | undefined = null,
+  successTtlMs = 5 * 60_000
 ): boolean {
   if (hasCache) {
-    return false
+    // A cache nothing ever stamped was written by something other than the probe, so its age is
+    // unknowable; treat it as fresh rather than dialing an unknown-age roster on every poll.
+    if (lastSuccessMs == null) {
+      return false
+    }
+
+    if (nowMs - lastSuccessMs < successTtlMs) {
+      return false
+    }
+
+    if (lastAttemptMs != null && nowMs - lastAttemptMs < retryAfterMs) {
+      return false
+    }
+
+    return true
   }
 
   if (lastAttemptMs == null) {

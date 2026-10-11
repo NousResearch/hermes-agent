@@ -14,7 +14,7 @@ import requests
 from pydantic import ValidationError
 
 from tools.connectors.gateway import wire
-from tools.connectors.gateway.config import session_platform
+from tools.connectors.gateway.config import load_config, session_platform
 from tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
@@ -264,7 +264,9 @@ def return_to_args(*, op: Optional[str] = None) -> dict[str, Any]:
     Only the desktop registers a URL scheme for that return, so every other surface sends neither
     field and keeps the vendor's own done page. The dev build registers ``hermes-dev://`` instead, and
     announces itself to its backend with ``HERMES_DESKTOP_DEV_SERVER``."""
-    if session_platform() != "desktop":
+    # An isolated rehearsal does not register a protocol handler. Keep the vendor's done page
+    # rather than handing its return to an unrelated installed development app.
+    if session_platform() != "desktop" or not load_config().browser_return:
         return {}
     target = "hermes-desktop-dev" if os.environ.get("HERMES_DESKTOP_DEV_SERVER") else "hermes-desktop"
     return {"return_to": target, "op": op} if op else {"return_to": target}

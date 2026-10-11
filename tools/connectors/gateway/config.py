@@ -28,6 +28,7 @@ _FALSE_STRINGS = frozenset({"false", "0", "no", "off", ""})
 class ConnectorConfig:
 
     enabled: bool = True
+    browser_return: bool = True
 
     @classmethod
     def from_raw(cls, raw: Any) -> ConnectorConfig:
@@ -35,7 +36,8 @@ class ConnectorConfig:
         if isinstance(raw, bool):
             return cls(enabled=raw)
         if isinstance(raw, dict):
-            return cls(enabled=_coerce_bool(raw.get("enabled"), True))
+            return cls(enabled=_coerce_bool(raw.get("enabled"), True),
+                       browser_return=_coerce_bool(raw.get("browser_return"), True))
         return cls()
 
 

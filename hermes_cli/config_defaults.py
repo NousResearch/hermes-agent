@@ -2027,7 +2027,7 @@ DEFAULT_CONFIG = {
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires
         # the portal sign-in every managed tool gates on.
-        "connectors": {"enabled": True},
+        "connectors": {"enabled": True, "browser_return": True},
     },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING

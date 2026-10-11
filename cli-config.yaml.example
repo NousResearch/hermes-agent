@@ -1360,6 +1360,13 @@ gateway:
 
 # =============================================================================
 # Toolsets
+# Native connectors normally return from consent to the requesting desktop app.
+# An isolated desktop without a registered protocol handler can keep the provider's
+# completion page instead; Hermes still checks account status in the background.
+# tools:
+#   connectors:
+#     enabled: true
+#     browser_return: true
 # =============================================================================
 # Control which tools the agent has access to.
 # Use `hermes tools` to interactively enable/disable tools per platform.

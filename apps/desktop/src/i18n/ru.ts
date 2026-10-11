@@ -2,34 +2,15 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruCron } from './ru_cron'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
+import { RU_NOUN, RU_PLURAL } from './ru_plural'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruUpdateChannel } from './ru_update_channel'
-
-// RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
-// RU_NOUN: (count, one, few, many) — формы род. множественного
-// count может быть number или string (часть подписей en.ts передаёт строки)
-const ruNum = (count: number | string) => (typeof count === 'string' ? Number(count) || 0 : count)
-
-const RU_PLURAL = (count: number | string, one: string, few: string, many: string) => {
-  const c = ruNum(count)
-  const n = Math.abs(c) % 10
-  const nn = Math.abs(c) % 100
-
-  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
-}
-
-const RU_NOUN = (count: number | string, one: string, few: string, many: string) => {
-  const c = ruNum(count)
-  const n = Math.abs(c) % 10
-  const nn = Math.abs(c) % 100
-
-  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
-}
 
 export const ruOverrides = {
   sharedMetrics: ruSharedMetrics,
@@ -2351,144 +2332,7 @@ export const ruOverrides = {
     saveFailed: 'Hermes не сохранил это изменение модели.'
   },
 
-  cron: {
-    close: 'Закрыть cron',
-    title: 'Запланированные задачи',
-    count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
-    search: 'Поиск cron-задач...',
-    loading: 'Загрузка cron-задач...',
-    states: {
-      enabled: 'включено',
-      scheduled: 'запланировано',
-      running: 'выполняется',
-      paused: 'приостановлено',
-      disabled: 'отключено',
-      error: 'ошибка',
-      completed: 'завершено'
-    },
-    deliveryLabels: {
-      local: 'Это приложение',
-      telegram: 'Telegram',
-      discord: 'Discord',
-      slack: 'Slack',
-      email: 'Email'
-    },
-    scheduleLabels: {
-      daily: 'Ежедневно',
-      weekdays: 'Будни',
-      weekly: 'Еженедельно',
-      monthly: 'Ежемесячно',
-      hourly: 'Каждый час',
-      'every-15-minutes': 'Каждые 15 минут',
-      custom: 'Свой'
-    },
-    scheduleHints: {
-      daily: 'Каждый день в 9:00',
-      weekdays: 'С понедельника по пятницу в 9:00',
-      weekly: 'Каждый понедельник в 9:00',
-      monthly: 'В первый день каждого месяца в 9:00',
-      hourly: 'В начале каждого часа',
-      'every-15-minutes': 'Каждые 15 минут',
-      custom: 'Синтаксис cron или естественный язык'
-    },
-    days: {
-      '0': 'Воскресенье',
-      '1': 'Понедельник',
-      '2': 'Вторник',
-      '3': 'Среда',
-      '4': 'Четверг',
-      '5': 'Пятница',
-      '6': 'Суббота',
-      '7': 'Воскресенье'
-    },
-    dayFallback: value => `день ${value}`,
-    everyDayAt: time => `Каждый день в ${time}`,
-    weekdaysAt: time => `Будни в ${time}`,
-    everyDayOfWeekAt: (day, time) => `Каждый ${day} в ${time}`,
-    monthlyOnDayAt: (dayOfMonth, time) => `Ежемесячно ${dayOfMonth}-го числа в ${time}`,
-    topOfHour: 'В начале каждого часа',
-    everyHourAt: minute => `Каждый час на :${minute}`,
-    newCron: 'Новый cron',
-    emptyDescNew:
-      'Запланируйте промпт, который будет выполняться по cron-выражению. Hermes выполнит его и доставит результаты в выбранное вами место.',
-    emptyDescSearch: 'Попробуйте более широкий запрос.',
-    emptyTitleNew: 'Запланированных задач пока нет',
-    emptyTitleSearch: 'Нет совпадений',
-    last: 'Последний:',
-    next: 'Следующий:',
-    noRuns: 'Запусков пока не было',
-    queuedRun: 'Запуск в очереди',
-    manage: 'Управлять',
-    showRuns: 'Показать запуски',
-    hideRuns: 'Скрыть запуски',
-    runHistory: 'История запусков',
-    actionsTitle: 'Действия с cron-задачей',
-    resume: 'Продолжить cron',
-    pause: 'Приостановить cron',
-    resumeTitle: 'Продолжить',
-    pauseTitle: 'Приостановить',
-    triggerNow: 'Запустить сейчас',
-    edit: 'Изменить cron',
-    deleteTitle: 'Удалить cron-задачу?',
-    deleteDescPrefix: 'Это навсегда удалит ',
-    deleteDescSuffix: '. Она перестанет срабатывать сразу.',
-    deleting: 'Удаление...',
-    resumed: 'Cron продолжен',
-    paused: 'Cron приостановлен',
-    triggered: 'Cron запущен',
-    deleted: 'Cron удалён',
-    created: 'Cron создан',
-    updated: 'Cron обновлён',
-    failedLoad: 'Не удалось загрузить cron-задачи',
-    failedUpdate: 'Не удалось обновить cron-задачу',
-    failedTrigger: 'Не удалось запустить cron-задачу',
-    failedDelete: 'Не удалось удалить cron-задачу',
-    failedSave: 'Не удалось сохранить cron-задачу',
-    editTitle: 'Изменить cron-задачу',
-    createTitle: 'Новая cron-задача',
-    editDesc: 'Обновите расписание, промпт или место доставки. Изменения вступят в силу при следующем запуске.',
-    createDesc:
-      'Запланируйте промпт для автоматического выполнения. Используйте синтаксис cron или фразу вроде «каждые 15 минут».',
-    nameLabel: 'Имя',
-    namePlaceholder: 'Утренний брифинг',
-    promptLabel: 'Промпт',
-    scriptLabel: 'Скрипт',
-    scriptBadge: 'скрипт',
-    promptPlaceholder: 'Суммируй мои непрочитанные треды Slack и пришли топ-5 на почту...',
-    frequencyLabel: 'Частота',
-    deliverLabel: 'Доставить в',
-    deliverNeedsHomeChannel: 'сначала задайте домашний канал',
-    modelLabel: 'Модель',
-    modelDefault: 'По умолчанию (глобальная модель)',
-    customScheduleLabel: 'Своё расписание',
-    customPlaceholder: '0 9 * * * или будни в 9:00',
-    customHint: 'Cron-выражение или фразы вроде «каждый час» или «будни в 9:00».',
-    optional: 'Необязательно',
-    promptRequired: 'Промпт обязателен.',
-    promptScheduleRequired: 'Промпт и расписание обязательны.',
-    scheduleRequired: 'Расписание обязательно.',
-    scriptOnlyEditHint: 'Задача только со скриптом (без AI-промпта). ID задачи:',
-    saveChanges: 'Сохранить изменения',
-    createAction: 'Создать cron',
-    tabs: {
-      jobs: 'Задачи',
-      blueprints: 'Шаблоны'
-    },
-    blueprints: {
-      tab: 'Шаблоны',
-      startFrom: 'Начать с',
-      custom: 'Свой',
-      subtitle: 'Готовые автоматизации',
-      dialogDesc: 'Заполните детали и запланируйте.',
-      scheduleIt: 'Запланировать',
-      scheduling: 'Планирование...',
-      scheduled: 'Шаблон запланирован',
-      loading: 'Загрузка шаблонов...',
-      failedLoad: 'Не удалось загрузить шаблоны',
-      emptyTitle: 'Шаблоны недоступны',
-      emptyDesc: 'На этом бэкенде нет шаблонов автоматизации.'
-    }
-  },
+  cron: ruCron.cron,
   artifacts: {
     search: 'Поиск артефактов...',
     refresh: 'Обновить артефакты',

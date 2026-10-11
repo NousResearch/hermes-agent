@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
+import { jaCron } from './ja_cron'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
@@ -2083,145 +2084,7 @@ export const jaOverrides = {
     declined: 'モデル変更をキャンセルしました — データ学習ティアの警告を拒否しました。'
   },
 
-  cron: {
-    close: 'Cron を閉じる',
-    title: 'スケジュール済みジョブ',
-    count: count => `${count} 件のジョブ`,
-    search: 'Cron ジョブを検索...',
-    loading: 'Cron ジョブを読み込み中...',
-    states: {
-      enabled: '有効',
-      scheduled: 'スケジュール済み',
-      running: '実行中',
-      paused: '一時停止中',
-      disabled: '無効',
-      error: 'エラー',
-      completed: '完了'
-    },
-    deliveryLabels: {
-      local: 'このデスクトップ',
-      telegram: 'Telegram',
-      discord: 'Discord',
-      slack: 'Slack',
-      email: 'メール'
-    },
-    scheduleLabels: {
-      daily: '毎日',
-      weekdays: '平日',
-      weekly: '毎週',
-      monthly: '毎月',
-      hourly: '毎時',
-      'every-15-minutes': '15 分ごと',
-      custom: 'カスタム'
-    },
-    scheduleHints: {
-      daily: '毎日午前 9:00',
-      weekdays: '月曜日から金曜日の午前 9:00',
-      weekly: '毎週月曜日午前 9:00',
-      monthly: '毎月 1 日午前 9:00',
-      hourly: '毎時 0 分',
-      'every-15-minutes': '15 分ごと',
-      custom: 'Cron 構文または自然言語'
-    },
-    days: {
-      '0': '日曜日',
-      '1': '月曜日',
-      '2': '火曜日',
-      '3': '水曜日',
-      '4': '木曜日',
-      '5': '金曜日',
-      '6': '土曜日',
-      '7': '日曜日'
-    },
-    dayFallback: value => `${value}日`,
-    everyDayAt: time => `毎日 ${time} に`,
-    weekdaysAt: time => `平日 ${time} に`,
-    everyDayOfWeekAt: (day, time) => `毎週 ${day} ${time} に`,
-    monthlyOnDayAt: (dayOfMonth, time) => `毎月 ${dayOfMonth} 日 ${time} に`,
-    topOfHour: '毎時 0 分',
-    everyHourAt: minute => `毎時 :${minute} に`,
-    newCron: '新しい Cron',
-    emptyDescNew:
-      'Cron 式でプロンプトを実行するスケジュールを設定します。Hermes が実行して、選択した宛先に結果を送信します。',
-    emptyDescSearch: '検索キーワードを広げてください。',
-    emptyTitleNew: 'スケジュールされたジョブがまだありません',
-    emptyTitleSearch: '一致なし',
-    last: '前回',
-    next: '次回',
-    noRuns: 'まだ実行されていません',
-    queuedRun: '待機中の実行',
-    manage: '管理',
-    showRuns: '実行履歴を表示',
-    hideRuns: '実行履歴を隠す',
-    runHistory: '実行履歴',
-
-    actionsTitle: 'Cron ジョブのアクション',
-    resume: '再開',
-    pause: '一時停止',
-    resumeTitle: '再開',
-    pauseTitle: '一時停止',
-    triggerNow: '今すぐ実行',
-    edit: 'Cron を編集',
-    deleteTitle: 'Cron ジョブを削除しますか？',
-    deleteDescPrefix: 'これにより ',
-    deleteDescSuffix: ' が完全に削除され、即座に実行が停止されます。',
-    deleting: '削除中...',
-    resumed: 'Cron を再開しました',
-    paused: 'Cron を一時停止しました',
-    triggered: 'Cron をトリガーしました',
-    deleted: 'Cron を削除しました',
-    created: 'Cron を作成しました',
-    updated: 'Cron を更新しました',
-    failedLoad: 'Cron ジョブの読み込みに失敗しました',
-    failedUpdate: 'Cron ジョブの更新に失敗しました',
-    failedTrigger: 'Cron ジョブのトリガーに失敗しました',
-    failedDelete: 'Cron ジョブの削除に失敗しました',
-    failedSave: 'Cron ジョブの保存に失敗しました',
-    editTitle: 'Cron ジョブを編集',
-    createTitle: '新しい Cron ジョブ',
-    editDesc: 'スケジュール、プロンプト、または配信先を更新します。変更は次回の実行時に適用されます。',
-    createDesc:
-      'プロンプトを自動実行するスケジュールを設定します。Cron 構文または「15 分ごと」などのフレーズを使用します。',
-    nameLabel: '名前',
-    namePlaceholder: '例: 日次サマリー',
-    promptLabel: 'プロンプト',
-    scriptLabel: 'スクリプト',
-    scriptBadge: 'スクリプト',
-    promptPlaceholder: '実行ごとにエージェントが行う内容は？',
-    frequencyLabel: '頻度',
-    deliverLabel: '配信先',
-    deliverNeedsHomeChannel: '先にホームチャンネルを設定してください',
-    modelLabel: 'モデル',
-    modelDefault: 'デフォルト（グローバルモデル）',
-    customScheduleLabel: 'カスタムスケジュール',
-    customPlaceholder: '0 9 * * * または weekdays at 9am',
-    customHint: 'Cron 式、または「every hour」「weekdays at 9am」のようなフレーズ。',
-    optional: '省略可能',
-    promptRequired: 'プロンプトは必須です。',
-    promptScheduleRequired: 'プロンプトとスケジュールは必須です。',
-    scheduleRequired: 'スケジュールは必須です。',
-    scriptOnlyEditHint: 'スクリプトのみのジョブ（AI プロンプトなし）。ジョブ ID:',
-    saveChanges: '変更を保存',
-    createAction: 'Cron を作成',
-    tabs: {
-      jobs: 'ジョブ',
-      blueprints: 'ブレーンプリント'
-    },
-    blueprints: {
-      tab: 'ブレーンプリント',
-      startFrom: '開始点',
-      custom: 'カスタム',
-      subtitle: 'すぐに使える自動化',
-      dialogDesc: '詳細を入力してスケジュールします。',
-      scheduleIt: 'スケジュールする',
-      scheduling: 'スケジュール中...',
-      scheduled: 'ブレーンプリントをスケジュールしました',
-      loading: 'ブレーンプリントを読み込み中...',
-      failedLoad: 'ブレーンプリントの読み込みに失敗しました',
-      emptyTitle: '利用できるブレーンプリントはありません',
-      emptyDesc: 'このバックエンドで利用できる自動化ブレーンプリントはありません。'
-    }
-  },
+  cron: jaCron.cron,
 
   artifacts: {
     search: 'アーティファクトを検索...',

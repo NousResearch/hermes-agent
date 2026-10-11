@@ -606,6 +606,25 @@ function Ensure-Git {
     return $true
 }
 
+# Pin this process and its children to one output encoding. On a CJK-locale
+# Windows the OEM codepage (cp936) writes the piped stdout in GBK while the
+# Hermes-Setup reader decodes UTF-8 first, so every non-ASCII byte -- uv's
+# checkmark lines, Python's localized os-error text, our own Write-Host --
+# reaches bootstrap-installer.log as mojibake (#132531). [Console]::
+# OutputEncoding covers both directions of PowerShell's pipe; PYTHONUTF8 /
+# PYTHONIOENCODING cover Python's redirected stdio, which follows the ANSI
+# codepage and ignores the console one. Mirrors the same pins in
+# scripts/desktop-update/windows.ps1. Best-effort: a host with no attached
+# console must still install.
+function Set-ConsoleUtf8 {
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $global:OutputEncoding = [System.Text.Encoding]::UTF8
+    } catch {}
+    $env:PYTHONUTF8 = "1"
+    $env:PYTHONIOENCODING = "utf-8"
+}
+
 # The pre-pm installer's line style. ASCII glyphs: Windows PowerShell 5.1
 # reads a BOM-less script as the ANSI code page, so arrows would mojibake.
 function Log([string]$msg) { Write-Host "-> $msg" -ForegroundColor Cyan }
@@ -1365,6 +1384,12 @@ if ($script:IsDotSourced) {
     Write-Verbose "[hermes] install.ps1 was dot-sourced; definitions only, no execution"
     return
 }
+
+# Before any stage, child, or output line: the whole stream must be one
+# encoding end to end, or the log the failure dialog points at records
+# question marks instead of the system error text needed to diagnose it.
+# Ahead of the prologue too, so its own stderr diagnostics round-trip.
+Set-ConsoleUtf8
 
 # The normalization prologue runs exactly once per real entry, before any
 # switch is honored, so every contract below sees long-form paths.

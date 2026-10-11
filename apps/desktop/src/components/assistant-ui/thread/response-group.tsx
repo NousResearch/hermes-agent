@@ -37,7 +37,7 @@ interface ResponseRow {
 
 interface ResponseSection {
   key: string
-  indices: number[]
+  rows: ResponseRow[]
   assistantIds: string[]
   response: boolean
 }
@@ -73,13 +73,13 @@ export function ResponseMessages({ components, indices }: ResponseMessagesProps)
       const previous = result.at(-1)
 
       const section: ResponseSection =
-        response && previous?.response ? previous : { key: row.id, indices: [], assistantIds: [], response }
+        response && previous?.response ? previous : { key: row.id, rows: [], assistantIds: [], response }
 
       if (section !== previous) {
         result.push(section)
       }
 
-      section.indices.push(row.index)
+      section.rows.push(row)
 
       if (row.role === 'assistant' && row.hasText) {
         section.assistantIds.push(row.id)
@@ -93,13 +93,13 @@ export function ResponseMessages({ components, indices }: ResponseMessagesProps)
     section.response ? (
       <ResponseMessageIds.Provider key={section.key} value={section.assistantIds}>
         <div className="group flex min-w-0 flex-col gap-(--scaffold-block-gap)" data-slot="aui_response-group">
-          {section.indices.map(index => (
-            <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
+          {section.rows.map(row => (
+            <ThreadPrimitive.MessageByIndex components={components} index={row.index} key={row.id} />
           ))}
         </div>
       </ResponseMessageIds.Provider>
     ) : (
-      <ThreadPrimitive.MessageByIndex components={components} index={section.indices[0]!} key={section.key} />
+      <ThreadPrimitive.MessageByIndex components={components} index={section.rows[0]!.index} key={section.key} />
     )
   )
 }

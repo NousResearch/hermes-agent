@@ -571,12 +571,14 @@ def _oauth_wire_namer(anthropic_tools: list[dict[str, Any]]):
 _OAUTH_SYSTEM_REPLACEMENTS = (
     ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"), ("Nous Research", "Anthropic"),
 )
-# The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox
-# or quoted as an identifier (``hermes-agent.nousresearch.com``, ``~/.hermes/hermes-agent/venv``,
-# ``NousResearch/hermes-agent``, ``skill_view(name='hermes-agent')``) it is an address the model
-# dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
-# identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
-_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
+# The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox,
+# quoted as an identifier, or naming an index row (``hermes-agent.nousresearch.com``,
+# ``~/.hermes/hermes-agent/venv``, ``NousResearch/hermes-agent``, ``skill_view(name='hermes-agent')``,
+# the skills-index line ``- hermes-agent: ...``) it is an address or key the model dereferences,
+# and the rewritten form does not exist or collides with another skill (#48860, #134744). The
+# OPENING quote and a TRAILING colon mark identifiers; a sentence-final ``.`` or a possessive
+# ``'s`` is prose.
+_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@:-]|\.\w)""")
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):

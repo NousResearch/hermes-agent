@@ -494,6 +494,19 @@ export function ChatBar({
 
     flushRafRef.current = window.requestAnimationFrame(() => {
       flushRafRef.current = undefined
+
+      // A busy renderer (agent response streaming) can postpone this rAF past
+      // the next compositionstart: the trailing input of the previous IME
+      // composition is what queued it. Flushing now runs the DOM-normalizing
+      // pass mid-preedit, which aborts the live composition — the IME restarts
+      // it (candidate window flash) and the aborted preedit lands in the draft
+      // as literal Latin letters (#136460). compositionend re-reads the
+      // contentEditable and flushes the committed text, so dropping this run
+      // loses nothing.
+      if (composingRef.current) {
+        return
+      }
+
       flushEditorToDraft(editor)
     })
   }

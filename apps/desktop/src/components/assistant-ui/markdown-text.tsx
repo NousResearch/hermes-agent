@@ -8,7 +8,16 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import {
+  type ComponentProps,
+  isValidElement,
+  memo,
+  type ClipboardEvent as ReactClipboardEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState
+} from 'react'
 import { defaultRemarkPlugins } from 'streamdown'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
@@ -22,6 +31,7 @@ import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { selectionTextWithLatex } from '@/lib/latex-copy'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
@@ -633,6 +643,29 @@ function MarkdownTextSurface({
   const code = useCodePlugin()
   const plugins = useMemo(() => (code ? { math: mathPlugin, code } : { math: mathPlugin }), [code])
 
+  const copyWithLatex = (event: ReactClipboardEvent<HTMLDivElement>) => {
+    containerProps?.onCopy?.(event)
+
+    if (event.defaultPrevented) {
+      return
+    }
+
+    const selection = window.getSelection()
+
+    if (!selection) {
+      return
+    }
+
+    const copiedText = selectionTextWithLatex(event.currentTarget, selection)
+
+    if (copiedText === null) {
+      return
+    }
+
+    event.preventDefault()
+    event.clipboardData.setData('text/plain', copiedText)
+  }
+
   const components = useMemo(
     () =>
       ({
@@ -781,7 +814,7 @@ function MarkdownTextSurface({
       <StreamdownTextPrimitive
         components={components}
         containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
-        containerProps={surfaceContainerProps}
+        containerProps={{ ...surfaceContainerProps, onCopy: copyWithLatex }}
         defer={defer}
         lineNumbers={false}
         mode="streaming"

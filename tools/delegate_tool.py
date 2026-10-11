@@ -318,9 +318,9 @@ def _build_child_agent(
     )
     if coding_error:
         raise ValueError(coding_error)
-    setattr(child, "_delegate_repo_root", coding_root)
+    child._delegate_repo_root = coding_root
     # Lease only when a checkout was resolved. Write tools alone are not a writer.
-    setattr(child, "_delegate_admission_required", bool(coding_root) and _is_concrete_source_writer(child))
+    child._delegate_admission_required = bool(coding_root) and _is_concrete_source_writer(child)
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.

@@ -116,9 +116,9 @@ _CHECKS = (*_GUARDS, "ruff", "health")
 
 # Narrow exception for this authorized reconciliation only. Both commits must be
 # ancestors of the tested head; callers cannot supply alternative exemption refs.
-_ALIGNMENT_BRANCH = "house/reconcile-nous-1744a19e0df568c647e4f3ff9c37f2a284a282fb"
-_ALIGNMENT_PARENTS = ("e89d5b77529f282b5b0198f12c6848a88e85dfd0",
-                     "1744a19e0df568c647e4f3ff9c37f2a284a282fb")
+_ALIGNMENT_BRANCH = "house/sync-nous-c5733167"
+_ALIGNMENT_PARENTS = ("0fc49025948aa41afa1e9b7683806042fcad7de6",
+                     "c57331677d7fc46298a7159cf3a650853f0966c5")
 
 
 def _alignment_parents(head: str | None) -> tuple[str, ...]:

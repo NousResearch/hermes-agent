@@ -40,6 +40,7 @@ import hermes_bootstrap
         [sys.executable, "-S", "-c", code, str(target), phase],
         env={**os.environ, "PYTHONPATH": str(root)},
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 1, result.stderr
     assert result.stderr.count("hermes: ") == 1
@@ -71,6 +72,7 @@ raise SystemExit(main(["repair"]))
         [sys.executable, "-c", code, str(target)],
         env={**os.environ, "PYTHONPATH": str(root)},
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 1, result.stderr
     assert "install state is not writable by this user" in result.stderr

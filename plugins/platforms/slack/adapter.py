@@ -5414,7 +5414,7 @@ class SlackAdapter(BasePlatformAdapter):
                 chat_id=chat_id, question=question, choices=choices, clarify_id=clarify_id,
                 session_key=session_key, metadata=metadata)
 
-        def _build() -> Tuple[str, list]:
+        def _build() -> tuple[str, list]:
             elements = [
                 self._button(str(idx + 1), f"hermes_clarify_choice_{idx}", f"{clarify_id}|{idx}", emoji=True)
                 for idx in range(len(labels))

@@ -288,6 +288,7 @@ def _detect_claude_code_version() -> str:
             result = subprocess.run(
                 [cmd, "--version"],
                 stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+                check=False,
             )
             if result.returncode == 0 and result.stdout.strip():
                 version = result.stdout.strip().split()[0]  # "2.1.74 (Claude Code)" or "2.1.74"

@@ -208,9 +208,9 @@ def _prune_durable_records() -> None:
 
 
 def _persist_completion(
-    event: Dict[str, Any], result: Dict[str, Any],
-    on_cancel: Optional[Callable[[], tuple[Dict[str, Any], Dict[str, Any]]]] = None,
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    event: dict[str, Any], result: dict[str, Any],
+    on_cancel: Optional[Callable[[], tuple[dict[str, Any], dict[str, Any]]]] = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Commit a terminal result, letting a previously committed stop win.
 
     The stop intent and terminal state share this transaction's decision point:
@@ -234,7 +234,7 @@ def _persist_completion(
     return event, result
 
 
-def _persist_stop_intents(targets: List[Dict[str, Any]], reason: str) -> set[str]:
+def _persist_stop_intents(targets: list[dict[str, Any]], reason: str) -> set[str]:
     """Atomically record cancellation BEFORE signalling descendants.
 
     A DB failure deliberately fails closed: an unjournalled stop can leave a
@@ -943,9 +943,9 @@ def dispatch_async_delegation_batch(
 
 
 # ── Finalization + completion events ────────────────────────────────────────
-def _cancelled_terminal_result(record: Dict[str, Any], result: Any) -> Dict[str, Any]:
+def _cancelled_terminal_result(record: dict[str, Any], result: Any) -> dict[str, Any]:
     """The only terminal result permitted after a durable stop request."""
-    cancelled = dict(cast(Dict[str, Any], result or {}))
+    cancelled = dict(cast(dict[str, Any], result or {}))
     cancelled["error"] = cancelled.get("error") or (
         "Cancelled after a durable stop request; any partial work requires reconciliation before reuse.")
     if not record.get("is_batch"):
@@ -969,7 +969,7 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record["progress_fn"] = None  # stop stale-monitor sampling
         snapshot = dict(record)
     terminal_result = result(snapshot) if callable(result) else result
-    cancel_callback: Optional[Callable[[], tuple[Dict[str, Any], Dict[str, Any]]]] = None
+    cancel_callback: Optional[Callable[[], tuple[dict[str, Any], dict[str, Any]]]] = None
     # Cancellation wins over a late child success. The intent was committed
     # before the interrupt call. _persist_completion repeats the decision under
     # its SQLite transaction, covering the commit-to-memory propagation race.
@@ -977,20 +977,20 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         status = "interrupted"
         terminal_result = _cancelled_terminal_result(snapshot, terminal_result)
     else:
-        def _on_cancel() -> tuple[Dict[str, Any], Dict[str, Any]]:
+        def _on_cancel() -> tuple[dict[str, Any], dict[str, Any]]:
             cancelled = _cancelled_terminal_result(snapshot, terminal_result)
             return _completion_event(snapshot, cancelled, "interrupted"), cancelled
 
         cancel_callback = _on_cancel
 
-    status = _push_completion_event(snapshot, cast(Dict[str, Any], terminal_result), status, on_cancel=cancel_callback)
+    status = _push_completion_event(snapshot, cast(dict[str, Any], terminal_result), status, on_cancel=cancel_callback)
     with _records_lock:
         if delegation_id in _records:
             _records[delegation_id]["status"] = status
         _prune_completed_locked()
 
 
-def _completion_event(record: Dict[str, Any], result: Dict[str, Any], status: str) -> Dict[str, Any]:
+def _completion_event(record: dict[str, Any], result: dict[str, Any], status: str) -> dict[str, Any]:
     """Build the durable and queued terminal event for one delegation."""
     is_batch = bool(record.get("is_batch"))
     dispatched_at = record.get("dispatched_at") or time.time()
@@ -1022,8 +1022,8 @@ def _completion_event(record: Dict[str, Any], result: Dict[str, Any], status: st
 
 
 def _push_completion_event(
-    record: Dict[str, Any], result: Dict[str, Any], status: str,
-    on_cancel: Optional[Callable[[], tuple[Dict[str, Any], Dict[str, Any]]]] = None,
+    record: dict[str, Any], result: dict[str, Any], status: str,
+    on_cancel: Optional[Callable[[], tuple[dict[str, Any], dict[str, Any]]]] = None,
 ) -> str:
     """Push a type='async_delegation' event onto the shared completion queue. Batch records
     (``is_batch``) carry the per-task ``results`` list (plus live transcript paths, the
@@ -1040,7 +1040,7 @@ def _push_completion_event(
     evt = _completion_event(record, result, status)
     try:
         evt, result = _persist_completion(evt, result, on_cancel=on_cancel)
-    except Exception as exc:  # noqa: BLE001 — a lost durable row is recoverable; a lost result + leaked slot is not
+    except Exception as exc:
         logger.error(f"Async delegation{label} %s: durable completion write failed; delivering in-memory "
                      "only (a restart may report this unit as unknown): %s", record.get("delegation_id"), exc)
     try:
@@ -1268,7 +1268,7 @@ def list_async_delegations() -> list[dict[str, Any]]:
     return items
 
 
-def _interrupt_records(targets: List[Dict[str, Any]], caller: str, reason: str, msg: str) -> int:
+def _interrupt_records(targets: list[dict[str, Any]], caller: str, reason: str, msg: str) -> int:
     """Persist cancellation, then call each descendant's interrupt function.
 
     The order is deliberate. If a caller dies after the action but before an

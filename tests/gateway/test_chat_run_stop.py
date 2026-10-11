@@ -198,7 +198,7 @@ async def test_chat_stop_before_promotion_fences_model_launch_and_observes_late_
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "default")
-    runner, state, source, key = _running_turn(home)
+    runner, _state, source, key = _running_turn(home)
     gate = threading.Event()
     ctx = TurnContext(source=source, session_key=key, run_generation=3,
                       internal_plugin_execution_id=None, execution_launch_gate=gate,

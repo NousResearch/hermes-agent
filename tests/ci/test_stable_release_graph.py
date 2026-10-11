@@ -336,6 +336,7 @@ def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
              "IMAGE_NAME": "owner/repo", "RELEASE_TAG": "0.21.5",
              "CREATE_MARKER": str(marker)},
         capture_output=True, text=True, encoding="utf-8",
+        check=False,
     )
     assert result.returncode != 0
     assert "versioned Docker manifest differs" in result.stderr

@@ -75,7 +75,7 @@ def test_write_tools_without_a_coding_root_do_not_require_a_lease():
     from run_agent import AIAgent
 
     writer = object.__new__(AIAgent)
-    setattr(writer, "valid_tool_names", {"terminal", "write_file", "patch"})
+    writer.valid_tool_names = {"terminal", "write_file", "patch"}
     assert delegate_tool._is_concrete_source_writer(writer)
     assert not delegate_tool._requires_writer_admission(writer)
 

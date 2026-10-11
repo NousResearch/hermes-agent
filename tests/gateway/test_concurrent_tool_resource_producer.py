@@ -54,7 +54,7 @@ def test_real_submit_marks_reserved_before_pool_and_started_before_tool(tmp_path
     token = propagated.set("copied")
     try:
         with bind_chat_execution(tmp_path, "key", 1):
-            futures, indices = batch.submit_all(SubmitProbe(), [0])
+            futures, _indices = batch.submit_all(SubmitProbe(), [0])
         assert entered.wait(5)
         assert seen == [("started", "copied")]
         assert futures[0].cancel() is False
@@ -89,7 +89,7 @@ def test_unstarted_submissions_stay_reserved(tmp_path, mode):
                 batch.submit_all(executor, [0])
     else:
         with bind_chat_execution(tmp_path, "key", 1):
-            futures, indices = batch.submit_all(executor, [0])
+            futures, _indices = batch.submit_all(executor, [0])
         assert futures[0].cancel()
     assert bodies == []
     assert ChatExecutionStore(tmp_path).inspect_resources("key")[0]["state"] == "reserved"
@@ -119,7 +119,7 @@ def test_physical_persistence_failure_retains_unresolved_resource(tmp_path, monk
     monkeypatch.setattr(ChatExecutionStore, method, broken)
     with DaemonThreadPoolExecutor(max_workers=1) as pool:
         with bind_chat_execution(tmp_path, "key", 1):
-            futures, indices = batch.submit_all(pool, [0])
+            futures, _indices = batch.submit_all(pool, [0])
         if phase == "start":
             with pytest.raises(sqlite3.OperationalError):
                 futures[0].result(timeout=5)
@@ -207,7 +207,7 @@ def test_legacy_submit_still_executes_without_journal_context():
     bodies = []
     batch = batch_for(lambda: bodies.append("legacy"))
     with DaemonThreadPoolExecutor(max_workers=1) as pool:
-        futures, indices = batch.submit_all(pool, [0])
+        futures, _indices = batch.submit_all(pool, [0])
         futures[0].result(timeout=5)
     assert bodies == ["legacy"]
 
@@ -215,7 +215,7 @@ def test_legacy_submit_still_executes_without_journal_context():
 @pytest.mark.asyncio
 async def test_parent_physical_completion_does_not_settle_blocked_tool_thread(tmp_path, monkeypatch):
     from tests.gateway.test_chat_execution_worker import reserved_worker
-    runner, state, ctx, store = reserved_worker(tmp_path, monkeypatch)
+    runner, _state, ctx, store = reserved_worker(tmp_path, monkeypatch)
     entered, release = threading.Event(), threading.Event()
     tool_futures = []
     def body():
@@ -224,7 +224,7 @@ async def test_parent_physical_completion_does_not_settle_blocked_tool_thread(tm
     batch = batch_for(body)
     pool = DaemonThreadPoolExecutor(max_workers=1)
     def parent():
-        futures, indices = batch.submit_all(pool, [0])
+        futures, _indices = batch.submit_all(pool, [0])
         tool_futures.extend(futures)
         assert entered.wait(5)
         pool.shutdown(wait=False, cancel_futures=True)

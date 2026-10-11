@@ -292,7 +292,7 @@ class MCPServerTransportMixin:
 
     # ------------------------------------------------------------------ stdio
 
-    def _track_spawned_children(self, new_pids: Set[int], spawn_marker: str) -> None:
+    def _track_spawned_children(self, new_pids: set[int], spawn_marker: str) -> None:
         """Ledger the freshly spawned stdio children (pids, pgids, machine spawn ledger). pgids are
         captured while alive (getpgid fails after exit; the sweep needs them for reparented descendants)."""
         new_pgids: dict[int, int] = {}

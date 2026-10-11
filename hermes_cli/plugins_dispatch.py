@@ -22,7 +22,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
 
 def get_pre_tool_call_block_message(
-    tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
+    tool_name: str, args: Optional[dict[str, Any]], **hook_kwargs: Any
 ) -> Optional[str]:
     """Deprecated shim: only the ``block`` message (or ``None``); ``approve`` is invisible here."""
     from hermes_cli import plugins

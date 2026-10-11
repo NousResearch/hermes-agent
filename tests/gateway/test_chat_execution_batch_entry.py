@@ -92,7 +92,7 @@ def test_legacy_batch_context_preserves_entry_behavior(monkeypatch, mode):
 async def test_physical_worker_binds_identity_before_public_batch_entry(tmp_path, monkeypatch, mode):
     import asyncio
     from tests.gateway.test_chat_execution_worker import reserved_worker
-    runner, state, ctx, store = reserved_worker(tmp_path, monkeypatch)
+    runner, _state, ctx, store = reserved_worker(tmp_path, monkeypatch)
     callbacks = []
     def boundary():
         assert observation(tmp_path, ctx.session_key) == (1, "unknown")

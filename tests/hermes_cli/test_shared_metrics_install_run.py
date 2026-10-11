@@ -151,6 +151,7 @@ def test_real_install_sh_ladder_leaves_only_closed_tokens(tmp_path):
          "--dir", str(tmp_path / "checkout")],
         env={"HOME": str(tmp_path), "PATH": str(tools), "HERMES_REPO_URL": "https://example.invalid/x.git"},
         capture_output=True, text=True, encoding="utf-8", timeout=60,
+        check=False,
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert "git is required" in result.stderr

@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.testclient import TestClient
 
-import hermes_cli.plugins as plugins
+from hermes_cli import plugins
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests, mint_ticket
 from tui_gateway import server
@@ -96,7 +96,7 @@ def _fixture_profile(tmp_path: Path, *, subjects: list[dict[str, str]]) -> tuple
 def _start_real_broker(monkeypatch, tmp_path: Path, *, profile: str, principals: list[dict]):
     """Start the fleet broker HTTP handler; only TLS/viewer auth is out of scope."""
     sys.path[:0] = [str(_broker_source())]
-    import origin  # noqa: PLC0415
+    import origin
 
     principals_file = tmp_path / "principals.json"
     principals_file.write_text(json.dumps(principals), encoding="utf-8")

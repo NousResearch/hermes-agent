@@ -189,7 +189,7 @@ def test_zero_retry_fresh_task_gets_one_initial_claim(lifecycle):
 
 
 def test_zero_retry_dead_worker_is_blocked_without_replay(lifecycle, monkeypatch):
-    conn, task_id, run_id = lifecycle
+    conn, task_id, _run_id = lifecycle
     conn.execute("UPDATE tasks SET max_retries = 0 WHERE id = ?", (task_id,))
     conn.execute(
         "UPDATE tasks SET worker_pid = ?, started_at = ? WHERE id = ?",

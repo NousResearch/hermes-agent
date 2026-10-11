@@ -132,6 +132,106 @@ or mount layouts. Relay does not filter events by working directory; if a path
 must not leave the host, use a trusted local collector or do not enable a remote
 exporter for that process.
 
+## Compaction Marks
+
+When the Relay runtime is live, Hermes emits one Relay mark with
+`data_schema: {"name": "hermes.compaction", "version": "1"}` for each of these
+sources:
+
+- each `compress_context` attempt that returns, including blocked,
+  Codex-routed and aborted ones;
+- each micro-compaction pass;
+- each committed proactive tool-result prune;
+- each Codex app-server thread compaction that Codex ran on its own and Hermes
+  observed.
+
+The mark needs no setting because Relay exporters are configured separately.
+Other history and request rewrites emit no mark yet: OpenAI Responses native
+compaction and its pre-checkpoint item pruning, image shrinking after a
+provider rejection, request-only truncation, and the gateway's automatic
+session reset after a turn ends with `compression_exhausted`, which replaces
+the session with a new, empty one instead of compacting it.
+
+| Mark | When | Relay effect |
+|---|---|---|
+| `compaction` | `outcome: committed` with `scope: history` or `provider` | Resets LLM-history freshness for the session's agent scope, so the next LLM start records the full compacted history |
+| `compaction.attempt` | Any other outcome (`aborted`, `failed`, `skipped`, `blocked`, `other`) | None |
+
+A commit whose session split failed after it had already stored the compacted
+history is still `committed` (the model sees the compacted history next), with
+`failure_class: session_split_failed` and `split_status: failed_not_indexed`.
+
+The mark is parented to the live `hermes.turn` of the same session, or to the
+`hermes.session` scope when compaction runs outside a turn (gateway hygiene).
+With `compression.in_place: false`, a rotating commit moves the agent to a
+child session that has no Relay scope until a later Relay-managed LLM call or
+the next turn opens one. While it has none, a compaction in the child (a
+second preflight pass, or the micro-compaction pass that runs before the turn
+ends) is parented to the live `hermes.turn` the agent started in, and
+`data.session_id` still names the child. No mark is
+emitted from a turn Relay does not instrument (a second concurrent turn on the
+same session) or from a persistence-detached fork such as background review:
+their compaction rewrites only their own transcript.
+
+`data` is flat so OpenTelemetry flattens every field into
+`nemo_relay.mark.data.<key>`. Every v1 key is present on every mark; a value
+that does not apply is `null`. Categorical fields come from these closed sets,
+except the two summarizer identifiers:
+
+| Field | v1 values |
+|---|---|
+| `kind` | `summarize`, `micro_summarize`, `prune_tool_results`, `provider_native` |
+| `scope` | `history`, `provider` |
+| `official` | `true` only for `compress_context` attempts |
+| `method` | `llm_summary`, `aux_fallback_main`, `deterministic_fallback`, `deterministic_prune`, `provider`, `none` |
+| `trigger` | `manual`, `turn_start_threshold`, `pre_api`, `post_tool`, `idle`, `engine_preflight`, `overflow`, `gateway_hygiene`, `between_turns`, `proactive_prune`, `provider`, `unknown` |
+| `trigger_class` | `auto`, `manual`, `overflow`, `provider`, `unknown` |
+| `outcome` | `committed`, `aborted`, `failed`, `skipped`, `blocked` |
+| `split_status` | `not_applicable`, `in_place_committed`, `rotated_committed`, `failed_not_indexed`, `aborted`, or `null` |
+| `token_count_method` | `estimate_rough`, or `null` |
+| `overflow_reason` | `context_overflow`, `payload_too_large`, `long_context_tier` (the error classifier's reason for the provider rejection a `trigger: overflow` attempt recovers from), or `null` for every other trigger |
+| `summarizer_provider`, `summarizer_model` | Free-form, not a closed set: the provider and model identifiers Hermes resolved for the summary call, or `null` when the attempt recorded none. A micro-compaction mark carries only `summarizer_model`, the configured summary model |
+
+A value outside a closed set reads `other`. `failure_class` uses the
+`hermes.compression.count` classes plus the attempt-only classes (guard exits
+such as `blocked:cooldown`, Codex route exits such as `codex_auto_native`, the
+lease exits `session_ownership_lost`, `session_ownership_unreadable` and
+`cooldown_state_unreadable`, `empty_transcript` (a context engine returned no
+messages), `summary_model_benched`, and the micro-compaction outcomes), `none` when there is no class, and `other` for anything else. An
+automatic caller that passes no trigger label reads `trigger: unknown` with
+`trigger_class: auto`; a record with no trigger at all reads `unknown` for
+both. `in_place` and `session_rotated` are set only when `split_status` is
+`in_place_committed` or `rotated_committed`; `cache_break` is `null` for
+`scope: provider`.
+
+Numeric fields carry the effect (`tokens_before`, `tokens_after`,
+`tokens_reclaimed`, `messages_before`, `messages_after`, `items_dropped`) and
+timings (`duration_ms`, `summary_generation_ms`, `aux_call_duration_ms`,
+`queue_wait_ms`, `commit_ms`). Token counts are rough message-only estimates
+(`token_count_method: estimate_rough`). The payload never contains message
+text, summary text, the focus topic (only `has_focus_topic`), error text or
+file paths. `attempt_id` and `session_id` are for correlation; do not use them
+as metric labels.
+
+Codex app-server turns run their model calls inside Codex, so Relay records no
+LLM start for them. Their `compaction` mark records the rewrite; its freshness
+reset only affects a later Hermes-side LLM call in the same session scope. A
+compaction Hermes forces is recorded once, by its `compress_context` attempt:
+the next Codex turn drops notifications from the compaction turn, so it cannot
+report the same compaction again.
+
+Known gaps in v1:
+
+- With `gateway.telemetry.session_segments.on_compaction: true`, a rotating
+  commit outside any turn closes the old Relay session before the mark is
+  emitted, so the mark is dropped. No current caller does this: manual
+  `/compress` defers that notification until after the mark, and gateway
+  hygiene compacts in place.
+- Reserved for later versions and never emitted in v1: `kind`
+  `request_truncation` / `window_reduction`, `scope: request`,
+  `trigger: recovery`, `outcome: noop`, and
+  `token_count_method: provider_usage`.
+
 ## Process-Wide Plugin Policy and Profile Isolation
 
 Relay plugin configuration is a process-level deployment choice, not a Hermes
@@ -356,7 +456,7 @@ itself ships.
 | `hermes.setup.completed` | surface (`cli`/`desktop`), provider | Which providers people choose at setup, and on which surface. |
 | `hermes.model_tokens.sum` | call role, model, provider, auxiliary task, token type | Token volume per model/provider, prompt-cache share, and what auxiliary work (compression, titles, vision, ...) costs. The value is a token sum, not an event count. |
 | `hermes.model_route.count` `ttft_bucket` | time to first token | Perceived latency per provider/model. |
-| `hermes.compression.count` | trigger, outcome, context-fill bucket, failure class | How often compaction runs, how full contexts get, and whether it fails. `skipped` = nothing could fail: lock held elsewhere, nothing summarizable (no model call), user stop, or a newer attempt replaced it. Since package schema v4 the row also carries `failure_class`, the attempt log's own class name from a closed list: the skip reasons (`lock_contended`, `insufficient_messages`, `no_compressible_window`, `empty_post_handoff_window`, `explicit_interrupt`, `attempt_superseded`, `snapshot_stale`) on skipped rows; the failure reasons (`summary_auth_failure`, `summary_network_failure`, `summary_truncated_failure`, `summary_empty_content_failure`, `summary_overload_failure`, `summary_generation_aborted`, `summary_generation_failed`, `summary_overload_degraded`, `aux_model_fallback`, `feasibility_skip`, `stall_deterministic_fallback`, `stall_interrupted`, `would_grow`, `no_progress`, `commit_fence_cancelled`, `pool_saturated`, `session_split_failed`, `exception`, `rollback`) on failed rows; `none` on success. An exception's or rollback's Python type name is dropped (`exception:TimeoutError` reads `exception`), any other value reads `other`, a failure with no class `unknown`. |
+| `hermes.compression.count` | trigger, outcome, context-fill bucket, failure class | How often compaction runs, how full contexts get, and whether it fails. `skipped` = nothing could fail: lock held elsewhere, nothing summarizable (no model call), user stop, or a newer attempt replaced it. Since package schema v4 the row also carries `failure_class`, the attempt log's own class name from a closed list: the skip reasons (`lock_contended`, `insufficient_messages`, `no_compressible_window`, `empty_post_handoff_window`, `explicit_interrupt`, `attempt_superseded`, `snapshot_stale`) on skipped rows; the failure reasons (`summary_auth_failure`, `summary_network_failure`, `summary_truncated_failure`, `summary_empty_content_failure`, `summary_overload_failure`, `summary_generation_aborted`, `summary_generation_failed`, `summary_overload_degraded`, `aux_model_fallback`, `feasibility_skip`, `stall_deterministic_fallback`, `stall_interrupted`, `would_grow`, `no_progress`, `commit_fence_cancelled`, `pool_saturated`, `session_split_failed`, `empty_transcript`, `exception`, `rollback`) on failed rows; `none` on a clean success. A success that committed through a fallback keeps that row's class, so `failure_class` other than `none` on a `success` row means "committed with a fallback": a deterministic summary (`summary_generation_failed`, `summary_overload_degraded`, `stall_deterministic_fallback`, or `feasibility_skip`, which also covers a summary model benched after repeated fallbacks) or the main model replacing a failed summary model (`aux_model_fallback`). An exception's or rollback's Python type name is dropped (`exception:TimeoutError` reads `exception`), any other value reads `other`, a failure with no class `unknown`. |
 | `hermes.model_switch.count` | from/to provider, surface | Which providers people leave and move to. |
 | `hermes.fallback.count` | from/to provider, error class | How often fallback providers rescue a turn, and from what. |
 | `hermes.slash_command.count` | command, surface | Which built-in commands are used (`/retry`, `/undo`, `/new` are friction signals). Skill and plugin commands report `skill`/`plugin`. |

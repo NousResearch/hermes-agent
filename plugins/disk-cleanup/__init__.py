@@ -186,7 +186,7 @@ def _session_end_mode() -> str:
     return mode if isinstance(mode, str) and mode in _SESSION_END_MODES else "disabled"
 
 
-def _report_session_end_candidates() -> Dict[str, Any]:
+def _report_session_end_candidates() -> dict[str, Any]:
     """Return bounded candidate counts only; dry-run never mutates tracked files or paths."""
     try:
         auto, prompt = dg.dry_run()
@@ -206,7 +206,7 @@ def _report_session_end_candidates() -> Dict[str, Any]:
 
 
 def _on_session_end(
-    session_id: str = "", completed: bool = True, interrupted: bool = False, **_: Any) -> Optional[Dict[str, Any]]:
+    session_id: str = "", completed: bool = True, interrupted: bool = False, **_: Any) -> Optional[dict[str, Any]]:
     """Apply the configured automatic lifecycle mode after draining tracked test paths."""
     # Drain the session bucket plus every task-scoped bucket (subagents record into their own).
     with _lock:

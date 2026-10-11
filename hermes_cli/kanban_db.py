@@ -4404,8 +4404,8 @@ def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
 
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
-from hermes_cli.kanban_db_run_queries import current_run_started_ats, latest_summaries  # noqa: E402
-from hermes_cli.kanban_db_boards import (  # noqa: E402
+from hermes_cli.kanban_db_run_queries import current_run_started_ats, latest_summaries
+from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
     _dir_holds_board,
     board_metadata_path,
@@ -4415,7 +4415,7 @@ from hermes_cli.kanban_db_boards import (  # noqa: E402
     remove_board,
     write_board_metadata,
 )
-from hermes_cli.kanban_db_connect import (  # noqa: E402
+from hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,
     init_db,
     write_txn,

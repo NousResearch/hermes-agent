@@ -1175,6 +1175,7 @@ def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_pat
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert successor.returncode == 0, successor.stderr
     assert [entry["session_id"] for entry in active_session_registry_snapshot(home)] == [sibling_sid]

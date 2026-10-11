@@ -109,6 +109,7 @@
   "canonical.queue.discardFailed",
   "canonical.queue.invalidRecord",
   "canonical.queue.journalCleanupFailed",
+  "canonical.queue.noClipboardImage",
   "canonical.queue.notSavedDraftKept",
   "canonical.queue.notSavedQueueKept",
   "canonical.queue.serverRow",

@@ -314,7 +314,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
           }
 
           if (!quiet) {
-            sys(r?.message || 'No image found in clipboard')
+            sys(r?.message || t('canonical.queue.noClipboardImage'))
           }
 
           return null

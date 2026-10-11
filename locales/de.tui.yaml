@@ -113,6 +113,7 @@ canonical.queue.clipboardImageFailed: "Bild aus Zwischenablage fehlgeschlagen: {
 canonical.queue.discardFailed: "Verwerfen fehlgeschlagen: {0}"
 canonical.queue.invalidRecord: "Ungültiger ausstehender Eingabedatensatz: {0}"
 canonical.queue.journalCleanupFailed: "Eingabe zugestellt; Journal-Bereinigung fehlgeschlagen: {0}"
+canonical.queue.noClipboardImage: "Kein Bild in der Zwischenablage gefunden"
 canonical.queue.notSavedDraftKept: "Eingabe nicht gespeichert: {0} — Entwurf beibehalten"
 canonical.queue.notSavedQueueKept: "Eingabe nicht gespeichert: {0} — Warteschlange beibehalten"
 canonical.queue.serverRow: "[{0}] {1}"

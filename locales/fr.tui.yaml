@@ -113,6 +113,7 @@ canonical.queue.clipboardImageFailed: "échec de l'image du presse-papiers : {0}
 canonical.queue.discardFailed: "échec de la suppression : {0}"
 canonical.queue.invalidRecord: "Enregistrement de saisie en attente invalide : {0}"
 canonical.queue.journalCleanupFailed: "saisie livrée ; échec du nettoyage du journal : {0}"
+canonical.queue.noClipboardImage: "aucune image trouvée dans le presse-papiers"
 canonical.queue.notSavedDraftKept: "saisie non enregistrée : {0} — brouillon conservé"
 canonical.queue.notSavedQueueKept: "saisie non enregistrée : {0} — file d'attente conservée"
 canonical.queue.serverRow: "[{0}] {1}"

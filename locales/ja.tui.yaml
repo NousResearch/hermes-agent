@@ -113,6 +113,7 @@ canonical.queue.clipboardImageFailed: "クリップボード画像の取得に�
 canonical.queue.discardFailed: "破棄に失敗しました: {0}"
 canonical.queue.invalidRecord: "保留中の入力レコードが無効です: {0}"
 canonical.queue.journalCleanupFailed: "入力は配信されましたが、ジャーナルの整理に失敗しました: {0}"
+canonical.queue.noClipboardImage: "クリップボードに画像が見つかりません"
 canonical.queue.notSavedDraftKept: "入力を保存できませんでした: {0} — 下書きは保持されています"
 canonical.queue.notSavedQueueKept: "入力を保存できませんでした: {0} — キューは保持されています"
 canonical.queue.serverRow: "[{0}] {1}"

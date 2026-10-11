@@ -199,7 +199,152 @@ _LONG_HANDLERS = frozenset({
 })
 
 _rpc_pool_workers = max(2, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))
-_pool = concurrent.futures.ThreadPoolExecutor(max_workers=_rpc_pool_workers, thread_name_prefix="tui-rpc")
+
+
+# ── LONG-handler pool self-healing ────────────────────────────────────────────
+# The recurring "credits panel empty until I restart the gateway" bug is pool SATURATION, not a
+# failing handler: a LONG handler that wedges (hung subprocess, lock held across a blocking call,
+# dead provider probe with no socket timeout) occupies one of the 8 shared workers forever; once
+# they're all stuck, every queued LONG handler — usage.bars included — misses the client's 30s
+# deadline and the panel stays empty until a restart clears the pool. Stdlib ThreadPoolExecutor
+# offers no per-task deadline and no stuck-worker reaping, and its non-daemon workers can't even be
+# interrupted mid-syscall. Fix = a self-healing wrapper whose watchdog ROTATES the pool on overrun
+# (a fresh daemon executor takes over new submissions; the wedged worker is abandoned but, being
+# daemon, never blocks exit and never again consumes a live slot). No restart required.
+#
+# Deadlines reflect CLIENT patience for each RPC, sized a little above it: the client has already
+# given up on a handler running longer, so reclaiming its worker then loses nothing a listener was
+# still waiting for. Panel/picker RPCs (usage/session.bars, billing, subscription, model.options)
+# self-heal in seconds; full-turn agent runs (bot_relay=600s) and installs (voice/wake, image/pet
+# generate, mcp/reload=~300s) keep generous budgets so legitimate slow work is never killed.
+_RPC_HANDLER_DEADLINE_S = {
+    "usage.bars": 35, "session.usage": 35, "billing.state": 35, "billing.step_up": 35,
+    "subscription.state": 35, "subscription.preview": 35, "subscription.change": 35,
+    "subscription.resume": 35, "subscription.upgrade": 35, "free_tier.provision": 35,
+    "session.active_list": 60, "model.options": 60,
+    "session.foreign.list": 60, "session.foreign.preview": 60, "session.foreign.import": 60,
+    "complete.path": 60, "complete.slash": 60, "setup.runtime_check": 60, "setup.status": 60,
+    "bot_relay.deliver": 650, "bot_relay.reply": 650, "bot_relay.outbox.drain": 650,
+    "bot_relay.roster.sync": 650, "voice.toggle": 320, "voice.record": 320, "voice.tts": 320,
+    "wake.start": 320, "wake.status": 320, "image.generate": 320, "pet.generate": 320,
+    "mcp.servers.test": 320, "mcp.servers.oauth.start": 320, "reload.mcp": 320,
+}
+_RPC_HANDLER_DEFAULT_DEADLINE_S = 300.0
+
+
+class _PermitOnce:
+    """Exactly-once retirement-release guard.
+
+    A wedged LONG handler's future never completes, so its ``retirement.acquire()`` permit (taken
+    BEFORE enqueueing) used to leak forever — the fence's active count climbed and blocked future
+    backend retirement. The pool watchdog now releases the permit when it declares a handler
+    wedged, while a normally-finished handler releases via its own done_callback; both can fire for
+    the same task if a wedged handler eventually finishes, so the release must be idempotent per
+    task or the count would go negative (which would falsely block retirement forever).
+    """
+
+    __slots__ = ("_released", "_release", "_lock")
+
+    def __init__(self, release):
+        self._release = release
+        self._lock = threading.Lock()
+        self._released = False
+
+    def __call__(self):
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
+            self._release()
+
+
+class _SelfHealingRpcPool:
+    """LONG-handler pool that self-heals a wedged worker without a gateway restart.
+
+    Wraps a :class:`tools.daemon_pool.DaemonThreadPoolExecutor` (daemon workers => an abandoned
+    wedged thread never blocks interpreter exit) and adds a per-task wall-clock deadline enforced
+    by a daemon monitor thread. When a task overruns its method's deadline the pool ROTATES: a
+    fresh executor takes over all subsequent ``submit`` calls while the old one is shut down
+    (leaving already-started work to drain), and the wedged worker leaks in the background rather
+    than continuing to consume a live slot. New LONG handlers always land on a clean pool, so the
+    credits panel repopulates on the next refresh.
+    """
+
+    def __init__(self, max_workers, deadline_map, default_deadline_s):
+        self._max_workers = max_workers
+        self._map = deadline_map
+        self._default = default_deadline_s
+        self._interval = max(1.0, env_float("HERMES_TUI_RPC_MONITOR_INTERVAL_S", 5.0))
+        self._lock = threading.Lock()
+        self._in_flight = {}  # id(future) -> (future, start_monotonic, method, on_wedge)
+        self._pool = self._fresh()
+        self._stop = threading.Event()
+        threading.Thread(target=self._run_monitor, name="tui-rpc-monitor", daemon=True).start()
+
+    def _fresh(self):
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+        return DaemonThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="tui-rpc")
+
+    def _deadline_for(self, method):
+        return self._map.get(method, self._default)
+
+    def submit(self, fn, method="", on_wedge=None):
+        with self._lock:
+            executor = self._pool
+            future = executor.submit(fn)
+            self._in_flight[id(future)] = (future, time.monotonic(), method, on_wedge)
+        return future
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        self._stop.set()
+        with self._lock:
+            executor = self._pool
+        executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    def _run_monitor(self):
+        while not self._stop.wait(self._interval):
+            try:
+                self._check_wedged()
+            except Exception:
+                logger.exception("rpc pool monitor sweep failed")
+
+    def _check_wedged(self):
+        now = time.monotonic()
+        wedged = []
+        old = None
+        with self._lock:
+            for fid, (fut, start, method, on_wedge) in list(self._in_flight.items()):
+                if fut.done():
+                    del self._in_flight[fid]
+                    continue
+                if now - start >= self._deadline_for(method):
+                    wedged.append((fut, method, on_wedge, now - start))
+                    del self._in_flight[fid]
+            if wedged:
+                # Swap BEFORE draining so any submit after this point lands on the fresh pool.
+                old = self._pool
+                self._pool = self._fresh()
+        if not wedged:
+            return
+        assert old is not None  # wedged non-empty ⇒ the swap branch ran
+        logger.warning(
+            "tui-rpc LONG handler(s) wedged past deadline — rotating pool: %s",
+            ",".join(f"{m} ({elapsed:.0f}s)" for _, m, _, elapsed in wedged))
+        for fut, method, on_wedge, _elapsed in wedged:
+            try:
+                if on_wedge:
+                    on_wedge()  # release this task's retirement permit exactly once
+            except Exception:
+                logger.exception("rpc pool wedged-handler release failed (%s)", method)
+            logger.warning("tui-rpc abandoned wedged handler %s (worker leaked, daemon; pool rotated)", method)
+        old.shutdown(wait=False, cancel_futures=False)
+
+
+_pool = _SelfHealingRpcPool(
+    max_workers=_rpc_pool_workers,
+    deadline_map=_RPC_HANDLER_DEADLINE_S,
+    default_deadline_s=_RPC_HANDLER_DEFAULT_DEADLINE_S,
+)
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
 # Exact in-memory session record executing on the current turn thread — unlike a public session id,

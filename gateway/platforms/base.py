@@ -1449,6 +1449,14 @@ def _mask_media_scan_text(text: str) -> str:
     return masked
 
 
+def _expand_media_lists(text: str) -> str:
+    """One ``MEDIA:`` keyword listing several quoted / JSON-array / comma-separated references
+    becomes one tag per reference, so every seam below sees single-path tags only. Keywords are
+    located on the protected-span mask (examples in code stay as written)."""
+    from gateway.platforms.media_list_tags import expand_media_list_tags
+    return expand_media_list_tags(text, BasePlatformAdapter._mask_protected_spans)
+
+
 def _deliverable_tag_spans(text: str) -> list:
     """Spans to delete from ``text``: its deliverable MEDIA tags (located on the masked copy)
     plus a terminal ``<|eos|>`` sentinel, which is a control token and never user content."""
@@ -1522,7 +1530,7 @@ def _strip_media_tag_directives(text: str) -> str:
     """
     if not text or not _has_media_directives(text):
         return text
-    cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
+    cleaned = _expand_media_lists(text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", ""))
     return _delete_spans(cleaned, _deliverable_tag_spans(cleaned))
 
 
@@ -3323,6 +3331,9 @@ class BasePlatformAdapter(ABC):
         on the ORIGINAL response and only stripped here."""
         media = []
         has_voice_tag = "[[audio_as_voice]]" in content
+        # One keyword listing several references is rewritten to one tag per reference first so the
+        # single-path scanners below deliver every listed file instead of only the first.
+        content = _expand_media_lists(content)
         cleaned = content.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
         # Scan a masked copy so example/stored MEDIA paths (code, quotes, JSON values) are never
         # delivered; dedupe on the expanded path so a file referenced twice uploads once.

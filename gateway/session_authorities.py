@@ -143,6 +143,18 @@ def all_authorities(runner):
     return [authority] if authority is not None else []
 
 
+def admission_owner(authority, session_id):
+    """The admission identity a physical store row answers to: its compression root, then the
+    local creation id a canonical reset forks under (a reset child is not a compression child, so
+    ``logical_owner`` alone stops at the child and misses the conversation's admissions)."""
+    from hermes_state_local import local_lineage_owner
+    sid = authority.logical_owner(session_id)
+    if not sid:
+        return sid
+    with authority.db._read_ctx() as conn:
+        return local_lineage_owner(conn, sid)
+
+
 def owner_scope(authority, *, hydrate_secrets=False):
     """Runtime scope of the profile that owns *authority* — under multiplex only.
 

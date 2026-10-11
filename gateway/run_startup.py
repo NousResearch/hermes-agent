@@ -611,10 +611,11 @@ class GatewayStartupMixin:
         for entry in candidates:
             # Canonical admissions own restart decisions, including unknown pauses.
             # Legacy synthetic resume must not race their restored FIFO.
-            from gateway.session_authorities import all_authorities
+            from gateway.session_authorities import admission_owner, all_authorities
             if any(authority.db._read_one(
-                    'SELECT 1 FROM session_admissions WHERE target_session_id=? LIMIT 1',
-                    (entry.session_id,)) for authority in all_authorities(self)):
+                    'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
+                    (entry.session_id, admission_owner(authority, entry.session_id)))
+                   for authority in all_authorities(self)):
                 continue
             # Epoch math: the marker was stamped naive-local by the previous process, possibly
             # on the other side of a DST change; wall-clock subtraction is off by the shift.

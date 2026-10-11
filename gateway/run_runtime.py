@@ -134,7 +134,7 @@ def release_unknown_turn_markers(runner):
     admission recovered ``unknown`` (the owner died before its terminal commit) owes no reply, so
     its marker is cleared rather than ledgered as a delivery the FIFO never committed. A terminal
     admission keeps its marker: its persisted reply is ledgered and sent once, never re-run."""
-    from gateway.session_authorities import owner_scope
+    from gateway.session_authorities import admission_owner, owner_scope
     store = getattr(runner, 'session_store', None)
     if store is None:
         return
@@ -145,7 +145,7 @@ def release_unknown_turn_markers(runner):
             if not unknown:
                 continue
             for entry in store.list_sessions():
-                if entry.active_turn_token and authority.logical_owner(entry.session_id) in unknown:
+                if entry.active_turn_token and admission_owner(authority, entry.session_id) in unknown:
                     store.clear_turn_active(entry.session_key, entry.active_turn_token)
 
 

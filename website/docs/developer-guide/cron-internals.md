@@ -369,7 +369,7 @@ For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-
 
 By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
 - A header identifying the cron job name and task
-- A footer noting the agent cannot see the delivered message in conversation
+- A footer explaining how to stop or manage the job (omit just this with `cron.wrap_footer: false`)
 
 The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
 

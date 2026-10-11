@@ -240,6 +240,43 @@ messaging, and cron sessions.
 | `show_tip` | Point at one element with a small accent bubble and an arrow — the quiet sibling of `gui_tour`, with no dimming, no spotlight, and no Next/Prev. Same `data-tour` handles and the same `tour(action='targets')` discovery call. | — |
 | `apply_layout` | Apply a saved layout preset to the Hermes desktop app when the user asks to rearrange the workspace. Built-ins: default (chat + sidebars), focus (chat only), terminal-deck, quad; plugin/user presets by id. To reveal ONE pane, use `focus_pane` instead. | — |
 
+### Inspecting a preview target
+
+An untargeted `drive_preview(action="elements")` still returns the ordinary inventory
+or delta. Add `ref` or `selector` to inspect a target **without interacting**:
+
+```json
+{"action":"elements","selector":"svg circle:nth-of-type(2)","max":2}
+```
+
+Targeted calls return `inspection`, not inventory/delta. It reports the total match
+count, bounded candidates and an explicit `truncated` flag. Each candidate has
+identity hints, up to four ancestors, a finite rectangle (or null when unusable),
+the rounded center, viewport membership, computed `pointer-events`/`visibility`/
+`display`, and the node and ancestors hit by `elementFromPoint` at that center.
+The relationship is `self`, `descendant`, `ancestor`, `unrelated`, or `none`.
+Viewport dimensions, scroll offsets and device pixel ratio accompany coordinates
+labeled `guest-viewport-css-pixels`; no screen or screenshot scaling is applied.
+
+Results contain at most five candidates (`max` can reduce this), 80 UTF-16 code
+units per identity string, and 12,000 UTF-16 code units for the complete serialized
+result, including JSON escaping. Whole entries are dropped to fit the output cap;
+the total count remains accurate. No page text, labels, values, HTML, title, URL or
+arbitrary attributes are added. Identity hints (`id`, `class`, `data-testid`) may
+still be sensitive; they are returned only in the requested response, not logged.
+
+A ref takes precedence over a selector. Inspection only reads existing bindings;
+it does not rebind a removed node or fall back from a stale ref to the selector.
+Refresh an untargeted inventory when asked. Invalid selectors fail with a sanitized
+error; zero matches succeeds with an empty list. Inspection does not install the
+watch overlay, create or mutate the ref holder, scroll, focus, or acquire input.
+It stays in the current document with no iframe or shadow-root bypass.
+
+**Limits:** center hit-testing is a diagnostic, not proof of interactability.
+Descendant hits can be legitimate. Toolbars may cover visible handles, and adjacent
+handles may overlap at small document scales. Occlusion can change before the next
+action; inspect and retarget rather than forcing an invisible click.
+
 ### Tours
 
 For a general look around the app, `gui_tour(action='start')` with no steps runs the desktop app's built-in tour. `preset='quick'` shows four essentials (sessions, composer, new session, model); `preset='full'` (the default) adds the stops for the current interface mode. Stops whose element is not on screen are skipped. The built-in tour runs only on `surface='app'`, and `preset` cannot be combined with `steps`.

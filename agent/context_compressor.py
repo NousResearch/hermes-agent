@@ -2085,8 +2085,8 @@ def _today_for_prompt() -> str:
 _SECTION_INSTRUCTIONS: dict[bool, dict[str, str]] = {
     True: {
         "language": (
-            "Write the summary in the same language the user was using in the "
-            "conversation — do not translate or switch to English. "
+            "Write the summary in the language of the user's own messages (not assistant replies, earlier "
+            "summaries, or tool output) — do not translate or switch to English. "
         ),
         "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Identify the user's most recent unfulfilled
 input precisely, but summarize it in your own words rather than copying long
@@ -2126,9 +2126,8 @@ If no outstanding task exists, write "None."]""",
     },
     False: {
         "language": (
-            "This session contains no user-authored turns. Write the summary in the dominant language of the "
-            "source turns; if they are mixed, use the language of the most recent natural-language assistant "
-            "turn. Do not translate, invent a user, or attribute any request to a user. "
+            "This session contains no user-authored turns. Write the summary in the dominant natural language of "
+            "the source turns being summarized. Do not translate, invent a user, or attribute any request to a user. "
         ),
         "historical_task": f"""[NO user-authored turn exists in this session. Write exactly:
 {_NO_USER_TASK_SENTINEL}

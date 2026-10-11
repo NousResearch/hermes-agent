@@ -197,20 +197,22 @@ Update `get_connected_platforms()` if your platform doesn't use token/api_key
 
 ---
 
-## 3. Adapter Factory (`gateway/run.py`)
+## 3. Adapter Factory (`gateway/run_adapters.py` + `gateway/run.py`)
 
-Add to `_instantiate_adapter()`:
+Register the adapter in the `_BUILTIN_ADAPTERS` table in `gateway/run.py`
+(consumed by `_instantiate_builtin_adapter()`):
 
 ```python
-elif platform == Platform.YOUR_PLATFORM:
-    from gateway.platforms.your_platform import YourAdapter, check_your_requirements
-    if not check_your_requirements():
-        logger.warning("Your Platform: dependencies not met")
-        return None
-    return YourAdapter(config)
+_BUILTIN_ADAPTERS: dict[Platform, tuple[str, str, str, str]] = {
+    ...
+    Platform.YOUR_PLATFORM: ("your_platform", "YourAdapter", "check_your_requirements",
+                             "Your Platform: dependencies not met"),
+}
 ```
 
-`_create_adapter()` wraps this factory and binds every successful adapter to
+`GatewayRunner._instantiate_adapter()` in `gateway/run_adapters.py` (plugin
+registry first, then the table above) instantiates it. `_create_adapter()`
+wraps that factory and binds every successful adapter to
 its `GatewayRunner`. Do not construct platform adapters in lifecycle call sites;
 startup and reconnect must keep using the wrapper so profile routing is wired
 before `connect()`.

@@ -92,6 +92,26 @@ def _same_chat_key_slots(
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
 
+    if TYPE_CHECKING:
+        _BUSY_QUEUE_MAX_PENDING: int
+
+    async def _strict_session_current(
+        self, event: MessageEvent, session_key: str, *, session_id: str | None = None,
+    ) -> bool:
+        metadata = event.metadata or {}
+        if not metadata.get("gateway_session_strict"):
+            return True
+        expected_key = str(metadata.get("gateway_session_key") or "").strip()
+        expected_id = str(metadata.get("gateway_session_id") or "").strip()
+        if not expected_key or not expected_id or session_key != expected_key:
+            return False
+        if session_id is not None and session_id != expected_id:
+            return False
+        if self._session_key_for_source(event.source) != expected_key:
+            return False
+        entry = await self.async_session_store.lookup_by_session_key(expected_key)
+        return entry is not None and entry.session_id == expected_id
+
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
         mode = busy_input_mode or self._busy_input_mode
@@ -107,6 +127,10 @@ class GatewayBusySessionMixin:
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
             return
+        if session_key not in pending_slot:
+            earlier = self._promote_queued_event(session_key, adapter, None)
+            if earlier is not None:
+                pending_slot[session_key] = earlier
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
@@ -373,7 +397,7 @@ class GatewayBusySessionMixin:
     )
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.base_pending_merge import merge_pending_message_event
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return
@@ -814,6 +838,9 @@ class GatewayBusySessionMixin:
                 return True
             return False  # base adapter queues silently behind the active turn
 
+        if not await self._strict_session_current(event, session_key):
+            return True
+
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -837,13 +864,14 @@ class GatewayBusySessionMixin:
             return True
         if await self._route_plaintext_approval_while_busy(event, session_key):
             return True
+        if not await self._strict_session_current(event, session_key):
+            return True
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
-        # Internal synthetic events (delegation / background completions) must never interrupt or
-        # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
-        # queue them through the FIFO (security metadata kept apart).
-        if getattr(event, "internal", False):
+        # Internal completions and external events that request a new turn must not interrupt or
+        # steer. Queue them through the FIFO after the normal external sender checks above.
+        if event.internal or event.defer_until_idle:
             self._queue_or_replace_pending_event(session_key, event)
             return True
         if (
@@ -1050,9 +1078,12 @@ class GatewayBusySessionMixin:
                 media_urls=list(getattr(event, "media_urls", []) or []),
                 media_types=list(getattr(event, "media_types", []) or []),
                 media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
+                _quoted_media_dependencies=event._quoted_media_dependencies,
+                _inbound_context_dependencies=event._inbound_context_dependencies,
                 reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
                 reply_to_author_id=event.reply_to_author_id,
                 reply_to_author_name=event.reply_to_author_name,
+                reply_to_author_authorized=event.reply_to_author_authorized,
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,

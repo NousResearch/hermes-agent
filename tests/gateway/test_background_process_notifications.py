@@ -20,6 +20,128 @@ from gateway.run import GatewayRunner, _parse_session_key
 from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
 
 
+@pytest.mark.parametrize(
+    ("output", "expected_tail"),
+    [
+        pytest.param("", "", id="empty"),
+        pytest.param("done\n", "done\n", id="short"),
+        pytest.param("x" * 1999 + "\n", "x" * 1999 + "\n", id="at-limit"),
+        pytest.param("x" * 2000 + "\n", "x" * 1999 + "\n", id="one-over-limit"),
+        *[
+            pytest.param(
+                '{"payload":"' + "x" * 2100 + '","result":"useful-result"}' + ending,
+                ("x" * 2000 + '","result":"useful-result"}' + ending)[-2000:],
+                id=f"long-json-{name}",
+            )
+            for name, ending in (
+                ("no-newline", ""),
+                ("lf", "\n"),
+                ("two-lfs", "\n\n"),
+                ("crlf", "\r\n"),
+                ("two-crlfs", "\r\n\r\n"),
+                ("trailing-whitespace", "\n \t\n"),
+            )
+        ],
+        pytest.param("x" * 2100 + "\ncomplete line\nlast line\n",
+                     "complete line\nlast line\n", id="multiline-snap"),
+        pytest.param("x" * 2100 + "\n \t\nlast line", " \t\nlast line",
+                     id="blank-line-before-substantive-tail"),
+        pytest.param("界" * 2100 + "\n\n", "界" * 1998 + "\n\n", id="unicode-char-bound"),
+    ],
+)
+def test_process_completion_tail_keeps_substantive_output(output, expected_tail):
+    """Line snapping must not discard an entire long line for its trailing whitespace."""
+    from tools.process_registry import ProcessSession
+    from tools.process_registry_notifications import format_process_notification
+
+    session = ProcessSession(id="proc_tail", command="python report.py", output_buffer=output,
+                             exited=True, exit_code=0)
+    event = GatewayRunner._build_process_completion_event(_watcher_dict(session.id), session, session.id)
+    expected = expected_tail
+    if len(output) > 2000:
+        expected = f"[… output truncated — showing last {len(expected_tail)} chars]\n{expected_tail}"
+    assert event["output"] == expected
+    assert len(expected_tail) <= 2000
+    notification = format_process_notification(event)
+    assert notification is not None
+    assert notification.endswith(expected + "]")
+    assert session.output_buffer == output
+
+
+@pytest.mark.parametrize("redaction_enabled", [True, False], ids=["redaction-on", "redaction-off"])
+def test_process_completion_redacts_token_straddling_left_cut(monkeypatch, redaction_enabled):
+    """Whitespace-only line snapping must not expose a credential after cutting off its prefix."""
+    import agent.redact as redact
+    from tools.process_registry import ProcessSession
+    from tools.process_registry_notifications import format_process_notification
+
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", redaction_enabled)
+    assert redact._redact_enabled() is redaction_enabled
+    body = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklm"
+    secret = "sk-" + body  # Synthetic credential whose prefix lies just outside the tail.
+    output = "x" * 2100 + " " + secret + " " * (1999 - len(body)) + "\n"
+    assert output[-2000:].startswith(body)
+    session = ProcessSession(id="proc_tail", command="python report.py", output_buffer=output,
+                             exited=True, exit_code=0)
+
+    event = GatewayRunner._build_process_completion_event(_watcher_dict(session.id), session, session.id)
+
+    assert body not in event["output"]
+    assert event["output"].startswith("[… output truncated — showing last ")
+    assert len(event["output"].split("\n", 1)[1]) <= 2000
+    notification = format_process_notification(event)
+    assert notification is not None
+    assert body not in notification
+    assert session.output_buffer == output
+    assert session.command == "python report.py"
+
+
+@pytest.mark.parametrize("redaction_enabled", [True, False], ids=["redaction-on", "redaction-off"])
+@pytest.mark.parametrize("notification_kind", ["completion", "result", "concise", "running"])
+def test_process_notification_tails_transform_then_redact(
+    monkeypatch, notification_kind, redaction_enabled
+):
+    """Transformed long lines survive the tail paths without bypassing the egress redactor."""
+    import agent.redact as redact
+    from tools.process_registry import ProcessSession
+    from tools.process_registry_notifications import format_process_notification
+
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", redaction_enabled)
+    assert redact._redact_enabled() is redaction_enabled
+    secret = "sk-" + "a" * 48  # Synthetic credential, introduced by the transform hook.
+    replacement = '{"payload":"' + "x" * 2100 + '","result":"useful-result","token":"' + secret + '"}\n\n'
+    seen = []
+
+    def transform(hook_name, **kwargs):
+        if hook_name != "transform_terminal_output":
+            return []
+        seen.append(kwargs)
+        return [replacement]
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", transform)
+    output = "\x1b[32mraw output\x1b[0m\n"
+    command = f"python report.py --api-key {secret}"
+    session = ProcessSession(id="proc_tail", command=command, task_id="task-tail", output_buffer=output,
+                             exited=True, exit_code=7)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    if notification_kind == "completion":
+        event = runner._build_process_completion_event(_watcher_dict(session.id), session, session.id)
+        notification = format_process_notification(event)
+        assert event["output"].startswith("[… output truncated — showing last ")
+        assert len(event["output"].split("\n", 1)[1]) <= 2000
+        assert secret not in event["command"]
+    elif notification_kind == "running":
+        notification = runner._format_process_running_message(session)
+    else:
+        notification = runner._format_process_final_message(session.id, session, notification_kind)
+    assert notification is not None
+    assert "useful-result" in notification
+    assert secret not in notification
+    assert seen and seen[0]["output"] == "raw output\n"
+    assert (seen[0]["command"], seen[0]["returncode"], seen[0]["task_id"]) == (command, 7, "task-tail")
+    assert session.output_buffer == output and session.command == command
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

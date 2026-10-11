@@ -686,6 +686,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
         result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
         result_dict = result.to_dict()
+        if re_served:
+            result_dict["re_served"] = True
+            result_dict["note"] = (
+                f"This region (lines {offset}-{offset + limit - 1}) was "
+                "served again — your earlier read of it may no longer be in "
+                "your context. Proceed with this content; do not re-read "
+                "the same region. "
+                + _read_dedup_guidance(offset, limit)
+            )
 
         # Failed reads cannot establish whole-file knowledge.
         _err = result_dict.get("error") or ""

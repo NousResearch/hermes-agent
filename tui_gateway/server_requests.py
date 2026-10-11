@@ -10,7 +10,9 @@ Ids are ``srq-<12 hex>``: strings never collide with client-minted integer ids, 
 part keeps a compute-host child's requests distinct from the parent's when both reach one socket.
 A request that times out or is cancelled (interrupt, session close, shutdown) emits ONE
 ``request.cancel {id, method, reason}`` notification so every renderer tears the card down the
-same way. A response for an id that is no longer open is dropped — the wait already returned.
+same way; one client's response settling the request emits it too (reason ``resolved``) when
+another attached client may still be showing the card (#136709). A response for an id that is no
+longer open is dropped — the wait already returned.
 
 Reconnect: unanswered requests are returned as ``open_requests`` by ``session.resume`` /
 ``session.activate`` / ``session.events.since`` (:func:`open_requests`); the shared TypeScript
@@ -158,6 +160,14 @@ def _emit_cancel(req: ServerRequest, reason: str) -> None:
     _emit("request.cancel", req.sid, {"id": req.id, "method": req.method, "reason": reason})
 
 
+def _others_hold_the_card(req: ServerRequest) -> bool:
+    """True when a client other than the one settling may still be showing the card: with more
+    than one answering client attached, the others must hear the request is gone (#136709). With
+    a single attached client that is the settler itself, and a cancel would be the bogus notice
+    #112548 guards against."""
+    return len(_clients(req.sid)) > 1
+
+
 def _register(req: ServerRequest) -> None:
     from tui_gateway.contracts import registry as contracts
 
@@ -302,6 +312,8 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
     if req.on_result is not None:
         req.on_result(req.result)
     req.event.set()
+    if _others_hold_the_card(req):
+        _emit_cancel(req, "resolved")
     return True
 
 
@@ -322,6 +334,8 @@ def lock_answer(request_id: str, question_id: str, answer: str | None) -> list[s
             _open.pop(request_id, None)
     if not remaining:
         req.event.set()
+        if _others_hold_the_card(req):
+            _emit_cancel(req, "resolved")
     return remaining
 
 

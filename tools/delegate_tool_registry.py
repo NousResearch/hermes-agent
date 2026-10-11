@@ -235,30 +235,58 @@ def _owns_subagent_record(record: dict[str, Any], parent_agent: Any) -> bool:
     return _resolve_session_lineage(owner_sid, parent_agent) in {parent_sid, _resolve_session_lineage(parent_sid, parent_agent)}
 
 def _list_payload(parent_agent: Any) -> dict[str, Any]:
+    from tools.delegate_tool import _parent_live_home
+
+    caller_home = _parent_live_home(parent_agent)
     with _active_subagents_lock:
         records = list(_active_subagents.values())
     entries = []
+    siblings = []
     for r in records:
-        if not _owns_subagent_record(r, parent_agent):
-            continue
         started = r.get("started_at")
-        entries.append({
-            "subagent_id": r.get("subagent_id"),
-            "parent_id": r.get("parent_id"),
+        if _owns_subagent_record(r, parent_agent):
+            entries.append({
+                "subagent_id": r.get("subagent_id"),
+                "parent_id": r.get("parent_id"),
+                "goal": r.get("goal"),
+                "model": r.get("model"),
+                "status": r.get("status"),
+                "running_seconds": round(time.time() - started, 1) if isinstance(started, (int, float)) else None,
+                "accepting_steer": bool(r.get("accepting_steer", False)),
+                "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
+            })
+            continue
+        # Read-only visibility for live children of OTHER sessions in the same profile (a
+        # group-room sibling thread of this bot): scoping that hides them from steer/stop must
+        # not make `list` deny work already in flight — a fresh thread then re-dispatched the
+        # same tasks (#135864). Home-pinned from parent-owned state, so a record without one
+        # never matches (fail closed across profiles).
+        if not caller_home or str(r.get("owner_home") or "") != str(caller_home):
+            continue
+        siblings.append({
             "goal": r.get("goal"),
-            "model": r.get("model"),
+            "owner_agent_session_id": r.get("owner_agent_session_id"),
             "status": r.get("status"),
             "running_seconds": round(time.time() - started, 1) if isinstance(started, (int, float)) else None,
-            "accepting_steer": bool(r.get("accepting_steer", False)),
-            "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
+            "controllable": False,
         })
     payload: dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
+    if siblings:
+        payload["subagents_in_other_sessions"] = siblings
     if not entries:
-        payload["note"] = (
-            "No live subagents right now. Children that already finished "
-            "have delivered (or will deliver) their results as normal "
-            "completion messages — there is nothing to steer or stop."
-        )
+        if siblings:
+            payload["note"] = (
+                f"No live subagents in this conversation's spawn tree, but {len(siblings)} are running in "
+                "other sessions of this profile (subagents_in_other_sessions) — e.g. a sibling thread of the "
+                "same bot in a group room. This conversation cannot steer or stop them; do not re-dispatch "
+                "the same work."
+            )
+        else:
+            payload["note"] = (
+                "No live subagents in this conversation's spawn tree. Children that already finished "
+                "have delivered (or will deliver) their results as normal "
+                "completion messages — there is nothing to steer or stop."
+            )
     return payload
 
 def _handle_control_action(action: str, subagent_id: Optional[str], message: Optional[str], parent_agent: Any) -> str:

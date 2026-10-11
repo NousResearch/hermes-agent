@@ -1,3 +1,5 @@
+# ABOUTME: Loads plugin extensions and dispatches their registered callbacks.
+# ABOUTME: Composes tool argument updates and approval directives.
 """Hermes Plugin System — discovers, loads, and manages plugins.
 
 Sources, later overriding earlier on key collision: bundled ``<repo>/plugins/<name>/`` (``memory/``
@@ -1995,15 +1997,15 @@ def _get_pre_tool_call_directive_details(
         if not isinstance(result, dict):
             continue
         action = result.get("action")
-        # "modify" — transform tool_input before dispatch. Processed before the block/approve gate
-        # so modify directives are visible even when a later hook blocks. Each modify directive
-        # shallow-merges its keys into one accumulated dict built from the original args.
-        if action == "modify":
+        # Both directives can update the input. Merge updates before resolving
+        # approval or a veto so the returned arguments describe the same call.
+        if action in ("modify", "approve"):
             partial = result.get("args")
             if isinstance(partial, dict) and partial:
                 modified_args = {**(modified_args if modified_args is not None else
                                     (args if isinstance(args, dict) else {})), **partial}
-            continue
+            if action == "modify":
+                continue
         if action not in ("block", "approve"):
             continue
         message = result.get("message")

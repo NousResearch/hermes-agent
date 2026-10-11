@@ -258,7 +258,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
 | `/sessions [all] [search <query>]` | List previous sessions for this chat; the active session appears with a `(current)` marker. `/sessions search <query>` filters by title/id match (most recently active first); `/sessions all` lists across origins (admin only — non-admins get a notice and the chat-scoped list). |
-| `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. |
+| `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. On OpenRouter (and OpenAI-compatible proxies that report the billed amount in `usage.cost` / `cost_details`) the cost is the provider-reported actual spend and is shown without the `~` estimate marker. |
 | `/topup` | Show your Nous balance and manage billing on the portal. |
 | `/login` | Sign in with a Nous account. **Paired direct messages only** — in a group, channel, or broadcast-shaped platform Hermes refuses. On Slack use `/hermes login`. |
 | `/whoami` | Show your slash command access level (admin / user). |

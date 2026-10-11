@@ -64,3 +64,38 @@ def test_forensics_parser_reads_the_new_fields(tmp_path):
     assert [c["n"] for c in calls] == [3, 4]
     assert calls[0]["write"] == 28604 and calls[0]["id"] == "gen-1788636728-qMa1" and calls[0]["upstream"] == "Claude Platform on AWS"
     assert "write" not in calls[1] and "id" not in calls[1]
+
+
+class _StubSessionDB:
+    def __init__(self):
+        self.queued = []
+
+    def queue_token_counts(self, session_id, **kwargs):
+        self.queued.append((session_id, kwargs))
+
+
+def test_provider_reported_cost_persisted_as_actual_delta(tmp_path, monkeypatch):
+    """A provider-reported usage.cost prices the call as status="actual" and the
+    delta is accumulated into actual_cost_usd, not estimated_cost_usd (#105215)."""
+    a = _agent(tmp_path, monkeypatch)
+    try:
+        stub = _StubSessionDB()
+        a._session_db = stub
+        a._session_db_created = True
+        usage = SimpleNamespace(prompt_tokens=100, completion_tokens=7, total_tokens=107,
+                                prompt_tokens_details=SimpleNamespace(cached_tokens=0, cache_write_tokens=0),
+                                completion_tokens_details=None, cost=0.00002510375)
+        from agent import turn_usage
+        turn_usage.record_response_usage(
+            a, SimpleNamespace(usage=usage), messages=[{"role": "user", "content": "hi"}],
+            api_call_count=1, api_duration=0.2, compression_attempts=0, max_compression_attempts=3)
+        assert a.session_cost_status == "actual"
+        assert a.session_cost_source == "provider_cost_api"
+        assert abs(a.session_estimated_cost_usd - 0.00002510375) < 1e-12
+        (sid, kw), = stub.queued
+        assert sid == "t"
+        assert kw["cost_status"] == "actual"
+        assert abs(kw["actual_cost_usd"] - 0.00002510375) < 1e-15
+        assert kw["estimated_cost_usd"] is None
+    finally:
+        a.close()

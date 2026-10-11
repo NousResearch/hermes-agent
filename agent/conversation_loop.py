@@ -1255,6 +1255,19 @@ def _redecorate_prompt_cache_for_provider(
             ),
         )
         messages, planned_tools = plan.messages, plan.tools
+        engine = getattr(agent, "context_compressor", None)
+        if engine is not None and _engine_overrides_hook(engine, "cache_plan"):
+            try:
+                from copy import deepcopy
+                # Preserve the host's fallback even if the hook mutates then fails.
+                engine_plan = engine.cache_plan(deepcopy(messages), deepcopy(planned_tools))
+                if engine_plan is not None and hasattr(engine_plan, "messages") and hasattr(engine_plan, "tools"):
+                    messages, planned_tools = engine_plan.messages, engine_plan.tools
+            except Exception:
+                logger.warning(
+                    "Context engine cache_plan hook failed; using host cache plan (session=%s)",
+                    getattr(agent, "session_id", None) or "-", exc_info=True,
+                )
 
     return messages, prepared, planned_tools
 

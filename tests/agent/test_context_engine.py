@@ -70,6 +70,9 @@ class StubEngine(ContextEngine):
 class TestDefaults:
     """Verify ABC default implementations work correctly."""
 
+    def test_default_cache_plan(self):
+        assert StubEngine().cache_plan([], []) is None
+
     def test_default_get_status(self):
         engine = StubEngine()
         engine.last_prompt_tokens = 50000

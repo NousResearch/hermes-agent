@@ -128,6 +128,15 @@ def on_turn_complete(self, messages, usage=None, **kwargs):
     """
 ```
 
+An engine that replaces context with `select_context()` can also override
+`cache_plan(messages, tools, **kwargs)` to own that request's cache breakpoints.
+When prompt caching is enabled, the host calls it with request-local copies after
+applying its cache plan; return an object with `.messages` and `.tools` attributes
+(the shape returned by `build_prompt_cache_plan`) to replace that plan. The default
+is a no-op returning `None` and is skipped entirely; `None`, an invalid return
+shape, or an exception keeps the host's plan. Prepared MoA requests retain their
+destination-owned planning path.
+
 Contract:
 
 - **No-op by default, fail-open.** Both default to `return None`. A missing hook, an exception, or an invalid return value leaves the request untouched — so a failing engine is never worse than not installing one. The host also identity-checks for the inherited ABC default and skips it entirely, so non-implementing engines (including the built-in compressor) pay no per-request work at all.

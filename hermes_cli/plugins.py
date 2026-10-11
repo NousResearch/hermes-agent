@@ -11,9 +11,7 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import importlib.metadata
-import inspect
 import json
 import logging
 import os
@@ -64,6 +62,7 @@ from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
+from hermes_cli.plugin_command_dispatch import invoke_plugin_command, resolve_plugin_command_result
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -648,9 +647,12 @@ class PluginContext:
         self, name: str, handler: Callable, description: str = "", args_hint: str = "",
         argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
-        """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        """Register an in-session slash command (``/name``).
+
+        Handlers may accept keyword context such as ``session_id`` (the
+        persisted physical id, or ``None`` before creation), durable
+        ``session_key``, and ``platform``; one-argument handlers remain valid.
+        """
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -937,8 +939,17 @@ class PluginContext:
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
+        # Keep the manifest owner attached to turn-route results so the host's forensic trace can
+        # distinguish two plugins that return the same source/reason fields.
+        original_callback = callback
+
+        @wraps(original_callback)
+        def owned_callback(*args, **kwargs):
+            return original_callback(*args, **kwargs)
+
+        setattr(owned_callback, "_hermes_plugin_name", self.manifest.name)
         return self._track_callback(
-            "middleware", kind, callback, self._manager._middleware, VALID_MIDDLEWARE
+            "middleware", kind, owned_callback, self._manager._middleware, VALID_MIDDLEWARE
         )
 
     def _track_callback(
@@ -2184,43 +2195,6 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
-
-
-_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
-
-
-def resolve_plugin_command_result(result: Any) -> Any:
-    """Resolve a plugin command result, awaiting async handlers: ``asyncio.run`` when no loop is
-    running, else a helper thread with its own loop (30s bound so a hung handler cannot wedge the
-    terminal)."""
-    if not inspect.isawaitable(result):
-        return result
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(result)
-    outcome: dict[str, Any] = {}
-    failure: dict[str, BaseException] = {}
-    done = threading.Event()
-
-    def _runner() -> None:
-        try:
-            outcome["value"] = asyncio.run(result)
-        except BaseException as exc:  # pragma: no cover - re-raised below
-            failure["exc"] = exc
-        finally:
-            done.set()
-
-    # copy_context: the helper thread must see the caller's profile/secret scope, else an
-    # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
-    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
-                     name="hermes-plugin-command-await", daemon=True).start()
-    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
-        raise TimeoutError("Plugin command async handler did not complete within "
-                           f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
-    if "exc" in failure:
-        raise failure["exc"]
-    return outcome.get("value")
 
 
 def get_plugin_commands() -> dict[str, dict]:

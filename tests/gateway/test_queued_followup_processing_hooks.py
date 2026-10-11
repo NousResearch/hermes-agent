@@ -145,6 +145,14 @@ async def test_queue_terminal_presentation_belongs_to_last_turn(monkeypatch, tmp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = HookRecordingAdapter()
     runner = _make_runner(adapter)
+    route_contexts = []
+    monkeypatch.setattr(
+        "hermes_cli.middleware.apply_turn_route_middleware",
+        lambda route, **context: (
+            route_contexts.append(context)
+            or SimpleNamespace(changed=False, payload=route, trace=[])
+        ),
+    )
     adapter._pending_messages[SESSION_KEY] = MessageEvent(
         text="follow-up", source=_source(), internal=diagnostic_last,
         metadata={"notification_category": "diagnostic"} if diagnostic_last else {}, message_id="queued")
@@ -154,6 +162,10 @@ async def test_queue_terminal_presentation_belongs_to_last_turn(monkeypatch, tmp
     assert _TwoTurnAgent.calls == ["first", "follow-up"]
     assert result["final_response"] == "done-2"
     assert result["_notification_reply_muted"] is diagnostic_last
+    # Both external turns route; an internal queued diagnostic bypasses middleware exactly like
+    # an internal first turn. This pins classification through the recursive drain.
+    assert len(route_contexts) == (1 if diagnostic_last else 2)
+    assert all(context["internal"] is False for context in route_contexts)
     from gateway.warning_notifications import diagnostic_wake_muted
     outer = MessageEvent(text="first", source=_source(), internal=not diagnostic_last)
     outer._notification_reply_muted = result["_notification_reply_muted"]

@@ -43,7 +43,7 @@ def test_provider_request_overrides_preserved_without_service_tier():
     """No /fast: the provider's extra_body must pass straight through."""
     runner = _runner(service_tier=None)
     rk = _runtime_kwargs(request_overrides=PROVIDER_OVERRIDES)
-    route = runner._resolve_turn_agent_config("hi", "main", rk)
+    route = runner._resolve_turn_agent_config("hi", "main", rk, internal=True)
     assert route["request_overrides"] == PROVIDER_OVERRIDES
     # A copy, not an alias into runtime_kwargs.
     assert route["request_overrides"] is not rk["request_overrides"]
@@ -57,7 +57,7 @@ def test_provider_request_overrides_merged_under_fast_mode(monkeypatch):
     )
     runner = _runner(service_tier="priority")
     rk = _runtime_kwargs(request_overrides=PROVIDER_OVERRIDES)
-    route = runner._resolve_turn_agent_config("hi", "main", rk)
+    route = runner._resolve_turn_agent_config("hi", "main", rk, internal=True)
     assert route["request_overrides"]["extra_body"] == PROVIDER_OVERRIDES["extra_body"]
     assert route["request_overrides"]["service_tier"] == "priority"
 
@@ -65,7 +65,7 @@ def test_provider_request_overrides_merged_under_fast_mode(monkeypatch):
 def test_no_provider_overrides_yields_empty():
     """Regression: absent provider overrides, behaviour is unchanged ({})."""
     runner = _runner(service_tier=None)
-    route = runner._resolve_turn_agent_config("hi", "main", _runtime_kwargs())
+    route = runner._resolve_turn_agent_config("hi", "main", _runtime_kwargs(), internal=True)
     assert route["request_overrides"] == {}
 
 

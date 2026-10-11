@@ -13,6 +13,7 @@ import shutil
 import sys
 
 from agent.i18n import t
+from hermes_cli.cli_agent_setup_mixin import _reset_cli_route_identity
 from hermes_constants import get_hermes_home
 from hermes_state_ids import new_session_id
 from pathlib import Path
@@ -519,6 +520,7 @@ class CLISessionMixin:
 
         self.session_start = datetime.now()
         self.session_id = new_session_id(self.session_start)
+        _reset_cli_route_identity(self)
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []

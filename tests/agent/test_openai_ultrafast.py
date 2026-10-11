@@ -82,7 +82,23 @@ def test_cli_and_gateway_turn_routes_send_the_static_tier(provider):
     runner._service_tier = "ultrafast"
     rk = {"api_key": "k", "base_url": "https://api.openai.com/v1", "provider": provider, "api_mode": "codex_responses",
           "command": None, "args": [], "credential_pool": None, "max_tokens": None}
-    assert runner._resolve_turn_agent_config("hi", "gpt-6-astra", rk)["request_overrides"] == {"service_tier": "ultrafast"}
+    assert runner._resolve_turn_agent_config("hi", "gpt-6-astra", rk, internal=False)["request_overrides"] == {"service_tier": "ultrafast"}
+
+
+@pytest.mark.parametrize("tier", ["priority", "ultrafast"])
+def test_gateway_turn_route_request_overrides_feed_the_agent_request(tier):
+    from gateway.run import GatewayRunner
+    from agent.fast_mode import effective_request_overrides
+
+    runner = object.__new__(GatewayRunner)
+    runner._service_tier = tier
+    rk = {"api_key": "k", "base_url": "https://api.openai.com/v1", "provider": "openai-api",
+          "api_mode": "codex_responses", "command": None, "args": [], "credential_pool": None,
+          "max_tokens": None}
+    route = runner._resolve_turn_agent_config("hi", "gpt-6-astra", rk, internal=False)
+    agent = SimpleNamespace(model=route["model"], **route["runtime"], service_tier=tier,
+                            request_overrides=route["request_overrides"])
+    assert effective_request_overrides(agent).get("service_tier") == tier
 
 
 def test_cli_refuses_ultrafast_on_a_model_without_it(monkeypatch):

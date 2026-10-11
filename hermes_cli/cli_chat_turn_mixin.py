@@ -79,11 +79,13 @@ class CLIChatTurnMixin:
         agent = self.agent
         if agent is None:
             return None
+        # Per-turn route decision for pre_api_request observers (cleared when this turn had none).
+        agent._turn_route_middleware_trace = list(turn_route.get("middleware_trace") or [])
         self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
-        message = self._chat_route_images(message, images)
+        message = self._chat_route_images(message, images, turn_route=turn_route)
 
         if isinstance(message, str) and not isinstance(message, TimelineNotification):
-            message, blocked = self._chat_expand_context_references(message)
+            message, blocked = self._chat_expand_context_references(message, turn_route=turn_route)
             if blocked is not None:
                 return blocked
             # Lone surrogates (rich-text clipboard paste) crash the OpenAI SDK's JSON serialization.
@@ -149,7 +151,7 @@ class CLIChatTurnMixin:
         if turn.tts_thread is not None and turn.tts_thread.is_alive():
             turn.tts_thread.join(timeout=5)
 
-    def _chat_expand_context_references(self, message: str):
+    def _chat_expand_context_references(self, message: str, *, turn_route=None):
         """Expand ``@file:``/``@diff``/``@folder:`` references.
 
         Returns ``(message, blocked)``; ``blocked`` is the refusal text to return instead
@@ -161,9 +163,12 @@ class CLIChatTurnMixin:
         try:
             from agent.context_references import preprocess_context_references
             from agent.model_metadata import get_model_context_length
+            runtime = (turn_route or {}).get("runtime") or {}
             _ctx_len = get_model_context_length(
-                self.model, base_url=self.base_url or "", api_key=self.api_key or "",
-                provider=self.provider or "",
+                (turn_route or {}).get("model", self.model),
+                base_url=runtime.get("base_url", self.base_url) or "",
+                api_key=runtime.get("api_key", self.api_key) or "",
+                provider=runtime.get("provider", self.provider) or "",
                 config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None)
             _ctx_result = preprocess_context_references(message, cwd=os.getcwd(), context_length=_ctx_len)
             if _ctx_result.expanded or _ctx_result.blocked:
@@ -178,7 +183,7 @@ class CLIChatTurnMixin:
             logging.debug("@ context reference expansion failed: %s", e)
         return message, None
 
-    def _chat_route_images(self, message, images):
+    def _chat_route_images(self, message, images, *, turn_route=None):
         """Attach images natively (vision model) or pre-describe them as text; returns the message to send.
 
         "native" → OpenAI-style content parts (adapters translate per provider); "text" →
@@ -188,17 +193,23 @@ class CLIChatTurnMixin:
         if not images:
             return message
         text = message if isinstance(message, str) else ""
+        runtime = (turn_route or {}).get("runtime") or {}
+        model = (turn_route or {}).get("model", getattr(self, "model", ""))
+        _runtime_model = (_split_model_config_default(model)[0]
+                          if isinstance(model, dict) else str(model or ""))
+        provider = runtime.get("provider", getattr(self, "provider", ""))
+        requested_provider = runtime.get("requested_provider", getattr(self, "requested_provider", ""))
         try:
             from agent.image_routing import build_native_content_parts, decide_image_input_mode
             from hermes_cli.config import load_config
 
-            _img_model = (_split_model_config_default(self.model)[0]
-                          if isinstance(self.model, dict) else str(self.model or ""))
-            _img_provider = (_split_model_config_default(self.provider)[1]
-                             if isinstance(self.provider, dict) else str(self.provider or ""))
+            _img_model = (_split_model_config_default(model)[0]
+                          if isinstance(model, dict) else str(model or ""))
+            _img_provider = (_split_model_config_default(provider)[1]
+                             if isinstance(provider, dict) else str(provider or ""))
             _img_mode = decide_image_input_mode(
                 _img_provider.strip(), _img_model.strip(), load_config(),
-                requested_provider=(self.requested_provider or "").strip(),
+                requested_provider=(requested_provider or "").strip(),
             )
         except Exception as _img_exc:
             logging.debug("image_routing decision failed, defaulting to text: %s", _img_exc)
@@ -217,7 +228,12 @@ class CLIChatTurnMixin:
                 # All images unreadable — fall back to text enrichment.
             except Exception as _img_exc:
                 logging.warning("native image attach failed, falling back to text: %s", _img_exc)
-        return self._preprocess_images_with_vision(text, images)
+
+        # The representation decision and the auxiliary description must use the same realized
+        # route. Explicit auxiliary.vision settings still take precedence in the resolver.
+        from agent.auxiliary_client import scoped_runtime_main
+        with scoped_runtime_main({**runtime, "model": _runtime_model}):
+            return self._preprocess_images_with_vision(text, images)
 
     def _handle_initiate_setup_command(self, cmd: str):
         from agent.initiate_setup_prompt import build_initiate_setup_prompt

@@ -743,6 +743,7 @@ gateway:
     reason_suffix: " (neden: {reason})"
     already_paused: "⏸️ Hermes zaten duraklatılmış{suffix}. Devam etmek için `/pause off` kullanın."
     paused: "⏸️ Duraklatıldı{suffix}. Yeni cron/kanban/gateway işleri beklemeye alındı; sürmekte olan işler normal şekilde tamamlanır. Devam etmek için `/pause off` kullanın."
+    refused: "🚫 Acil durdurma buradan değiştirilemez. Bir operatör Hermes ana makinesindeki bir terminalde `hermes {command}` komutunu çalıştırabilir."
   queue:
     usage: "Kullanım: /queue <prompt>"
     queued: "Sonraki tur için sıraya alındı."

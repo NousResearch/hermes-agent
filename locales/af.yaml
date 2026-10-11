@@ -743,6 +743,7 @@ gateway:
     reason_suffix: " (rede: {reason})"
     already_paused: "⏸️ Hermes is reeds gepouseer{suffix}. Gebruik `/pause off` om te hervat."
     paused: "⏸️ Gepouseer{suffix}. Nuwe cron-/kanban-/gateway-werk is opgeskort; werk wat reeds loop, word normaal voltooi. Gebruik `/pause off` om te hervat."
+    refused: "🚫 Die noodstop kan nie van hier af verander word nie. 'n Operateur kan `hermes {command}` in 'n terminaal op die Hermes-gasheer laat loop."
   queue:
     usage: "Gebruik: /queue <prompt>"
     queued: "In die tou vir die volgende beurt."

@@ -743,6 +743,7 @@ gateway:
     reason_suffix: " (motivo: {reason})"
     already_paused: "⏸️ O Hermes já está pausado{suffix}. Use `/pause off` para retomar."
     paused: "⏸️ Pausado{suffix}. Novo trabalho de cron/kanban/gateway está em espera; o trabalho em andamento termina normalmente. Use `/pause off` para retomar."
+    refused: "🚫 A parada de emergência não pode ser alterada daqui. Um operador pode executar `hermes {command}` em um terminal no host do Hermes."
   queue:
     usage: "Uso: /queue <prompt>"
     queued: "Enfileirado para o próximo turno."

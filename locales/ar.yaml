@@ -743,6 +743,7 @@ gateway:
     reason_suffix: " (السبب: {reason})"
     already_paused: "⏸️ Hermes متوقّف مؤقتًا بالفعل{suffix}. استخدم `/pause off` للاستئناف."
     paused: "⏸️ تم الإيقاف المؤقت{suffix}. أعمال cron/كانبان/البوّابة الجديدة معلّقة؛ والأعمال الجارية تُكمَل كالمعتاد. استخدم `/pause off` للاستئناف."
+    refused: "🚫 لا يمكن تغيير الإيقاف الطارئ من هنا. يمكن للمشغّل تشغيل `hermes {command}` في طرفية على مضيف Hermes."
   queue:
     usage: "الاستخدام: /queue <prompt>"
     queued: "في قائمة الانتظار للدور التالي."

@@ -405,6 +405,18 @@ Do not ask the agent to `patch` `~/.hermes/cron/jobs.json` directly. Use the `cr
 Write guards apply to `write_file` and `patch` only, with one exception: the Windows NT/device-namespace row is also enforced on reads — `read_file`, `search_files`, `@file:`/`@folder:` context references and the ACP file bridge all refuse those paths on the raw string, before anything resolves them. The `terminal` tool runs as the same OS user and can still `cat` or overwrite denied paths via shell commands. The denylist reduces accidental damage and gives models a clear stop signal; it does not sandbox a hostile or compromised agent.
 :::
 
+## Emergency stop {#emergency-stop}
+
+`hermes pause` can halt new cron, kanban and gateway work for every profile that shares the Hermes root, so only an operator may engage or lift it.
+
+- **CLI.** `hermes pause`/`hermes resume` refuse when the caller is an agent or automation context: a gateway or cron turn, a kanban worker, `hermes chat -q`, a process carrying an agent's session markers, or a process a Hermes agent started. The last is recognised by `HERMES_AGENT`, which Hermes exports into terminal-tool shells (remote backends included), the code execution sandbox and stdio MCP servers (these two are marked even when Hermes runs under an entry point that does not advertise it, such as ACP); a `hermes` process that set it itself is the operator's. Classification fails closed.
+- **Chat.** `/pause` and `/pause off` work for any person the gateway admits, and are refused from bots, internal events and unattended surfaces (webhooks, Microsoft Graph notifications, the API server). `security.estop_chat_control: false` (in the root or the profile config) accepts the stop only from the CLI. If agents can message each other's chats as ordinary users, set it to `false`.
+- **Operator shells started by Hermes** (a tmux session an agent started, a cron pre-run script, a quick command) count as agent-started; run the command from your own terminal.
+
+:::note Defense-in-depth, not a hard boundary
+The check reads environment markers an agent with a shell can remove, and the sentinel (`<HERMES_HOME>/ESTOP`) is a plain file the agent's OS user can write or delete. It stops an agent that runs `hermes pause` or `hermes resume`; it does not contain one that works around it on purpose (see the trust model in `SECURITY.md`).
+:::
+
 ## User Authorization (Gateway)
 
 When running the messaging gateway, Hermes controls who can interact with the bot through a layered authorization system.

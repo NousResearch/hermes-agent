@@ -41,6 +41,20 @@ class TestAdvertiseAgentEnv:
         assert os.environ["AI_AGENT"] == "pi"
         assert os.environ["HERMES_AGENT"] == "true"
 
+    def test_records_whether_an_agent_started_this_process(self, monkeypatch):
+        """Inheriting HERMES_AGENT means an agent started this hermes process (its terminal
+        tool, execute_code, a worker; remote backends export it with no session vars). The
+        emergency stop refuses such callers, so it is recorded before advertising erases it."""
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "inherited_agent_marker", None)
+        for name in ("AI_AGENT", "HERMES_AGENT"):
+            monkeypatch.setenv(name, "x")  # recorded, so monkeypatch restores it at teardown
+            monkeypatch.delenv(name)
+        _advertise_agent_env()  # an operator's `hermes ...`
+        assert hermes_constants.inherited_agent_marker is False
+        _advertise_agent_env()  # a `hermes ...` its agent ran: HERMES_AGENT is now inherited
+        assert hermes_constants.inherited_agent_marker is True
 
 
 class TestWrapCommandAdvertisesHarness:

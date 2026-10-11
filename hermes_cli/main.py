@@ -3299,17 +3299,16 @@ def _try_termux_fast_tui_launch() -> bool:
 
 
 def _advertise_agent_env() -> None:
-    """Advertise the agent harness to child processes.
+    """Advertise the agent harness to child processes (setdefault: never clobber an outer harness).
 
-    ``AI_AGENT`` is the cross-agent standard (huggingface_hub reads it); the
-    value must be our id in the public agent-harness registry
-    (``hermes-agent``) — matching is exact. ``HERMES_AGENT`` is the
-    Hermes-specific marker. setdefault: never clobber an outer harness.
-
-    ``AI_AGENT`` is the emerging cross-agent standard (huggingface_hub's agent detection reads it; pi and
-    other agents set it — earendil-works/pi#7493) so generic tooling can attribute subprocesses to the
-    harness that spawned them. Hermes running inside another agent's terminal).
+    ``AI_AGENT`` is the cross-agent standard (huggingface_hub reads it; earendil-works/pi#7493); its
+    value must be our id in the public agent-harness registry (``hermes-agent``), matched exactly.
+    ``HERMES_AGENT`` is the Hermes-specific marker. Inheriting it means an agent started this process
+    (its terminal tool, execute_code, a worker; remote backends export it too), so that is recorded
+    before advertising erases the difference: the emergency stop refuses such callers (agent/estop.py).
     """
+    import hermes_constants
+    hermes_constants.inherited_agent_marker = os.environ.get("HERMES_AGENT", "") != ""
     os.environ.setdefault("AI_AGENT", "hermes-agent")
     os.environ.setdefault("HERMES_AGENT", "true")
 

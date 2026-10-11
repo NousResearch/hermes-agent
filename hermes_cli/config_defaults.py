@@ -1791,10 +1791,10 @@ DEFAULT_CONFIG = {
         # banner. Add via `hermes doctor --ack <id>`; remove by editing the list. Catalog:
         # hermes_cli/security_advisories.py.
         "acked_advisories": [],
-        # Lazy-install opt-in backend packages from PyPI when a backend that needs them is first
-        # enabled (e.g. `elevenlabs`). False = require explicit pip install for everything beyond
-        # the base set (restricted/audited/air-gapped environments).
+        # Lazy-install a backend's PyPI packages when it is first enabled (e.g. `elevenlabs`). False =
+        # explicit install only beyond the base set (restricted/audited/air-gapped environments).
         "allow_lazy_installs": True,
+        "estop_chat_control": True,  # chat /pause and /pause off; False = `hermes pause`/`resume` only
     },
 
     "cron": {

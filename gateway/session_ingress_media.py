@@ -222,6 +222,7 @@ def capture_native_media(paths):
                     _leases[str(target)] += 1
                 if target.exists() or target.is_symlink():
                     restore_native_media([reference])
+                    os.utime(target)  # a fresh capture restarts the retention age (sweep_settled_media)
                 else:
                     os.replace(temporary, target)
             for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
@@ -368,11 +369,45 @@ def release_admission_media(db, admission_id):
         # Settled: the inline base64 copy of these committed images is redundant row weight.
         from gateway.session_api_media import compact_settled_api_payloads
         compact_settled_api_payloads(db, admission_id)
-    released = release_unheld_media(db, admission_media_references(row['payload']), retain_history=False)
-    # A hosted document is named in the prompt the transcript keeps, so it is history context like
-    # an API image: it goes once no live row and no transcript row names it (session deletion then
-    # collects it through ``retire_media``), never while a follow-up turn can still be told to read it.
-    return released + release_unheld_media(db, hosted_document_references(row['request_id'], row['payload']))
+    # Native and hosted inputs are named in the prompt the transcript keeps ("It is saved at: <path>"),
+    # so they are history context like an API image: they go once no live row and no transcript row
+    # names them, never while a follow-up turn can still be told to read them. Session deletion
+    # collects them through ``retire_media``; ``sweep_settled_media`` bounds the rest at main's 24 h.
+    released = release_unheld_media(db, admission_media_references(row['payload']))
+    released += release_unheld_media(db, hosted_document_references(row['request_id'], row['payload']))
+    return released + sweep_settled_media(db)
+
+
+_SWEEP_INTERVAL_S = 3600
+_last_sweep = {}
+
+
+def sweep_settled_media(db, *, now=None):
+    """At most hourly per store: collect settled native/attachment inputs older than
+    ``MEDIA_CACHE_MAX_AGE_HOURS`` whatever the transcript says, as main's age-based document cache
+    cleanup did for the staging copy the note used to name. A live admission or an in-flight capture
+    still holds its bytes; API images and hosted documents keep their own owners."""
+    import time
+    from agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
+    now = time.time() if now is None else now
+    if now - _last_sweep.get(db.db_path, 0) < _SWEEP_INTERVAL_S:
+        return 0
+    _last_sweep[db.db_path] = now
+    with db._read_ctx() as conn:
+        rows = conn.execute("""SELECT json_extract(payload_json, '$.attachments_v1.media', '$.native_text_v1.media')
+            FROM session_admissions WHERE status='terminal' AND (json_type(payload_json, '$.attachments_v1.media')
+            IS NOT NULL OR json_type(payload_json, '$.native_text_v1.media') IS NOT NULL)""").fetchall()
+    cutoff = now - MEDIA_CACHE_MAX_AGE_HOURS * 3600
+    stale = {}
+    for (encoded,) in rows:
+        attachments, native = json.loads(encoded)
+        for reference in (attachments or []) + (native or []):
+            try:
+                if Path(reference['path']).stat(follow_symlinks=False).st_mtime < cutoff:
+                    stale[reference['path']] = reference
+            except OSError:
+                continue
+    return release_unheld_media(db, list(stale.values()), retain_history=False) if stale else 0
 
 
 def collect_unheld_api_images(db):
@@ -400,12 +435,15 @@ def _history_mentions(conn, references, after_id=0):
     """Candidate paths any transcript row (id > after_id) mentions raw or JSON-escaped, in ONE
     messages pass. Rows are prefiltered in SQL on the literal text before each candidate's digest
     directory, so only rows that could name a candidate reach Python's exact substring test."""
+    # Matched by the content-addressed tail ``<sha256>/<name>`` with either separator, so every
+    # spelling a note can carry (the host path, a sandbox backend's ``to_agent_visible_cache_path``)
+    # counts as a mention.
     needles = {}
     for reference in references:
         raw = reference['path']
-        needles[raw] = needles[json.dumps(raw)[1:-1]] = raw
-    prefixes = sorted({needle[:needle.rfind(reference['sha256'])] for reference in references
-                       for needle in (reference['path'], json.dumps(reference['path'])[1:-1])})
+        for tail in (reference['sha256'] + sep + Path(raw).name for sep in ('/', '\\')):
+            needles[tail] = needles[json.dumps(tail)[1:-1]] = raw
+    prefixes = sorted({reference['sha256'] for reference in references})
     match = ' OR '.join(['instr(content,?)'] * len(prefixes))
     query = f'SELECT content FROM messages WHERE ({match})' + (' AND id>?' if after_id else '')
     mentioned = set()

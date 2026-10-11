@@ -870,6 +870,20 @@ def test_no_survivors_prints_nothing(capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_desktop_survivor_names_the_app_restart(capsys):
+    update_cmd._warn_stale_serve_runtimes(
+        [{"pid": 5151, "kind": "serve", "profile": "default", "supervisor": "desktop"}])
+    out = capsys.readouterr().out
+    assert "pid 5151" in out
+    assert "quit and reopen the app" in out
+
+
+def test_manual_survivor_has_no_desktop_hint(capsys):
+    update_cmd._warn_stale_serve_runtimes(
+        [{"pid": 5152, "kind": "serve", "profile": "default", "supervisor": "manual-serve"}])
+    assert "Hermes Desktop" not in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # Real fresh interpreter
 # ---------------------------------------------------------------------------

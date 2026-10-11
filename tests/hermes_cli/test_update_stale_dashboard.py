@@ -138,6 +138,62 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
     assert result == {"matched": [], "killed": [], "failed": []}
 
 
+def _desktop_ledger(monkeypatch, *, pid: int, spawner_dead):
+    """One ledger ``serve`` row spawned by a Desktop whose liveness is *spawner_dead*."""
+    from hermes_cli import process_identity
+
+    entry = {"purpose": "serve", "pid": pid, "spawner_pid": 777, "spawner_create": 1.0,
+             "argv": "hermes serve --host 127.0.0.1 --port 0"}
+    monkeypatch.setattr(process_identity, "ledger_entries", lambda *a, **k: [entry])
+    monkeypatch.setattr(process_identity, "spawner_is_dead", lambda e: spawner_dead)
+    monkeypatch.delenv("HERMES_DESKTOP_CHILD_PID", raising=False)
+
+
+def _exclude_pids_seen_by_cleanup(*, restart_managed: bool) -> set[int]:
+    seen: set[int] = set()
+
+    def _capture(*, exclude_pids=None, **_):
+        seen.update(exclude_pids or ())
+        return []
+
+    with patch("hermes_cli.main_dashboard._find_stale_dashboard_pids", side_effect=_capture):
+        assert _kill_stale_dashboard_processes(restart_managed=restart_managed) == {
+            "matched": [], "killed": [], "failed": []}
+    return seen
+
+
+def test_update_cleanup_spares_backend_of_a_running_desktop(monkeypatch):
+    # A terminal `hermes update` SIGTERMed the backend of the open Desktop app mid-turn,
+    # aborting every chat it hosted; the Desktop-run update already spares it (#37532).
+    _desktop_ledger(monkeypatch, pid=5151, spawner_dead=False)
+
+    assert 5151 in _exclude_pids_seen_by_cleanup(restart_managed=True)
+
+
+@pytest.mark.parametrize("spawner_dead", [True, None])
+def test_update_cleanup_still_stops_backend_without_a_live_desktop(monkeypatch, spawner_dead):
+    # Desktop gone (orphan) or spawner unprovable: stale code must not keep serving.
+    _desktop_ledger(monkeypatch, pid=5151, spawner_dead=spawner_dead)
+
+    assert 5151 not in _exclude_pids_seen_by_cleanup(restart_managed=True)
+
+
+def test_explicit_stop_still_stops_backend_of_a_running_desktop(monkeypatch):
+    _desktop_ledger(monkeypatch, pid=5151, spawner_dead=False)
+
+    assert 5151 not in _exclude_pids_seen_by_cleanup(restart_managed=False)
+
+
+def test_unreadable_ledger_spares_nothing(monkeypatch):
+    from hermes_cli import process_identity
+
+    def _boom(*a, **k):
+        raise OSError("ledger unreadable")
+
+    monkeypatch.setattr(process_identity, "ledger_entries", _boom)
+    assert dashboard_procs._desktop_supervised_serve_pids() == set()
+
+
 class TestFindStaleDashboardPids:
     """Unit tests for the ps/wmic-based detection step."""
 

@@ -374,7 +374,7 @@ def test_runtime_reuse_key_rejects_fifo_without_hanging(tmp_path):
     def _load():
         try:
             docker_env._load_or_create_runtime_reuse_key(fifo)
-        except BaseException as exc:  # noqa: BLE001 - captured for the parent test thread
+        except BaseException as exc:  # captured for the parent test thread
             result["exc"] = exc
 
     worker = threading.Thread(target=_load, daemon=True)

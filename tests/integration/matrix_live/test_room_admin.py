@@ -17,13 +17,19 @@ from tests.integration.matrix_live.conftest import (
 
 
 @pytest.fixture
-def gateway_extra_config(request: pytest.FixtureRequest) -> str:
+def gateway_extra_config(request: pytest.FixtureRequest, live_room: LiveRoom) -> str:
     opt_in = request.node.callspec.params["enabled"]
     return (
         "auxiliary:\n  background_review:\n    enabled: false\n"
         "  title_generation:\n    enabled: false\n    model_upgrade_enabled: false\n"
-        + ("platform_toolsets:\n  matrix: [hermes-matrix, matrix_admin]\n"
-           "matrix:\n  require_mention: false\n" if opt_in else "")
+        "platforms:\n  matrix:\n"
+        f"    allowed_users: {json.dumps(live_room.observer.user_id)}\n"
+        + (
+            "    require_mention: false\n"
+            "platform_toolsets:\n  matrix: [hermes-matrix, matrix_admin]\n"
+            if opt_in
+            else ""
+        )
     )
 
 

@@ -507,6 +507,11 @@ class SessionManager:
         from hermes_constants import resolve_reasoning_config
 
         config = load_config()
+        # Tool-call title previews truncate at display.tool_preview_length (0 = no limit) via the same
+        # resolver as gateway/run_turn; without this the ACP titles stayed at a hardcoded 80 (#135554).
+        from agent.display import set_tool_preview_max_len
+        from gateway.display_config import resolve_display_setting
+        set_tool_preview_max_len(resolve_display_setting(config, "acp", "tool_preview_length", 0))
         model_cfg = config.get("model")
         default_model, config_provider = "", None
         if isinstance(model_cfg, dict):

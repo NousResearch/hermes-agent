@@ -119,6 +119,38 @@ def _schema_of(provider) -> list:
     return provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
 
 
+def _required_env_fields(schema: list, provider_config: dict) -> list:
+    """Fields whose ``env_var`` applies to the provider's active config, deduped by env_var.
+
+    Schema fields may carry a ``when`` gate (e.g. ``{"mode": "cloud"}``) naming the
+    config values they belong to; a dependency falls back to the field's schema
+    default when the provider config has no explicit value. Without this filter,
+    status lists env vars of every mode at once — a local_embedded Hindsight setup
+    gets told to set the cloud-only HINDSIGHT_API_KEY, twice, while the real
+    initialization failure goes unmentioned.
+    """
+    if not isinstance(provider_config, dict):
+        provider_config = {}
+    defaults = {f.get("key"): f.get("default") for f in schema if f.get("key")}
+
+    def applies(field) -> bool:
+        when = field.get("when")
+        if not isinstance(when, dict) or not when:
+            return True
+        return all(
+            provider_config.get(dep_key, defaults.get(dep_key)) == expected
+            for dep_key, expected in when.items()
+        )
+
+    required, seen = [], set()
+    for f in schema:
+        env_var = f.get("env_var")
+        if env_var and env_var not in seen and applies(f):
+            seen.add(env_var)
+            required.append(f)
+    return required
+
+
 def _get_available_providers() -> list:
     """Discover memory providers from plugins/memory/ as ``(name, setup_hint, provider)`` tuples."""
     try:
@@ -409,8 +441,16 @@ def cmd_status(args) -> None:
                 print("  Status:    available ✓")
             else:
                 print("  Status:    not available ✗")
-                # All fields with env_var (secret and non-secret)
-                required_fields = [f for f in _schema_of(provider) if f.get("env_var")]
+                reason = ""
+                if hasattr(provider, "unavailable_reason"):
+                    try:
+                        reason = (provider.unavailable_reason() or "").strip()
+                    except Exception:
+                        reason = ""
+                if reason:
+                    print(f"  Reason:    {reason}")
+                # Only env vars the active config mode actually requires, deduped
+                required_fields = _required_env_fields(_schema_of(provider), provider_config)
                 if required_fields:
                     print("  Missing:")
                     for f in required_fields:

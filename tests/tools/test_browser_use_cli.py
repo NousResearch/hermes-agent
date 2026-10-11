@@ -788,6 +788,28 @@ class TestSkillTextDescription:
 
 
 class TestBrowserUseManagedLifecycle:
+    @pytest.mark.parametrize("session", ["", "research"])
+    def test_cloud_and_sidecar_have_independent_owned_lifecycles(self, session, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        cloud_env = {"BU_NAME": session or "default"}
+        local_env = {"BU_NAME": bu_cli._sidecar_daemon_name(session)}
+        cloud = bu_cli._managed_browser_use_state(session, cloud_env, ["browser-use"])
+        local = bu_cli._managed_browser_use_state(session, local_env, ["browser-use"])
+        assert cloud is not None and local is not None
+        assert cloud is not local
+        assert cloud["operation_lock"] is not local["operation_lock"]
+        assert cloud_env["BH_RUNTIME_DIR"] != local_env["BH_RUNTIME_DIR"]
+        stopped = []
+        monkeypatch.setattr(bu_cli, "_browser_use_inactivity_timeout", lambda: 30)
+        monkeypatch.setattr(bu_cli, "_stop_browser_use_state", lambda state: stopped.append(state["env"]["BU_NAME"]) or True)
+        cloud["last_activity"], local["last_activity"] = 0, 31
+        bu_cli._expire_idle_browser_use_sessions(now=31)
+        assert stopped == [session or "default"]
+        assert bu_cli._browser_use_sessions == {local["key"]: local}
+        bu_cli.stop_harness_daemons()
+        assert stopped == [session or "default", bu_cli._sidecar_daemon_name(session)]
+        assert bu_cli._browser_use_sessions == {}
+
     @pytest.fixture(autouse=True)
     def _reset_lifecycle(self):
         bu_cli._browser_use_sessions.clear()
@@ -859,12 +881,12 @@ class TestBrowserUseManagedLifecycle:
     def test_timeout_cleanup_preserves_queued_session_serialization(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-use"])
-        monkeypatch.setattr(bu_cli, "_base_subprocess_env", lambda: {})
-        monkeypatch.setattr(bu_cli, "_blocked_url_in_code", lambda code: None)
-        monkeypatch.setattr(bu_cli, "_route_backend", lambda *args: None)
+        monkeypatch.setattr(bu_cli, "_base_subprocess_env", dict)
+        monkeypatch.setattr(bu_cli, "_code_url_verdict", lambda code: bu_cli._CodeUrlVerdict(None, False))
+        monkeypatch.setattr(bu_cli, "_route_backend", lambda *args, **kwargs: None)
         monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *args: None)
         monkeypatch.setattr(bu_cli, "_workspace_dir", lambda *args: None)
-        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {})
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", dict)
         monkeypatch.setattr(bu_cli, "_ensure_browser_use_cleanup_thread", lambda: None)
         monkeypatch.setattr(bu_cli, "_stop_browser_use_state", lambda state: True)
         first_running = threading.Event()
@@ -916,12 +938,12 @@ class TestBrowserUseManagedLifecycle:
     def test_call_remains_managed_when_idle_cleanup_wins_registration_race(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-use"])
-        monkeypatch.setattr(bu_cli, "_base_subprocess_env", lambda: {})
-        monkeypatch.setattr(bu_cli, "_blocked_url_in_code", lambda code: None)
-        monkeypatch.setattr(bu_cli, "_route_backend", lambda *args: None)
+        monkeypatch.setattr(bu_cli, "_base_subprocess_env", dict)
+        monkeypatch.setattr(bu_cli, "_code_url_verdict", lambda code: bu_cli._CodeUrlVerdict(None, False))
+        monkeypatch.setattr(bu_cli, "_route_backend", lambda *args, **kwargs: None)
         monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *args: None)
         monkeypatch.setattr(bu_cli, "_workspace_dir", lambda *args: None)
-        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {})
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", dict)
         monkeypatch.setattr(bu_cli, "_ensure_browser_use_cleanup_thread", lambda: None)
         monkeypatch.setattr(bu_cli, "_browser_use_inactivity_timeout", lambda: 30)
         stopped = []

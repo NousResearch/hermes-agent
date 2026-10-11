@@ -221,3 +221,99 @@ def test_native_gateway_envelopes_keep_response_and_error_precedence(error_envel
             None,
             nested,
         )
+
+
+def _json_call(body, async_mode):
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    if not async_mode:
+        with UsageValidatedOpenAI(
+            api_key="fixture",
+            max_retries=0,
+            http_client=httpx.Client(transport=transport),
+        ) as client:
+            return _call(client, False)
+
+    async def run():
+        async with UsageValidatedAsyncOpenAI(
+            api_key="fixture",
+            max_retries=0,
+            http_client=httpx.AsyncClient(transport=transport),
+        ) as client:
+            return await _call(client, True)
+
+    return asyncio.run(run())
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("finish", [None, "missing"])
+def test_gateway_envelopes_preserve_unknown_finish_reason(async_mode, finish):
+    completion = _completion(None)
+    if finish == "missing":
+        completion["choices"][0].pop("finish_reason")
+    else:
+        completion["choices"][0]["finish_reason"] = finish
+    response = _json_call({"success": True, "data": completion}, async_mode)
+    choice = response.choices[0]
+    assert (
+        response.id,
+        response.model,
+        choice.finish_reason,
+        choice.message.content,
+        choice.message.refusal,
+        response.usage,
+    ) == ("chat_native", "served-model", None, "Answer.", "Refusal detail.", None)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("identity", [None, "missing"])
+def test_gateway_envelopes_preserve_absent_identity(async_mode, identity):
+    completion = _completion(None)
+    if identity == "missing":
+        completion.pop("id")
+    else:
+        completion["id"] = identity
+    response = _json_call({"success": True, "data": completion}, async_mode)
+    assert (response.id, response.model, response.choices[0].finish_reason) == (
+        None,
+        "served-model",
+        "stop",
+    )
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("status_field", ["status", "status_code"])
+def test_gateway_error_envelopes_preserve_authentication_facts(
+    async_mode, status_field
+):
+    from agent.auxiliary_response_envelope import AuxiliaryEnvelopeError
+    from agent.error_classifier import classify_api_error
+
+    error = {
+        "message": "Fixture authentication rejected.",
+        status_field: 401,
+        "type": "authentication_error",
+        "code": "invalid_api_key",
+    }
+    completion = _completion({"prompt_tokens": True, "completion_tokens": 1})
+    completion["error"] = error
+    with pytest.raises(AuxiliaryEnvelopeError) as caught:
+        _json_call({"success": False, "data": completion}, async_mode)
+    exc = caught.value
+    classified = classify_api_error(exc, provider="openai")
+    assert (
+        type(exc),
+        getattr(exc, "status_code", None),
+        getattr(exc, "code", None),
+        getattr(exc, "type", None),
+        getattr(exc, "body", None),
+        str(exc),
+        classified.reason.value,
+    ) == (
+        AuxiliaryEnvelopeError,
+        401,
+        "invalid_api_key",
+        "authentication_error",
+        {"error": error},
+        "Auxiliary session_search: provider returned error envelope: Fixture authentication rejected.",
+        "auth",
+    )

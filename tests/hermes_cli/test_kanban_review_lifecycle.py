@@ -31,6 +31,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_respawn as kbr
 from hermes_cli import kanban_ops
 
 
@@ -603,6 +604,185 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (done_id,))
         assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
+
+
+def _dashboard_drag_to_ready(conn, tid):
+    """The board's drag-drop path (``_set_status_direct``), ready -> todo -> ready."""
+    pytest.importorskip("fastapi")
+    import importlib.util
+    import sys
+
+    plugin_file = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    spec = importlib.util.spec_from_file_location("hermes_dashboard_plugin_kanban_requeue_test", plugin_file)
+    assert spec is not None and spec.loader is not None
+    api = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = api
+    spec.loader.exec_module(api)
+    assert api._set_status_direct(conn, tid, "todo")
+    assert api._set_status_direct(conn, tid, "ready")
+
+
+def _dependency_promotion(conn, tid):
+    """The card waits on a parent; finishing the parent promotes it."""
+    parent = kb.create_task(conn, title="upstream merge", assignee="ops")
+    kb.link_tasks(conn, parent, tid)
+    assert kb.get_task(conn, tid).status == "todo"
+    assert kb.complete_task(conn, parent, result="merged")
+
+
+@pytest.mark.parametrize("requeue", [
+    pytest.param(lambda conn, tid: (kb.block_task(conn, tid, reason="needs Jorge"),
+                                    kb.unblock_task(conn, tid)), id="unblock"),
+    pytest.param(lambda conn, tid: (kb.block_task(conn, tid, reason="needs Jorge"),
+                                    kb.promote_task(conn, tid, actor="operator")), id="promote"),
+    pytest.param(_dependency_promotion, id="dependency_promotion"),
+    pytest.param(_dashboard_drag_to_ready, id="dashboard_drag"),
+])
+def test_active_pr_guard_lifts_after_an_operator_requeue(kanban_home: Path, requeue) -> None:
+    """A card that keeps working on its own PR is re-queued on purpose after
+    the PR comment: unblocked, promoted, or dragged back to Ready. That is the
+    same "run it again" ``recent_success`` already honours, so ``active_pr``
+    must let the same profile go on with the PR instead of holding the card
+    for 24 hours."""
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="own pr", assignee="dev")
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        _backdate_comments(conn, tid)
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        requeue(conn, tid)
+
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kbd.check_respawn_guard(conn, tid) is None
+        # A PR comment after the re-queue (the resumed run's own) guards again.
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_holds_after_crash_and_reclaim(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash or reclaim puts the card back in Ready without anyone asking for
+    another run, so the worker that opened the PR stays held."""
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="opened a pr, then died", assignee="dev")
+        kb.claim_task(conn, tid)
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        _backdate_comments(conn, tid)
+        kbd._set_worker_pid(conn, tid, 98765)
+        assert kbd.detect_crashed_workers(conn) == [tid]
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        kb.claim_task(conn, tid)
+        assert kb.reclaim_task(conn, tid, reason="wedged")
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_unblock_lifts_the_hold_on_a_held_ready_card(kanban_home: Path) -> None:
+    """``hermes kanban unblock`` is the one command a held card's notification
+    names, so it must work on a card that is already in Ready: it lifts
+    ``active_pr`` and ``blocker_auth`` without moving the card."""
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    with kbc.connect() as conn:
+        pr_id = kb.create_task(conn, title="held by its pr", assignee="dev")
+        kb.add_comment(conn, pr_id, author="dev", body=pr_comment)
+        _backdate_comments(conn, pr_id)
+        auth_id = kb.create_task(conn, title="held by a 429", assignee="dev")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET last_failure_error = '429 quota exceeded' WHERE id = ?", (auth_id,),
+            )
+        assert kbd.check_respawn_guard(conn, pr_id) == "active_pr"
+        assert kbd.check_respawn_guard(conn, auth_id) == "blocker_auth"
+
+        for tid in (pr_id, auth_id):
+            assert kb.unblock_task(conn, tid) is True
+            assert kb.get_task(conn, tid).status == "ready"
+            assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def _dispatch_held_tick(conn):
+    res = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: pytest.fail("a held card must not spawn"))
+    return dict(res.respawn_guarded)
+
+
+def _backdate_events(conn, tid, kind, seconds):
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_events SET created_at = created_at - ? WHERE task_id = ? AND kind = ?",
+            (seconds, tid, kind),
+        )
+
+
+def test_long_hold_records_one_respawn_held_event(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``respawn_guarded`` is written every tick and reaches no subscriber, so
+    a card can sit in Ready for hours with nobody told. Once a hold passes the
+    threshold the dispatcher writes ONE ``respawn_held`` event (a notifier
+    kind) naming the reason; later ticks and comments add none."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="held by its pr", assignee="dev")
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+
+        assert _dispatch_held_tick(conn) == {tid: "active_pr"}
+        assert _events(conn, tid, "respawn_held") == []
+
+        _backdate_events(conn, tid, "respawn_guarded", kbr.DEFAULT_HOLD_NOTIFY_SECONDS)
+        _dispatch_held_tick(conn)
+        (held,) = _events(conn, tid, "respawn_held")
+        assert held[1]["reason"] == "active_pr"
+        assert held[1]["held_seconds"] >= kbr.DEFAULT_HOLD_NOTIFY_SECONDS
+
+        kb.add_comment(conn, tid, author="ops", body="still waiting on review")
+        _dispatch_held_tick(conn)
+        assert len(_events(conn, tid, "respawn_held")) == 1
+
+
+@pytest.mark.parametrize("case", ["disabled", "cooldown"])
+def test_long_hold_notice_skips_disabled_and_self_expiring_holds(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    """``HERMES_KANBAN_HOLD_NOTIFY_SECONDS=0`` turns the notice off, and a
+    cooldown lifts itself, so ``hermes kanban unblock`` would be the wrong
+    advice: neither writes ``respawn_held``."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="held", assignee="dev")
+        if case == "disabled":
+            monkeypatch.setenv("HERMES_KANBAN_HOLD_NOTIFY_SECONDS", "0")
+            kb.add_comment(conn, tid, author="dev", body="https://github.com/example/repo/pull/44")
+            expected = "active_pr"
+        else:
+            monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "86400")
+            now = int(__import__("time").time())
+            with kb.write_txn(conn):
+                conn.execute(
+                    "INSERT INTO task_runs (task_id, profile, status, outcome, started_at, ended_at) "
+                    "VALUES (?, 'dev', 'rate_limited', 'rate_limited', ?, ?)", (tid, now, now),
+                )
+            expected = "rate_limit_cooldown"
+
+        assert _dispatch_held_tick(conn) == {tid: expected}
+        _backdate_events(conn, tid, "respawn_guarded", 2 * kbr.DEFAULT_HOLD_NOTIFY_SECONDS)
+        assert _dispatch_held_tick(conn) == {tid: expected}
+        assert _events(conn, tid, "respawn_held") == []
 
 
 def test_dispatch_json_exposes_suppression_reasons(

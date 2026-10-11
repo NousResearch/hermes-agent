@@ -44,15 +44,17 @@ def _pin_first():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+# ``respawn_held`` is the one notice for a card the respawn guard keeps in
+# Ready; its per-tick ``respawn_guarded`` rows stay silent.
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "respawn_held")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected", "respawn_held")
 
 
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
-    if ev.kind in {"crashed", "timed_out", "gave_up"}:
+    if ev.kind in {"crashed", "timed_out", "gave_up", "respawn_held"}:
         return True
     if ev.kind in {"blocked", "block_loop_detected"}:
         return (ev.payload or {}).get("kind") != "needs_input"
@@ -466,6 +468,12 @@ def _fmt_timed_out(ev, n) -> tuple:
     return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
 
 
+def _fmt_respawn_held(ev, n) -> tuple:
+    minutes = max(1, int(_payload(ev, "held_seconds") or 0) // 60)
+    return t("gateway.kanban.ping.respawn_held", head=n.head, minutes=minutes,
+             reason=_payload(ev, "reason") or "", task_id=n.task_id), None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
@@ -482,6 +490,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
+    "respawn_held": _fmt_respawn_held,
 }
 
 

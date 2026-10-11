@@ -3577,8 +3577,8 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review`` when it
+    left off there), closing any leaked run first; on ``ready`` it only lifts a respawn hold."""
     now = int(time.time())
     with write_txn(conn):
         resume_status = (
@@ -3587,7 +3587,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             else "ready"
         )
         _reclaim_dangling_run(
-            conn, task_id, statuses=("blocked", "scheduled"), now=now,
+            conn, task_id, statuses=("blocked", "scheduled", "ready"), now=now,
             note="invariant recovery on unblock",
         )
         # Re-gate on parent completion before restoring the source phase.
@@ -3605,7 +3605,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
+            "WHERE id = ? AND status IN ('blocked', 'scheduled', 'ready')", (new_status, task_id),
         )
         if cur.rowcount != 1:
             return False

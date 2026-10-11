@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import httpx
@@ -1077,3 +1077,177 @@ def test_poll_for_token_timeout_raises_actionable_message():
             expires_in=1,
             poll_interval=1,
         )
+
+
+# =============================================================================
+# Device-code grant lifetime (#135518)
+# =============================================================================
+
+
+class TestDeviceCodeGrantLifetime:
+    """The grant hard-expires 30 days after the human approved it, and an access-token
+    refresh does NOT extend it. A headless gateway refreshed every 45-60 min rewrote
+    ``obtained_at`` each time, so nothing on disk recorded the approval time and the
+    first observable of expiry was the outage itself."""
+
+    def test_refresh_preserves_the_grant_approval_time(self):
+        from hermes_cli.auth_nous import _apply_nous_refreshed_tokens
+
+        granted_at = "2026-10-01T00:00:00+00:00"
+        state = {"obtained_at": granted_at, "grant_obtained_at": granted_at}
+        _apply_nous_refreshed_tokens(
+            state, {"access_token": "new", "expires_in": 3600}, "r2")
+
+        assert state["grant_obtained_at"] == granted_at
+        # ...while the access token's own clock does move forward.
+        assert state["obtained_at"] != granted_at
+
+    def test_refresh_does_not_infer_the_grant_time_from_obtained_at(self):
+        """A legacy state must NOT acquire a deadline from obtained_at.
+
+        obtained_at is rewritten by every access-token refresh, so it is not the approval
+        time. Adopting it advertises a deadline up to a full grant-period later than reality:
+        approved Sep 10 -> refreshed Oct 9 -> advertised Nov 8, when the grant actually dies
+        Oct 10. That is the false confidence this field exists to remove, so unknown stays
+        unknown until a device-code login records a real approval time.
+        """
+        from hermes_cli.auth_nous import _apply_nous_refreshed_tokens
+
+        state = {"obtained_at": "2026-10-09T12:00:00+00:00"}  # last hourly refresh, no grant field
+        _apply_nous_refreshed_tokens(
+            state, {"access_token": "new", "expires_in": 3600}, "r2")
+
+        assert "grant_obtained_at" not in state
+
+    def test_a_known_grant_time_survives_a_refresh(self):
+        """The field IS carried forward when it is real — refresh must not reset the clock."""
+        from hermes_cli.auth_nous import _apply_nous_refreshed_tokens
+
+        state = {"obtained_at": "2026-10-09T12:00:00+00:00",
+                 "grant_obtained_at": "2026-09-10T00:00:00+00:00"}
+        _apply_nous_refreshed_tokens(
+            state, {"access_token": "new", "expires_in": 3600}, "r2")
+
+        assert state["grant_obtained_at"] == "2026-09-10T00:00:00+00:00"
+        assert state["obtained_at"] != "2026-10-09T12:00:00+00:00"  # the token clock did move
+
+    def test_grant_expiry_is_thirty_days_after_approval(self):
+        from hermes_cli.auth_nous import nous_grant_expires_at
+
+        assert nous_grant_expires_at("2026-10-01T00:00:00+00:00") == "2026-10-31T00:00:00+00:00"
+
+    @pytest.mark.parametrize("bad", [None, "", "not-a-timestamp"])
+    def test_grant_expiry_is_unknown_without_a_usable_approval_time(self, bad):
+        from hermes_cli.auth_nous import nous_grant_expires_at
+
+        assert nous_grant_expires_at(bad) is None
+
+    def test_grant_time_survives_a_state_rebuild(self):
+        """refresh_nous_oauth_from_state rebuilds the dict field by field; a field it does not
+        copy is lost on the very next refresh, which is the bug this pins."""
+        from hermes_cli.auth_nous import _nous_shared_shape, refresh_nous_oauth_from_state
+
+        src = {"grant_obtained_at": "2026-10-01T00:00:00+00:00"}
+        assert _nous_shared_shape(src)["grant_obtained_at"] == "2026-10-01T00:00:00+00:00"
+
+    def test_pre_epoch_approval_still_yields_a_deadline(self):
+        """A valid timestamp that parses to 0.0 is a real deadline, not a missing one.
+
+        ``if not started`` would drop it, so a corrupted-but-valid approval time silently
+        became "unknown" instead of long-expired."""
+        from hermes_cli.auth_nous import nous_grant_expires_at
+
+        assert nous_grant_expires_at("1970-01-01T00:00:00+00:00") == "1970-01-31T00:00:00+00:00"
+
+    def test_computed_status_flags_a_grant_inside_the_warning_window(self, monkeypatch):
+        """``hermes auth status nous`` routes to _compute_nous_auth_status, NOT the local
+        snapshot — the signal has to land there or the command still says only "logged in"."""
+        from datetime import timedelta
+
+        from hermes_cli import auth_nous
+
+        granted = datetime.now(UTC) - timedelta(days=29)
+        state = {"access_token": "a", "refresh_token": "r", "obtained_at": granted.isoformat(),
+                 "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                 "grant_obtained_at": granted.isoformat(), "scope": auth_nous.DEFAULT_NOUS_SCOPE}
+        monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
+        monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", lambda: {
+            "base_url": "https://inference.nousresearch.com/v1", "expires_at": state["expires_at"],
+            "source": "portal"})
+
+        status = auth_nous._compute_nous_auth_status()
+
+        assert status["grant_expiring"] is True
+        assert status["grant_expires_at"]
+
+    def test_computed_status_is_silent_for_a_healthy_grant(self, monkeypatch):
+        """No noise on a healthy install: the deadline is reported to the status dict, but only
+        the warning window flips the flag the CLI prints."""
+        from datetime import timedelta
+
+        from hermes_cli import auth_nous
+
+        granted = datetime.now(UTC) - timedelta(days=2)
+        state = {"access_token": "a", "refresh_token": "r", "obtained_at": granted.isoformat(),
+                 "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                 "grant_obtained_at": granted.isoformat(), "scope": auth_nous.DEFAULT_NOUS_SCOPE}
+        monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
+        monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", lambda: {
+            "base_url": "https://inference.nousresearch.com/v1", "expires_at": state["expires_at"],
+            "source": "portal"})
+
+        status = auth_nous._compute_nous_auth_status()
+
+        assert "grant_expiring" not in status
+        assert status["grant_expires_at"]
+
+    def test_pre_upgrade_state_without_the_field_is_left_alone(self, monkeypatch):
+        """An install whose auth.json predates this field must not gain a made-up deadline."""
+        from hermes_cli import auth_nous
+
+        state = {"access_token": "a", "refresh_token": "r",
+                 "obtained_at": datetime.now(UTC).isoformat(),
+                 "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                 "scope": auth_nous.DEFAULT_NOUS_SCOPE}
+        monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
+        monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", lambda: {
+            "base_url": "https://inference.nousresearch.com/v1", "expires_at": state["expires_at"],
+            "source": "portal"})
+
+        status = auth_nous._compute_nous_auth_status()
+
+        assert "grant_expires_at" not in status
+        assert "grant_expiring" not in status
+
+    def test_cli_status_command_prints_the_deadline(self, capsys, monkeypatch):
+        """End-to-end through the command the issue names.
+
+        The status dict is not the deliverable; ``hermes auth status nous`` printing the
+        deadline is. An earlier draft added the keys to a snapshot the CLI never renders, so
+        the dict alone could pass while the operator still saw only "logged in".
+        """
+        from datetime import timedelta
+
+        from hermes_cli import auth_commands
+
+        granted = datetime.now(UTC) - timedelta(days=29)
+        state = {"access_token": "a", "refresh_token": "r", "obtained_at": granted.isoformat(),
+                 "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                 "grant_obtained_at": granted.isoformat(), "scope": "openid profile email"}
+        monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
+        monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", lambda: {
+            "base_url": "https://inference.nousresearch.com/v1", "expires_at": state["expires_at"],
+            "source": "portal"})
+        monkeypatch.setattr(auth_commands, "dispatch_plugin_auth", lambda *_a, **_k: False)
+        monkeypatch.setattr(auth_commands, "_moved_auth_hint", lambda *_a: None)
+        monkeypatch.setattr(auth_commands, "_print_oauth_heal_notices", lambda: None)
+
+        class _Args:
+            provider = "nous"
+
+        auth_commands.auth_status_command(_Args())
+
+        out = capsys.readouterr().out
+        assert "grant expires:" in out
+        # ...and it names the remediation, because a date alone is not actionable.
+        assert "hermes auth add nous" in out

@@ -151,23 +151,31 @@ def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route()
     assert agent._reasoning_rejecting_routes == {}
 
 
-def test_duplicate_field_rejection_strips_the_alias_and_keeps_the_must_echo():
+@pytest.mark.parametrize("provider,model,base_url,expected_pad", [
+    # must-echo family (mimo): the learned strip keeps the echoed field and the pad.
+    ("custom", "mimo-v2.6-pro", "https://api.example-relay.test/v1", True),
+    # a plain vLLM-style custom route does NOT must-echo; the strip must still keep
+    # reasoning_content there — a duplicate-field error means the schema READS it.
+    ("custom", "qwen3-32b", "http://vllm.local/v1", False),
+])
+def test_duplicate_field_rejection_strips_the_alias_and_keeps_reasoning_content(
+        provider, model, base_url, expected_pad):
     """A schema that treats ``reasoning`` as an alias of ``reasoning_content`` rejects a replayed message
     that carries both with ``duplicate field `reasoning_content``` (serde alias collision). The learned
-    strip must drop the alias carrier and keep the must-echo field; an identical repeat must not retry."""
+    strip must drop the alias carrier and keep ``reasoning_content`` (the field the schema reads) on
+    every route; an identical repeat must not retry."""
     from types import SimpleNamespace
     from agent.message_sanitization import record_reasoning_field_rejection
 
-    agent = SimpleNamespace(provider="custom", model="mimo-v2.6-pro",
-                            base_url="https://api.example-relay.test/v1",
+    agent = SimpleNamespace(provider=provider, model=model, base_url=base_url,
                             api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)
     sent = [{"role": "assistant", "content": "", "reasoning": "thought", "reasoning_content": "thought"}]
     body = ("litellm.BadRequestError: OpenAIException - Invalid JSON data: Failed to deserialize the JSON body "
             "into the target type: messages[0]: duplicate field `reasoning_content`")
     assert record_reasoning_field_rejection(agent, body, sent) == frozenset({"reasoning"})
-    # The re-shaped route keeps only the carrier the schema reads, still padded for must-echo.
+    # The re-shaped route keeps only the carrier the schema reads, still padded for must-echo routes.
     route = reasoning_replay_route("chat_completions", agent.provider, agent.model, agent.base_url,
                                    rejected=rejected_reasoning_carriers(agent))
     assert route.carriers == {"reasoning_content"}
-    assert route.pad
+    assert route.pad is expected_pad
     assert record_reasoning_field_rejection(agent, body, sent) == frozenset()  # already learned -> no loop

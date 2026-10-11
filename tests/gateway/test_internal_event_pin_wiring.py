@@ -67,7 +67,7 @@ def _make_runner(
     r._pending_messages = {}
     r._pending_approvals = {}
     r._is_user_authorized = lambda s: True
-    r._set_session_env = lambda c: None
+    r._set_session_env = lambda c: []
     r._handle_active_session_busy_message = AsyncMock(return_value=False)
     r._session_db = MagicMock()
     r._recover_telegram_topic_thread_id = lambda s: None
@@ -249,6 +249,7 @@ async def test_eventless_followup_keeps_effective_prompt_through_next_human(
     runner._refresh_agent_cache_message_count = AsyncMock()
 
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter.get_pending_message.return_value = None
     adapter._active_sessions = {}
     source = _human_thread_source()
@@ -297,6 +298,7 @@ async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypa
 
     source = _human_source()
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter._active_sessions = {}
     pending_event = MessageEvent(
         text="queued",

@@ -21,10 +21,11 @@ from tui_gateway import server
 DELEGATION = {"type": "async_delegation", "delegation_id": "deleg-1", "session_key": "stored"}
 
 
-def _claimed_session() -> dict:
+def _claimed_session() -> tuple[dict, int]:
     session = {"history_lock": threading.RLock(), "running": False, "history": []}
-    assert server._notif_claim_turn(session) is True
-    return session
+    claim = server._notif_claim_turn(session)
+    assert claim is not None
+    return session, claim
 
 
 def _no_turn(monkeypatch) -> list:
@@ -46,13 +47,13 @@ def test_a_lost_delivery_claim_hands_the_turn_back(monkeypatch, claim):
 
     monkeypatch.setattr("tools.async_delegation.claim_event_delivery", _claim)
     started = _no_turn(monkeypatch)
-    session = _claimed_session()
+    session, turn_claim = _claimed_session()
 
-    server._notif_dispatch_event("sid", session, dict(DELEGATION), "text")
+    server._notif_dispatch_event("sid", session, dict(DELEGATION), "text", turn_claim)
 
     assert session["running"] is False
     assert started == []
-    assert server._notif_claim_turn(session) is True, "the session must be claimable again"
+    assert server._notif_claim_turn(session) is not None, "the session must be claimable again"
 
 
 @pytest.mark.parametrize("fail_at", ["claim", "render"])
@@ -95,9 +96,9 @@ def test_a_loop_wakeup_whose_send_cannot_start_hands_the_turn_back(monkeypatch):
     ticks: list = []
     mgr = SimpleNamespace(abandon_tick=lambda: ticks.append("abandoned"),
                           complete_tick=lambda text: ticks.append("completed") or {})
-    session = _claimed_session()
+    session, turn_claim = _claimed_session()
 
-    server._notif_slash_loop_tick("rid", "sid", session, mgr, "/skill go")
+    server._notif_slash_loop_tick("rid", "sid", session, mgr, "/skill go", turn_claim)
 
     assert session["running"] is False
     assert ticks == ["completed"]

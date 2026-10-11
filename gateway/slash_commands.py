@@ -157,13 +157,19 @@ def _home_thread_from_source(source) -> Optional[str]:
     """The thread id /sethome should persist on the home target, or None.  Slack thread-per-message
     keying stamps a top-level message's own id as ``source.thread_id`` (a session key, not a
     location); persisting it would pin HOME to that ephemeral thread.  A thread id equal to the
-    message's own id is synthetic and dropped; a real thread (id = parent's) is kept."""
+    message's own id is synthetic and dropped; a real thread (id = parent's) is kept.
+
+    Matrix auto-thread creates the same synthetic pattern (thread_id == message_id for a message
+    that was never in a user-created thread).  The check is now platform-agnostic: if the thread
+    id matches the message's own id, it's an auto-thread artifact and is dropped, not persisted.
+    """
     thread_id = getattr(source, "thread_id", None)
     if not thread_id:
         return None
-    synthetic = (getattr(source, "platform", None) == Platform.SLACK and getattr(source, "message_id", None)
-                 and str(thread_id) == str(source.message_id))
-    return None if synthetic else str(thread_id)
+    message_id = getattr(source, "message_id", None)
+    if message_id and str(thread_id) == str(message_id):
+        return None
+    return str(thread_id)
 
 
 class GatewaySlashCommandsMixin(

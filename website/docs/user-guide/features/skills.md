@@ -630,8 +630,12 @@ work, how you want the result to look, and the pitfalls that cost time. Whether 
 in a foreground turn, by the background review, or by the curator's consolidation pass,
 it captures **lessons, not logs**: a pitfall is a generalizable rule plus one clause of
 *why* (the mechanism), attached to the step it affects, stated once. Incident narration, PR or
-issue numbers, dates, and quoted chat are not skill content; the rule has to stand
-without the story behind it. Always-on rules live in `SKILL.md` itself; `references/`
+issue numbers, incidental dates, and quoted chat are not skill content; the rule
+has to stand without the story behind it. Decision constants are part of that
+rule: exact labels, categories, enum values, field names, and thresholds must
+remain verbatim, including numbers or dates that define a comparison. Values
+that belong only to one ticket, person, or batch should not become constants.
+Always-on rules live in `SKILL.md` itself; `references/`
 holds a small set of files named by topic (a decision table, a recipe, provider quirks),
 extended in place rather than accumulated one file per session. Skills also do not
 restate what is already loaded every turn (the repo's `AGENTS.md`, tool schemas).

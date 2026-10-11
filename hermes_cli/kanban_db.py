@@ -1910,6 +1910,17 @@ def _end_run(
         (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
+    # A run that actually moved the card forward supersedes any failure stamp
+    # an older run left behind: the respawn guard must not re-trap the card on
+    # quota/auth text that no longer describes it (#119070). Failure-family
+    # outcomes keep theirs (they re-stamp it in the same transaction), and
+    # ``blocked`` is excluded on purpose — the block transition writes its own
+    # ``last_failure_error`` BEFORE ending the run, so clearing here would wipe
+    # the block reason.
+    if outcome in ("completed", "review_requested", "changes_requested"):
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = NULL WHERE id = ?", (task_id,),
+        )
     return run_id
 
 

@@ -8,6 +8,7 @@ import json
 import re
 from typing import Any, Dict, Optional
 
+from agent.error_classifier import _extract_status_code
 from agent.redact import redact_sensitive_text
 
 # Substrings of the plain ``ValueError`` jiter (the openai/anthropic SDKs' SSE JSON parser)
@@ -69,7 +70,7 @@ def _is_xai_entitlement_text(lower: str) -> bool:
 
 
 def _http_prefix(error: Exception) -> str:
-    status_code = getattr(error, "status_code", None)
+    status_code = _extract_status_code(error)
     return f"HTTP {status_code}: " if status_code else ""
 
 

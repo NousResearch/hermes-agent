@@ -744,6 +744,7 @@ gateway:
     already_paused: "⏸️ Hermes è già in pausa{suffix}. Usa `/pause off` per riprendere."
     paused: "⏸️ In pausa{suffix}. Il nuovo lavoro cron/kanban/gateway è sospeso; il lavoro in corso termina normalmente. Usa `/pause off` per riprendere."
   queue:
+    full: "La coda in attesa è piena. Questo messaggio non è stato accodato. Attendi che un turno in coda termini, quindi invialo di nuovo."
     usage: "Uso: /queue <prompt>"
     queued: "In coda per il prossimo turno."
     queued_depth: " ({depth} in coda)"

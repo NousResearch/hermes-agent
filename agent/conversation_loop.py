@@ -713,7 +713,7 @@ def _restore_pinned_tools(agent, session_row) -> list:
     except Exception:
         logger.debug("tool prefix restore skipped", exc_info=True)
     if getattr(agent, "_memory_mode_explicit", False) is True:
-        from agent.agent_init import _prune_explicit_memory_tools
+        from agent.agent_init_memory import _prune_explicit_memory_tools
         _prune_explicit_memory_tools(
             agent,
             getattr(agent, "_memory_mode", "off"),

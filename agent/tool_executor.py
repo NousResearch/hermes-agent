@@ -1663,7 +1663,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     function_name, function_args, effective_task_id, tool_call_id, middleware_trace = (
         ref.name, ref.args, ref.task_id, ref.call_id, ref.trace,
     )
-    from agent.agent_init import memory_tool_call_allowed
+    from agent.agent_init_memory import memory_tool_call_allowed
     if not memory_tool_call_allowed(agent, function_name):
         return _SequentialDispatch(
             lambda _next_args: json.dumps({

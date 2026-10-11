@@ -80,7 +80,7 @@ def _publish_tool_snapshot(
             new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
         new_defs, new_names = _drop_session_tools(agent, new_defs, new_names)
         if getattr(agent, "_memory_mode_explicit", False) is True:
-            from agent.agent_init import memory_tool_call_allowed
+            from agent.agent_init_memory import memory_tool_call_allowed
             new_defs = [entry for entry in new_defs if memory_tool_call_allowed(agent, _def_name(entry))]
             new_names = {_def_name(entry) for entry in new_defs}
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
@@ -235,7 +235,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
     merged, merged_names = _drop_session_tools(agent, merged, merged_names)
     if getattr(agent, "_memory_mode_explicit", False) is True:
-        from agent.agent_init import memory_tool_call_allowed
+        from agent.agent_init_memory import memory_tool_call_allowed
         merged = [entry for entry in merged if memory_tool_call_allowed(agent, _def_name(entry))]
         merged_names = {_def_name(entry) for entry in merged}
     changed = merged != fresh_defs

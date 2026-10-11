@@ -722,10 +722,15 @@ class MemoryManager:
                 continue
             try:
                 raw_schemas = list(cast(Iterable[Any], getter() or ()))
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- provider hooks fail closed; sanitized traceback only
+                # Provider exception text may contain request data. Keep the traceback for diagnosis
+                # but replace its rendered exception with a fixed non-secret message.
+                safe_error = RuntimeError("memory provider hook failed")
                 logger.warning(
-                    "Memory provider '%s' read-only schema discovery failed: %s",
-                    provider.name, exc,
+                    "Memory provider '%s' read-only schema discovery failed; "
+                    "rejecting its declarations",
+                    provider.name,
+                    exc_info=(type(safe_error), safe_error, exc.__traceback__),
                 )
                 continue
             for raw_schema in raw_schemas or ():
@@ -783,10 +788,13 @@ class MemoryManager:
         checker = getattr(provider, "is_read_only_tool_call", None)
         try:
             permitted = callable(checker) and checker(tool_name, args)
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- provider policy failure denies the call; sanitized traceback only
+            # Keep diagnostic frames but never render checker arguments or exception text.
+            safe_error = RuntimeError("memory provider policy hook failed")
             logger.warning(
-                "Memory provider '%s' read-only policy check failed for %s: %s",
-                provider.name, tool_name, exc,
+                "Memory provider '%s' read-only policy check failed; denying %s",
+                provider.name, tool_name,
+                exc_info=(type(safe_error), safe_error, exc.__traceback__),
             )
             permitted = False
         if not permitted:

@@ -175,7 +175,7 @@ def _is_memory_surface_tool(tool_name: str) -> bool:
     try:
         import model_tools
         toolset = model_tools.get_toolset_for_tool(tool_name) or ""
-    except Exception:
+    except (AttributeError, ImportError, KeyError, RuntimeError, TypeError):
         toolset = ""
     return "memory" in toolset.lower()
 

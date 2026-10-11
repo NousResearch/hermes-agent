@@ -350,7 +350,7 @@ def test_child_inherits_profile_identity_fields():
     ],
 )
 def test_runtime_policy_is_an_authorization_backstop(mode, allowed, tool_name, expected):
-    from agent.agent_init import memory_tool_call_allowed
+    from agent.agent_init_memory import memory_tool_call_allowed
 
     agent = SimpleNamespace(
         _memory_mode_explicit=True,

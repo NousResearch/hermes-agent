@@ -77,8 +77,9 @@ def staged_candidate(tmp_path, r2_server, https_origin):
     for platform, arches in [('windows', ('x64', 'arm64')), ('macos', ('x64', 'arm64')), ('termux', ('aarch64',))]:
         for arch in arches:
             row = {
+                # Exactly the keys record() writes: a row is metadata, not a stamp (no baseVersion).
                 'platform': platform, 'arch': arch, 'tag': tag, 'commit': commit,
-                'baseVersion': tag[1:], 'identity': 'Product',
+                'identity': 'Product',
             }
             if platform == 'windows':
                 row.update(version=WINDOWS_VERSION, executableVersion=WINDOWS_VERSION,

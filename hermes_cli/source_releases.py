@@ -80,7 +80,8 @@ def _resolve_channel(name: str, repository: str):
 
 def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None,
                           forward_only: bool = False) -> SourceTarget:
-    """Resolve every subscription, including default labels, through R2.
+    """Resolve a subscription: stable from GitHub releases, main from the git branch,
+    preview channels (e.g. ``pm-preview``) through their R2 records.
 
     ``forward_only`` (an unchosen default subscription) pins a checkout that already
     contains the release to its own HEAD, so the update is a no-op instead of a downgrade.
@@ -122,20 +123,18 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
 
 
 def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
-    from hermes_cli.release_channels import ChannelNotFound, validate_name
+    from hermes_cli.release_channels import validate_name
 
     validate_name(channel)
     repository = repository or source_repository(git_cmd, cwd)
     if channel == "stable":
         return _resolve_stable(repository, git_cmd, cwd)
-    try:
-        resolved = _resolve_channel(channel, repository)
-    except ChannelNotFound:
-        if channel != "main":
-            raise
-        # main IS the source branch; its record can only add a retirement.
-        # Until one is published, a checkout keeps following the branch via git.
+    if channel == "main":
+        # main IS the git branch. No R2 record is read: none was ever published, and a
+        # network that answers it with 403 instead of 404 (regional WAFs) must not stop
+        # an install from following the branch it is on.
         return SourceTarget(channel, channel, repository, branch="main")
+    resolved = _resolve_channel(channel, repository)
     terminal = resolved.terminal
     if terminal["repository"].lower() != repository.lower():
         raise ValueError("Channel repository does not match this source installation")

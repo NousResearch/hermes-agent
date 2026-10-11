@@ -5168,10 +5168,11 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # under it, the custom entry wins over alias rewriting. Only for aliases, so entries matching a
     # canonical name (e.g. ``nous``) still defer to the built-in.
     custom_entry = None
+    lookup_overrides = {"explicit_base_url": req.explicit_base_url} if req.explicit_base_url else {}
     if req.original_provider and req.original_provider != provider:
-        custom_entry = _get_named_custom_provider(req.original_provider)
+        custom_entry = _get_named_custom_provider(req.original_provider, **lookup_overrides)
     if custom_entry is None:
-        custom_entry = _get_named_custom_provider(provider)
+        custom_entry = _get_named_custom_provider(provider, **lookup_overrides)
     if not custom_entry:
         return None
     # A per-task/explicit base_url or api_key composes OVER the named entry's defaults: the entry supplies
@@ -5182,7 +5183,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "
-                       "and will 401 on auth-required endpoints", custom_entry.get("name") or provider)
+                       "and the endpoint may require authentication", custom_entry.get("name") or provider)
     # Actual's wire protocol takes precedence over persisted task/provider modes.
     entry_api_mode = (req.api_mode or custom_entry.get("api_mode") or "").strip()
     if _is_actual_auxiliary_route(req, custom_base):

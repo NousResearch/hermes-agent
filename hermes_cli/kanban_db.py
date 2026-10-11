@@ -1894,6 +1894,10 @@ def _end_run(
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    # Completion metadata must retain the route reserved at claim time.
+    prior = _json_dict(conn.execute("SELECT metadata FROM task_runs WHERE id=?", (run_id,)).fetchone()[0])
+    if "quota_route" in prior:
+        metadata = dict(metadata or {}, quota_route=prior["quota_route"])
     conn.execute(
         """
         UPDATE task_runs
@@ -2074,6 +2078,8 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
     with write_txn(conn):
+        from hermes_cli.kanban_quota import recover_waits
+        recover_waits(conn)
         todo_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
@@ -2152,6 +2158,13 @@ def _claim_and_open_run(
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
     when the CAS lost. Caller holds the txn."""
+    from hermes_cli.kanban_quota import bind_probe_run, guard_claim, route
+    route_row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if route_row is None or route_row["status"] != source_status or route_row["claim_lock"] is not None:
+        return None
+    pinned = route(route_row)
+    if not guard_claim(conn, task_id, source_status, pinned=pinned):
+        return None
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2185,6 +2198,8 @@ def _claim_and_open_run(
         ),
     )
     run_id = run_cur.lastrowid
+    conn.execute("UPDATE task_runs SET metadata=? WHERE id=?", (_json_or_null({"quota_route": pinned}), run_id))
+    bind_probe_run(conn, task_id, run_id, pinned)
     conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?", (run_id, task_id))
     _append_event(
         conn, task_id, "claimed",
@@ -3609,6 +3624,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        from hermes_cli.kanban_quota import clear_wait
+        clear_wait(conn, task_id)
         _append_event(
             conn, task_id, "unblocked",
             (

@@ -129,9 +129,8 @@ def _sync_cli_session_id_from_agent(cli) -> None:
         cli.session_id = cli.agent.session_id
 
 
-# ``failure_reason`` values that say nothing about the task itself: the provider is walled,
-# down or unreachable, or the account is out of credit, so a Kanban worker signals "try
-# later" instead of "I failed" and the dispatcher does not spend the task's retry budget on it.
+# Provider failures share the EX_TEMPFAIL exit discriminator; durable evidence
+# lets the dispatcher distinguish a hard quota park from bounded transient retries.
 _TRANSIENT_PROVIDER_REASONS = frozenset({
     "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
 })
@@ -141,7 +140,7 @@ _TRANSIENT_PROVIDER_REASONS = frozenset({
 # not exist for this account, or the TLS chain is broken. A Kanban worker exits
 # ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` so the dispatcher parks the card after ONE spawn with
 # the provider's words as the reason, instead of re-spawning into the same wall until
-# ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
+# ``kanban.failure_limit`` is spent. ``billing`` uses exit 75, with durable quota evidence for the dispatcher.
 # ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
 # header change heals it, never a retry.
 _TERMINAL_PROVIDER_REASONS = frozenset({
@@ -157,8 +156,8 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     partway (`partial`, `completed: False`) or never ran at all (credentials / agent init
     failed, so ``result`` is not a dict). A Kanban worker (``HERMES_KANBAN_TASK`` set) that
     failed purely on a provider rate-limit / billing wall exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
-    (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` and requeues the task
-    WITHOUT counting a failure, so a quota window or a provider outage cannot trip the breaker.
+    (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` with durable provider
+    evidence: hard quota parks once, transient failures use a finite budget.
     The same sentinel applies when credential resolution itself is a quota/rate-limit
     AuthError (no turn result object is produced). One that failed on a terminal provider
     error (credential revoked, model gone) exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
@@ -188,6 +187,8 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     if kanban_task_id():
         reason = result.get("failure_reason")
         if reason in _TRANSIENT_PROVIDER_REASONS:
+            from hermes_cli.kanban_quota import record_worker_result
+            record_worker_result(result)
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE
         if reason in _TERMINAL_PROVIDER_REASONS:

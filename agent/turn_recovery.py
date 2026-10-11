@@ -1078,10 +1078,13 @@ def nonretryable_client_error_result(
     # Billing walls get the same structured recovery descriptor as the max-retries path
     # so every surface renders one consistent signal.
     if classified.reason == FailoverReason.billing:
-        return _billing_failure_result(
+        result = _billing_failure_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
         )
+        from hermes_cli.kanban_quota import failure_evidence
+        result["provider_failure"] = failure_evidence(agent, classified, api_error)
+        return result
     if _welcome_hint:
         # A free-tier refusal is fully explained by its own sentence; the raw provider summary
         # (status codes, JSON) is for the log, not for a first-time user's chat.
@@ -1099,6 +1102,8 @@ def nonretryable_client_error_result(
         _final_response, _nonretryable_summary, delivered,
     )
     result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
+    from hermes_cli.kanban_quota import failure_evidence
+    result["provider_failure"] = failure_evidence(agent, classified, api_error)
     result.update({
         "failure_reason": classified.reason.value,
         "failure_retryable": bool(classified.retryable),
@@ -1232,6 +1237,8 @@ def max_retries_exhausted_result(
             "smaller sections (or via execute_code with Python's open())."
         )
     result = _failed_turn_result(_final_response, messages, api_call_count, _final_summary)
+    from hermes_cli.kanban_quota import failure_evidence
+    result["provider_failure"] = failure_evidence(agent, classified, api_error)
     result.update({
         # Classified reason so callers (kanban worker in cli.py) can tell a quota wall
         # (``rate_limit`` / ``billing``) from a task failure.

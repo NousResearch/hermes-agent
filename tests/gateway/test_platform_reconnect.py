@@ -537,7 +537,7 @@ class TestReconnectKeepsInboundDedup:
 
         runner._redeliver_failed_obligations_for_platform = AsyncMock(side_effect=asyncio.CancelledError)
         runner._create_adapter = MagicMock(return_value=failed)
-        runner._configure_profile_adapter = MagicMock(side_effect=lambda *_a: setattr(runner, "_running", False))
+        runner._configure_profile_adapter = MagicMock(side_effect=lambda *_a, **_kw: setattr(runner, "_running", False))
         if mode != "connect-raises":  # stub the attempt; connect-raises runs the real one's own teardown
             runner._secondary_reconnect_attempt = attempt
         with patch("hermes_cli.profiles.get_profile_dir"), \

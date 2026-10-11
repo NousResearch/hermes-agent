@@ -666,17 +666,38 @@ def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
         connecting = {_key_name(key) for key in owned if key in _core._server_connecting}
         lazy = {key for key in _core._lazy_server_configs
                 if _key_scope(key) == scope and _key_name(key) not in wanted}
+        # An adopted connection is owned (and torn down) by another profile, but this profile's
+        # registry overlay is still mutable state that must follow THIS config. Otherwise removing
+        # an adopted entry leaves its tools callable indefinitely.
+        adopted = [
+            key for key, scopes in _core._server_tool_scopes.items()
+            if scope is not None and scope in scopes
+            and _core._server_scope_keys.get(key, _key_scope(key)) != scope
+        ]
     stale = sorted(live - wanted)
+    stale_adopted = [key for key in adopted if _key_name(key) not in wanted]
     if stale:
         logger.info("MCP server(s) %s no longer in config (or disabled); disconnecting", ", ".join(stale))
         _lifecycle.shutdown_mcp_servers(scope=scope, names=set(stale))
+    if scope is not None:
+        for key in stale_adopted:
+            _registration._remove_server_scope(key, scope)
+    if stale:
+        # Teardown of an owned shared connection deliberately drops every adopter's overlay.
+        # Re-home those adopters even when this owner removed its last server and therefore has no
+        # discovery pass of its own to drain the orphan ledger.
+        _lifecycle._reregister_orphaned_adopters()
     for key in lazy:
         _forget_lazy_server(key)
     added = _awaiting_connect(wanted, scope)
     if added:
         discover_mcp_tools()
-    return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
-            "pending": sorted(connecting - wanted)}
+    removed = list(dict.fromkeys(
+        stale
+        + sorted(_key_name(k) for k in lazy)
+        + sorted(_key_name(k) for k in stale_adopted)
+    ))
+    return {"removed": removed, "added": added, "pending": sorted(connecting - wanted)}
 
 
 def _awaiting_connect(wanted: set[str], scope) -> list[str]:

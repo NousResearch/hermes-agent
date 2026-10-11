@@ -1342,8 +1342,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_counter = itertools.count(1)
         self._update_prompt_state: dict[int, dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
-        # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
-        self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
+        # Inbound turn -> (bot message carrying the badge, opaque reaction_id).
+        self._pending_processing_reactions: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._last_bot_messages: OrderedDict[tuple[str, Optional[str]], str] = OrderedDict()
         self._load_seen_message_ids()
 
     @staticmethod
@@ -2564,10 +2565,15 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id = event.message_id
         if not self._reactions_enabled() or not message_id or message_id in self._pending_processing_reactions:
             return
-        reaction_id = await self._add_reaction(message_id, _FEISHU_REACTION_IN_PROGRESS)
+        source = event.source
+        target = self._last_bot_messages.get((source.chat_id, source.thread_id or None)) if source else None
+        # Feishu notifies the message author: never fall back to the user's message.
+        if not target:
+            return
+        reaction_id = await self._add_reaction(target, _FEISHU_REACTION_IN_PROGRESS)
         if reaction_id:
             cache = self._pending_processing_reactions
-            cache[message_id] = reaction_id
+            cache[message_id] = (target, reaction_id)
             cache.move_to_end(message_id)
             while len(cache) > _FEISHU_PROCESSING_REACTION_CACHE_SIZE:
                 cache.popitem(last=False)
@@ -2576,15 +2582,21 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id = event.message_id
         if not self._reactions_enabled() or not message_id:
             return
-        start_reaction_id = self._pending_processing_reactions.get(message_id)
-        if start_reaction_id:
-            if not await self._remove_reaction(message_id, start_reaction_id):
-                # Don't stack a second badge on a Typing we couldn't remove (UI would read as both
-                # "working" and "done/failed"); keep the handle so LRU eventually evicts it.
-                return
-            self._pending_processing_reactions.pop(message_id, None)
+        pending = self._pending_processing_reactions.get(message_id)
+        if not pending:
+            return
+        target, start_reaction_id = pending
+        if outcome is ProcessingOutcome.FAILURE and event.source:
+            key = (event.source.chat_id, event.source.thread_id or None)
+            # A failed target must not carry the next turn's Typing; keep a newer successful send.
+            if self._last_bot_messages.get(key) == target:
+                self._last_bot_messages.pop(key, None)
+        if not await self._remove_reaction(target, start_reaction_id):
+            # Don't stack a failure badge when Typing could not be removed.
+            return
+        self._pending_processing_reactions.pop(message_id, None)
         if outcome is ProcessingOutcome.FAILURE:
-            await self._add_reaction(message_id, _FEISHU_REACTION_FAILURE)
+            await self._add_reaction(target, _FEISHU_REACTION_FAILURE)
 
     # --- Webhook server and security ---
     def _record_webhook_anomaly(self, remote_ip: str, status: str) -> None:
@@ -3753,7 +3765,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
-            return await self._run_blocking(self._client.im.v1.message.reply, request)
+            response = await self._run_blocking(self._client.im.v1.message.reply, request)
+            self._remember_bot_message(chat_id, thread_id, response)
+            return response
         if thread_id:
             # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
             receive_id, receive_id_type = thread_id, "thread_id"
@@ -3765,7 +3779,26 @@ class FeishuAdapter(BasePlatformAdapter):
             receive_id=receive_id, msg_type=msg_type, content=payload, uuid_value=str(uuid.uuid4()),
         )
         request = self._build_create_message_request(receive_id_type, body)
-        return await self._run_blocking(self._client.im.v1.message.create, request)
+        response = await self._run_blocking(self._client.im.v1.message.create, request)
+        self._remember_bot_message(chat_id, thread_id, response)
+        return response
+
+    def _remember_bot_message(self, chat_id: str, thread_id: Optional[str], response: Any) -> None:
+        """Track successful sends without turning an already-delivered message into a retry."""
+        try:
+            message_id = self._extract_response_field(response, "message_id")
+            # User-ID sends return the canonical chat ID needed by inbound events.
+            chat_id = getattr(getattr(response, "data", None), "chat_id", None) or chat_id
+            if not message_id or not chat_id:
+                return
+            key = (chat_id, thread_id or None)
+            cache = self._last_bot_messages
+            cache[key] = message_id
+            cache.move_to_end(key)
+            while len(cache) > _FEISHU_PROCESSING_REACTION_CACHE_SIZE:
+                cache.popitem(last=False)
+        except Exception:
+            logger.debug("[Feishu] Failed to remember bot message for processing badge", exc_info=True)
 
     @staticmethod
     def _response_succeeded(response: Any) -> bool:

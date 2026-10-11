@@ -130,8 +130,7 @@ class SessionMaintenanceMixin:
                 self._delete_unreferenced_system_prompts(conn)
             return ids
         removed_ids = self._execute_write(_do) or []
-        for sid in removed_ids if sessions_dir else ():
-            self._remove_session_files(sessions_dir, sid)
+        self._remove_sessions_files(sessions_dir, removed_ids)
         return len(removed_ids)
 
     def _guarded_ids(self, conn, ids: Iterable[str]) -> set:
@@ -348,8 +347,7 @@ class SessionMaintenanceMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
-        for sid in removed_ids:
-            self._remove_session_files(sessions_dir, sid)
+        self._remove_sessions_files(sessions_dir, removed_ids)
         return count
 
     def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:

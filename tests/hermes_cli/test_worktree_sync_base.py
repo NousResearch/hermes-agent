@@ -23,7 +23,7 @@ import cli
 
 
 def _run(args, cwd):
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30)
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30, check=False)
 
 
 def _commit(repo, name, msg):

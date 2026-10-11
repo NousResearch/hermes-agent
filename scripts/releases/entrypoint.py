@@ -69,13 +69,14 @@ def _require_remote_main(repo: Path, commit: str) -> None:
     result = subprocess.run(
         ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/hermes-release/main"],
         cwd=repo, capture_output=True,
+        check=False,
     )
     if result.returncode != 0:
         raise ReleaseRefused(f"{commit} is not on origin/main")
 
 
 def _claim_collision(repo: Path, remote: str, tag: str, error: Exception) -> ReleaseRefused:
-    subprocess.run(["git", "tag", "--delete", tag], cwd=repo, capture_output=True)
+    subprocess.run(["git", "tag", "--delete", tag], cwd=repo, capture_output=True, check=False)
     try:
         _git(repo, "fetch", remote, f"+refs/tags/{tag}:refs/tags/{tag}")
         details = _git(
@@ -149,7 +150,7 @@ def _require_ancestry(repo: Path, commit: str, published_commit: str | None) -> 
     if published_commit is None:
         return
     ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", published_commit, commit], cwd=repo, capture_output=True)
+        ["git", "merge-base", "--is-ancestor", published_commit, commit], cwd=repo, capture_output=True, check=False)
     if ancestor.returncode != 0:
         raise ReleaseRefused(
             f"{commit} does not descend from the published stable head {published_commit}")
@@ -180,7 +181,7 @@ def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: s
     receipt = f"v{published_version}"
     if base is None and subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{receipt}^{{commit}}"],
-            cwd=repo, capture_output=True).returncode == 0:
+            cwd=repo, capture_output=True, check=False).returncode == 0:
         # Before the first publication the seed version's tag is the base.
         base = receipt
     commits = release_script.get_commits(since_tag=base, until=commit, cwd=repo)
@@ -495,7 +496,7 @@ def cmd_release(args) -> None:
     commit = _git(repo, "rev-parse", "--verify", f"{args.commit}^{{commit}}")
 
     def execute(command: list[str]) -> None:
-        completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8")
+        completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8", check=False)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.strip() or "release command failed")
         return completed.stdout
@@ -535,13 +536,13 @@ def _command_repository(args) -> tuple[Path, str, str]:
 
 
 def _execute(repo: Path, command: list[str]) -> None:
-    completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8")
+    completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8", check=False)
     if completed.returncode != 0:
         raise ReleaseRefused(completed.stderr.strip() or "release command failed")
 
 
 def _inspect(repo: Path, command: list[str]) -> str:
-    completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8")
+    completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8", check=False)
     if completed.returncode != 0:
         raise ReleaseRefused(completed.stderr.strip() or "release inspection failed")
     return completed.stdout

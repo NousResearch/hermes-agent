@@ -431,6 +431,7 @@ def test_repo_gitignores_the_legacy_bin_dir():
     result = subprocess.run(
         [git, "-C", str(repo_root), "check-ignore", "-q", "bin/hermes.exe"],
         capture_output=True, env=env,
+        check=False,
     )
     assert result.returncode == 0, (
         "bin/hermes.exe is not gitignored — hermes update's autostash "

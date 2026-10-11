@@ -1425,11 +1425,11 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
     return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
 
 
-def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
+def _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config):
     # Bedrock Converse — the adapter converts messages/tools and calls boto3 directly.
     return agent._get_transport().build_kwargs(model=agent.model, messages=api_messages, tools=tools_for_api,
         max_tokens=agent.max_tokens, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
-        guardrail_config=getattr(agent, "_bedrock_guardrail_config", None))
+        guardrail_config=getattr(agent, "_bedrock_guardrail_config", None), reasoning_config=reasoning_config)
 
 
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
@@ -1495,6 +1495,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         _profile = get_provider_profile(agent.provider)
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
+    from agent.reasoning_carriers import shape_wire_carriers
+    api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url)
     # Strip image parts for non-vision models on BOTH paths (registered
     # providers with profiles used to bypass it).
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
@@ -1563,7 +1565,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
     if agent.api_mode == "bedrock_converse":
-        return _build_bedrock_kwargs(agent, api_messages, tools_for_api)
+        return _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config)
     # Rotation-stable logical cache scope shared by every OpenAI-wire branch
     # (memoized on the agent); anthropic/bedrock above don't use it.
     cache_scope_id = _prompt_cache_scope_for_agent(agent)
@@ -1659,6 +1661,11 @@ def _assistant_tool_call_dict(agent, tool_call, index: int) -> dict:
     extra = getattr(tool_call, "extra_content", None)
     if extra is not None:
         tc_dict["extra_content"] = _dump_if_model(extra)
+    # Copilot's Gemini 3 variant signs the call inside ``function`` (replayed only to Copilot).
+    from agent.reasoning_carriers import field
+    fn_sig = field(tool_call, "thought_signature") or getattr(tool_call.function, "thought_signature", None)
+    if isinstance(fn_sig, str) and fn_sig:
+        tc_dict["function"]["thought_signature"] = fn_sig
     return tc_dict
 
 
@@ -1754,6 +1761,13 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                         from agent.conversation_compression import _reset_read_dedup_caches
 
                         _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
+
+    from agent.reasoning_carriers import carrier_record
+    if record := carrier_record(assistant_message):
+        # Gemini text-turn signature / Copilot reasoning_opaque+text: top-level for the live
+        # history, a private reasoning_details record for persistence (reasoning_carriers.py).
+        msg.update({k: v for k, v in record.items() if k != "type"})
+        msg["reasoning_details"] = [*msg.get("reasoning_details", ()), record]
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]
@@ -2721,70 +2735,6 @@ class _BedrockStream:
         return _with_stream_emitters(self.agent, self._poll)
 
 
-class _ToolCallAccumulator:
-    """Assemble streamed tool-call deltas into complete ``tool_calls`` entries
-    (``acc``: slot index -> entry dict). Ollama-compatible endpoints reuse index 0
-    for every call in a parallel batch, distinguishing them only by id, so a new
-    id at an already-seen raw index is redirected to a fresh slot."""
-
-    def __init__(self):
-        self.acc: dict = {}
-        self._notified: set = set()
-        self._last_id_at_idx: dict = {}      # raw_index -> last seen non-empty id
-        self._active_slot_by_idx: dict = {}  # raw_index -> current slot in acc
-        # Argument deltas are collected per slot and joined once in ``materialize`` —
-        # ``+=`` per chunk rebuilds the whole string every delta (quadratic on big args).
-        self._argument_parts: dict[int, list[str]] = {}
-
-    def materialize(self) -> dict:
-        """Join buffered argument deltas into each entry's ``arguments``; idempotent. Returns ``acc``."""
-        for idx, parts in self._argument_parts.items():
-            self.acc[idx]["function"]["arguments"] = "".join(parts)
-        return self.acc
-
-    def feed(self, tc_delta) -> Optional[str]:
-        """Merge one delta; return the tool name the first time it is complete."""
-        raw_idx = getattr(tc_delta, "index", None)
-        if raw_idx is None:
-            raw_idx = 0
-        tc_id = getattr(tc_delta, "id", None)
-        delta_id = tc_id or ""
-        if isinstance(tc_id, int):  # Poolside sends integer ids
-            tc_id = str(tc_id)
-
-        self._active_slot_by_idx.setdefault(raw_idx, raw_idx)
-        if delta_id and raw_idx in self._last_id_at_idx and delta_id != self._last_id_at_idx[raw_idx]:
-            self._active_slot_by_idx[raw_idx] = max(self.acc, default=-1) + 1
-        if delta_id:
-            self._last_id_at_idx[raw_idx] = delta_id
-        idx = self._active_slot_by_idx[raw_idx]
-
-        entry = self.acc.setdefault(
-            idx, {"id": tc_id or "", "type": "function", "function": {"name": "", "arguments": ""}, "extra_content": None},
-        )
-        parts = self._argument_parts.setdefault(idx, [])
-        if tc_id:
-            entry["id"] = tc_id
-        tc_function = getattr(tc_delta, "function", None)
-        if tc_function:
-            if getattr(tc_function, "name", None):
-                # Assignment, not +=: names arrive complete and some providers (MiniMax via
-                # NVIDIA NIM) resend the full name every chunk — += gives "read_fileread_file".
-                entry["function"]["name"] = tc_function.name
-            if getattr(tc_function, "arguments", None):
-                parts.append(tc_function.arguments)
-        extra = getattr(tc_delta, "extra_content", None)
-        if extra is None and hasattr(tc_delta, "model_extra"):
-            extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
-        if extra is not None:
-            entry["extra_content"] = _dump_if_model(extra)
-        name = entry["function"]["name"]
-        if name and idx not in self._notified:
-            self._notified.add(idx)
-            return name
-        return None
-
-
 class _StreamingCall(StreamingWaitMonitor):
     """One streaming request on the chat_completions / anthropic_messages wire.
     State shared between the request worker and the poll-loop monitor (heartbeat,
@@ -3098,8 +3048,11 @@ class _StreamingCall(StreamingWaitMonitor):
         refusal_parts: list[str] = []
         reasoning_details: list = []  # OpenRouter replay data (signatures, encrypted blocks)
         pending_text_parts: list[str] = []
+        from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
+        from agent.reasoning_carriers import StreamCarriers
+        carriers = StreamCarriers()
         finish_reason = model_name = usage_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
         role = "assistant"
@@ -3181,6 +3134,8 @@ class _StreamingCall(StreamingWaitMonitor):
             # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
             if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
                 reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+            # Copilot /chat/completions names its readable reasoning ``reasoning_text``.
+            reasoning_text = carriers.feed(delta, reasoning_text)
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(
@@ -3270,6 +3225,7 @@ class _StreamingCall(StreamingWaitMonitor):
             "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
+        carriers.apply(response)
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
@@ -3344,7 +3300,8 @@ class _StreamingCall(StreamingWaitMonitor):
             mock_tool_calls.append(SimpleNamespace(
                 id=tc["id"], type=tc["type"], extra_content=tc.get("extra_content"),
                 function=SimpleNamespace(name=tc["function"]["name"], arguments=arguments,
-                                         args_repaired=arguments != tc["function"]["arguments"])))
+                                         args_repaired=arguments != tc["function"]["arguments"],
+                                         thought_signature=tc.get("thought_signature"))))
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,

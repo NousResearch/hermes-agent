@@ -7209,11 +7209,10 @@ async def _standalone_send(
                         form.add_field("payload_json", payload_json, content_type="application/json")
                         try:
                             for idx, media_path in enumerate(valid_media):
-                                with open(media_path, "rb") as fh:
-                                    form.add_field(
-                                        f"files[{idx}]", fh.read(),
-                                        filename=os.path.basename(media_path),
-                                    )
+                                form.add_field(
+                                    f"files[{idx}]", await asyncio.to_thread(_Path(media_path).read_bytes),
+                                    filename=os.path.basename(media_path),
+                                )
                             async with session.post(thread_url, headers=auth_headers, data=form, **_req_kw) as resp:
                                 data, err = await _standalone_response_json_or_error(resp, "Discord forum thread creation error")
                                 if err:
@@ -7273,7 +7272,7 @@ async def _standalone_send(
                             content_type="application/json",
                         )
                         caption_pending = False
-                    with open(media_path, "rb") as f:
+                    with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                         form.add_field("files[0]", f, filename=filename)
                         async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
                             data, err = await _standalone_response_json_or_error(resp, "Discord API error")

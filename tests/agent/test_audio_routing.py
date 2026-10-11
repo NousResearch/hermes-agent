@@ -168,7 +168,7 @@ class TestPrepareClipGates:
     def test_empty_file_is_skipped(self, tmp_path: Path):
         p = tmp_path / "empty.wav"
         p.write_bytes(b"")
-        parts, skipped = build_native_audio_parts("hi", [str(p)])
+        _parts, skipped = build_native_audio_parts("hi", [str(p)])
         assert skipped == [str(p)]
 
     def test_over_8mb_is_skipped(self, tmp_path: Path):
@@ -184,7 +184,7 @@ class TestPrepareClipGates:
         p = _make_wav(tmp_path / "long.wav")
         monkeypatch.setattr(audio_routing, "probe_duration_seconds",
                             lambda _p: MAX_NATIVE_AUDIO_SECONDS + 1)
-        parts, skipped = build_native_audio_parts("hi", [str(p)])
+        _parts, skipped = build_native_audio_parts("hi", [str(p)])
         assert skipped == [str(p)]
 
     def test_at_duration_limit_still_attaches(self, tmp_path: Path, monkeypatch):
@@ -198,7 +198,7 @@ class TestPrepareClipGates:
     def test_duration_probe_failure_does_not_block(self, tmp_path: Path, monkeypatch):
         p = _make_wav(tmp_path / "ok.wav")
         monkeypatch.setattr(audio_routing, "probe_duration_seconds", lambda _p: None)
-        parts, skipped = build_native_audio_parts("hi", [str(p)])
+        _parts, skipped = build_native_audio_parts("hi", [str(p)])
         assert skipped == []
 
     def test_blocked_read_path_is_skipped(self, tmp_path: Path, monkeypatch):
@@ -208,7 +208,7 @@ class TestPrepareClipGates:
             raise ValueError("read blocked")
 
         monkeypatch.setattr("agent.file_safety.raise_if_read_blocked", _block)
-        parts, skipped = build_native_audio_parts("hi", [str(p)])
+        _parts, skipped = build_native_audio_parts("hi", [str(p)])
         assert skipped == [str(p)]
 
 
@@ -232,7 +232,7 @@ class TestNormalizationSelection:
                             lambda _p: (_ for _ in ()).throw(AssertionError("mp3 must not be transcoded")))
         parts, skipped = build_native_audio_parts("hi", [str(p)])
         assert skipped == []
-        assert [x for x in parts if is_audio_part(x)][0]["input_audio"]["format"] == "mp3"
+        assert next(x for x in parts if is_audio_part(x))["input_audio"]["format"] == "mp3"
 
     def test_ogg_is_transcoded_to_mp3(self, tmp_path: Path, monkeypatch):
         p = tmp_path / "voice.ogg"
@@ -261,7 +261,7 @@ class TestNormalizationSelection:
         p.write_bytes(b"OggS\x00\x02" + b"\x00" * 8)
         monkeypatch.setattr(audio_routing, "transcode_with_ffmpeg",
                             lambda _p: b"x" * (MAX_NATIVE_AUDIO_BYTES + 1))
-        parts, skipped = build_native_audio_parts("hi", [str(p)])
+        _parts, skipped = build_native_audio_parts("hi", [str(p)])
         assert skipped == [str(p)]
 
     def test_ffmpeg_missing_is_degrade_not_error(self, tmp_path: Path, monkeypatch):

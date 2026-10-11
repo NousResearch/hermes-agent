@@ -194,6 +194,7 @@ def _prepare_container_image(
             probe = _sp.run(
                 ["docker", "image", "inspect", container_image],
                 capture_output=True, timeout=10,
+                check=False,
             )
             if probe.returncode != 0:
                 if config.get("verbose"):
@@ -201,6 +202,7 @@ def _prepare_container_image(
                 pull = _sp.run(
                     ["docker", "pull", container_image],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
+                    check=False,
                 )
                 if pull.returncode != 0:
                     return _failure_result(

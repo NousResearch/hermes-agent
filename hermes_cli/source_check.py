@@ -65,7 +65,7 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
     try:
         return subprocess.run(
             [git, *args], capture_output=True, timeout=timeout, cwd=str(cwd) if cwd is not None else None,
-            **(_GIT_TEXT_KW if text else {}), **kwargs)
+            **(_GIT_TEXT_KW if text else {}), **kwargs, check=False)
     except Exception:
         return None
 
@@ -290,6 +290,9 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only:
         result.update(channel=channel, targetSha=target, updateAvailable=co.head != target,
                       behind=0 if co.head == target else UPDATE_AVAILABLE_NO_COUNT,
                       sourceVersion=source_target.version, buildId=source_target.build_id)
+        # Forward-only pins the target to this checkout's own HEAD, newer than the release.
+        # Always present: Desktop names the release only on an explicit False.
+        result["aheadOfRelease"] = bool(getattr(source_target, "ahead", False))
         if source_target.retired:
             result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
     return source_target

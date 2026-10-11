@@ -31,7 +31,7 @@ import logging
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ def _load_cfg_readonly() -> Any:
         from hermes_cli.config import load_config_readonly
 
         return load_config_readonly()
-    except Exception:  # noqa: BLE001 — the gate must never fail a request
+    except Exception:  # the gate must never fail a request
         return {}
 
 
@@ -163,7 +163,7 @@ def probe_duration_seconds(path: Any) -> Optional[float]:
             with wave.open(str(p), "rb") as wf:
                 rate = wf.getframerate() or 1
                 return wf.getnframes() / float(rate)
-        except Exception:  # noqa: BLE001 — malformed wav falls through to ffprobe
+        except Exception:  # malformed wav falls through to ffprobe
             pass
     if shutil.which("ffprobe") is None:
         return None
@@ -176,7 +176,7 @@ def probe_duration_seconds(path: Any) -> Optional[float]:
             capture_output=True, text=True, timeout=_FFPROBE_TIMEOUT_S, check=False,
         )
         return float(proc.stdout.strip()) if proc.returncode == 0 else None
-    except Exception:  # noqa: BLE001 — a probe failure only skips the duration gate
+    except Exception:  # a probe failure only skips the duration gate
         logger.debug("audio_routing: ffprobe duration failed for %s", p, exc_info=True)
         return None
 
@@ -202,7 +202,7 @@ def transcode_with_ffmpeg(path: Any) -> Optional[bytes]:
             ],
             capture_output=True, timeout=_FFMPEG_TIMEOUT_S, check=False,
         )
-    except Exception:  # noqa: BLE001 — degrade to the text note, never fail the turn
+    except Exception:  # degrade to the text note, never fail the turn
         logger.warning("audio_routing: ffmpeg transcode failed for %s", path, exc_info=True)
         return None
     if proc.returncode != 0 or not proc.stdout:
@@ -214,7 +214,7 @@ def transcode_with_ffmpeg(path: Any) -> Optional[bytes]:
     return proc.stdout
 
 
-def _prepare_clip(path: Any) -> Optional[Tuple[bytes, str]]:
+def _prepare_clip(path: Any) -> Optional[tuple[bytes, str]]:
     """``(raw_bytes, format)`` for one clip, or None when it must not be attached.
 
     Order matters: cheap stat/size/duration gates first so an oversized clip never
@@ -228,7 +228,7 @@ def _prepare_clip(path: Any) -> Optional[Tuple[bytes, str]]:
     except ValueError as exc:
         logger.warning("audio_routing: blocked local audio attachment %s -- %s", p, exc)
         return None
-    except Exception:  # noqa: BLE001 — attachment stays best-effort without the guard
+    except Exception:  # attachment stays best-effort without the guard
         pass
     try:
         if not p.is_file():
@@ -264,8 +264,8 @@ def _prepare_clip(path: Any) -> Optional[Tuple[bytes, str]]:
 
 
 def build_native_audio_parts(
-    user_text: str, audio_paths: List[str]
-) -> Tuple[List[Dict[str, Any]], List[str]]:
+    user_text: str, audio_paths: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Build an OpenAI-style ``content`` list for a user turn carrying voice clips.
 
     Mirrors ``agent.image_routing.build_native_content_parts``: one text part holds
@@ -275,8 +275,8 @@ def build_native_audio_parts(
     over the size/duration ceiling, untranscodable) — their path-pointing note in the
     caller's text is the model's only handle, exactly as before native routing.
     """
-    clipped: List[Tuple[bytes, str, str]] = []  # (raw, format, path)
-    skipped: List[str] = []
+    clipped: list[tuple[bytes, str, str]] = []  # (raw, format, path)
+    skipped: list[str] = []
     for raw_path in dict.fromkeys(audio_paths or []):
         prepared = _prepare_clip(raw_path)
         if prepared is None:
@@ -290,7 +290,7 @@ def build_native_audio_parts(
 
     hints = "\n".join(f"[Voice message attached as audio: {path}]" for _, _, path in clipped)
     combined = f"{text}\n\n{hints}" if text else hints
-    parts: List[Dict[str, Any]] = [{"type": "text", "text": combined}]
+    parts: list[dict[str, Any]] = [{"type": "text", "text": combined}]
     parts.extend(
         {"type": "input_audio", "input_audio": {"data": base64.b64encode(raw).decode("ascii"), "format": fmt}}
         for raw, fmt, _ in clipped
@@ -305,7 +305,7 @@ def is_audio_part(part: Any) -> bool:
     return isinstance(part, dict) and part.get("type") in AUDIO_PART_TYPES
 
 
-def _has_text_part(parts: List[Dict[str, Any]]) -> bool:
+def _has_text_part(parts: list[dict[str, Any]]) -> bool:
     return any(
         isinstance(p, dict) and p.get("type") in ("text", "input_text") and str(p.get("text") or "").strip()
         for p in parts
@@ -326,7 +326,7 @@ def strip_unsupported_audio_parts(agent: Any, api_messages: Any) -> int:
         return 0
     try:
         cfg = _load_cfg_readonly()
-    except Exception:  # noqa: BLE001 — a config hiccup must not change wire behavior
+    except Exception:  # a config hiccup must not change wire behavior
         cfg = {}
     api_mode = str(getattr(agent, "api_mode", "") or "")
     provider = str(getattr(agent, "provider", "") or "")
@@ -337,7 +337,7 @@ def strip_unsupported_audio_parts(agent: Any, api_messages: Any) -> int:
         from agent.vision_message_prep import _provider_model_key
 
         rejecting = _provider_model_key(agent) in (getattr(agent, "_audio_rejecting_models", None) or set())
-    except Exception:  # noqa: BLE001 — without the key the config gate still decides
+    except Exception:  # without the key the config gate still decides
         rejecting = bool(getattr(agent, "_audio_rejecting_models", None))
     if native_audio_supported(cfg, api_mode=api_mode, provider=provider) and not rejecting:
         return 0

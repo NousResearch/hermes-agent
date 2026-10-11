@@ -184,6 +184,7 @@ def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
             [resolve_ffmpeg_executable(), "-y", "-loglevel", "error", "-i", path, "-f", "s16le",
              "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1"],
             capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning("decode_to_pcm failed for %s: %s", path, e)

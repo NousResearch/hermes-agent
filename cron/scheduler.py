@@ -4072,7 +4072,7 @@ def _worktree_maintenance_repos() -> list[str]:
                 probe = subprocess.run(
                     ["git", "rev-parse", "--show-toplevel"],
                     capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=5, cwd=workdir)
+                    errors="replace", timeout=5, cwd=workdir, check=False)
                 if probe.returncode == 0 and probe.stdout.strip():
                     repos.add(probe.stdout.strip())
             except Exception:

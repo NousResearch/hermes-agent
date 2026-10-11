@@ -254,7 +254,7 @@ class SSHEnvironment(BaseEnvironment):
         ssh_cmd = self._build_ssh_command() + [
             f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}"]
         with open(dest, "wb") as f:
-            result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120)
+            result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120, check=False)
         if result.returncode != 0:
             stderr = result.stderr.decode(errors="replace").strip()
             # A socket not named *.sock is the only rc=2 we knowingly accept, and only when
@@ -296,6 +296,6 @@ class SSHEnvironment(BaseEnvironment):
                 continue
             with contextlib.suppress(OSError, subprocess.SubprocessError):
                 cmd = ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", f"{self.user}@{self.host}"]
-                subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+                subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
             with contextlib.suppress(OSError):
                 socket.unlink()

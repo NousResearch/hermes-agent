@@ -584,6 +584,7 @@ def _ensure_fhs_path_guard() -> None:
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             timeout=10,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return  # no bash or probe hung — don't block update on this

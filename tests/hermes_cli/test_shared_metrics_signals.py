@@ -612,7 +612,7 @@ def test_diff_and_record_run_off_the_callers_lock_in_the_owning_profile(marks, m
     monkeypatch.setattr(disabled_metrics, "config_transitions", slow)
     token = set_hermes_home_override(str(tmp_path / "b"))
     try:
-        with threading.Lock():  # the caller's write lock (the dashboard's _CONFIG_MUTATION_LOCK)
+        with threading.Lock():  # noqa: PLW2101 -- inert on purpose: a stand-in for the caller's _CONFIG_MUTATION_LOCK, which record_config_saved documents running outside of; the caller's write lock (the dashboard's _CONFIG_MUTATION_LOCK)
             disabled_metrics.record_config_saved({}, {"memory": {"memory_enabled": False}})
             assert marks.rows == []  # returned without diffing
     finally:

@@ -247,6 +247,23 @@ def thinking_toggle_extras(
     return {"thinking": {"type": "enabled"}}, {}
 
 
+# DashScope documents ``preserve_thinking`` (Qwen3.6+ and the Kimi K2.6/K2.7 it hosts) and a
+# top-level ``clear_thinking`` (its GLM-5.x) as the switches that make the server KEEP replayed
+# prior-turn ``reasoning_content``; without them the replay is accepted and dropped.
+# https://www.alibabacloud.com/help/en/model-studio/deep-thinking
+_DASHSCOPE_PRESERVE_MODELS = ("qwen3.6", "qwen3.7", "qwen3.8", "kimi-k2.6", "kimi-k2.7")
+
+
+def dashscope_preserve_thinking_extras(model: Optional[str]) -> dict:
+    """``extra_body`` keys that keep replayed reasoning on a DashScope-hosted model, else ``{}``."""
+    m = (model or "").strip().lower()
+    if any(token in m for token in _DASHSCOPE_PRESERVE_MODELS):
+        return {"preserve_thinking": True}
+    if m.startswith("glm-5"):
+        return {"clear_thinking": False}
+    return {}
+
+
 def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[str]) -> tuple[dict, dict]:
     """Ox Alpha (``x-preview-f-free``) ``reasoning_effort`` translation for the
     opencode-zen profile (low/high/max only; anything else 400s)."""

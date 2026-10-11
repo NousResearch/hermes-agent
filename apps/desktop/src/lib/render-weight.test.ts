@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { messagePaintWeight, messageStoreWeight, RENDER_WEIGHT_CHARS } from './render-weight'
+import { messageFirstPaintWeight, messagePaintWeight, messageStoreWeight, RENDER_WEIGHT_CHARS } from './render-weight'
 
 const bigResult = (chars: number) => ({
   type: 'tool-call',
@@ -116,5 +116,34 @@ describe('messagePaintWeight', () => {
 
     // One ceiling for the whole message — not one per part.
     expect(messagePaintWeight(parts)).toBeLessThanOrEqual(350)
+  })
+})
+
+describe('messageFirstPaintWeight', () => {
+  it('prices a lone expanded tool result by payload chars, not the collapsed line', () => {
+    // A run of a single tool call mounts EXPANDED (ToolRun forces expanded at
+    // count < 2), so the first-paint commit parses the whole payload while the
+    // history paint weight charges one collapsed line (#127684).
+    const solo = [bigResult(57_000)]
+
+    expect(messagePaintWeight(solo)).toBe(1)
+    expect(messageFirstPaintWeight(solo)).toBeGreaterThan(100)
+  })
+
+  it('agrees with the paint weight on markdown that mounts fully either way', () => {
+    const text = [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * 3) }]
+
+    expect(messageFirstPaintWeight(text)).toBe(messagePaintWeight(text))
+  })
+
+  it('bounds an enormous payload under the shared per-message ceiling', () => {
+    const enormous = messageFirstPaintWeight([bigResult(RENDER_WEIGHT_CHARS * 10_000)])
+
+    expect(enormous).toBeLessThanOrEqual(302)
+  })
+
+  it('floors at one unit and accepts non-array content', () => {
+    expect(messageFirstPaintWeight([{ type: 'tool-call', toolName: 'todo', args: {} }])).toBeGreaterThanOrEqual(1)
+    expect(messageFirstPaintWeight(null)).toBe(1)
   })
 })

@@ -10,6 +10,7 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -20,7 +21,7 @@ import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 import { useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
-import { messagePaintWeight } from '@/lib/render-weight'
+import { messageFirstPaintWeight, messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
   COMPOSER_CLEARANCE_SLOT,
@@ -95,7 +96,20 @@ const RENDER_BUDGET = 600
 // turn count regardless of weight).
 // Panes that already backfilled keep their mounted content when the count
 // changes — the share only caps where NEW backfills stop.
-const $mountedTranscriptPanes = atom(0)
+//
+// Registry of transcript panes that currently mount DOM, keyed by pane
+// instance. Visible panes always mount; hot-hidden panes mount only while
+// retained (see MAX_RETAINED_HIDDEN_TRANSCRIPTS). The shared page budget
+// divides across this count, so an unbounded registry would dilute every
+// visible pane's page with app uptime (#127684).
+interface TranscriptPaneRetentionEntry {
+  hidden: boolean
+  hiddenAt: number
+}
+
+export type TranscriptPaneRetention = Record<string, TranscriptPaneRetentionEntry>
+
+const $transcriptPaneRetention = atom<TranscriptPaneRetention>({})
 // Never offer "Show earlier" over fewer turns than this, however heavy they
 // are. A weight-only cut on a session of enormous turns put the button two
 // turns from the bottom, where it reads as broken rather than as paging — the
@@ -114,7 +128,7 @@ const MIN_VISIBLE_GROUPS = 8
 // 1-2 normal turns ≈ 10-20 units; the transition backfill below fills the rest
 // interruptibly, so the only thing a smaller budget changes is how much work
 // blocks the click-to-paint path.
-const FIRST_PAINT_BUDGET = 20
+export const FIRST_PAINT_BUDGET = 20
 // A hot-hidden transcript is retained for instant tab return, but keeping its
 // full scrollback mounted defeats the bounded pane cache. Preserve only the
 // live tail while hidden; revealing it resumes stepped backfill.
@@ -342,6 +356,60 @@ export function firstVisibleGroupIndex(
   return Math.min(firstVisible, Math.max(0, groups.length - minVisible))
 }
 
+// How many hot-hidden transcripts may keep their retention DOM. The most
+// recently hidden panes stay mounted for instant tab return; older ones evict
+// their rows (rendering nothing while hidden) and leave the shared budget
+// count. Sized above the per-zone hot-hidden cap (2) so ordinary tab
+// round-trips never notice, while a session-hopping workday across zones,
+// floating panes, and secondary surfaces cannot pin transcripts forever. A
+// reveal remounts through the normal backfill path (retention budget first,
+// then bounded steps), exactly like a hidden pane's reveal today.
+export const MAX_RETAINED_HIDDEN_TRANSCRIPTS = 4
+
+/** Ids of the hidden panes allowed to keep retention DOM: the `cap` most
+ *  recently hidden. Ordered by age, bounded by count. */
+export function retainedHiddenTranscriptIds(
+  retention: TranscriptPaneRetention,
+  cap = MAX_RETAINED_HIDDEN_TRANSCRIPTS
+): Set<string> {
+  return new Set(
+    Object.entries(retention)
+      .filter(([, entry]) => entry.hidden)
+      .sort((a, b) => b[1].hiddenAt - a[1].hiddenAt)
+      .slice(0, Math.max(0, cap))
+      .map(([id]) => id)
+  )
+}
+
+/** Panes dividing the shared page budget: every visible pane plus retained
+ *  hidden ones. Evicted hidden panes mount nothing, so they must not dilute
+ *  the visible share either. */
+export function mountedTranscriptPaneCount(
+  retention: TranscriptPaneRetention,
+  retainedHidden: ReadonlySet<string>
+): number {
+  return Object.entries(retention).filter(([id, entry]) => !entry.hidden || retainedHidden.has(id)).length
+}
+
+// Stable identity for an evicted hidden pane's empty row list, so the rows
+// memo below holds while hidden instead of rebuilding on every render.
+const EMPTY_GROUPS: MessageGroup[] = []
+
+// Fold a per-message weight vector into turn weights. The fold is currency-
+// agnostic: the full page cuts in paint weights (what history mounts
+// collapsed), the first-paint cut in expanded payload weights (what the bottom
+// turn(s) mount live). Structural identity is untouched, so swapping currency
+// never churns row identity.
+export function withGroupWeights(groups: readonly MessageGroup[], messageWeights: readonly number[]): MessageGroup[] {
+  return groups.map(group => ({
+    ...group,
+    weight:
+      group.kind === 'turn'
+        ? group.indices.reduce((sum, index) => sum + (messageWeights[index] ?? 1), 0)
+        : (messageWeights[group.index] ?? 1)
+  }))
+}
+
 // content-visibility:auto skips off-screen turns for perf, but with
 // contain-intrinsic-size:auto the browser only remembers a turn's size AFTER
 // it has rendered. A turn that finishes streaming near the bottom may have had
@@ -491,6 +559,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')
   )
 
+  // First-paint currency: expanded payload chars (what the bottom turn(s)
+  // actually mount). Same per-message cost class as the paint signature —
+  // settled content hits messageFirstPaintWeight's WeakMap.
+  const firstPaintSignature = useAuiState(s =>
+    s.thread.messages.map(message => messageFirstPaintWeight(message.content)).join(',')
+  )
+
   const { t } = useI18n()
   // Row structure is memoized on the STRUCTURAL signature only, so streaming
   // part-appends can't churn group identity (that would defeat the rows memo
@@ -525,18 +600,35 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   const { olderAvailable, expandWindow, isHistorical, returnToLatest } = useTranscriptWindow()
 
-  useEffect(() => {
-    $mountedTranscriptPanes.set($mountedTranscriptPanes.get() + 1)
-
-    return () => $mountedTranscriptPanes.set($mountedTranscriptPanes.get() - 1)
-  }, [])
-
-  const mountedPanes = useStore($mountedTranscriptPanes)
   const paneLifecycle = usePaneLifecycle()
   const paneVisible = usePaneVisible()
+  const isHotHidden = paneLifecycle === 'hot-hidden'
+  const paneInstanceId = useId()
+
+  useEffect(() => {
+    $transcriptPaneRetention.set({
+      ...$transcriptPaneRetention.get(),
+      [paneInstanceId]: { hidden: isHotHidden, hiddenAt: Date.now() }
+    })
+
+    return () => {
+      const next = { ...$transcriptPaneRetention.get() }
+
+      delete next[paneInstanceId]
+      $transcriptPaneRetention.set(next)
+    }
+  }, [paneInstanceId, isHotHidden])
+
+  const retention = useStore($transcriptPaneRetention)
+  // Hidden panes beyond the retention bound evict their rows (and leave the
+  // shared count) until revealed. Subscriptions stay mounted — this bounds DOM
+  // and commit traversal, not selector re-runs.
+  const retainedHidden = useMemo(() => retainedHiddenTranscriptIds(retention), [retention])
+  const evictedWhileHidden = isHotHidden && !retainedHidden.has(paneInstanceId)
+  const mountedPanes = mountedTranscriptPaneCount(retention, retainedHidden)
   // Hidden panes retain only a live-tail budget. Visible panes share the normal
   // screen budget; a reveal backfills older rows in bounded transition steps.
-  const paneBudget = transcriptPaneBudget(mountedPanes, paneLifecycle === 'hot-hidden')
+  const paneBudget = transcriptPaneBudget(mountedPanes, isHotHidden)
 
   const [renderBudget, setRenderBudget] = useState(FIRST_PAINT_BUDGET)
 
@@ -632,18 +724,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   // Weights (part count + visible character cost) fold into the BUDGET only.
   // Group identity stays structural, so a streaming append re-runs this cheap
-  // sum — not the row JSX. Settled content hits messagePaintWeight's WeakMap.
+  // sum — not the row JSX. Settled content hits the render-weight WeakMaps.
   const weightedGroups = useMemo(() => {
     const weights = weightSignature.split(',').map(w => Number(w) || 1)
 
-    return groups.map(group => ({
-      ...group,
-      weight:
-        group.kind === 'turn'
-          ? group.indices.reduce((sum, index) => sum + (weights[index] ?? 1), 0)
-          : (weights[group.index] ?? 1)
-    }))
+    return withGroupWeights(groups, weights)
   }, [groups, weightSignature])
+
+  // Same fold in the first-paint currency (expanded payload chars).
+  const firstPaintGroups = useMemo(() => {
+    const weights = firstPaintSignature.split(',').map(w => Number(w) || 1)
+
+    return withGroupWeights(groups, weights)
+  }, [groups, firstPaintSignature])
 
   // The turn floor and the newest-turn exemption apply to a real page only.
   // During the first-paint budget the point is a small synchronous commit;
@@ -657,7 +750,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // clamp looks like a user scroll-up to use-stick-to-bottom.
   const fullPage = renderBudget >= paneBudget
 
-  const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget, fullPage ? MIN_VISIBLE_GROUPS : 0, fullPage)
+  // First paint cuts in the EXPANDED currency: the bottom turn(s) mount the
+  // way the live view mounts them — single-tool runs expanded, text and diffs
+  // fully — so collapsed paint weights let tens of KB through a 20-unit budget
+  // at a price of ~1 (#127684). The full page keeps paint weights: history
+  // mounts collapsed, and repricing it expanded would page ordinary sessions
+  // apart for no paint saving.
+  const cutGroups = fullPage ? weightedGroups : firstPaintGroups
+
+  const hiddenCount = firstVisibleGroupIndex(cutGroups, renderBudget, fullPage ? MIN_VISIBLE_GROUPS : 0, fullPage)
 
   // Memoized for IDENTITY, not to save the slice: `rows` below keys off this
   // array, and an inline slice handed it a fresh array every render — so the
@@ -665,7 +766,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // streamed token rebuilt every visible row's JSX and re-rendered the whole
   // mounted transcript. Under the budget the raw `groups` identity made the
   // memo hold; heavy sessions lost it exactly when they could least afford to.
-  const visibleGroups = useMemo(() => (hiddenCount > 0 ? groups.slice(hiddenCount) : groups), [groups, hiddenCount])
+  const visibleGroups = useMemo(() => {
+    if (evictedWhileHidden) {
+      return EMPTY_GROUPS
+    }
+
+    return hiddenCount > 0 ? groups.slice(hiddenCount) : groups
+  }, [evictedWhileHidden, groups, hiddenCount])
 
   // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
   // commit painted — as a TRANSITION, so the heavy markdown + syntax

@@ -293,6 +293,14 @@ jobs:
     if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
     uses: ./.github/workflows/lockfile-diff.yml
 
+  # Advisory summary of the committed prompt-surface snapshot's diff. A stdlib-only job over two
+  # committed directories: cheap enough to run on every Python PR, and silent when nothing moved.
+  prompt-surface-diff:
+    name: Prompt surface diff
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.python == 'true'
+    uses: ./.github/workflows/prompt-surface-diff.yml
+
   docker-lint:
     name: Lint Docker scripts
     needs: detect
@@ -317,7 +325,7 @@ jobs:
   #   by detect.outputs must succeed; only unselected consumers may skip.
   #   Release (inputs.release): strict — every required job must be
   #   `success`. A skipped required lane fails the gate; only the PR-only
-  #   jobs (history-check, lockfile-diff, supply-chain) and
+  #   jobs (history-check, lockfile-diff, prompt-surface-diff, supply-chain) and
   #   the deferred Desktop E2E (e2e-desktop) may skip. The OSV scan's
   #   findings are advisory, but its execution is required.
   #
@@ -355,6 +363,7 @@ jobs:
       - case-collision-check
       - lazy-deps-guard
       - lockfile-diff
+      - prompt-surface-diff
       - docker-lint
       - profile-artifact-check
       - icons-freshness-check

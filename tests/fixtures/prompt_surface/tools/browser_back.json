@@ -1,0 +1,9 @@
+{
+  "description": "Navigate back to the previous page in browser history. Requires browser_navigate to be called first.",
+  "name": "browser_back",
+  "parameters": {
+    "properties": {},
+    "required": [],
+    "type": "object"
+  }
+}

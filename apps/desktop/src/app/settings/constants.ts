@@ -629,7 +629,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   terminal: {
     cwd: 'Default project folder for tool and terminal work.',
-    persistentShell: 'SSH backend: keep exported variables between commands. Off starts each command from the login environment; the working directory always carries over.',
+    persistentShell:
+      'SSH backend: keep exported variables between commands. Off starts each command from the login environment; the working directory always carries over.',
     envPassthrough: 'Environment variables to pass into tool execution.',
     dockerImage: 'Container image used when the execution backend is Docker.',
     singularityImage: 'Image used when the execution backend is Singularity.',

@@ -184,6 +184,7 @@ from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInbound
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
+from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from utils import env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -512,7 +513,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -681,6 +682,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._send_path_degraded: bool = False
         self._general_request_drain_lock = asyncio.Lock()
         self._dm_topics: dict[str, int] = {}  # topic_name -> message_thread_id
+        # Topic creation whose opening message has not arrived yet (#136567); see TelegramTopicRoutingMixin.
+        self._pending_created_topics: dict[tuple[str, str], tuple[str, int, float]] = {}
         self._forum_command_registered: set[int] = set()  # forum chats with commands registered
         self._command_menu_fingerprint: str = ""  # language + menu payload last pushed via set_my_commands
         self._forum_lock = asyncio.Lock()
@@ -2893,6 +2896,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         app.add_handler(TelegramMessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
+        # Topic-creation service messages carry the new topic id and no text, so no other handler sees
+        # them. They are a routing signal only (never an agent turn): see _handle_forum_topic_created.
+        created_filter = getattr(getattr(filters, "StatusUpdate", None), "FORUM_TOPIC_CREATED", None)
+        if created_filter is not None:
+            app.add_handler(TelegramMessageHandler(created_filter, self._handle_forum_topic_created))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
@@ -6935,13 +6943,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._reload_dm_topics_from_config()  # cache miss — topics may have been added externally
         return _lookup()
 
-    def _cache_dm_topic_from_message(self, chat_id: str, thread_id: str, topic_name: str) -> None:
-        """Cache a thread_id -> topic_name mapping discovered from an incoming message."""
-        cache_key = f"{chat_id}:{topic_name}"
-        if cache_key not in self._dm_topics:
-            self._dm_topics[cache_key] = int(thread_id)
-            logger.info("[%s] Cached DM topic from message: %s -> thread_id=%s", self.name, cache_key, thread_id)
-
     @classmethod
     def _flatten_rich_inline_text(cls, value: Any) -> str:
         """Best-effort plaintext flattener for Bot API rich-message inline nodes."""
@@ -7006,13 +7007,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             if topic_info:
                 chat_topic = topic_info.get("name")
                 topic_skill = topic_info.get("skill")
-            # forum_topic_created service messages also reveal topic names
-            if hasattr(message, "forum_topic_created") and message.forum_topic_created:
-                created_name = message.forum_topic_created.name
-                if created_name:
-                    self._cache_dm_topic_from_message(str(chat.id), thread_id_str, created_name)
-                    if not chat_topic:
-                        chat_topic = created_name
+            # The topic name a creation reveals is cached by _handle_forum_topic_created, which is the
+            # only path Telegram delivers a ``forum_topic_created`` service message through.
         elif chat_type == "group" and thread_id_str:
             # Forum topic skill binding via config.extra['group_topics']; accepts both
             # [{"chat_id": ..., "topics": [...]}] and legacy {"-100...": [{"thread_id": 12}]}.
@@ -7080,6 +7076,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # (message_thread_id=None) normalize to the General-topic id so replies route back to General
         # (#22423).
         thread_id_str = self._effective_message_thread_id(message)
+        # A new private-chat topic's opening message can arrive with no thread id at all (#136567); the
+        # creation it follows is then the only source of the topic id. Adopt it before anything downstream
+        # (gating, batching, session routing, topic recovery) reads the event source.
+        thread_id_str = self._adopt_created_topic_thread(message, chat_type, thread_id_str)
         chat_topic, topic_skill = self._resolve_topic_binding(message, chat_type, thread_id_str)
         has_full_name = hasattr(chat, "full_name")
         if user:

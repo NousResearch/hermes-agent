@@ -3,6 +3,13 @@
 tool result already carries the content verbatim. Cleared via ``reset_skill_view_dedup()`` on
 context compression AND on a committed proactive tool-result prune, because both replace the
 original content with a one-line marker.
+
+The cache is process-global (one long-lived process serves many sessions), so it is ALSO
+scoped to the active session: when the session changes, the whole cache is dropped. Without
+this, a fresh session that reuses a task_id (TUI resume/reconnect, a background-review fork,
+or any task_id collision) could match a stale entry from a previous session and get a false
+"unchanged" stub for a skill it has never actually loaded into its own context — the model
+then has to read the file from disk to recover the content.
 """
 
 import json
@@ -13,6 +20,9 @@ from typing import Dict
 _skill_view_tracker: dict[str, dict[tuple, tuple]] = {}
 _skill_view_tracker_lock = threading.Lock()
 _SKILL_VIEW_DEDUP_CAP = 200
+# Last session_id seen by a view. A change means a new conversation: the dedup cache is a
+# per-conversation optimization, so a new conversation starts clean (no inherited entries).
+_active_session_id: str | None = None
 
 _SKILL_VIEW_DEDUP_MESSAGE = (
     "Skill content unchanged since it was loaded earlier in this "
@@ -32,7 +42,7 @@ def _skill_view_fingerprint(payload: dict) -> tuple | None:
         return None
 
 
-def _record_skill_view(task_id, name, file_path, payload: dict) -> None:
+def _record_skill_view(task_id, name, file_path, payload: dict, session_id: str | None = None) -> None:
     """Record a served skill_view so an identical repeat can be deduped."""
     # Never dedup setup-needed views: readiness depends on config/env state that
     # changes without the file changing; the model must see the refreshed status.
@@ -43,19 +53,41 @@ def _record_skill_view(task_id, name, file_path, payload: dict) -> None:
         return
     key = (str(payload.get("name") or name), file_path or "")
     with _skill_view_tracker_lock:
+        _drop_cache_on_session_change(session_id)
         cache = _skill_view_tracker.setdefault(str(task_id), {})
         cache[key] = fp
         while len(cache) > _SKILL_VIEW_DEDUP_CAP:  # FIFO eviction
             del cache[next(iter(cache))]
 
 
-def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
+def _drop_cache_on_session_change(session_id: str | None) -> None:
+    """Drop the whole dedup cache when the active session changes (caller holds the lock).
+
+    The cache is a per-conversation optimization, but the process is long-lived and serves
+    many sessions: a fresh session that reuses a task_id (TUI resume/reconnect, a
+    background-review fork, or any task_id collision) must NOT inherit a stale entry from a
+    previous session, or its first view of a skill would return a false "unchanged" stub.
+    """
+    global _active_session_id
+    if session_id is None or session_id == _active_session_id:
+        return
+    _skill_view_tracker.clear()
+    _active_session_id = session_id
+
+
+def _check_skill_view_dedup(task_id, name, file_path, session_id: str | None = None) -> str | None:
     """Dedup stub when this exact skill file was already served to this task and
-    is unchanged on disk; None otherwise."""
+    is unchanged on disk; None otherwise.
+
+    ``session_id`` scopes the cache to the active conversation: when it differs from the
+    session that populated the cache, the stale entries are dropped first, so a fresh
+    session (or a task_id reused across sessions) never gets a false "unchanged" stub.
+    """
     if not task_id:
         return None
     n = str(name)
     with _skill_view_tracker_lock:
+        _drop_cache_on_session_change(session_id)
         if not (cache := _skill_view_tracker.get(str(task_id))):
             return None
         # Record key is the RESOLVED name; match raw and resolved forms so

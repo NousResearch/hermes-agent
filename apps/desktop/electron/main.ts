@@ -13358,6 +13358,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       )
     }
 
+    backendConnectionState.markProcessReady(processOwner)
+
     updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',
@@ -15882,7 +15884,12 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   // reset connection state so the next startHermes() call restarts the
   // full backend flow (including a fresh runBootstrap pass).
   rememberLog('[bootstrap] reset requested by renderer; clearing latched failure')
-  await teardownPrimaryBackendAndWait()
+  // A renderer retry can arrive after the current spawn has completed its
+  // readiness handshake. Do not tear down that adopted backend and immediately
+  // reconnect to its corpse; the retry only needs to clear the UI latch.
+  if (!backendConnectionState.isProcessReady()) {
+    await teardownPrimaryBackendAndWait()
+  }
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null

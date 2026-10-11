@@ -514,6 +514,21 @@ def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, An
     }
 
 
+def _facts_lines(facts: ProjectFacts) -> list[str]:
+    """The workspace-block lines that carry project facts, rendered exactly as
+    ``build_coding_workspace_block`` emits them — the evidence a pin re-derives to tell
+    a marker-only workspace's generation from its successor's."""
+    lines: list[str] = []
+    if facts.manifests:
+        managers = f" ({'/'.join(facts.package_managers)})" if facts.package_managers else ""
+        lines.append(f"- Project: {', '.join(facts.manifests[:6])}{managers}")
+    if facts.verify_commands:
+        lines.append(f"- Verify: {'; '.join(facts.verify_commands)}")
+    if facts.context_files:
+        lines.append(f"- Context files: {', '.join(facts.context_files)}")
+    return lines
+
+
 WORKSPACE_BLOCK_HEADER = "Workspace (snapshot at session start — re-check with `git` before acting on it):"
 
 
@@ -559,11 +574,5 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
             lines.extend(["- Recent commits:", *(f"    {c}" for c in recent.splitlines())])
 
     f = detect_project_facts(root)
-    if f.manifests:
-        managers = f" ({'/'.join(f.package_managers)})" if f.package_managers else ""
-        lines.append(f"- Project: {', '.join(f.manifests[:6])}{managers}")
-    if f.verify_commands:
-        lines.append(f"- Verify: {'; '.join(f.verify_commands)}")
-    if f.context_files:
-        lines.append(f"- Context files: {', '.join(f.context_files)}")
+    lines.extend(_facts_lines(f))
     return "\n".join(lines)

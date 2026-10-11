@@ -753,11 +753,6 @@ class A2AAdapter(BasePlatformAdapter):
             return error
         if rec["state"] in protocol.TERMINAL_STATES:
             return _err(req_id, protocol.ERR_TASK_NOT_CANCELABLE, f"task {task_id} already {rec['state']}")
-        if rec.get("input_id"):
-            # Forwarded: the owner holds the admission and this adapter cannot stop it, so marking
-            # the task canceled would report a cancel while the owner's turn ran to completion.
-            return _err(req_id, protocol.ERR_TASK_NOT_CANCELABLE,
-                        f"task {task_id} was forwarded to its profile owner; accepted work is not cancelled")
         self.tasks.complete(task_id, protocol.STATE_CANCELED, "")
         self._turns.reset(rec["context_id"])
         self._resolve_task(task_id, protocol.STATE_CANCELED, "")

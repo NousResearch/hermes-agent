@@ -5,6 +5,7 @@ Replaces the old ``os.environ``-based ``HERMES_SESSION_*`` state with task-local
 other's routing ids.  ``get_session_env`` is a drop-in for ``os.getenv``.
 """
 
+import logging
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -12,6 +13,7 @@ from typing import Any, Iterator
 
 # "Never set here" (falls back to os.environ for CLI/cron) vs "" = explicitly cleared (no fallback).
 _UNSET: Any = object()
+logger = logging.getLogger(__name__)
 
 # Process-level latch: has set_session_vars() ever bound a session?  When engaged, the subprocess
 # env bridge treats ContextVars as authoritative and an _UNSET var as "no session in THIS task".
@@ -88,7 +90,11 @@ def set_current_session_id(session_id: str) -> None:
         if is_delegated_child_context():
             return
     except Exception:
-        pass
+        logger.warning(
+            "delegation-context guard unavailable; not writing HERMES_SESSION_ID to os.environ",
+            exc_info=True,
+        )
+        return
     os.environ["HERMES_SESSION_ID"] = session_id
 
 

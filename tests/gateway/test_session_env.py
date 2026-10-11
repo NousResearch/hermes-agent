@@ -13,6 +13,7 @@ from gateway.session_context import (
     reset_session_vars,
     _VAR_MAP,
     _UNSET,
+    set_current_session_id,
 )
 
 
@@ -316,3 +317,20 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     # Bound only for the handler call, not leaked past dispatch
     assert get_session_env("HERMES_SESSION_KEY") == ""
 
+
+
+def test_set_current_session_id_fails_closed_when_child_guard_raises(monkeypatch):
+    """An unavailable child-context guard must not clobber the process env."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "parent-session")
+
+    def raise_from_guard():
+        raise RuntimeError("guard unavailable")
+
+    monkeypatch.setattr(
+        "agent.delegation_context.is_delegated_child_context",
+        raise_from_guard,
+    )
+
+    set_current_session_id("child-session")
+
+    assert os.environ["HERMES_SESSION_ID"] == "parent-session"

@@ -397,6 +397,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:minimize-to-tray:changed', listener)
     }
   },
+  downloadSaveDirect: {
+    get: () => ipcRenderer.invoke('hermes:download-save-direct:get'),
+    set: on => ipcRenderer.invoke('hermes:download-save-direct:set', on),
+    onChanged: callback => {
+      const listener = (_event, enabled) => callback(enabled)
+      ipcRenderer.on('hermes:download-save-direct:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:download-save-direct:changed', listener)
+    }
+  },
   setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),
   setF12ShortcutActive: active => ipcRenderer.send('hermes:f12ShortcutActive', Boolean(active)),
   onF12Shortcut: callback => {

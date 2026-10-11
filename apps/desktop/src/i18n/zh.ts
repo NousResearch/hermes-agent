@@ -1276,6 +1276,9 @@ export const zhOverrides = {
       minimizeToTrayDesc:
         '最小化窗口或关闭主窗口时，将其隐藏到系统托盘（macOS 上为菜单栏），让 Hermes 继续运行。通过托盘菜单中的“退出 Hermes”或 Cmd+Q 退出。默认关闭，仅适用于此设备。',
       minimizeToTrayUnavailable: '系统托盘不可用。窗口将正常最小化和关闭。关闭此选项后重新开启即可重试。',
+      downloadsSaveDirectTitle: '保存下载时不再询问',
+      downloadsSaveDirectDesc:
+        '预览面板中的下载会直接保存到“下载”文件夹，不再弹出系统保存对话框——无人值守的代理运行无法应答该对话框。不会覆盖已有文件，重复下载会另存为“名称 (1)”。默认关闭，仅适用于此设备。',
       none: '无',
       noneParen: '(无)',
       builtinOnly: '仅内置',

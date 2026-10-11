@@ -38,6 +38,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
 import { DeveloperSettings } from './developer-settings'
+import { DownloadsSaveDirectSetting } from './downloads-save-direct-setting'
 import {
   clearsEnabledToolsets,
   diffConfig,
@@ -484,6 +485,7 @@ function ConfigSettingsInner({
             label={c.alwaysExternalLinksTitle}
             onChange={setAlwaysExternalLinks}
           />
+          <DownloadsSaveDirectSetting id={settingElementId(SETTING_IDS.advanced.downloadsSaveDirect)} />
           <PoolLimitsSetting />
           <QuickEntrySettings />
           <DeveloperSettings />

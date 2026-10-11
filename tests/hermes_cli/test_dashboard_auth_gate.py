@@ -350,8 +350,14 @@ def test_start_server_loopback_public_url_enables_gate(monkeypatch):
         clear_providers()
 
 
-def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypatch):
-    """Trusting an external Host must never expose the loopback token mode."""
+def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypatch, capsys):
+    """Trusting an external Host must never expose the loopback token mode.
+
+    The refusal is a permanent configuration error, not a crash: it exits with
+    the gateway's EX_CONFIG marker (78) so supervisors park the service
+    instead of restart-looping (#49567), and the actionable message goes to
+    stderr so `docker logs` shows it.
+    """
     from hermes_cli.dashboard_auth import clear_providers
 
     monkeypatch.setenv(
@@ -368,11 +374,14 @@ def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypa
         "trusted_public_hosts",
     )
 
-    with pytest.raises(SystemExit, match=r"no auth providers"):
+    with pytest.raises(SystemExit) as error:
         web_server.start_server(
             host="127.0.0.1", port=9119,
             open_browser=False, allow_public=False,
         )
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    assert error.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
+    assert "no auth providers" in capsys.readouterr().err
     assert web_server.app.state.auth_required is True
 
 

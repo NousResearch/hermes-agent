@@ -1201,7 +1201,16 @@ def _configure_auth_gate(
         # No escape hatch serves a gated dashboard without a provider.
         from hermes_cli.dashboard_auth import list_providers
         if not list_providers():
-            raise SystemExit(_no_auth_provider_message(host))
+            from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+            # A missing provider is configuration, not a transient crash: exit
+            # EX_CONFIG (78) — the same permanent-refusal status as host
+            # conflicts — so supervisors (s6 finish maps 78 → 125) park the
+            # service instead of restart-looping on a guaranteed re-failure.
+            # The message goes to stderr; a string SystemExit would exit 1,
+            # indistinguishable from a crash (#49567's restart loop).
+            print(_no_auth_provider_message(host), file=sys.stderr)
+            raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
         _log.info(
             "Dashboard binding to %s with auth gate enabled. Providers: %s",
             host,

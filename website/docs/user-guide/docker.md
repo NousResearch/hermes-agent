@@ -127,20 +127,22 @@ docker run -d \
   nousresearch/hermes-agent gateway run
 ```
 
-The dashboard is supervised by s6 — if it crashes, `s6-supervise` restarts it automatically after a short backoff. Dashboard stdout/stderr is forwarded to `docker logs <container>` (no prefix; the gateway's own output now lives in a per-profile s6-log file — see [Where the logs go](#where-the-logs-go) below — so the two streams don't clash).
+The dashboard is supervised by s6 — if it crashes, `s6-supervise` restarts it. Startup *refusals* are not crashes: when the dashboard exits with a fatal configuration error (e.g. the auth gate refuses a non-loopback bind with no provider registered — exit code 78), the s6 finish script parks the service instead of restarting, and the refusal message appears in `docker logs <container>`. Dashboard stdout/stderr is forwarded to `docker logs <container>` (no prefix; the gateway's own output now lives in a per-profile s6-log file — see [Where the logs go](#where-the-logs-go) below — so the two streams don't clash).
 
 | Environment variable | Description | Default |
 |---------------------|-------------|---------|
 | `HERMES_DASHBOARD` | Set to `1` (or `true` / `yes`) to enable the supervised dashboard service | *(unset — service is registered but stays down)* |
-| `HERMES_DASHBOARD_HOST` | Bind address for the dashboard HTTP server | `0.0.0.0` |
+| `HERMES_DASHBOARD_HOST` | Bind address for the dashboard HTTP server | `127.0.0.1` |
 | `HERMES_DASHBOARD_PORT` | Port for the dashboard HTTP server | `9119` |
 | `HERMES_DASHBOARD_INSECURE` | **Deprecated / no-op.** Formerly bypassed the auth gate; as of the June 2026 hardening it no longer disables authentication. A non-loopback bind always requires an auth provider | *(ignored — configure a provider instead)* |
 
-The dashboard inside the container defaults to binding `0.0.0.0` — without it, the published `-p 9119:9119` port would not be reachable from the host. To restrict the bind to container loopback (for sidecar / reverse-proxy setups), set `HERMES_DASHBOARD_HOST=127.0.0.1`.
+The dashboard inside the container defaults to binding `127.0.0.1` — the same safe loopback default as the `hermes dashboard` CLI, so a fresh container never serves an unauthenticated dashboard. With the default loopback bind, a published `-p 9119:9119` port is **not** reachable from the host; to serve the dashboard through a published port, set `HERMES_DASHBOARD_HOST=0.0.0.0` **and** configure an auth provider (`HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `_PASSWORD`, or `HERMES_DASHBOARD_OAUTH_CLIENT_ID`) — a providerless non-loopback bind is refused at startup (exit 78, service parked, message in `docker logs`). For sidecar / reverse-proxy setups inside the container network, keep `HERMES_DASHBOARD_HOST=127.0.0.1`.
+
+On **macOS / Windows Docker Desktop**, `network_mode: host` and published container-loopback binds both miss the host: Docker Desktop maps them into its Linux VM. Use the shipped compose override instead — `docker compose -f docker-compose.yml -f docker-compose.macos.yml up -d` publishes the dashboard on `127.0.0.1:9119` to your Mac/PC (see `docker-compose.macos.yml`).
 
 The dashboard's auth gate engages automatically when both of the following are true:
 
-1. The bind host is non-loopback (e.g. the default `0.0.0.0` inside the container), **and**
+1. The bind host is non-loopback (e.g. `HERMES_DASHBOARD_HOST=0.0.0.0` inside the container), **and**
 2. A `DashboardAuthProvider` plugin is registered.
 
 There are three bundled ways to satisfy the second condition:

@@ -942,10 +942,57 @@ class WebhookAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
-            result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+            # Mirror the cron delivery path: unwrap MEDIA: tags into native media sends and post
+            # only the cleaned text (cron/scheduler_delivery.py). Webhook routes render prompts
+            # from signed event payloads, so the shared media-path policy (allow dirs / strict /
+            # denylist) must gate attachment delivery exactly like cron — a MEDIA: tag here is no
+            # more trusted than one a cron job's LLM emits.
+            from gateway.media_policy import apply_media_policy_env
+            apply_media_policy_env()
+            media_files, cleaned_content = BasePlatformAdapter.extract_media(content)
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            if media_files:
+                result = await self._deliver_media(adapter, target_platform, chat_id, cleaned_content,
+                                                   media_files, thread_id, delivery)
+            else:
+                result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
             if result.success:
                 self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)
             return result
+
+    async def _deliver_media(self, adapter, target_platform, chat_id, cleaned_content,
+                             media_files, thread_id, delivery) -> SendResult:
+        """Send cleaned text plus each validated media file through the adapter's media lanes.
+
+        Same dispatch as cron/run_turn: audio via ``send_voice``, then video / image / document.
+        ``send_voice`` is the sibling lane cron uses; platforms where media delivery must fail
+        closed on the mirror text keep the raw content out of the session transcript.
+        """
+        metadata = {"thread_id": thread_id} if thread_id else None
+        if cleaned_content and cleaned_content.strip():
+            text_result = await adapter.send(chat_id, cleaned_content, metadata=metadata)
+            if not text_result.success:
+                return text_result
+        from gateway.platforms.base import should_send_media_as_audio
+        from gateway.run_notifications import _IMAGE_EXTS, _VIDEO_EXTS
+        for media_path, is_voice in media_files:
+            ext = os.path.splitext(media_path)[1].lower()
+            with suppress(Exception):
+                if should_send_media_as_audio(target_platform, ext, is_voice=is_voice):
+                    media_result = await adapter.send_voice(chat_id=chat_id, audio_path=media_path,
+                                                            metadata=metadata, is_voice=is_voice)
+                elif ext in _VIDEO_EXTS:
+                    media_result = await adapter.send_video(chat_id=chat_id, video_path=media_path,
+                                                            metadata=metadata)
+                elif ext in _IMAGE_EXTS:
+                    media_result = await adapter.send_image_file(chat_id=chat_id, image_path=media_path,
+                                                                 metadata=metadata)
+                else:
+                    media_result = await adapter.send_document(chat_id=chat_id, file_path=media_path,
+                                                               metadata=metadata)
+                if not getattr(media_result, "success", True):
+                    return SendResult(success=False, error=f"Media delivery failed: {media_path}")
+        return SendResult(success=True)
 
     def _delivery_config(self, profile: Optional[str]):
         """Gateway config of the profile a delivery is bound to (call inside ``_profile_scope``)."""

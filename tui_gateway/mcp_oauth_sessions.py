@@ -70,8 +70,15 @@ def start_flow(
         client_redirect_uri = _validate_client_redirect_uri(client_redirect_uri)
     cutoff = time.time() - _SESSION_TTL_SECONDS  # opportunistic GC of expired sessions
     with _sessions_lock:
-        for sid in [sid for sid, rec in _sessions.items() if rec["created_at"] < cutoff]:
-            _shutdown_listener(_sessions.pop(sid))
+        expired = [
+            _sessions.pop(sid)
+            for sid in [s for s, r in _sessions.items() if r["created_at"] < cutoff]
+        ]
+    # shutdown() blocks until the listener's serve_forever loop exits (or forever when the
+    # thread never started); it must not run under _sessions_lock, since every other session
+    # operation serializes behind it.
+    for old in expired:
+        _shutdown_listener(old)
     with _sessions_lock:
         active = [r for r in _sessions.values() if not r["flow"].worker_done]
         if len(active) >= _MAX_PENDING:

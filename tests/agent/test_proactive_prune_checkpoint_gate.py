@@ -29,6 +29,9 @@ class _CountingPruneCompressor:
             current_tokens is None or current_tokens >= self.proactive_prune_tokens
         )
 
+    # A bound session row: the host only dispatches the prune when the originals can be archived.
+    _session_db, _session_id = object(), "s1"
+
     def prune_tool_results_only(self, messages, current_tokens=None):
         self.calls += 1
         return list(messages) + [{"role": "system", "content": "pruned"}], 3
@@ -97,6 +100,7 @@ def test_engine_override_of_prune_is_suppressed_too():
 
     class _PruningEngine(_engine_stub()):
         calls = 0
+        _session_db, _session_id = object(), "s1"  # a bound session row (host-side archive gate)
 
         def prune_tool_results_only(self, messages, current_tokens=None):
             type(self).calls += 1
@@ -133,7 +137,7 @@ def test_prune_suppression_logs_once_and_names_the_availability_consequence(capl
 
 
 def test_disabled_prune_is_not_reported_as_a_suppressed_authority(caplog):
-    """The shipping default (``proactive_prune_tokens: 0``) withholds nothing."""
+    """A disabled prune (``proactive_prune_tokens: 0``) withholds nothing."""
     compressor = _CountingPruneCompressor(proactive_prune_tokens=0)
     messages = [{"role": "user", "content": "scan"}]
     agent = _agent(True)
@@ -168,11 +172,14 @@ def test_would_proactively_prune_is_the_compressors_own_precondition():
 
     with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
         default = ContextCompressor(model="test", quiet_mode=True)
+        off = ContextCompressor(model="test", quiet_mode=True, proactive_prune_tokens=0)
         configured = ContextCompressor(model="test", quiet_mode=True, proactive_prune_tokens=48_000)
 
-    assert default.proactive_prune_tokens == 0
-    assert default.would_proactively_prune(400_000) is False
-    assert _prune_would_have_run(default, 400_000) is False
+    assert default.proactive_prune_tokens == 64_000  # default-on
+    assert default.would_proactively_prune(63_999) is False
+    assert default.would_proactively_prune(64_000) is True
+    assert off.would_proactively_prune(400_000) is False
+    assert _prune_would_have_run(off, 400_000) is False
     assert configured.would_proactively_prune(47_999) is False
     assert configured.would_proactively_prune(48_000) is True
     assert _prune_would_have_run(configured, 47_999) is False

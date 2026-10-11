@@ -248,6 +248,18 @@ def test_removing_compressor_keys_restores_fresh_build_values(monkeypatch):
         assert getattr(compressor, attr) == getattr(fresh, attr), attr
 
 
+def test_boolean_prune_trigger_matches_fresh_build(monkeypatch):
+    """Hot reload parses YAML booleans like agent_init: `true` keeps the default, `false` turns it off."""
+    session, compressor = _session_with_compressor()
+    for raw, expected in ((True, 64_000), (False, 0)):
+        monkeypatch.setattr(server, "_load_cfg", lambda raw=raw: {"compression": {"proactive_prune_tokens": raw}})
+        server._sync_agent_compression_with_config("sid-bool", session)
+        assert compressor.proactive_prune_tokens == expected
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"proactive_prune_min_reclaim_tokens": True}})
+    server._sync_agent_compression_with_config("sid-bool", session)
+    assert compressor.proactive_prune_min_reclaim_tokens == 64_000
+
+
 def test_removing_threshold_restores_derived_default(monkeypatch):
     session, compressor = _neutral_session(threshold_percent=0.85)
     assert compressor.threshold_percent == 0.85

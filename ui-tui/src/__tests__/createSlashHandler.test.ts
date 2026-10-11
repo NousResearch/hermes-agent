@@ -732,6 +732,26 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('names the MCP servers that did not connect after /reload-mcp', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ failed: ['broken', 'flaky'], status: 'reloaded' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/reload-mcp now')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('MCP servers reloaded')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('did not connect: broken, flaky')
+    })
+  })
+
+  it('reports a clean /reload-mcp without a failure line on an older gateway', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ status: 'reloaded' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/reload-mcp now')).toBe(true)
+    await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalledWith('MCP servers reloaded'))
+    expect(ctx.transcript.sys).toHaveBeenCalledTimes(1)
+  })
+
   it('routes /rollback through native RPC when a session is active', () => {
     patchUiState({ sid: 'sid-abc' })
     const rpc = vi.fn(() => Promise.resolve({}))

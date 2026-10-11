@@ -791,6 +791,11 @@ class PhotonAdapter(BasePlatformAdapter):
         except json.JSONDecodeError:
             logger.debug("[photon] skipping non-JSON inbound line")
             return
+        if event.get("control"):  # sidecar notice, never a user message
+            if event["control"] == "inbound_gap":
+                logger.warning("[photon] Photon could not replay inbound messages sent between %s and %s;"
+                               " some may be missing", event.get("since") or "the last delivery", event.get("until"))
+            return
         msg_id = event.get("messageId")
         if msg_id and self._dedup.is_duplicate(msg_id):
             return
@@ -1044,6 +1049,8 @@ class PhotonAdapter(BasePlatformAdapter):
             "PHOTON_PROJECT_ID": self._project_id, "PHOTON_PROJECT_SECRET": self._project_secret,
             "PHOTON_SIDECAR_PORT": str(self._sidecar_port), "PHOTON_SIDECAR_BIND": self._sidecar_bind,
             "PHOTON_SIDECAR_TOKEN": self._sidecar_token,
+            # Inbound resume cursor, kept across sidecar restarts (sidecar/catchup.mjs).
+            "PHOTON_CATCHUP_STATE_FILE": str(_runtime_record_path().with_name("photon-catchup.json")),
             # Exit on stdin EOF so ANY gateway death (incl. SIGKILL) can't orphan it on the port.
             "PHOTON_SIDECAR_WATCH_STDIN": "1"})
         from hermes_cli._subprocess_compat import windows_hide_flags  # hide child console on Windows

@@ -1361,11 +1361,13 @@ def _resolve_target_transport(
     target_adapters = adapters
     transport = None
     if isinstance(adapters, _preflight.SharedRouteAdapters):
-        # Credentialless satellite: the primary adapter serves THIS target only when an exact
-        # primary route maps it to this profile; a miss fails closed below.
-        # See #101113.
-        shared = adapters.get(platform, target)
-        target_adapters = {platform: shared} if shared is not None else {}
+        # Satellite: its OWN adapters serve their platforms through the normal native gate below
+        # (an own ``enabled: false`` still vetoes; the host bot never substitutes). For any other
+        # platform the primary adapter serves THIS target only when an exact primary route maps
+        # it to this profile; a miss fails closed below. See #101113.
+        own_adapters = adapters.own_adapters
+        shared = None if platform in own_adapters else adapters.get(platform, target)
+        target_adapters = {**own_adapters, platform: shared} if shared is not None else own_adapters
         if shared is not None:
             # The PRIMARY's route authorized this exact native adapter. The satellite's own
             # ``platforms.<p>`` block describes a connector it never runs (no credential), so

@@ -1955,13 +1955,6 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def read_raw_config_readonly() -> dict[str, Any]:
-    """``read_raw_config()`` without the per-call deepcopy, for callers that ONLY READ.
-    **Mutating the result corrupts the in-process cache for every subsequent caller.** Meant for
-    per-turn policy checks that were paying a full config deepcopy 2-3x per agent turn."""
-    return _read_raw_config_impl(want_deepcopy=False)
-
-
 def require_readable_config_before_write(config_path: Optional[Path] = None) -> dict[str, Any]:
     """Refuse to replace an existing config.yaml that cannot be read or parsed; return the mapping.
     Guards two collapse-to-empty failure modes that would let a read-then-write caller silently
@@ -2076,11 +2069,11 @@ def load_config() -> dict[str, Any]:
     return _load_config_impl(want_deepcopy=True)
 
 
-def load_config_readonly() -> dict[str, Any]:
-    """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
-    **Mutating the returned dict (or any nested structure) corrupts the in-process cache for
-    every subsequent caller** — only for code paths that never write to the result."""
-    return _load_config_impl(want_deepcopy=False)
+# ---- Read-only config views ----  (moved into config_readonly; re-exported here
+# because callers and tests import these from hermes_cli.config)
+
+from hermes_cli.config_readonly import (
+    load_config_readonly, read_raw_config_readonly)
 
 
 def _ensure_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:

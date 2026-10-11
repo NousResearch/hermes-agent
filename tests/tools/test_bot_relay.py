@@ -708,6 +708,33 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
     assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"
 
 
+def test_delivery_env_drops_the_senders_identity_pins(monkeypatch):
+    """A sender that is (or inherited the env of) a kanban worker must not pin the recipient's
+    identity: HERMES_PROFILE(_NAME) would re-label the recipient's kanban comments as the sender's
+    profile, the kanban worker env would retarget its tools at the sender's card. The delegated-child
+    fence marker is deliberately NOT dropped: a recipient woken by a fenced worker stays fenced and
+    replies via message_agent instead of mutating the board (#117619)."""
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS
+
+    monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
+    monkeypatch.setenv("HERMES_PROFILE", "dedale")
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "dedale")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(Path("/w/t-sender")))
+    for name in KANBAN_ENV_KEYS:
+        monkeypatch.setenv(name, f"sender-{name}")
+
+    env = bot_relay.delivery_env(None)
+    assert "HERMES_PROFILE" not in env
+    assert "HERMES_PROFILE_NAME" not in env
+    assert "HERMES_KANBAN_WORKSPACE" not in env
+    for name in KANBAN_ENV_KEYS:
+        assert name not in env
+    # Non-identity process env still passes through; the fence survives the pin strip.
+    assert env["HERMES_RELAY_TEST_MARKER"] == "kept"
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, str(Path("/w/board-sender")))
+    assert bot_relay.delivery_env(None)[DELEGATED_CHILD_ENV_MARKER] == str(Path("/w/board-sender"))
+
+
 def test_delivery_env_under_multiplex_names_the_pinned_launch_home(tmp_path, monkeypatch):
     """A relayed DM into the launch profile spawns with the launch home and its secrets, even after a
     host mirrors another home into HERMES_HOME; a bound scope or home override still wins."""

@@ -582,12 +582,18 @@ def delivery_env(author: Optional[dict], profile_home: str | Path | None = None)
     HERMES_TURN_AUTHOR is dropped first so a delivery without an author never inherits the author of the turn
     that sent it. Dispatcher session identity (the canonical ``gateway.session_context`` session env names) is
     dropped too: a nested recipient that ``message_agent``s onward must not stamp that grandchild
-    notify with the grandparent's key, or the live recipient never resumes. The child runs the target
-    profile's Bot Chat turn, so it starts from THAT profile's env (``served_profile_child_env``: launch
+    notify with the grandparent's key, or the live recipient never resumes. The sender's identity pins
+    (``HERMES_PROFILE``/``HERMES_PROFILE_NAME``, the kanban worker env of ``agent.delegation_context``) are
+    dropped as well: the child runs the target profile's Bot Chat turn, so a pin from the sender's env would
+    re-label the recipient's kanban comments with the sender's profile and retarget its kanban tools at the
+    sender's card (#133531); the delegated-child fence marker is deliberately kept, so a recipient woken by a
+    fenced worker still replies via ``message_agent`` instead of mutating the board (#117619). The child starts
+    from THAT profile's env (``served_profile_child_env``: launch
     profile ``.env`` / TERMINAL_* residue dropped, target secrets overlaid), never the multiplexer's raw
     ``os.environ``; ``-p`` alone only pinned HERMES_HOME. ``profile_home`` is the target's home when the
     caller knows it (relay RPC, roster); otherwise the active override, and under multiplex the launch
     home."""
+    from agent.delegation_context import KANBAN_ENV_KEYS
     from agent.secret_scope import current_secret_scope, is_multiplex_active
     from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
     from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
@@ -605,6 +611,8 @@ def delivery_env(author: Optional[dict], profile_home: str | Path | None = None)
     env = served_profile_child_env(base=os.environ, target_home=target_home, inherit_credentials=True)
     env.pop(TURN_AUTHOR_ENV, None)
     for name in _delivery_child_session_env_names():
+        env.pop(name, None)
+    for name in ("HERMES_PROFILE", "HERMES_PROFILE_NAME", "HERMES_KANBAN_WORKSPACE", *KANBAN_ENV_KEYS):
         env.pop(name, None)
     if author:
         env.update(turn_author_env(author))

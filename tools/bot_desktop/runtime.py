@@ -29,6 +29,17 @@ from typing import Dict, Optional
 from hermes_constants import get_hermes_home
 from tools.bot_desktop import placement
 
+# fcntl is Unix-only; on Windows lock a byte range with msvcrt (same shape as tools/skill_usage.py).
+# The sandbox placement runs the desktop in docker/ssh while the host-side locks below still execute on
+# the gateway host — including a Windows one — so neither half is Linux-only (#132759).
+msvcrt = None
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - platform-specific fallback
+    fcntl = None
+    with contextlib.suppress(ImportError):
+        import msvcrt
+
 logger = logging.getLogger(__name__)
 
 _LAUNCHER = Path(__file__).with_name("launcher.sh")
@@ -314,13 +325,27 @@ _ALLOC_LOCK = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") 
 
 @contextlib.contextmanager
 def _flocked(path: Path):
-    import fcntl  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start)
-    with open(path, "a+", encoding="utf-8") as fh:  # windows-footgun: ok — Linux-only runtime
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    # Host-side lock, taken on the gateway host whatever the placement: the Linux host branch (start,
+    # allocation, stop) and the sandbox branch — whose host can be Windows running a docker backend
+    # (#132759) — both serialize through it.
+    if msvcrt and (not path.exists() or path.stat().st_size == 0):
+        # msvcrt needs a non-empty byte range to lock
+        path.write_text(" ", encoding="utf-8")
+    with open(path, "r+" if msvcrt else "a+", encoding="utf-8") as fh:
+        if fcntl:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        else:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
         try:
             yield fh
         finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            if fcntl:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            else:
+                fh.seek(0)
+                with contextlib.suppress(OSError):
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def _pick_display() -> int:

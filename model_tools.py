@@ -228,7 +228,7 @@ def _tool_defs_config_fingerprints() -> tuple[Any, Any]:
             if managed_dir is not None
             else None
         )
-    except Exception:
+    except (ImportError, OSError, RuntimeError):
         managed_fp = None
     return cfg_fp, managed_fp
 
@@ -248,7 +248,7 @@ def _tool_defs_cache_key(
         registry._generation,
         cfg_fp,
         managed_fp,
-        bool(os.environ.get("HERMES_KANBAN_TASK")),
+        os.environ.get("HERMES_KANBAN_TASK") not in (None, ""),
         bool(skip_tool_search_assembly),
         _is_delegated_child_context(),
         _is_dispatcher_owned_worker(),

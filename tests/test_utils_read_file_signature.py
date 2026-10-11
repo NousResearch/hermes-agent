@@ -39,7 +39,7 @@ def test_read_file_with_signature_still_works_for_normal_files(tmp_path):
     assert result is not None
     data, sig = result
     assert data == b"hello world"
-    resolved, mtime_ns, size, digest = sig
+    resolved, _mtime_ns, size, digest = sig
     assert isinstance(resolved, str)
     assert size == len(b"hello world")
     assert len(digest) == 64  # SHA-256 hex

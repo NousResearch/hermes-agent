@@ -123,8 +123,13 @@ def load_managed_config_snapshot() -> tuple[dict, tuple | None]:
         if not isinstance(parsed, dict):
             parsed = {}
     except Exception as exc:
-        logger.warning("managed scope: failed to parse %s: %s — IGNORING this managed file. "
-                       "Admin policy from this file is NOT being applied. Fix and restart.", path, exc)
+        logger.warning(
+            "managed scope: failed to parse %s: %s — IGNORING this managed file. "
+            "Admin policy from this file is NOT being applied. Fix and restart.",
+            path,
+            exc,
+            exc_info=True,
+        )
         return {}, signature
     with _CACHE_LOCK:
         _CONFIG_CACHE[signature[0]] = (signature, copy.deepcopy(parsed))

@@ -307,6 +307,8 @@ Only valid configured names appear in the tool schema, along with redacted descr
 
 **Credential authority:** a route that changes the endpoint (`base_url`) must supply its own `api_key`; the parent's key is forwarded only when the scheme, host, and port are identical. A route with a different authority and no explicit key is rejected before any child is spawned. Named custom providers also require matching provider identity to inherit a key. Inheritance uses the live parent endpoint and its key together, including an explicitly empty live key.
 
+These route and credential checks are in-process policy hardening, not an OS security boundary. Run untrusted workloads with OS-level isolation and restrict their filesystem mounts, network access, environment, and credentials.
+
 ## The `/review` Command
 
 `/review` spawns an independent, full-privilege background subagent whose only job is to review the work your conversation just produced — a PR, a diff, code, documentation, a design. It works on every surface: CLI, TUI, the Desktop app, and every gateway messaging platform.

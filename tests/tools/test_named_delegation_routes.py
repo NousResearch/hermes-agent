@@ -80,7 +80,7 @@ def test_named_route_snapshots_are_atomic_repeatable_and_thread_isolated():
 
 
 def test_named_route_reasoning_reaches_child_without_changing_internal_route_policy(monkeypatch):
-    import tools.delegate_tool as delegate_tool
+    from tools import delegate_tool
 
     global_cfg = {"reasoning_effort": "low"}
     named_cfg = {"model": "cloud-model", "provider": "cloud-provider", "reasoning_effort": "high"}
@@ -124,7 +124,7 @@ def test_named_route_reasoning_reaches_child_without_changing_internal_route_pol
 
 
 def test_named_route_schema_errors_and_both_dispatch_paths_are_safe(monkeypatch):
-    import tools.delegate_tool as delegate_tool
+    from tools import delegate_tool
     from run_agent import AIAgent
 
     cfg = _route_config()

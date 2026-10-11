@@ -621,6 +621,46 @@ def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) 
         pinned=pinned, owner="delegation")
 
 
+def _validate_child_credential_authority(
+    parent_agent,
+    configured_provider: Optional[str],
+    override_provider: Optional[str],
+    override_base_url: Optional[str],
+    override_api_key: Optional[str],
+    override_acp_command: Optional[str],
+) -> None:
+    """Reject credential borrowing before child construction."""
+    if (override_provider or override_base_url) and not override_api_key:
+        credential_provider = (
+            override_provider
+            if _named_custom_provider(override_provider)
+            else configured_provider or override_provider
+        )
+        credential_base_url = override_base_url
+        if (
+            override_acp_command
+            or (override_provider or "").strip().lower() in _NATIVE_SDK_PROVIDERS
+        ):
+            credential_base_url = None
+        authority_error = _check_credential_authority(
+            parent_agent,
+            credential_base_url,
+            None,
+            credential_provider,
+        )
+        if authority_error:
+            raise ValueError(authority_error)
+    provider_bundle_error = _check_provider_credential_bundle(
+        parent_agent,
+        override_provider,
+        override_base_url,
+        override_api_key,
+        override_acp_command,
+    )
+    if provider_bundle_error:
+        raise ValueError(provider_bundle_error)
+
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
@@ -651,25 +691,14 @@ def _resolve_child_runtime(
     else:
         effective_provider = getattr(parent_agent, "provider", None)
         effective_base_url, parent_api_key = parent_base_url, live_parent_api_key
-    if (override_provider or override_base_url) and not override_api_key:
-        credential_provider = (
-            override_provider
-            if _named_custom_provider(override_provider)
-            else configured_provider or override_provider
-        )
-        credential_base_url = override_base_url
-        if override_acp_command or (override_provider or "").strip().lower() in _NATIVE_SDK_PROVIDERS:
-            credential_base_url = None
-        authority_error = _check_credential_authority(
-            parent_agent, credential_base_url, None, credential_provider,
-        )
-        if authority_error:
-            raise ValueError(authority_error)
-    provider_bundle_error = _check_provider_credential_bundle(
-        parent_agent, override_provider, override_base_url, override_api_key, override_acp_command,
+    _validate_child_credential_authority(
+        parent_agent,
+        configured_provider,
+        override_provider,
+        override_base_url,
+        override_api_key,
+        override_acp_command,
     )
-    if provider_bundle_error:
-        raise ValueError(provider_bundle_error)
     if override_base_url and not override_api_key:
         effective_api_key = live_parent_api_key
     else:

@@ -408,7 +408,7 @@ def _run_single_child(
 
 
 def _build_children(
-    task_list: list[dict[str, Any]], task_schemas: List[Optional[dict[str, Any]]], creds: dict[str, Any], *,
+    task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], creds: dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: dict[str, Any],
     runtime_cfg: Optional[dict[str, Any]],
     task_configs: Optional[list[dict]] = None, task_credentials: Optional[list[dict]] = None,

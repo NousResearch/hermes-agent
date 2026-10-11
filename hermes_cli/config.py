@@ -36,6 +36,12 @@ import hermes_yaml as yaml
 from hermes_cli.cli_output import line_input
 from hermes_cli.colors import Colors, color
 from hermes_cli import managed_scope
+from hermes_cli.config_content_identity import (
+    _canonical_config_path_key,
+    _combined_config_signature,
+    _load_config_cache_sig,
+    _raw_config_cache_hit,
+)
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Managed-mode, container and HERMES_UID/GID policy live in hermes_constants (import-safe);
@@ -1879,21 +1885,8 @@ def cfg_get(cfg: Optional[dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
-def _canonical_config_path_key(path: Path) -> str:
-    try:
-        return str(path.resolve(strict=False))
-    except (OSError, RuntimeError):
-        return str(path.absolute())
 
 
-def _raw_config_cache_hit(path_key: str, cache_key: tuple[Any, ...]) -> Optional[dict[str, Any]]:
-    """Pure lookup: the cached raw config for ``path_key`` if its signature equals ``cache_key``,
-    else ``None``. Shared by the lock-free fast path and the locked re-check of
-    ``_read_raw_config_impl`` so the predicate cannot drift between them."""
-    cached = _RAW_CONFIG_CACHE.get(path_key)
-    if cached is not None and cached[:len(cache_key)] == cache_key:
-        return cached[len(cache_key)]
-    return None
 
 
 def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
@@ -1906,7 +1899,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
         config_path = get_config_path()
         snapshot = read_file_with_signature(config_path, raise_errors=True)
         cache_key = snapshot[1] if snapshot is not None else None
-        hit = _raw_config_cache_hit(_canonical_config_path_key(config_path), cache_key) if cache_key is not None else None
+        hit = _raw_config_cache_hit(_RAW_CONFIG_CACHE, _canonical_config_path_key(config_path), cache_key) if cache_key is not None else None
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
     except Exception:
@@ -1925,7 +1918,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
             return FailedConfigRead(error=e)
 
         path_key = _canonical_config_path_key(config_path)
-        hit = _raw_config_cache_hit(path_key, cache_key)
+        hit = _raw_config_cache_hit(_RAW_CONFIG_CACHE, path_key, cache_key)
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
@@ -2212,19 +2205,8 @@ def apply_terminal_config_to_env(
     return target
 
 
-def _load_config_cache_sig(config_path: Path) -> tuple[tuple | None, tuple | None]:
-    """User and managed content identities for lock-free cache lookups."""
-    snapshot = read_file_with_signature(config_path, raise_errors=True)
-    user_sig = snapshot[1] if snapshot is not None else None
-    managed_dir = managed_scope.get_managed_dir()
-    managed_sig = file_content_signature(managed_dir / "config.yaml") if managed_dir else None
-    return user_sig, _combined_config_signature(user_sig, managed_sig)
 
 
-def _combined_config_signature(user_sig, managed_sig) -> tuple | None:
-    if user_sig is None and managed_sig is None:
-        return None
-    return (*(user_sig or (None,) * 4), *(managed_sig or (None,) * 4))
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[dict[str, Any]]:

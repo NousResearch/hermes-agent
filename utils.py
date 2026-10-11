@@ -24,7 +24,7 @@ TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
 
 
 def read_file_with_signature(
-    path: Union[Path, str], *, raise_errors: bool = False,
+    path: Path | str, *, raise_errors: bool = False,
 ) -> "tuple[bytes, tuple[str, int, int, str]] | None":
     """Read a file once and return its bytes with a content-aware identity."""
     import hashlib
@@ -49,7 +49,7 @@ def read_file_with_signature(
     )
 
 
-def file_content_signature(path: Union[Path, str]) -> "tuple[str, int, int, str] | None":
+def file_content_signature(path: Path | str) -> "tuple[str, int, int, str] | None":
     """Return a path- and content-sensitive identity for a regular file."""
     snapshot = read_file_with_signature(path)
     return snapshot[1] if snapshot is not None else None

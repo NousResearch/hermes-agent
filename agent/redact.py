@@ -499,6 +499,22 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 # (unterminated quote → shell EOF / SyntaxError).
 _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
 
+# Reference-shaped Authorization values — template/expression placeholders
+# (``${…}``, ``{{…}}``, ``{…}``) and JS env lookups (``$env.X``,
+# ``process.env.X``) — hold no literal credential. Masking one breaks agent file
+# rewrites: the agent writes the mask back as literal text and corrupts the file
+# (#133402). Only full-value shapes match — a bare ``}``-run may trail the
+# reference (object-literal closers the credential class swallows); partial
+# concatenations with real token characters stay masked.
+_AUTH_REF_VALUE_RE = re.compile(
+    r"(?:"
+    r"\$\{[^{}]*\}"
+    r"|\{\{[^{}]*\}\}"
+    r"|\{[^{}]*\}"
+    r"|(?:\$env|process\.env)\.[A-Za-z_][\w.]*"
+    r")\}*"
+)
+
 # API-key style headers (single opaque value, no scheme word): non-vendor-prefix
 # values would otherwise leak when a curl command is echoed into tool output.
 SECRET_HEADER_NAME_LIST = ("x-api-key", "x-goog-api-key", "api-key", "apikey", "x-api-token", "x-auth-token", "x-access-token")
@@ -878,6 +894,23 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
     return _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
 
 
+def _auth_header_sub(m):
+    """Mask an Authorization credential unless the whole value is a pure reference."""
+    value = m.group(3)
+    if _AUTH_REF_VALUE_RE.fullmatch(value):
+        return m.group(0)
+    # ``Authorization: `Bearer ${$env.KEY}` `` — the credential group stops at the
+    # space inside the JS template literal, so the masked span would be the scheme
+    # word, not a credential. Preserve it when the same-line closing backtick
+    # encloses an interpolation; a backticked literal token stays masked.
+    if value.startswith("`"):
+        tail = m.string[m.end():].split("\n", 1)[0]
+        close = tail.find("`")
+        if close != -1 and "${" in value + tail[:close]:
+            return m.group(0)
+    return m.group(1) + (m.group(2) or "") + _mask_token(value)
+
+
 def _redact_phone(m):
     phone = m.group(1)
     keep = 2 if len(phone) <= 8 else 4
@@ -955,7 +988,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _redact_assignments(text, mask_nonreusable=file_read)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
-        text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
+        text = _AUTH_HEADER_RE.sub(_auth_header_sub, text)
 
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)

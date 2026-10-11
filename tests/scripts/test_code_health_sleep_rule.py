@@ -60,6 +60,92 @@ def test_wall_clock_sleep_shapes(src, flagged):
     assert bool(_hits(src)) is flagged, src
 
 
+_DEADLINE = "import time\nend = time.monotonic() + 5\n"
+
+
+@pytest.mark.parametrize("src, flagged", [
+    # red: a test made only of clock reads and constants waits out the clock
+    (_DEADLINE + "other = time.monotonic() + 9\nwhile time.monotonic() < end and time.monotonic() < other:\n"
+     "    time.sleep(0.1)\n", True),
+    (_DEADLINE + "while time.monotonic() < end or False:\n    time.sleep(0.1)\n", True),
+    (_DEADLINE + "while not time.monotonic() >= end:\n    time.sleep(0.1)\n", True),
+    (_DEADLINE + "now = time.monotonic()\nwhile now < end:\n    time.sleep(0.1)\n"
+     "    now = time.monotonic()\n", True),  # locals assigned only from the clock
+    (_DEADLINE + "while True:\n    if time.monotonic() > end and True:\n        break\n"
+     "    time.sleep(0.1)\n", True),
+    # red: `or` ends the loop only when every operand is false, so the clock still decides
+    (_DEADLINE + "while not done() or time.monotonic() < end:\n    time.sleep(0.1)\n", True),
+    # green: any non-clock operand is a condition
+    (_DEADLINE + "while time.monotonic() < end and not done():\n    time.sleep(0.05)\n", False),
+    (_DEADLINE + "now = time.monotonic()\nwhile now < end and not done():\n    time.sleep(0.05)\n"
+     "    now = time.monotonic()\n", False),
+    (_DEADLINE + "while time.monotonic() < end:\n    if done() or time.monotonic() > end:\n"
+     "        break\n    time.sleep(0.05)\n", False),
+    (_DEADLINE + "while time.monotonic() < end:\n    if not r.busy:\n        break\n"
+     "    else:\n        time.sleep(0.05)\n", False),
+    (_DEADLINE + "while True:\n    left = alive()\n    if not left or time.monotonic() >= end:\n"
+     "        return left\n    time.sleep(0.1)\n", False),
+    # red: a timestamp kept in a dict or on an object is still the clock (fails closed)
+    ("import time\nt = {'at': time.time()}\nwhile time.time() - t['at'] < 0.5:\n    time.sleep(0.005)\n", True),
+    (_DEADLINE + "while time.monotonic() < self.end and time.monotonic() < end:\n    time.sleep(0.1)\n", True),
+    ("import asyncio\nasync def drain():\n    end = asyncio.get_event_loop().time() + 0.15\n"
+     "    while asyncio.get_event_loop().time() < end:\n        await asyncio.sleep(0.01)\n", True),
+    # green: an age read from observed state is a condition
+    (_DEADLINE + "while True:\n    age = time.time() - path.stat().st_mtime\n    if age > 5:\n"
+     "        return\n    assert time.monotonic() < end\n    time.sleep(0.02)\n", False),
+    # green: only time arithmetic makes a clock local; a value merely built from one is state
+    ("import time\nnonce = time.time_ns()\npid = spawn(f'x{nonce}')\nend = time.monotonic() + 5\n"
+     "while time.monotonic() < end:\n    if not alive(pid):\n        break\n    time.sleep(0.05)\n", False),
+    # red: a `try` that only sleeps cannot fail, so its `break` is unconditional
+    ("import time\nfor _ in range(10):\n    try:\n        time.sleep(0.5)\n        break\n"
+     "    except OSError:\n        pass\n", True),
+    # green: a `try` body's `return` is taken only when the probe did not raise
+    (_DEADLINE + "while time.monotonic() < end:\n    try:\n        return probe()\n"
+     "    except OSError:\n        time.sleep(0.1)\n", False),
+    # red: the same chain of clock locals with no state in it
+    ("import time\nstart = time.monotonic()\nend = start + 5\nnow = start\nwhile now < end:\n"
+     "    time.sleep(0.1)\n    now = time.monotonic()\n", True),
+])
+def test_condition_must_read_more_than_the_clock(src, flagged):
+    assert bool(_hits(src)) is flagged, src
+
+
+@pytest.mark.parametrize("src, flagged", [
+    # red: a `break` in a nested loop ends that loop, not the clock-only wait around it
+    (_DEADLINE + "while time.monotonic() < end:\n    for x in items:\n        if x.done:\n            break\n"
+     "    time.sleep(0.1)\n", True),
+    (_DEADLINE + "while time.monotonic() < end:\n    while busy():\n        if ready():\n            break\n"
+     "    time.sleep(0.1)\n", True),
+    ("import time\nfor _ in range(5):\n    for x in items:\n        if x.done:\n            break\n"
+     "    time.sleep(0.1)\n", True),
+    # red: a nested def's `return` is not the loop's exit
+    (_DEADLINE + "while time.monotonic() < end:\n    def check():\n        if done():\n            return True\n"
+     "    time.sleep(0.1)\n", True),
+    # red: a loop's `else:` runs once after the loop; it is no poll interval
+    ("import time\nfor _ in range(3):\n    if ready():\n        break\nelse:\n    time.sleep(1)\n", True),
+    (_DEADLINE + "while not done() and time.monotonic() < end:\n    pass\nelse:\n    time.sleep(1)\n", True),
+    # ... nor are a `while` test or a `for` iterable
+    (_DEADLINE + "while not done() and time.monotonic() < end and time.sleep(1) is None:\n    pass\n", True),
+    # red: an outer round loop whose only exit is the inner wait's `break` (tests/tools/test_approval.py)
+    ("import time\nfor i in range(n):\n    if i == 0:\n        for _ in range(400):\n            if ready():\n"
+     "                break\n            time.sleep(0.005)\n    else:\n        time.sleep(0.05)\n", True),
+    # green: the poll's own exits, wherever they sit in its body
+    ("import time\nfor _ in range(50):\n    try:\n        if ready():\n            break\n    except OSError:\n"
+     "        pass\n    time.sleep(0.05)\n", False),
+    ("import time\nfor _ in range(50):\n    with lock:\n        if ready():\n            return_value = 1\n"
+     "            break\n    time.sleep(0.05)\n", False),
+    ("import time\ndef w():\n    for _ in range(50):\n        for x in items:\n            if x.done:\n"
+     "                return x\n        time.sleep(0.05)\n", False),  # a `return` ends every loop
+    ("import time\nfor _ in range(50):\n    for x in items:\n        pass\n    else:\n        if ready():\n"
+     "            break\n    time.sleep(0.05)\n", False),  # an inner `else:` break ends the outer loop
+    # green: a poll interval inside the loop body, beside a nested loop
+    (_DEADLINE + "while not done() and time.monotonic() < end:\n    for x in items:\n        x.poke()\n"
+     "    time.sleep(0.05)\n", False),
+])
+def test_exit_belongs_to_the_loop_and_the_interval_to_its_body(src, flagged):
+    assert bool(_hits(src)) is flagged, src
+
+
 @pytest.mark.parametrize("path, applies", [
     ("tests/gateway/test_x.py", True),
     ("tests/e2e/core/test_y.py", True),

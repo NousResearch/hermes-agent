@@ -13,7 +13,9 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 import itertools
 
-_FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
+from scripts.code_health.py_ast import _FUNCS, Ctx, _call_name, _deferred_parts, _dotted, _eager
+from scripts.code_health.py_rules_sleep import wall_clock_sleep
+
 _CAPTURE_CALLS = {
     "get_hermes_home",
     "display_hermes_home",
@@ -34,11 +36,6 @@ _SYNC_CONFIG_CALLS = {"load_config", "save_config", "read_raw_config", "load_con
 _SUBPROCESS_WAITS = {"run", "call", "check_call", "check_output"}
 # health: allow HX003 -- the detector's own pattern list
 _SHELL_IDENTITY = ("pgrep -f", "ps aux", "ps -ef", "ps -eo")
-
-
-@dataclass
-class Ctx:
-    known_env: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -220,25 +217,6 @@ def canonical_tree(tree: ast.Module) -> ast.Module:
     return ast.fix_missing_locations(_Spell().visit(tree))
 
 
-def _dotted(node: ast.AST) -> str:
-    """``os.environ.get`` for an Attribute chain, ``""`` for anything else."""
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
-        return ".".join(reversed(parts))
-    if isinstance(node, ast.Call):
-        inner = _dotted(node.func)
-        return ".".join([f"{inner}()", *reversed(parts)]) if inner else ""
-    return ""
-
-
-def _call_name(call: ast.Call) -> str:
-    return _dotted(call.func)
-
-
 def _str_arg(call: ast.Call, index: int = 0) -> str | None:
     if len(call.args) > index:
         arg = call.args[index]
@@ -287,36 +265,6 @@ def _env_write_names(node: ast.AST) -> list[str]:
                 keys += [k.value for k in arg.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)]
         return keys
     return []
-
-
-def _deferred_parts(node: ast.AST) -> list[ast.AST] | None:
-    """For a node whose evaluation defers part of itself, the parts that run NOW; else None.
-
-    A lambda/def runs only its defaults and decorators when evaluated; a generator expression
-    runs only its first iterable (the element, conditions and later loops run on consumption).
-    Comprehensions and class bodies run immediately, so they are not deferred.
-    """
-    if isinstance(node, ast.Lambda):
-        return [d for d in (*node.args.defaults, *node.args.kw_defaults) if d is not None]
-    if isinstance(node, _FUNCS):
-        defaults = [d for d in (*node.args.defaults, *node.args.kw_defaults) if d is not None]
-        return [*node.decorator_list, *defaults]
-    if isinstance(node, ast.GeneratorExp):
-        return [node.generators[0].iter]
-    return None
-
-
-def _eager(node: ast.AST) -> Iterator[ast.AST]:
-    """Every node evaluated when ``node`` is evaluated (or a statement executes), root included."""
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        parts = _deferred_parts(current)
-        if parts is not None:
-            stack.extend(parts)
-            continue
-        yield current
-        stack.extend(ast.iter_child_nodes(current))
 
 
 def _hermes_home_path(text: str, prefix: str = "") -> bool:
@@ -910,111 +858,6 @@ def raw_thread(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
             if (isinstance(node, ast.Call) and _call_name(node) == "threading.Thread"
                     and not _runs_in_copied_context(node, contexts)):
                 yield node.lineno
-
-
-# Sleeps that block on the wall clock -> keyword names of their delay (positional slot 0).
-_SLEEPS = {
-    "time.sleep": ("secs", "seconds"),
-    "asyncio.sleep": ("delay",),
-    "anyio.sleep": ("delay",),
-    "trio.sleep": ("seconds",),
-    # a fresh Event nobody can set is a sleep spelled differently
-    "threading.Event().wait": ("timeout",),
-}
-
-
-def _delay(call: ast.Call, names: tuple[str, ...]) -> ast.expr | None:
-    if call.args:
-        return call.args[0]
-    return next((kw.value for kw in call.keywords if kw.arg in names), None)
-
-
-def _zero(node: ast.expr | None) -> bool:
-    """A literal ``0`` / ``0.0``: a scheduler yield, not a delay (``False`` is not a delay)."""
-    return (isinstance(node, ast.Constant) and type(node.value) in (int, float)
-            and node.value == 0)
-
-
-_CLOCKS = {"time.monotonic", "time.time", "time.perf_counter", "time.monotonic_ns", "time.time_ns"}
-
-
-def _reads_clock(node: ast.AST) -> bool:
-    """A wall-clock read: ``time.monotonic()`` and friends, or an event loop's ``.time()``."""
-    for inner in _eager(node):
-        if isinstance(inner, ast.Call):
-            name = _call_name(inner)
-            if name in _CLOCKS or name.endswith(("loop().time", "loop.time")):
-                return True
-    return False
-
-
-def _exits_on_condition(body: list[ast.stmt]) -> bool:
-    """A ``break``/``return`` under an ``if`` whose test is not a clock comparison."""
-    for stmt in body:
-        for node in _eager(stmt):
-            if isinstance(node, ast.If) and not _reads_clock(node.test):
-                if any(isinstance(n, (ast.Break, ast.Return)) for s in node.body for n in _eager(s)):
-                    return True
-    return False
-
-
-def _condition_exit(loop: ast.While) -> bool:
-    """The loop can end on something other than the clock: a non-clock condition in its test,
-    or a conditional ``break``/``return`` in its body."""
-    test = loop.test
-    if not isinstance(test, ast.Constant) and not (isinstance(test, ast.Compare) and _reads_clock(test)):
-        return True
-    return _exits_on_condition(loop.body)
-
-
-def _deadline_poll(loop: ast.AST) -> bool:
-    """A loop polling a condition under a bound: a ``while`` that reads a clock and can end on
-    the condition, or ``for _ in range(n)`` that can (n rounds bound it; load only stretches
-    them). ``while time.monotonic() < end: sleep(.1)`` alone is a fixed delay."""
-    if isinstance(loop, ast.For):
-        bounded = isinstance(loop.iter, ast.Call) and _call_name(loop.iter) == "range"
-        return bounded and _exits_on_condition(loop.body)
-    if not isinstance(loop, ast.While):
-        return False
-    clock = _reads_clock(loop.test) or any(_reads_clock(stmt) for stmt in loop.body)
-    return clock and _condition_exit(loop)
-
-
-def _sleep_loops(tree: ast.Module) -> Iterator[tuple[ast.Call, ast.AST | None]]:
-    """Each call in ``tree`` with its nearest enclosing loop in the same function (or None)."""
-    stack: list[tuple[ast.AST, ast.AST | None]] = [(tree, None)]
-    while stack:
-        node, loop = stack.pop()
-        for child in ast.iter_child_nodes(node):
-            inner = loop
-            if isinstance(child, (*_FUNCS, ast.Lambda)):
-                inner = None
-            elif isinstance(child, (ast.While, ast.For, ast.AsyncFor)):
-                inner = child
-            if isinstance(child, ast.Call):
-                yield child, loop
-            stack.append((child, inner))
-
-
-def wall_clock_sleep(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
-    """``time.sleep(x)`` / ``asyncio.sleep(x)`` (any alias) with ``x`` not a literal zero,
-    unless it is the interval of a loop polling a condition under a deadline or round bound.
-
-    Every other non-zero delay counts, however small: the sub-10 ms ones on main are poll
-    intervals without a deadline and timestamp-separation hacks, which a Windows runner's
-    ~15.6 ms clock already breaks. A non-literal delay counts too.
-    """
-    for node, loop in _sleep_loops(tree):
-        names = _SLEEPS.get(_call_name(node))
-        if names is None:
-            continue
-        delay = _delay(node, names)
-        if names == ("timeout",) and (delay is None or (
-                isinstance(delay, ast.Constant) and delay.value is None)):
-            continue  # an Event wait without a deadline hangs; it does not sleep
-        if _zero(delay) or (loop is not None and _deadline_poll(loop)):
-            continue
-        yield node.lineno
 
 
 CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {

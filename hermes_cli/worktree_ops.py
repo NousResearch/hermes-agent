@@ -791,8 +791,8 @@ def _worktree_branch_pushed_exact(
 
 
 # ``hermes pid=<pid>`` (classic launch), ``hermes pid=<pid> db=<state.db>`` (``--tui -w`` launch)
-# and ``hermes session=<id> db=<state.db>`` (re-lock when the TUI exits). Read with
-# ``list --porcelain -z``: without it git C-quotes a reason holding a backslash, a quote, a control or a
+# and ``hermes session=<id> db=<state.db>`` (re-lock when the TUI exits). Read raw from the admin
+# dir: plain ``list --porcelain`` C-quotes a reason holding a backslash, a quote, a control or a
 # non-ASCII byte (every Windows path), and the ``db=`` path would never parse.
 _HERMES_LOCK_RE = re.compile(r"hermes (?:pid=(\d+)|session=\S+)(?: db=(.+))?", re.DOTALL)
 
@@ -843,21 +843,26 @@ def _retained_tree_is_live(db_path: str, worktree_path: str) -> bool:
 
 
 def _worktree_lock_reason(repo_root: str, worktree_path: str, timeout: int):
-    """``(found, reason)`` from ``git worktree list --porcelain -z``; reason is ``None`` when
-    unlocked and ``""`` for a bare lock. Raises when git fails."""
-    listing = _git(["worktree", "list", "--porcelain", "-z"], repo_root, timeout=timeout)
-    if listing.returncode != 0:
-        raise RuntimeError(listing.stderr.strip())
-    target = Path(worktree_path).resolve()
-    for record in listing.stdout.split("\0\0"):
-        fields = record.strip("\0").split("\0")
-        if not fields[0].startswith("worktree ") or Path(fields[0][len("worktree "):]).resolve() != target:
-            continue
-        for field in fields[1:]:
-            if field == "locked" or field.startswith("locked "):
-                return True, field[len("locked "):]
+    """``(found, reason)`` from the tree's admin dir (``gitdir:`` of its ``.git`` file, under
+    ``<common-dir>/worktrees/``); reason is ``None`` when unlocked and ``""`` for a bare lock.
+    Read raw and trimmed, as git does: ``list --porcelain -z`` needs git 2.36. Raises when git
+    or the admin dir cannot be read."""
+    common = _git_out(["rev-parse", "--git-common-dir"], repo_root, timeout=timeout)
+    if not common:
+        raise RuntimeError("not a git repository")
+    tree = Path(worktree_path)
+    if not (tree / ".git").is_file():
+        return False, None  # no tree there, or the main checkout
+    link = (tree / ".git").read_text(encoding="utf-8-sig")
+    if not link.startswith("gitdir:"):
+        raise RuntimeError(f"unreadable .git file in {tree}")
+    admin = (tree / link[len("gitdir:"):].strip()).resolve()
+    if admin.parent != (Path(repo_root) / common / "worktrees").resolve():
+        return False, None  # a checkout of another repository
+    try:
+        return True, (admin / "locked").read_text(encoding="utf-8-sig", errors="replace").strip(" \t\n\v\f\r")
+    except FileNotFoundError:
         return True, None
-    return False, None
 
 
 def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10):

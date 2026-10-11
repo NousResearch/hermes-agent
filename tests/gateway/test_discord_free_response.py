@@ -864,7 +864,9 @@ async def test_discord_send_does_not_cache_nonconversational_status_as_history_b
     """Automated status notifications should not move the backfill boundary."""
 
     class SendingChannel(FakeTextChannel):
-        async def send(self, content, reference=None):
+        # Mirrors discord.Messageable.send: status/progress traffic now carries the scoped
+        # no-mention/no-embed policy (allowed_mentions, suppress_embeds), so the double accepts them.
+        async def send(self, content, reference=None, **kwargs):
             return SimpleNamespace(id=222)
 
     channel = SendingChannel(channel_id=777)

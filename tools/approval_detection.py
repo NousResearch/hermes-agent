@@ -633,13 +633,32 @@ _INTERPRETER_NAME_RES = tuple((family, re.compile(pattern)) for family, pattern 
     ("python", r"py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?"), ("node", r"node(?:js)?(?:\.exe)?"),
     ("perl", r"perl[0-9]*(?:\.\d+)*(?:\.exe)?"), ("ruby", r"ruby[0-9.]*(?:\.exe)?"), ("php", r"php(?:\.exe)?"),
     ("powershell", r"powershell(?:\.exe)?|pwsh(?:\.exe)?"),
-    ("bun", r"bun(?:\.exe)?"), ("deno", r"deno(?:\.exe)?"),
+    ("bun", r"bun(?:\.exe)?"), ("deno", r"deno(?:\.exe)?"), ("julia", r"julia(?:\.exe)?"),
 ))
 _INTERPRETER_EXEC_FLAGS = {
     "python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "perl": {"-e", "--eval"}, "ruby": {"-e"},
     "php": {"-r"}, "powershell": {"-command", "-c", "-file", "-f"},
-    "bun": {"-e", "--eval"}, "deno": {"eval", "-e", "--eval"},
+    "bun": {"-e", "--eval"}, "deno": {"eval", "-e", "--eval"}, "julia": {"-e", "--eval", "-E", "--print"},
 }
+# Julia parses its options with getopt_long (src/jloptions.c): a long option may be abbreviated to any
+# unique prefix (`--ev`, `--proj`), and each option below consumes the next token as its value
+# (`--threads 4 -e ...`). Optional-value long options (`--project`, `--optimize`, `--debug-info`) bind
+# only with `=`, but their short forms `-O`, `-g`, `-P` require a value. `-m/--module` ends option
+# parsing (later arguments go to the package), so like `python -m` its operand stops the scan.
+_JULIA_LONG_OPTIONS_WITH_ARG = (
+    "banner", "home", "load", "bug-report", "sysimage", "sysimage-native-code", "compiled-modules", "pkgimages",
+    "cpu-target", "procs", "threads", "gcthreads", "machine-file", "color", "history-file", "startup-file",
+    "compile", "code-coverage-mode", "check-bounds", "output-bc", "output-unopt-bc", "output-o", "output-asm",
+    "output-ji", "output-incremental", "depwarn", "warn-overwrite", "warn-scope", "inline", "polly",
+    "timeout-for-safepoint-straggler", "trace-compile", "trace-dispatch", "task-metrics", "math-mode",
+    "handle-signals", "bind-to", "permalloc-pkgimg", "heap-size-hint", "hard-heap-limit", "heap-target-increment",
+    "compress-sysimage", "target-sanitize",
+)
+_JULIA_LONG_OPTIONS = _JULIA_LONG_OPTIONS_WITH_ARG + (
+    "version", "help", "help-hidden", "interactive", "quiet", "eval", "module", "print", "project", "code-coverage",
+    "track-allocation", "optimize", "min-optlevel", "debug-info", "trace-compile-timing", "experimental", "worker",
+    "lisp", "image-codegen", "rr-detach", "strip-metadata", "strip-ir", "gc-sweep-always-full", "trim", "trace-eval",
+)
 _INTERPRETER_WITH_ARG = {
     "python": {"-W", "-X", "--check-hash-based-pycs"},
     "node": {"-C", "--conditions", "--cpu-prof-dir", "--diagnostic-dir", "--icu-data-dir", "--import", "--loader",
@@ -652,6 +671,8 @@ _INTERPRETER_WITH_ARG = {
     # may precede it and take a separate value is `-L/--log-level <level>` (`--env-file[=v]`
     # binds with `=`; the `--unstable-*` and `--ext` flags belong after `eval`).
     "bun": {"--config", "--cwd", "--env-file", "--preload", "--require"}, "deno": {"-L", "--log-level"},
+    "julia": {"-H", "-L", "-J", "-C", "-t", "-p", "-O", "-g", "-P"}
+    | {f"--{name}" for name in _JULIA_LONG_OPTIONS_WITH_ARG},
 }
 _READ_TOOL_EXEC_FLAGS = {
     "sort": {"--compress-program"}, "rg": {"--pre", "--hostname-bin"}, "ag": {"--pager"},
@@ -895,10 +916,20 @@ def _iter_top_level_shell_segments(command: str):
         yield command[start:]
 
 
+def _julia_long_option(option: str) -> str:
+    """Expand a unique-prefix abbreviation of a Julia long option, as getopt_long does (`--ev` -> `--eval`)."""
+    if not option.startswith("--") or option[2:] in _JULIA_LONG_OPTIONS:
+        return option
+    matches = [name for name in _JULIA_LONG_OPTIONS if name.startswith(option[2:])]
+    return f"--{matches[0]}" if len(matches) == 1 else option
+
+
 def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
     """Return an execution-bearing interpreter option, if present."""
     flags, with_arg = _INTERPRETER_EXEC_FLAGS[family], _INTERPRETER_WITH_ARG[family]
     powershell = family == "powershell"
+    if family == "julia" and args and args[0].startswith("+"):
+        args = args[1:]  # juliaup's launcher consumes a leading `+<channel>` (`julia +1.10 -e ...`)
     skip_value = False
     for token in args:
         if skip_value:
@@ -912,6 +943,8 @@ def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
                 return "eval"
             break
         option, equals, _ = token.partition("=")
+        if family == "julia":
+            option = _julia_long_option(option)
         comparable = option.lower() if powershell else option
         if comparable in flags:
             return comparable
@@ -921,11 +954,13 @@ def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
             option.startswith(short) and len(option) > len(short)
             for short in with_arg if short.startswith("-") and not short.startswith("--")
         )
-        if not powershell and not option.startswith("--") and len(option) > 2 and not has_attached_option_value:
+        bundle = not powershell and not option.startswith("--") and len(option) > 2 and not has_attached_option_value
+        if bundle:
             bundled = next((f"-{char}" for char in option[1:] if f"-{char}" in flags), None)
             if bundled:
                 return bundled
-        skip_value = comparable in with_arg and not equals
+        # A bundle ending in a value-taking option (`julia -qt 4`, `ruby -wr json`) owns the next token too.
+        skip_value = (comparable in with_arg or (bundle and f"-{option[-1]}" in with_arg)) and not equals
     return None
 
 

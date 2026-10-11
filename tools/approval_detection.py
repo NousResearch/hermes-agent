@@ -900,7 +900,7 @@ def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
     flags, with_arg = _INTERPRETER_EXEC_FLAGS[family], _INTERPRETER_WITH_ARG[family]
     powershell = family == "powershell"
     skip_value = False
-    for token in args:
+    for index, token in enumerate(args):
         if skip_value:
             skip_value = False
             continue
@@ -910,6 +910,13 @@ def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
             # a later positional `eval` (`deno run eval.ts`) stays data.
             if family == "deno" and token.lower() == "eval":
                 return "eval"
+            # `deno repl --eval[-file]` runs its argument before the prompt opens.
+            if family == "deno" and token.lower() == "repl":
+                for option in args[index + 1:]:
+                    if option == "--":
+                        break
+                    if option.partition("=")[0] in ("--eval", "--eval-file"):
+                        return "repl --eval"
             break
         option, equals, _ = token.partition("=")
         comparable = option.lower() if powershell else option

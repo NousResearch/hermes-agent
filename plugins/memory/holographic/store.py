@@ -280,7 +280,7 @@ class MemoryStore:
                 try:
                     with entry["lock"]:
                         entry["conn"].close()
-                except Exception:
+                except Exception:  # health: allow BLE001 S110 -- restored verbatim by the revert of #136424; this provider leaves core on Oct 15
                     pass  # an already-closed/broken connection must not abort releasing siblings
         return len(doomed)
 

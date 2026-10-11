@@ -174,7 +174,7 @@ class FactRetriever:
                f"WHERE facts_fts MATCH ? {category_clause}AND f.trust_score >= ? ORDER BY facts_fts.rank LIMIT ?")
         try:
             results = [dict(row) for row in self.store._conn.execute(sql, params).fetchall()]
-        except Exception:
+        except Exception:  # health: allow BLE001 -- restored verbatim by the revert of #136424; this provider leaves core on Oct 15
             return []  # FTS5 MATCH can fail on malformed queries
         # FTS5 rank is negative (lower = better); normalize |rank| / max to [0, 1] (1e-6 floor avoids div by zero)
         max_rank = max([abs(f["fts_rank_raw"]) for f in results] + [1e-6])

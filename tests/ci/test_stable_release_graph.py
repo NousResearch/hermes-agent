@@ -138,6 +138,21 @@ def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
         assert set(gated) <= set(needs_of(name)), name
 
 
+def test_a_skipped_upgrade_arm_never_skips_a_gated_publish_job():
+    """The signed-package upgrade arms skip when there is no published baseline (the first bundled
+    release). A gated job downstream of one without a status function inherits that skip, and the
+    publication gate then refuses it: rc.11-v0.21.7 blocked on publish-bundles=skipped."""
+    from scripts.releases.stable import PACKAGED_BY
+
+    jobs = workflow("stable-release.yml")["jobs"]
+
+    for name, job in jobs.items():
+        if set(PACKAGED_BY) & ancestors(jobs, name):
+            condition = str(job.get("if", ""))
+            assert "always()" in condition or "!cancelled()" in condition, (
+                f"{name} skips whenever an upgrade arm skips")
+
+
 def test_all_applicable_ci_jobs_are_aggregated_and_desktop_e2e_stays_deferred():
     jobs = workflow("ci.yaml")["jobs"]
     checks = {name for name, job in jobs.items() if "uses" in job}

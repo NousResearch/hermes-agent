@@ -83,7 +83,7 @@ def _portalocker_probe() -> bool:
 # 0660 chmod and eager file creation; CLH opens lazily and rotates differently.
 if sys.platform == "win32":
     if _portalocker_probe():
-        from concurrent_log_handler import (  # noqa: E402
+        from concurrent_log_handler import (
             ConcurrentRotatingFileHandler as RotatingFileHandler,
         )
     else:
@@ -94,11 +94,11 @@ if sys.platform == "win32":
         # below; fall back to stdlib rotation instead. Rollover is disabled in
         # the fallback: multi-process appends make Windows renames fail with
         # WinError 32, the exact #44873 trap CLH exists to avoid.
-        from logging.handlers import RotatingFileHandler  # noqa: E402
+        from logging.handlers import RotatingFileHandler
 
         _WINDOWS_CLH_FALLBACK = True
 else:
-    from logging.handlers import RotatingFileHandler  # noqa: E402
+    from logging.handlers import RotatingFileHandler
 
 # Thread-local per-conversation session context.
 _session_context = threading.local()
@@ -581,7 +581,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
 
 def _new_file_handler(
     path: Path, *, level: int, max_bytes: int, backup_count: int, formatter
-) -> "_ManagedRotatingFileHandler":
+) -> _ManagedRotatingFileHandler:
     """Create the ``logs/`` directory and a configured ``_ManagedRotatingFileHandler``."""
     mkdir_under_hermes_home(path.parent)
     if _WINDOWS_CLH_FALLBACK:
@@ -722,7 +722,7 @@ class _ProfileRoutingFileHandler(logging.Handler):
 # drops WebSocket clients. Every file handler is therefore driven by a single
 # QueueListener thread; loggers only do a non-blocking enqueue.
 
-_log_queue: "Optional[queue.SimpleQueue]" = None
+_log_queue: Optional[queue.SimpleQueue] = None
 _queue_listener: Optional[QueueListener] = None
 _queued_file_handlers: list = []
 _queue_atexit_registered = False
@@ -905,7 +905,7 @@ def _reset_queued_handlers() -> None:
         for h in list(root.handlers):
             if getattr(h, "_hermes_queue", False):
                 root.removeHandler(h)
-        for h in list(_queued_file_handlers):
+        for h in _queued_file_handlers:
             _quietly(h.close)
         _queued_file_handlers.clear()
         _log_queue = None

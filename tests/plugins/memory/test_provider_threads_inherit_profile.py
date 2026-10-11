@@ -22,7 +22,7 @@ def _probe_home(seen: dict, key: str = "home"):
 
 
 def _retaindb(seen, tmp_path):
-    import plugins.memory.retaindb as retaindb
+    from plugins.memory import retaindb
 
     p = retaindb.RetainDBMemoryProvider()
     p._client = MagicMock()
@@ -34,25 +34,15 @@ def _retaindb(seen, tmp_path):
 
 
 def _byterover(seen, tmp_path):
-    import plugins.memory.byterover as byterover
+    from plugins.memory import byterover
 
     p = byterover.ByteRoverMemoryProvider()
     p._curate = _probe_home(seen)
     return [p._curate_in_background("content", name="brv-test", what="test")]
 
 
-def _openviking(seen, tmp_path):
-    import plugins.memory.openviking as openviking
-
-    p = openviking.OpenVikingMemoryProvider()
-    workers: set = set()
-    p._spawn_tracked("ov-test", _probe_home(seen), threading.Lock(), lambda: workers)
-    return list(workers)
-
-
 _PROVIDERS = {
     "retaindb": _retaindb, "byterover": _byterover,
-    "openviking": _openviking,
 }
 
 

@@ -27,7 +27,7 @@ def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
 
 
 class SummaryDispatchMixin:
-    def _apply_summary_route(self, call_kwargs: dict, pinned: Optional[Dict[str, Any]] = None) -> None:
+    def _apply_summary_route(self, call_kwargs: dict, pinned: Optional[dict[str, Any]] = None) -> None:
         """Pin the summary route onto ``call_kwargs`` for both compression entry points.
 
         After a fallback, an omitted route is NOT "use the main model": ``call_llm`` re-resolves
@@ -58,7 +58,7 @@ class SummaryDispatchMixin:
                 call_kwargs[key] = value
 
     def _summarize_window(
-        self, messages: List[Dict[str, Any]], turns_to_summarize: List[Dict[str, Any]], scan: "_HandoffScan",
+        self, messages: list[dict[str, Any]], turns_to_summarize: list[dict[str, Any]], scan: _HandoffScan,
         focus_topic: Optional[str], memory_context: str, bypass_cooldown: bool,
     ) -> Optional[str]:
         """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first.
@@ -80,7 +80,7 @@ class SummaryDispatchMixin:
                 telemetry["failure_class"] = "stall_deterministic_fallback"
             return None
         # Focus-topic derivation scans user turns; only pay when a summary is generated.
-        summary_kwargs: Dict[str, Any] = {
+        summary_kwargs: dict[str, Any] = {
             "focus_topic": focus_topic or self._derive_auto_focus_topic(messages),
             "memory_context": memory_context,
         }

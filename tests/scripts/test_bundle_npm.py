@@ -26,7 +26,7 @@ def test_bundle_npm_runs_workspace_from_unrelated_directory(tmp_path):
                npm_config_offline="true")
     result = subprocess.run([*npm_command(node), "--prefix", str(workspace),
                              "run", "--silent", "build", "--", "two words", "$(literal)"],
-                            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+                            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 7, result.stdout + result.stderr
     child = json.loads(result.stdout)
     assert child["args"] == ["two words", "$(literal)"]

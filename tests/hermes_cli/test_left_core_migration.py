@@ -236,7 +236,7 @@ def test_the_migration_installs_once_so_a_removal_sticks(tmp_path, monkeypatch):
         plugin.mkdir(parents=True)
         return {"ok": True}
 
-    quiet = lambda message: None  # noqa: E731
+    quiet = lambda message: None
     monkeypatch.setattr(mpm, "catalog_source", lambda name: None)
     assert lcm.migrate_home(home, install=install, say=quiet) == []
     monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
@@ -266,7 +266,7 @@ def test_a_failed_startup_install_backs_off_and_reports_one_line(tmp_path, monke
     git_error = ("Could not download the plugin from https://github.com/x/y. Check the address.\n"
                  "Details: Cloning into '/h/plugins/.install-1'...\n"
                  "fatal: unable to access 'https://github.com/x/y/': Could not resolve host: github.com\n")
-    failing = lambda name: {"ok": False, "error": git_error}  # noqa: E731
+    failing = lambda name: {"ok": False, "error": git_error}
     monkeypatch.setattr(lcm, "_install_into", lambda h: failing)
     said = []
     assert lcm.recover_at_startup(say=said.append) == []
@@ -278,3 +278,32 @@ def test_a_failed_startup_install_backs_off_and_reports_one_line(tmp_path, monke
     assert lookups == ["homeassistant"] and len(said) == 1
     assert lcm.migrate_home(home, install=failing, say=said.append) == []
     assert lookups == ["homeassistant", "homeassistant"]
+
+
+@pytest.mark.parametrize(("auth_json", "config", "in_use"), [
+    ('{"providers": {"spotify": {"refresh_token": "r"}}}', "", True),
+    ('{"providers": {"spotify": {"access_token": "a"}}}', "", True),
+    ("", "platform_toolsets:\n  cli: [hermes-cli, spotify]\n", True),
+    ('{"providers": {"spotify": {"client_id": "only-the-app"}}}', "", False),
+    ('{"providers": {"nous": {"access_token": "a"}}}', "platform_toolsets:\n  cli: [hermes-cli]\n", False),
+])
+def test_spotify_in_use_is_a_stored_login_or_the_toolset(tmp_path, auth_json, config, in_use):
+    """Core's Spotify tools were opt-in and login-gated: a login in auth.json or the toolset selected is
+    use; an app client id alone (or another provider's login) is not."""
+    home = _home(tmp_path, config=config)
+    if auth_json:
+        (home / "auth.json").write_text(auth_json, encoding="utf-8")
+    assert lcm.spotify_in_use(home) is in_use
+
+
+def test_old_spotify_commands_point_at_the_plugin(tmp_path, monkeypatch):
+    """`hermes auth spotify` / `hermes spotify` name the new command and how to get it for this home."""
+    home = _home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    hint = lcm.moved_command_hint("hermes auth", "spotify", "status")
+    assert "`hermes auth status spotify` is now `hermes spotify status`" in hint
+    assert "plugins install spotify" in hint
+    assert "plugins install spotify" in lcm.moved_command_hint("hermes", "spotify")
+    (home / "plugins" / "spotify").mkdir(parents=True)  # installed but disabled
+    assert "plugins enable spotify" in lcm.moved_command_hint("hermes", "spotify")
+    assert lcm.moved_command_hint("hermes", "honcho") == ""

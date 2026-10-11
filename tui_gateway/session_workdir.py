@@ -224,6 +224,35 @@ def _context_cwd_is_launch_artifact(session: dict | None) -> bool:
     return bool(session and not session.get("explicit_cwd") and _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE)
 
 
+def _resolve_create_cwd(params: dict, source: str, profile_home) -> tuple[bool, str, bool]:
+    """``(explicit_cwd, session_cwd, remote_cwd)`` for a freshly created session.
+
+    Only a chosen workspace persists as cwd; the launch-dir fallback is "No workspace". A
+    chosen workspace is one the gateway host can ``isdir``-probe, an ssh-shaped cwd on a remote
+    profile, or — the #108205 desktop arm — a nonblank desktop-sourced cwd the host probe could
+    not vouch for: the client names a workspace its gateway host cannot see (Docker/remote
+    backend topology), and a failed host-side isdir is a topology artifact, not a verdict on
+    the client's path. The CLIENT vouches instead, with #52589 provenance: a deliberate pick
+    (``cwd_explicit``) adopts the raw path outright; an inherited app-global workspace only
+    counts once the completion resolution actually adopted it, so a launch-dir fallback still
+    persists nothing and a named profile's configured ``terminal.cwd`` keeps winning.
+    """
+    raw_cwd = str(params.get("cwd") or "").strip()
+    remote_cwd = bool(raw_cwd) and _is_remote_cwd_shape(raw_cwd) and _cwd_is_remote(profile_home)
+    explicit_cwd = False
+    with contextlib.suppress(Exception):
+        explicit_cwd = bool(raw_cwd) and (
+            remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
+    session_cwd = _completion_cwd(params)
+    if raw_cwd and not explicit_cwd and source == "desktop":
+        if params.get("cwd_explicit"):
+            explicit_cwd = True
+            session_cwd = raw_cwd
+        elif session_cwd and session_cwd == os.path.abspath(os.path.expanduser(raw_cwd)):
+            explicit_cwd = True
+    return explicit_cwd, session_cwd, remote_cwd
+
+
 def _persisted_session_cwd(session: dict) -> str | None:
     """The cwd to stamp on the session's DB row, or None to leave it unset (launch-dir rule: ``_ensure_session_db_row``)."""
     if session.get("explicit_cwd"):
@@ -446,7 +475,8 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
             model_config[flag] = True
     if isinstance(composer_profile := session.get("composer_override_profile"), dict):
         model_config["composer_override_profile"] = composer_profile
-    return row_model, model_config
+    from tools.approval_yolo import with_session_yolo  # a /yolo toggled before the row existed
+    return row_model, with_session_yolo(model_config, session.get("session_key") or "")
 
 
 def _ensure_session_db_row(session: dict) -> bool:

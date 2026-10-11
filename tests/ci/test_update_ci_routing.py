@@ -26,12 +26,13 @@ import os
 import re
 import subprocess
 import sys
-from functools import lru_cache
+from functools import lru_cache, cache
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from hermes_platform.host.facts import native_arch
 from tests.ci import _gha_expr as gha
 from tests.ci import workflow_steps
 
@@ -49,7 +50,19 @@ _spec.loader.exec_module(cc)
 # bash is Git Bash: the replay, its dispatch chain and the ineffective-step controls carry this
 # marker so a green Windows job has run them on that layout (review F81-R). Not "any": macOS
 # bash 3.2 is not a host the replay has been run on.
-_NATIVE_WINDOWS_TOO = pytest.mark.platforms("linux", "windows")
+_NATIVE_WINDOWS_PLATFORMS = pytest.mark.platforms("linux", "windows")
+# Not Windows on arm64: Git for Windows ships an x86-64 MSYS bash.exe there, run under emulation,
+# and with the os-tests lane's 16 workers it dies with 0xC000026F (STATUS_WX86_INTERNAL_ERROR) or
+# 0xC0000005 before running a line, on replays of unchanged workflows: one copy of this file red
+# in ~3 when 16 run at once, against 0/64 on x64 Windows under the same load. The emulator's
+# crash is not the replay's to assert on; the x64 Windows row runs the same layout natively.
+_EMULATED_BASH = pytest.mark.skipif(
+    sys.platform == "win32" and native_arch() == "arm64",
+    reason="Git Bash is x86-64 under emulation on Windows arm64 and crashes under parallel load")
+
+
+def _NATIVE_WINDOWS_TOO(test):
+    return _NATIVE_WINDOWS_PLATFORMS(_EMULATED_BASH(test))
 _lister_spec = importlib.util.spec_from_file_location("list_os_marked", _REPO / "scripts/ci/list_os_marked_tests.py")
 assert _lister_spec is not None and _lister_spec.loader is not None
 lister = importlib.util.module_from_spec(_lister_spec)
@@ -72,7 +85,7 @@ def _real_classifier(paths: list[str]) -> dict[str, bool]:
 # -- workflow replay ---------------------------------------------------------------------
 
 
-@lru_cache(maxsize=None)
+@cache
 def _yaml(rel: str) -> dict:
     yaml = pytest.importorskip("hermes_yaml")
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
@@ -82,8 +95,12 @@ def _on(workflow: dict) -> dict:
     return workflow.get("on", workflow.get(True)) or {}
 
 
-def _detect_outputs(lanes: dict[str, bool]) -> dict[str, Any]:
-    """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs."""
+def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch") -> dict[str, Any]:
+    """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs.
+
+    Replays a manual dispatch by default: E2E lanes reach their consumers only on a dispatch or a
+    release run (pull requests and main pushes force them off), and the routing tests below check
+    that a set lane reaches its suites."""
     raw = {k: gha.to_string(v) for k, v in lanes.items()}
     action = _yaml(".github/actions/detect-changes/action.yml")
     action_out = {k: gha.render(v["value"], {"steps": {"classify": {"outputs": raw}}})
@@ -93,7 +110,7 @@ def _detect_outputs(lanes: dict[str, bool]) -> dict[str, Any]:
     classify = next(s for s in detect["steps"] if s.get("id") == "classify")
     assert classify["uses"] == "./.github/actions/detect-changes"
     steps = {"classify": {"outputs": action_out}}
-    ctx = {"steps": steps, "github": {"event_name": "pull_request"}, "inputs": {}}
+    ctx = {"steps": steps, "github": {"event_name": event_name}, "inputs": {}}
     steps["gate-lanes"] = {"outputs": workflow_steps.outputs(gate, ctx)}
     return {k: gha.render(v, ctx) for k, v in detect["outputs"].items()}
 
@@ -398,7 +415,7 @@ def test_marker_corpus_change_runs_every_language_that_reads_it():
 def _tracked_mentions(name: str) -> list[str]:
     try:
         out = subprocess.run(["git", "-C", str(_REPO), "grep", "-l", "-F", name, "--", "."],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, timeout=60, check=False)
     except OSError:
         pytest.skip("git unavailable: cannot list the fixture's consumers")
     if out.returncode not in (0, 1):
@@ -557,7 +574,7 @@ def test_replay_python3_is_the_replay_interpreter_when_its_dir_has_only_python(t
              "print(json.dumps([sys.executable, workflow_steps.outputs(json.loads(sys.argv[1]), {})]))")
     env = {**os.environ, "PYTHONPATH": str(_REPO)}
     result = subprocess.run([str(interpreter), "-c", probe, json.dumps(_PROBE_STEP)], cwd=_REPO, env=env,
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stderr
     replay_python, out = json.loads(result.stdout)
     assert out["py3"] == replay_python
@@ -631,7 +648,7 @@ def _module_file(module: str) -> Path | None:
     return None
 
 
-@lru_cache(maxsize=None)
+@cache
 def _imports(path: Path) -> frozenset[str]:
     """Repo modules ``path`` imports anywhere (module level or lazily in a function)."""
     try:
@@ -650,6 +667,8 @@ def _imports(path: Path) -> frozenset[str]:
                 base = ".".join([*parts, base] if base else parts)
             names.add(base)
             names.update(f"{base}.{a.name}" for a in node.names)
+    # Importing a.b.c runs a/__init__.py and a/b/__init__.py first.
+    names |= {".".join(n.split(".")[:i]) for n in names for i in range(1, n.count(".") + 1)}
     found = set()
     for name in names:
         target = _module_file(name)
@@ -664,7 +683,7 @@ def _entry_modules(prefixes: tuple[str, ...]) -> list[Path]:
     return sorted(hits)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _importers() -> dict[str, int]:
     counts: dict[str, int] = {}
     for path in _product_python():
@@ -800,10 +819,15 @@ def test_strict_acceptance_dispatch_reaches_every_e2e_suite(value):
         assert _strict_env(run, path, rel, job, step) == value, "/".join(path)
 
 
-def test_pull_requests_never_run_strict():
-    run = _ci_run(cc.classify([]))
-    for path, rel, job, step in _STRICT_STEPS:
-        assert _strict_env(run, path, rel, job, step) == "", "/".join(path)
+@pytest.mark.parametrize("event_name", ["pull_request", "push"])
+def test_pull_requests_and_main_pushes_never_run_e2e(event_name):
+    """E2E suites run only on a release run or a manual dispatch, whatever the diff or labels select."""
+    lanes = cc.classify([], run_e2e=True)  # every lane on, as a label or an update-path diff would
+    run = _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes, event_name))
+    for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update"):
+        assert not any(_consumers_reached(run, lane).values()), f"{event_name}: {lane} ran"
+    assert "e2e-desktop-core" not in run
+    assert "tests" in run and "tests-os" in run  # the unit lanes still run
 
 
 def test_windows_install_update_dispatch_alone_sets_strict():
@@ -818,5 +842,5 @@ def test_windows_install_update_dispatch_alone_sets_strict():
 def test_run_tests_forwards_the_strict_switch():
     """run_tests.sh starts pytest under `env -i`: an unlisted variable never arrives."""
     text = (_REPO / "scripts/run_tests.sh").read_text(encoding="utf-8-sig")
-    allow = re.search(r"for _test_var in (.*?); do", text, re.S)
+    allow = re.search(r"for _test_var in (.*?); do", text, re.DOTALL)
     assert allow and "HERMES_E2E_STRICT_ACCEPTANCE" in allow.group(1).split()

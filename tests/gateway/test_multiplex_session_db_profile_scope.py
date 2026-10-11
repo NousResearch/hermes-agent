@@ -26,7 +26,7 @@ where they always did.
 
 import asyncio
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -768,8 +768,8 @@ def test_compression_child_write_stays_in_the_parents_profile_store(multiplex_ho
     entry = SessionEntry(
         session_key=key,
         session_id=parent_id,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
     store._entries[key] = entry
 

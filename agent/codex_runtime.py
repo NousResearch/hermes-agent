@@ -523,11 +523,18 @@ def _store_codex_thread_id(agent, thread_id: str | None) -> None:
 def _start_codex_thread(agent) -> str:
     """``ensure_started`` with the fail-closed resume policy: a stored thread that codex cannot hand back
     (unknown id, rollout locked by a killed app-server, different thread) is dropped from the session row,
-    the user is told once on the status rail, and a fresh thread starts on the same client."""
+    the user is told once on the status rail, and a fresh thread starts on the same client. A bound active
+    native Goal instead pauses and raises: its cumulative ledger cannot move to a fresh thread."""
     from agent.transports.codex_app_server_session import CodexThreadResumeError
+    from agent.transports.codex_app_server import CodexAppServerError
     try:
         return agent._codex_session.ensure_started()
-    except CodexThreadResumeError as exc:
+    except (CodexAppServerError, TimeoutError) as exc:
+        from agent.codex_runtime_goals import pause_native_setup_failure
+        if pause_native_setup_failure(agent, str(exc)):
+            raise
+        if not isinstance(exc, CodexThreadResumeError):
+            raise
         logger.warning("%s; starting a new codex thread (session=%s)", exc.message, getattr(agent, "session_id", None))
         _store_codex_thread_id(agent, None)
         agent._emit_diagnostic_status(_CODEX_THREAD_RESUME_NOTICE)
@@ -601,17 +608,19 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     turn's transcript (current user row last); a thread started from scratch is seeded with the prior turns."""
     developer_instructions = _codex_developer_instructions(agent)
     model_provider = _codex_model_provider(agent)
+    from agent.codex_runtime_goals import native_resume_thread, native_session_matches
+    goal_thread = native_resume_thread(agent)
     if getattr(agent, "_codex_session", None) is not None:
-        # Only a session whose recorded composition differs is stale; one attached without a record is kept.
+        # A bound active Goal also fences cached chat threads, even if the prompt has not changed.
         # The provider is fixed per thread (turn/start can switch the model, not the provider), so an
         # in-place switch to or from a named custom provider retires the thread too.
         recorded = getattr(agent, "_codex_session_prompt", None)
-        if recorded is None or (recorded == developer_instructions
-                                and getattr(agent, "_codex_session_model_provider", None) == model_provider):
+        composition_matches = recorded is None or (recorded == developer_instructions
+                              and getattr(agent, "_codex_session_model_provider", None) == model_provider)
+        if composition_matches and native_session_matches(agent._codex_session, goal_thread):
             return
         _close_codex_session(agent)
-    from agent.codex_runtime_goals import native_resume_thread
-    resume_thread_id = native_resume_thread(agent) or (None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent))
+    resume_thread_id = goal_thread or (None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent))
     from agent.runtime_cwd import resolve_agent_cwd
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     from hermes_cli.codex_runtime_switch import get_configured_codex_binary

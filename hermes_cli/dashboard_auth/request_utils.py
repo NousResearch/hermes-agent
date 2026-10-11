@@ -36,8 +36,17 @@ def extract_bearer(request: Request) -> str:
 
 def is_safe_next_path(path: str) -> bool:
     """Same-origin post-login target: rejects non-relative and protocol-relative (``//evil``)
-    values, the auth routes themselves, and every ``/api`` path."""
-    if not path.startswith("/") or path.startswith("//"):
+    values, the backslash/control/space forms browsers normalise into them, the auth routes
+    themselves, and every ``/api`` path.
+
+    Browsers parse ``/\\evil`` as ``//evil`` (WHATWG URL collapses ``\\`` to ``/`` in
+    special-scheme URLs) and strip tab/newline before parsing, so a string-prefix check alone
+    cannot decide origin; anything a valid same-origin path would carry percent-encoded is
+    rejected here fail-closed instead.
+    """
+    if not path.startswith("/") or path.startswith(("//", "/\\")):
+        return False
+    if "\\" in path or any(ord(ch) <= 0x20 for ch in path):
         return False
     if any(path == p or path.startswith(p) for p in _NEXT_DENY_PREFIXES):
         return False

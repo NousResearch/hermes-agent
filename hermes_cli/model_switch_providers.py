@@ -28,28 +28,37 @@ _UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencod
 
 def _save_discovered_models_to_config(
     api_url: str, model_ids: list[str], *, api_mode: Optional[str] = None,
-    headers: Optional[dict[str, str]] = None, credential_identity: str | None = None) -> None:
-    """Persist a successful ``/v1/models`` probe into the matching ``custom_providers`` entry.
+    headers: Optional[dict[str, str]] = None, credential_identity: str | None = None,
+    provider_key: str = "") -> None:
+    """Persist a successful ``/v1/models`` probe into the matching saved provider.
 
-    Matches by base_url (slash-normalised), api_mode and headers. A failed config write is
-    swallowed — the picker still shows the live models for this session."""
+    Match keyed entries by stable identity as well as endpoint properties. Legacy entries are
+    still updated in place for compatibility. A failed config write is swallowed — the picker
+    still shows the live models for this session."""
     from hermes_cli.model_switch import _extra_headers_from_config
     if not api_url or not model_ids:
         return
     try:
         from hermes_cli.config import load_config, save_config
         cfg = load_config()
-        providers = cfg.get("custom_providers") or []
-        if not isinstance(providers, list):
-            return
-
         norm_url = api_url.strip().rstrip("/").lower()
         changed = False
-        for entry in providers:
+        candidates = []
+        keyed = cfg.get("providers")
+        if provider_key and isinstance(keyed, dict):
+            candidates.extend(
+                (entry, key) for key, entry in keyed.items()
+                if isinstance(entry, dict) and str(key).lower() == provider_key.lower())
+        legacy = cfg.get("custom_providers")
+        if not provider_key and isinstance(legacy, list):
+            candidates.extend((entry, "") for entry in legacy if isinstance(entry, dict))
+        for entry, identity in candidates:
             if not isinstance(entry, dict):
                 continue
-            entry_url = (entry.get("base_url", "") or entry.get("url", "")).strip()
+            entry_url = (entry.get("base_url", "") or entry.get("url", "") or entry.get("api", "")).strip()
             if entry_url.rstrip("/").lower() != norm_url or _entry_api_mode(entry) != api_mode:
+                continue
+            if provider_key and identity and identity.lower() != provider_key.lower():
                 continue
             if headers is not None and _extra_headers_from_config(entry) != headers:
                 continue
@@ -62,7 +71,6 @@ def _save_discovered_models_to_config(
             changed = True
 
         if changed:
-            cfg["custom_providers"] = providers
             save_config(cfg)
     except Exception:
         pass
@@ -1123,6 +1131,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         display_name = prefix or raw_name
         grp = groups.setdefault(group_key, {
             "slug": custom_provider_slug(display_name, provider_key), "name": display_name,
+            "provider_key": provider_key,
             "api_url": api_url, "api_key": "", "credential_identity": cred_identity, "models": [], "has_explicit_models": False,
             "discover_models": True, "api_mode": api_mode, "extra_headers": entry_extra_headers,
             "aliases": set()})
@@ -1171,7 +1180,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
                 try:
                     _save_discovered_models_to_config(
                         api_url, discovered, api_mode=grp.get("api_mode"), headers=grp.get("extra_headers") or None,
-                        credential_identity=grp["credential_identity"])
+                        credential_identity=grp["credential_identity"], provider_key=grp.get("provider_key", ""))
                 except Exception:
                     pass
         b.add_endpoint_row(slug, grp["name"], grp["api_url"], grp["models"], is_current, native_catalog_empty)

@@ -828,9 +828,10 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.config.save_config", _save)
 
     _save_custom_provider("http://localhost:11434/v1", name="Ollama")
-    entries = saved.get("custom_providers", [])
+    entries = saved.get("providers", {})
     assert len(entries) == 1
-    assert entries[0]["name"] == "Ollama"
+    assert entries["ollama"]["name"] == "Ollama"
+    assert entries["ollama"]["api"] == "http://localhost:11434/v1"
 
 
 def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypatch, tmp_path):
@@ -853,10 +854,106 @@ def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypa
         key_env="HERMES_CUSTOM_LOCALHOST_11434_API_KEY",
     )
 
-    entry = saved["custom_providers"][0]
+    entry = saved["providers"]["ollama"]
     assert entry["key_env"] == "HERMES_CUSTOM_LOCALHOST_11434_API_KEY"
     assert "api_key" not in entry
     assert "sk-secret" not in yaml.safe_dump(saved)
+
+
+def test_save_custom_provider_keeps_named_shared_url_entries_separate(monkeypatch):
+    """Named providers sharing one URL are separate config identities."""
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    saved = {}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+
+    _save_custom_provider("https://proxy.example/v1", model="model-a", name="Alpha")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: saved)
+    _save_custom_provider("https://proxy.example/v1", model="model-b", name="Beta")
+
+    assert set(saved["providers"]) == {"alpha", "beta"}
+    assert saved["providers"]["alpha"]["default_model"] == "model-a"
+    assert saved["providers"]["beta"]["default_model"] == "model-b"
+
+
+def test_save_custom_provider_reuses_unique_named_arbitrary_key(monkeypatch):
+    """A display name identifies its existing keyed entry even when its URL changes."""
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    saved = {}
+    config = {"providers": {
+        "endpoint-prod-7f3a": {"name": "Friendly Alpha", "api": "https://old.example/v1",
+                               "transport": "anthropic_messages", "key_env": "ALPHA_KEY",
+                               "models": {"curated": {"context_length": 8192}}},
+        "beta": {"name": "Beta", "api": "https://beta.example/v1"},
+    }}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+
+    _save_custom_provider("https://new.example/v1", model="selected", name="Friendly Alpha")
+
+    assert set(saved["providers"]) == {"endpoint-prod-7f3a", "beta"}
+    assert saved["providers"]["endpoint-prod-7f3a"] == {
+        "name": "Friendly Alpha", "api": "https://new.example/v1", "transport": "anthropic_messages",
+        "key_env": "ALPHA_KEY", "models": {"curated": {"context_length": 8192}},
+        "default_model": "selected",
+    }
+
+
+def test_save_custom_provider_migrates_matching_legacy_metadata_once(monkeypatch):
+    """Saving a legacy provider moves its curated catalog and credential metadata once."""
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    saved = {}
+    other_legacy = {"name": "Other", "base_url": "https://old.example/v1", "model": "other-model"}
+    same_name_other_url = {"name": "Gateway", "base_url": "https://other.example/v1", "model": "other-model"}
+    config = {"custom_providers": [
+        {"name": "Gateway", "base_url": "https://new.example/v1", "key_env": "GATEWAY_KEY",
+         "api_mode": "anthropic_messages", "models": {"curated": {"context_length": 16384}},
+         "extra_headers": {"X-Tenant": "tenant-a"}},
+        other_legacy,
+        same_name_other_url,
+    ]}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+
+    _save_custom_provider("https://new.example/v1", model="selected", name="Gateway")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: saved)
+    _save_custom_provider("https://new.example/v1", model="selected", name="Gateway")
+
+    assert saved["custom_providers"] == [other_legacy, same_name_other_url]
+    assert saved["providers"]["gateway"] == {
+        "name": "Gateway", "api": "https://new.example/v1", "key_env": "GATEWAY_KEY",
+        "transport": "anthropic_messages", "models": {"curated": {"context_length": 16384}},
+        "extra_headers": {"X-Tenant": "tenant-a"}, "default_model": "selected",
+    }
+
+
+def test_save_custom_provider_round_trips_real_temp_config(monkeypatch, tmp_path):
+    """Exercise the real config reader/writer and legacy conversion in an isolated home."""
+    import hermes_yaml as yaml
+    from hermes_cli.config import load_config
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "custom_providers": [{"name": "Old gateway", "base_url": "https://proxy/v1",
+                              "key_env": "PROXY_KEY", "models": {"curated": {"context_length": 4096}}}]
+    }))
+
+    _save_custom_provider("https://proxy/v1", model="curated", name="Old gateway")
+    after_first = load_config()
+    _save_custom_provider("https://proxy/v1", model="curated", name="Old gateway")
+    after_second = load_config()
+
+    assert after_first["custom_providers"] == []
+    assert after_first["providers"] == after_second["providers"]
+    assert after_second["providers"]["old-gateway"]["key_env"] == "PROXY_KEY"
+    assert after_second["providers"]["old-gateway"]["models"] == {
+        "curated": {"context_length": 4096}}
 
 
 

@@ -283,6 +283,8 @@ routes are never trusted, even with the flag set.
 Older configs used a top-level `custom_providers:` list (with `base_url` instead of `api`). It still works and is auto-migrated to the `providers:` dict on `hermes update` (config v12).
 :::
 
+Newly saved custom endpoints use the `providers:` mapping; provider identity is the entry key, so multiple named providers may share one endpoint URL.
+
 ### Nous Portal: which wire carries Claude
 
 Nous Portal serves its `anthropic/*` models on two routes: OpenAI-compatible `/v1/chat/completions` and the native Anthropic Messages wire `/v1/messages`. `nous.anthropic_wire` picks one:

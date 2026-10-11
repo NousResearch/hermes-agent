@@ -667,6 +667,45 @@ cron:
   wrap_response: false
 ```
 
+### Threaded delivery (summary parent + detail in thread)
+
+On busy channels a long cron report buries everything else in the timeline.
+Set `cron.threaded_delivery` to post a **one-line summary as the parent
+message** and the **full report in its thread** — the channel shows a scannable
+brief that expands on click:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  threaded_delivery: true
+```
+
+- **Slack only today.** Every other platform ignores the flag and delivers
+  flat.
+- **Continuable jobs keep their reply surface.** When a delivery opens its own
+  reply thread (a continuable job on the default `thread` surface) or uses
+  `slack.cron_continuable_surface: in_channel`, that target is delivered flat
+  exactly as without this flag, so a reply still continues the job.
+- **Live gateway only.** Threading needs a running gateway with a connected
+  Slack adapter. When cron delivery falls back to the standalone sender (no
+  gateway running, or the scheduler ticking inside the desktop app without a
+  gateway), the report is delivered flat as it is today.
+- **Summary split.** The parent is the report's first paragraph (a leading
+  `TL;DR:` / `Summary:` marker is stripped); everything after the first blank
+  line becomes the threaded detail. A report with no blank-line break is
+  delivered flat, unchanged.
+- **Per-job opt-out.** Set `thread: false` on an individual job to force flat
+  delivery for it even when the global flag is on.
+- **Degradation is safe.** If the summary posts but the body cannot be threaded
+  (adapter returns no thread anchor, or a send times out mid-flight), the body
+  is delivered flat instead — you never get a duplicated summary and never lose
+  the report. The scheduler logs a warning when it sends the body
+  un-threaded.
+- **Timeouts never duplicate.** Both sends go through the same delivery router
+  and 60-second confirmation window as a flat delivery. A send that times out
+  before it was dispatched counts as not sent and falls back; a send that times
+  out while already in flight counts as delivered and is never retried.
+
 ### Push notifications (`cron.delivery.notify`)
 
 Cron output is a *final* delivery, not a progress message, so by default it is

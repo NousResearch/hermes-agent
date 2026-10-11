@@ -1299,6 +1299,266 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
         logger.debug("Job '%s': could not record delivery verification: %s", job.get("id"), exc)
 
 
+# Outcomes of a threaded-delivery attempt, returned to _deliver_result.  The
+# caller MUST distinguish these: whether a flat retry is safe, and of WHAT text,
+# depends on what already went out on the wire.
+THREADED_OK = "threaded"            # parent + detail both landed in a thread.
+THREADED_ASSUME_SENT = "assume"     # a send is in flight; re-sending would DUPE.
+THREADED_DETAIL_ONLY = "detail"     # parent is out, detail is NOT — send detail flat.
+THREADED_FALL_BACK = "fallback"     # nothing went out — the full flat report is safe.
+
+# Per-leg send verdicts, internal to _send_threaded_via_router.  A leg either
+# COMPLETED (inspect the result), was cleanly NOT SENT (safe to retry), or is
+# IN FLIGHT after a timeout (must not retry — would duplicate).
+_LEG_NOT_SENT = "not_sent"
+_LEG_IN_FLIGHT = "in_flight"
+
+
+def _threaded_send_leg(router, target, text, metadata, loop, job, label, transport=None):
+    """Run one leg of a threaded send through the DeliveryRouter.
+
+    Returns ``(send_result, verdict)``:
+      - ``(result, None)``          -> the send completed; inspect ``result``.
+      - ``(None, _LEG_NOT_SENT)``   -> nothing reached the wire (never scheduled,
+                                       never dispatched, or a clean send error);
+                                       a retry is safe.
+      - ``(None, _LEG_IN_FLIGHT)``  -> a request is on the wire after a timeout
+                                       and cannot be un-sent; re-sending this
+                                       same text on any path is a DUPLICATE.
+
+    Timeout handling mirrors the flat live-adapter path (#38922): a slow
+    confirmation does NOT mean the send failed, so ``future.cancel()`` decides.
+    ``cancel() == True`` -> the callback never started, nothing was sent.
+    ``cancel() == False`` -> already running, the request is in flight.
+    ``_deliver_to_platform`` raises on a *confirmed* send failure (nothing on the
+    wire), which is caught here and reported as _LEG_NOT_SENT.
+
+    ``transport`` is the target's already-authorized transport, passed through
+    exactly as the flat lane passes it: re-resolving from the plain adapters
+    dict cannot re-derive a SharedRouteAdapters satellite grant (#115656).
+    """
+    from agent.async_utils import safe_schedule_threadsafe
+
+    future = safe_schedule_threadsafe(
+        router._deliver_to_platform(target, text, metadata, transport=transport), loop,
+    )
+    if future is None:
+        logger.warning(
+            "Job '%s': threaded %s send could not be scheduled on the gateway loop",
+            job.get("id", "?"), label,
+        )
+        return None, _LEG_NOT_SENT
+
+    try:
+        return future.result(timeout=60), None
+    except TimeoutError:
+        if future.cancel():
+            logger.warning(
+                "Job '%s': threaded %s send timed out before dispatch; nothing sent",
+                job.get("id", "?"), label,
+            )
+            return None, _LEG_NOT_SENT
+        logger.warning(
+            "Job '%s': threaded %s send timed out after 60s but is already in "
+            "flight; assuming delivered (no retry, would duplicate)",
+            job.get("id", "?"), label,
+        )
+        return None, _LEG_IN_FLIGHT
+    except Exception as ex:
+        # _deliver_to_platform raises RuntimeError on a confirmed send failure —
+        # the adapter tried and failed, so nothing is in flight and a retry is
+        # safe. (A genuinely in-flight send times out; it does not raise here.)
+        logger.warning(
+            "Job '%s': threaded %s send failed (%s); nothing sent",
+            job.get("id", "?"), label, ex,
+        )
+        return None, _LEG_NOT_SENT
+
+
+def _send_threaded_via_router(
+    router,
+    platform,
+    chat_id: str,
+    route_thread_id,
+    parent_text: str,
+    detail_text: str,
+    route_metadata: dict,
+    loop,
+    job: dict,
+    transport=None,
+):
+    """Post parent_text, then detail_text into its thread, via the DeliveryRouter.
+
+    Routing goes through ``DeliveryRouter._deliver_to_platform`` with the
+    target's authorized ``transport`` and the flat lane's ``route_metadata``
+    (from ``_live_route_metadata``), so target resolution and send metadata
+    (``notify``, ``scope_id``) match a flat send.
+
+    Threaded delivery is gated to platforms whose adapters thread on
+    ``metadata["thread_id"]`` (``THREADED_DELIVERY_PLATFORMS``); the Telegram
+    DM-topic disambiguation in ``_live_route_metadata`` never applies to them.
+
+    Returns ``(outcome, thread_anchor)``: one of the THREADED_* constants, and
+    for THREADED_OK / THREADED_ASSUME_SENT the thread id the detail went to (so
+    media can follow it).  When ``route_thread_id`` is set (the job targets an
+    existing thread), both messages go to that thread instead of creating a new
+    parent.
+    """
+    from gateway.delivery import DeliveryTarget
+
+    base_meta = dict(route_metadata or {})
+    if route_thread_id:
+        base_meta["thread_id"] = str(route_thread_id)
+    else:
+        base_meta.pop("thread_id", None)
+
+    parent_target = DeliveryTarget(
+        platform=platform,
+        chat_id=str(chat_id),
+        thread_id=base_meta.get("thread_id"),
+        is_explicit=True,
+    )
+    parent_result, verdict = _threaded_send_leg(
+        router, parent_target, parent_text, base_meta, loop, job, "parent",
+        transport=transport,
+    )
+    if verdict == _LEG_NOT_SENT:
+        # Nothing landed — the full flat report is safe to send.
+        return THREADED_FALL_BACK, None
+    if verdict == _LEG_IN_FLIGHT:
+        # The summary parent is on the wire but we never got its ts, so we
+        # cannot thread under it.  The detail has NOT been sent, and losing the
+        # report body is worse than a stray un-threaded body: send the detail
+        # flat.  Re-sending the whole report would duplicate the summary.
+        return THREADED_DETAIL_ONLY, None
+    if not _confirm_adapter_delivery(parent_result):
+        # Completed but unconfirmed (e.g. silence-filtered) — nothing user-
+        # visible landed, so the full flat report is safe.
+        logger.debug(
+            "Job '%s': threaded parent send unconfirmed; falling back to flat",
+            job.get("id", "?"),
+        )
+        return THREADED_FALL_BACK, None
+
+    thread_meta = dict(base_meta)
+    if not thread_meta.get("thread_id"):
+        parent_ts = getattr(parent_result, "message_id", None)
+        if not parent_ts:
+            # Parent DID land but gave us no anchor to thread under.  Same
+            # reasoning as the in-flight case: the body still has to go out, and
+            # re-sending the whole report would duplicate the summary.
+            logger.debug(
+                "Job '%s': threaded parent returned no message_id; sending detail flat",
+                job.get("id", "?"),
+            )
+            return THREADED_DETAIL_ONLY, None
+        thread_meta["thread_id"] = str(parent_ts)
+
+    detail_target = DeliveryTarget(
+        platform=platform,
+        chat_id=str(chat_id),
+        thread_id=thread_meta["thread_id"],
+        is_explicit=True,
+    )
+    detail_result, verdict = _threaded_send_leg(
+        router, detail_target, detail_text, thread_meta, loop, job, "detail",
+        transport=transport,
+    )
+    if verdict == _LEG_IN_FLIGHT:
+        # Detail is on the wire — assume delivered.  Retrying it on any path
+        # would duplicate it.
+        return THREADED_ASSUME_SENT, thread_meta["thread_id"]
+    if verdict == _LEG_NOT_SENT or not _confirm_adapter_delivery(detail_result):
+        # Parent is already out but the body is not: re-send ONLY the body
+        # (flat), never the whole report.
+        logger.warning(
+            "Job '%s': thread detail not delivered; sending body flat",
+            job.get("id", "?"),
+        )
+        return THREADED_DETAIL_ONLY, None
+
+    return THREADED_OK, thread_meta["thread_id"]
+
+
+# Sentinel: the threaded lane delivered this leg outright, so no flat send follows.
+_THREADED_DELIVERED = object()
+
+
+def _try_threaded_delivery(t, parent_text, detail_text, media_files, delivery_errors):
+    """Attempt threaded delivery for one target.
+
+    Returns ``_THREADED_DELIVERED`` when the thread carried the whole report, a
+    body-only string when the summary parent landed but the body did not (the flat
+    lane must then send ONLY the body, never the whole report again), or None when
+    nothing went out and the full flat report is safe.
+
+    Threading yields to upstream's continuable surfaces: when the target already
+    has an opened handoff thread (``t.opened_thread_id``) or uses the in_channel
+    surface, this returns None and the flat lane delivers and seeds the reply
+    session exactly as it would without threading.
+
+    Partial failures go to ``delivery_errors``, the list the flat lane uses for
+    problems that surface even on success (media losses, thread fallback).
+    """
+    job = t.job
+    if not (t.runtime_adapter is not None and t.loop is not None
+            and getattr(t.loop, "is_running", lambda: False)()
+            and t.platform_name.lower() in _sched.THREADED_DELIVERY_PLATFORMS
+            and detail_text and _sched._threaded_delivery_enabled(job)):
+        return None
+    if t.opened_thread_id or t.in_channel_surface:
+        logger.debug(
+            "Job '%s': continuable surface active for %s (opened_thread=%s in_channel=%s); "
+            "delivering flat", job["id"], t.where, t.opened_thread_id, t.in_channel_surface)
+        return None
+    from gateway.delivery import DeliveryRouter
+
+    route_thread_id, route_metadata, media_metadata = _live_route_metadata(t)
+    try:
+        outcome, thread_anchor = _send_threaded_via_router(
+            DeliveryRouter(t.config, t.target_adapters), t.platform, t.chat_id,
+            route_thread_id, parent_text, detail_text, route_metadata, t.loop, job,
+            transport=t.transport)
+    except Exception as e:
+        # Unreachable in practice: _threaded_send_leg catches every send error and
+        # reports it as a verdict.  Kept so an unexpected bug before the parent is
+        # sent degrades to a flat delivery instead of losing the report.
+        logger.warning("Job '%s': threaded delivery to %s failed (%s); falling back to flat",
+                       job["id"], t.where, e)
+        return None
+    if outcome in (THREADED_OK, THREADED_ASSUME_SENT):
+        logger.info("Job '%s': delivered to %s via threaded live adapter (%s)",
+                    job["id"], t.where, outcome)
+        if media_files and outcome == THREADED_OK:
+            # Same sender, relay fields and error reporting as the flat lane, routed
+            # into the report's thread.
+            _live_send_media(t, dict(media_metadata, thread_id=thread_anchor),
+                             media_files, delivery_errors)
+        elif media_files:
+            # Detail in flight: the loop is contended, skip media as the flat lane
+            # does on an in-flight timeout, and record the drop.
+            _note_target_error(
+                job,
+                f"{len(media_files)} media attachment(s) not delivered to "
+                f"{t.where} (threaded detail confirmation timed out)",
+                delivery_errors)
+        # No opened thread and no in_channel surface here, so this runs the same
+        # mirror the flat lane runs after a confirmed send.
+        _seed_live_delivery_sessions(t, None)
+        return _THREADED_DELIVERED
+    if outcome == THREADED_DETAIL_ONLY:
+        # Parent landed (or is in flight); the body did not. Degrade to a flat body-only
+        # send: a stray summary plus an un-threaded body beats either a duplicated summary
+        # or a lost report.
+        _note_target_error(
+            job,
+            f"threaded delivery to {t.where} could not thread the report body; "
+            "sent it un-threaded",
+            delivery_errors)
+        return detail_text
+    return None
+
+
 @dataclass
 class _TargetDelivery:
     """Per-target delivery state shared by the live-adapter and standalone lanes."""
@@ -2067,6 +2327,24 @@ def _deliver_result(
     # the chat message itself was clean — and a transcript outlives the message.
     mirror_text = _redact_cron_payload((mirror_text or "").strip(), "mirror payload")
 
+    # Split the clean, unwrapped report so threaded delivery can send a slim parent
+    # summary and put the full detail/footer in the thread.
+    summary, detail = _sched._split_summary(mirror_text)
+    if detail:
+        task_name_for_thread = job.get("name", job["id"])
+        if wrap_response:
+            parent_text = f"\U0001F4CB *{task_name_for_thread}* \u2014 {summary}"
+            detail_text = (
+                f"{detail}\n\n"
+                f"(job_id: {job.get('id', '')})\n"
+                f"To stop or manage this job, send me a new message "
+                f"(e.g. \"stop reminder {task_name_for_thread}\")."
+            )
+        else:
+            parent_text, detail_text = summary, detail
+    else:
+        parent_text, detail_text = None, None
+
     try:
         config = load_gateway_config()
     except Exception as e:
@@ -2104,14 +2382,22 @@ def _deliver_result(
         if t is None:
             continue
         target_errors: list = []
-        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
+        # When a threaded attempt puts the summary parent out but not the body, the flat
+        # lanes must send the BODY ONLY — re-sending the whole report would duplicate the
+        # summary the user can already see.
+        flat_text_override = _try_threaded_delivery(
+            t, parent_text, detail_text, media_files, delivery_errors)
+        threaded_done = flat_text_override is _THREADED_DELIVERED
+        text_for_flat = cleaned_delivery_content if (
+            threaded_done or not flat_text_override) else flat_text_override
+        delivered = threaded_done or (t.live_adapter_ready and _deliver_via_live_adapter(
+            t, text_for_flat, media_files,
             target_errors=target_errors, delivery_errors=delivery_errors,
             unverified_targets=unverified_targets,
-        )
+        ))
         if not delivered:
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, text_for_flat, media_files, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.

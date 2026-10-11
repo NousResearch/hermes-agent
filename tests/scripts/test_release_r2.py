@@ -799,7 +799,7 @@ def test_download_streams_verified_bytes_and_preserves_destination_on_failure(r2
     def corrupt_once(handler):
         sent.append(1)
         if len(sent) == 1:
-            handler._send(200, payload[:-1] + b"!")
+            handler._send(200, payload[:-1] + bytes([payload[-1] ^ 1]))
         else:
             original_get(handler)
 

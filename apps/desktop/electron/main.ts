@@ -89,16 +89,12 @@ import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate
 import { createInstalledRuntimeGate } from './backend-resolution'
 import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
-  isHostKeyChangedBootFailure,
+  classifyTerminalRemoteBootFailure,
   isRetryableRemoteBootFailure,
-  isSshAuthFailedBootFailure,
-  isSshClientFailedBootFailure,
   shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
-  shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure,
-  shouldLatchSshAuthFailure,
-  shouldLatchSshClientFailure,
+  shouldLatchTerminalRemoteBootFailure,
   sshClientFailedError
 } from './backend-start-failure'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
@@ -13404,9 +13400,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     }
 
     const message = error instanceof Error ? error.message : String(error)
-    const hostKeyChanged = isHostKeyChangedBootFailure(error)
-    const sshAuthFailed = isSshAuthFailedBootFailure(error)
-    const sshClientFailed = isSshClientFailedBootFailure(error)
+    const terminalRemote = classifyTerminalRemoteBootFailure(error)
 
     // Carry structured Cloud-down metadata through the boot-progress / IPC
     // boundary when present, so the renderer overlay can key on it rather than
@@ -13430,29 +13424,19 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }
 
-    // A host-key CHANGE is the terminal exception among remote failures: SSH
-    // fails closed until the user verifies the change and clears the stale
-    // known_hosts entry, so retrying re-drives the identical doomed boot (one
-    // bundle showed 157 consecutive failures over 2.5h). Latch it like a local
-    // failure — reset/repair/apply-config clear the latch after the user fixes
-    // known_hosts.
-    if (shouldLatchHostKeyChangedFailure({ attemptedRemote, isReauth: false, isHostKeyChanged: hostKeyChanged })) {
-      backendStartFailure = error instanceof Error ? error : new Error(message)
-    }
-
-    // Rejected SSH credentials are just as terminal (#72698): BatchMode ssh
-    // keeps failing until the user loads the key or edits the connection, and
-    // an unlatched failure lets every api call re-drive boot and hide the
-    // overlay out from under its Gateway settings button.
-    if (shouldLatchSshAuthFailure({ attemptedRemote, isReauth: false, isSshAuthFailed: sshAuthFailed })) {
-      backendStartFailure = error instanceof Error ? error : new Error(message)
-    }
-
-    // A dead local ssh client (`ssh -G` failed) is terminal too (#103288):
-    // every retry re-runs the same local probe, so boot looped every ~2s and
-    // the user never reached Settings. Latch it so the overlay holds still;
-    // reset/repair/apply-config release it (desktop.ssh_path needs a restart).
-    if (shouldLatchSshClientFailure({ attemptedRemote, isReauth: false, isSshClientFailed: sshClientFailed })) {
+    // Terminal remote failures latch like a local failure: retrying re-drives the
+    // identical doomed boot, and an unlatched failure lets every api call re-run
+    // startHermes and hide the overlay out from under its Gateway settings button.
+    // - A host-key CHANGE: SSH fails closed until the user clears the stale
+    //   known_hosts entry (one bundle showed 157 consecutive failures over 2.5h).
+    // - Rejected SSH credentials (#72698): BatchMode ssh keeps failing until the
+    //   user loads the key or edits the connection.
+    // - A dead local ssh client (#103288): every retry re-ran the same `ssh -G`
+    //   probe, so boot looped every ~2s (desktop.ssh_path needs a restart).
+    // - A remote with no Hermes install: the same locate probe fails until the user
+    //   installs Hermes there or fixes the Hermes path (~25 SSH logins/min).
+    // reset/repair/apply-config release the latch.
+    if (shouldLatchTerminalRemoteBootFailure({ attemptedRemote, isReauth: false, ...terminalRemote })) {
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }
 
@@ -13471,15 +13455,13 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
         // Renderer contract for the self-heal loop (#82679): a transient
         // REMOTE failure (dropped SSH/HTTP registered connection, mint
         // timeout) is retryable — the renderer re-attempts the boot with
-        // bounded backoff. Local failures, confirmed reauth rejections,
-        // host-key changes, and rejected SSH credentials are not: those end in
-        // the recovery overlay / sign-in affordance.
+        // bounded backoff. Local failures, confirmed reauth rejections, and the
+        // terminal remote kinds latched above are not: those end in the
+        // recovery overlay / sign-in affordance.
         retryable: isRetryableRemoteBootFailure({
           attemptedRemote,
           isReauth: isReauthRequiredError(error),
-          isHostKeyChanged: hostKeyChanged,
-          isSshAuthFailed: sshAuthFailed,
-          isSshClientFailed: sshClientFailed
+          ...terminalRemote
         }),
         running: false,
         statusCode: Number.isInteger(statusCode) ? statusCode : undefined

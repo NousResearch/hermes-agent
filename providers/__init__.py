@@ -19,6 +19,10 @@ load into that home's own layer, so one process serving several profiles
 plugins override bundled plugins on name collision, so third parties can
 monkey-patch or replace any built-in profile without editing the repo.
 
+``$HERMES_HOME`` plugins are gated on the same ``plugins.enabled`` /
+``plugins.disabled`` config the PluginManager enforces — see
+:func:`_scan_home_layer` for which directory honours which list.
+
 For backward compatibility, ``providers/*.py`` files (other than ``base.py``
 and ``__init__.py``) are still discovered via ``pkgutil.iter_modules``.
 This lets out-of-tree users drop a single-file profile into an editable
@@ -381,13 +385,19 @@ def _installed_plugins_dir() -> Path | None:
         return None
 
 
-def _declares_model_provider_kind(plugin_dir: Path) -> bool:
-    """Whether ``plugin_dir``'s manifest declares ``kind: model-provider``.
+_MANIFEST_FIELDS = ("kind", "name")
 
-    Only that kind is imported from the flat install directory — every other
-    plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with ruamel.yaml when available, falling back to a line
-    scan so provider discovery never hard-depends on it.
+
+def _manifest_fields(plugin_dir: Path) -> dict[str, str]:
+    """``kind`` and ``name`` from ``plugin_dir``'s manifest (``{}`` when absent).
+
+    ``kind`` decides what the flat install directory hands to provider
+    discovery — every other kind there belongs to ``PluginManager``, which owns
+    its lifecycle and consent flow. ``name`` is what ``hermes plugins
+    enable|disable`` writes into config for such a directory, so discovery can
+    gate on the key the PluginManager gates on. Parsed with ruamel.yaml when
+    available, falling back to a line scan so provider discovery never
+    hard-depends on it.
     """
     for filename in ("plugin.yaml", "plugin.yml"):
         manifest = plugin_dir / filename
@@ -396,24 +406,67 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
         try:
             text = manifest.read_text(encoding="utf-8", errors="replace")
         except Exception:
-            return False
+            return {}
         try:
             from utils import fast_safe_load
 
             data = fast_safe_load(text)
             if isinstance(data, dict):
-                return str(data.get("kind", "")).strip() == "model-provider"
+                return {k: str(data.get(k, "")).strip() for k in _MANIFEST_FIELDS}
         except Exception:
             pass
+        fields: dict[str, str] = {}
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("#") or ":" not in stripped:
                 continue
             key, _, value = stripped.partition(":")
-            if key.strip() == "kind":
-                return value.strip().strip("\"'") == "model-provider"
-        return False
-    return False
+            key = key.strip()
+            if key in _MANIFEST_FIELDS and key not in fields:
+                fields[key] = value.strip().strip("\"'")
+        return fields
+    return {}
+
+
+class _PluginGate:
+    """The bound home's ``plugins.enabled`` / ``plugins.disabled``, read once per scan and only
+    when a plugin needs gating — most homes have no ``$HERMES_HOME`` provider plugin at all.
+
+    ``enabled`` is ``None`` when the key is missing or malformed: "nothing enabled yet", the
+    opt-in default.
+    """
+
+    def __init__(self) -> None:
+        self._lists: tuple[set[str] | None, set[str]] | None = None
+
+    def _read(self) -> tuple[set[str] | None, set[str]]:
+        if self._lists is None:
+            from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins
+
+            self._lists = (_get_enabled_plugins(), _get_disabled_plugins())
+        return self._lists
+
+    @property
+    def enabled(self) -> set[str] | None:
+        return self._read()[0]
+
+    @property
+    def disabled(self) -> set[str]:
+        return self._read()[1]
+
+
+def _config_keys(plugin_dir: Path, fields: dict[str, str], prefix: str = "") -> set[str]:
+    """Every key ``plugins.enabled``/``plugins.disabled`` can carry for a plugin dir.
+
+    Mirrors ``hermes_cli.plugins_discovery.gate_manifest``, which matches a
+    manifest against both its path-derived key (``model-providers/<dir>`` for a
+    nested plugin, the bare manifest name for a flat one) and its manifest name.
+    The directory name is accepted too, for a manifest that declares no name.
+    """
+    keys = {plugin_dir.name, fields.get("name") or plugin_dir.name}
+    if prefix:
+        keys.add(f"{prefix}/{plugin_dir.name}")
+    return keys
 
 
 def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
@@ -423,23 +476,46 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     ``hermes plugins install`` into ``$HERMES_HOME/plugins/<name>/`` that declare
     ``kind: model-provider`` (PluginManager owns every other kind there). Per-home module names
     let two profiles carry the same plugin without aliasing each other's registrations.
+
+    Importing a plugin executes its code, so both honour ``plugins.disabled``. The flat install
+    directory also requires ``plugins.enabled`` — installed is not loaded, the contract the
+    pip entry-point scan enforces. ``model-providers/`` does not: dropping a directory there is
+    the opt-in, and config migration 21 never grandfathered it into ``plugins.enabled``, so
+    requiring it would drop every existing profile.
     """
     global _discovering
     token, prior_discovering = _REGISTRATION_TARGET.set(layer), _discovering
     _discovering = True
+    gate = _PluginGate()
     try:
         user_dir = _user_plugins_dir()
         if user_dir is not None:
             for child in sorted(user_dir.iterdir()):
-                if child.is_dir() and not child.name.startswith(("_", ".")):
-                    _import_plugin_dir(child, "user", home_key=key)
+                if not child.is_dir() or child.name.startswith(("_", ".")):
+                    continue
+                # PluginManager lists these as ``model-providers/<dir>`` and `hermes plugins
+                # disable` accepts that key, so an explicit disable has to stop the import.
+                if gate.disabled and gate.disabled & _config_keys(
+                    child, _manifest_fields(child), "model-providers"
+                ):
+                    logger.debug("user provider plugin %r skipped: disabled in config", child.name)
+                    continue
+                _import_plugin_dir(child, "user", home_key=key)
         installed_dir = _installed_plugins_dir()
         if installed_dir is not None:
             for child in sorted(installed_dir.iterdir()):
                 if not child.is_dir() or child.name.startswith(("_", ".")) or child.name == "model-providers":
                     continue
-                if _declares_model_provider_kind(child):
-                    _import_plugin_dir(child, "user", home_key=key)
+                fields = _manifest_fields(child)
+                if fields.get("kind") != "model-provider":
+                    continue
+                # `hermes plugins install` prompts "Enable now?" and otherwise tells the user to
+                # run `hermes plugins enable <name>`; until then the clone must not execute.
+                keys = _config_keys(child, fields)
+                if not gate.enabled or not keys & gate.enabled or keys & gate.disabled:
+                    logger.debug("installed provider plugin %r skipped: not enabled in config", child.name)
+                    continue
+                _import_plugin_dir(child, "user", home_key=key)
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering

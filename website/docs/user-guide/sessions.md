@@ -103,7 +103,7 @@ Each session is tagged with its source platform:
 | `kanban` | Kanban dispatcher workers (read on the board, hidden from session pickers) |
 | `tool` | Third-party integrations (`--source tool`), hidden from session pickers |
 
-A session compressed mid-conversation continues under the same source: the compression child of a `--source tool` or `oneshot` run is tagged the same way, so it inherits the same picker visibility.
+A session compressed mid-conversation continues under the same source: the compression child of a `--source tool` or `oneshot` run is tagged the same way, so it inherits the same picker visibility. A `tool` child row is otherwise its own conversation; the compression continuation of a `tool` session carries a `_compressed_from` marker naming its parent, so resume, the turn lease and lineage walks still treat it as the same conversation.
 
 ## CLI Session Resume
 

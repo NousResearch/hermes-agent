@@ -166,6 +166,10 @@ def _sql_preview_raw(session_id_expr: str = "s.id") -> str:
 
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
+# ``model_config`` marker ``publish_compression_child`` stamps on the continuation of a ``tool`` conversation (value:
+# the parent id). A ``tool`` child is otherwise a separate conversation, so without it every lineage walk stops there.
+COMPRESSED_FROM_KEY = "_compressed_from"
+
 # /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
 _BRANCH_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._branched_from')} IS NOT NULL"
     " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"
@@ -219,6 +223,17 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
         f"            AND {alias}.session_key != ''            AND {alias}.session_key = p.session_key)")
 
 
+def _tool_fork_sql(child: str = "") -> str:
+    """SQL condition: row *child* (column prefix ``""``, ``"c."``) is a ``tool`` session that is NOT the compression
+    continuation of its parent.  ``publish_compression_child`` stamps ``_compressed_from`` (bound to
+    ``parent_session_id``, like the fork markers) on the continuation of a ``tool`` conversation, which inherits the
+    parent's source (#112550); any other ``tool`` row stays its own conversation.  Python twin:
+    ``_is_explicit_fork_child_row``."""
+    return (f"(COALESCE({child}source, '') = 'tool' AND (COALESCE({child}parent_session_id, '') = ''"
+            f" OR COALESCE({_sql_json_extract(f'{child}model_config', '$.' + COMPRESSED_FROM_KEY)}, '')"
+            f" != {child}parent_session_id))")
+
+
 def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
     """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
     (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
@@ -227,7 +242,7 @@ def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
     return "".join(
         f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
         for marker in ("_branched_from", "_delegate_from", "_reset_from")
-    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
+    ) + f"  AND NOT {_tool_fork_sql(child)}\n"
 
 
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.

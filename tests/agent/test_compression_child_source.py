@@ -43,3 +43,6 @@ def test_compression_child_keeps_parent_source(db, parent_source):
 
     assert agent.session_id != "parent"
     assert db.get_session(agent.session_id)["source"] == parent_source
+    # Same conversation for the lineage too: the rotated child is the tip and shares the turn lease key.
+    assert db.get_compression_tip("parent") == agent.session_id
+    assert db._session_turn_lease_key(agent.session_id) == "parent"

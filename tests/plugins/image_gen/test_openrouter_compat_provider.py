@@ -585,6 +585,30 @@ class TestImageApiSurface:
         assert gemini["aspect_ratio"] == "16:9"
         assert mini["aspect_ratio"] == "3:2"
 
+    def test_gpt_image_2_5_family_keeps_exact_ratios_and_extended_enums(self):
+        """The 2.5 family is curated, so its knobs reach the payload instead of
+        being dropped: 16:9 survives, ``xhigh``/``max`` quality is accepted, and
+        ``background=transparent`` is allowed (gpt-image-2 rejects both)."""
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        for model_id in ("openai/gpt-image-2.5-sunburst", "openai/gpt-image-2.5-flare"):
+            payload, notes = _build_image_api_payload(
+                model_id=model_id, prompt="p", semantic_aspect="portrait",
+                references=[], config_key="openrouter",
+                kwargs={"quality": "xhigh", "background": "transparent"},
+            )
+            assert payload["aspect_ratio"] == "9:16"
+            assert payload["quality"] == "xhigh"
+            assert payload["background"] == "transparent"
+            assert notes == []
+
+        older, older_notes = _build_image_api_payload(
+            model_id="openai/gpt-image-2", prompt="p", semantic_aspect="square",
+            references=[], config_key="openrouter", kwargs={"quality": "xhigh"},
+        )
+        assert "quality" not in older
+        assert any("quality" in n for n in older_notes)
+
     def test_unsupported_parameter_is_dropped_and_explained(self):
         """The endpoint silently ignores unknown fields, so we must filter."""
         from plugins.image_gen.openrouter import _build_image_api_payload

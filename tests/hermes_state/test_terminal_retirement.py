@@ -275,8 +275,8 @@ def test_deleted_history_is_not_recoverable_from_worker_or_mutation_receipts(tmp
 
 def test_mutation_receipts_naming_a_deleted_physical_target_drop_its_text(tmp_path):
     """D7 / pastels M07: a local owner's rewind receipt is keyed by the logical id but copies the
-    rewound turn from the physical reset child. Deleting only that child (``hermes sessions delete``
-    on the dashboard row) must still strip it, and a full delete also drops the user-set title."""
+    rewound turn from the physical reset child. Deleting that child (``hermes sessions delete`` on
+    the dashboard row, which removes the whole conversation) strips it and the user-set title."""
     import json
     from tests.hermes_state.test_target_advance_fence import _local_session
 
@@ -298,14 +298,13 @@ def test_mutation_receipts_naming_a_deleted_physical_target_drop_its_text(tmp_pa
         assert 'SECRET_CHILD_TURN' in json.dumps(rt.mutate_runtime_session(db, epoch=epoch, **rewind))
         rename = args(db, sid, 'rename', 'rn', {'title': 'SECRET_TITLE'})
         rt.mutate_runtime_session(db, epoch=epoch, **rename)
-        assert db.delete_session(child) and db.get_session(sid) is not None
+        # The listed row is the reset child; deleting it deletes the whole conversation.
+        assert db.delete_session(child) and db.get_session(sid) is None
 
         def blobs():
             with db._read_ctx() as c:
                 return ''.join(v for (v,) in c.execute('SELECT value FROM state_meta'))
-        assert 'SECRET_CHILD_TURN' not in blobs()
+        assert 'SECRET_CHILD_TURN' not in blobs() and 'SECRET_TITLE' not in blobs()
         replay = rt.mutate_runtime_session(db, epoch=epoch, **rewind)
         assert replay['target_message'] is None and replay['rewound_count'] == 2
-        rt.mutate_runtime_session(db, epoch=epoch, **args(db, sid, 'delete', 'del', {}))
-        assert 'SECRET_TITLE' not in blobs()
         assert rt.mutate_runtime_session(db, epoch=epoch, **rename)['title'] is None

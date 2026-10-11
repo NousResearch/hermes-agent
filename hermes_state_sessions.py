@@ -1705,8 +1705,8 @@ class SessionSessionsMixin:
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
-            # Deleting a local creation id takes its reset/compression segments with it (its policy
-            # goes); any other row, a single segment included, is just itself.
+            # A local reset/compression conversation deletes whole from any segment: the listed row
+            # is its latest segment, and a lone segment delete strands the owner's policy and FIFO.
             from hermes_state_local import owned_lineage_ids
             scope = owned_lineage_ids(conn, session_id)
             target_ids = (
@@ -1767,8 +1767,9 @@ class SessionSessionsMixin:
         row whose first turn is already leased but not yet flushed would be deleted mid-turn
         (#123583). A guarded row is simply not deleted (returns ``False``), like any non-empty row."""
         def _do(conn):
-            if self._guarded_ids(conn, [session_id]):
-                return False
+            from hermes_state_local import owned_lineage_ids
+            if self._guarded_ids(conn, [session_id]) or owned_lineage_ids(conn, session_id) != [session_id]:
+                return False  # an empty reset tip is still its conversation's current target
             eligible = conn.execute(
                 """
                 SELECT 1 FROM sessions
@@ -1826,12 +1827,16 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
-            if include_compression_chain:
-                # Expand BEFORE the guard pass so a guarded chain member (active turn lease /
-                # compression lock anywhere in the lineage) keeps its selected root listed too.
-                expanded = self._expand_compression_lineage(conn, existing)
-            else:
-                expanded = existing
+            from hermes_state_local import owned_lineage_ids
+
+            def expand(ids):
+                # A local reset/compression segment deletes as its whole conversation (delete_session).
+                if include_compression_chain:
+                    return self._expand_compression_lineage(conn, ids)
+                return list(dict.fromkeys(x for sid in ids for x in owned_lineage_ids(conn, sid)))
+            # Expand BEFORE the guard pass so a guarded lineage member (active turn lease /
+            # compression lock anywhere in it) keeps its selected root listed too.
+            expanded = expand(existing)
             guard_pool = [*expanded, *_collect_delegate_child_ids(conn, expanded)]
             if exclude_active_write_guards:
                 # A root is skipped when it or any delegate child it would cascade is guarded, so the
@@ -1851,17 +1856,15 @@ class SessionSessionsMixin:
                     else:
                         active_ids = {
                             sid for sid in existing
-                            if self._guarded_ids(conn, [sid, *_collect_delegate_child_ids(conn, [sid])])
+                            if self._guarded_ids(conn, [*(members := expand([sid])),
+                                                        *_collect_delegate_child_ids(conn, members)])
                         }
                 existing = [sid for sid in existing if sid not in active_ids]
                 if skipped_ids is not None:
                     skipped_ids.extend(sorted(active_ids))
                 if not existing:
                     return 0
-                if include_compression_chain:
-                    expanded = self._expand_compression_lineage(conn, existing)
-                else:
-                    expanded = existing
+                expanded = expand(existing)
             from hermes_state_mutation_retirement import retire_sessions
             retire_sessions(conn, expanded)
             removed_ids.extend(_delete_delegate_children(conn, expanded))

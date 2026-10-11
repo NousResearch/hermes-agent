@@ -419,9 +419,13 @@ class SessionGatewayMixin:
         second write after it commits. ``sessions_skipped`` counts only the guarded rows.
         ``deleted_ids`` (the owning gateway) receives every candidate id that was not kept."""
         candidates = self.list_never_active_keyed_sessions(older_than_days=older_than_days)
-        if not candidates:
+        # A fresh local reset tip is its conversation's current target, not a never-active chat:
+        # the conversation holds the earlier segments' history and the owner's queued work.
+        from hermes_state_local import owned_lineage_ids
+        with self._read_ctx() as conn:
+            ids = {str(row["id"]) for row in candidates if owned_lineage_ids(conn, str(row["id"])) == [str(row["id"])]}
+        if not ids:
             return (0, 0, 0)
-        ids = {str(row["id"]) for row in candidates}
         skipped: list[str] = []
         # ``delete_sessions`` retires the deleted rows' routing entries inside its own transaction
         # (``retire_routes``), so count what pointed at the candidates before it commits; the

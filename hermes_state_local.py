@@ -104,11 +104,10 @@ def local_lineage_owner(conn, session_id):
 
 
 def owned_lineage_ids(conn, session_id):
-    """[session_id] for any row, or the whole conversation when *session_id* IS a local creation id
-    whose receipt has moved its transcript to later segments: deleting the owner retires its policy,
-    so its segments must go with it or they are left readable but never continuable."""
-    if local_lineage_owner(conn, session_id) != session_id:
-        return [session_id]
+    """[session_id] for any row outside a local reset/compression lineage, else the whole
+    conversation (*session_id* first). Any segment deletes as all of it: the owner's policy goes
+    with its current target, and an earlier segment's gap breaks the lineage, so a lone segment
+    delete strands the rest (and the owner's queued work) readable but never continuable."""
     return list(dict.fromkeys([session_id, *local_conversation_ids(conn, session_id)]))
 
 

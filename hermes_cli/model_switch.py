@@ -1826,10 +1826,24 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
 
     Targeted key writes, not a whole-``model:`` rewrite: a block rewrite destroys sibling keys the
     user set there (``model_slots``, ``model_fallback``, ...). ``should_clear_context_pin`` can do
-    cold-start disk I/O — async callers run this on a worker thread."""
+    cold-start disk I/O — async callers run this on a worker thread.
+
+    A pick the endpoint proves this account is not entitled to is NOT written as the
+    default (t_27cf7a7b): the session keeps the model it just switched to, and the
+    global default stays on its previous value. ``HERMES_ALLOW_UNENTITLED_PICK=1``
+    restores warn-and-persist.
+    """
     from pathlib import Path
     from hermes_cli.config import get_config_path, read_user_config_raw
     from utils import atomic_roundtrip_yaml_update
+    from hermes_cli.model_entitlement_guard import ensure_pick_entitled, resolve_endpoint
+    if not ensure_pick_entitled(
+        result.new_model or "", provider=result.target_provider or "",
+        base_url=result.base_url or resolve_endpoint(result.target_provider or "")[0],
+        api_key=result.api_key or resolve_endpoint(result.target_provider or "")[1],
+    ):
+        print("  This session keeps the model; the profile default was NOT changed.")
+        return
     path = Path(config_path) if config_path else get_config_path()
     for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
         atomic_roundtrip_yaml_update(path, f"model.{key}", value)

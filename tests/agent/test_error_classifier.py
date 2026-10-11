@@ -195,6 +195,28 @@ class TestClassifyApiError:
 
 
 
+    def test_404_openrouter_retired_free_slug_is_model_entitlement(self):
+        # Live body, 2026-09-28 (kanban t_27cf7a7b): the retired `:free` slug came
+        # back as `unknown` with should_fallback=False — the caller retried a route
+        # that can never serve it, with no fallback.
+        body = {"error": {"message": (
+            "This model is unavailable for free. The paid version is available now - "
+            "use this slug instead: upstage/solar-pro4"), "code": 404},
+            "user_id": "user_x"}
+        e = MockAPIError(body["error"]["message"], status_code=404, body=body)
+        result = classify_api_error(e, provider="openrouter", model="upstage/solar-pro4:free")
+        assert result.reason == FailoverReason.model_entitlement
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_403_model_not_allowed_for_key_is_model_entitlement(self):
+        # A model/key permission wall is not a stale credential: the account cannot
+        # use this model here, so fall back instead of re-authing the same route.
+        e = MockAPIError("This model is not allowed for this API key", status_code=403)
+        result = classify_api_error(e, provider="zai", model="glm-5.3-flashx")
+        assert result.reason == FailoverReason.model_entitlement
+        assert result.retryable is False
+
     def test_404_free_tier_model_block_is_billing(self):
         e = MockAPIError(
             "Not Found",
@@ -230,10 +252,9 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
-    def test_404_retired_free_route_is_model_not_found(self):
-        # The provider retired the :free route — the slug is dead for every
-        # credential, so fall back instead of burning retries (#123180). Not
-        # billing: the account's tier/balance is not what rejected the call.
+    def test_404_retired_free_route_is_model_entitlement(self):
+        # The provider retired the :free route — the slug is unusable for this
+        # account and must take the non-retryable entitlement fallback path.
         e = MockAPIError(
             "Not Found",
             status_code=404,
@@ -246,7 +267,7 @@ class TestClassifyApiError:
             },
         )
         result = classify_api_error(e, provider="nous", model="meituan/longcat-2.0:free")
-        assert result.reason == FailoverReason.model_not_found
+        assert result.reason == FailoverReason.model_entitlement
         assert result.retryable is False
         assert result.should_fallback is True
 
@@ -382,6 +403,28 @@ class TestClassifyApiError:
     def test_429_insufficient_credits_is_billing(self):
         e = MockAPIError("Insufficient credits remaining.", status_code=429)
         result = classify_api_error(e, provider="openrouter", model="x")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_zai_plan_refusal_is_model_entitlement_not_rate_limit(self):
+        # Live body, 2026-09-28 (kanban t_27cf7a7b): Z.AI stamps a PERMANENT plan
+        # refusal on 429 code=1311. Classified as rate_limit it was retried on the
+        # same route (the log showed `attempt 1/3 error_type=RateLimitError` before
+        # a fallback hop) — a throttle window a plan wall never closes.
+        body = {"error": {"code": "1311", "message": (
+            "Your current subscription plan does not yet include access to GLM-5.3-FlashX")}}
+        e = MockAPIError(body["error"]["message"], status_code=429, body=body)
+        result = classify_api_error(e, provider="zai", model="glm-5.3-flashx")
+        assert result.reason == FailoverReason.model_entitlement
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_429_zai_no_resource_package_is_billing(self):
+        # Live body, 2026-09-28: the same endpoint's code=1113 (endpoint dry).
+        body = {"error": {"code": "1113", "message": (
+            "Insufficient balance or no resource package. Please recharge.")}}
+        e = MockAPIError(body["error"]["message"], status_code=429, body=body)
+        result = classify_api_error(e, provider="zai", model="glm-5.3-flashx")
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 

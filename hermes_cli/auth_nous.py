@@ -1655,6 +1655,22 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             print("No provider change. Nous credentials saved for future use.")
             print("  Run `hermes model` again to switch to Nous Portal.")
             return
+        # Entitlement gate (t_27cf7a7b): this login path persists its own selection,
+        # so the pick must be proven usable on the Portal before it can become the
+        # default. The credential + endpoint are in hand here, so the probe is
+        # conclusive. On a refusal nothing is written — the Nous tokens stay saved
+        # and the previous provider/model is kept (same shape as a "Skip").
+        from hermes_cli.model_entitlement_guard import ensure_pick_entitled
+        _nous_key = ""
+        with suppress(Exception):
+            _nous_key = str((resolve_nous_runtime_credentials() or {}).get("api_key") or "")
+        if not ensure_pick_entitled(selected_model, provider="nous",
+                                    base_url=inference_base_url, api_key=_nous_key):
+            _restore_active_provider(prior_active_provider)
+            print()
+            print("No provider change. Nous credentials saved for future use.")
+            print("  Run `hermes model` again to switch to Nous Portal.")
+            return
         config_path = _update_config_for_provider(
             "nous", inference_base_url, default_model=selected_model)
         _save_model_choice(selected_model)

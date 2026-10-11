@@ -5,8 +5,11 @@ from __future__ import annotations
 import re
 import struct
 
+import pytest
+
+from hermes_cli.local_runtime import presets
 from hermes_cli.local_runtime.context_policy import spill_overrides
-from hermes_cli.local_runtime.estimator import profile_from_gguf
+from hermes_cli.local_runtime.estimator import HardwareBudget, profile_from_gguf
 from hermes_cli.local_runtime.gguf import read_gguf_header
 
 
@@ -71,3 +74,48 @@ def test_reader_sizes_mxfp4_tensor_blocks(tmp_path):
 
     assert header.tensor_bytes == 34
     assert header.embd_table_bytes == header.tensor_bytes
+
+
+def test_reader_and_presets_accept_ternary_tensor_types(tmp_path):
+    """A mixed known/Prism header accounts for multiple group-128 blocks before planning."""
+    def tensor(name, tensor_type, elements):
+        encoded = name.encode()
+        return (struct.pack("<Q", len(encoded)) + encoded
+                + struct.pack("<IQIQ", 1, elements, tensor_type, 0))
+
+    gguf = tmp_path / "Ternary-Bonsai-PQ2_0.gguf"
+    gguf.write_bytes(
+        b"GGUF"
+        + struct.pack("<IQQ", 3, 3, 0)
+        + tensor("token_embd.weight", 142, 256)
+        + tensor("blk.0.ffn_down.weight", 143, 384)
+        + tensor("output_norm.weight", 0, 16)
+    )
+
+    header = read_gguf_header(gguf)
+    assert header.tensor_bytes == 2 * 34 + 3 * 28 + 16 * 4
+    assert header.embd_table_bytes == 2 * 34
+    assert header.ffn_block_bytes == {0: 3 * 28}
+    ini = tmp_path / "presets.ini"
+    generated = presets.generate_presets(
+        tmp_path, HardwareBudget(2 << 30, 2 << 30, 8 << 30), ini)
+    assert [entry.model_id for entry in generated] == ["Ternary-Bonsai-PQ2_0"]
+    assert not generated[0].refusal
+    assert generated[0].keys["model"] == str(gguf)
+    reread = presets.read_preset_decisions(ini)["Ternary-Bonsai-PQ2_0"]
+    assert not reread.refusal and reread.keys["model"] == str(gguf)
+
+
+def test_reader_and_presets_reject_unknown_tensor_type(tmp_path):
+    """Recognizing vendor layouts must not admit an unaccounted tensor type."""
+    name = b"token_embd.weight"
+    gguf = tmp_path / "unknown.gguf"
+    gguf.write_bytes(
+        b"GGUF" + struct.pack("<IQQ", 3, 1, 0)
+        + struct.pack("<Q", len(name)) + name
+        + struct.pack("<IQIQ", 1, 128, 999, 0)
+    )
+    with pytest.raises(ValueError, match="unknown ggml tensor type 999"):
+        read_gguf_header(gguf)
+    assert presets.generate_presets(
+        tmp_path, HardwareBudget(2 << 30, 2 << 30, 8 << 30), tmp_path / "presets.ini") == []

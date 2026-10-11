@@ -102,7 +102,6 @@ def _tools_mod(module: str):
 
 
 _stripped = lambda v: bool(str(v or "").strip())
-_nonempty = lambda v: not (v is None or str(v) == "")
 _NAME = (("name", _stripped),)
 _NAME_SESSION = (("name", _stripped), ("session_id", _stripped))
 
@@ -1615,7 +1614,7 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"ok": True, "name": name, "server": _mcp_summarize_server(name, saved)})
 
 
-@_mcp_rpc("set_api_key", (*_NAME, ("value", _nonempty)))
+@_mcp_rpc("set_api_key", (*_NAME, ("value", _stripped)))
 def _(rid, params: dict) -> dict:
     """Secret → profile .env under ``env_var`` (default ``MCP_<NAME>_API_KEY``); config.yaml gets only
     a ``${ENV}`` reference (Bearer header for http, ``env`` entry for stdio)."""

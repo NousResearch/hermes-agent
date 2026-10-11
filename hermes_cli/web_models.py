@@ -530,6 +530,10 @@ class ThemeSetBody(BaseModel):
 class FontSetBody(BaseModel):
     font: str
 
+class LocaleSetBody(BaseModel):
+    """A dashboard UI locale id (validated against the router's allow-list)."""
+    locale: str
+
 class _AgentPluginInstallBody(BaseModel):
     identifier: str
     force: bool = False

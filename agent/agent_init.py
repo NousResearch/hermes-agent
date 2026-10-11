@@ -2455,6 +2455,10 @@ def init_agent(
     # Models whose Anthropic organization answered a fast request with a fast-mode limit of 0;
     # agent.fast_mode stops sending ``speed`` to them for the rest of the session.
     agent._fast_mode_unavailable_models = set()
+    # Same ledger for audio: a model that 4xx'd on input_audio gets text-only requests from
+    # strip_unsupported_audio_parts (agent/audio_routing) for the rest of the session, even
+    # under media.native_audio: on — the override is a routing preference, not a retry licence.
+    agent._audio_rejecting_models = set()
 
     _init_prompt_cache_config(agent)
     _init_turn_state(agent, run_budget_seconds)

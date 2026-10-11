@@ -139,6 +139,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/local-models",
   "/api/dashboard/theme",
   "/api/dashboard/font",
+  "/api/dashboard/locale",
   "/api/dashboard/plugins",
   // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
   "/api/shared-metrics",

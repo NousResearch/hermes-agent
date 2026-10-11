@@ -19,6 +19,12 @@ const t = {
       plugins: "Plugins",
       sessions: "Sessions",
       skills: "Skills",
+      files: "Files",
+      mcp: "MCP",
+      channels: "Channels",
+      webhooks: "Webhooks",
+      pairing: "Pairing",
+      system: "System",
     },
   },
 } as unknown as Translations;

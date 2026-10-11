@@ -191,6 +191,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
+    CommandDef("subagent", "Inspect or pin the subagent (delegation) provider:model route", "Configuration",
+               cli_only=True, args_hint="model [set <provider>/<model>]", subcommands=("model",)),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",), args_hint="[auto|codex_app_server]",
                busy_policy="reject", busy_handler="codex-runtime"),

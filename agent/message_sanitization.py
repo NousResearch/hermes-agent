@@ -351,6 +351,10 @@ def serialized_messages_bytes(messages: list) -> int:
 
 
 _IMAGE_PART_TYPES = {"image_url", "image", "input_image"}
+#: Content-part types carrying audio — OpenAI chat ``input_audio`` and the generic ``audio``
+#: spelling (Anthropic-style block / some adapters). Kept in sync with
+#: ``agent.audio_routing.AUDIO_PART_TYPES`` (that module imports lazily to stay cycle-free).
+_AUDIO_PART_TYPES = {"input_audio", "audio"}
 
 
 def _strip_images_from_messages(messages: list) -> bool:
@@ -450,6 +454,86 @@ def _looks_like_image_content_rejection(error_body: str) -> bool:
     """Return True when a provider error says image/multimodal input is unsupported."""
     body = str(error_body or "").lower()
     return any(phrase in body for phrase in _IMAGE_REJECTION_PHRASES)
+
+
+# Provider error bodies (lowercased substring match) meaning "audio/input_audio input
+# unsupported" — the recovery loop then strips audio and retries text-only instead of
+# wedging on the same 4xx. Gated by the caller on the turn actually CARRYING audio, which is
+# what makes the shared generic phrases safe here.
+_AUDIO_REJECTION_PHRASES = (
+    # The field name itself: OpenAI-compatible 400s on the part, and the discriminated-union
+    # tag an Anthropic-style schema reports for a block it cannot parse (the ``media.native_audio:
+    # on`` override can aim input_audio at such a wire; without this the turn exhausts retries).
+    "input_audio",
+    # Capability refusals naming audio.
+    "audio input is not supported", "audio content is not supported",
+    "does not support audio", "does not support audio input", "audio is not supported",
+    "unsupported audio",
+    # Generic text-only gates (shared with _IMAGE_REJECTION_PHRASES): with audio in the turn,
+    # these say the non-text block — i.e. the audio — is what the wire refused. Checked BEFORE
+    # the image branch so an audio-carrying turn isn't recorded as image-rejecting and stuck.
+    "only 'text' content type is supported", "only text content type is supported",
+    "multimodal is not supported", "multimodal content is not supported",
+    "multimodal input is not supported", "does not support multimodal",
+    "unexpected item type in content",
+    # Rust-schema gateways (DeepSeek et al.) rejecting the unknown variant by name.
+    "unknown variant `input_audio`, expected `text`",
+    "unknown variant input_audio, expected text",
+)
+
+
+def _looks_like_audio_content_rejection(error_body: str) -> bool:
+    """Return True when a provider error says audio/input_audio input is unsupported."""
+    body = str(error_body or "").lower()
+    return any(phrase in body for phrase in _AUDIO_REJECTION_PHRASES)
+
+
+def _messages_carry_audio(messages: Any) -> bool:
+    """True when any message's ``content`` list holds an audio part."""
+    if not isinstance(messages, list):
+        return False
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(p, dict) and p.get("type") in _AUDIO_PART_TYPES for p in content
+        ):
+            return True
+    return False
+
+
+def _strip_audio_from_messages(messages: list) -> bool:
+    """Remove audio content parts from all messages in-place (server rejected audio).
+
+    Mirrors :func:`_strip_images_from_messages`: ``tool`` / ``tool_calls`` rows left empty get a
+    placeholder, never deleted (an orphaned ``tool_call_id`` is an HTTP 400); other now-empty
+    rows are dropped, and rewritten rows lose their ``api_content`` sidecar so the removed bytes
+    cannot replay next turn. Callers pass per-call clones — history keeps the audio so a later
+    audio-capable backend hears the clip again.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.turn_context import drop_stale_api_content
+
+    found = False
+    to_delete = []
+    for i, msg in enumerate(messages):
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        new_parts = [p for p in content if not (isinstance(p, dict) and p.get("type") in _AUDIO_PART_TYPES)]
+        if len(new_parts) < len(content):
+            found = True
+            if new_parts:
+                msg["content"] = new_parts
+                msg.pop(_DB_PERSISTED_MARKER, None)
+            elif msg.get("role") == "tool" or msg.get("tool_calls"):
+                msg["content"] = "[audio content removed — server does not accept audio input]"
+                msg.pop(_DB_PERSISTED_MARKER, None)
+            else:
+                to_delete.append(i)
+            drop_stale_api_content(msg)
+    for i in reversed(to_delete):
+        del messages[i]
+    return found
 
 
 def _looks_like_corrupt_image_rejection(error_body: str) -> bool:

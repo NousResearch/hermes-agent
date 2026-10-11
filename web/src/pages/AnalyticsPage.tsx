@@ -491,32 +491,26 @@ export default function AnalyticsPage() {
           <CardContent className="py-12">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
               <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
-                Token analytics hidden
+                {t.analytics.hiddenTitle ?? "Token analytics hidden"}
               </h2>
               <p>
-                The token, cost, and per-day analytics on this page are a
-                local debug estimate. They only count successful main-agent
-                responses with a usable <span className="font-mono">usage</span>{" "}
-                block, and silently exclude auxiliary calls (context
-                compression, title generation, vision, session search, web
-                extract, smart approvals, MCP routing, plugin LLM access)
-                plus provider-side retries and fallback attempts. Cache
-                writes are missing entirely.
+                {t.analytics.hiddenBodyOne ?? "The token, cost, and per-day analytics on this page are a local debug estimate. They only count successful main-agent responses with a usable"}{" "}
+                <span className="font-mono">usage</span>{" "}
+                {t.analytics.hiddenBodyOneSuffix ?? "block, and silently exclude auxiliary calls (context compression, title generation, vision, session search, web extract, smart approvals, MCP routing, plugin LLM access) plus provider-side retries and fallback attempts. Cache writes are missing entirely."}
               </p>
               <p>
-                On models with heavy auxiliary traffic (Kimi K2.6, MiniMax
-                M2.7) the local total can be 10x–100x lower than what your
-                provider bills. Hiding these numbers is safer than letting
-                them look authoritative.
+                {t.analytics.hiddenBodyTwo ?? "On models with heavy auxiliary traffic (Kimi K2.6, MiniMax M2.7) the local total can be 10x–100x lower than what your provider bills. Hiding these numbers is safer than letting them look authoritative."}
               </p>
               <p>
-                Check your provider dashboard (OpenRouter, Anthropic, etc.)
-                for actual usage and billing. To re-enable the local debug
-                estimate anyway, set{" "}
+                {t.analytics.hiddenBodyThreePrefix ?? "Check your provider dashboard (OpenRouter, Anthropic, etc.) for actual usage and billing. To re-enable the local debug estimate anyway, set"}{" "}
                 <span className="font-mono">
                   dashboard.show_token_analytics: true
                 </span>{" "}
-                in <a href="/config" className="underline">Config</a>.
+                {t.analytics.hiddenBodyThreeMid ?? "in"}{" "}
+                <a href="/config" className="underline">
+                  {t.analytics.hiddenConfigLink ?? "Config"}
+                </a>
+                {t.analytics.hiddenBodyThreeSuffix ?? "."}
               </p>
             </div>
           </CardContent>

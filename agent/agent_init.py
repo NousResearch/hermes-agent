@@ -39,7 +39,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
 )
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from hermes_cli.route_identity import normalize_route_base_url
+from hermes_cli.route_identity import is_copilot_route_pair, normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from hermes_state_ids import new_session_id
@@ -125,7 +125,7 @@ def _context_route_mismatch(
     _norm = (lambda v: str(v or "")) if already_normalized else normalize_route_base_url
     configured_route, active_route = _norm(configured_base_url), _norm(active_base_url)
     if configured_route:
-        return configured_route != active_route
+        return configured_route != active_route and not is_copilot_route_pair(configured_route, active_route)
 
     configured_provider = str(configured_provider or "").strip()
     active_provider = str(active_provider or "").strip()

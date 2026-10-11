@@ -705,6 +705,29 @@ def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
     return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
 
 
+def _rates_for_prompt(entry: PricingEntry, prompt_tokens: int) -> list[Optional[Decimal]]:
+    """(input, output, cache_read, cache_write) per-1M rates for a request of ``prompt_tokens``.
+
+    Context tiers are whole-request (Google/OpenAI/xAI semantics, not marginal brackets): above a
+    threshold the tier's rates replace the base ones for every bucket. ``pricing_tiers`` are applied in
+    ascending order so a rate a higher tier omits inherits the previous tier's; None keeps the fallback.
+    """
+    rates = [entry.input_cost_per_million, entry.output_cost_per_million,
+             entry.cache_read_cost_per_million, entry.cache_write_cost_per_million]
+    overlays: list[tuple[Optional[Decimal], ...]] = []
+    if entry.tier_threshold_tokens is not None and prompt_tokens > entry.tier_threshold_tokens:
+        overlays.append((entry.input_cost_per_million_above, entry.output_cost_per_million_above,
+                         entry.cache_read_cost_per_million_above, entry.cache_write_cost_per_million_above))
+    overlays.extend(
+        (tier.input_cost_per_million, tier.output_cost_per_million,
+         tier.cache_read_cost_per_million, tier.cache_write_cost_per_million)
+        for tier in entry.pricing_tiers if prompt_tokens >= tier.min_prompt_tokens
+    )
+    for overlay in overlays:
+        rates = [new if new is not None else old for old, new in zip(rates, overlay)]
+    return rates
+
+
 def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
@@ -733,35 +756,7 @@ def estimate_usage_cost(
     if not entry:
         return _unknown_cost("none")
 
-    # Whole-request context tier (e.g. Gemini Pro >200k prompts): above the
-    # threshold the *_above rates apply to the entire request; None falls back.
-    above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
-    rates = [
-        entry.input_cost_per_million,
-        entry.output_cost_per_million,
-        entry.cache_read_cost_per_million,
-        entry.cache_write_cost_per_million,
-    ]
-    if above:
-        for index, rate in enumerate((
-            entry.input_cost_per_million_above,
-            entry.output_cost_per_million_above,
-            entry.cache_read_cost_per_million_above,
-            entry.cache_write_cost_per_million_above,
-        )):
-            if rate is not None:
-                rates[index] = rate
-    for tier in entry.pricing_tiers:
-        if usage.prompt_tokens < tier.min_prompt_tokens:
-            break
-        for index, rate in enumerate((
-            tier.input_cost_per_million,
-            tier.output_cost_per_million,
-            tier.cache_read_cost_per_million,
-            tier.cache_write_cost_per_million,
-        )):
-            if rate is not None:
-                rates[index] = rate
+    rates = _rates_for_prompt(entry, usage.prompt_tokens)
     amount = _ZERO
     for tokens, rate, note in (
         (usage.input_tokens, rates[0], ()),

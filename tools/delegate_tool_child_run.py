@@ -72,18 +72,18 @@ def _attach_child(parent_agent: Any, child: Any) -> None:
         _with_children_lock(parent_agent, "append", child)
     if getattr(parent_agent, "_interrupt_requested", False) is not True:
         return
-    # Same soft/hard split as ``interrupt()``'s own fan-out: a hard stop cancels, a soft one redirects.
-    message = getattr(parent_agent, "_interrupt_message", None)
+    # Same soft/hard split as ``interrupt()``'s own fan-out: only a hard stop
+    # cancels the child tree; a soft interrupt (typing while busy) must leave
+    # running subagents alone (#136087).
     hard = getattr(parent_agent, "_hard_interrupt_requested", None)
     if hard is None or hard.is_set():
+        message = getattr(parent_agent, "_interrupt_message", None)
         _signal_child_stop(child, message or "parent agent interrupted",
                            tool_reason=getattr(parent_agent, "_tool_interrupt_reason", None) or "parent agent interrupted")
-    else:
-        with _quiet("Failed to propagate interrupt to late child: %s"):
-            child.interrupt(message)
 
 def _detach_child(parent_agent: Any, child: Any) -> None:
     """Remove the child from parent interrupt propagation (no-op if absent)."""
+    setattr(child, "_background_admission_pending", False)
     if not hasattr(parent_agent, "_active_children"):
         return
     try:

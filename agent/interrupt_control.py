@@ -214,17 +214,23 @@ class InterruptControlMixin:
             # signal instead of targeting the caller thread.
             self._interrupt_thread_signal_pending = True
         _ic_signal_tool_workers(self, True, reason=tool_interrupt_reason)
-        # Propagate interrupt to any running child agents (subagent delegation)
-        with self._active_children_lock:
-            children_copy = list(self._active_children)
-        for child in children_copy:
-            try:
-                if hard_cancel:
-                    request_hard_interrupt(child, message, tool_reason=tool_interrupt_reason)
-                else:
-                    child.interrupt(message)
-            except Exception as e:
-                logger.debug("Failed to propagate interrupt to child agent: %s", e)
+        # Propagate interrupt to any running child agents (subagent delegation).
+        # Only an explicit stop (hard_cancel) tears down the child tree; a soft
+        # interrupt (typing while busy, a new message, voice) means "also consider
+        # this" and must not silently cancel delegated work (#136087).
+        if hard_cancel or any(getattr(child, "_background_admission_pending", False) is True
+                              for child in getattr(self, "_active_children", ())):
+            with self._active_children_lock:
+                children_copy = list(self._active_children)
+            for child in children_copy:
+                try:
+                    if hard_cancel or getattr(child, "_background_admission_pending", False) is True:
+                        if hard_cancel:
+                            request_hard_interrupt(child, message, tool_reason=tool_interrupt_reason)
+                        else:
+                            child.interrupt(message)
+                except Exception as e:
+                    logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
         return True

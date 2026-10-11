@@ -468,7 +468,9 @@ def _validate_context_from_refs(refs: list[Any]) -> Optional[str]:
 
 
 # Optional fields echoed by _format_job only when truthy (order = JSON key order).
+# `failure_deliver` leads so the failure-notice override reads next to its parent `deliver`.
 _FORMAT_JOB_OPTIONAL_KEYS = (
+    "failure_deliver",
     "script", "reasoning_effort", "monitor_script", "monitor_url",
     "monitor_state", "no_agent", "enabled_toolsets", "workdir", "interpreter")
 

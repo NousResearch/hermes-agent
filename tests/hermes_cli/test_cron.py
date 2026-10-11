@@ -169,6 +169,29 @@ class TestUnverifiedDeliveryVisibility:
         assert "slack:C0123456" in out
 
 
+class TestFailureDeliverVisibility:
+    """The per-job failure-notice override is honored at fire time but was invisible in
+    ``hermes cron list`` (#134228): the only way to audit where failure alerts go was
+    opening jobs.json by hand. The listing must show the override next to Deliver."""
+
+    def test_list_shows_failure_deliver_override(self, tmp_cron_dir, capsys):
+        create_job(
+            prompt="Nightly brief",
+            schedule="every 1h",
+            deliver="local",
+            failure_deliver="telegram:-100123456",
+        )
+        cron_command(Namespace(cron_command="list", all=True, json=False))
+        out = capsys.readouterr().out
+        assert "On failure:" in out
+        assert "telegram:-100123456" in out
+
+    def test_list_is_quiet_without_override(self, tmp_cron_dir, capsys):
+        create_job(prompt="Nightly brief", schedule="every 1h", deliver="local")
+        cron_command(Namespace(cron_command="list", all=True, json=False))
+        assert "On failure" not in capsys.readouterr().out
+
+
 class TestCronDoctor:
     def test_doctor_reports_cron_health_issues(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Daily digest", schedule="every 1h", script="missing.py")

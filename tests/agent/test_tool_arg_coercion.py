@@ -197,6 +197,26 @@ class TestNormalizeJsonStringsForSchema:
     def test_non_dict_schema_returns_value(self):
         assert _normalize_json_strings_for_schema("x", None) == "x"
 
+    def test_nested_integer_string_coerced(self):
+        """Regression: a model-emitted string at a nested integer position
+        reached the MCP server un-coerced (see _normalize_json_strings_for_schema)."""
+        schema = {
+            "type": "object",
+            "properties": {"ts": {"type": "integer"}},
+        }
+        out = _normalize_json_strings_for_schema('{"ts": "1758700000000000"}', schema)
+        assert out == {"ts": 1758700000000000}
+
+    def test_nested_string_field_untouched(self):
+        """A numeric-looking string at a type:string position must not change."""
+        schema = {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+        }
+        out = _normalize_json_strings_for_schema('{"id": "123"}', schema)
+        assert out == {"id": "123"}
+
+
 
 class TestCoerceToolArgsNested:
     """Integration: nested JSON-string elements/fields are normalized via the

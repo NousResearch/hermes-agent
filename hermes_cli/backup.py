@@ -232,6 +232,9 @@ def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Op
         if destination is None:
             partial_path.unlink(missing_ok=True)
         else:
+            # Archives carry credentials; do not inherit the umask (no-op on platforms without POSIX modes).
+            with suppress(OSError):
+                os.chmod(partial_path, 0o600)
             os.replace(partial_path, destination)
     except BaseException:
         partial_path.unlink(missing_ok=True)
@@ -1158,7 +1161,9 @@ def _create_prefixed_full_backup(
         return None
     backup_dir = hermes_root / _PRE_UPDATE_BACKUPS_DIR
     try:
-        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with suppress(OSError):
+            os.chmod(backup_dir, 0o700)
     except OSError as exc:
         logger.warning("Could not create %s backup dir %s: %s", what, backup_dir, exc)
         return None

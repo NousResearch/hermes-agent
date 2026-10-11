@@ -412,7 +412,11 @@ def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, An
     from gateway.platforms.api_server_authority_runs import run_projection
     canonical = run_projection(self, run_id)
     if canonical is not None:
-        return canonical
+        # The documented poll shape: the canonical projection decides status/output/usage; the
+        # retained run record still names the object, the requested model and the served runtime.
+        retained = self._run_statuses.get(run_id) or {}
+        return {"object": "hermes.run", **{key: retained[key] for key in ("model", "runtime", "created_at")
+                                           if key in retained}, **canonical}
     status = self._run_statuses.get(run_id)
     if status is not None:
         if run_id in self._run_idempotency_ids:

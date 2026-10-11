@@ -98,8 +98,44 @@ class GatewayConfigLoadersMixin:
             return prompt
         return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
 
-    def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id):
-        """``channel_overrides`` entry for this channel/thread, or None (also when no config is bound)."""
+    def _channel_override_for_source(
+        self, source, platform: Platform, chat_id: str, *, thread_id=None, parent_id=None,
+    ):
+        """``channel_overrides`` entry resolved from the profile whose bot received ``source``.
+
+        Under ``multiplex_profiles`` the runner's ``config`` is the launch profile's alone, but a
+        Telegram DM's chat id is the user's id — shared across every profile's bot — so an
+        override the launch profile pins for a DM would also steer that user's DMs with the other
+        bots, whose own ``model`` config is then silently ignored (#136198). Follow the
+        transport-owning profile like ``policy_for_runner_source``; a served profile whose config
+        is not cached resolves to no override, never the launch profile's.
+        """
+        from gateway.run import _get_channel_override
+        from gateway.session_identity import identity_of
+        config = getattr(self, "config", None)
+        if not config or source is None:
+            return None
+        if getattr(config, "multiplex_profiles", False):
+            identity = identity_of(source)
+            owner = (
+                identity.transport_profile if identity is not None else None
+            ) or getattr(source, "profile", None)
+            primary = getattr(self, "_primary_profile_name", None) or "default"
+            if owner and owner != primary:
+                config = (getattr(self, "_profile_configs", None) or {}).get(owner)
+                if config is None:
+                    return None
+        return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
+
+    def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id, source=None):
+        """``channel_overrides`` entry for this channel/thread, or None (also when no config is bound).
+
+        ``source`` routes the lookup through the transport-owning profile under multiplexing
+        (``_channel_override_for_source``); without one the bound config is read as before.
+        """
+        if source is not None:
+            return self._channel_override_for_source(
+                source, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
         from gateway.run import _get_channel_override
         config = getattr(self, "config", None)
         if not config:
@@ -109,24 +145,26 @@ class GatewayConfigLoadersMixin:
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,
         thread_id: Optional[str] = None, parent_id: Optional[str] = None,
+        source: Optional[SessionSource] = None,
     ) -> str:
         """Resolve model for this channel: channel_overrides else global default.
 
         Precedence lives in :func:`hermes_cli.model_switch.resolve_effective_model` (shared with the
         API server so the surfaces cannot diverge). No session tier here: session /model overrides
-        are applied later by ``_apply_session_model_override``.
+        are applied later by ``_apply_session_model_override``. ``source`` resolves the override
+        through the transport-owning profile under multiplexing (#136198).
         """
         from gateway.run import _resolve_gateway_model
         from hermes_cli.model_switch import resolve_effective_model
         return resolve_effective_model(
             None,  # session tier applied downstream (_apply_session_model_override)
-            self._channel_override(platform, chat_id, thread_id, parent_id),
+            self._channel_override(platform, chat_id, thread_id, parent_id, source=source),
             _resolve_gateway_model(user_config),
         )
 
     def _get_system_prompt_for_channel(
         self, platform: Platform, chat_id: str, *, thread_id: Optional[str] = None,
-        parent_id: Optional[str] = None,
+        parent_id: Optional[str] = None, source: Optional[SessionSource] = None,
     ) -> str:
         """Ephemeral system prompt for this channel/thread.
 
@@ -138,9 +176,10 @@ class GatewayConfigLoadersMixin:
         Callers run inside ``_profile_runtime_scope`` (``run_sync`` under ``_run_agent``), so a routed
         multiplex profile gets its own ``display.personality`` / ``agent.system_prompt`` instead of a
         boot-time snapshot of the launch profile's (#89161); ``/personality`` edits take effect on the next
-        turn for the same reason.
+        turn for the same reason. ``source`` likewise routes ``channel_overrides`` through the
+        transport-owning profile (#136198).
         """
-        override = self._channel_override(platform, chat_id, thread_id, parent_id)
+        override = self._channel_override(platform, chat_id, thread_id, parent_id, source=source)
         if override and override.system_prompt:
             return (override.system_prompt or "").strip()
         return self._load_ephemeral_system_prompt()

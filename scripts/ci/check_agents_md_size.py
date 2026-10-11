@@ -4,8 +4,8 @@
 An agent started in a directory gets every AGENTS.md from the git root down to that directory as
 ONE project-context block: ``agent/prompt_builder.py`` joins the chain before truncating it, at 6%
 of the context window (30,720 chars on a 128k-token model, a 20k floor on small ones). So the
-budget is per CHAIN: each AGENTS.md plus all of its ancestors stays within CHAIN_MAX_CHARS (the
-128k budget minus room for the per-file provenance labels), and the root, which is in every
+budget is per CHAIN: each AGENTS.md plus its ancestors and provenance labels must fit the
+runtime floor (read from prompt_builder.py), and the root, which is in every
 chain, stays within ROOT_MAX_CHARS so area files have room. An area file reached as a
 subdirectory hint is also capped by ``_MAX_HINT_CHARS`` in ``agent/subdirectory_hints.py``, read
 from the source here so the two can never drift. Shrink a file (move long form to the developer
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path, PurePosixPath
 
 ROOT_MAX_CHARS = 12_000
-CHAIN_MAX_CHARS = 30_000
+
 
 
 def _int_constant(source: Path, name: str) -> int:
@@ -40,6 +40,7 @@ def _chain(rel: str, sizes: dict[str, int]) -> list[str]:
 
 def main(repo: Path) -> int:
     hint_cap = _int_constant(repo / "agent" / "subdirectory_hints.py", "_MAX_HINT_CHARS")
+    chain_cap = _int_constant(repo / "agent" / "prompt_builder.py", "CONTEXT_FILE_MAX_CHARS")
     tracked = subprocess.run(
         ["git", "ls-files", "-z", "--", "AGENTS.md", "*/AGENTS.md"], cwd=repo, capture_output=True,
         check=True, stdin=subprocess.DEVNULL, timeout=60,
@@ -51,9 +52,11 @@ def main(repo: Path) -> int:
         if size > cap:
             over.append(f"{rel}: {size} chars > {cap} cap")
         chain = _chain(rel, sizes)
-        total = sum(sizes[p] for p in chain)
-        if len(chain) > 1 and total > CHAIN_MAX_CHARS:
-            over.append(f"{' + '.join(chain)}: {total} chars > {CHAIN_MAX_CHARS} chain cap")
+        # Runtime wraps each file with "## <relative label>\n\n" and joins sections
+        # with two newlines. Reserve extra room for context-scanner annotations.
+        total = sum(sizes[p] + 4 + len(p) + 2 for p in chain) + 2 * (len(chain) - 1) + 64
+        if len(chain) > 1 and total > chain_cap:
+            over.append(f"{' + '.join(chain)}: {total} rendered chars > {chain_cap} floor cap")
     for line in over:
         print(line)
     if over:

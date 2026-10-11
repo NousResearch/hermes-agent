@@ -212,17 +212,21 @@ def admit_api_steps(adapter, **kwargs):
     if not isinstance(kwargs['user_message'], list):
         return (yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs))
     from gateway.session_api_media import commit_api_images
-    from gateway.session_ingress_media import release_unheld_media
-    payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
-    # Retained bytes belong to an accepted admission. A refused request (or an exact retry of a
-    # retired one, whose references were erased) owns nothing, so its bytes are collected unless
-    # another admission holds them.
-    release = partial(release_unheld_media, authority.db, payload['api_turn_v1']['media'])
-    try:
-        admitted = yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
-    except Exception:
-        yield release
-        raise
+    from gateway.session_ingress_media import capture_lease, drop_capture_lease, release_unheld_media
+    # Content-addressed bytes another admission may name are held from capture until this one
+    # commits or is refused: a concurrent release would otherwise unlink them in between.
+    with capture_lease():
+        payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
+        # Retained bytes belong to an accepted admission. A refused request (or an exact retry of a
+        # retired one, whose references were erased) owns nothing, so its bytes are collected unless
+        # another admission holds them.
+        release = partial(release_unheld_media, authority.db, payload['api_turn_v1']['media'])
+        try:
+            admitted = yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
+        except Exception:
+            drop_capture_lease()
+            yield release
+            raise
     yield release
     return admitted
 

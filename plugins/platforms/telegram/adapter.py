@@ -2499,6 +2499,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             topic = await self._bot.create_forum_topic(**kwargs)
             thread_id = topic.message_thread_id
             logger.info("[%s] Created DM topic '%s' in chat %s -> thread_id=%s", self.name, name, chat_id, thread_id)
+            # Tell the runner this topic is OURS: Telegram emits a ``forum_topic_created`` service
+            # message for it too, and treating that as a user-created empty topic would route the
+            # next fresh General/"All" message into THIS topic (#31772 hijack, reintroduced).
+            if thread_id is not None:
+                runner = getattr(self, "gateway_runner", None)
+                note_own = getattr(runner, "_note_own_created_lobby_topic", None)
+                if callable(note_own):
+                    note_own(str(chat_id), str(thread_id))
             return thread_id
         except Exception as e:
             error_text = str(e).lower()
@@ -2741,9 +2749,50 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             if self._post_connect_task is asyncio.current_task():
                 self._post_connect_task = None
 
+    def _capture_telegram_created_dm_topic(self, update) -> None:
+        """Record the empty DM topic Telegram auto-created for a mobile General/"All" message.
+
+        Telegram's client creates the topic and emits a ``forum_topic_created`` service message
+        before/while the user's text is delivered to the lobby. Capturing that thread id lets the
+        fresh-lobby router route the text INTO that topic instead of creating a duplicate. Records
+        the name in the adapter's topic cache (so later sends resolve it) and hands the id to the
+        runner, which owns the reuse window. Never raises into PTB.
+        """
+        try:
+            message = getattr(update, "message", None)
+            created = getattr(message, "forum_topic_created", None)
+            if created is None:
+                return
+            chat = getattr(message, "chat", None)
+            thread_id = getattr(message, "message_thread_id", None)
+            name = getattr(created, "name", None)
+            if chat is None or thread_id is None:
+                return
+            # DM topics only: a group's forum_topic_created is not the mobile "All" lane, and its
+            # thread ids share no namespace with the private chat the lobby router serves.
+            chat_type = str(getattr(getattr(chat, "type", None), "value", getattr(chat, "type", "")) or "")
+            if chat_type.lower() != "private":
+                return
+            if name:
+                self._cache_dm_topic_from_message(str(chat.id), str(thread_id), str(name))
+            runner = getattr(self, "gateway_runner", None)
+            note = getattr(runner, "_note_pending_lobby_topic", None)
+            if callable(note):
+                note(str(chat.id), str(thread_id))
+                logger.info(
+                    "[%s] Captured forum_topic_created: chat=%s thread=%s name=%r",
+                    self.name, chat.id, thread_id, name,
+                )
+        except Exception:
+            logger.debug("[%s] Failed to capture forum_topic_created", self.name, exc_info=True)
+
     async def _on_platform_update(self, update, context) -> None:
         """Catch-all PTB handler (group 99) firing ``gateway_platform_event`` per inbound update with a
         stable envelope (no raw SDK objects) and an internal auth source. Never raises into PTB."""
+        # Capture the empty DM topic Telegram itself creates for a mobile General/"All" message
+        # (its ``forum_topic_created`` service message) BEFORE the hook guards below: a fresh lobby
+        # message must be routed INTO that topic, not into a duplicate one Hermes would create.
+        self._capture_telegram_created_dm_topic(update)
         # Admission counts dispatch before any preparation can stop this group. Retain
         # accounting for callers outside that Application boundary (#102260).
         admission = getattr(self, "_update_admission", None)
@@ -2879,6 +2928,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def handle_message(self, event: MessageEvent) -> None:
         self._accept_update()
+        # Fresh General/"All" lobby messages (mobile Telegram, DM topic mode) get their own topic
+        # BEFORE any session key, guard or delivery snapshot reads the source. Placed here, ahead of
+        # super(), because base.handle_message derives the session key and the busy/queue fork from
+        # event.source: a topic chosen inside the gateway handler would be invisible to both (and
+        # to the delivery snapshot that builds the final reply's metadata).
+        await self._route_fresh_lobby_event(event)
         await super().handle_message(event)
 
     def _register_handlers(self, app) -> None:

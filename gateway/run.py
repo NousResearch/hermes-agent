@@ -3899,6 +3899,9 @@ class GatewayRunner(
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
+    # How long a Telegram-created empty DM topic (``forum_topic_created`` service message) stays
+    # eligible for reuse by a fresh mobile General/"All" lobby message before we create our own.
+    _PENDING_LOBBY_TOPIC_WINDOW_S = 60.0
 
     def _normalize_source_for_session_key(self, source: SessionSource) -> SessionSource:
         """Apply Telegram DM topic recovery to a source for session-key purposes. Always derive override

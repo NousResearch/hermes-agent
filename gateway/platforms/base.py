@@ -1973,6 +1973,11 @@ class BasePlatformAdapter(ABC):
         self._platform_event_handler: Optional[Callable[[dict[str, Any], Any], Awaitable[None]]] = None
         # Rewrites ``event.source.thread_id`` before session keying (Telegram DM topics).
         self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
+        # Pre-dispatch router for FRESH General/"All" lobby messages (Telegram DM topics). Runs
+        # BEFORE any session key / guard / delivery snapshot reads the source, so the topic it
+        # chooses is visible to every downstream reader. None = no fresh-lobby lane (other
+        # platforms, and every adapter the runner does not wire it on).
+        self._fresh_lobby_router: Optional[Callable[[Any], Awaitable[bool]]] = None
         self._running, self._fatal_error_retryable = False, True
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -2372,6 +2377,30 @@ class BasePlatformAdapter(ABC):
         before session keying; a non-None return replaces ``source.thread_id``. ``None`` clears
         it."""
         self._topic_recovery_fn = fn
+
+    def set_fresh_lobby_router(self, fn: Optional[Callable[[Any], Awaitable[bool]]]) -> None:
+        """Install a pre-dispatch router for FRESH Telegram General/"All" lobby messages (DM topic
+        mode). Unlike :meth:`set_topic_recovery_fn` — which is synchronous and runs at batch-enqueue
+        key derivation, and therefore can only *rewrite* an already-keyed source — this hook is
+        awaited from the adapter's ``handle_message`` BEFORE ``super().handle_message``, i.e. before
+        the session guard lookup, the session key derivation and the delivery snapshot in
+        ``_process_message_background``. A topic chosen here is consequently seen by all of them,
+        including the busy path (the stamped source derives the NEW topic's key, so the message
+        never collides with a running session's guard). ``fn`` returns True when it stamped a topic.
+        ``None`` clears it; platforms that never register one are unaffected.
+        """
+        self._fresh_lobby_router = fn
+
+    async def _route_fresh_lobby_event(self, event: MessageEvent) -> bool:
+        """Run the registered fresh-lobby router, if any. Never raises into ingress."""
+        router = getattr(self, "_fresh_lobby_router", None)
+        if router is None:
+            return False
+        try:
+            return bool(await router(event))
+        except Exception:
+            logger.debug("[%s] fresh-lobby routing failed", self.name, exc_info=True)
+            return False
 
     def _apply_topic_recovery(self, event: MessageEvent) -> None:
         """Rewrite ``event.source.thread_id`` in place if the hook returns one."""

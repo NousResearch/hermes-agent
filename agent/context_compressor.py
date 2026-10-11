@@ -3887,8 +3887,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
-    def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:
+    def _call_summary_llm(self, messages: List[Dict[str, str]], prompt_started_at: float) -> str:
         """Issue the single aux summary call; return validated content text.
+        ``messages`` is the ``[system, user]`` pair from ``_build_summary_prompt``.
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
         routes through main-model fallback + cooldown instead of wiping the compacted turns."""
         # call_llm writes the route it actually selected; never pre-resolve a second, stale pair.
@@ -3899,7 +3900,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 "model": self.model, "provider": self.provider, "base_url": self.base_url, "api_key": self.api_key,
                 "api_mode": self.api_mode,
             },
-            "messages": [{"role": "user", "content": prompt}], "route_info": _aux_route,
+            "messages": list(messages), "route_info": _aux_route,
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.
         }
@@ -3916,7 +3917,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # one — silence before it is prompt build, silence after it is the summary provider.
         logger.info(
             "Compression summary call dispatched: model=%s prompt_chars=%s prompt_build_ms=%s",
-            self.summary_model or self.model, f"{len(prompt):,}", _latency_info["prompt_build_ms"],
+            self.summary_model or self.model, f"{sum(len(m.get('content') or '') for m in messages):,}",
+            _latency_info["prompt_build_ms"],
         )
         try:
             # Compression is atomic: shield the summary call from gateway interrupts. Re-entrant.
@@ -4011,9 +4013,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         has_user_turn = getattr(self, "_summary_has_user_turn", None)
         if has_user_turn is None:
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
-        prompt = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
+        messages = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
         try:
-            content = self._call_summary_llm(prompt, prompt_started_at)
+            content = self._call_summary_llm(messages, prompt_started_at)
             # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
             from agent.agent_runtime_helpers import strip_think_blocks
             content = strip_think_blocks(None, content).strip() or content
@@ -4047,8 +4049,18 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
     def _build_summary_prompt(
         self, content_to_summarize: str, summary_budget: int, focus_topic: Optional[str],
         memory_context: str, has_user_turn: bool,
-    ) -> str:
-        """Assemble the summarizer prompt (fresh or iterative-update form); focus guidance goes last so it takes precedence."""
+    ) -> List[Dict[str, str]]:
+        """Assemble the summarizer request (fresh or iterative-update form) as ``[system, user]``.
+
+        The steering instructions (preamble, structure template, focus guidance) travel in the
+        ``system`` slot and the turns to summarize in the ``user`` slot. Providers train the
+        instruction hierarchy on that role split, so a directive smuggled inside a compacted turn
+        competes with a *user* message, not with the summarizer's own instructions; it is also the
+        canonical shape for Chat Completions and the Responses ``instructions``/``input`` pair, and
+        it keeps the static instruction block a cacheable prefix across compactions. Every other
+        auxiliary caller (titles, smart approval, MCP sampling) already sends this shape. Ported
+        from OpenHands/software-agent-sdk#5143. Focus guidance goes last so it takes precedence.
+        """
         _memory_section = _memory_provider_section(memory_context)
         _section = _SECTION_INSTRUCTIONS[bool(has_user_turn)]
         _language_and_provenance_rule = _section["language"]
@@ -4068,38 +4080,36 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if self._previous_summary:
             # Iterative update. Bound the previous summary too: a rehydrated handoff can be huge.
             _bounded_previous_summary = self._bound_summary_input(self._previous_summary)
-            prompt = f"""{_summarizer_preamble}
+            instructions = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
-
-PREVIOUS SUMMARY:
-{_bounded_previous_summary}
-
-NEW TURNS TO INCORPORATE:
-{content_to_summarize}{_memory_section}
 
 Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
+            source_material = f"""PREVIOUS SUMMARY:
+{_bounded_previous_summary}
+
+NEW TURNS TO INCORPORATE:
+{content_to_summarize}{_memory_section}"""
         else:
-            prompt = f"""{_summarizer_preamble}
+            instructions = f"""{_summarizer_preamble}
 
 Create a structured checkpoint summary for the conversation after earlier turns are compacted. The summary should preserve enough detail for continuity without re-reading the original turns.
-
-TURNS TO SUMMARIZE:
-{content_to_summarize}{_memory_section}
 
 Use this exact structure:
 
 {_template_sections}"""
+            source_material = f"""TURNS TO SUMMARIZE:
+{content_to_summarize}{_memory_section}"""
 
         # Focus guidance goes last so it takes precedence.
         if focus_topic:
-            prompt += f"""
+            instructions += f"""
 
 FOCUS TOPIC: "{focus_topic}"
 This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
-        return prompt
+        return [{"role": "system", "content": instructions}, {"role": "user", "content": source_material}]
 
     @staticmethod
     def _temporal_anchoring_rule() -> str:

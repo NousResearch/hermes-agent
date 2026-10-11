@@ -182,7 +182,7 @@ def test_resume_handoff_after_default_protected_head_decays_initial_turns():
     with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")) as mock_call:
         result = compressor.compress(_messages_with_default_handoff(old_summary))
 
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = "\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"])
     assert "PREVIOUS SUMMARY:" in prompt
     assert prompt.count(old_summary) == 1
     assert "original task before first compaction" in prompt

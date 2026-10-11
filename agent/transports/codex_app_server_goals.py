@@ -54,7 +54,8 @@ def _next_turn(session, result, *, idle_timeout, control):
         if note.get("method") == "turn/started":
             return {"turn": params.get("turn") or {}}
         if note.get("method") == "thread/goal/updated" and (params.get("goal") or {}).get("status") != "active":
-            return None
+            if (_native_request(session, "thread/goal/get") or {}).get("status") != "active":
+                return None  # Ignore an older queued terminal status after an explicit re-arm.
     result.error = f"Codex native Goal inactive for {idle_timeout}s awaiting automatic continuation; task incomplete"
     result.interrupted = result.should_retire = True
     return None
@@ -90,7 +91,7 @@ def _attach_native_goal(session, state, objective, *, initial_turn):
 
 
 def run_native_goal(session, user_input, *, session_id, state, on_turn=None, interrupt_requested=None,
-                    initial_turn=None, **options):
+                    initial_turn=None, rate_limit_delays=(), on_recovery=None, **options):
     from agent.transports.codex_app_server_session import TurnResult
     aggregate = TurnResult(thread_id=session.ensure_started())
     goal_id = state.goal_id
@@ -118,6 +119,8 @@ def run_native_goal(session, user_input, *, session_id, state, on_turn=None, int
             session.request_interrupt()
         return False
 
+    from agent.transports.codex_goal_recovery import NativeRateLimitRecovery
+    recovery = NativeRateLimitRecovery(session, session_id, goal_id, objective, rate_limit_delays, control, on_recovery)
     session._native_goal_control = control
     session._native_goal_running = True
     try:
@@ -128,9 +131,22 @@ def run_native_goal(session, user_input, *, session_id, state, on_turn=None, int
             if not turn.projected_messages and not turn.error and not turn.interrupted:
                 turn.error = "Codex native Goal returned no transcript; task incomplete"
             if on_turn is not None:
-                continuing = native["status"] == "active" and bool(turn.tool_iterations) and not turn.error and not turn.interrupted
+                continuing = ((native["status"] == "active" and bool(turn.tool_iterations) and not turn.error and not turn.interrupted)
+                              or recovery.eligible(turn, native))
                 on_turn(turn, continuing)
             _merge_result(aggregate, turn)
+            recovered = recovery.recover(turn, native)
+            if recovered is not None:
+                record_native_goal(session_id, goal_id, recovered)
+                aggregate.error = None
+                aggregate.interrupted = aggregate.should_retire = False
+                ts = _next_turn(session, aggregate, idle_timeout=options["idle_timeout"], control=control)
+                if ts is None:
+                    break
+                turn = TurnResult(thread_id=aggregate.thread_id)
+                session._run_started_turn(turn, ts, options["turn_timeout"], .25, 90,
+                                          idle_timeout=options["idle_timeout"])
+                continue
             if turn.error or turn.interrupted:
                 pause_native_goal(session_id, goal_id, turn.error or "Codex turn interrupted; task incomplete")
             mirror = record_native_goal(session_id, goal_id, native, completed_turn=not turn.error and not turn.interrupted)

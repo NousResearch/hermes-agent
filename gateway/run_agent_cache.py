@@ -151,7 +151,21 @@ class GatewayAgentCacheMixin:
         is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
         from gateway.run import _resolve_runtime_agent_kwargs_for_provider
         store = getattr(self, "session_store", None)
-        if self._session_model_override(session_key) is not None or store is None:
+        state = self._peek_session_state(session_key)
+        # A restored (ambient) identity is disposable: if the user has since persisted an explicit
+        # /model, drop the restored one below so the explicit override wins. A genuine in-memory
+        # override is kept and makes this a no-op.
+        if state is not None and state.conversation.restored_from_served:
+            try:
+                has_explicit = bool(store and store.get_model_override(session_key))
+            except Exception:
+                has_explicit = False
+            if has_explicit:
+                state.conversation.model_override = None
+                state.conversation.restored_from_served = False
+            else:
+                return
+        elif self._session_model_override(session_key) is not None or store is None:
             return
         try:
             persisted = store.get_model_override(session_key)
@@ -193,6 +207,57 @@ class GatewayAgentCacheMixin:
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
             session_key, override.get("model"), provider or "",
+        )
+
+    def _rehydrate_served_identity(self, session_key: str) -> None:
+        """After a restart, resume a session that had NO explicit /model on the identity that
+        actually served its last turn (persisted as ``last_served``), instead of inheriting the
+        restarted gateway's warmup model.
+
+        Reuses the same non-secret + credential re-resolution path as
+        :meth:`_rehydrate_session_model_override`, but flags the result ``restored_from_served``
+        so it is never treated as a user-chosen override. No-op when an in-memory/persisted
+        explicit override exists, the identity is already restored, or no last_served is stored.
+        """
+        from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+        store = getattr(self, "session_store", None)
+        state = self._session_state(session_key)
+        if (
+            store is None
+            or state.conversation.model_override is not None
+            or state.conversation.restored_from_served
+        ):
+            return
+        try:
+            if store.get_model_override(session_key):
+                return  # explicit /model wins; _rehydrate_session_model_override owns it
+            served = store.get_last_served(session_key)
+        except Exception:
+            logger.debug("Failed to read persisted last-served identity", exc_info=True)
+            return
+        if not served:
+            return
+        provider = served.get("provider")
+        restored: Dict[str, Any] = {k: served.get(k) for k in ("model", "provider", "base_url")}
+        if provider:
+            try:
+                runtime = _resolve_runtime_agent_kwargs_for_provider(
+                    provider, target_model=served.get("model") or None)
+                for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
+                    restored[k] = runtime.get(k)
+                restored["request_overrides"] = dict(runtime.get("request_overrides") or {})
+                restored["capabilities"] = dict(runtime.get("capabilities") or {})
+            except Exception:
+                # The serving provider is gone after restart: do NOT restore a dead identity.
+                # The session stays on the ambient default route and the caller announces it.
+                logger.info(
+                    "Last-served provider %s unavailable on resume; keeping ambient model", provider)
+                return
+        state.conversation.model_override = restored
+        state.conversation.restored_from_served = True
+        logger.info(
+            "Resumed session=%s on its last-served model=%s provider=%s",
+            session_key, restored.get("model"), provider or "",
         )
 
     def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict) -> tuple:

@@ -530,6 +530,11 @@ class SessionEntry:
     # Session-scoped /model override (model/provider/base_url ONLY — never credentials, see
     # sanitize_model_override). Persisted so a restart keeps the chosen model.
     model_override: Optional[dict[str, str]] = None
+    # The model/provider/base_url that actually SERVED the session's last successful turn,
+    # captured even when the user never issued an explicit /model (so a gateway restart does
+    # not silently move an ambient-served session onto the restarted gateway's warmup model).
+    # Non-secret keys only, same contract as model_override.
+    last_served: Optional[dict[str, str]] = None
     # Profile owning the bot that received this lane's traffic (``RoutingIdentity.transport_profile``,
     # "default" spelled out). The key namespace only says where the turn RUNS; after a restart this is
     # what says which bot may deliver to it. None = unknown (row predates the field, or standalone).
@@ -569,6 +574,8 @@ class SessionEntry:
         if self.model_override:
             # Defence-in-depth against an unsanitized dict stored directly.
             result["model_override"] = sanitize_model_override(self.model_override)
+        if self.last_served:
+            result["last_served"] = sanitize_model_override(self.last_served)
         if self.prompt_pin:
             # Same defence-in-depth: routing JSON must never preserve malformed pin state.
             if pin := sanitize_prompt_pin(self.prompt_pin):
@@ -615,6 +622,7 @@ class SessionEntry:
             last_resume_marked_at=_parse_iso(data.get("last_resume_marked_at")),
             active_turn_token=token, active_turn_started_at=started_at,
             model_override=sanitize_model_override(data.get("model_override")),
+            last_served=sanitize_model_override(data.get("last_served")),
             prompt_pin=sanitize_prompt_pin(data.get("prompt_pin")),
             transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
             **plain,
@@ -1130,6 +1138,31 @@ class SessionStore(
         with self._lock:
             entry = self._entry_locked(session_key)
             return dict(entry.model_override) if entry and entry.model_override else None
+
+    def set_last_served(self, session_key: str, served: Optional[Dict[str, Any]]) -> None:
+        """Persist (or clear, with ``None``) the identity that served the last successful turn.
+
+        Unlike :meth:`set_model_override` this records the AMBIENT-served identity too, so a
+        gateway restart without an explicit /model can still resume on it. Non-secret keys only.
+        """
+        from dataclasses import replace
+
+        cleaned = sanitize_model_override(served)
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or entry.last_served == cleaned:
+                return
+            data, generation = self._snapshot_routing_locked()
+            entry = self._entries[session_key]
+            data[session_key] = replace(entry, last_served=cleaned).to_dict()
+            self._persist_routing_data(data, generation)
+            entry.last_served = cleaned
+
+    def get_last_served(self, session_key: str) -> Optional[Dict[str, str]]:
+        """Return the persisted last-served identity for *session_key*, if any."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            return dict(entry.last_served) if entry and entry.last_served else None
 
     def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""

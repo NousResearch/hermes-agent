@@ -189,6 +189,7 @@ class GatewayTurnMixin:
         model = _resolve_gateway_model(user_config)
         if skey:
             self._rehydrate_session_model_override(skey)
+            self._rehydrate_served_identity(skey)
         _override_state = self._peek_session_state(skey) if skey else None
         override = _override_state.conversation.model_override if _override_state else None
         if override:
@@ -1560,6 +1561,19 @@ class GatewayTurnMixin:
                 await self.async_session_store.clear_resume_pending(session_key)
             except Exception as _e:
                 logger.debug("clear_resume_pending failed for %s: %s", session_key, _e)
+
+        # Record the identity that actually served this successful turn (incl. ambient, not only
+        # an explicit /model), so a later gateway restart resumes on it instead of the warmup model.
+        if session_key and agent_result.get("completed") is True and not agent_result.get("failed"):
+            _served = {
+                "model": agent_result.get("model"),
+                "provider": agent_result.get("provider"),
+                "base_url": agent_result.get("base_url"),
+            }
+            try:
+                await self.async_session_store.set_last_served(session_key, _served)
+            except Exception as _e:
+                logger.debug("set_last_served failed for %s: %s", session_key, _e)
 
         # Normalize empty responses: surface errors, partial failures, and work-without-text.
         # Fix for #18765.

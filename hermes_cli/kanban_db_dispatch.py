@@ -709,7 +709,8 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, tid, pid, row["claim_lock"]),
+                (_kb._landing_status_after_parents(conn, tid, retry_status),
+                 tid, pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
                 payload = {
@@ -811,7 +812,7 @@ def detect_stale_running(
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
-                (retry_status, tid, row["claim_lock"]),
+                (_kb._landing_status_after_parents(conn, tid, retry_status), tid, row["claim_lock"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -848,10 +849,12 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     A task ``running`` with NULL ``claim_lock``/``claim_expires`` (crash
     mid-claim, manual SQL, DB restore) is a zombie forever: ``release_stale_claims``
     needs ``claim_expires``, ``detect_crashed_workers`` needs a host-local lock +
-    pid, ``detect_stale_running`` is off by default. Orphans go back to ``ready``
-    with a comment, leaked run closed, ``reconciled`` event; a row with a live
-    host-local PID is deferred so no duplicate spawns beside it.
+    pid, ``detect_stale_running`` is off by default. Orphans return to their
+    source phase if parents succeeded, otherwise ``todo``, with a comment,
+    leaked run closed, ``reconciled`` event; live host-local PIDs defer to avoid duplicates.
     """
+    from hermes_cli.kanban_db_recovery import restore_orphaned_claim
+
     now = int(time.time())
     reconciled: list[str] = []
     rows = conn.execute(
@@ -870,18 +873,13 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
             )
             continue
         with _kb.write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ? AND claim_expires IS ?",
-                (tid, row["claim_lock"], row["claim_expires"]),
-            )
-            if cur.rowcount != 1:
+            restored, resume_status, new_status = restore_orphaned_claim(conn, row)
+            if not restored:
                 continue
             payload = {
                 "reason": "orphaned_running",
+                "resume_status": resume_status,
+                "status": new_status,
                 "claim_lock": row["claim_lock"],
                 "claim_expires": _kb._opt_int(row["claim_expires"]),
                 "worker_pid": int(pid) if pid else None,
@@ -896,7 +894,7 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
             _kb._insert_comment(
                 conn, tid, "dispatcher",
                 "reconciliation: card was 'running' with no valid claim "
-                "(dead/gone worker) — requeued to ready",
+                f"(dead/gone worker) — requeued to {new_status}",
                 now,
             )
             _kb._append_event(conn, tid, "reconciled", payload, run_id=run_id)
@@ -1174,7 +1172,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, row["id"], pid, row["claim_lock"]),
+                (_kb._landing_status_after_parents(conn, row["id"], retry_status),
+                 row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -1405,7 +1404,8 @@ def _record_task_failure(
                     "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
-                    (retry_status, failures, error, task_id),
+                    (_kb._landing_status_after_parents(conn, task_id, retry_status),
+                     failures, error, task_id),
                 )
             else:
                 conn.execute(
@@ -1431,7 +1431,7 @@ def _record_task_failure(
             + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                if release_claim else "")
             + "consecutive_failures = ?, last_failure_error = ? "
-            "WHERE id = ? AND status IN ('running', 'ready', 'review')",
+            "WHERE id = ? AND status IN ('running', 'ready', 'review', 'todo')",
             (failures, error, task_id),
         )
         payload = {

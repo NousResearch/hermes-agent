@@ -30,6 +30,11 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
+from hermes_cli.kanban_db_dependencies import (
+    parents_satisfied as _parents_satisfied,
+    unsatisfied_parents,
+    landing_status as _landing_status_after_parents,
+)
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -112,6 +117,9 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
+# Archive must remain a bounded board mutation; larger dependency graphs need an
+# explicit bulk workflow instead of monopolizing the single SQLite writer lock.
+ARCHIVE_DESCENDANT_LIMIT = 1000
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -1337,7 +1345,7 @@ def create_task(
                 if task_status == "todo":
                     # Parked behind an open parent: record why, exactly as
                     # link_tasks does, so the board never shows an unexplained todo.
-                    gating = [p for p in parents if _task_status(conn, p) not in ("done", "archived")]
+                    gating = [p for p, _ in unsatisfied_parents(conn, task_id)]
                     if gating:
                         _append_event(
                             conn,
@@ -1564,7 +1572,7 @@ def link_tasks(
     expected_child_run_id: Optional[int] = None,
 ) -> bool:
     """Link ``parent_id -> child_id``. Returns True when the link gated a
-    ``ready`` child back to ``todo`` (the new parent is not yet terminal), so
+    ``ready`` child back to ``todo`` (the new parent has not succeeded), so
     callers can surface the demotion instead of a silent status flip.
 
     A running child cannot normally be gated retroactively, so reject the edge
@@ -1590,9 +1598,8 @@ def link_tasks(
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
         _link(conn, parent_id, child_id)
-        # If child was ready but parent is not yet terminal, demote child to todo
-        # (archived counts as terminal, matching _parents_satisfied/recompute_ready).
-        if _task_status(conn, parent_id) not in ("done", "archived"):
+        # A terminal-but-unsuccessful parent still gates the child.
+        if not _parents_satisfied(conn, child_id):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -2047,7 +2054,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
         "SELECT payload FROM task_events "
         "WHERE task_id = ? AND kind IN ("
         "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
-        "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
+        "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', 'reconciled', "
         "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
         ") ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
@@ -2059,16 +2066,17 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
 
 
 def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
-    """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
-    returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
+    """Promote ``todo``/``blocked`` tasks whose parents all succeeded; archived
+    parents deliberately do not satisfy dependency gates. Returns the count.
+    Opens its own IMMEDIATE transaction — call outside any write transaction.
 
     ``blocked`` is skipped when sticky (explicit ``kanban_block``) or when
-    ``consecutive_failures`` reached the limit (else the breaker could never
-    trip). Limit order matches ``_record_task_failure``: ``max_retries`` >
+    ``consecutive_failures`` reached the limit, preventing an endless recovery
+    loop. Limit order matches ``_record_task_failure``: ``max_retries`` >
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
 
-    1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).
+    A worker-initiated ``kanban_block`` stays blocked until explicit
+    ``kanban_unblock`` (#28712).
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -2084,12 +2092,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?", (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if _parents_satisfied(conn, task_id):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2121,29 +2124,6 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
 
 
 # --- Claim / complete / block ---
-
-def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
-    return conn.execute(
-        "SELECT 1 FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
-    ).fetchone() is None
-
-
-def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
-    """``(parent_id, status)`` for every direct parent :func:`_parents_satisfied`
-    still counts as open (``done`` / ``archived`` release the child), in id
-    order, so a refusal or a board view can name the blockers instead of the
-    caller guessing. Read-only."""
-    rows = conn.execute(
-        "SELECT p.id, p.status FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
-        "ORDER BY p.id", (task_id,),
-    ).fetchall()
-    return [(row["id"], row["status"]) for row in rows]
 
 
 def _claim_and_open_run(
@@ -2409,7 +2389,8 @@ def release_stale_claims(
                 "AND claim_expires IS NOT NULL AND claim_expires < ? "
                 # A worker that registered its own pid since the SELECT keeps its claim.
                 "AND worker_pid IS ?",
-                (retry_status, row["id"], row["claim_lock"], now, row["worker_pid"]),
+                (_landing_status_after_parents(conn, row["id"], retry_status),
+                 row["id"], row["claim_lock"], now, row["worker_pid"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -2512,7 +2493,8 @@ def reclaim_task(
             "UPDATE tasks SET status = ?, claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?", (retry_status, task_id, prev_lock),
+            "AND claim_lock IS ?",
+            (_landing_status_after_parents(conn, task_id, retry_status), task_id, prev_lock),
         )
         if cur.rowcount != 1:
             return False
@@ -3517,12 +3499,7 @@ def promote_task(
     # No override: claim_task demotes ready -> todo on an undone parent whichever
     # writer set 'ready', so a forced promotion would only report a success the
     # first claim silently reverts (#106195). The dependency itself is the knob.
-    parents = conn.execute(
-        "SELECT t.id, t.status FROM tasks t "
-        "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ?", (task_id,),
-    ).fetchall()
-    unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
+    unsatisfied = [pid for pid, _ in unsatisfied_parents(conn, task_id)]
     if unsatisfied:
         return False, (
             f"unsatisfied parent dependencies: {', '.join(unsatisfied)} "
@@ -3535,6 +3512,9 @@ def promote_task(
         return True, None
 
     with write_txn(conn):
+        # Re-check under the write lock: validation above is only a preview.
+        if not _parents_satisfied(conn, task_id):
+            return False, "unsatisfied parent dependencies changed during promotion"
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
             "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
@@ -3570,11 +3550,6 @@ def _reclaim_dangling_run(
         )
 
 
-def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str:
-    """``ready`` if every parent is terminal else ``todo`` — the re-gate shared by
-    unblock/reopen so neither can spawn a child whose upstream is unfinished."""
-    return "ready" if _parents_satisfied(conn, task_id) else "todo"
-
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
@@ -3591,12 +3566,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             note="invariant recovery on unblock",
         )
         # Re-gate on parent completion before restoring the source phase.
-        landing_status = _landing_status_after_parents(conn, task_id)
-        new_status = (
-            "review"
-            if landing_status == "ready" and resume_status == "review"
-            else landing_status
-        )
+        new_status = _landing_status_after_parents(conn, task_id, resume_status)
         # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
         # resetting them is the amnesia that let cron-unblock <-> re-block loop
         # unbounded; only complete_task clears them. ``consecutive_failures``
@@ -3808,6 +3778,54 @@ def specify_triage_task(
     return True
 
 
+def _regate_children_after_parent_archive(conn: sqlite3.Connection, parent_id: str) -> list[tuple[str, object, object, object, Optional[int]]]:
+    """Atomically revoke every nonterminal descendant after a parent loses success.
+
+    A descendant can be hidden behind already-completed intermediate work. It
+    must not remain complete or runnable after an ancestor is archived. Running
+    descendants are fenced in this transaction and returned for post-commit
+    process termination.
+    """
+    terminations = []
+    rows = conn.execute(
+        "WITH RECURSIVE descendants(id) AS ("
+        "  SELECT child_id FROM task_links WHERE parent_id = ? "
+        "  UNION "
+        "  SELECT l.child_id FROM task_links l JOIN descendants d ON l.parent_id = d.id "
+        "  LIMIT ?"
+        ") "
+        "SELECT t.id, t.status, t.worker_pid, t.claim_lock, t.worker_started_at "
+        "FROM tasks t JOIN descendants d ON d.id = t.id",
+        (parent_id, ARCHIVE_DESCENDANT_LIMIT + 1),
+    ).fetchall()
+    if len(rows) > ARCHIVE_DESCENDANT_LIMIT:
+        raise ValueError(
+            f"archive dependency closure exceeds {ARCHIVE_DESCENDANT_LIMIT}; use a controlled bulk archive"
+        )
+    for row in rows:
+        child_id = row["id"]
+        source_status = row["status"]
+        if source_status not in {"done", "ready", "review", "running"}:
+            continue
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, worker_started_at = NULL WHERE id = ?",
+            (child_id,),
+        )
+        run_id = _end_run(
+            conn, child_id, outcome="reclaimed", status="reclaimed",
+            summary="dependency parent archived",
+        )
+        _append_event(
+            conn, child_id, "dependency_wait",
+            {"parent": parent_id, "parent_status": "archived", "source_status": source_status},
+            run_id=run_id,
+        )
+        if source_status == "running":
+            terminations.append((child_id, row["worker_pid"], row["claim_lock"], row["worker_started_at"], run_id))
+    return terminations
+
+
 def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
     """Archive a task; a *running* task's host-local worker is terminated.
 
@@ -3844,12 +3862,17 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+        child_terminations = _regate_children_after_parent_archive(conn, task_id)
     if was_running:
         termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
         with write_txn(conn):
             _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
-    # ``archived`` parents no longer block children; promote them now.
-    recompute_ready(conn)
+    for child_id, child_pid, child_lock, child_started, child_run_id in child_terminations:
+        termination = _terminate_reclaimed_worker(child_pid, child_lock, signal_fn=signal_fn, started_at=child_started)
+        with write_txn(conn):
+            _append_event(conn, child_id, "dependency_parent_archived_termination", termination, run_id=child_run_id)
+    # Archival cannot release dependencies, so no board-wide readiness scan is
+    # needed here; the affected closure was re-gated atomically above.
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
     return True

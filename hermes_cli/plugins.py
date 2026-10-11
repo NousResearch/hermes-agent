@@ -2048,7 +2048,7 @@ def resolve_pre_tool_block(
     return _dispatch_pre_tool_call_hooks(tool_name, args, **hook_kwargs)[0]
 
 
-def _redacted_arguments_json(args: Dict[str, Any]) -> str:
+def _redacted_arguments_json(args: dict[str, Any]) -> str:
     """Render tool args for a human approval prompt without exposing secret values."""
     from agent.redact import redact_sensitive_text
 
@@ -2078,13 +2078,13 @@ def _redacted_arguments_json(args: Dict[str, Any]) -> str:
     )
 
 
-def _approval_observability_kwargs(hook_kwargs: Dict[str, Any]) -> Dict[str, str]:
+def _approval_observability_kwargs(hook_kwargs: dict[str, Any]) -> dict[str, str]:
     return {k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")}
 
 
 def _resolve_block_from_details(
     details: _PreToolCallDirective, tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
-    session_id: str = "", final_args: Optional[Dict[str, Any]] = None,
+    session_id: str = "", final_args: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
     """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an
     ``approve`` whose gate errors, denies, or times out is blocked; anything else proceeds."""
@@ -2121,7 +2121,7 @@ def _resolve_block_from_details(
 
 
 def _resolve_pending_pre_tool_approval(
-    details: "_PreToolCallDirective", tool_name: str, args: Dict[str, Any], **hook_kwargs: Any,
+    details: _PreToolCallDirective, tool_name: str, args: dict[str, Any], **hook_kwargs: Any,
 ) -> Optional[str]:
     """Resolve a deferred approve directive against the final arguments about to execute."""
     return _resolve_block_from_details(
@@ -2147,8 +2147,8 @@ def _dispatch_pre_tool_call_hooks(
 
 
 def _prepare_pre_tool_call_hooks_for_dispatch(
-    tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
-) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional["_PreToolCallDirective"]]:
+    tool_name: str, args: Optional[dict[str, Any]], **hook_kwargs: Any
+) -> tuple[Optional[str], Optional[dict[str, Any]], Optional[_PreToolCallDirective]]:
     """Run pre_tool_call once and defer approve until execution middleware settles final args."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     if details.action == "block":

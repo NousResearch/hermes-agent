@@ -11,6 +11,48 @@ const info = (profile_name: string) => ({ model: 'test', profile_name, skills: {
 
 afterEach(resetUiState)
 
+describe('queue scope subscription', () => {
+  it('ignores unrelated ui-state churn but wakes on destination changes', async () => {
+    patchUiState({ info: info('alpha'), sid: 'session-a' })
+    let renders = 0
+
+    function Harness() {
+      renders += 1
+      useQueue()
+
+      return <Text>queue probe</Text>
+    }
+
+    const stdout = new PassThrough()
+    Object.assign(stdout, { columns: 80, isTTY: false, rows: 20 })
+    const instance = renderSync(<Harness />, {
+      patchConsole: false,
+      stdin: new PassThrough() as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stderr: new PassThrough() as unknown as NodeJS.WriteStream
+    })
+
+    try {
+      const baseline = renders
+
+      for (let i = 0; i < 20; i++) {
+        patchUiState({ status: `streaming-${i}` })
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(renders).toBe(baseline)
+
+      patchUiState({ sid: 'session-b' })
+      await expect.poll(() => renders).toBe(baseline + 1)
+
+      patchUiState({ info: info('beta') })
+      await expect.poll(() => renders).toBe(baseline + 2)
+    } finally {
+      instance.unmount()
+    }
+  })
+})
+
 describe('pending input destination', () => {
   it.each([
     { profile: 'alpha', sid: 'other-session' },

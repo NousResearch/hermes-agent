@@ -48,6 +48,10 @@ export const $uiState = atom<UiState>(buildUiState())
 
 export const $uiTheme = computed($uiState, state => state.theme)
 export const $uiSessionId = computed($uiState, state => state.sid)
+export const $uiQueueScope = computed(
+  $uiState,
+  state => JSON.stringify([state.info?.profile_name || 'default', state.sid])
+)
 
 export const getUiState = () => $uiState.get()
 

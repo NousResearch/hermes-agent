@@ -601,7 +601,16 @@ def _is_recoverable_local_backend_failure(session_info: dict[str, Any], result: 
         return False
     if session_info.get("cdp_url") or session_info.get("bb_session_id"):
         return False
-    return result.get("returncode") is not None and not result.get("success")
+    if result.get("returncode") is not None and not result.get("success"):
+        return True
+    # Wedged-daemon signature (observed on Windows): the agent-browser CLI answers with
+    # parsed JSON but its daemon-side engine died mid-command — success=false, no
+    # returncode, "Invalid response: ... daemon may be busy or unresponsive". The page is
+    # gone; only a tree-kill + respawn recovers, so treat it like the rc!=0 case above.
+    err = result.get("error")
+    if (not result.get("success")) and isinstance(err, str) and "daemon may be busy or unresponsive" in err:
+        return True
+    return False
 
 
 def _interpret_browser_command_output(command: str, stdout: str, stderr: str, returncode: int) -> dict[str, Any]:

@@ -5127,6 +5127,7 @@ export const en: Translations = {
     savingImage: 'Saving image',
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
+    warmView: 'Warm view',
     resetZoom: 'Reset zoom',
     imagePreviewFailed: 'Image preview failed',
     imageAttach: 'Image attach',

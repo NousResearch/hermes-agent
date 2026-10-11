@@ -308,22 +308,20 @@ class CLIStatusBarMixin:
             context_tokens = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
             from agent.context_breakdown import context_display_source
             snapshot["context_estimated"] = context_display_source(compressor) != "provider_usage"
-            # Display-only anchoring: on reasoning models a long tool loop replays the turn's
-            # thinking on every request, so the LAST request's prompt_tokens can exceed the
-            # durable transcript by hundreds of K and the bar sawtooths at the turn boundary.
-            # Anchor on the turn's FIRST response plus a delta estimate of appended messages.
-            # The compression trigger keeps using real last-request usage.
+            # Echoed reasoning occupies the request window, so show compaction's pressure.
+            # Other routes keep the stable turn-base display.
             try:
                 from agent.usage_anchor import anchored_context_tokens
 
                 _msgs = getattr(agent, "_session_messages", None)
+                _echo_reasoning = agent._needs_thinking_reasoning_pad()
+                anchor = getattr(
+                    agent, "_usage_anchor" if _echo_reasoning else "_turn_base_usage_anchor", None)
                 _anchored = anchored_context_tokens(
                     _msgs if isinstance(_msgs, list) else [],
-                    getattr(agent, "_turn_base_usage_anchor", None),
-                    charge_stale_thinking=False)
+                    anchor, charge_stale_thinking=_echo_reasoning)
                 if _anchored is not None and _anchored > 0:
                     context_tokens = _anchored
-                    anchor = agent._turn_base_usage_anchor
                     delta = _msgs[int(anchor["base_count"]):]
                     if delta and delta[0].get("role") == "assistant":
                         delta = delta[1:]

@@ -119,6 +119,18 @@ def generic_failure_notice(job_name: str, job_id: str, cleaned_error: str) -> st
     )
 
 
+def iteration_limit_handoff_notice(job_name: str, job_id: str, cleaned_error: str, summary: str) -> str:
+    """An iteration-limit handoff: the run did not finish, and ``summary`` is the agent's own
+    partial work (a resumable handoff). Delivered with a header so it is not read as finished work,
+    and *not* replaced by ``generic_failure_notice`` — the summary is the payload."""
+    return (
+        f"⏳ Cron '{job_name}' did not finish: {cleaned_error} "
+        f"Here is what it reached before stopping — pick it up with `hermes cron run {job_id}` "
+        f"(full log: `hermes cron runs {job_id}`, saved under {cron_output_dir_display(job_id)}).\n\n"
+        f"{summary.strip()}"
+    )
+
+
 def script_timeout_notice(job_name: str, job_id: str) -> str:
     return (
         f"⚠️ Cron '{job_name}' failed: its script timed out. No model was invoked. "

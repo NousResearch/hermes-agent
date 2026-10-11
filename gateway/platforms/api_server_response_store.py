@@ -78,7 +78,9 @@ class ResponseStore:
         # Rows written before settlement was tracked: settled iff their replay record survives.
         self._mark_settled('1', ())
         self._settle_terminal_admissions()
-        self._conn.commit()
+        # The identity bound holds from open, not only from the next write (a lowered bound or a
+        # store that crashed past it would otherwise keep every settled identity until then).
+        self._evict_and_commit()
         # Conversation history lives here: owner-only perms, once at init (not per commit).
         self._tighten_file_permissions()
 

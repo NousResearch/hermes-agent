@@ -205,7 +205,9 @@ def _provider_with_token_endpoint(tmp_path, oauth_config, token_endpoint, monkey
     # TTY, so present an interactive stdin to reach the code under test.
     _set_interactive_stdin(monkeypatch)
     mgr = MCPOAuthManager()
-    provider = mgr.get_or_build_provider("srv", "https://mcp.example.com", oauth_config)
+    provider = mgr.get_or_build_provider(
+        "srv", "https://mcp.example.com", {"redirect_port": 54321, **oauth_config}
+    )
     provider.context.oauth_metadata = SimpleNamespace(token_endpoint=token_endpoint)
     provider._initialized = True
     return provider
@@ -490,7 +492,8 @@ def _token(access, refresh, expires_in=3600):
 
 
 @pytest.mark.asyncio
-async def test_refresh_400_recovers_token_rotated_by_peer(tmp_path, monkeypatch):
+@pytest.mark.parametrize("status", [400, 429, 503])
+async def test_refresh_failure_recovers_token_rotated_by_peer(tmp_path, monkeypatch, status):
     """A peer rotated the refresh token: recover from disk instead of clearing."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     provider = _provider_with_token_endpoint(
@@ -503,7 +506,7 @@ async def test_refresh_400_recovers_token_rotated_by_peer(tmp_path, monkeypatch)
     await provider.context.storage.set_tokens(_token("A2", "R2"))
 
     resp = _fake_response(
-        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
+        status, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
     )
     result = await provider._handle_refresh_response(resp)
 
@@ -546,23 +549,57 @@ async def test_refresh_400_rejects_disk_token_without_refresh_token(
 
 @pytest.mark.asyncio
 async def test_refresh_400_still_clears_when_disk_is_same_token(tmp_path, monkeypatch):
+    """A genuine invalid_grant clears only memory and still permits SDK browser reauth."""
+    from urllib.parse import parse_qs, urlsplit
+    from tools.mcp_tool import sdk_httpx
 
-    """No peer wrote anything: the credential really is dead — clear it."""
+    httpx = sdk_httpx()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    provider = _provider_with_token_endpoint(
-        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
-    )
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    storage = provider.context.storage
+    storage.bind_issuer("https://idp.example.com")
+    await storage.set_tokens(_token("A1", "R1"))
+    await storage.set_client_info(provider.context.client_info)
+    disk_before = storage._tokens_path().read_bytes()
+    browser_calls = []
+    state = []
 
-    provider.context.current_tokens = _token("A1", "R1")
-    await provider.context.storage.set_tokens(_token("A1", "R1"))
+    async def redirect(url):
+        browser_calls.append("redirect")
+        state.append(parse_qs(urlsplit(url).query)["state"][0])
 
-    resp = _fake_response(
-        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
-    )
-    result = await provider._handle_refresh_response(resp)
+    async def callback():
+        browser_calls.append("callback")
+        return SimpleNamespace(code="auth-code", state=state[0], iss="https://idp.example.com")
 
-    assert result is False
-    assert provider.context.current_tokens is None
+    provider.context.redirect_handler = redirect
+    provider.context.callback_handler = callback
+    grants = []
+
+    def responder(request):
+        if request.method == "POST":
+            grant = parse_qs(request.content.decode())["grant_type"][0]
+            grants.append(grant)
+            if grant == "refresh_token":
+                return httpx.Response(400, request=request, json={"error": "invalid_grant"})
+            return httpx.Response(200, request=request, json=_token("A2", "R2").model_dump(mode="json"))
+        if "oauth-protected-resource" in str(request.url):
+            return httpx.Response(200, request=request, json={
+                "resource": "https://mcp.example.com", "authorization_servers": ["https://idp.example.com"]
+            })
+        if "oauth-authorization-server" in str(request.url):
+            return httpx.Response(200, request=request, json=provider.context.oauth_metadata.model_dump(mode="json"))
+        if not request.headers.get("Authorization"):
+            assert provider.context.current_tokens is None
+            assert storage._tokens_path().read_bytes() == disk_before
+            return httpx.Response(401, request=request)
+        return httpx.Response(200, request=request)
+
+    await _drive_flow(provider, responder)
+    assert grants == ["refresh_token", "authorization_code"]
+    assert browser_calls == ["redirect", "callback"]
+    assert provider.context.current_tokens.refresh_token == "R2"
 
 
 @pytest.mark.asyncio
@@ -671,9 +708,10 @@ async def _drive_flow(provider, responder):
     Yields to the event loop before answering so a concurrent flow gets to
     contend for the fence while this one is "on the wire".
     """
-    import httpx2
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
 
-    gen = provider.async_auth_flow(httpx2.Request("GET", "https://mcp.example.com/mcp"))
+    gen = provider.async_auth_flow(httpx.Request("GET", "https://mcp.example.com/mcp"))
     out = await gen.asend(None)
     while True:
         await asyncio.sleep(0)
@@ -681,6 +719,184 @@ async def _drive_flow(provider, responder):
             out = await gen.asend(responder(out))
         except StopAsyncIteration:
             return
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,retry_after,delay", [
+    (429, "3", 3),
+    (429, "900", 900),
+    (503, "date", 900),
+    (500, None, 1),
+    (503, "malformed", 1),
+    (429, "nan", 1),
+    (429, "inf", 1),
+    (429, "-inf", 1),
+])
+async def test_transient_refresh_preserves_grant_and_defers_post(
+    tmp_path, monkeypatch, caplog, status, retry_after, delay
+):
+    """Temporary outages must not trigger anonymous requests, reauth, or early refreshes."""
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+    from agent import retry_utils
+    from tools import mcp_oauth, mcp_oauth_provider
+    from tools.mcp_tool import sdk_httpx
+    from tools.mcp_tool_errors import _classify_mcp_failure
+
+    httpx = sdk_httpx()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    storage = provider.context.storage
+    provider.context.current_tokens = _token("access-secret", "refresh-secret")
+    provider.context.client_info.client_secret = "client-secret"
+    provider.context.client_info.token_endpoint_auth_method = "client_secret_post"
+    storage.bind_issuer("https://idp.example.com")
+    await storage.set_tokens(provider.context.current_tokens)
+    await storage.set_client_info(provider.context.client_info)
+    paths = (storage._tokens_path(), storage._client_info_path())
+    disk_before = [path.read_bytes() for path in paths]
+    tokens_before = provider.context.current_tokens.model_dump()
+    client_before = provider.context.client_info.model_dump()
+    clock = [100.0]
+    monkeypatch.setattr(mcp_oauth_provider, "monotonic", lambda: clock[0], raising=False)
+    fixed_now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(retry_utils, "datetime", FixedDateTime)
+    if retry_after == "date":
+        retry_after = format_datetime(fixed_now + timedelta(seconds=delay), usegmt=True)
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    browser_calls = []
+
+    async def unexpected_browser(*args):
+        browser_calls.append(args)
+        raise AssertionError("Transient refresh must not start browser authorization")
+
+    provider.context.redirect_handler = unexpected_browser
+    provider.context.callback_handler = unexpected_browser
+    request = httpx.Request("GET", "https://mcp.example.com/mcp")
+    flow = provider.async_auth_flow(request)
+    try:
+        refresh = await flow.asend(None)
+        assert refresh.method == "POST" and str(refresh.url) == endpoint
+        with pytest.raises(ConnectionError) as failed:
+            await flow.asend(httpx.Response(
+                status, headers=headers, request=refresh, content=b"response-body-secret"
+            ))
+    finally:
+        await flow.aclose()
+
+    assert _classify_mcp_failure(failed.value) == "transient"
+    assert provider.context.current_tokens.model_dump() == tokens_before
+    assert provider.context.client_info.model_dump() == client_before
+    assert [path.read_bytes() for path in paths] == disk_before
+    assert browser_calls == []
+    for secret in ("access-secret", "refresh-secret", "client-secret", "response-body-secret"):
+        assert secret not in str(failed.value) + caplog.text
+
+    # Exercise the actual file lock, not just the provider's descriptor bookkeeping.
+    fd = await mcp_oauth.acquire_refresh_fence(storage._tokens_path(), timeout=0)
+    try:
+        for elapsed in (0, delay - 0.01):
+            clock[0] = 100 + elapsed
+            with pytest.raises(ConnectionError) as deferred:
+                await _drive_flow(provider, lambda req: pytest.fail("Refresh sent before deadline"))
+            assert _classify_mcp_failure(deferred.value) == "transient"
+            async with provider.context.lock:
+                assert provider.context.current_tokens.model_dump() == tokens_before
+    finally:
+        mcp_oauth.release_refresh_fence(fd)
+    assert [path.read_bytes() for path in paths] == disk_before
+
+    clock[0] = 100 + delay
+    sent = []
+
+    def success(req):
+        sent.append(req)
+        body = _token("A2", "R2").model_dump(mode="json", exclude_none=True)
+        return httpx.Response(200, request=req, json=body if req.method == "POST" else {})
+
+    await _drive_flow(provider, success)
+    assert [req.method for req in sent] == ["POST", "GET"]
+    assert sent[-1].headers["Authorization"] == "Bearer A2"
+    assert provider.context.current_tokens.refresh_token == "R2"
+    assert (await storage.get_tokens()).refresh_token == "R2"
+    assert provider.context.client_info.model_dump() == client_before
+    assert paths[1].read_bytes() == disk_before[1]
+    assert browser_calls == []
+    fd = await mcp_oauth.acquire_refresh_fence(storage._tokens_path(), timeout=0)
+    mcp_oauth.release_refresh_fence(fd)
+
+
+@pytest.mark.asyncio
+async def test_rejected_expired_peer_preserves_expiry_through_refresh_cooldown(
+    tmp_path, monkeypatch
+):
+    """Rejecting an expired peer must never renew the held token's absolute TTL."""
+    from tools import mcp_oauth, mcp_oauth_provider
+    from tools.mcp_tool import sdk_httpx
+
+    httpx = sdk_httpx()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    template = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    # The manager reloads disk before each flow, masking a resurrected in-memory TTL.
+    provider = mcp_oauth.build_oauth_auth(
+        "srv", "https://mcp.example.com", {"redirect_port": 54321}
+    )
+    provider.context.oauth_metadata = template.context.oauth_metadata
+    provider.context.client_info = template.context.client_info
+    provider.context.current_tokens = template.context.current_tokens
+    provider.context.token_expiry_time = template.context.token_expiry_time
+    provider._initialized = True
+    old_tokens = provider.context.current_tokens
+    old_expiry = provider.context.token_expiry_time
+    storage = provider.context.storage
+    storage.bind_issuer("https://idp.example.com")
+    await storage.set_tokens(old_tokens)
+    clock = [100.0]
+    monkeypatch.setattr(mcp_oauth_provider, "monotonic", lambda: clock[0], raising=False)
+
+    async def unexpected_browser(*args):
+        pytest.fail("Rejected expired peer must not start browser authorization")
+
+    provider.context.redirect_handler = unexpected_browser
+    provider.context.callback_handler = unexpected_browser
+    flow = provider.async_auth_flow(httpx.Request("GET", "https://mcp.example.com/mcp"))
+    try:
+        refresh = await flow.asend(None)
+        assert refresh.method == "POST" and str(refresh.url) == endpoint
+        with pytest.raises(ConnectionError, match="temporarily unavailable"):
+            await flow.asend(httpx.Response(
+                503, request=refresh, headers={"Retry-After": "60"}
+            ))
+    finally:
+        await flow.aclose()
+
+    assert provider.context.current_tokens is old_tokens
+    assert provider.context.token_expiry_time == old_expiry
+    assert not provider.context.is_token_valid()
+    # A peer rotates during cooldown, but its access token is already expired.
+    await storage.set_tokens(_token("A2", "R2", expires_in=-60))
+    disk_before = storage._tokens_path().read_bytes()
+    for elapsed in (1, 59):
+        clock[0] = 100.0 + elapsed
+        flow = provider.async_auth_flow(httpx.Request("GET", "https://mcp.example.com/mcp"))
+        try:
+            with pytest.raises(ConnectionError, match="retry deadline"):
+                await flow.asend(None)
+        finally:
+            await flow.aclose()
+        assert provider.context.current_tokens is old_tokens
+        assert provider.context.token_expiry_time == old_expiry
+        assert not provider.context.is_token_valid()
+        assert storage._tokens_path().read_bytes() == disk_before
+        assert provider._hermes_fence is None
 
 
 @pytest.mark.asyncio
@@ -776,7 +992,8 @@ async def test_refresh_adopts_expired_peer_pair_and_posts_its_refresh_token(tmp_
 
 
 @pytest.mark.asyncio
-async def test_refresh_adopts_peer_pair_without_expiry_and_skips_the_post(tmp_path, monkeypatch):
+@pytest.mark.parametrize("retry_pending", [False, True])
+async def test_refresh_adopts_peer_pair_without_expiry_and_skips_the_post(tmp_path, monkeypatch, retry_pending):
     """A peer rotated to (A2, R2) with no ``expires_in`` (RFC 6749 optional): that pair is live.
 
     Treating a missing expiry as expired would POST R2 needlessly and burn a
@@ -786,6 +1003,9 @@ async def test_refresh_adopts_peer_pair_without_expiry_and_skips_the_post(tmp_pa
     endpoint = "https://idp.example.com/oauth/token"
     provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
     await provider.context.storage.set_tokens(_token("A2", "R2", expires_in=None))
+    from tools import mcp_oauth, mcp_oauth_provider
+    monkeypatch.setattr(mcp_oauth_provider, "monotonic", lambda: 100.0)
+    provider._hermes_refresh_retry_at = 1000.0 if retry_pending else 0.0
 
     posted = []
 
@@ -794,7 +1014,13 @@ async def test_refresh_adopts_peer_pair_without_expiry_and_skips_the_post(tmp_pa
             posted.append(request)
         return _fake_response(200, str(request.url), b"{}")
 
-    await _drive_flow(provider, responder)
+    fd = (await mcp_oauth.acquire_refresh_fence(provider.context.storage._tokens_path())
+          if retry_pending else None)
+    try:
+        await _drive_flow(provider, responder)
+    finally:
+        if fd is not None:
+            mcp_oauth.release_refresh_fence(fd)
 
     assert posted == [], "a live peer pair must be adopted without presenting a refresh token"
     assert (provider.context.current_tokens.access_token, provider.context.current_tokens.refresh_token) == ("A2", "R2")

@@ -9,7 +9,9 @@ modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 from __future__ import annotations
 
 import logging
+import math
 import re
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -93,6 +95,7 @@ class HermesProviderMixin:
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+        self._hermes_refresh_retry_at = 0.0
 
     async def _perform_authorization(self):
         info = self.context.client_info
@@ -298,6 +301,11 @@ class HermesProviderMixin:
         aborted) by one task, and async_auth_flow cannot interleave two
         refreshes inside one process.
         """
+        if monotonic() < self._hermes_refresh_retry_at:
+            # A live peer rotation remains usable during this provider's cooldown.
+            if await self._hermes_reload_tokens_after_refresh_failure():
+                raise _RefreshCompletedByPeer
+            raise ConnectionError("MCP OAuth refresh deferred until the retry deadline")
         self._coerce_client_secret_post()
         await self._hermes_acquire_refresh_fence()
         try:
@@ -459,6 +467,26 @@ class HermesProviderMixin:
                     "Recovered a peer-rotated refresh token instead of clearing the session"
                 )
                 return True
+            if response.status_code == 429 or 500 <= response.status_code <= 599:
+                from agent.retry_utils import parse_retry_after_seconds
+
+                raw = response.headers.get("Retry-After")
+                delay = parse_retry_after_seconds(raw)
+                # The shared parser clamps negative values to zero, which also
+                # hides NaN/-inf. Reject nonfinite numeric headers before using it.
+                try:
+                    numeric = float(raw)
+                except (TypeError, ValueError):
+                    numeric = None
+                if (delay is None or not math.isfinite(delay)
+                        or (numeric is not None and not math.isfinite(numeric))):
+                    delay = 1.0
+                self._hermes_refresh_retry_at = monotonic() + delay
+                # False would make the SDK send an anonymous resource request
+                # and enter full authorization; an auth error would park retries.
+                raise ConnectionError(
+                    f"MCP OAuth refresh temporarily unavailable (HTTP {response.status_code})"
+                )
             self.context.clear_tokens()
             return False
         from httpx import HTTPError
@@ -504,6 +532,7 @@ class HermesProviderMixin:
         # to be installed to be tested; a losing probe must leave the context
         # exactly as it found it.
         previous_tokens = self.context.current_tokens
+        previous_expiry = self.context.token_expiry_time
         if (
             self._hermes_install_disk_pair(candidate)
             and self._hermes_live_ttl()
@@ -511,7 +540,7 @@ class HermesProviderMixin:
         ):
             return True
         self.context.current_tokens = previous_tokens
-        self.context.update_token_expiry(previous_tokens)
+        self.context.token_expiry_time = previous_expiry
         return False
 
 

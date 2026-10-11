@@ -142,6 +142,17 @@ def _agent_browser_close_session(session_name: str) -> None:
     _agent_browser_session_cmd(session_name, "close", log_label="session close")
 
 
+def _endpoint_on_profile_copy(cdp_url: Optional[str]) -> bool:
+    """True when the endpoint serving a real-profile-marked session is proven to run on the
+    recorded copy dir. ``features["real_profile"]`` records launch *intent*: a stale daemon that
+    fell back to a throwaway temp profile inherits the flag and every response would claim the
+    user's profile was used (#133415). The DevToolsActivePort OUR Chrome wrote in the copy dir
+    is authoritative — fail closed on mismatch or when the dir is unknown."""
+    _bt = _origin()
+    copy_dir = _bt._real_profile_cdp_cache.get("copy_dir")
+    return bool(copy_dir and cdp_url and _cdp_on_data_dir(cdp_url, copy_dir))
+
+
 _REAL_PROFILE_CHROME_FLAGS = (
     "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check",
     "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
@@ -309,6 +320,7 @@ def _real_profile_cdp() -> tuple:
         existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
             _bt._real_profile_cdp_cache["cdp"] = existing
+            _bt._real_profile_cdp_cache["copy_dir"] = copy_dir
             return existing, None
         if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
             _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
@@ -322,6 +334,7 @@ def _real_profile_cdp() -> tuple:
             if not cdp:
                 return None, err
             _bt._real_profile_cdp_cache["cdp"] = cdp
+            _bt._real_profile_cdp_cache["copy_dir"] = copy_dir
             _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
             return cdp, None
 
@@ -338,6 +351,7 @@ def _real_profile_cdp() -> tuple:
         if not cdp:
             return None, err
         _bt._real_profile_cdp_cache["cdp"] = cdp
+        _bt._real_profile_cdp_cache["copy_dir"] = copy_dir
         _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
         return cdp, None
     finally:

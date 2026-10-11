@@ -790,7 +790,25 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     response = {"success": True, "url": final_url, "title": title}
     features = session_info.get("features") or {}
     if features.get("real_profile"):  # auditability: this ran on the user's real-profile copy-browser
-        response["used_real_profile"] = True
+        # The flag must describe the endpoint that served the request, not launch intent:
+        # a stale daemon bound to a throwaway inherits the session flag otherwise (#133415).
+        from tools.browser_tool_real_profile import _endpoint_on_profile_copy
+
+        if _endpoint_on_profile_copy(session_info.get("cdp_url")):
+            response["used_real_profile"] = True
+        else:
+            response["used_real_profile"] = False
+            response["real_profile_warning"] = (
+                "This page was NOT served by the real-profile browser: its debug endpoint does not "
+                "match the real-profile data dir (a throwaway fallback session likely took over, "
+                "see #98437/#101029). The throwaway has none of the user's cookies or logins — "
+                "retry, or turn browser.use_real_profile off."
+            )
+            # The same stale record must not advertise real_profile in stealth_features.
+            session_info = {
+                **session_info,
+                "features": {k: v for k, v in features.items() if k != "real_profile"},
+            }
     # Only a successful, non-blocked navigation becomes the task owner: failed opens
     # and blocked redirects must not retarget follow-up clicks to an irrelevant session.
     _last_active_session_key[effective_task_id] = nav_session_key
@@ -812,7 +830,10 @@ def _add_navigate_warnings(response: dict[str, Any], title: str, first_nav_sessi
         )
     if first_nav_session is not None and "features" in first_nav_session:
         features = first_nav_session["features"]
-        if not features.get("proxies"):
+        # The Browserbase proxy upsell only makes sense for cloud sessions: a local (incl.
+        # real-profile) session never touches Browserbase, so warning it about a plan
+        # upgrade is actively misleading (#133415).
+        if not features.get("local") and not features.get("proxies"):
             response["stealth_warning"] = (
                 "Running WITHOUT residential proxies. Bot detection may be more aggressive. "
                 "Consider upgrading Browserbase plan for proxy support."

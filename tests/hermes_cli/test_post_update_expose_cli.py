@@ -121,6 +121,27 @@ class TestExposeCli:
         assert _launchers.expose_cli(create=False) == {"ok": True, "written": []}
 
     @posix_only
+    def test_same_tick_repair_is_reported_written(self, fake_install, monkeypatch):
+        """A repair that lands in the same mtime tick as the entry it replaced is still a write: the
+        Blacksmith CI filesystem reported ``written: []`` for the dangling-symlink repair above."""
+        home, root = fake_install
+        real_write = _launchers._write_shell
+
+        def same_tick_write(target, command):
+            if not (target.exists() or target.is_symlink()):
+                return real_write(target, command)
+            before = target.lstat().st_mtime_ns
+            out = real_write(target, command)
+            os.utime(target, ns=(before, before), follow_symlinks=False)
+            return out
+
+        monkeypatch.setattr(_launchers, "_write_shell", same_tick_write)
+        extra = home / "bin"
+        extra.mkdir()
+        (extra / "hermes-acp").symlink_to(root / "venv/bin/hermes-acp")
+        assert _launchers.expose_cli(create=False) == {"ok": True, "written": ["hermes-acp"]}
+
+    @posix_only
     def test_writes_all_three_wrappers_fresh(self, fake_install):
         home, root = fake_install
         result = _launchers.expose_cli()

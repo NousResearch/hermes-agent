@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
+from agent.conversation_compression_call import _resolve_compress_call
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
 from agent.conversation_compression_telemetry import (
     _emit_aborted_attempt_telemetry, _emit_blocked_attempt_telemetry, _emit_bypassed_attempt_telemetry,
@@ -1741,29 +1742,6 @@ def _compression_lock_holder(agent: Any) -> str:
     return f"pid={os.getpid()}{holder_namespace_token()}:tid={threading.get_ident()}:agent={id(agent):x}:nonce={uuid.uuid4().hex[:8]}"
 
 
-def _supported_compression_kwargs(
-    compress_fn: Any, *, current_tokens: Optional[int], focus_topic: Optional[str], force: bool,
-    memory_context: str, bypass_cooldown: bool = False,
-) -> dict:
-    """Return only compression kwargs accepted by an engine callable.
-    Inspecting first keeps older plugin signatures compatible without catching ``TypeError`` and running a
-    stateful compressor twice."""
-    candidates = {"current_tokens": current_tokens, "focus_topic": focus_topic, "force": force}
-    if bypass_cooldown:
-        candidates["bypass_cooldown"] = True
-    if memory_context:
-        candidates["memory_context"] = memory_context
-    try:
-        parameters = inspect.signature(compress_fn).parameters
-    except (TypeError, ValueError):
-        # current_tokens has always been in the ContextEngine ABC; use the oldest call
-        # shape when the callable has no inspectable signature.
-        return {"current_tokens": current_tokens}
-    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
-        return candidates
-    return {name: value for name, value in candidates.items() if name in parameters}
-
-
 class _CompressionActivityHeartbeat:
     """Refresh the agent inactivity tracker while compression blocks in an aux call."""
 
@@ -2977,27 +2955,6 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
             if isinstance(_maybe_ctx, str):
                 memory_context = sanitize_memory_context(_maybe_ctx)
     return memory_context
-
-
-def _resolve_compress_call(
-    agent: Any, *, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool, memory_context: str,
-    bypass_cooldown: bool,
-) -> tuple[Callable[..., Any], dict[str, Any]]:
-    """Bind ``compress()`` and only the kwargs its signature accepts."""
-    compress_fn = agent.context_compressor.compress
-    compress_kwargs = _supported_compression_kwargs(
-        compress_fn, current_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
-        bypass_cooldown=bypass_cooldown,
-    )
-    if memory_context.strip() and "memory_context" not in compress_kwargs:
-        engine_name = getattr(agent.context_compressor, "name", type(agent.context_compressor).__name__)
-        if getattr(agent, "_last_memory_context_unsupported_engine", None) != engine_name:
-            agent._last_memory_context_unsupported_engine = engine_name
-            logger.warning(
-                "context engine %s does not accept memory_context; continuing without provider-supplied summary context",
-                engine_name,
-            )
-    return compress_fn, compress_kwargs
 
 
 def _run_summary_dispatch(

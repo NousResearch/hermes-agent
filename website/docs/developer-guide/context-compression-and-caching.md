@@ -296,6 +296,7 @@ compression:
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
   codex_responses_native: false  # Opt-in server compaction: gpt-5.6 on OpenAI/Codex; Astra on Codex OAuth
   codex_responses_compact_threshold: null  # Server compaction trigger; only used when codex_responses_native: true
+  anthropic_native: false    # Opt-in: Anthropic on-demand compaction writes the summary (direct Anthropic route)
   in_place: true             # Compact on the same session id, no rotation (default: true)
 
 # Summarization model/provider configured under auxiliary:
@@ -324,6 +325,7 @@ auxiliary:
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
 | `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription, and `gpt-6-astra` (including its `-900k` picker alias) on official Codex OAuth (see below) |
 | `codex_responses_compact_threshold` | `null` | `null` or positive integer | Server-side compaction trigger, read **only when `codex_responses_native: true`** — it never changes when local compression fires; the local trigger is `threshold` (ratio) capped by `threshold_tokens`. `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
+| `anthropic_native` | `false` | bool | Opt in to Anthropic on-demand compaction as the summary writer on the direct Anthropic Messages route, for models that support it. The conversation's own model summarizes the last request it answered, reading that request's prompt cache; the head/summary/tail rewrite is unchanged. Any other route, a stale cache or a failure uses `auxiliary.compression` (see below) |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
 
 ### In-place compaction (single stable session id)
@@ -516,6 +518,58 @@ threshold such as 200,000. Invalid values select automatic behavior. If no
 usable local trigger exists, automatic mode uses 200,000. The provider minimum
 is 1,024 tokens, so an unusually small local trigger at or below that floor
 cannot preserve strict native first ordering.
+
+### Anthropic on-demand compaction as the summary writer
+
+Anthropic's Messages API can write a conversation summary itself: a request
+that carries `compaction: {type: "summarize", instructions}` (beta
+`compact-2026-09-04`) returns a single `compaction` block whose readable text
+summarizes every message of the request, earlier thinking included. With
+`compression.anthropic_native: true`, Hermes uses that block's text as the
+compression summary instead of calling the auxiliary summarizer.
+
+The compaction request is **exactly the last request the main model answered**
+(same `system`, `tools`, `messages` and thinking settings): that request just
+wrote the prompt cache, so the summary call reads the conversation back from the
+cache rather than sending it to a second model. Only fields the API rejects on a
+compaction request are removed (`stream`, `stop_sequences`, a forced
+`tool_choice`, `output_config.format`, `context_management`, a task-budget
+`remaining`); `output_config.effort` is lowered to `low` and `max_tokens` is set
+for the summary, neither of which breaks the cache read. The `instructions` are
+Hermes' own checkpoint template (same sections as the auxiliary prompt), so the
+summary has the usual structure; the post-processing (redaction, pruned-skill
+markers, task snapshot grounding) is unchanged.
+
+Hermes keeps its usual rewrite: protected head, summary, verbatim tail. The
+signed block itself is not replayed, so the session keeps plain-text history
+and can still fall back to another provider. The summary covers the whole
+captured request, so it also describes the recent turns the tail keeps verbatim.
+
+The native path is used only when every condition holds; otherwise the
+auxiliary summarizer runs as before, in the same compression attempt:
+
+- **Route and model:** direct Anthropic Messages (`api.anthropic.com`, API key
+  or Claude subscription OAuth) and a model documented with on-demand
+  compaction: Opus and Sonnet 4.6+, Haiku 5.5, Fable, Mythos. Third-party
+  Anthropic-compatible endpoints and Bedrock never see the field.
+- **Prompt caching on** (`prompt_caching.cache_ttl` 5m or 1h), and the captured
+  request younger than that lifetime minus a 60-second margin.
+- **Same history:** the captured request belongs to the current session and
+  model, its history rows are unchanged (role, content, tool calls), and every
+  row added since it (the reply and its tool results) falls inside the tail
+  Hermes keeps verbatim. A turn-start compaction after a long pause, a rewritten
+  history or `/compress` with a short tail therefore uses the auxiliary path.
+- **A usable answer:** `stop_reason` `compaction` with non-empty text. A
+  truncated summary, a refusal, an HTTP error or an oversized `instructions`
+  string (16,384 characters) falls back; a structured 400 rejection of the
+  compaction field disables the native path for the rest of the session.
+
+The summary call is billed to the session like any auxiliary compression call
+(the API reports it in `usage.iterations`; the top-level counters are zero).
+Measured on Opus 5.5: a compaction between turns read the whole conversation
+from the cache (64,198 of 64,202 tokens); one inside a tool loop read the
+conversation up to the running tool round and wrote that round to the cache
+(32,631 read, 17,234 written).
 
 ### Computed Values (for a 200K context model at defaults)
 

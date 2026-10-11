@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.agent_init_compression import _compression_codex_settings
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
@@ -1487,32 +1488,6 @@ def _compression_threshold(agent, cfg: dict[str, Any]) -> tuple[float, bool]:
     return threshold, notice_enabled
 
 
-def _compression_codex_settings(cfg: dict[str, Any]) -> tuple[str, bool, Optional[int]]:
-    """``codex_app_server_auto`` / ``codex_responses_native`` / ``codex_responses_compact_threshold``."""
-    app_server_auto = str(cfg.get("codex_app_server_auto", "native") or "native").lower()
-    if app_server_auto not in {"native", "hermes", "off"}:
-        _ra().logger.warning(
-            "Invalid compression.codex_app_server_auto=%r; using 'native'. "
-            "Valid values are: native, hermes, off.",
-            app_server_auto,
-        )
-        app_server_auto = "native"
-    # Native Responses server-side compaction (opt-in; gate in agent/native_compaction.py).
-    # Truthy coercion so "false"/"off" strings stay disabled.
-    responses_native = is_truthy_value(cfg.get("codex_responses_native", False))
-    _raw = cfg.get("codex_responses_compact_threshold")
-    compact_threshold = None
-    if _raw is not None:
-        compact_threshold = _positive_int(_raw, reject=(bool, float))
-        if compact_threshold is None:
-            _ra().logger.warning(
-                "Invalid compression.codex_responses_compact_threshold=%r; "
-                "using the automatic threshold derived from local compression.",
-                _raw,
-            )
-    return app_server_auto, responses_native, compact_threshold
-
-
 def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     """Parse the ``compression`` section. Defaults here MUST match DEFAULT_CONFIG."""
     cfg = _cfg_dict(_agent_cfg, "compression")
@@ -1587,6 +1562,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_app_server_auto=app_server_auto,
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
+        anthropic_native=is_truthy_value(cfg.get("anthropic_native", False)),  # gate: anthropic_native_compaction.py
         idle_compact_after_seconds=idle_compact_after_seconds,
     )
 
@@ -2030,6 +2006,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     agent.codex_app_server_auto_compaction = cs.codex_app_server_auto
     agent.codex_responses_native_compaction = cs.codex_responses_native
     agent.codex_responses_compact_threshold = cs.codex_responses_compact_threshold
+    agent.anthropic_native_compaction = cs.anthropic_native
     from agent.native_compaction import resolve_native_compaction_capabilities
     agent.runtime_capabilities = resolve_native_compaction_capabilities(
         model=agent.model, base_url=agent.base_url, provider=agent.provider,

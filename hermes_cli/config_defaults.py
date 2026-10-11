@@ -672,9 +672,9 @@ DEFAULT_CONFIG = {
         # Hermes' summarizer cannot shrink it. native = codex decides; hermes = Hermes' threshold
         # triggers thread/compact/start; off = never auto-trigger.
         "codex_app_server_auto": "native",
-        # Opt in to OpenAI server-side compaction on the Responses API. Only gpt-5.6-family on
-        # api.openai.com or the Codex backend; local compression stays as fallback.
-        "codex_responses_native": False,
+        # Opt-in provider-native compaction, local compression staying the fallback: OpenAI Responses server-side
+        # (gpt-5.6 on OpenAI/Codex, Astra on Codex OAuth); Anthropic on-demand summary (direct route, cached).
+        "codex_responses_native": False, "anthropic_native": False,
         # Absolute server compaction trigger (input tokens). None follows the local trigger with a
         # safety margin; explicit values only clamp downward so the server goes first.
         "codex_responses_compact_threshold": None,

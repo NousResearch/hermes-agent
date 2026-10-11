@@ -201,6 +201,9 @@ def check_api_response(
     if _usage_outcome.rearmed:
         _preflight_compression_blocked = False
         _last_preflight_pressure = None
+    # The answered request is the cache-warm source of a native compaction summary (opt-in, no-op otherwise).
+    from agent.anthropic_native_compaction import record_compaction_seed
+    record_compaction_seed(agent, api_kwargs, messages)
 
     _retry.has_retried_429 = False
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.

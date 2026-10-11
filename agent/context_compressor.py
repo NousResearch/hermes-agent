@@ -32,6 +32,7 @@ from agent.auxiliary_client import (
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
+from agent.context_compressor_native import NativeSummaryMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -2147,7 +2148,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 
 
 class ContextCompressor(
-    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin, ContextEngine,
+    SummaryDispatchMixin, NativeSummaryMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin, ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
@@ -4013,7 +4014,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
         prompt = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
         try:
-            content = self._call_summary_llm(prompt, prompt_started_at)
+            content = self._native_first_summary(prompt, prompt_started_at, summary_budget, memory_context, has_user_turn)
             # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
             from agent.agent_runtime_helpers import strip_think_blocks
             content = strip_think_blocks(None, content).strip() or content
@@ -4094,12 +4095,7 @@ Use this exact structure:
 {_template_sections}"""
 
         # Focus guidance goes last so it takes precedence.
-        if focus_topic:
-            prompt += f"""
-
-FOCUS TOPIC: "{focus_topic}"
-This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
-        return prompt
+        return prompt + self._focus_guidance(focus_topic)
 
     @staticmethod
     def _temporal_anchoring_rule() -> str:
@@ -5533,7 +5529,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def compress(
         self, messages: list[dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None,
-        force: bool = False, memory_context: str = "", bypass_cooldown: bool = False,
+        force: bool = False, memory_context: str = "", bypass_cooldown: bool = False, native_summary: Any = None,
     ) -> list[dict[str, Any]]:
         """Summarize the middle turns: prune tool-result bodies (tool-call args untouched), protect head and a
         token-budget tail from the pruned copy, summarize, then clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
@@ -5549,12 +5545,14 @@ Write only the summary body. Do not include any preamble or prefix."""
         bypass_cooldown: If True, run the summary LLM even while the summary-failure cooldown is armed,
         WITHOUT clearing it (#100661). Set by provider-proven overflow recovery, which is already bounded by
         the caller's attempt budget.
+        native_summary: Optional provider summary source tried first (``context_compressor_native``).
         """
         # A detached stale attempt must not even reset per-call state the fallback owns. Staleness that
         # arises mid-compress is caught by the write-point gates below; this covers stale-at-entry.
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
+        original_messages = messages
         telemetry = self._begin_compress_attempt(current_tokens, force)
         telemetry["has_focus_topic"] = bool(focus_topic)
         n_messages = len(messages)
@@ -5625,8 +5623,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         )
         summary = None  # pre-LLM summary skip (feasibility or benched model): no LLM call; Phase 4 inserts the deterministic fallback
         if not feasibility_skip:
-            summary = self._summarize_window(
-                messages, turns_to_summarize, scan, focus_topic, memory_context, bypass_cooldown,
+            summary = self._native_first_summarize_window(
+                native_summary, original_messages, messages, max(compress_end, scan.tail_start), turns_to_summarize, scan,
+                focus_topic, memory_context, bypass_cooldown,
             )
             if not summary and self._abort_on_summary_failure(
                 telemetry, compress_end - compress_start, scan.previous_summary_before,

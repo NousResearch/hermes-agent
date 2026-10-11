@@ -1834,6 +1834,13 @@ class SlackAdapter(BasePlatformAdapter):
                 except Exception:  # pragma: no cover - defensive logging
                     logger.debug("[Slack] Cleanup after failed start raised", exc_info=True)
                 raise
+            # Publish the outcome. The runner stamps `_runtime_status_platform_key` as
+            # ``<profile>:<platform>`` on a multiplexed adapter, and every other adapter reports its
+            # connect through this same base helper; without it a served profile's Slack never
+            # appears in gateway_state.json, so the dashboard answers "the gateway has not reported a
+            # connection yet. Restart the gateway." while Socket Mode is up (run_startup's
+            # connecting/connected stamps are primary-only).
+            self._mark_connected()
             logger.info("[Slack] Socket Mode connected (%d workspace(s))", len(self._team_clients))
             self._hint_allow_bots()
             return True

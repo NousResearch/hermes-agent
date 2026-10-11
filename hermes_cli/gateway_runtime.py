@@ -174,7 +174,12 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
         served = _served_by_multiplexer(home, timeout=timeout)
         if served is not None:
             return served
-        return GatewayDiscovery(missing_owner_state(home))
+        state = missing_owner_state(home)
+        if state == "inaccessible" and os.name != "nt":
+            from gateway.runtime_ownership import unreadable_lock_recovery
+            if detail := unreadable_lock_recovery(home / "gateway.lock"):
+                return GatewayDiscovery(state, reason_code="foreign_stale_lock", detail=detail)
+        return GatewayDiscovery(state)
     except TimeoutError:
         return GatewayDiscovery("inaccessible", reason_code="control_timeout")
     except DiscoveryError as exc:

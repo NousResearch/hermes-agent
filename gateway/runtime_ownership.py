@@ -80,7 +80,10 @@ def _unlink_stale_lock(path: Path) -> bool:
     try:
         probe = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | os.O_NONBLOCK)
     except PermissionError:
-        return _inode_locked_per_proc(info.st_ino) is False and _unlink_if_same(path, info)
+        held = _inode_locked_per_proc(info.st_ino)
+        if held is None:  # no /proc/locks (macOS/BSD): nothing can prove it unheld, so never guess
+            raise PermissionError(foreign_lock_recovery(path)) from None
+        return held is False and _unlink_if_same(path, info)
     import fcntl
     try:
         if not _same_inode(os.fstat(probe), info):
@@ -93,6 +96,22 @@ def _unlink_stale_lock(path: Path) -> bool:
         return _unlink_if_same(path, info)
     finally:
         os.close(probe)
+
+
+def foreign_lock_recovery(path: Path) -> str:
+    return (f'foreign_stale_lock: {path} is not readable by this user (left by a gateway run as root?) '
+            f'and cannot be proven unheld. If `sudo lsof {path}` lists no process, run `sudo rm {path}`.')
+
+
+def unreadable_lock_recovery(path: Path) -> str | None:
+    """The recovery a client prints for a ``gateway.lock`` it cannot even open read-only."""
+    try:
+        os.close(os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | os.O_NONBLOCK))
+    except PermissionError:
+        return foreign_lock_recovery(path)
+    except OSError:
+        pass
+    return None
 
 
 def _unlink_if_same(path: Path, info) -> bool:

@@ -108,7 +108,7 @@ class TestUpdateCommandGatewayFlag:
 
         mock_popen = MagicMock()
         with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
+             patch("gateway.slash_commands.__file__", fake_file), \
              patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
              patch("subprocess.Popen", mock_popen):
             await runner._handle_update_command(event)

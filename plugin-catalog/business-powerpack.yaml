@@ -1,0 +1,22 @@
+name: business-powerpack
+repo: https://github.com/web3blind/hermes-business-powerpack
+sha: 012a5f473125af5118fce68515efabd7d26c7ca9
+title: Hermes Business Powerpack
+description: 'Owner-invoked Telegram Business agent with tools, text and voice wake, reply-attachment analysis, voice transcription, and story publishing.'
+maintainer: web3blind
+tier: community
+category: platform
+docs_url: https://github.com/web3blind/hermes-business-powerpack#readme
+version: "0.3.5"
+platforms:
+  - linux
+known_issues:
+  - 'Beta: replies are sent on behalf of the owner and are visible to the conversation partner; invoke deliberately.'
+  - 'Restart after upgrades. Busy-route requests are skipped; ambiguous outcomes are not automatically retried.'
+  - 'Requires compatible Hermes native CLI/profile interfaces, configured STT for voice, and FFmpeg/libx265 for video stories.'
+capabilities:
+  provides_tools:
+    - business_story
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1608,57 +1608,6 @@ def _warn_retired_xai_models() -> None:
         pass
 
 
-def _start_chat_background_prefetch() -> None:
-    """Kick off the update-check/banner prefetch and the bundled-skills sync.
-
-    Update check is opt-in on Termux (it imports rich/prompt_toolkit in the
-    foreground and competes for CPU on single-core devices). The skills sync
-    is idempotent and hash-gated (~120-170ms of rglob/hashing) so it normally
-    runs in a daemon thread — skill loading happens at agent init, long after.
-    The ONE exception is an unseeded ~/.hermes/skills: there the banner
-    prefetch races the sync and caches an empty index ("No skills installed"
-    on the very first launch), so the first run syncs in the foreground and
-    drops the banner's skills cache.
-    """
-    if _termux_should_prefetch_update_check():
-        try:
-            from hermes_cli.banner import prefetch_banner_data, prefetch_update_check
-
-            prefetch_update_check()
-            prefetch_banner_data()  # git banner state + skills index off-thread
-        except Exception:
-            pass
-
-    def _skills_dir_is_unseeded() -> bool:
-        try:
-            from hermes_cli.config import get_hermes_home
-            skills_dir = Path(get_hermes_home()) / "skills"
-            if not skills_dir.is_dir():
-                return True
-            return next(skills_dir.rglob("SKILL.md"), None) is None
-        except Exception:
-            return False
-
-    def _skills_sync_bg() -> None:
-        try:
-            _sync_bundled_skills_for_startup()
-        except Exception:
-            pass
-
-    if _skills_dir_is_unseeded():
-        _skills_sync_bg()
-        # Drop the banner's possibly-empty skills cache so it recomputes.
-        try:
-            import hermes_cli.banner as _banner_mod
-            _banner_mod._available_skills_cache = None
-        except Exception:
-            pass
-    else:
-        threading.Thread(
-            target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
-        ).start()
-
-
 def _first_run_setup_guard(args) -> None:
     """No provider configured: offer `hermes setup` (TTY) or exit 1 with guidance."""
     print()
@@ -1756,7 +1705,9 @@ def cmd_chat(args):
         _first_run_setup_guard(args)
         return
 
-    _start_chat_background_prefetch()
+    from hermes_cli.main_startup import prepare_chat_startup
+
+    prepare_chat_startup(args, use_tui=use_tui)
 
     # --yolo: bypass all dangerous command approvals. main() also sets this
     # before _prepare_agent_startup() — the authoritative site, since it runs
@@ -2941,8 +2892,12 @@ def _prepare_agent_startup(args) -> None:
         return
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
-    if not _is_tui_chat_launch(args):
-        # The TUI backend does its own discovery; the launcher only spawns Node.
+    from hermes_cli.main_startup import is_native_interactive_chat
+
+    _use_tui = _is_tui_chat_launch(args)
+    if not _use_tui and not is_native_interactive_chat(args, use_tui=_use_tui):
+        # Interactive CLI consumers discover synchronously after the heavy imports;
+        # a speculative scan here competes with them for the import lock and GIL.
         try:
             from hermes_cli.plugins import start_background_plugin_discovery
 

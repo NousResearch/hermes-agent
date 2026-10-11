@@ -13,6 +13,8 @@ from argparse import Namespace
 import sys
 import types
 
+import pytest
+
 from hermes_cli import main as main_mod
 from hermes_cli import mcp_startup
 
@@ -68,7 +70,26 @@ def test_plugin_discovery_skipped_for_tui_launch(monkeypatch):
     )
 
 
-def test_plugin_discovery_runs_for_plain_chat(monkeypatch):
+@pytest.mark.parametrize("overrides, speculative", [
+    ({"command": None}, False),
+    ({"command": "chat"}, False),
+    ({"command": "chat", "query": "hello"}, True),
+    ({"command": "chat", "query_file": "prompt.txt"}, True),
+    ({"command": None, "oneshot": "hello"}, True),
+    ({"command": "acp"}, True),
+    ({"command": "rl"}, True),
+    ({"command": "gateway", "gateway_command": "run"}, True),
+    ({"command": "cron", "cron_command": "tick"}, True),
+])
+def test_plugin_discovery_waits_for_interactive_chat_consumer(monkeypatch, overrides, speculative):
     calls = _install_discover_spy(monkeypatch)
-    main_mod._prepare_agent_startup(_args(tui=False, command="chat"))
-    assert calls == ["discover"]
+    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: False)
+    main_mod._prepare_agent_startup(_args(tui=False, **overrides))
+    assert calls == (["discover"] if speculative else []), (
+        "Only interactive CLI imports must avoid speculative plugin scanning"
+    )
+
+    # Discovery is deferred, not disabled: synchronous consumers still get it.
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+    assert calls[-1] == "discover"

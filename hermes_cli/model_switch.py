@@ -393,13 +393,21 @@ def resolve_startup_model_route(
     # the model name and the whole prompt goes to its endpoint before it 404s (#73943). The
     # configured ids come from the caller's config, the same source the ``/`` branch below uses.
     from hermes_cli.models import parse_model_input
-    from hermes_cli.providers import custom_provider_slug
+    from hermes_cli.providers import custom_provider_slug, normalize_provider
     custom_ids = {custom_provider_slug(str(entry.get("name") or key), str(key))
                   for key, entry in (user_providers or {}).items() if isinstance(entry, dict)}
     custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
                       for entry in (custom_providers or []) if isinstance(entry, dict) and _clean(entry.get("name")))
     qualified_provider, qualified_model = parse_model_input(raw, "", custom_ids=custom_ids)
     if qualified_provider:
+        # An explicitly pinned, *configured* custom provider owns the route. A bare vendor prefix
+        # that maps to a different, non-custom provider (e.g. ``hf:`` on a Synthetic endpoint) is a
+        # passthrough tag that endpoint requires, not a provider selector — so it must not outrank
+        # the pin. Leave the model string (prefix intact) for the config pin + runtime resolver,
+        # which already routes ``custom:<name>`` + ``hf:<model>`` correctly. See #125578.
+        if current_provider and normalize_provider(current_provider) in custom_ids \
+                and not normalize_provider(qualified_provider).startswith("custom"):
+            return None
         return StartupModelRoute(model=qualified_model, provider=qualified_provider)
     if "/" not in raw:
         return None

@@ -214,7 +214,7 @@ def test_gated_api_rejects_opaque_bearer_with_401_not_503(_gated_nous):
 
 
 def test_gated_api_rejects_opaque_cookie_with_401_not_503(_gated_nous):
-    _gated_nous.cookies.set(SESSION_AT_COOKIE, OPAQUE_PEER_KEY)
+    _gated_nous.cookies.set(f"__Host-{SESSION_AT_COOKIE}", OPAQUE_PEER_KEY)
     r = _gated_nous.get("/api/auth/me")
     assert r.status_code != 503, r.text
     assert "unreachable" not in r.text.lower()

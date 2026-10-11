@@ -30,8 +30,10 @@ gives the exact rewrite rules and honest limits.
 - String literals inside formulas (`"See B2"`) are never rewritten.
 - Function names that look like cells (`LOG10(...)`) are not touched
   (a reference is never followed by `(`).
-- Whole-row/column refs (`B:B`, `2:2`) pass through unchanged — Excel
-  semantics keep them valid across inserts within the span.
+- Whole-row/column refs (`B:B`, `2:2`) are shifted for operations on
+  their own axis and pass through unchanged for the other axis. A span
+  grows when an insertion lands inside it and becomes `#REF!` when a
+  deletion removes it completely.
 
 ## Shift semantics
 

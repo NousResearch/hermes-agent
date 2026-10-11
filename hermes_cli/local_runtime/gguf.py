@@ -19,6 +19,11 @@ _GGUF_MAGIC = b"GGUF"
 # Split GGUF naming: "<stem>-00001-of-00003.gguf"; the part suffix is not part of the model id.
 SPLIT_PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 _PART_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
+
+# Companion assets staged next to the model they serve (vision projectors, TTS audio codecs). They
+# are valid GGUFs with no chat surface of their own, so a name-only predicate keeps them out of
+# servable listings.
+COMPANION_ASSET_RE = re.compile(r"^(mmproj|.*-mmproj|projector)-", re.IGNORECASE)
 # Same tensor selection as context_policy's per-block FFN -ot override.
 _FFN_WEIGHT = re.compile(r"blk\.(\d+)\.ffn_.*\.weight")
 

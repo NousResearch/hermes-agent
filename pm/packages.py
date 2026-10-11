@@ -683,9 +683,10 @@ class Git(BinaryPackage):
     """Windows only: Git for Windows carries the bash.exe contract. POSIX
     uses the system git - a deliberate gap, not an oversight. The pin is the
     PortableGit self-extracting 7z: it carries its own extractor (stock
-    Windows 10 tar.exe has no bzip2), shows a progress window (-y only drops
-    prompts), and runs the vendor post-install, so the staged tree is
-    post-install output."""
+    Windows 10 tar.exe has no bzip2) and shows a progress window (-y only
+    drops prompts). Under -y it does NOT run the vendor post-install, so
+    unpack() runs /etc/post-install/*.post itself: the staged tree is
+    post-install output, the bytes Git Bash leaves behind on first use."""
 
     name = "git"
     optional = True
@@ -757,6 +758,43 @@ class Git(BinaryPackage):
                 "nothing under -y; usual causes: disk full, path-length limit, "
                 "antivirus lock)",
             )
+        self._run_post_install(staged)
+
+    def _run_post_install(self, staged: Path) -> None:
+        """Run the vendor's /etc/post-install/*.post scripts in the staged tree.
+
+        Otherwise Git Bash's /etc/profile runs them on the first login shell, inside
+        the published entry: they add etc/{hosts,mtab,networks,protocols,services}
+        and mingw64/libexec/git-core/dlls-copied.exe, and 99-post-install-cleanup
+        deletes etc/post-install/. The realized bytes then never match the digest
+        recorded at install, so `hermes pm doctor` reports git as corrupt and every
+        explicit install (`hermes update`) re-downloads and replaces it.
+
+        Same loop as the vendor's post-install.bat, with /mingw64/bin on PATH:
+        13-copy-dlls.post needs git. Best effort: a failure here leaves the entry
+        exactly as before this step existed."""
+        bash = staged / "usr" / "bin" / "bash.exe"
+        if not (staged / "etc" / "post-install").is_dir() or not bash.is_file():
+            return
+        script = (
+            "export PATH=/mingw64/bin:/usr/bin:$PATH SYSCONFDIR=/etc; "
+            "for p in $(export LC_COLLATE=C; echo /etc/post-install/*.post); "
+            'do test -e "$p" && . "$p"; done'
+        )
+        try:
+            proc = subprocess.run(
+                [str(bash), "--norc", "-c", script],
+                cwd=staged,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=300,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            LOG.warning("PortableGit post-install did not complete: %s", exc)
+            return
+        if proc.returncode or (staged / "etc" / "post-install").exists():
+            LOG.warning("PortableGit post-install did not complete (exit %s)", proc.returncode)
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}

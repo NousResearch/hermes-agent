@@ -835,6 +835,26 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (49, _migrate_to_49),
     # 49 → 50: security.tirith_* dropped; the bundled scanner is gone (see _migrate_to_50).
     (50, _migrate_to_50),
+    # 50 → 51: two timeout defaults changed after installs seeded with the old values. The v30-era
+    # config writer persisted the whole DEFAULT_CONFIG of the day, so a value that is still exactly
+    # the old default is the template copied, never a choice — it is dropped and follows the
+    # current default at read time; any other explicit value is preserved. approvals.mode
+    # (manual → smart) is deliberately NOT rewritten: it is a security posture the user should
+    # change on purpose (`hermes config unset approvals.mode`).
+    (51, _rewrite_stale_default(
+        section="approvals", key="timeout", old=60, new=None,
+        added="removed approvals.timeout: 60 (the old default)",
+        message=(
+            "  ✓ Removed approvals.timeout: 60 — the old default, copied into config.yaml by the "
+            "early setup wizard. Approval prompts now wait the default 300s (see #136754). Set "
+            "approvals.timeout to a number to pin it again."))),
+    (51, _rewrite_stale_default(
+        section="agent", key="clarify_timeout", old=600, new=None,
+        added="removed agent.clarify_timeout: 600 (the old default)",
+        message=(
+            "  ✓ Removed agent.clarify_timeout: 600 — the old default, copied into config.yaml by the "
+            "early setup wizard. Clarify prompts now wait the default 3600s (see #136754). Set "
+            "agent.clarify_timeout to a number to pin it again."))),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

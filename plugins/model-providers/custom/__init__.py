@@ -4,7 +4,13 @@ provider="custom" (Ollama, vLLM, llama.cpp, GLM-5.2 on ARK, …)."""
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
+from agent.reasoning_effort import (
+    OPENAI_COMPAT_WIRE_EFFORTS,
+    QWEN38_EFFORTS,
+    QWEN38_OVERRIDES,
+    clamp_effort,
+    is_qwen38_model,
+)
 from providers import register_provider
 from providers.base import ProviderProfile
 from utils import base_url_host_matches
@@ -40,7 +46,14 @@ class CustomProfile(ProviderProfile):
         unchanged (#114249). A custom endpoint's vocabulary is undiscoverable, so
         the widest OpenAI-compat set is the honest ceiling; ``ultra`` still clamps
         to ``max`` via the shared ``clamp_effort`` policy.
+
+        Exception: a Qwen3.8 GGUF's embedded chat template validates
+        ``reasoning_effort`` against low/medium/xhigh only and turns ``high``/``max``
+        into a Jinja exception → HTTP 500 (#136324), so that family declares the
+        template's own set instead.
         """
+        if is_qwen38_model(model):
+            return QWEN38_EFFORTS
         return OPENAI_COMPAT_WIRE_EFFORTS
 
     def default_reasoning_config(self, model: str | None = None) -> dict | None:
@@ -80,7 +93,13 @@ class CustomProfile(ProviderProfile):
                 # "none" / "default"; any graded level ("medium", "high") 400s (#75089).
                 top_level["reasoning_effort"] = "default"
             elif effort:
-                top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
+                # Qwen3.8's GGUF-embedded template 500s on high/max (it only names
+                # low/medium/xhigh), so that family clamps to the template's own
+                # vocabulary — every other endpoint keeps the widest wire set.
+                if is_qwen38_model(str(ctx.get("model") or "")):
+                    top_level["reasoning_effort"] = clamp_effort(effort, QWEN38_EFFORTS, QWEN38_OVERRIDES)
+                else:
+                    top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
         return extra_body, top_level
 
     def fetch_models(

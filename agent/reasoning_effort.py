@@ -19,6 +19,10 @@ from typing import Optional, Sequence
 # From #76427 by @ruizanthony.
 _KIMI_K3_SLUG_RE = re.compile(r"(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)")
 
+#: Matches ``qwen3.8`` as a family slug (``Qwen3.8-27B-UD-Q4_K_M`` catalog names) without
+#: swallowing a later minor (``qwen3.85``).
+_QWEN38_SLUG_RE = re.compile(r"(?:^|[^a-z0-9.])qwen3\.8(?:[.-]|$)")
+
 # Canonical low→high ordering for nearest-level clamping. Includes "none" so an explicit
 # disable can be clamped when a provider publishes it as a level. ``ultra`` is Hermes-internal
 # (the Codex product tier): no wire accepts it, every declared set stops at ``max``.
@@ -89,6 +93,14 @@ OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 #: Meta Model API (Muse): rejects ``none``.
 META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
+#: Qwen3.8 chat template (embedded in the GGUFs llama.cpp and template-reusing servers serve,
+#: e.g. ``Qwen3.8-27B-UD-Q4_K_M``): validates ``reasoning_effort`` against exactly
+#: xhigh (its default/top tier), medium, low — ``high`` and ``max`` raise a Jinja exception
+#: and the request 500s on every retry (#136324). The template's high tier is *named* xhigh,
+#: so both rejected levels round to it rather than down to medium.
+QWEN38_EFFORTS: tuple[str, ...] = ("low", "medium", "xhigh")
+QWEN38_OVERRIDES: dict[str, str] = {"high": "xhigh", "max": "xhigh"}
+
 
 def is_astra_model(model: Optional[str]) -> bool:
     """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.
@@ -118,6 +130,13 @@ def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """
     m = (model or "").strip().lower().split("/")[-1]
     return KIMI_K3_EFFORTS if _KIMI_K3_SLUG_RE.search(m) else KIMI_K2_EFFORTS
+
+
+def is_qwen38_model(model: Optional[str]) -> bool:
+    """A Qwen3.8-family slug (GGUF catalog names like ``Qwen3.8-27B-UD-Q4_K_M``), with or
+    without a ``vendor/`` prefix — the family whose chat template validates
+    ``reasoning_effort`` against low/medium/xhigh only (#136324)."""
+    return bool(_QWEN38_SLUG_RE.search((model or "").strip().lower().rsplit("/", 1)[-1]))
 
 
 def clamp_effort(

@@ -600,11 +600,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
         if _cmd_def_inner:
-            # /status and /context are intentionally pre-gate so users always see session state.
+            # /status is the read-only pre-gate floor. /context mirrors idle actor policy.
             if _cmd_def_inner.name == "status":
                 return True, await self._handle_status_command(event)
-            if _cmd_def_inner.name == "context":
-                return True, await self._handle_context_command(event)
             # Slash access control mirrors the cold-path gate so non-admins can't bypass gating
             # just because an agent is busy. /help and /whoami are the always-allowed floor.
             _denied = self._check_slash_access(source_for_event_actor(event), _cmd_def_inner.name)

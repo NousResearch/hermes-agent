@@ -472,6 +472,56 @@ async def test_running_agent_fastpath_uses_event_actor_on_shared_source():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [False, True])
+async def test_context_requires_actor_on_shared_route_even_while_busy(busy):
+    runner = _make_runner(platform=Platform.TELEGRAM)
+    source = _make_source(
+        platform=Platform.TELEGRAM, user_id=None, chat_type="group", chat_id="-100",
+    )
+    if busy:
+        key = build_session_key(source)
+        runner._running_agents[key] = MagicMock()
+        runner._running_agents_ts[key] = 0
+    runner._handle_context_command = AsyncMock(return_value="context-handled")
+
+    denied = await runner._handle_message(MessageEvent(
+        text="/context", source=source, message_id="context-anonymous",
+    ))
+
+    assert "requires an identifiable user" in (denied or "")
+    runner._handle_context_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [False, True])
+async def test_context_uses_group_actor_policy_even_while_busy(busy):
+    runner = _make_runner(
+        platform=Platform.TELEGRAM,
+        platform_extra={"group_allow_admin_from": ["111"], "group_user_allowed_commands": []},
+    )
+    source = _make_source(
+        platform=Platform.TELEGRAM, user_id=None, chat_type="group", chat_id="-100",
+    )
+    if busy:
+        key = build_session_key(source)
+        runner._running_agents[key] = MagicMock()
+        runner._running_agents_ts[key] = 0
+    runner._handle_context_command = AsyncMock(return_value="context-handled")
+
+    denied = await runner._handle_message(MessageEvent(
+        text="/context", source=source, user_id="222", message_id="context-nonadmin",
+    ))
+    assert "⛔" in (denied or "")
+    runner._handle_context_command.assert_not_awaited()
+
+    allowed = await runner._handle_message(MessageEvent(
+        text="/context", source=source, user_id="111", message_id="context-admin",
+    ))
+    assert allowed == "context-handled"
+    runner._handle_context_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_quick_command_sink_uses_event_actor_on_shared_source():
     """The quick-command exec sink (#44727 gate) must authorize by the
     rehydrated MessageEvent actor on a shared routing source, not see every

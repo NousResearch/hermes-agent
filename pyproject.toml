@@ -673,6 +673,11 @@ exclude-newer = "14 days"
 # environment resolves under the same cutoff ("Failed to resolve
 # requirements from build-system.requires ... maturin>=1.9,<2").
 #
+# cffi, pycparser: runtime deps of the exempted cryptography pin.
+# cryptography 50.x requires cffi>=2.0.0, so while cffi 2.x is inside the
+# window the exemption on cryptography alone cannot resolve; pycparser is
+# the undated-on-mirrors shape (TUNA and friends) under cffi (#135483).
+#
 # google-cloud-pubsub: same exact-pin shape (==2.39.2, google-chat adapter).
 # The pin bump WAS the review; exclude-newer only filters it because the
 # 14-day window is younger than the reviewed release.
@@ -690,6 +695,7 @@ boto3 = false
 brotlicffi = false
 browser-harness = false
 certifi = false
+cffi = false
 concurrent-log-handler = false
 croniter = false
 cryptography = false
@@ -699,6 +705,7 @@ debugpy = false
 defusedxml = false
 dingtalk-stream = false
 discord-py = false
+distlib = false
 edge-tts = false
 elevenlabs = false
 exa-py = false
@@ -737,14 +744,19 @@ opentelemetry-sdk = false
 packaging = false
 parallel-web = false
 pathspec = false
+pilk = false
 pillow = false
 piper-tts = "2026-09-04T16:47:32Z"
+playwright = false
 prompt-toolkit = false
 psutil = false
 pvporcupine = false
 pyasn1 = false
+pycparser = false
 pydantic = false
 pyjwt = false
+pyopen-wakeword = false
+pypinyin = false
 pytest = false
 pytest-asyncio = false
 python-dotenv = false
@@ -754,12 +766,15 @@ python-telegram-bot = false
 pyyaml = false
 qrcode = false
 requests = false
+resvg-py = false
 rich = false
 ruamel-yaml = false
 ruff = false
 sentencepiece = false
 setuptools = false
 setuptools-rust = false
+tomli-w = false
+truststore = false
 wheel = false
 sherpa-onnx = "2026-09-10T17:00:04Z"
 # The core is exact-pinned by sherpa-onnx. Admit all wheels of that release.

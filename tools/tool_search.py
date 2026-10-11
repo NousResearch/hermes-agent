@@ -134,6 +134,27 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
+def _session_direct_names(name: str) -> bool:
+    """Is *name* a directly-callable native tool of the CURRENT turn's tool surface?
+
+    ``tools[]``/``valid_tool_names`` can carry tools the registry never sees — chiefly the Bot
+    Mode ``message_agent``, injected by the auth gate in ``tools.bot_mode_dm`` for a managed
+    bot's canonical Bot Chat. Those tools are advertised to the provider and dispatchable
+    natively, so the bridge must never call them "unknown" and never send the model to
+    ``tool_search`` for a name the catalog structurally cannot list (#124209).
+
+    Answered from the injecting module's published set rather than a live agent: the bridge
+    call sites (``not_deferrable_error``, ``dispatch_tool_describe``) have no agent handle, and
+    the published set only ever gains a name after that tool really was placed in some live
+    session surface by its own gate. Fails closed — anything unexpected reads as "not direct",
+    i.e. today's behaviour. Never raises."""
+    try:
+        from tools.bot_mode_dm import is_injected_native_tool
+        return is_injected_native_tool(name)
+    except Exception:
+        return False
+
+
 # Session-gated GUI toolsets: off ``_HERMES_CORE_TOOLS`` so non-GUI clients never pay
 # their schema; once enabled they stay direct unless the deferral list names them.
 _DIRECT_SURFACE_TOOLSETS = CLIENT_SURFACE_TOOLSETS | TOOLSET_SESSION_PLATFORMS.keys()
@@ -514,8 +535,13 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
         elif is_connector_name(name):
             (undescribed if hosted_failure else not_found).append(name)
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
-            name, load_config_readonly().effective_defer_tools):
+                name, load_config_readonly().effective_defer_tools):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
+            errors[name] = not_deferrable_error(name)
+        elif _session_direct_names(name):
+            # An injected native tool (Bot Mode message_agent): advertised in this session's
+            # tools[] but absent from the catalog. A bare "not found" hid a working tool from
+            # the model and pushed it to conclude the capability was unavailable (#124209).
             errors[name] = not_deferrable_error(name)
         else:
             not_found.append(name)

@@ -21,6 +21,27 @@ class TestToolsetIntersection:
         assert "memory" not in child
         assert "terminal" in child
 
+class TestContextEngineToolsFollowTheEngine:
+    """A child runs the parent's context engine (same config), which rewrites the child's old tool
+    results into recall stubs; the engine's tools must come along or the stubs are unreadable."""
+
+    def _parent(self, enabled, engine_tools):
+        return SimpleNamespace(enabled_toolsets=enabled, disabled_toolsets=[],
+                               _context_engine_tool_names=set(engine_tools), valid_tool_names=set())
+
+    def test_engine_tools_carried_to_child_with_or_without_explicit_toolsets(self):
+        from tools.delegate_tool_toolsets import _resolve_child_toolsets
+        parent = self._parent(["terminal", "file"], {"cmi_recall"})
+        for requested in (None, ["terminal"]):
+            enabled, _ = _resolve_child_toolsets(parent, requested, "leaf")
+            assert "context_engine" in enabled
+
+    def test_no_engine_tools_means_nothing_added(self):
+        from tools.delegate_tool_toolsets import _resolve_child_toolsets
+        enabled, _ = _resolve_child_toolsets(self._parent(["terminal"], ()), None, "leaf")
+        assert "context_engine" not in enabled
+
+
 class TestEmitParentConsole:
     """Progress lines (e.g. ``✓ [N/M] …``) must route through the parent's
     configured ``_safe_print`` in headless stdio hosts (ACP, gateway) so

@@ -15,7 +15,7 @@ def test_passed_gate_tick_and_queued_job_remain_busy_until_real_worker_exit(tmp_
     script.write_text("print('no model')\n")
     job = jobs.create_job(prompt=None, schedule=datetime.now(UTC).isoformat(), script=str(script), no_agent=True)
     for name in ("_maybe_run_worktree_maintenance", "_sweep_mcp_orphans", "_maybe_reap_dead_owners"):
-        monkeypatch.setattr(scheduler, name, lambda: None)
+        monkeypatch.setattr(scheduler, name, lambda **kw: None)
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
     reached, release_tick, running, release_job = (threading.Event() for _ in range(4))
     due = scheduler.get_due_jobs

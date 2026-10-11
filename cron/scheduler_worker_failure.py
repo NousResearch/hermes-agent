@@ -11,6 +11,7 @@ def record_unknown_worker_outcome(
     fire or duplicate a failure the worker already recorded.
     """
     from cron import scheduler
+    from cron.executions import _OWNER_WEDGED_REASON
     from cron.unreachable_retry import is_retry_run
 
     execution = scheduler.get_execution(str(job["execution_id"]))
@@ -23,14 +24,24 @@ def record_unknown_worker_outcome(
     with scheduler.fire_claim_fence(job["id"], expected_owner=owner) as owns_claim:
         if not owns_claim:
             return True
+        # Recovery may have delivered while this waiter was acquiring the fence.
+        # Re-read this exact attempt; a different error signature or disabled cooldown
+        # must not turn the same worker death into a second notification.
+        execution = scheduler.get_execution(str(job["execution_id"])) or execution
         error = error or execution["error"]
         scheduler.logger.error("Job '%s': %s", job["id"], error)
         scope_tokens = scheduler._install_fire_secret_scope()
         delivery_error = None
         try:
-            delivery_error, _ = scheduler._deliver_crash_failure(
-                job, error, adapters=adapters, loop=loop
-            )
+            if execution.get("delivery_outcome") is None:
+                if execution.get("error") == _OWNER_WEDGED_REASON:
+                    # The ledger sweep can commit before its incident-only callback runs.
+                    scheduler._deliver_reclaimed_execution(execution, job, adapters=adapters, loop=loop)
+                else:
+                    delivery_error, outcome = scheduler._deliver_crash_failure(
+                        job, error, adapters=adapters, loop=loop
+                    )
+                    scheduler._record_reclaimed_delivery_outcome(execution, outcome)
         finally:
             scheduler._reset_fire_secret_scope(scope_tokens)
             scheduler.mark_job_run(

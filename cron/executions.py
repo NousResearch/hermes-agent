@@ -39,6 +39,20 @@ _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
 
+class RecoveredExecutions(int):
+    """Recovered records that remain compatible with the former integer count result."""
+
+    records: tuple[Dict[str, Any], ...]
+
+    def __new__(cls, records: List[Dict[str, Any]]):
+        result = super().__new__(cls, len(records))
+        result.records = tuple(records)
+        return result
+
+    def __iter__(self):
+        return iter(self.records)
+
+
 # --- executions ledger --------------------------------------------------------------------------
 
 def _connect() -> sqlite3.Connection:
@@ -335,6 +349,8 @@ def finish_execution(
     return record
 
 
+# Recovery reasons participate in the cron incident signature. Keep durable wording
+# stable unless intentionally starting a distinct incident series.
 _OWNER_GONE_REASON = (
     "Scheduler restarted after this execution's owner exited before a durable "
     "terminal state; whether side effects ran is unknown."
@@ -356,12 +372,31 @@ def settle_unstarted_execution(execution_id: str, job_id: str, error: str) -> No
                      job_id, execution_id, error, record_err)
 
 
-def recover_interrupted_executions() -> int:
-    """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
-    dead, plus rows whose live owner holds a claim older than the derived stale bound (the
-    process is not killed)."""
+def record_execution_delivery_outcome(
+    execution_id: str, delivery_outcome: str,
+) -> Optional[Dict[str, Any]]:
+    """Record notification outcome for a recovered attempt without changing ``unknown``."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET delivery_outcome=? WHERE id=? AND status='unknown'",
+            (str(delivery_outcome), execution_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        record = _fetch(conn, execution_id)
+    _emit_execution_state(record, delivery_outcome=delivery_outcome)
+    return record
+
+
+def recover_interrupted_executions() -> RecoveredExecutions:
+    """Mark abandoned attempts unknown and return count-compatible records.
+
+    Recovery never retries because side effects are unknown. It includes both
+    provably dead owners and live owners whose claim exceeded the derived stale
+    bound; callers can use each returned record's reason to select notification
+    policy.
+    """
     now = _hermes_now().isoformat()
-    changed = 0
     recovered: list[dict[str, Any]] = []
     # Derived on the first live-owned row only: the bound reads config, and the idle gateway
     # tick must stay config-free (tests/cron/test_idle_tick_config_skip.py).
@@ -416,16 +451,15 @@ def recover_interrupted_executions() -> int:
                 (now, reason, row["id"], row["status"], row["process_id"], row["pid"],
                  row["handoff_pending"], row["handoff_started_at"]),
             )
-            changed += cur.rowcount
             if cur.rowcount:
                 record = _fetch(conn, row["id"])
                 if record is not None:
                     recovered.append(record)
-        if changed:
+        if recovered:
             _prune_unlocked(conn)
     for record in recovered:
         _emit_execution_state(record)
-    return changed
+    return RecoveredExecutions(recovered)
 
 
 def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:

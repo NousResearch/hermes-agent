@@ -698,16 +698,33 @@ def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Op
 
 
 _shadowed_subscription_warned = False  # once per process: the resolver runs on every request
+_shadowed_subscription_lock = threading.Lock()
 
 
 def _claude_code_login_present_on_disk() -> bool:
     """Existence probe only — the API-key path must never read or parse the borrowed login (the
     `test_api_key_path_does_not_read_auto_discovered_credentials` contract), and a stat does not
-    touch the Keychain or the single-use refresh family."""
+    touch the Keychain or the single-use refresh family. Honours ``auth.adopt_external_logins``
+    the same way the reader does: an opted-out login is not a subscription the user can switch
+    to, so advising them to unset the key would remove the only credential Hermes may use."""
+    from agent.credential_sources import adopt_external_logins_enabled
+    if not adopt_external_logins_enabled():
+        return False
     try:
         return claude_code_credentials_path().is_file()
     except OSError:
         return False
+
+
+def _warn_once_api_key_shadows_subscription() -> bool:
+    """True exactly once per process when an explicit key shadows a usable Claude Code login.
+    The check-and-set is under a lock: the resolver runs on every request thread."""
+    global _shadowed_subscription_warned
+    with _shadowed_subscription_lock:
+        if _shadowed_subscription_warned or not _claude_code_login_present_on_disk():
+            return False
+        _shadowed_subscription_warned = True
+        return True
 
 
 def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
@@ -715,23 +732,23 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
 
     With *model*, a token the credential pool has benched for that model resolves to ``None``
     instead of being handed straight back to the caller that just saw it rate-limited."""
-    global _shadowed_subscription_warned
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:
-        logger.debug("Anthropic token source: ANTHROPIC_TOKEN / CLAUDE_CODE_OAUTH_TOKEN env")
-        return _available_anthropic_token(
-            _prefer_refreshable_claude_code_token(token, _read_creds()) or token, model,
-        )
+        # Attribute the source to the credential actually returned: a static env OAuth token
+        # may be swapped for the refreshable file so refresh can proceed.
+        refreshable = _prefer_refreshable_claude_code_token(token, _read_creds())
+        if refreshable:
+            logger.debug("Anthropic token source: Claude Code credential file (refreshable, over static env token)")
+        else:
+            logger.debug("Anthropic token source: ANTHROPIC_TOKEN / CLAUDE_CODE_OAUTH_TOKEN env")
+        return _available_anthropic_token(refreshable or token, model)
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
         # Honouring the explicit key is the intent; doing it silently is not. An inherited or
         # forgotten key otherwise moves a host from subscription to metered billing with no
-        # signal anywhere (#97085). This path must never *read* the borrowed login (Keychain,
-        # adopt_external_logins gate, single-use refresh family), so only probe that the Claude
-        # Code credential file exists. Stage only — never token material.
-        if not _shadowed_subscription_warned and _claude_code_login_present_on_disk():
-            _shadowed_subscription_warned = True
+        # signal anywhere (#97085). Stage only — never token material.
+        if _warn_once_api_key_shadows_subscription():
             logger.warning(
                 "ANTHROPIC_API_KEY is set and takes precedence over a Claude Code subscription login "
                 "found on this host; requests bill to the API key. Unset it to use the subscription.")

@@ -4119,7 +4119,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``""`` (no pin) for anything else — never raises, so a malformed field
         degrades to the pre-change behaviour instead of failing the turn.
         """
-        if not isinstance(raw, str):
+        if not isinstance(raw, str) or not raw.strip():
+            # abspath("") resolves to cwd; bail before normalizing to avoid
+            # accidental anchoring when the API runs from an allowlisted root.
             return ""
         candidate = os.path.abspath(os.path.expanduser(raw.strip()))
         if not os.path.isdir(candidate):

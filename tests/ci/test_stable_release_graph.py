@@ -146,17 +146,8 @@ def test_a_skipped_upgrade_arm_never_skips_a_gated_publish_job():
 
     jobs = workflow("stable-release.yml")["jobs"]
 
-    def ancestors_of(name, seen=None):
-        seen = set() if seen is None else seen
-        needs = jobs[name].get("needs", [])
-        for need in [needs] if isinstance(needs, str) else needs:
-            if need not in seen:
-                seen.add(need)
-                ancestors_of(need, seen)
-        return seen
-
     for name, job in jobs.items():
-        if set(PACKAGED_BY) & ancestors_of(name):
+        if set(PACKAGED_BY) & ancestors(jobs, name):
             condition = str(job.get("if", ""))
             assert "always()" in condition or "!cancelled()" in condition, (
                 f"{name} skips whenever an upgrade arm skips")

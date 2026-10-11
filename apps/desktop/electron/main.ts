@@ -590,8 +590,11 @@ import {
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
+  installTranslucencyReassertOnDisplayMetrics,
+  installTranslucencyReassertOnWindowEvents,
   normalizeState as normalizeTranslucency,
   opacityNeedsSetting,
+  translucencyReassertForDpiChange,
   translucencySupportedOn,
   vibrancyFor as vibrancyForTranslucency,
   windowBackgroundMaterialOptions,
@@ -1543,6 +1546,7 @@ let translucencyState = readPersistedTranslucency()
 // wake indicator are `transparent: true` windows that own their backgrounds —
 // painting a themed backing onto them would turn them into opaque rectangles.
 const translucencyBackedWindows = new WeakSet()
+const translucencyScaleFactors = new WeakMap<object, number>()
 
 // Set a live window's native opacity, but only when the state asks it to fade
 // — or when the window is already faded and is on its way back to opaque. The
@@ -1614,6 +1618,14 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
     }
   } catch (error) {
     rememberLog(`[translucency] apply failed: ${error.message}`)
+  }
+}
+
+function reassertChatWindowTranslucencyForDpi(win) {
+  const changed = translucencyReassertForDpiChange(translucencyState)
+
+  if (changed) {
+    applyWindowTranslucency(win, changed)
   }
 }
 
@@ -19412,6 +19424,15 @@ app.whenReady().then(() => {
     screen.on('display-removed', reposition)
   }
 
+  // Mixed-DPI display changes can drop DWM's chat backdrop (#106285).
+  installTranslucencyReassertOnDisplayMetrics(screen, () => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (translucencyBackedWindows.has(win)) {
+        reassertChatWindowTranslucencyForDpi(win)
+      }
+    }
+  })
+
   // The popped-out pet must never be stranded on a disconnected display: when
   // the topology changes, pull an off-screen overlay back onto the display
   // that holds the main window (and persist the corrected spot). Unlike the
@@ -19585,6 +19606,12 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 // before-quit with the latch set and falls through.
 function registerChatWindow(window: BrowserWindow) {
   chatWindows.add(window)
+  installTranslucencyReassertOnWindowEvents(
+    window,
+    screen,
+    () => reassertChatWindowTranslucencyForDpi(window),
+    translucencyScaleFactors
+  )
   window.on('close', (event: Electron.Event) => {
     // The tray's close-to-tray handler runs first (registered first) and
     // absorbs the close into a hide — the work keeps running, so there is

@@ -29,6 +29,23 @@ from tests.pm._fixtures import isolated_python
 pytestmark = pytest.mark.real_machine_home
 
 
+def _populate_source_install(root: Path, repository: Path) -> None:
+    """Give a disposable source install the modules its own bootstrap imports.
+
+    A real checkout contains them; the fixture builds only a stamp plus a
+    completion stub, and the re-entry path (hermes_cli.venv_sync ->
+    hermes_bootstrap) needs them in the install it re-enters.
+    """
+    for name in ("hermes_bootstrap.py", "hermes_constants.py"):
+        shutil.copy2(repository / name, root / name)
+    shutil.copytree(repository / "pm", root / "pm", dirs_exist_ok=True)
+    completion = root / "hermes_cli" / "source_completion.py"
+    stub = completion.read_bytes() if completion.exists() else None
+    shutil.copytree(repository / "hermes_cli", root / "hermes_cli", dirs_exist_ok=True)
+    if stub is not None:
+        completion.write_bytes(stub)
+
+
 @pytest.fixture
 def source_launch(tmp_path, monkeypatch, isolated_python):
     client = importlib.import_module("pm.client")
@@ -369,7 +386,7 @@ def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isol
     repository = Path(__file__).resolve().parents[2]
     # Copy the real bootstrap so it owns this disposable source install. The
     # other modules remain real checkout imports; only acquisition is injected.
-    shutil.copy2(repository / "hermes_bootstrap.py", root / "hermes_bootstrap.py")
+    _populate_source_install(root, repository)
     (root / "launch_test_tools.py").write_text(
         "import sys\n"
         "from pathlib import Path\n"
@@ -451,6 +468,71 @@ def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isol
     assert json.loads(receipt.read_text(encoding="utf-8"))["outcome"] == "ok"
     assert not (root / ".update-incomplete").exists()
     assert not (root / ".lazy-refresh-incomplete").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_reexec_activates_generation_before_the_callers_own_imports(
+    source_launch, tmp_path, isolated_python,
+):
+    """A handed-off caller must find the dependency it declares.
+
+    The store interpreter boots cold: the committed generation reaches sys.path
+    only when the bootstrap activates it. A caller that loads a declared
+    dependency before it can engage the runtime (a synopsis reading its YAML
+    table at module top) is re-entered by the lazy-install handoff and must still
+    import it — the re-entry runs the bootstrap itself, it does not merely put
+    the project root on sys.path.
+    """
+    root, store_python, worker_command = source_launch
+    repository = Path(__file__).resolve().parents[2]
+    # A real source install CARRIES the modules its own bootstrap imports; copy
+    # them the way the bootstrap is copied, so the re-entry has the production
+    # shape. The re-entry must import the bootstrap before the caller runs —
+    # that import is what restores the dependency environment.
+    _populate_source_install(root, repository)
+    (root / "launch_test_tools.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(1, {str(repository)!r})\n"
+        "import pm.client\n"
+        "from pm import paths\n"
+        f"paths.lockfile_path = lambda: Path({str(tmp_path / 'tool-lock.json')!r})\n"
+        f"pm.client.runtime_command = lambda *args, **kwargs: {worker_command!r}\n",
+        encoding="utf-8",
+    )
+    entry = root / "launch_probe.py"
+    entry.write_text(
+        "import launch_test_tools\n"
+        # The caller's own dependency, loaded BEFORE it can engage the runtime.
+        "import declared_dependency\n"
+        "import hermes_bootstrap\n"
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from pm.environments import selected_venv, site_packages\n"
+        "root = Path(__file__).parent\n"
+        "print(json.dumps({'executable': sys.executable,\n"
+        "    'value': declared_dependency.VALUE,\n"
+        "    'site': str(site_packages(selected_venv(root))), 'path': sys.path}))\n",
+        encoding="utf-8",
+    )
+    pm.sync_venv(["all"], explicit=True, project_root=root)
+    caller_python = selected_venv(root) / "bin" / "python3"
+    (site_packages(selected_venv(root)) / "declared_dependency.py").write_text(
+        "VALUE = 'declared'\n", encoding="utf-8",
+    )
+    # Positive control: the caller's own interpreter really does carry the
+    # dependency, so only the handoff can take it away.
+    control = subprocess.run(
+        [str(caller_python), str(entry)], cwd=root,
+        env=dict(os.environ), capture_output=True, text=True, timeout=60,
+    )
+    # The control re-enters too (that is the handoff); it must succeed under the
+    # store interpreter, and the dependency must survive the re-entry.
+    assert control.returncode == 0, control.stderr
+    output = json.loads(control.stdout)
+    assert output["executable"] == str(store_python)
+    assert output["value"] == "declared"
+    assert output["site"] in output["path"]
 
 
 @pytest.mark.platforms("posix")

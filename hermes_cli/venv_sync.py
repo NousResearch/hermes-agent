@@ -587,6 +587,23 @@ def _sync_source_dependencies(root: Path, *, arm: bool, borrowed_from: Path | No
         (root / name).unlink(missing_ok=True)
 
 
+def activate_relaunch_environment(project_root: str | Path) -> None:
+    """Re-establish the dependency environment for a re-entered caller.
+
+    The store interpreter boots *cold*: its own site-packages is the bare tool,
+    and the committed generation reaches ``sys.path`` only through this
+    activation. ``relaunch_command`` re-enters the caller's own ``__main__``
+    under that interpreter, so the re-entry has to activate the environment
+    itself — putting the project root on ``sys.path`` is not enough. A caller
+    that declares a dependency and loads it before it can engage the runtime
+    (a synopsis reading its YAML table at module top) otherwise dies on
+    ``ModuleNotFoundError`` the moment it is handed off.
+    """
+    from pm.environments import activate_dependencies
+
+    activate_dependencies(Path(project_root))
+
+
 def relaunch_command(
     python: Path, root: Path, argv: list[str], original: list[str], module: str | None,
 ) -> list[str]:
@@ -594,6 +611,9 @@ def relaunch_command(
 
     An old venv may use a different Python ABI. Do not add the new generation
     to that interpreter, and do not depend on its obsolete editable finder.
+
+    The re-entry activates the committed generation BEFORE the caller's own
+    code, so a handed-off caller keeps the dependencies it declares.
     """
     # Preserve interpreter options, not application flags with the same names.
     options: list[str] = []
@@ -607,7 +627,10 @@ def relaunch_command(
         if option in ("-W", "-X") and index < len(original):
             options.append(original[index])
             index += 1
-    prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    prefix = (f"import sys, runpy; sys.path.insert(0, {str(root)!r}); "
+              f"sys.argv = {argv!r}; "
+              "from hermes_cli.venv_sync import activate_relaunch_environment as _activate; "
+              f"_activate({str(root)!r}); ")
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

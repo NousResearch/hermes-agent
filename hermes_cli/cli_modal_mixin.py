@@ -116,10 +116,12 @@ class CLIModalMixin:
             self._inline_pastes(target_buffer)
             self._skip_paste_collapse = True
             # Submission here is driven by the custom `enter` keybinding, NOT the buffer's
-            # accept_handler, so validate_and_handle can't route through it; chain a done-callback
-            # that re-uses the real submit pipeline (TUI Ctrl+G parity: save == send).
+            # accept_handler. By default, Ctrl+G save-and-quit submits the edited draft (TUI parity).
+            # Set display.editor_auto_submit: false to leave it in the input area for Enter instead.
             task = target_buffer.open_in_editor(validate_and_handle=False)
-            if task is not None and hasattr(task, "add_done_callback"):
+            display = getattr(self, "config", None) or {}
+            editor_auto_submit = (display.get("display") or {}).get("editor_auto_submit", True)
+            if editor_auto_submit and task is not None and hasattr(task, "add_done_callback"):
                 task.add_done_callback(lambda _t, b=target_buffer: self._submit_editor_buffer(b))
             return True
         except Exception as exc:
@@ -128,8 +130,8 @@ class CLIModalMixin:
 
     def _submit_editor_buffer(self, buffer) -> None:
         """Submit the draft an external editor left in ``buffer`` (Ctrl+G done-callback), mirroring
-        the `enter` keybinding: empty save ignored, bang/slash dispatched, else queued. Runs on the
-        prompt_toolkit loop, so it must stay cheap/non-blocking."""
+        the `enter` keybinding: empty save ignored, bang/slash routed like Enter, else queued. Runs
+        on the prompt_toolkit loop, so it must stay cheap/non-blocking."""
         from cli import _DIM, _RST, _cprint, _looks_like_slash_command
         try:
             text = (getattr(buffer, "text", "") or "").strip()
@@ -146,6 +148,14 @@ class CLIModalMixin:
                 app.invalidate()
 
         # `!<command>` shell mode is checked before slash dispatch, matching the Enter path.
+        # Enter queues a bang command while a turn runs (it is a local dispatch, never
+        # steered), so a long `!cmd` cannot block the prompt_toolkit loop for a live turn.
+        if self._agent_running and text.strip().startswith("!"):
+            self._pending_input.put(text)
+            preview = text[:80] + ("..." if len(text) > 80 else "")
+            _cprint(f"  {t('cli.editor.queued_next_turn', preview=preview)}")
+            _done()
+            return
         try:
             if self.handle_bang_shell(text):
                 _done()
@@ -156,6 +166,28 @@ class CLIModalMixin:
             return
 
         if _looks_like_slash_command(text):
+            # Busy routing parity with Enter: the process loop is blocked inside chat() for the
+            # whole turn, so dispatching here runs the command mid-turn on the prompt_toolkit
+            # thread — /compress would compact the live conversation and rotate agent.session_id
+            # underneath the running turn. Queue it for the turn boundary instead, except for the
+            # commands Enter also dispatches mid-run (see _tui_enter_inline_command).
+            _busy_inline = (
+                self._should_handle_model_command_inline(text)
+                or self._should_handle_steer_command_inline(text)
+                or self._should_handle_background_command_inline(text)
+                or self._should_handle_goal_control_command_inline(text)
+                or self._should_handle_readonly_dispatch_inline(text))
+            if self._agent_running and not _busy_inline:
+                # Busy exec quick commands run off the UI thread like Enter does; anything else
+                # queues for the turn boundary.
+                if self._tui_start_busy_exec(text, has_images=False):
+                    _done()
+                    return
+                self._pending_input.put(text)
+                preview = text[:80] + ("..." if len(text) > 80 else "")
+                _cprint(f"  Queued for the next turn: {preview}")
+                _done()
+                return
             try:
                 if not self.process_command(text):
                     self._should_exit = True
@@ -168,14 +200,10 @@ class CLIModalMixin:
             return
 
         if self._agent_running:
-            # Agent busy → honour the configured busy-input behaviour (interrupt/steer remain
-            # reachable via the normal Enter path).
-            if self.busy_input_mode == "interrupt":
-                self._interrupt_queue.put(text)
-            else:
-                self._pending_input.put(text)
-            preview = text[:80] + ("..." if len(text) > 80 else "")
-            _cprint(f"  {t('cli.editor.queued_next_turn', preview=preview)}")
+            # Agent busy → honour the configured busy-input behaviour exactly as Enter does
+            # (steer / interrupt / queue), so a Ctrl+G draft is steered when the session is in
+            # steer mode instead of always being queued for the next turn.
+            self._tui_enter_while_busy(text, [], text)
         else:
             self._pending_input.put(text)
         _done()

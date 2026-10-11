@@ -334,6 +334,15 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+    # Dispatcher-owned kanban workers: re-grant the lifecycle handoff tools
+    # AFTER the disabled subtraction. The dispatcher always hands its workers
+    # the kanban lifecycle (claim/comment/complete/block); a profile that
+    # disables the kanban chat toolset must not strip that protocol grant,
+    # or the worker can neither complete nor block and exits rc=0 into a
+    # protocol-violation respawn loop (system-engineer, runs 63-68, #V3.3).
+    if (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
+            and _is_dispatcher_owned_worker() and "kanban" in (disabled_toolsets or [])):
+        tools.update(resolve_toolset("kanban"))
     return tools
 
 

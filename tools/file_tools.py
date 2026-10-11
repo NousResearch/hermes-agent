@@ -15,7 +15,8 @@ import re
 import stat
 import threading
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
@@ -46,6 +47,17 @@ logger = logging.getLogger(__name__)
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
+_programmatic_read = ContextVar("programmatic_read", default=False)
+
+
+@contextmanager
+def programmatic_read_context():
+    """Select stable raw read results for one standard dispatcher call."""
+    token = _programmatic_read.set(True)
+    try:
+        yield
+    finally:
+        _programmatic_read.reset(token)
 
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
 # ~25-35K tokens across typical tokenisers. Configurable: file_read_max_chars.
@@ -426,7 +438,7 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str, *, line_numbers: bool = True) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -464,12 +476,23 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     lines = extracted_text.splitlines()
     total_lines = len(lines)
     end_line = offset + limit - 1
-    page_text = "\n".join(lines[offset - 1:end_line])
+    # Terminate the raw page with a newline, matching the
+    # native file_ops read path (sed/cut always newline-
+    # terminate their output). With line_numbers=True the
+    # gutter join reproduces that shape anyway; with
+    # line_numbers=False the raw page must be byte-identical
+    # to the same window served through file_ops.
+    # One terminator per selected line: a window ending on a real blank line
+    # keeps it — byte-identical to the file_ops window (sed/cut emit the blank
+    # line's own newline) and preserving its gutter number, since
+    # _add_line_numbers drops exactly one terminator.
+    window = lines[offset - 1:end_line]
+    page_text = "".join(line + "\n" for line in window)
     from tools.tool_output_limits import get_max_line_length
     max_line_length = get_max_line_length()
-    truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
+    truncated_lines = any(len(line) > max_line_length for line in window)
     result_dict = {
-        "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+        "content": (file_ops._add_line_numbers(page_text, offset) if page_text and line_numbers else page_text),
         "total_lines": total_lines,
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,
@@ -536,7 +559,8 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None, version_before=None, snapshot=None) -> int:
+                            total_lines=None, version_before=None, snapshot=None,
+                            deduplicate: bool = True) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -548,15 +572,24 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     OUTSIDE our lock (no nested locking): the cross-agent registry, and the
     background-review read-mark (a FULL read of a skill file counts like
     skill_view so a follow-up skill_manage(patch) is accepted).
+
+    With ``deduplicate=False`` (programmatic callers) the dedup/stub/loop
+    machinery stays untouched — a sandbox read must neither arm a stub for a
+    later chat read nor count toward the consecutive-read warnings — while the
+    "this task has seen the current content" bookkeeping still records: a
+    script that read the file must be able to write it.
     """
     version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
     stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
     complete = False
     with _read_tracker_lock:
-        task_data["dedup_hits"].pop(dedup_key, None)
-        task_data["dedup_generation_reads"].add(dedup_key)
+        if deduplicate:
+            task_data["dedup_hits"].pop(dedup_key, None)
+            task_data["dedup_generation_reads"].add(dedup_key)
+            count = _bump_consecutive(task_data, ("read", path, offset, limit))
+        else:
+            count = 0
         task_data["read_history"].add((path, offset, limit))
-        count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
             _mtime_now = os.path.getmtime(resolved_str)
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
@@ -564,7 +597,8 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             pass
         baselines = task_data["full_write_baselines"]
         if stable and version is not None and count < 4:
-            task_data["dedup"][dedup_key] = version_before
+            if deduplicate:
+                task_data["dedup"][dedup_key] = version_before
             # A narrower view does not undo knowledge of these same bytes. Do
             # not revive a baseline after a partial read of a different version.
             complete = baselines.get(resolved_str) == version
@@ -579,7 +613,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                 task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
         if not complete:
             baselines.pop(resolved_str, None)
-        if not stable or count >= 4:
+        if deduplicate and (not stable or count >= 4):
             task_data["dedup"].pop(dedup_key, None)
             task_data["dedup_generation_reads"].discard(dedup_key)
         _cap_read_tracker_data(task_data)
@@ -604,7 +638,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", *, line_numbers: bool = True, deduplicate: bool = True) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
@@ -651,7 +685,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if block_error:
             return tool_error(block_error)
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, line_numbers=line_numbers)
         if extracted is not None:
             return extracted
 
@@ -680,11 +714,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # read-before-write guard needs a real read, which the stub path never records (#95976).
         file_ops = _get_file_ops(task_id)
         version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
-        if (cached_version is not None and not is_background_review()
+        if (deduplicate and cached_version is not None and not is_background_review()
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        read_kwargs = {} if line_numbers else {"line_numbers": False}
+        result = file_ops.read_file(
+            resolved_str if _file_ops_uses_host_paths(file_ops) else path,
+            offset, limit, **read_kwargs)
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -733,12 +770,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             end_line = offset + limit - 1
             if isinstance(total_lines, int) and total_lines > 0:
                 end_line = min(end_line, total_lines)
-        count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
-                                        dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
-                                        redacted=redacted or bool(result_dict.get("truncated_lines")),
-                                        end_line=end_line, total_lines=total_lines,
-                                        version_before=version_before,
-                                        snapshot=getattr(result, "_snapshot", None))
+        # Programmatic reads bypass the stub/loop machinery but still record
+        # the "seen current content" contract (baseline, timestamps, registry).
+        count = _record_successful_read(
+            task_data, task_id, path, resolved_str, offset, limit,
+            dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
+            redacted=redacted or bool(result_dict.get("truncated_lines")),
+            end_line=end_line, total_lines=total_lines,
+            version_before=version_before, snapshot=getattr(result, "_snapshot", None),
+            deduplicate=deduplicate)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -755,6 +795,32 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
+
+
+def read_file_programmatic_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = DEFAULT_READ_LIMIT,
+    task_id: str = "default",
+) -> str:
+    """Return stable raw ``read_file`` data for execute_code RPC callers."""
+    result = read_file_tool(
+        path=path,
+        offset=offset,
+        limit=limit,
+        task_id=task_id,
+        line_numbers=False,
+        deduplicate=False,
+    )
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return tool_error("read_file returned an invalid programmatic result", content="", success=False)
+    if not isinstance(payload, dict):
+        return tool_error("read_file returned an invalid programmatic result", content="", success=False)
+    payload.setdefault("content", "")
+    payload.setdefault("success", not bool(payload.get("error")))
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────
@@ -1309,7 +1375,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    read = read_file_programmatic_tool if _programmatic_read.get() else read_file_tool
+    return read(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", DEFAULT_READ_LIMIT),
+        task_id=tid,
+    )
 
 
 def _handle_write_file(args, **kw):

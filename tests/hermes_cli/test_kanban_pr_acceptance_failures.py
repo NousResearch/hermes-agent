@@ -1,9 +1,9 @@
 """Typed, secret-free Kanban PR-acceptance failures on the profile-scoped gh path.
 
 Identity refusals stay ``auth`` (HTTP 401/403/404, exit 4, GraphQL bad
-credentials). A rate-limit 403 is ``rate_limited`` even though it also names
-HTTP 403. stderr never reaches the receipt. ``gh`` is still invoked with the
-profile child env.
+credentials, a GraphQL NOT_FOUND repository). A rate-limit 403 is
+``rate_limited`` even though it also names HTTP 403. stderr never reaches the
+receipt. ``gh`` is still invoked with the profile child env.
 """
 import json
 import subprocess
@@ -103,6 +103,43 @@ def test_graphql_bad_credentials_stay_auth_without_the_body(monkeypatch):
     assert "credential" in receipt["detail"]
     assert "ghp_secret" not in blob
     assert "Bad credentials" not in blob
+
+
+def _graphql_exit_1(monkeypatch, body: dict, stderr: str):
+    import hermes_cli.kanban_pr_acceptance as acc
+
+    def run(command, **kwargs):
+        raise subprocess.CalledProcessError(returncode=1, cmd=command, output=json.dumps(body), stderr=stderr)
+
+    monkeypatch.setattr(acc.subprocess, "run", run)
+    return acc.collect_acceptance("acme/repo", _PR_URL)
+
+
+def test_graphql_not_found_repository_is_auth(monkeypatch):
+    """Real gh exits 1 for a repository the login cannot read: HTTP 200 + NOT_FOUND,
+    so stderr has no ``HTTP 404``. That is an identity problem, not provider_error."""
+    stderr = "gh: Could not resolve to a Repository with the name 'acme/repo'."
+    body = {"data": {"repository": None},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository"], "message": stderr[4:]}]}
+    receipt = _graphql_exit_1(monkeypatch, body, stderr)
+    assert receipt["classification"] == "auth"
+    assert "acme/repo" in receipt["detail"]
+    assert "the ambient gh login" in receipt["detail"]
+    assert "Could not resolve" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("body", [
+    # The repository is readable but the PR number does not exist.
+    {"data": {"repository": {"pullRequest": None}},
+     "errors": [{"type": "NOT_FOUND", "path": ["repository", "pullRequest"]}]},
+    # Any other GraphQL error type on a null repository.
+    {"data": {"repository": None}, "errors": [{"type": "FORBIDDEN", "path": ["repository"]}]},
+    {"data": None, "errors": [{"type": "NOT_FOUND", "path": ["repository"]}]},
+])
+def test_other_graphql_exit_1_stays_provider_error(monkeypatch, body):
+    receipt = _graphql_exit_1(monkeypatch, body, "gh: GraphQL error")
+    assert receipt["classification"] == "provider_error"
+    assert receipt["detail"] == "GitHub API call failed (rc=1)."
 
 
 def test_malformed_gh_stdout_stays_infra(monkeypatch):

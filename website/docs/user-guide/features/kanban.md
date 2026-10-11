@@ -85,7 +85,8 @@ infrastructure checks or wait, then retry completion. Use `kanban_block` when
 human action is needed. Generic GitHub `failure` cannot establish whether a test
 or artifact upload failed; inspect its retained URL. `gh` subprocess failures
 are typed, and stderr is never stored: `capability` (no `gh` binary),
-`auth` (identity: HTTP 401/403/404, exit 4, GraphQL bad credentials),
+`auth` (identity: HTTP 401/403/404, exit 4, GraphQL bad credentials, or a
+repository GraphQL reports NOT_FOUND because the login cannot read it),
 `rate_limited` (a 403 that says rate limit — not an identity failure),
 `network` (timeout), `provider_error` (any other `gh` exit, fixed rc sentence).
 Generic `infra` remains only the final net for non-`gh` failures. No extra

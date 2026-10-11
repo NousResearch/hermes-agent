@@ -62,7 +62,8 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     except subprocess.CalledProcessError as exc:
         # stderr classifies only. A rate-limited 403 names both "rate limit" and
         # HTTP 403, so the rate-limit check wins; otherwise 401/403/404 is an
-        # identity refusal. The persisted detail never includes stderr.
+        # identity refusal, and so is a GraphQL NOT_FOUND repository (read from
+        # stdout). The persisted detail never includes stderr.
         low = (exc.stderr or "").lower()
         if "rate limit" in low:
             raise _AcceptanceFailure(
@@ -72,6 +73,9 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
             raise _GateAuthError(f"HTTP {denied[1]} on {path}") from None
+        not_found = _graphql_repository_not_found(exc.stdout)
+        if not_found is not None:
+            return not_found
         if exc.returncode == 4 or "gh auth login" in low:
             raise _GateAuthError(f"gh has no login for {path}") from None
         logger.warning("gh api failed for %s (rc=%s); stderr suppressed", path, exc.returncode)
@@ -83,6 +87,28 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
             raise _GateAuthError("GraphQL rejected the acceptance credential") from None
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
+
+
+def _graphql_repository_not_found(stdout: str | None) -> dict | None:
+    """The GraphQL answer when gh exited only because the repository is not visible.
+
+    Real ``gh api graphql`` exits 1 whenever the response carries ``errors``, and a
+    repository the login cannot read comes back as HTTP 200 with a NOT_FOUND error,
+    so stderr never says HTTP 404. Returning the answer (``repository: null``) lets
+    the caller's null-repository check classify it as ``auth``."""
+    try:
+        value = json.loads(stdout or "")
+    except ValueError:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("data"), dict):
+        return None
+    if "repository" not in value["data"] or value["data"]["repository"] is not None:
+        return None
+    errors = value.get("errors") or []
+    if errors and all(isinstance(e, dict) and e.get("type") == "NOT_FOUND"
+                      and (e.get("path") or [None])[0] == "repository" for e in errors):
+        return value
+    return None
 
 
 class _AcceptanceFailure(Exception):

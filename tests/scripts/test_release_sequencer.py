@@ -238,9 +238,10 @@ def _discover_run(tags, releases=(), workflow_runs=()):
         if argv[:2] == ["git", "fetch"]:
             return ""
         if argv[:3] == ["git", "ls-remote", "--tags"]:
+            # git lists refs sorted by name (rc.10 sorts before rc.2).
             return "\n".join(
                 f"{sha}\trefs/tags/{tag}\n{commit}\trefs/tags/{tag}^{{}}"
-                for tag, (sha, commit, _message) in tags.items()
+                for tag, (sha, commit, _message) in sorted(tags.items())
             )
         if argv[:2] == ["git", "rev-parse"]:
             return tags[argv[-1].removeprefix("refs/tags/")][0]
@@ -323,6 +324,49 @@ def test_abandoned_attempts_before_a_later_winner_are_burned_not_compared_to_the
     }
 
 
+def test_a_tenth_attempt_is_the_version_s_record_not_the_ninth():
+    """git sorts rc.10 between rc.1 and rc.2; discover orders attempts numerically so the
+    newest attempt is last and reconcile hands IT (not rc.9) to publish."""
+    from scripts.releases.sequencer import discover
+
+    tags = {}
+    for n in range(1, 11):
+        commit = f"{n:x}".rjust(40, "c")
+        tags[f"rc.{n}-v0.21.7"] = (f"{n:x}".rjust(40, "a"), commit,
+                                   _claim_message("0.21.7", n, commit, epoch=1_790_000_000 + n))
+        if n < 10:
+            tags[f"abandoned-rc.{n}-v0.21.7"] = (f"{n:x}".rjust(40, "b"), commit, {})
+    green = {"id": 77, "status": "completed", "conclusion": "success", "run_attempt": 1,
+             "updated_at": "2026-10-11T01:00:00Z", "head_branch": "rc.10-v0.21.7",
+             "head_sha": tags["rc.10-v0.21.7"][1]}
+    draft = {"id": 11, "tag_name": "rc.10-v0.21.7", "draft": True, "prerelease": False}
+    records = discover("example/project", _discover_run(tags, releases=[draft], workflow_runs=[green]))
+    assert [r["attempt"] for r in records] == list(range(1, 11))
+    newest = {r["version"]: r for r in records}["0.21.7"]
+    assert (newest["claim_tag"], newest["state"], newest["release_id"]) == ("rc.10-v0.21.7", "green", 11)
+
+
+def test_a_same_commit_retry_after_an_abandoned_attempt_publishes():
+    """rc.1 abandoned, rc.2 re-cut at the SAME commit wins: rc.1 is burned (its marker), not
+    compared against v0.21.6's metadata, which names rc.2."""
+    from scripts.releases.sequencer import discover
+
+    commit = "a" * 40
+    tags = {
+        "rc.1-v0.21.6": ("1" * 40, commit, _claim_message("0.21.6", 1, commit, epoch=1_790_000_001)),
+        "abandoned-rc.1-v0.21.6": ("3" * 40, commit, {}),
+        "rc.2-v0.21.6": ("2" * 40, commit, _claim_message("0.21.6", 2, commit, epoch=1_790_000_002)),
+    }
+    final = _final_message("0.21.6", 2, commit, release_id=9, epoch=1_790_000_002)
+    final["claimTagObject"] = "2" * 40
+    tags["v0.21.6"] = ("f" * 40, commit, final)
+    releases = [{"id": 9, "tag_name": "v0.21.6", "draft": False, "prerelease": False,
+                 "published_at": "2026-10-08T11:51:57Z"}]
+    records = discover("example/project", _discover_run(tags, releases=releases))
+    assert [(r["claim_tag"], r["state"]) for r in records] == [
+        ("rc.1-v0.21.6", "burned"), ("rc.2-v0.21.6", "published")]
+
+
 def test_a_final_tag_at_another_commit_than_a_live_attempt_is_still_refused():
     """Only an abandoned attempt is exempt: a NON-abandoned attempt whose version's final tag
     points elsewhere is a real inconsistency and keeps failing loudly."""
@@ -383,9 +427,10 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
         if argv[:2] == ["git", "fetch"]:
             return ""
         if argv[:3] == ["git", "ls-remote", "--tags"]:
+            # git lists refs sorted by name (rc.10 sorts before rc.2).
             return "\n".join(
                 f"{sha}\trefs/tags/{tag}\n{target}\trefs/tags/{tag}^{{}}"
-                for tag, (sha, target, _message) in tags.items()
+                for tag, (sha, target, _message) in sorted(tags.items())
             )
         if argv[:2] == ["git", "ls-remote"]:
             lines = []

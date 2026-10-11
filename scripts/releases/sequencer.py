@@ -305,7 +305,9 @@ def discover(repository: str, run=output) -> list[dict]:
             "retry": retry if final_ref is None else None,
         })
 
-    return sorted(records, key=lambda record: _key(record["version"]))
+    # Attempt order inside a version: git lists refs by name (rc.10 before rc.2), and
+    # reconcile indexes by version with the last record winning, i.e. the newest attempt.
+    return sorted(records, key=lambda record: (_key(record["version"]), record["attempt"]))
 
 
 def channel_head(desktop_head: str | None, records: list[dict],

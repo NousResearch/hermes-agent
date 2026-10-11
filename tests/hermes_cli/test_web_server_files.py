@@ -677,17 +677,21 @@ def test_mutating_a_link_entry_never_touches_its_referent(local_files_client, mo
     saved = home / "saved"
     saved.mkdir()
     (saved / "later.md").symlink_to(docs / "later.md")
-    refused = [
-        client.post(
-            "/api/files/upload",
-            json={"path": str(saved / "later.md"), "overwrite": False, "data_url": "data:text/plain;base64,bmV3"},
-        ),
-        client.post(
-            "/api/files/upload-stream",
-            data={"path": str(saved / "later.md"), "overwrite": "false"},
-            files={"file": ("later.md", b"new")},
-        ),
-    ]
+    for name in ("proj", "site"):
+        (saved / name).symlink_to(repo, target_is_directory=True)
+    refused = []
+    for name in ("later.md", "proj"):
+        refused += [
+            client.post(
+                "/api/files/upload",
+                json={"path": str(saved / name), "overwrite": False, "data_url": "data:text/plain;base64,bmV3"},
+            ),
+            client.post(
+                "/api/files/upload-stream",
+                data={"path": str(saved / name), "overwrite": "false"},
+                files={"file": (name, b"new")},
+            ),
+        ]
     decode = _rt_files._decode_data_url
 
     def decode_while_another_writer_saves(data_url):
@@ -700,8 +704,9 @@ def test_mutating_a_link_entry_never_touches_its_referent(local_files_client, mo
             "/api/files/upload",
             json={"path": str(saved / "report.md"), "overwrite": False, "data_url": "data:text/plain;base64,bmV3"},
         ))
-    assert [r.status_code for r in refused] == [409] * 3, [r.text for r in refused]
+    assert [r.status_code for r in refused] == [409] * 5, [r.text for r in refused]
     assert os.readlink(saved / "later.md") == str(docs / "later.md")
+    assert os.readlink(saved / "proj") == str(repo)
     assert not (docs / "later.md").exists()
     assert (saved / "report.md").read_text() == "theirs"
 
@@ -744,6 +749,22 @@ def test_mutating_a_link_entry_never_touches_its_referent(local_files_client, mo
     )
     assert uploaded.status_code == 200, uploaded.text
     assert (shortcuts / "notes.md").read_bytes() == b"new"
+    # A link to a directory is an entry too: overwrite replaces the link, not a 409.
+    uploaded = [
+        client.post(
+            "/api/files/upload",
+            json={"path": str(saved / "proj"), "data_url": "data:text/plain;base64,bmV3"},
+        ),
+        client.post(
+            "/api/files/upload-stream",
+            data={"path": str(saved / "site"), "overwrite": "true"},
+            files={"file": ("site", b"new")},
+        ),
+    ]
+    assert [r.status_code for r in uploaded] == [200, 200], [r.text for r in uploaded]
+    for name in ("proj", "site"):
+        assert not (saved / name).is_symlink()
+        assert (saved / name).read_bytes() == b"new"
 
     # Exactly what FilesPage.confirmDelete() sends for each listed row.
     listing = client.get("/api/files", params={"path": str(shortcuts)})

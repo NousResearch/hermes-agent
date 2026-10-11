@@ -628,9 +628,12 @@ async def stream_managed_file(request: Request, path: str):
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
     policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
-    if target.exists() and target.is_dir():
+    # is_dir()/exists() follow a link: a link to a directory is still a
+    # replaceable entry, and a dangling one is still present.
+    is_link = _is_link(target)
+    if not is_link and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
-    if target.exists() and not overwrite:
+    if (is_link or target.exists()) and not overwrite:
         raise HTTPException(status_code=409, detail="File already exists")
     return policy, target, display_path
 

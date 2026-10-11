@@ -9,6 +9,7 @@ reaped the OTHER server's live process as its orphan (#58414).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import subprocess
 import sys
 from contextlib import asynccontextmanager
@@ -40,12 +41,20 @@ def test_two_servers_spawning_together_each_track_only_their_own_child(monkeypat
     monkeypatch.setattr(MCPServerTask, "_track_spawned_children", lambda self, pids: tracked.setdefault(self.name, set(pids)))
     monkeypatch.setattr(MCPServerTask, "_release_spawned_children", lambda self, pids: None)
 
+    spawned = {name: asyncio.Event() for name in ("alpha", "beta")}
+
     @asynccontextmanager
     async def _spawning_stdio_client(params, errlog=None):
+        name = params.args[0]
         await asyncio.sleep(0)  # the other server snapshots its children before this spawn
-        children[params.args[0]] = await asyncio.to_thread(
+        children[name] = await asyncio.to_thread(
             subprocess.Popen, [sys.executable, "-c", "import time; time.sleep(30)"])
-        await asyncio.sleep(0.3)  # the other server spawns while this one is still connecting
+        spawned[name].set()
+        # Unserialized, the other server spawns now, inside this one's snapshot window; serialized, it
+        # is still waiting for the window, so the wait runs out.
+        other = "beta" if name == "alpha" else "alpha"
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(spawned[other].wait(), timeout=1)
         yield (None, None)
 
     async def _connect_both():

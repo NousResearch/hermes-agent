@@ -351,11 +351,24 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
 
 
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
-    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
-    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
+    """Exact argv of a running process: psutil's argv array when importable, else
+    ``/proc/<pid>/cmdline`` (Linux), else ``ps -o command=`` + shlex (macOS), None on Windows
+    (no graceful taskkill window; Desktop manages its backend). psutil wins over ``ps`` because
+    ``ps`` shell-quotes its output and ``shlex.split`` mangles arguments containing spaces (a
+    ``python -c "<script>"`` launcher would respawn with a broken argv)."""
     if sys.platform == "win32":
         return None
     try:
+        try:
+            # psutil is not shipped on android; the /proc and ps fallbacks below still apply.
+            import psutil
+        except ImportError:
+            psutil = None
+        if psutil is not None:
+            with contextlib.suppress(psutil.Error):
+                argv = psutil.Process(pid).cmdline()
+                if argv:
+                    return argv
         cmdline_path = f"/proc/{pid}/cmdline"
         if os.path.exists(cmdline_path):
             with open(cmdline_path, "rb") as f:

@@ -773,7 +773,7 @@ class TestFilterDashboardRespawnCandidates:
 
 
 class TestCmdlineCapture:
-    """_dashboard_cmdline_for_pid reads /proc on Linux, ps on macOS."""
+    """_dashboard_cmdline_for_pid reads psutil's exact argv first, /proc next, ps last."""
 
     def _live(self):
         return main_dashboard
@@ -798,7 +798,9 @@ class TestCmdlineCapture:
                 return real_open(proc_file, *a, **kw)
             return real_open(path, *a, **kw)
 
-        with patch.object(live.os.path, "exists", fake_exists), \
+        import psutil
+        with patch.object(psutil.Process, "cmdline", side_effect=psutil.NoSuchProcess(pid=777)), \
+             patch.object(live.os.path, "exists", fake_exists), \
              patch("builtins.open", fake_open):
             argv = main_dashboard._dashboard_cmdline_for_pid(777)
 
@@ -812,11 +814,39 @@ class TestCmdlineCapture:
             assert args == ["ps", "-p", "888", "-o", "command="]
             return MagicMock(returncode=0, stdout="hermes serve --port 8300\n", stderr="")
 
-        with patch.object(live.os.path, "exists", return_value=False), \
+        import psutil
+        with patch.object(psutil.Process, "cmdline", side_effect=psutil.NoSuchProcess(pid=888)), \
+             patch.object(live.os.path, "exists", return_value=False), \
              patch("subprocess.run", side_effect=fake_run):
             argv = main_dashboard._dashboard_cmdline_for_pid(888)
 
         assert argv == ["hermes", "serve", "--port", "8300"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX psutil cmdline path")
+    def test_psutil_exact_argv_wins_over_ps(self):
+        """ps shell-quotes its output, so shlex.split mangles arguments containing spaces
+        (a ``python -c "<script>"`` launcher would respawn with a broken argv); psutil's
+        exact argv array must win whenever psutil reports one."""
+        import psutil
+        exact = [sys.executable, "-c", "import time; time.sleep(30)"]
+
+        class _StubProcess:
+            # psutil.Process(pid) itself raises NoSuchProcess for dead pids, so patching
+            # cmdline alone is environment-dependent; a stub constructor is deterministic.
+            def __init__(self, pid):
+                self.pid = pid
+
+            def cmdline(self):
+                return list(exact)
+
+        def fail_probe(*a, **kw):
+            raise AssertionError("ps fallback must not run when psutil reports the argv")
+
+        with patch.object(psutil, "Process", _StubProcess), \
+             patch.object(main_dashboard, "_run_probe", side_effect=fail_probe):
+            argv = main_dashboard._dashboard_cmdline_for_pid(909)
+
+        assert argv == exact
 
     @pytest.mark.platforms("windows")
     def test_returns_none_on_windows(self):

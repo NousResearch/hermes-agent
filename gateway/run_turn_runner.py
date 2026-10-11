@@ -1128,9 +1128,9 @@ class TurnRunner:
             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,
             gateway_session_key=ctx.session_key,
             session_db=getattr(runner._session_db, "_db", runner._session_db),
-            # Reload from disk — do not reuse the startup snapshot.
-            # See #60955.
-            fallback_model=self._runner._refresh_fallback_model(),
+            # Use the source-aware chain: global fallback settings refresh between turns,
+            # while per-channel overrides use the gateway's loaded config snapshot.
+            fallback_model=runner._resolve_fallback_model_for_source(src),
             skip_context_files=skip_context_files,
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
@@ -1155,11 +1155,14 @@ class TurnRunner:
         msg_count = self._current_message_count()
         found = self._lookup_cached_agent(sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count)
         agent = found.agent
-        # Lock released — refresh the reused agent's fallback chain from disk OUTSIDE the cache lock
-        # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain
-        # configured after caching must reach the next turn; per-session serialization keeps it safe.
+        # Lock released — refresh the reused agent's fallback chain OUTSIDE the cache lock
+        # (disk I/O for the global chain under the lock stalls the idle-sweep watcher and Discord
+        # heartbeats). Per-session serialization keeps the update safe; channel overrides come
+        # from the gateway's loaded config snapshot.
         if found.reused and agent is not None:
-            self._runner._apply_fallback_chain_to_agent(agent, runner._refresh_fallback_model())
+            self._runner._apply_fallback_chain_to_agent(
+                agent, runner._resolve_fallback_model_for_source(ctx.source)
+            )
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:

@@ -2283,22 +2283,35 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     "_pending_turn_sidecar_notes")
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
+def _resolve_runtime_agent_kwargs(
+    *, fallback_providers: list[dict] | None = None, requested_provider: str | None = None,
+    target_model: str | None = None,
+) -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
     ``resolve_runtime_provider()`` may fall back to env vars; behavioral config is config.yaml only.
     An ``AuthError`` from the primary walks the configured fallback chain through the shared
-    ``resolve_runtime_with_fallback`` (the gateway keeps no resolver loop of its own)."""
+    ``resolve_runtime_with_fallback`` (the gateway keeps no resolver loop of its own).
+
+    An explicit channel chain, including ``[]``, replaces both global fallback keys during this
+    pre-agent resolution so private-channel routing cannot leak to a global fallback provider.
+    """
     from hermes_cli.runtime_provider import (
         resolve_runtime_with_fallback, format_runtime_provider_error, _get_model_config)
 
     # Capture primary provider/model from config before the try block so we
     # can include it in the fallback notice if the primary fails (#74349).
     _model_cfg = _get_model_config()
-    _primary_model = (_model_cfg.get("default") or "").strip()
-    _primary_provider = (_model_cfg.get("provider") or "").strip()
+    _primary_model = target_model or (_model_cfg.get("default") or "").strip()
+    _primary_provider = requested_provider or (_model_cfg.get("provider") or "").strip()
 
     try:
-        runtime, fallback_entry = resolve_runtime_with_fallback(_load_gateway_config())
+        fallback_config = (
+            {"fallback_providers": fallback_providers}
+            if fallback_providers is not None else _load_gateway_config()
+        )
+        runtime, fallback_entry = resolve_runtime_with_fallback(
+            fallback_config, requested=requested_provider, target_model=target_model,
+        )
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 

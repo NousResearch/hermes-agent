@@ -9,6 +9,7 @@ vi.mock('@/store/session', async (): Promise<object> => {
   return { $connection: atom(null), $defaultReasoningEffort: atom<string>('') }
 })
 
+import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -31,7 +32,12 @@ import {
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
-import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from './model-catalog-menu'
+import {
+  collisionFallbackTags,
+  ModelCatalogMenu,
+  ModelMenuCloseContext,
+  type ModelMenuController
+} from './model-catalog-menu'
 import { MODEL_MENU_ROW_AREA, type ModelMenuRowContribution } from './model-menu-row-decorations'
 
 // Radix calls these on open; jsdom doesn't implement them.
@@ -120,7 +126,7 @@ describe('model menu row decorations (MODEL_MENU_ROW_AREA)', () => {
       expect(row.querySelector('[data-model-menu-row-badge]')?.textContent).toBe('new')
 
       // A decorator returning null leaves its row bare.
-      const bare = screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!
+      const bare = screen.getByText(/Gemini 2\.5/).closest('[role="menuitem"]')!
 
       expect(bare.querySelector('[data-slot="model-menu-row-icon"]')).toBeNull()
       expect(bare.querySelector('[data-model-menu-row-badge]')).toBeNull()
@@ -135,14 +141,14 @@ describe('the current row effort', () => {
     $defaultReasoningEffort.set('ultra')
     renderMenu({ effortPending: true, model: 'gemini-2.5-flash', provider: 'google' })
 
-    const row = (await screen.findByText('Gemini 2.5')).closest('[role="menuitem"]')!
+    const row = (await screen.findByText(/Gemini 2\.5/)).closest('[role="menuitem"]')!
 
     expect(row.textContent).not.toContain('Ultra')
     cleanup()
 
     renderMenu({ model: 'gemini-2.5-flash', provider: 'google' })
 
-    const settled = (await screen.findByText('Gemini 2.5')).closest('[role="menuitem"]')!
+    const settled = (await screen.findByText(/Gemini 2\.5/)).closest('[role="menuitem"]')!
 
     expect(settled.textContent).toContain('Ultra')
   })
@@ -159,14 +165,13 @@ describe('the reasoning-effort badge (#51833)', () => {
     expect(badge.getAttribute('data-slot')).toBe('badge')
 
     // …as a SIBLING of the truncating model-name span, so it can never read as
-    // part of a differently-named model. The `-flash` variant tag is its own
-    // chip between them (#118083); the name itself stays free of both.
+    // part of a differently-named model. The variant word (`flash`) stays in
+    // the name; only the effort occupies its own chip (#51833).
     const nameSpan = badge.parentElement?.querySelector('.truncate')
 
     expect(nameSpan?.className).toContain('truncate')
     expect(nameSpan?.contains(badge)).toBe(false)
-    expect(nameSpan?.textContent?.toLowerCase()).toContain('gemini 2.5')
-    expect(nameSpan?.textContent?.toLowerCase()).not.toContain('flash')
+    expect(nameSpan?.textContent?.toLowerCase()).toContain('gemini 2.5 flash')
     expect(nameSpan?.textContent?.toLowerCase()).not.toContain('high')
   })
 
@@ -184,7 +189,7 @@ describe('the reasoning-effort badge (#51833)', () => {
 
     renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })
 
-    await screen.findByText('Gemini 2.5')
+    await screen.findByText(/Gemini 2\.5/)
 
     await waitFor(() => {
       expect(screen.queryByText('High')).toBeNull()
@@ -197,9 +202,10 @@ describe('the reasoning-effort badge (#51833)', () => {
 // (what it lists, what it offers), not about what any host does with a pick.
 function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
   const select = vi.fn()
+  const applyPreset = vi.fn()
 
   const controller: ModelMenuController = {
-    applyPreset: vi.fn(),
+    applyPreset,
     current: { effort: '', fast: false, model: '', provider: '', ...current },
     presetFor: () => ({}),
     select,
@@ -220,7 +226,7 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
     </QueryClientProvider>
   )
 
-  return select
+  return Object.assign(select, { applyPreset })
 }
 
 // Curation is ONE global preference, so it belongs to the catalog rather than
@@ -233,7 +239,7 @@ describe('the catalog owns model curation', () => {
 
     renderMenu()
 
-    await screen.findByText('Gemini 2.5')
+    await screen.findByText(/Gemini 2\.5/)
     expect(screen.queryByText(/Gemini 3\.1 Pro/i)).toBeNull()
   })
 
@@ -241,7 +247,7 @@ describe('the catalog owns model curation', () => {
     setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))
 
     renderMenu()
-    await screen.findByText('Gemini 2.5')
+    await screen.findByText(/Gemini 2\.5/)
 
     const input = screen.getByRole('textbox', { name: 'Search models' })
 
@@ -304,7 +310,7 @@ describe('the catalog owns favorite models', () => {
     // favorites sit together under it.
     expect(screen.getAllByText('Google')).toHaveLength(1)
     expect(screen.getAllByText('OpenRouter')).toHaveLength(1)
-    expect(rows).toEqual(['Gemini 3.1 Pro', 'Gemini 2.5', 'Gemini 3.1 Pro'])
+    expect(rows).toEqual(['Gemini 3.1 Pro', 'Gemini 2.5 Flash', 'Gemini 3.1 Pro'])
   })
 
   it('does not label the provider when every favorite shares one', async () => {
@@ -374,10 +380,10 @@ describe('the catalog owns favorite models', () => {
   it('the star, shift-click and Shift+Enter toggle a favorite without selecting or closing', async () => {
     const select = renderMenu()
     const key = favoriteModelKey('google', 'gemini-2.5-flash')
-    const row = () => screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!
+    const row = () => screen.getByText(/Gemini 2\.5/).closest('[role="menuitem"]')!
     const star = () => row().querySelector('button[aria-pressed]')!
 
-    await screen.findByText('Gemini 2.5')
+    await screen.findByText(/Gemini 2\.5/)
     fireEvent.click(star())
     expect($favoriteModels.get()).toEqual([key])
     await screen.findByText('Favorites')
@@ -560,10 +566,9 @@ describe('the per-row options submenu is discoverable', () => {
     fireEvent.keyDown(input, { key: 'ArrowRight' })
     await screen.findByText('Effort')
 
-    // The row name no longer carries the variant (`-flash` is its own chip,
-    // #118083), so target the truncating name span and walk up to the sub
-    // trigger from there.
-    const hovered = screen.getByText('Gemini 2.5').closest('[data-slot="dropdown-menu-sub-trigger"]')
+    // The row name now carries the variant word (`flash`) in the name; target
+    // the truncating name span and walk up to the sub trigger from there.
+    const hovered = screen.getByText(/Gemini 2\.5/).closest('[data-slot="dropdown-menu-sub-trigger"]')
 
     fireEvent.pointerMove(hovered as Element, { pointerType: 'mouse' })
     await waitFor(() => expect(hovered?.getAttribute('data-state')).toBe('open'))
@@ -733,5 +738,187 @@ describe('the catalog renders per-model pricing', () => {
     await screen.findByText('Sonnet 5')
     expect(screen.queryByText(/\/Mtok/)).toBeNull()
     expect(screen.queryByText('free')).toBeNull()
+  })
+})
+
+// Collision fallback: two distinct ids a section renders with the same name
+// get a distinguishing chip; unique rows get nothing.
+describe('collision fallback tags', () => {
+  const row = (id: string, name: string, tag = '') => ({
+    id,
+    name,
+    sectionKey: `agg:${id}`,
+    tag
+  })
+
+  it('assigns nothing when every row renders uniquely', () => {
+    const chips = collisionFallbackTags([row('deepseek/foo-x', 'Foo X'), row('solo-y', 'Solo Y')])
+
+    expect(chips.size).toBe(0)
+  })
+
+  it('treats the existing tag as part of the rendered identity', () => {
+    const chips = collisionFallbackTags([row('a-q4', 'Same', 'Q4'), row('a-q8', 'Same', 'Q8')])
+
+    expect(chips.size).toBe(0)
+  })
+
+  it('does not compare rows in different collision scopes', () => {
+    const chips = collisionFallbackTags([
+      { ...row('a/gemini-x', 'Gemini X'), scope: 'google', sectionKey: 'google:gemini-x' },
+      { ...row('gemini-x', 'Gemini X'), scope: 'openrouter', sectionKey: 'openrouter:gemini-x' }
+    ])
+
+    expect(chips.size).toBe(0)
+  })
+
+  it('uses the shallowest distinct path prefixes', () => {
+    const chips = collisionFallbackTags([
+      row('qwen/foo-x', 'Foo X'),
+      row('lora/qwen/foo-x', 'Foo X')
+    ])
+
+    expect(chips.get('agg:qwen/foo-x')?.visible).toBe('qwen/')
+    expect(chips.get('agg:lora/qwen/foo-x')?.visible).toBe('lora/')
+  })
+
+  it('lengthens prefixes past the first level only when it is still shared', () => {
+    const chips = collisionFallbackTags([
+      row('vendor/a-foo', 'Same'),
+      row('vendor/b-foo', 'Same')
+    ])
+
+    expect(chips.get('agg:vendor/a-foo')?.visible).toBe('vendor/a-foo')
+    expect(chips.get('agg:vendor/b-foo')?.visible).toBe('vendor/b-foo')
+  })
+
+  it('caps overlong chips at 12 visible characters and keeps the full token', () => {
+    const chips = collisionFallbackTags([
+      row('consensusprotocol/foo-x', 'Foo X'),
+      row('groq/foo-x', 'Foo X')
+    ])
+
+    const long = chips.get('agg:consensusprotocol/foo-x')
+
+    expect(long?.visible).toBe('consensuspr…')
+    expect(long?.visible.length).toBe(12)
+    expect(long?.full).toBe('consensusprotocol/')
+  })
+
+  it('widens capped chips just enough to stay distinct within the group', () => {
+    // Both tokens share their first 11 characters: a plain 12-char cap would
+    // read identically; the chips widen until they differ.
+    const chips = collisionFallbackTags([
+      row('consensusprotocol-a/foo', 'Same'),
+      row('consensusprotocol-b/foo', 'Same')
+    ])
+
+    const a = chips.get('agg:consensusprotocol-a/foo')?.visible
+    const b = chips.get('agg:consensusprotocol-b/foo')?.visible
+
+    expect(a).not.toBe(b)
+    expect(a).toBe('consensusprotocol-a…')
+    expect(b).toBe('consensusprotocol-b…')
+  })
+
+  it('falls back to the full id when prefixes are absent or not unique', () => {
+    const chips = collisionFallbackTags([row('deepseek/foo-x', 'Foo X'), row('foo-x', 'Foo X')])
+
+    expect(chips.get('agg:deepseek/foo-x')).toEqual({
+      full: 'deepseek/foo-x',
+      visible: 'deepseek/fo…'
+    })
+    expect(chips.get('agg:foo-x')).toEqual({ full: 'foo-x', visible: 'foo-x' })
+  })
+
+  it('renders prefix chips on duplicate rows in the live menu, none on a unique row', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['deepseek/foo-x', 'consensusprotocol/foo-x', 'solo-y'],
+          name: 'Aggregator',
+          slug: 'agg'
+        }
+      ]
+    })
+    setVisibleModels(
+      new Set([
+        modelVisibilityKey('agg', 'deepseek/foo-x'),
+        modelVisibilityKey('agg', 'consensusprotocol/foo-x'),
+        modelVisibilityKey('agg', 'solo-y')
+      ])
+    )
+
+    renderMenu()
+
+    expect((await screen.findAllByText('Foo X'))).toHaveLength(2)
+    expect(screen.getByText('deepseek/')).toBeTruthy()
+    expect(screen.getByText('consensuspr…')).toBeTruthy()
+
+    const unique = screen.getByText('Solo Y').closest('[role="menuitem"]')!
+
+    expect(unique.querySelector('[data-slot="badge"]')).toBeNull()
+  })
+
+  it('keeps a base id and its pinned snapshot as two rows without a fallback chip', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['claude-haiku-4-5', 'claude-haiku-4-5-20251001'],
+          name: 'Anthropic',
+          slug: 'anthropic'
+        }
+      ]
+    })
+
+    renderMenu()
+
+    expect(await screen.findByText('Haiku 4.5')).toBeTruthy()
+    expect(await screen.findByText('Haiku 4.5 2025-10-01')).toBeTruthy()
+
+    const pinned = screen.getByText('Haiku 4.5 2025-10-01').closest('[role="menuitem"]')!
+
+    expect(pinned.querySelector('[data-slot="badge"]')).toBeNull()
+  })
+})
+
+// On selection a stored preset restores its values; a model without one gets
+// the profile defaults applied to the session without being persisted.
+describe('preset restore on selection', () => {
+  it('applies the profile defaults on switch but does not store them as a preset', async () => {
+    const select = renderMenu()
+    await screen.findByText(/Gemini 2\.5/)
+
+    fireEvent.click(screen.getByText(/Gemini 2\.5/))
+    expect(select).toHaveBeenCalledWith('gemini-2.5-flash', 'google')
+
+    await waitFor(() =>
+      expect(select.applyPreset).toHaveBeenCalledWith(
+        { effort: DEFAULT_REASONING_EFFORT, fast: false, serviceTier: 'normal' },
+        { model: 'gemini-2.5-flash', provider: 'google' },
+        { persist: false }
+      )
+    )
+  })
+
+  it('shows the full id in the submenu and offers it via the OverflowTip trigger', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/)
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+
+    const idLabel = await screen.findByText('gemini-3.1-pro')
+
+    expect(idLabel.textContent).toBe('gemini-3.1-pro')
+
+    await waitFor(() => {
+      const row = document.querySelector('[data-kb-active]')
+      const nameTrigger = row?.querySelector('span.truncate')
+
+      expect(nameTrigger?.getAttribute('data-slot')).toBe('tooltip-trigger')
+    })
   })
 })

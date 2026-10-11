@@ -3586,17 +3586,16 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         return result
 
     def _augment_summary_lean(self, summary: str, turns_to_summarize: list[dict[str, Any]]) -> str:
-        """Append deterministic lean-mode sections to a summary; no-op in legacy mode."""
+        """Rebuild the deterministic lean-mode sections from this region plus the previous summary (#136540)."""
         if getattr(self, "tail_mode", "lean") != "lean":
             return summary
-        for heading, build in (
-            (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
-            (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
-            (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
-        ):
-            if heading not in summary:
-                summary += build()
-        return summary
+        from agent.context_compressor_lean import rebuild_lean_sections
+
+        return rebuild_lean_sections(
+            summary, turns_to_summarize,
+            previous_summary=self._previous_summary or "",
+            session_id=getattr(self, "_session_id", "") or "",
+        )
 
     @classmethod
     def _bound_summary_input(cls, content: str) -> str:

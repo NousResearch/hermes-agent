@@ -627,6 +627,7 @@ export function useMainApp(gw: GatewayClient) {
     gw,
     onFreshSessionStarted: DASHBOARD_TUI_MODE ? setDashboardFreshSessionId : undefined,
     panel,
+    recoverSidRef,
     rpc,
     scrollRef,
     setHistoryItems,

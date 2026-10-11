@@ -959,6 +959,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
+    // The view already holds a session (a user attach took over the recovery target, or
+    // bound before the first ready): never forge or auto-resume a replacement behind it.
+    // The one-shot startup prompt still goes to that session.
+    if (getUiState().sid) {
+      return scheduleStartupPrompt()
+    }
+
     if (STARTUP_RESUME_ID) {
       patchUiState({ status: t('session.status.resuming') })
       resumeById(STARTUP_RESUME_ID)

@@ -5570,6 +5570,42 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
         # assembled and measured from the pruned copy (#61932).
         canonical_messages = self._drop_blank_echoes(messages)
+
+        # Size-efficiency guard (#21470): skip the LLM call when the compressible
+        # window is not meaningfully larger than the summary budget.  The
+        # structured summary template has a _MIN_SUMMARY_TOKENS floor of 2,000
+        # plus ~500 tokens of overhead (headers, instructions, separators).
+        # When the compressible window is small, the summary can be BIGGER than
+        # the raw messages it replaces, causing rapid re-compression (#23811).
+        #
+        # Uses auto-detected prompt tokens (self.last_prompt_tokens, set by the
+        # last real LLM response) instead of display_tokens (which may be
+        # caller-overridden with current_tokens) so the guard does not fire
+        # for unit tests that pass synthetic current_tokens on tiny transcripts.
+        # ``force=True`` (explicit user /compress request) also bypasses the
+        # guard, same as ``_feasibility_skip``.
+        _auto_tokens = self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        if not force:
+            _guard_start = self._protect_head_size(messages)
+            _guard_start = self._align_boundary_forward(messages, _guard_start)
+            _guard_end = self._find_tail_cut_by_tokens(messages, _guard_start)
+            if _guard_start < _guard_end:
+                _guard_turns = messages[_guard_start:_guard_end]
+                _guard_tokens = estimate_messages_tokens_rough(_guard_turns)
+                _guard_budget = self._compute_summary_budget(_guard_turns)
+                if (
+                    _auto_tokens >= self.threshold_tokens
+                    and _guard_tokens <= _guard_budget + 500
+                ):
+                    if not self.quiet_mode:
+                        logger.info(
+                            "Compression skipped: compressible window (~%d tokens) not "
+                            "larger than summary budget (%d tokens)",
+                            _guard_tokens,
+                            _guard_budget + 500,
+                        )
+                    return messages
+
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,

@@ -11,7 +11,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
-from agent.anthropic_thinking_policy import anthropic_thinking_route, model_preserves_prior_thinking
+from agent.anthropic_thinking_policy import anthropic_thinking_route, route_replays_prior_thinking
 
 logger = logging.getLogger(__name__)
 
@@ -570,20 +570,34 @@ def _keep_valid_thinking(content: list[Any], signature_dead: bool) -> list[Any]:
     return new_content
 
 
+def _current_tool_loop_start(result: list[dict[str, Any]]) -> int:
+    """Index after the last user message carrying no tool result: every assistant turn from there on belongs
+    to the in-flight tool loop, whose thinking Anthropic requires back. A steer merged into a tool_result
+    turn still continues the loop."""
+    for i in range(len(result) - 1, -1, -1):
+        m = result[i]
+        if m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if not (isinstance(content, list) and any(_block_type(b) == "tool_result" for b in content)):
+            return i + 1
+    return 0
+
+
 def _manage_thinking_signatures(result: list[dict[str, Any]], base_url: str | None, model: str | None) -> None:
     """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
 
     Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
-    (400 "Invalid signature in thinking block"). Native preserved-thinking models keep valid signed
-    blocks on every assistant turn; older Claude models retain the established latest-turn-only
-    policy. Signatures are proprietary: third-party endpoints strip all thinking. Kimi replays as-is;
-    DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous Portal proxies Claude
-    with sticky sessions and validates the same signatures, so it takes the native path despite not
-    being anthropic.com.
+    (400 "Invalid signature in thinking block"). Signed routes (Anthropic, Nous Portal, Bedrock,
+    Vertex, Foundry; MiniMax for its own blocks) keep valid signed blocks on every assistant turn
+    when the model keeps prior thinking, else on every turn of the in-flight tool loop (the API
+    requires those back and strips older turns itself; cutting at the latest assistant message
+    broke the loop's earlier steps). Unknown relays cannot verify signatures and strip all; Kimi
+    replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones.
     """
     route = anthropic_thinking_route(base_url, model)
-    last_assistant_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), None)
-    preserve_prior = model_preserves_prior_thinking(model)
+    loop_start = _current_tool_loop_start(result)
+    preserve_prior = route_replays_prior_thinking(route, model)
     for idx, m in _assistant_block_lists(result):
         if route == "kimi":
             pass  # shared cleanup below still strips cache markers + the flag
@@ -594,7 +608,7 @@ def _manage_thinking_signatures(result: list[dict[str, Any]], base_url: str | No
                 if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
             ]
             m["content"] = new_content or [_text_block("(empty)")]
-        elif route == "third_party" or (idx != last_assistant_idx and not preserve_prior):
+        elif route == "third_party" or (idx < loop_start and not preserve_prior):
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
         else:
             new_content = _keep_valid_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
@@ -716,8 +730,8 @@ def convert_messages_to_anthropic(
 ) -> tuple[Optional[Any], list[dict]]:
     """Convert OpenAI-format messages to Anthropic format -> ``(system, messages)``. System is
     extracted into its own param (a string, or a block list when cache_control is present).
-    ``base_url``/``model`` drive thinking-signature policy — third-party endpoints strip signatures
-    (proprietary, they 400 on them); Kimi-family endpoints/models keep unsigned
+    ``base_url``/``model`` drive thinking-signature policy — unknown third-party relays strip
+    signatures (they cannot verify them); Kimi-family endpoints/models keep unsigned
     reasoning_content-derived blocks, which Kimi requires even when empty."""
     system = None
     result: list[dict[str, Any]] = []

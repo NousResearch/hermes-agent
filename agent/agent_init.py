@@ -2449,9 +2449,9 @@ def init_agent(
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
-    # Every (provider, model) that rejected image content this session. build_api_request strips
-    # images from requests to those models only, so history keeps them for any model that can see.
+    # Routes that rejected image content / named reasoning keys; build_api_request strips those from wire copies only.
     agent._image_rejecting_models = set()
+    agent._reasoning_rejecting_routes = {}  # (provider, host, model) -> rejected reasoning keys
     # Models whose Anthropic organization answered a fast request with a fast-mode limit of 0;
     # agent.fast_mode stops sending ``speed`` to them for the rest of the session.
     agent._fast_mode_unavailable_models = set()

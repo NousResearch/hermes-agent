@@ -280,11 +280,11 @@ DEFAULT_CONFIG = {
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},
-        # Preserve assistant `reasoning_content` on history replay. Echo families (DeepSeek,
-        # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name/base-URL host; custom
-        # providers and OpenAI-compatible gateways proxying them are not. Set `reasoning_echo: true`
-        # on a `model:` entry or a `fallback_providers:` entry to opt in per provider. Default
-        # false: strict providers (Mistral, Groq, Cerebras) reject the field.
+        # Stored reasoning is replayed to every provider that can read it by default. This flag
+        # only adds the must-echo " " pad on reasoning-less tool-call turns, which DeepSeek,
+        # Kimi/Moonshot and Xiaomi MiMo require (auto-detected by provider name/host). Set
+        # `reasoning_echo: true` on a `model:` or `fallback_providers:` entry for a custom gateway
+        # proxying one of them. Strict providers (Mistral, Groq, Cerebras) never get the field.
         "reasoning_echo": False,
         # Turn liveness watchdog: a turn with no observable progress for `timeout_s` seconds is
         # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn

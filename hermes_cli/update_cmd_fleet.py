@@ -1526,7 +1526,11 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
         # full-budget wait reads as a hung update.
         if not _drain_or_signal_gateway_for_update(
                 pid, _drain_budget, proc.profile, self_restart_pending=out.self_restart_pending_pids):
-            with suppress(ProcessLookupError, PermissionError):
+            # ``OSError`` too: on Windows ``os.kill`` maps to TerminateProcess and raises
+            # ``OSError(WinError 87)`` — not ProcessLookupError — for a PID that exited
+            # between the scan and the kill (bpo-14484); a bare escape aborts the whole
+            # restart phase (#132812).
+            with suppress(ProcessLookupError, PermissionError, OSError):
                 os.kill(pid, _signal.SIGTERM)
         # Wait ≤5s for exit: Telegram keeps the old getUpdates session ~30s; a new gateway
         # inside that window gets a 409 (_handle_polling_conflict retries, but a brief
@@ -1541,7 +1545,10 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
     for pid in manual_pids:
         if pid in profile_processes and pid not in unrestartable_pids:
             continue
-        with suppress(ProcessLookupError, PermissionError):
+        # Same Windows widening as above: an unmapped PID that exited mid-window raises
+        # ``OSError(WinError 87)`` from ``os.kill`` instead of ProcessLookupError and must
+        # read as "already stopped", not abort the phase (#132812).
+        with suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(pid, _signal.SIGTERM)
             out.killed_pids.add(pid)
             out.stopped_unmapped_pids.add(pid)

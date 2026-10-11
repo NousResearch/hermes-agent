@@ -1835,6 +1835,10 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
             or result.get("failure_reason") == "context_overflow"
         ):
             return
+        # Superseded by the user's newer message (#136146): the request was not refused, and the
+        # newer message continues it, so a "not processed, send it again" row only misleads.
+        if result.get("interrupted") and result.get("interrupt_message"):
+            return
         messages = result.get("messages")
         db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
         if not isinstance(messages, list) or not messages or db is None or not session_id:

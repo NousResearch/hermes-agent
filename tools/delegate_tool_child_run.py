@@ -383,24 +383,56 @@ def _register_child(
 
 def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str]):
     """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
-    child's terminal starts there). Git-only, local-backend-only; failures
-    degrade silently to the shared workspace. Returns the worktree info or None."""
+    child's terminal starts there). Git-only, local-backend-only.
+
+    Returns the worktree info dict on success, ``None`` when isolation was not
+    requested or does not apply (non-local backend), or — Goal B — a
+    ``{"isolation_failed": <reason>}`` marker when isolation WAS requested but
+    could not engage. Callers must surface the marker, never silently treat the
+    child as isolated, and block repo-mutating work for it (recorded as a
+    downgrade by ``seed_workspace``, keyed by the real child task id)."""
     from tools.delegate_tool import _get_worktree_isolation, _resolve_workspace_hint
     if not _get_worktree_isolation():
         return None
-    with _quiet("worktree isolation setup failed: %s"):
+    try:
         from tools import subagent_worktree
         if not subagent_worktree.local_backend_active():
+            # By design: the host worktree is invisible in a remote/container
+            # sandbox, which is itself the isolation boundary. Not a downgrade.
             logger.debug("worktree isolation skipped: non-local terminal backend")
             return None
         _parent_cwd = None
         with _quiet(None):
             from tools.terminal_tool import get_session_cwd as _gsc
             _parent_cwd = _gsc(parent_task_id)
-        return subagent_worktree.create_subagent_worktree(
-            _parent_cwd or _resolve_workspace_hint(parent_agent), subagent_id=subagent_id,
-        )
-    return None
+        _parent_cwd = _parent_cwd or _resolve_workspace_hint(parent_agent)
+        if not _parent_cwd:
+            return {"isolation_failed": "worktree isolation was requested but no parent "
+                                         "cwd could be resolved (no session record, no workspace hint)"}
+        if subagent_worktree.resolve_repo_root(_parent_cwd) is None:
+            return {"isolation_failed": f"worktree isolation was requested for repository "
+                                         f"work but the dispatch cwd ({_parent_cwd}) is not "
+                                         f"inside a git repository — no worktree could be "
+                                         f"established"}
+        info = subagent_worktree.create_subagent_worktree(_parent_cwd, subagent_id=subagent_id)
+        if info is None:
+            # e.g. repo with zero commits (unborn HEAD): `git worktree add`
+            # fails; detail is in the subagent_worktree log line.
+            return {"isolation_failed": f"worktree isolation was requested but git worktree "
+                                         f"creation failed for repo at "
+                                         f"{subagent_worktree.resolve_repo_root(_parent_cwd)}"}
+        return info
+    except Exception as exc:
+        # Goal B, fail-closed: an unexpected setup error must never degrade to
+        # "not isolated, unguarded" (the pre-hardening ``_quiet`` swallow did
+        # exactly that — the exception fell through to a silent ``return None``
+        # with no downgrade record, so no mutation guard applied either).
+        logger.warning("worktree isolation setup raised %s: %s — recording as an "
+                       "explicit downgrade, never a silent one",
+                       type(exc).__name__, exc, exc_info=True)
+        return {"isolation_failed": f"worktree isolation was requested but setup raised "
+                                     f"{type(exc).__name__}: {exc} — no worktree could be "
+                                     f"established; the child is NOT repository-isolated"}
 
 def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     """Hand ``child.close()`` to a Future done-callback and drain its transports.
@@ -719,6 +751,9 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    # Goal B: non-empty when worktree isolation was requested but FAILED at
+    # dispatch; surfaced in the result entry so the downgrade is never silent.
+    isolation_downgrade_reason: Optional[str] = None
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -732,6 +767,18 @@ class _ChildRun:
     def attach_worktree(self, entry_dict: dict[str, Any]) -> dict[str, Any]:
         """Inspect + prune the child worktree, reporting into the entry (no-op without isolation)."""
         info = self.worktree_info
+        if self.isolation_downgrade_reason:
+            # Goal B: the dispatch requested isolation and did not get it — the
+            # entry must say so explicitly; the child was never isolated and
+            # repo-mutating tool calls were denied during the run.
+            entry_dict["worktree_isolation_downgraded"] = {
+                "reason": self.isolation_downgrade_reason,
+                "child_task_id": self.child_task_id,
+                "note": ("Worktree isolation was requested but FAILED. The child was NOT "
+                         "repository-isolated; repository-mutating tool calls (terminal "
+                         "workdir, write_file/patch) were denied during the run. No "
+                         "silent downgrade occurred."),
+            }
         if info is None:
             return entry_dict
         from tools import subagent_worktree
@@ -758,7 +805,27 @@ class _ChildRun:
             record_session_cwd(self.child_task_id, get_session_cwd(self.parent_task_id))
             register_container_alias(self.child_task_id, self.parent_task_id)
 
-        self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
+        _isolation = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
+        if isinstance(_isolation, dict) and _isolation.get("isolation_failed"):
+            # Goal B: isolation was requested but could not engage. Record the
+            # downgrade keyed by the child's REAL task id so every structured
+            # mutation guard (terminal workdir, write_file/patch, cwd recorder)
+            # denies repo-mutating operations for this child, and surface the
+            # reason in the child's result entry (attach_worktree reads this).
+            self.isolation_downgrade_reason = str(_isolation["isolation_failed"])
+            from tools import child_containment
+            child_containment.register_isolation_downgrade(
+                self.child_task_id, self.isolation_downgrade_reason,
+                str(getattr(self.parent_agent, "cwd", "") or ""))
+            self.worktree_info = None
+        elif isinstance(_isolation, dict):
+            # Goal A: register the approved worktree keyed by the child's REAL
+            # task id — the same key the terminal/file guards resolve.
+            self.worktree_info = _isolation
+            from tools import child_containment
+            child_containment.register_child_worktree(self.child_task_id, self.worktree_info)
+        else:
+            self.worktree_info = None
         if self.worktree_info is not None:
             with _quiet("worktree cwd seed failed: %s"):
                 from tools.terminal_tool import record_session_cwd as _rsc
@@ -1049,6 +1116,14 @@ class _ChildRun:
         no turn is active."""
         child = self.child
         heartbeat.stop()
+
+        # Containment registry teardown (Goal A/B): the child run is over, so its
+        # approved-worktree entry / downgrade record must not constrain any
+        # later task that reuses this id, nor leak a stale approval.
+        with _quiet("child containment unregister failed"):
+            from tools import child_containment
+            child_containment.unregister_child_worktree(self.child_task_id)
+            child_containment.unregister_isolation_downgrade(self.child_task_id)
 
         # Safe even if the child was never registered (ID missing on test doubles).
         if self.subagent_id:

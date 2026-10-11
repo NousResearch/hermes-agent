@@ -1314,11 +1314,14 @@ _PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
 def _pre_exec_block(
     command: str, *, env: Any, env_type: str, cwd: str,
     workdir: Optional[str], session_key: str,
+    task_id: Optional[str] = None,
 ) -> None:
     """Raise :class:`_Rejected` with the blocked-result JSON when the command must not run.
 
     Order matters: gateway lifecycle first (protects the running gateway),
-    then the dangerous-workdir check, then the self-repo guard (local only).
+    then the dangerous-workdir check, then the delegated-child containment
+    check (Goal A: refuse an explicit workdir outside the child's approved
+    worktree), then the self-repo guard (local only).
     """
     blocked = gateway_lifecycle_block(
         command=command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
@@ -1331,6 +1334,17 @@ def _pre_exec_block(
             logger.warning("Blocked dangerous workdir: %s (command: %s)",
                            workdir[:200], _safe_command_preview(command))
             raise _Rejected(_error_json(workdir_error, status="blocked"))
+        # Goal A: worktree-isolated delegated children may not direct commands
+        # at directories outside their approved worktree (parent checkout or a
+        # sibling worktree). Denial happens BEFORE the command runs. Opt-in via
+        # the parent-side registry keyed by task_id (covers kernel-RPC relays
+        # too, where the delegated-child ContextVar is absent).
+        if workdir:
+            from tools.terminal_tool_guards import child_workdir_containment_block
+
+            contained = child_workdir_containment_block(workdir=workdir, task_id=task_id)
+            if contained:
+                raise _Rejected(contained)
     if env_type == "local":
         blocked = self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
         if blocked:
@@ -1418,6 +1432,20 @@ def terminal_tool(
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
+        # Delegated children must resolve cwd under their OWN task id, not the
+        # ambient session key. seed_workspace records the child's worktree cwd
+        # under child_task_id, but the child inherits the parent's process-global
+        # session key verbatim (delegated_child_context never rebinds it), so the
+        # expression above would read the PARENT's record and execute the child's
+        # commands in the parent checkout — the isolation the worktree promised is
+        # silently lost, and finalize's auto-prune then erases the evidence. One
+        # key per child (not one per dispatch) is also the only shape that holds
+        # for CONCURRENT children: two siblings share the parent's session key, so
+        # keying by it would have child B's record overwrite child A's mid-run.
+        from agent.delegation_context import is_delegated_child_context
+
+        if is_delegated_child_context() and task_id:
+            session_key = task_id
 
         # The supervised-gateway identity probe ends in a kernel process query
         # (psutil create_time) that has wedged for the better part of an hour on
@@ -1438,6 +1466,7 @@ def terminal_tool(
             bounded_guard = run_bounded_sync(
                 lambda: _pre_exec_block(
                     command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+                    task_id=task_id,
                 ),
                 guard_timeout,
                 label="terminal.pre-exec-guard",

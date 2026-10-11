@@ -772,13 +772,23 @@ def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: s
                           cross_profile: bool) -> str | None:
     """Run the shared write/patch guards in order; return the first error string.
 
-    Order matters: hard denies (sensitive path, mirror) and the corruption
-    guard run before anything that could prompt the user, and ONE approval
-    prompt covers every path of a multi-file patch.
+    Order matters: hard denies (sensitive path, mirror, containment) and the
+    corruption guard run before anything that could prompt the user, and ONE
+    approval prompt covers every path of a multi-file patch. Containment runs
+    for every caller but no-ops for task ids never registered as contained
+    children (the parent-side registry is the authority — NOT the
+    delegated-child ContextVar, which is absent on execute_code kernel-RPC
+    handler threads).
     """
     for p in paths:
         err = _check_sensitive_path(p, task_id) or (
             None if cross_profile else _check_cross_profile_path(p, task_id))
+        if err:
+            return err
+        # Goal A: a worktree-isolated child's resolved write target must lie
+        # inside its approved worktree; a downgraded child (Goal B) may not
+        # mutate repo files at all. Both deny BEFORE mutation.
+        err = _check_child_containment_target(p, task_id)
         if err:
             return err
     for p in content_paths:
@@ -787,6 +797,34 @@ def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: s
             return err
     return (_check_protected_instruction_write(paths, task_id)
             or _check_approval_required_write(paths, task_id))
+
+
+def _check_child_containment_target(filepath: str, task_id: str) -> str | None:
+    """Containment denial for one write/patch target of a delegated child.
+
+    Goal A: the resolved target (or its raw fallback) of a worktree-isolated
+    child must be inside that child's approved worktree. Goal B: a child whose
+    isolation FAILED (downgrade record) is denied repository file writes
+    entirely — it shares the parent's workspace, so a write could hit the
+    parent checkout. Keyed by the parent-side registry (covers execute_code
+    kernel-RPC relays, where the delegated-child ContextVar is absent);
+    unregistered task ids keep historical behavior. Returns the denial
+    string, else None.
+    """
+    if not task_id:
+        return None
+    from tools.child_containment import (
+        approved_worktree_for, check_downgraded_repo_mutation, check_mutation_target)
+
+    denied = check_downgraded_repo_mutation(
+        task_id=task_id, operation="a repository file write")
+    if denied:
+        return denied
+    if approved_worktree_for(task_id) is None:
+        return None  # not a contained child — historical behavior
+    resolved = _resolve_or_none(filepath, task_id) or os.path.normpath(_expand_tilde(filepath))
+    return check_mutation_target(
+        target=resolved, task_id=task_id, operation="a file write/patch target")
 
 
 def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str) -> list[str]:
@@ -871,6 +909,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     """
     # write_file checks the binary-document guard before the mirror guard.
     err = (_check_sensitive_path(path, task_id)
+           or _check_child_containment_target(path, task_id)
            or _check_binary_document_write(path, task_id)
            or _check_protected_instruction_write([path], task_id)
            or _check_approval_required_write([path], task_id)

@@ -887,7 +887,10 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
 def _has_local_edits(installed: dict) -> bool:
     """True when the on-disk content no longer matches the install-time hash. Bytecode and tool
     caches the skill's own scripts generate are not edits (bundles never ship them); older lock
-    entries may have recorded them, so either hash matching means unedited."""
+    entries may have recorded them, so either hash matching means unedited. If such recorded cache
+    bytes later disappear (cleaned, or dropped by ``profile create --clone``) the old origin can no
+    longer be proven and the skill stays protected until ``--force``, the same trade-off as
+    ``tools.skills_sync._matches_origin_hash``."""
     from tools.skills_hub import SKILLS_DIR
     from tools.skills_guard import content_hash
     from tools.skills_sync_optional import _is_runtime_cache
@@ -895,8 +898,8 @@ def _has_local_edits(installed: dict) -> bool:
     skill_path = SKILLS_DIR / installed.get("install_path", "")
     try:
         return (bool(recorded_hash) and skill_path.is_dir()
-                and recorded_hash not in (content_hash(skill_path),
-                                          content_hash(skill_path, ignore=_is_runtime_cache)))
+                and recorded_hash != content_hash(skill_path, ignore=_is_runtime_cache)
+                and recorded_hash != content_hash(skill_path))
     except OSError:
         return False
 

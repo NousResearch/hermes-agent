@@ -993,6 +993,11 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
+    -- GOV-F25 durable notifications (Option B): retry_policy selects delivery-failure
+    -- handling ('default' | 'durable'); pending_event_id is the single in-flight fence —
+    -- the oldest un-acked event id in a claimed durable batch, NULL when nothing is in flight.
+    retry_policy TEXT NOT NULL DEFAULT 'default',
+    pending_event_id INTEGER DEFAULT NULL,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
@@ -1413,10 +1418,11 @@ def _inherit_notify_subs(
         INSERT OR IGNORE INTO kanban_notify_subs
             (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
              chat_type, notifier_profile, delivery_mode, delivery_metadata,
-             created_at, last_event_id)
+             created_at, last_event_id, retry_policy)
         SELECT ?, platform, chat_id, thread_id, user_id, user_id_alt,
                COALESCE(chat_type, 'dm'), notifier_profile,
-               COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?
+               COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?,
+               COALESCE(retry_policy, 'default')
           FROM kanban_notify_subs
          WHERE task_id IN ({placeholders})
         """,
@@ -1709,6 +1715,37 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
         return int(cur.lastrowid or 0)
+
+
+def publish_task_notification(
+    conn: sqlite3.Connection,
+    task_id: str,
+    message: str,
+    *,
+    metadata: Optional[dict] = None,
+) -> None:
+    """Append a generic ``notification`` event carrying ``message`` for ``task_id``.
+
+    Public, plugin-facing writer for the gateway kanban-notifier: ``notification``
+    is claimed by both ``TERMINAL_KINDS`` (delivery) and ``_WAKE_KINDS`` (wake), so
+    the payload's ``message`` is rendered as the passive-delivery body AND carried
+    into the synthetic wake turn. Unlike ``add_comment`` (which emits a
+    non-notifiable ``commented`` event), this lets any caller resume a task's
+    subscribers with arbitrary content through the existing claim / cursor / wake
+    machinery — no bespoke event kind, no new delivery mechanism.
+    """
+    if not message or not str(message).strip():
+        raise ValueError("notification message is required")
+    # Flatten metadata into the event payload alongside the message so a consumer
+    # reads e.g. payload["idempotency_key"] directly (never nested). ``message`` is
+    # written LAST so a stray metadata "message" key can never clobber the validated body.
+    payload: dict = dict(metadata) if metadata else {}
+    payload["message"] = str(message)
+    # allow_nested=True: a caller may compose the publish under an outer commit,
+    # the same contract add_comment uses.
+    with write_txn(conn, allow_nested=True):
+        _require_task(conn, task_id)
+        _append_event(conn, task_id, "notification", payload)
 
 
 def _require_task(conn: sqlite3.Connection, task_id: str) -> None:
@@ -4232,7 +4269,17 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
-            "(SELECT id FROM tasks WHERE status IN ('done', 'archived'))", (cutoff,),
+            "(SELECT id FROM tasks WHERE status IN ('done', 'archived')) "
+            # GOV-F25 (Option B): never GC an event a durable sub still owes delivery on — that
+            # would break never-drop. Two cases: a fenced (already-claimed but un-acked) event in
+            # [pending_event_id, ...]; AND an event not yet claimed at all (fence NULL) that is
+            # still ahead of the sub's cursor. Deleting either would strand a never-deliverable
+            # durable event (the latter matters when the gateway is offline past retention before
+            # the sub's first claim).
+            "AND NOT EXISTS (SELECT 1 FROM kanban_notify_subs s "
+            "WHERE s.task_id = task_events.task_id AND s.retry_policy = 'durable' "
+            "AND ((s.pending_event_id IS NOT NULL AND task_events.id >= s.pending_event_id) "
+            "OR (s.pending_event_id IS NULL AND task_events.id > s.last_event_id)))", (cutoff,),
         )
     return int(cur.rowcount or 0)
 

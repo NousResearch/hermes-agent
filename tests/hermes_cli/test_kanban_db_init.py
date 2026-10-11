@@ -223,3 +223,71 @@ def test_healthy_fast_path_stays_lock_free(tmp_path, monkeypatch):
     with kbc.connect_closing(db_path):
         pass
     assert len(locks) == 1
+
+
+# --------------------------------------------------------------------------- #
+# GOV-F25.c AC-4 — durable guard (subscribe + re-subscribe) + migration/rebuild + inheritance #
+# --------------------------------------------------------------------------- #
+import pytest  # noqa: E402
+from hermes_cli import kanban_db_notify as kbn  # noqa: E402,F401
+from tests.gov_f25c_support import (  # noqa: E402
+    _seed_task, _notify_sub, _notify_sub_columns, _default_retry_policy, _default_pending_event_id,
+    _db_without_optional_columns, _drifted_db_with_durable_row, _sub_retry_policy, _sub_pending_event_id,
+)
+
+
+@pytest.fixture
+def kanban_conn(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def test_ac_gov_f25_c_4(kanban_conn):
+    """add_notify_sub rejects durable on push AND on a non-wake-capable mode (subscribe + re-subscribe); retry_policy + pending_event_id survive migration/rebuild; child inherits durable."""
+    from hermes_cli import kanban_db_notify, kanban_db_connect
+
+    task_id = _seed_task(kanban_conn)
+    with pytest.raises(ValueError):
+        kanban_db_notify.add_notify_sub(
+            kanban_conn, task_id=task_id, platform="telegram", chat_id="c1", retry_policy="durable")
+    with pytest.raises(ValueError):
+        kanban_db_notify.add_notify_sub(
+            kanban_conn, task_id=task_id, platform="api_server", chat_id="c2",
+            delivery_mode="notify", retry_policy="durable")
+    kanban_db_notify.add_notify_sub(
+        kanban_conn, task_id=task_id, platform="api_server", chat_id="c3",
+        delivery_mode="wake", retry_policy="durable")
+    with pytest.raises(ValueError):
+        kanban_db_notify.add_notify_sub(
+            kanban_conn, task_id=task_id, platform="api_server", chat_id="c3",
+            delivery_mode="notify", retry_policy="durable")
+    assert _notify_sub(kanban_conn, task_id=task_id, chat_id="c3").delivery_mode == "wake"
+    with pytest.raises(ValueError):
+        kanban_db_notify.add_notify_sub(
+            kanban_conn, task_id=task_id, platform="api_server", chat_id="c3", delivery_mode="notify")
+    assert _notify_sub(kanban_conn, task_id=task_id, chat_id="c3").delivery_mode == "wake"
+
+    migrate_path = _db_without_optional_columns()
+    kanban_db_connect.init_db(db_path=migrate_path)
+    with kanban_db_connect.connect_closing(db_path=migrate_path) as migrated:
+        cols = _notify_sub_columns(migrated)
+        assert "retry_policy" in cols and "pending_event_id" in cols
+        assert _default_retry_policy(migrated) == "default"
+        assert _default_pending_event_id(migrated) is None
+    rebuild_path = _drifted_db_with_durable_row(chat_id="pre", pending_event_id=7)
+    kanban_db_connect.init_db(db_path=rebuild_path)
+    with kanban_db_connect.connect_closing(db_path=rebuild_path) as rebuilt:
+        assert _sub_retry_policy(rebuilt, chat_id="pre") == "durable"
+        assert _sub_pending_event_id(rebuilt, chat_id="pre") == 7
+
+    from hermes_cli.kanban_db import _inherit_notify_subs
+    child_task = _seed_task(kanban_conn)
+    _inherit_notify_subs(kanban_conn, child_task, (task_id,))
+    inherited = _notify_sub(kanban_conn, task_id=child_task, chat_id="c3")
+    assert inherited.retry_policy == "durable"

@@ -55,6 +55,19 @@ class SSHEnvironment(BaseEnvironment):
     _profile_scoped_passthrough = True
     _sudo_nopasswd_probe_supported = True
 
+    @property
+    def _sudo_cache_target(self) -> str:
+        return f"ssh:{self.user}@{self.host}:{self.port}"
+
+    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        from tools.terminal_tool_macos_open import _transform_macos_open_command
+        from tools.terminal_tool_sudo import _transform_sudo_command
+        transformed, stdin = _transform_sudo_command(_transform_macos_open_command(command),
+                                                     sudo_nopasswd_check=self._sudo_nopasswd_works,
+                                                     cache_target=self._sudo_cache_target)
+        assert transformed is not None
+        return transformed, stdin
+
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
                  probe_only: bool = False, sync_files: bool = True):

@@ -313,8 +313,10 @@ class CLITuiRuntimeMixin:
             # The redactor snapshots its state at import time so any toggle now won't affect the running
             # process — we just want the operator to see that they're running without the safety net. See
             # #17691.
+            from agent.redact import redaction_flag_enabled
+
             _redact_raw = os.getenv("HERMES_REDACT_SECRETS", "true")
-            if _redact_raw.lower() not in {"1", "true", "yes", "on"}:
+            if not redaction_flag_enabled(_redact_raw):
                 self._console_print(
                     f"[bold red]{t('cli.tui.redaction_disabled_title')}[/] "
                     + t("cli.tui.redaction_disabled_body", value=_escape(_redact_raw),

@@ -86,6 +86,14 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "x-goog-signature", "sig",  # GCS V4 signed URLs, Azure SAS tokens
 })
 
+
+def redaction_flag_enabled(raw) -> bool:
+    """Read a ``HERMES_REDACT_SECRETS`` value. Unset or blank (a bare ``HERMES_REDACT_SECRETS=`` line in a
+    .env or compose file) keeps the secure default ON; only an explicit non-truthy value opts out."""
+    value = "" if raw is None else str(raw).strip().lower()
+    return value in {"1", "true", "yes", "on"} if value else True
+
+
 # Snapshot at import time so runtime env mutations (e.g. an LLM-generated
 # `export HERMES_REDACT_SECRETS=false`) cannot disable redaction mid-session.
 # ON by default; `security.redact_secrets: false` bridges to this env var.
@@ -94,7 +102,8 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 # to this env var in hermes_cli/main.py, gateway/run.py, and cli.py) or `HERMES_REDACT_SECRETS=false` in
 # ~/.hermes/.env. An opt-out warning is logged at gateway and CLI startup so operators see the downgrade —
 # see `_log_redaction_status()` in gateway/run.py and cli.py.
-_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
+# health: allow HX005 -- deliberate launch snapshot (see above); routed profiles resolve via _redact_enabled
+_REDACT_ENABLED = redaction_flag_enabled(os.getenv("HERMES_REDACT_SECRETS"))
 
 # Routed multiplex profiles: the import-time snapshot above is the LAUNCH profile's policy. A profile
 # served under a HERMES_HOME override resolves its own ``security.redact_secrets`` (its ``.env``
@@ -128,7 +137,7 @@ def _redact_enabled() -> bool:
             cfg_val = (load_config_readonly().get("security") or {}).get("redact_secrets")
             raw = None if cfg_val is None else str(cfg_val)
         if raw is not None:
-            enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
+            enabled = redaction_flag_enabled(raw)
     except Exception:
         enabled = True  # unreadable policy: keep the secure default
     with _REDACT_ENABLED_LOCK:

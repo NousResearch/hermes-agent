@@ -627,7 +627,7 @@ def _stream_env_stale_base() -> tuple[float, bool]:
 
 def _configured_stale_base(agent) -> float:
     """Per-provider ``stale_timeout_seconds`` config, else HERMES_STREAM_STALE_TIMEOUT (180s)."""
-    cfg = get_provider_stale_timeout(agent.provider, agent.model)
+    cfg = get_provider_stale_timeout(agent.provider, agent.model, requested_provider=getattr(agent, "requested_provider", None))
     return cfg if cfg is not None else _stream_env_stale_base()[0]
 
 
@@ -692,7 +692,7 @@ def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
     wins over every implicit floor — the context-size tier as well as the reasoning-model
     floor — so it can SHORTEN patience for a hung stream (#115024). Only the 180s default
     is scaled and floored."""
-    explicit = get_provider_stale_timeout(agent.provider, agent.model)
+    explicit = get_provider_stale_timeout(agent.provider, agent.model, requested_provider=getattr(agent, "requested_provider", None))
     if explicit is not None:
         return explicit
     base, explicit_env = _stream_env_stale_base()
@@ -2959,7 +2959,8 @@ class _StreamingCall(StreamingWaitMonitor):
         ``request_timeout_seconds`` wins over HERMES_API_TIMEOUT (1800s) and
         HERMES_STREAM_READ_TIMEOUT (120s); connect/pool cover the handshake, not
         inference: 30s, or capped at 60s when configured."""
-        cfg = get_provider_request_timeout(self.agent.provider, self.agent.model)
+        cfg = get_provider_request_timeout(
+            self.agent.provider, self.agent.model, requested_provider=getattr(self.agent, "requested_provider", None))
         base = cfg if cfg is not None else env_float("HERMES_API_TIMEOUT", 1800.0)
         if cfg is not None:
             return base, cfg, min(base, 60.0)

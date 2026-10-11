@@ -1029,7 +1029,7 @@ def _build_client(agent, api_key, base_url, fallback_model):
     # responses.stream()). One provider/model timeout up front so every path applies it.
     agent._anthropic_client = None
     agent._is_anthropic_oauth = False
-    _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
+    _provider_timeout = get_provider_request_timeout(agent.provider, agent.model, requested_provider=getattr(agent, "requested_provider", None))
     if agent.api_mode == "anthropic_messages":
         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
     elif agent.provider == "moa":

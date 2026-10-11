@@ -97,16 +97,25 @@ def _compacted(content, media):
 
 
 def compact_settled_api_payloads(db, admission_id=None):
-    """Drop the redundant base64 copy of committed API images from TERMINAL admission rows: one
-    row at settlement, or (``admission_id=None``) the startup sweep for rows a crash left between
-    settlement and this pass. The bytes stay in content-addressed ``native-inputs`` (held by
-    ``api_turn_v1.media`` as history context); ``payload_digest`` is untouched, so an exact retry
-    still matches. Queued/started/unknown rows are never rewritten: they may still execute."""
+    """Drop what a TERMINAL API admission row no longer needs: one row at settlement, or
+    (``admission_id=None``) the startup sweep for rows a crash left between settlement and this pass.
+
+    - The redundant base64 copy of committed images in ``text``: the bytes stay in content-addressed
+      ``native-inputs`` (held by ``api_turn_v1.media`` as history context).
+    - The caller-supplied ``api_turn_v1.history`` (every turn carries the whole conversation, inline
+      images included, so a session's ledger grew quadratically). Execution read it; a terminal row
+      is read only by exact-retry projections. Responses rows keep it: their terminal replay rebuilds
+      the ``previous_response_id`` snapshot from it.
+
+    ``payload_digest`` is untouched, so an exact retry still matches. Queued/started/unknown rows
+    are never rewritten: they may still execute."""
     import json
     from hermes_state_runtime import _json
+    # LIKE, not instr(): SQLite LIKE is ASCII case-insensitive, as ``_data_url_bytes`` is.
     candidates = ("SELECT admission_id FROM session_admissions WHERE status='terminal' AND principal_id='api' "
-                  "AND json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL "
-                  "AND instr(payload_json, 'data:image/') > 0")
+                  "AND ((json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL "
+                  "AND payload_json LIKE '%data:image/%') OR (json_type(payload_json, '$.api_turn_v1.history')='array' "
+                  "AND request_id NOT LIKE 'responses:%'))")
     if admission_id is None:
         # The scan runs on a read snapshot; a write transaction opens only when there is work.
         with db._read_ctx() as conn:
@@ -117,13 +126,19 @@ def compact_settled_api_payloads(db, admission_id=None):
     def write(conn):
         compacted = 0
         for row_id in ids:
-            row = conn.execute(candidates.replace('SELECT admission_id', 'SELECT payload_json')
+            row = conn.execute(candidates.replace('SELECT admission_id', 'SELECT payload_json, request_id')
                                + ' AND admission_id=?', (row_id,)).fetchone()
-            payload = json.loads(row[0]) if row is not None else None
-            text = _compacted(payload.get('text'), payload['api_turn_v1']['media']) if payload else None
-            if text is not None:
+            if row is None:
+                continue
+            payload = json.loads(row[0])
+            data = payload['api_turn_v1']
+            text = _compacted(payload.get('text'), data.get('media'))
+            drop = isinstance(data.get('history'), list) and not row[1].startswith('responses:')
+            if text is not None or drop:
+                payload = {**payload, 'text': payload.get('text') if text is None else text,
+                           'api_turn_v1': {**data, 'history': None} if drop else data}
                 conn.execute('UPDATE session_admissions SET payload_json=? WHERE admission_id=?',
-                             (_json({**payload, 'text': text}), row_id))
+                             (_json(payload), row_id))
                 compacted += 1
         return compacted
     return db._execute_write(write) if ids else 0

@@ -589,3 +589,27 @@ the old native ledger is cleared before attaching that fresh Goal, regardless of
 A turn interrupted or rejected before any transcript exists reports its native error rather than
 a transcript write failure. A successful-but-empty turn remains incomplete. Real output still must
 be durably persisted before automatic continuation; that safety gate is not disabled.
+
+### Earlier native context compaction
+
+For long-running work, an optional per-profile watermark can ask Codex to compact earlier:
+
+```yaml
+compression:
+  codex_app_server_auto: native
+  codex_auto_compact_token_limit: 120000
+```
+
+The value must be a positive integer; null/unset preserves Codex's model default. This override
+is sent on both new and resumed threads, not written to the shared Codex home. It has no effect
+in `hermes` or `off` mode. It is a compaction watermark, **not** a context-window declaration,
+task token budget, turn limit, or guarantee of an exact resulting context size. Codex owns the
+safe compaction points inside its own execution loop, including automatic Goal continuation.
+No extra model kickoff, thread replacement, or Goal reset is introduced.
+
+For batches of independent issues, save a short durable checkpoint after verification: issue
+status, commit/PR, evidence, remaining blockers, relevant cross-issue decisions, and next action.
+Then stop repeatedly reading that issue's raw logs. Related issues may share a checkpoint.
+Do not compact on every small issue or clear a live thread to save context: compaction has a
+cost and may invalidate prompt caches. Disk history remains intact; compaction does not grant
+additional tokens or reset cumulative Goal usage.

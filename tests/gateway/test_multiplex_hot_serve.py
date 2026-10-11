@@ -113,6 +113,40 @@ async def test_opt_out_rescans_and_opt_in_waits_for_own_gateway_to_stop(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_multiplex_startup_drops_flat_platform_keys_from_the_previous_writer(
+    tmp_path, monkeypatch
+):
+    """#136734: the multiplexer re-stamps the record the previous writer left in place, so flat
+    platform entries the launch profile's standalone gateway wrote (a dead writer_pid) used to
+    survive every restart and shadow the live ``<profile>:<platform>`` state on the Messaging card.
+    Flat keys THIS process wrote (the default's adapters) must stay."""
+    from gateway.status import flush_runtime_status, write_runtime_status
+
+    runner, home = _runner(tmp_path, monkeypatch)
+    _mkprofile(home, "solo", "DISCORD_BOT_TOKEN=solo-token\n")
+    dead_pid = 2 ** 22 - 1
+    dead_writer = {"writer_pid": dead_pid, "writer_start_time": 1}
+    (home / "gateway_state.json").write_text(json.dumps({
+        "pid": dead_pid, "hermes_home": str(home), "gateway_state": "running",
+        "platforms": {
+            "telegram": {"state": "disconnected", **dead_writer},
+            "solo:discord": {"state": "connected", **dead_writer},
+        }}), encoding="utf-8")
+    # Load the standalone-era record into the process snapshot, then stamp a flat key of our own
+    # (the default's adapter) — the multiplexer's real boot does both before recording the served set.
+    write_runtime_status(platform="discord", platform_state="connected")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+    flush_runtime_status()
+    record = json.loads((home / "gateway_state.json").read_text(encoding="utf-8"))
+    assert record["served_profiles"] == ["default", "solo"]
+    # The dead writer's flat key is gone; this process's flat key and profile-prefixed keys stay.
+    assert "telegram" not in record["platforms"]
+    assert record["platforms"]["discord"]["state"] == "connected"
+    assert record["platforms"]["solo:discord"]["state"] == "connected"
+
+
+@pytest.mark.asyncio
 async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_path, monkeypatch, caplog):
     """#132547: the pre-serve own-gateway probe can end in a control-socket read that has no
     timeout of its own (a Windows named pipe stalls there until its peer answers); inline on

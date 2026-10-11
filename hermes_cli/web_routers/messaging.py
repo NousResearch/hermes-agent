@@ -313,8 +313,31 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
             # ``.hermes`` (or any custom HERMES_HOME), so its flat keys never matched (#123088).
             served_name = profile_name_for_home(own_home) or "default"
             runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], served_name)}
+    elif _runtime_record_is_multiplexer(runtime):
+        # The own-record rung won: this home LAUNCHED the gateway. When that gateway is the
+        # multiplexer (``hermes --profile host gateway run``), the host profile's adapters live
+        # under ``host:<platform>`` in its own record while a flat key left over from the
+        # profile's standalone days shadows them with a dead writer's state (#136734).
+        # ``default`` is exempt: its adapters ARE the record's flat keys.
+        host_name = profile_name_for_home(own_home)
+        if host_name not in (None, "default"):
+            runtime = {
+                **runtime,
+                "platforms": profile_platforms_from_multiplexer(runtime, host_name),
+            }
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
             for entry in entries]
+
+
+def _runtime_record_is_multiplexer(runtime: Optional[dict[str, Any]]) -> bool:
+    """True when a gateway_state record was written by the multiplexer: it stamps ``served_profiles``
+    and keeps every secondary's adapters under ``<profile>:<platform>`` keys. A standalone gateway
+    (``multiplex_profiles: false``) publishes ``served_profiles: []`` and only flat keys."""
+    if not isinstance(runtime, dict):
+        return False
+    if runtime.get("served_profiles"):
+        return True
+    return any(isinstance(key, str) and ":" in key for key in (runtime.get("platforms") or {}))
 
 
 @contextlib.contextmanager

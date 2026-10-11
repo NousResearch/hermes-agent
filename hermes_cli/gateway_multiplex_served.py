@@ -74,7 +74,8 @@ def served_profile_ingress_urls(profile: Optional[str] = None) -> dict[str, dict
     serves on its shared listener (``<profile>:<platform>`` entries carrying ``ingress_url``). This is
     what the user pastes into the vendor console (Twilio, LINE, Teams, ...). ``profile`` narrows the map."""
     from hermes_constants import get_default_hermes_root
-    from gateway.status import read_runtime_status, shared_listener_mirror_platforms
+    from gateway.status import read_runtime_status
+    from gateway.status_multiplexer import shared_listener_mirror_platforms
     if live_default_gateway_pid() is None:
         return {}
     runtime = read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}

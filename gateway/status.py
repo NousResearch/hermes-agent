@@ -21,6 +21,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
+from gateway.status_multiplexer import shared_listener_mirror_platforms
 from gateway.status_inline_source import (
     command_line_runs_inline_source,
     inline_bootstrap_argv,
@@ -1117,6 +1118,7 @@ def _prepare_runtime_status_update(
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
     load_existing: bool = True, reload_existing: bool = False,
+    prune_foreign_flat_platforms: bool = False,
 ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     """Merge one update into the process-wide canonical status snapshot."""
     global _runtime_status_state_path, _runtime_status_state
@@ -1140,6 +1142,20 @@ def _prepare_runtime_status_update(
                 k: v for k, v in payload["platforms"].items()
                 if not isinstance(k, str) or ":" not in k
                 or (drop_prefix is not None and not k.startswith(drop_prefix))
+            }
+        if prune_foreign_flat_platforms:
+            # The multiplexer re-stamps the record the previous writer left in place, so flat
+            # platform entries from the profile's standalone days (a dead writer_pid) survive
+            # every restart and shadow the live ``<profile>:<platform>`` state (#136734). Only
+            # entries this process wrote survive; ``<profile>:`` keys are always the current
+            # writer's, so they are kept regardless of their stamp.
+            payload["platforms"] = {
+                k: v for k, v in payload["platforms"].items()
+                if isinstance(k, str) and (
+                    ":" in k
+                    or (isinstance(v, dict)
+                        and v.get("writer_pid") == current_record["pid"]
+                        and v.get("writer_start_time") == current_record["start_time"]))
             }
         payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
         payload["updated_at"] = _utc_now_iso()
@@ -1347,32 +1363,6 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     if pid is None:
         return None
     return pid, read_runtime_status(launch_home / "gateway_state.json") or {}
-
-
-def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
-    """Entries for the api_server/webhook mirrors a served ``profile`` gets from the DEFAULT's
-    listener. The multiplexer never builds those adapters for a secondary (``gateway.run_adapters``
-    skips them: ``SHARED_LISTENER_MIRROR_PLATFORMS``), so the record has no ``<profile>:api_server``
-    entry and every reader fell through to ``pending_restart`` — "Restart needed" forever while
-    ``/p/<profile>/v1/...`` answered. Only a live default entry is mirrored; its state is the profile's
-    state, plus the ``/p/<profile>`` URL the client must actually call.
-    """
-    from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
-    plats = (runtime or {}).get("platforms")
-    if not profile or profile == "default" or not isinstance(plats, dict):
-        return {}
-    mirrored: dict[str, Any] = {}
-    for name in sorted(SHARED_LISTENER_MIRROR_PLATFORMS):
-        entry = plats.get(name)
-        if not isinstance(entry, dict) or entry.get("state") not in {"connected", "connecting", "retrying"}:
-            continue
-        # api_server and webhook bind separate ports; each mirror hangs off its own listener. A record
-        # from an older gateway carries no ``listener_base``: connected, URL unknown.
-        base = entry.get("listener_base")
-        url = f"{base}/p/{profile}{SHARED_LISTENER_MIRROR_PATHS.get(name, '')}" if isinstance(base, str) and base else None
-        mirrored[name] = {k: v for k, v in entry.items() if k != "listener_base"}
-        mirrored[name].update(ingress_url=url, mirrored_from="default")
-    return mirrored
 
 
 def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:

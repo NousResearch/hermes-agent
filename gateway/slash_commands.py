@@ -382,7 +382,7 @@ class GatewaySlashCommandsMixin(
 
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
-        source has no platform/chat to route back to."""
+        profile disables auto-subscription or the source has no platform/chat to route back to."""
         source = event.source
 
         def _field(name: str) -> Optional[str]:
@@ -397,9 +397,13 @@ class GatewaySlashCommandsMixin(
             return False
 
         def _sub():
-            from hermes_cli import kanban_db as _kb
+            from hermes_cli.config import load_config
             from hermes_cli import kanban_db_connect as _kbc
             from hermes_cli import kanban_db_notify as _kbn
+            # Match kanban_create's opt-out. Read inside the worker so config
+            # I/O stays off-loop; asyncio.to_thread carries the profile scope.
+            if not cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True):
+                return False
             conn = _kbc.connect(board=requested_board)
             try:
                 _kbn.add_notify_sub(
@@ -414,8 +418,8 @@ class GatewaySlashCommandsMixin(
                     delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
             finally:
                 conn.close()
-        await asyncio.to_thread(_sub)
-        return True
+            return True
+        return await asyncio.to_thread(_sub)
 
     async def _handle_stop_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /stop command - interrupt a running agent.  A truly hung agent (blocked thread

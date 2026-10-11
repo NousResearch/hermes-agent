@@ -275,7 +275,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             should_abort=should_abort, acquire_patience_s=acquire_patience_s,
             on_contended=on_contended)
 
-    def refresh_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0):
+    def refresh_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0, patience_s=None):
         self._session(session_id)
         return self._apply('turn.renew', {'holder': holder, 'ttl_seconds': ttl_seconds})['value']
 

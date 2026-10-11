@@ -2891,6 +2891,8 @@ approvals:
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
 
+The setup wizard offers this choice in its Agent Settings section (`hermes setup agent`; Enter keeps the current mode). At runtime, `/approvals [manual|smart|off]` and the Desktop **Approvals** settings page persist the same key.
+
 :::warning
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::

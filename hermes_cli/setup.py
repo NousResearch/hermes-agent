@@ -445,8 +445,40 @@ _TOOL_PROGRESS_HELP = (
     "  verbose — Full args, results, and debug logs",
     "  log     — Silent in chat; write every tool call to ~/.hermes/logs/tool_calls.log (gateway only)",
 )
+
+# Order matches hermes_cli.approval_mode.VALID_APPROVAL_MODES; labels are the wire values so the
+# saved choice reads back as config.yaml `approvals.mode`.
+_APPROVAL_MODE_CHOICES = (
+    ("manual", "manual — always ask before running a flagged command"),
+    ("smart", "smart  — an auxiliary model approves low-risk commands, asks you about the rest (default)"),
+    ("off", "off    — never ask (same as --yolo; approvals.deny rules still block)"),
+)
+
+
+def _prompt_approval_mode(config: dict) -> None:
+    """Offer the dangerous-command approval mode (``approvals.mode``). Enter / Escape keeps the
+    current one, so re-running the wizard never flips an existing policy; the choice is written into
+    ``config`` for the caller's ``save_config``."""
+    print_header("Dangerous-Command Approvals")
+    _info("Hermes checks terminal commands against dangerous patterns (recursive deletes, pipe-to-shell,",
+          "writes under /etc, ...) and asks before running one. Pick how flagged commands are handled.",
+          f"   Guide: {_DOCS_BASE}/user-guide/configuration#smart-approvals")
+    modes = [m for m, _ in _APPROVAL_MODE_CHOICES]
+    current = str(cfg_get(config, "approvals", "mode", default="smart") or "smart").strip().lower()
+    current_idx = modes.index(current) if current in modes else modes.index("smart")
+    idx = prompt_choice("Approval mode", [label for _, label in _APPROVAL_MODE_CHOICES], current_idx)
+    chosen = modes[idx] if 0 <= idx < len(modes) else current
+    if chosen == current:
+        print_info(f"Approval mode stays: {current}")
+        return
+    _sub_dict(config, "approvals")["mode"] = chosen
+    print_success(f"Approval mode set to: {chosen}")
+    if chosen == "off":
+        print_warning("Approval checks are disabled; only use this in a trusted, sandboxed environment.")
+
+
 def setup_agent_settings(config: dict):
-    """Configure agent behavior: iterations, progress display and compression."""
+    """Configure agent behavior: iterations, progress display, approval mode and compression."""
     print_header("Agent Settings")
     _info(f"   Guide: {_DOCS_BASE}/user-guide/configuration", None)
 
@@ -482,6 +514,9 @@ def setup_agent_settings(config: dict):
         print_success(f"Tool progress set to: {mode.lower()}")
     else:
         print_warning(f"Unknown mode '{mode}', keeping '{current_mode or 'per-platform defaults'}'")
+
+    # ── Dangerous-Command Approvals ──
+    _prompt_approval_mode(config)
 
     # ── Context Compression ──
     print_header("Context Compression")

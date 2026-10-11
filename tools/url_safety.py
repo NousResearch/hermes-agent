@@ -592,15 +592,19 @@ async def ssrf_checked_aiohttp_get(session: Any, url: str, **kwargs: Any):
     aiohttp follows redirects by default, so a pre-flight check alone lets a public URL 302 to
     loopback or cloud metadata; raises ``ValueError`` on a blocked hop or too many redirects.
     The async check keeps each hop's DNS lookup off the event loop."""
-    current_url = url
-    for _ in range(_AIOHTTP_MAX_REDIRECTS + 1):
-        if not await async_is_safe_url(current_url):
-            raise ValueError("Blocked URL targeting a private or internal address")
-        async with session.get(current_url, allow_redirects=False, **kwargs) as response:
-            location = response.headers.get("Location")
-            if response.status in _AIOHTTP_REDIRECT_STATUSES and location:
-                current_url = urljoin(current_url, location)
-                continue
-            yield response
-            return
-    raise ValueError("Too many redirects")
+    # aiohttp spends one ``total`` across its own redirect loop and the body read; each hop here
+    # is a fresh request, so the whole chain shares one deadline or ``total`` multiplies per hop.
+    total = getattr(kwargs.get("timeout") or getattr(session, "timeout", None), "total", None)
+    async with asyncio.timeout(total if isinstance(total, (int, float)) else None):
+        current_url = url
+        for _ in range(_AIOHTTP_MAX_REDIRECTS + 1):
+            if not await async_is_safe_url(current_url):
+                raise ValueError("Blocked URL targeting a private or internal address")
+            async with session.get(current_url, allow_redirects=False, **kwargs) as response:
+                location = response.headers.get("Location")
+                if response.status in _AIOHTTP_REDIRECT_STATUSES and location:
+                    current_url = urljoin(current_url, location)
+                    continue
+                yield response
+                return
+        raise ValueError("Too many redirects")

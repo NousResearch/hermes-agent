@@ -3,6 +3,7 @@
 aiohttp follows redirects by default, so an adapter that only pre-checks the first URL lets a
 public URL 302 to loopback/metadata and uploads the response into the chat.
 """
+import asyncio
 import socket
 
 import pytest
@@ -106,3 +107,34 @@ async def test_redirect_to_private_address_is_not_followed(fetch, monkeypatch):
 
     assert INTERNAL_BODY not in fetched
     assert internal_hits == []
+
+
+@pytest.mark.asyncio
+async def test_timeout_total_covers_the_whole_redirect_chain(monkeypatch):
+    """aiohttp's own redirect loop spends one ``total``; following hops by hand must not reset it."""
+    async def slow_hop(request):
+        await asyncio.sleep(1.5)
+        if request.path == "/first":
+            raise web.HTTPFound("/second")
+        return web.Response(body=b"done")
+
+    app = web.Application()
+    app.router.add_get("/{tail:.*}", slow_hop)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+
+    async def allow_all(_url):
+        return True
+    monkeypatch.setattr(url_safety, "async_is_safe_url", allow_all)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            with pytest.raises(asyncio.TimeoutError):  # each hop alone fits in 2.5 s, the chain does not
+                async with url_safety.ssrf_checked_aiohttp_get(
+                        session, f"http://127.0.0.1:{port}/first", timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
+                    await resp.read()
+    finally:
+        await runner.cleanup()

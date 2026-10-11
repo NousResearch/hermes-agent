@@ -27,8 +27,8 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
 _RESTART_FAILURE = re.compile(
-    r"^.*(recovery failed|restart could not be verified|restart incomplete|not verified alive).*$", re.M)
-_STATUS_LINE = re.compile(r"^.*[✓✗].*[Gg]ateway.*$", re.M)
+    r"^.*(recovery failed|restart could not be verified|restart incomplete|not verified alive).*$", re.MULTILINE)
+_STATUS_LINE = re.compile(r"^.*[✓✗].*[Gg]ateway.*$", re.MULTILINE)
 
 
 def _status_line(text: str) -> str:

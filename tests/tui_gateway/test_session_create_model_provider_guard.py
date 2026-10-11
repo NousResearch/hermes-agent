@@ -17,7 +17,7 @@ def _create(monkeypatch, tmp_path):
     (tmp_path / "config.yaml").write_text("model:\n  default: claude-opus-5\n  provider: anthropic\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(server, "_sessions", {})
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(server, "_profile_home", lambda *a: None)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a: None)
@@ -63,7 +63,7 @@ def test_session_create_logs_when_a_client_override_beats_the_profile_default(_c
     """A composer pick silently decided every new chat's model; agent.log must name it (#107410)."""
     from tui_gateway import server
 
-    monkeypatch.setattr(server, "_session_default_model", lambda session: "deepseek-v4-flash")
+    monkeypatch.setattr(server, "_session_default_route", lambda session: ("deepseek-v4-flash", ""))
     with caplog.at_level(logging.INFO):
         response, _ = _create({"model": "gpt-5.5", "provider": "openrouter"})
         pinned = [r.getMessage() for r in caplog.records if "client override" in r.getMessage()]

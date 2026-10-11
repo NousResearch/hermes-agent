@@ -25,8 +25,8 @@ import pytest
 
 pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI installs it)")
 
-from tests.e2e.core._pending_fixes import known_gate  # noqa: E402
-from tests.e2e.core.providers._native_helpers import (  # noqa: E402
+from tests.e2e.core._pending_fixes import known_gate
+from tests.e2e.core.providers._native_helpers import (
     ChatResult,
     KnownSymptom,
     NativeHome,
@@ -36,7 +36,7 @@ from tests.e2e.core.providers._native_helpers import (  # noqa: E402
     run_chat,
     tool_calls_of,
 )
-from tests.fakes.providers.vertex import (  # noqa: E402
+from tests.fakes.providers.vertex import (
     PROJECT,
     REGION,
     SA_EMBEDDED_PROJECT,

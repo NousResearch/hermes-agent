@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "正在規劃：{task}"
     ack_conversation: "正在根據此對話的上下文進行規劃…"
+  initiate_setup:
+    ack: "正在開始設定…"
   init:
     start_failed: "無法啟動 /init — 請再試一次。"
     ack_update: "正在依專案掃描結果更新 AGENTS.md…"
@@ -847,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ 工作階段資料庫回報的損毀錯誤僅限於搜尋索引（FTS5）；訊息資料表並未受損。修復前訊息可能無法保存：請執行 `hermes {profile_arg}doctor --fix`，然後重新啟動閘道。除非 `hermes {profile_arg}doctor` 確認有損毀，否則請勿執行復原工具或還原備份。"
     db_then_restart: "{action} 然後執行 `hermes {profile_arg}gateway restart`。"
     db_unavailable: "⚠️ 工作階段資料庫無法使用 — 訊息可能不會被儲存，且 /resume 將是空的。原因：{cause}。{action}"
+  cron_store:
+    unwritable: "⚠️ Cron 儲存區 {store} 自 {since} 起無法寫入（{error}）。在恢復可寫入之前，排程工作將被略過。修復方式：{fix}。"
+    recovered: "✅ Cron 儲存區 {store} 已恢復可寫入；略過了 {skipped} 次執行，每個工作將補執行一次。"
   whoami:
     scope_dm: "私訊"
     scope_group: "群組／頻道"
@@ -1448,8 +1453,6 @@ platform:
   irc:
     quit_message: "Hermes Agent 正在關閉"
     standalone_quit: "已傳送"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "批准一次"
     confirm_always_approve: "永遠批准"
@@ -1555,6 +1558,8 @@ slash:
     description: "在此工作階段以固定間隔重複執行提示"
   plan:
     description: "將 markdown 實作計畫寫入 .hermes/plans/，不執行任何動作"
+  initiate-setup:
+    description: "執行首次設定：了解你，並依你的需求設定 Hermes"
   moa:
     description: "以預設的 Mixture of Agents 預設組執行一次提示，然後還原你的模型"
   subgoal:
@@ -2252,6 +2257,8 @@ cli:
   approval:
     bell_context: "批准"
     label: "批准"
+    timeout_denying: "⏱ 逾時 — 拒絕指令"
+    timed_out_no_response: "已逾時（無回應）"
     outcome_once: "允許一次"
     outcome_session: "本工作階段允許"
     outcome_always: "已加入允許清單"
@@ -2259,6 +2266,7 @@ cli:
   clarify:
     bell_context: "澄清"
     label: "澄清"
+    timed_out_locked_answers: "（澄清已在 {timeout} 秒後逾時 — 已回傳鎖定的答案）"
   connect:
     bell_context: "連線設定"
     cannot_restart: "此連線無法再次啟動。請取消後再向代理提出一次。"
@@ -2352,6 +2360,7 @@ cli:
     removed: "已移除佇列項目 {index}：{preview}"
     item_not_found: "找不到佇列項目 {index}。目前佇列長度：{size}"
     usage_edit: "用法：/queue edit <number> <new prompt>"
+    usage_remove: "用法：/queue rm <number>"
     updated: "已更新佇列項目 {index}：{preview}"
     usage_move: "用法：/queue move <from> <to>"
     move_out_of_range: "佇列移動超出範圍。目前佇列長度：{size}"
@@ -2390,6 +2399,7 @@ cli:
     session_not_found: "找不到工作階段：{session_id}"
     compressed_into: "工作階段 {session_id} 已壓縮為 {descendant}；將以你的對話紀錄恢復後續的工作階段。"
     cannot_resume: "無法恢復工作階段：{error}"
+    kanban_owned: "⛔ 工作階段 {session_id} 是 Kanban 工作執行緒的記錄。在此恢復會建立一個 Kanban 看板無法觀察或監督的寫入者——請改為在看板上重試或解除卡片的封鎖，讓調度器擁有下一次執行。"
     cannot_resume_prefix: "無法恢復工作階段："
     resumed_session: "↻ 已恢復工作階段"
     counts_one: "（{count} 則使用者訊息，共 {total} 則訊息）"
@@ -2424,7 +2434,6 @@ cli:
     run_model_to_retry: "執行 'hermes model' 再試一次。"
     provider_configured: "✓ 提供方已設定完成 — 可以開始聊天了。"
     provider_setup_incomplete: "提供方設定未完成。執行 'hermes model' 重試。"
-    tirith_unavailable: "⚠ 已啟用 tirith 安全掃描器但無法使用 — 指令掃描將僅使用模式比對"
     unknown_toolsets: "警告：未知的工具集：{names}"
     stdin_unusable: "\n錯誤：stdin 無法使用（{error}）。\n某些 Python 安裝（例如 macOS 上由 uv 管理的 cPython）可能發生此問題，\n因為 kqueue 無法註冊 fd 0。\n請嘗試透過 pyenv 或 Homebrew 重新安裝 Python，然後重新執行：hermes setup"
     warning: "警告：{warning}"
@@ -2717,6 +2726,7 @@ cli:
       restored: "已從 {snapshot_id} 還原狀態"
       restart_recommended: "建議重新啟動閘道／儀表板程序，以套用 state.db 的變更。"
       not_found: "找不到快照：{snapshot_id}"
+      restore_incomplete: "快照 {snapshot_id} 未完全還原：部分檔案被拒絕（請查看日誌）"
       usage_prune: "用法：/snapshot prune [keep-count]"
       pruned: "已清除 {deleted} 個舊快照（保留 {keep} 個）。"
     export:
@@ -2908,6 +2918,8 @@ cli:
     plan:
       planning: "📋 規劃中：{task}"
       from_conversation: "📋 正在根據這段對話的上下文進行規劃…"
+    initiate_setup:
+      starting: "🧭 正在開始設定..."
     init:
       updating: "⚡ 正在根據專案掃描更新 AGENTS.md…"
       generating: "⚡ 正在根據專案掃描產生 AGENTS.md…"
@@ -3284,6 +3296,7 @@ cli:
     shallow_clone_keeping: "⚠ 淺層複製 — 無法確認推送狀態，保留：{path}"
     next_session_deepens: "下一次 `hermes -w` 工作階段會加深複製並自動清理已合併的工作樹。"
     unpushed_keeping: "⚠ 工作樹有未推送的提交，保留：{path}"
+    uncommitted_keeping: "⚠ 工作樹有未提交的變更，保留：{path}"
     clean_up_manually: "手動清理方式：git worktree remove --force {path}"
     cleaned_up: "✓ 工作樹已清理：{path}"
 display:
@@ -3640,7 +3653,7 @@ tips:
   t167: "危險指令的批准有 4 個層級：僅此一次、本工作階段、永遠（永久允許清單）、拒絕。"
   t168: "智慧批准模式會用 LLM 自動批准安全指令，並標記危險指令。"
   t169: "SSRF 防護會封鎖私有網路、loopback、link-local 與雲端 metadata 位址。"
-  t170: "Tirith 執行前掃描可偵測同形字 URL 偽裝與 pipe 到直譯器的模式。"
+  t170: "工作階段 ID 以時間戳記為前綴（20250305_091523_abcd），在 ls 與 jq 中排序自然正確。"
   t171: "MCP 子程序只會收到經過濾的環境變數 — 僅安全的系統變數能通過。"
   t172: "上下文檔案（.hermes.md、AGENTS.md）在載入前會先掃描是否含有提示注入。"
   t173: "config.yaml 中的 command_allowlist 可永久批准特定的 shell 指令模式。"
@@ -3670,7 +3683,7 @@ tips:
   t197: "軌跡儲存（--save-trajectories）會記錄完整的工具使用軌跡，供模型訓練使用。"
   t198: "外掛有三種類型：一般（工具／hook）、記憶提供方，以及上下文引擎。"
   t199: "hermes plugins install owner/repo 可直接從 GitHub 安裝外掛。"
-  t200: "外部記憶提供方：內建 Honcho、OpenViking、Mem0；Hindsight 等更多可透過 hermes plugins install 安裝。"
+  t200: "外部記憶提供方：Honcho、Hindsight、Mem0、OpenViking 等可透過 hermes plugins install 安裝。"
   t201: "外掛 hook 包含 pre/post_tool_call、pre/post_llm_call，以及用來標準化輸出的 transform_terminal_output。"
   t202: "提示快取（Anthropic）透過重用已快取的系統提示詞前綴來降低費用。"
   t203: "代理會在背景執行緒中自動產生工作階段標題 — 完全不影響延遲。"
@@ -3845,12 +3858,9 @@ tips:
   t372: "config.yaml 中的 image_gen.model 可選擇 FAL 模型：flux-2/klein、gpt-image-2、nano-banana-pro 等。"
   t373: "image_gen.provider 可將圖片生成改由外掛（OpenAI Images、Codex、FAL）處理，取代預設方式。"
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY 可將視覺分析指向任何 OpenAI 相容端點。"
-  t375: "security.tirith_fail_open: false 會讓 Hermes 在 tirith 掃描器本身出錯時封鎖指令。"
-  t376: "TIRITH_FAIL_OPEN 環境變數會覆寫 tirith_fail_open 設定 — 不必編輯 config.yaml 即可快速切換。"
+  t375: "API_SERVER_MODEL_NAME 可自訂 /v1/models 上的模型名稱 — 多設定檔的 Open WebUI 環境必備。"
+  t376: "儀表板外掛由 /dashboard-plugins/<name>/ 提供 — 把檔案放進 ~/.hermes/dashboard-plugins/ 即可。"
   t377: "--source tool 的聊天預設不會出現在 hermes sessions list — 明確指定 --source 才能看到。"
-  t378: "工作階段 ID 以時間戳記為前綴（20250305_091523_abcd），在 ls 與 jq 中排序自然正確。"
-  t379: "API_SERVER_MODEL_NAME 可自訂 /v1/models 上的模型名稱 — 多設定檔的 Open WebUI 環境必備。"
-  t380: "儀表板外掛由 /dashboard-plugins/<name>/ 提供 — 把檔案放進 ~/.hermes/dashboard-plugins/ 即可。"
   placeholder:
     p01: "隨便問點什麼，或輸入 / 查看指令…"
     p02: "摘要這個資料夾裡的內容"

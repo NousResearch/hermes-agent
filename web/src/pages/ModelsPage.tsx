@@ -14,6 +14,7 @@ import {
   Zap,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { auxTaskLabel, auxTaskRows } from "@/lib/aux-tasks";
 import type {
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
@@ -50,6 +51,7 @@ import { setNestedValue } from "@/lib/nested";
 import { errorMessage } from "@/lib/api-error";
 import { en } from "@/i18n/en";
 import type { Translations } from "@/i18n/types";
+import { assignmentToPickerCurrent } from "@/lib/model-picker-current";
 
 /** Models-page copy; en/zh seed the optional block, other locales fall back. */
 type ModelsPageCopy = NonNullable<Translations["models"]["page"]>;
@@ -61,21 +63,6 @@ const PERIODS = [
   { label: "7d", days: 7 },
   { label: "30d", days: 30 },
   { label: "90d", days: 90 },
-] as const;
-
-// Must match _AUX_TASK_SLOTS in hermes_cli/web_server.py.
-const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
-  { key: "vision", label: "Vision", hint: "Image analysis" },
-  { key: "compression", label: "Compression", hint: "Context compaction" },
-  { key: "skills_hub", label: "Skills Hub", hint: "Skill search" },
-  { key: "approval", label: "Approval", hint: "Smart auto-approve" },
-  { key: "mcp", label: "MCP", hint: "MCP tool routing" },
-  { key: "title_generation", label: "Title Gen", hint: "Session titles" },
-  { key: "review", label: "Review", hint: "/review subagent" },
-  { key: "triage_specifier", label: "Triage Specifier", hint: "Kanban spec fleshing" },
-  { key: "kanban_decomposer", label: "Kanban Decomposer", hint: "Task decomposition" },
-  { key: "profile_describer", label: "Profile Describer", hint: "Auto profile descriptions" },
-  { key: "curator", label: "Curator", hint: "Skill-usage review" },
 ] as const;
 
 function formatTokens(n: number): string {
@@ -223,6 +210,7 @@ function UseAsMenu({
   model,
   isMain,
   mainAuxTask,
+  auxTasks,
   onAssigned,
 }: {
   provider: string;
@@ -231,6 +219,8 @@ function UseAsMenu({
   isMain: boolean;
   /** If this model is assigned to a specific aux task, that task's key. */
   mainAuxTask: string | null;
+  /** Auxiliary rows as served (built-ins + plugin tasks); see auxTaskRows. */
+  auxTasks: AuxiliaryTaskAssignment[];
   onAssigned(): void;
 }) {
   const [open, setOpen] = useState(false);
@@ -338,16 +328,16 @@ function UseAsMenu({
             <span>{L.allAuxiliaryTasks}</span>
           </button>
 
-          {AUX_TASKS.map((task) => (
+          {auxTaskRows(auxTasks).map((t) => (
             <button
-              key={task.key}
+              key={t.key}
               type="button"
-              onClick={() => assign("auxiliary", task.key)}
+              onClick={() => assign("auxiliary", t.key)}
               disabled={busy}
               className="flex w-full items-center justify-between px-3 py-1.5 text-xs uppercase hover:bg-muted/50 disabled:opacity-40"
             >
-              <span>{L.auxTaskLabels[task.key] ?? task.label}</span>
-              {mainAuxTask === task.key && (
+              <span>{L.auxTaskLabels[t.key] ?? t.label}</span>
+              {mainAuxTask === t.key && (
                 <span className="text-display text-xs tracking-wider text-primary">
                   {L.current}
                 </span>
@@ -487,6 +477,7 @@ function ModelCard({
               model={entry.model}
               isMain={isMain}
               mainAuxTask={mainAuxTask}
+              auxTasks={aux}
               onAssigned={onAssigned}
             />
           </div>
@@ -647,34 +638,59 @@ function AuxiliaryTasksModal({
         </header>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-1">
-          {AUX_TASKS.map((task) => {
-            const cur = aux?.tasks.find((a) => a.task === task.key);
+          {auxTaskRows(aux?.tasks).map((t) => {
+            const cur = aux?.tasks.find((a) => a.task === t.key);
             const isAuto =
               !cur || cur.provider === "auto" || !cur.provider;
+            const eff = cur?.effective;
+            const effRoute =
+              eff?.provider && eff.provider !== "auto"
+                ? `${eff.provider} · ${eff.model || L.providerDefault}`
+                : L.autoUseMain;
             return (
               <div
-                key={task.key}
+                key={t.key}
                 className="flex items-center justify-between gap-3 px-3 py-2 border border-border/30 bg-card/50 hover:bg-muted/20 transition-colors"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs font-medium">
-                      {L.auxTaskLabels[task.key] ?? task.label}
+                      {L.auxTaskLabels[t.key] ?? t.label}
                     </span>
                     <span className="text-xs text-text-tertiary">
-                      {L.auxTaskHints[task.key] ?? task.hint}
+                      {L.auxTaskHints[t.key] ?? t.hint}
                     </span>
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
-                    {isAuto
-                      ? L.autoUseMain
-                      : `${cur?.provider} · ${cur?.model || L.providerDefault}`}
+                    {isAuto && t.inheritFrom
+                      ? `${L.auxInherits} ${auxTaskLabel(aux?.tasks, t.inheritFrom)} · ${effRoute}`
+                      : isAuto
+                        ? L.autoUseMain
+                        : `${cur?.provider} · ${cur?.model || L.providerDefault}`}
                   </div>
                 </div>
+                {t.inheritFrom && !isAuto && (
+                  <Button
+                    size="sm"
+                    outlined
+                    onClick={async () => {
+                      await api.setModelAssignment({
+                        scope: "auxiliary",
+                        task: t.key,
+                        provider: "auto",
+                        model: "",
+                      });
+                      onSaved();
+                    }}
+                    className="h-6 text-xs uppercase"
+                  >
+                    Follow {auxTaskLabel(aux?.tasks, t.inheritFrom)}
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   outlined
-                  onClick={() => setPicker({ kind: "aux", task: task.key })}
+                  onClick={() => setPicker({ kind: "aux", task: t.key })}
                   className="h-6 text-xs uppercase"
                 >
                   {L.change}
@@ -689,11 +705,12 @@ function AuxiliaryTasksModal({
             key={`picker-${refreshKey}`}
             loader={api.getModelOptions}
             alwaysGlobal
+            currentAssignment={assignmentToPickerCurrent(
+              aux?.tasks.find((a) => a.task === picker.task),
+            )}
             title={L.setAuxiliary.replace(
               "{task}",
-              L.auxTaskLabels[picker.task] ??
-                AUX_TASKS.find((task) => task.key === picker.task)?.label ??
-                picker.task,
+              L.auxTaskLabels[picker.task] ?? auxTaskLabel(aux?.tasks, picker.task),
             )}
             onApply={async ({ provider, model, confirmExpensiveModel }) => {
               const result = await api.setModelAssignment({
@@ -927,6 +944,11 @@ function MoaModelsModal({
           key={`moa-picker-${refreshKey}-${selected}-${picker.kind}-${picker.kind === "reference" ? picker.index : "agg"}`}
           loader={api.getModelOptions}
           alwaysGlobal
+          currentAssignment={
+            picker.kind === "aggregator"
+              ? preset.aggregator
+              : preset.reference_models[picker.index]
+          }
           title={L.selectMoaModel}
           onApply={async ({ provider, model }) => {
             if ((provider || "").toLowerCase() === "moa") {
@@ -1004,6 +1026,7 @@ function ModelSettingsPanel({
   const auxOverrideCount = aux?.tasks.filter(
     (a) => a.provider && a.provider !== "auto",
   ).length ?? 0;
+  const auxTaskCount = auxTaskRows(aux?.tasks).length;
 
   return (
     <Card className="min-w-0 max-w-full overflow-hidden">
@@ -1056,11 +1079,8 @@ function ModelSettingsPanel({
                 ? L.overridesSummary
                     .replace("{count}", String(auxOverrideCount))
                     .replace("{s}", auxOverrideCount > 1 ? "s" : "")
-                    .replace("{auto}", String(AUX_TASKS.length - auxOverrideCount))
-                : L.allAutoSummary.replace(
-                    "{count}",
-                    String(AUX_TASKS.length),
-                  )}
+                    .replace("{auto}", String(auxTaskCount - auxOverrideCount))
+                : L.allAutoSummary.replace("{count}", String(auxTaskCount))}
             </div>
           </div>
           <Button

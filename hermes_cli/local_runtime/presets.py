@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
     RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, launch_args, plan_launch, ub_logits_bytes)
 from hermes_cli.local_runtime.estimator import (
-    HardwareBudget, PhysicsRefusal, ctx_bytes, footprint_bytes, profile_from_gguf)
+    HardwareBudget, PhysicsRefusal, as_loaded, ctx_bytes, footprint_bytes, profile_from_gguf)
 from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ def _args_to_keys(args: list[str]) -> dict[str, str]:
     return keys
 
 
-def _asset_path(asset) -> "Path | None":
+def _asset_path(asset) -> Path | None:
     """On-disk path of a catalog companion asset, or None when it isn't downloaded."""
     from hermes_cli.local_runtime.bootstrap import assets_dir
 
@@ -55,6 +55,28 @@ def _asset_path(asset) -> "Path | None":
         return None
     path = assets_dir() / asset.local_name
     return path if path.exists() else None
+
+
+@dataclass(frozen=True)
+class _Companions:
+    """The files a catalog entry loads beside its weights, as far as they are on disk."""
+
+    mmproj: Path | None = None
+    mtp_head: Path | None = None
+    nbytes: int = 0
+
+
+def _companions(entry) -> _Companions:
+    if entry is None:
+        return _Companions()
+    mmproj, head = _asset_path(entry.mmproj), _asset_path(entry.mtp_head)
+    nbytes = sum(a.size_bytes for a, p in ((entry.mmproj, mmproj), (entry.mtp_head, head)) if p)
+    return _Companions(mmproj=mmproj, mtp_head=head, nbytes=nbytes)
+
+
+def _runs_mtp(entry, companions: _Companions) -> bool:
+    """MTP spec decode runs for a catalog entry: built-in heads, or a shipped head on disk."""
+    return entry is not None and (entry.mtp or companions.mtp_head is not None)
 
 
 def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhead: int) -> bool:
@@ -90,16 +112,15 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     model_id = model_id_from_stem(gguf.stem)
     try:
         header = read_gguf_header(gguf)
-        profile = profile_from_gguf(header)
+        profile = as_loaded(profile_from_gguf(header), budget)
     except (ValueError, OSError) as exc:
         logger.warning("preset skip %s: %s", gguf.name, exc)
         return None
     entry = entry_for_model(model_id)
-    is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
+    companions = _companions(entry)
+    is_mtp = _runs_mtp(entry, companions) if entry is not None else model_id in mtp_capable
 
-    mmproj_path = _asset_path(entry.mmproj) if entry is not None else None
-    fixed_overhead = RUNTIME_OVERHEAD_BYTES + (
-        entry.mmproj.size_bytes if entry is not None and mmproj_path is not None else 0)
+    fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
                        requested_window=(load_window_overrides().get(model_id)
                                          if requested_window is None else requested_window))
@@ -115,6 +136,10 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=plan.mtp_prefill,
         mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
     keys["model"] = str(gguf)
+    if profile.lazy_bytes:
+        # The price above leaves these tensors on disk; llama.cpp's own default loads them on
+        # integrated GPUs.
+        keys["lazy-mode"] = "on"
     if entry is not None and is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated
         # against the vendor's published llama.cpp recipes).
@@ -130,10 +155,14 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     if entry is not None:
         for k, v in (entry.sampling or {}).items():
             keys.setdefault(k, v)
-        if mmproj_path is not None:
-            keys["mmproj"] = str(mmproj_path)
+        if companions.mmproj is not None:
+            keys["mmproj"] = str(companions.mmproj)
+        if companions.mtp_head is not None:
+            # The model carries no MTP layers: draft-mtp drafts from the shipped head instead.
+            keys["model-draft"] = str(companions.mtp_head)
         draft_path = _asset_path(entry.draft) if decision.spilled else None
-        if draft_path is not None and _draft_fits(draft_path, profile, budget, decision.window, plan.overhead_bytes):
+        if draft_path is not None and _draft_fits(draft_path, plan.profile, budget, decision.window,
+                                                  plan.overhead_bytes):
             keys["model-draft"] = str(draft_path)
             keys["spec-type"] = "draft-dspark"
             # Unsloth's measured cliff: acceptance 83% at 2-3 drafts, collapses at 4.
@@ -148,18 +177,17 @@ def resident_footprint(gguf: Path, budget: HardwareBudget, window: int) -> int |
 
     model_id = model_id_from_stem(gguf.stem)
     try:
-        profile = profile_from_gguf(read_gguf_header(gguf))
+        profile = as_loaded(profile_from_gguf(read_gguf_header(gguf)), budget)
     except (ValueError, OSError) as exc:
         logger.debug("footprint skip %s: %s", gguf.name, exc)
         return None
     entry = entry_for_model(model_id)
-    is_mtp = entry.mtp if entry is not None else False
-    mmproj = entry.mmproj.size_bytes if entry is not None and _asset_path(entry.mmproj) else 0
+    companions = _companions(entry)
+    is_mtp = _runs_mtp(entry, companions)
     plan = plan_launch(profile, budget, mtp_capable=is_mtp,
-                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj, requested_window=window)
-    if is_mtp and profile.kv_scale == 1.0:
-        profile = replace(profile, kv_scale=1.2)
-    return footprint_bytes(profile, window, overhead_bytes=plan.overhead_bytes)
+                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + companions.nbytes,
+                       requested_window=window)
+    return footprint_bytes(plan.profile, window, overhead_bytes=plan.overhead_bytes)
 
 
 def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
@@ -171,21 +199,20 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
 
     model_id = model_id_from_stem(gguf.stem)
     try:
-        profile = profile_from_gguf(read_gguf_header(gguf))
+        profile = as_loaded(profile_from_gguf(read_gguf_header(gguf)), budget)
     except (ValueError, OSError) as exc:
         logger.debug("footprint skip %s: %s", gguf.name, exc)
         return None
     entry = entry_for_model(model_id)
-    is_mtp = entry.mtp if entry is not None else False
-    mmproj = entry.mmproj.size_bytes if entry is not None and _asset_path(entry.mmproj) else 0
-    plan = plan_launch(profile, budget, mtp_capable=is_mtp,
-                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj,
+    companions = _companions(entry)
+    plan = plan_launch(profile, budget, mtp_capable=_runs_mtp(entry, companions),
+                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + companions.nbytes,
                        requested_window=load_window_overrides().get(model_id))
     if isinstance(plan.decision, PhysicsRefusal):
         return None
     # Priced whole even when the plan spills: a spilled model still holds part of its weights on
     # the device, and over-counting errs toward the side that cannot thrash.
-    return footprint_bytes(profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
+    return footprint_bytes(plan.profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
 
 
 def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int) -> int:
@@ -283,6 +310,6 @@ def read_preset_decisions(preset_path: Path | None = None) -> dict[str, PresetEn
                 model_id=section, window=parser.getint(section, "ctx-size", fallback=0),
                 spilled=recorded.get(section, {}).get("spilled", parser.has_option(section, "override-tensor")),
                 keys=dict(parser[section]))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("preset read-back failed: %s", exc)
     return out

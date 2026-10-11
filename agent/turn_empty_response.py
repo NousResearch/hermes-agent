@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional
 from agent import empty_response_guard as _empty_guard
 from agent.message_metadata import append_message
 from agent.turn_context_compaction import _refund_api_call
-from agent.turn_failure_copy import site_copy
 from agent.turn_recovery import interruptible_backoff_sleep
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -36,7 +35,7 @@ class EmptyResponseVerdict:
     (unreachable: every path exits; kept for the contract)."""
 
     action: str
-    result: Optional[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
     final_response: Any
     turn_exit_reason: Any
     active_system_prompt: Any
@@ -97,8 +96,8 @@ def _retry_empty(
 
 def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, messages: Any) -> str:
     """Retries and fallback exhausted: persist the ``(empty)`` sentinel row and return the
-    delivery text. Reasoning is surfaced ONLY here, for delivery — the persisted row keeps
-    the sentinel so later "continue" turns don't replay it and loop on empties."""
+    delivery text. Reasoning is never copied into the delivery text here — the persisted row
+    keeps the sentinel so later "continue" turns don't replay it and loop on empties."""
     _streak_cost = _empty_guard.streak_cost_usd(agent)
     if _streak_cost is not None:
         agent._buffer_diagnostic_status(
@@ -127,19 +126,20 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
         )
         return "(empty)"
 
-    reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
     logger.warning(
-        "Reasoning-only response (no visible content) after exhausting retries and fallback. Reasoning: %s", reasoning_preview,
+        "Reasoning-only response after %d retries; keeping it out of the terminal result "
+        "(model=%s provider=%s)",
+        agent._empty_content_retries, agent.model, agent.provider,
     )
     agent._emit_diagnostic_status(
         "⚠️ Model produced reasoning but no visible response after all retries. Returning empty."
     )
-    return site_copy("reasoning_only", model=agent.model, preview=reasoning_preview)
+    return "(empty)"
 
 
 def recover_empty_response(
     agent: Any, assistant_message: Any, response: Any, finish_reason: str, *, final_response: Any,
-    messages: List[Dict[str, Any]], api_messages: Any, conversation_history: Any,
+    messages: list[dict[str, Any]], api_messages: Any, conversation_history: Any,
     active_system_prompt: Any, api_call_count: int, turn_exit_reason: Any,
     preflight_compression_blocked: bool,
 ) -> EmptyResponseVerdict:
@@ -151,7 +151,7 @@ def recover_empty_response(
     _turn_exit_reason = turn_exit_reason
     _preflight_compression_blocked = preflight_compression_blocked
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> EmptyResponseVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> EmptyResponseVerdict:
         return EmptyResponseVerdict(
             action=action, result=result, final_response=final_response,
             turn_exit_reason=_turn_exit_reason, active_system_prompt=active_system_prompt,
@@ -190,6 +190,9 @@ def recover_empty_response(
         # Do NOT modify the assistant message content (injected text poisoned history).
         final_response = agent._strip_think_blocks(fallback).strip()
         agent._response_was_previewed = True
+        # The final IS the response streamed before the housekeeping tool: name that identity
+        # so a client settles the text it already shows instead of painting it a second time.
+        agent._reused_response_text = final_response
         return _verdict("break")
 
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.

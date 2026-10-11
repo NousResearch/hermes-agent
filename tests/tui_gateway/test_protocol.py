@@ -37,8 +37,8 @@ def server():
     # unbound copy whose default sinks drop frames and treat every client as answerable. Likewise a test's
     # ``from tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
     # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
-    import tui_gateway.server_requests  # noqa: F401
-    import tui_gateway.transport  # noqa: F401
+    import tui_gateway.server_requests
+    import tui_gateway.transport
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -488,7 +488,7 @@ def test_client_capabilities_advertises_counting_not_shown_declines(server):
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
     from tui_gateway import server_requests
-    server, buf = capture
+    _server, buf = capture
     assert server_requests.send(method, "s1", {}, timeout=0) is None
     request, cancel = _frames(buf)
     assert request["method"] == method
@@ -507,19 +507,14 @@ def test_late_response_and_lock_are_dropped_quietly(server):
 
 
 def _start_batch_clarify(server, buf, qids, timeout=None):
-    """Open a batch ``clarify`` request: through ``_clarify_block`` (no deadline) by default, or straight
-    through ``server_requests.send`` with *timeout* to exercise the generic batch-deadline semantics."""
     from tui_gateway import server_requests
     box = {}
     normalized = [{"qid": q, "id": "", "question": q, "choices": None, "choices_offered": [], "multi_select": False}
                   for q in qids]
-    if timeout is None:
-        target = lambda: box.__setitem__("answer", server._clarify_block("s1", normalized))  # noqa: E731
-    else:
-        wire = [{"qid": q, "question": q, "choices": None, "multi_select": False} for q in qids]
-        target = lambda: box.__setitem__("answer", server_requests.send(  # noqa: E731
-            "clarify", "s1", {"questions": wire}, timeout=timeout, qids=list(qids)))
-    thread = threading.Thread(target=target, daemon=True)
+    if timeout is not None:
+        server._clarify_timeout_seconds = lambda: timeout
+    thread = threading.Thread(
+        target=lambda: box.__setitem__("answer", server._clarify_block("s1", normalized)), daemon=True)
     thread.start()
     return thread, box, _wait_open(server_requests, buf)
 
@@ -548,12 +543,16 @@ def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(captur
     thread.join(timeout=5)
     assert box["answer"] == {"answers": {"q0": "y", "q1": ""}, "outcome": "submitted"}
 
-    # Deadline (generic server-request semantics): locked answers survive, outcome timed_out, one request.cancel.
-    thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"], timeout=1.5)
-    locked = server.handle_request({"id": "b1", "method": "clarify.lock",
-                                    "params": {"request_id": req.id, "question_id": "q0", "answer": "kept"}})
-    assert locked["result"]["status"] == "ok"
-    thread.join(timeout=5)
+    # Deadline: locked answers survive, outcome timed_out, one request.cancel.
+    original_timeout = server._clarify_timeout_seconds
+    try:
+        thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"], timeout=1.5)
+        locked = server.handle_request({"id": "b1", "method": "clarify.lock",
+                                        "params": {"request_id": req.id, "question_id": "q0", "answer": "kept"}})
+        assert locked["result"]["status"] == "ok"
+        thread.join(timeout=5)
+    finally:
+        server._clarify_timeout_seconds = original_timeout
     assert box["answer"] == {"answers": {"q0": "kept"}, "outcome": "timed_out"}
     cancels = [f for f in _frames(buf) if f.get("method") == "event" and f["params"]["type"] == "request.cancel"]
     assert [c["params"]["payload"]["id"] for c in cancels] == [req.id]
@@ -940,7 +939,7 @@ def test_deferred_hydration_falls_back_to_tip_when_lineage_exceeds_limit(server,
 
 def test_session_resume_guard_failure_fails_open(server, monkeypatch):
     """A transient guard error must not block resume (fail open, log only)."""
-    reopened = []
+    reads = []
 
     class _DB:
         def get_session(self, sid):
@@ -955,9 +954,17 @@ def test_session_resume_guard_failure_fails_open(server, monkeypatch):
         def assert_resume_safe(self, _sid):
             raise RuntimeError("database is locked")
 
-        def reopen_session(self, sid):
-            reopened.append(sid)
-            return True
+        def get_messages_as_conversation(self, _sid, **_kwargs):
+            reads.append("tip")
+            return []
+
+        def get_resume_conversations(self, _sid):
+            reads.append("lineage")
+            return ([], [])
+
+        def get_ancestor_display_prefix(self, _sid):
+            reads.append("prefix")
+            return []
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 
@@ -972,11 +979,13 @@ def test_session_resume_guard_failure_fails_open(server, monkeypatch):
         }
     )
 
-    # The guard must not block: no 4130. Reopen being attempted proves
-    # execution moved past the guard.
+    # The guard must not block: no 4130, and execution moved PAST the guard to the
+    # history read (omit_messages reads the tip segment). (#85303 made the mount
+    # read-only — resume no longer reopens the row, so the history read is what
+    # proves the guard was survived.)
     err = response.get("error") or {}
     assert err.get("code") != 4130
-    assert reopened == ["transient-guard-session"]
+    assert "tip" in reads, "history read must have run"
 
 
 def test_session_resume_active_turn_payload_matches_desktop_fixture(server, monkeypatch):
@@ -1350,8 +1359,8 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
     '/nature-figure /academic-plotting Plot the results' loads BOTH skills
     over the remaining instruction instead of leaving the second token in
     the prompt as plain text."""
-    import agent.skill_commands as skill_commands
-    import tools.skills_tool as skills_tool
+    from agent import skill_commands
+    from tools import skills_tool
 
     home = tmp_path / ".hermes"
     skills_dir = home / "skills"
@@ -1400,8 +1409,8 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
 def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(server, tmp_path, monkeypatch):
     """A non-skill or repeated token stops the stack and stays instruction text —
     the split must never eat content the user meant as the prompt."""
-    import agent.skill_commands as skill_commands
-    import tools.skills_tool as skills_tool
+    from agent import skill_commands
+    from tools import skills_tool
 
     home = tmp_path / ".hermes"
     skills_dir = home / "skills"
@@ -1822,7 +1831,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     """Real config + skin files: activating a skin (as `hermes config set` does)
     makes the per-tool reconcile broadcast skin.changed with the resolved palette.
     Exercises _load_cfg → _skin_sig → resolve_skin → _emit with no mocks in between."""
-    import hermes_cli.skin_engine as skin_engine
+    from hermes_cli import skin_engine
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(

@@ -46,7 +46,7 @@ class CLIChatTurnMixin:
             return
         GatewayRunner._apply_fallback_chain_to_agent(agent, self._fallback_model)
 
-    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
+    def chat(self, message, images: list | None = None, voice_input: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
         Input typed while the agent runs goes to ``_interrupt_queue`` (separate from
@@ -219,6 +219,18 @@ class CLIChatTurnMixin:
                 logging.warning("native image attach failed, falling back to text: %s", _img_exc)
         return self._preprocess_images_with_vision(text, images)
 
+    def _handle_initiate_setup_command(self, cmd: str):
+        from agent.initiate_setup_prompt import build_initiate_setup_prompt
+        from cli import get_tool_definitions
+        from hermes_cli.setup_profile import primary_profile
+        from hermes_constants import get_hermes_home
+        print("\n" + t("cli.commands.initiate_setup.starting"))
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
+                                     quiet_mode=True, skip_tool_search_assembly=True)
+        names = [tool["function"]["name"] for tool in tools]
+        primary = primary_profile(get_hermes_home())
+        self._queue_prompt_turn(build_initiate_setup_prompt("cli", names, primary), "/initiate-setup")
+
     def _chat_stage_user_message(self, agent, message):
         """Append the staged user dict to the transcript under the agent's persist lock."""
         # Copy before appending: mutating ``agent._session_messages`` in this UI-only step
@@ -257,14 +269,18 @@ class CLIChatTurnMixin:
             threading.Thread(target=self._voice_full_duplex_listener, daemon=True).start()
 
         # Streaming TTS: any working provider speaks sentence-by-sentence as tokens arrive.
+        # Availability is check_tts_requirements() ALONE: the speaker side picks its own
+        # output route per platform (PortAudio stream where usable, tempfile -> afplay on
+        # macOS — sounddevice is deliberately never imported for output on Darwin, see
+        # tts_tool_speaker._device_usable), so probing it here disabled streaming TTS on
+        # macOS via the bare except below (#84046).
         if self._voice_tts:
             try:
-                from tools.tts_tool import _import_sounddevice, check_tts_requirements
+                from tools.tts_tool import check_tts_requirements
                 from tools.tts_tool_speaker import stream_tts_to_speaker
-                _import_sounddevice()
                 turn.use_streaming_tts = check_tts_requirements()
             except Exception:
-                pass
+                logging.debug("streaming TTS arm check failed", exc_info=True)
 
         if turn.use_streaming_tts:
             turn.text_queue = queue.Queue()
@@ -327,6 +343,7 @@ class CLIChatTurnMixin:
             reset_current_session_key = None  # type: ignore[assignment]
             _approval_session_token = None
         agent_message = turn.voice_prefix + message if turn.voice_prefix else message
+        self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).
         for _note_attr in ("_pending_model_switch_note", "_pending_skills_reload_note"):
@@ -345,9 +362,6 @@ class CLIChatTurnMixin:
         _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
-        # The user is at this terminal: approval and clarify prompts wait until answered or Ctrl+C.
-        from tools.approval_context import reset_prompts_wait_for_answer, set_prompts_wait_for_answer
-        _prompts_token = set_prompts_wait_for_answer()
         try:
             from agent.notification_presentation import notification_turn
             muted = getattr(turn, "mute_notification_reply", False)
@@ -398,7 +412,6 @@ class CLIChatTurnMixin:
                     reset_current_session_key(_approval_session_token)
                 except Exception:
                     pass
-            reset_prompts_wait_for_answer(_prompts_token)
 
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""
@@ -448,8 +461,7 @@ class CLIChatTurnMixin:
                     _f.write(f"{time.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
                              f"children={len(self.agent._active_children)}, "
                              f"parent._interrupt={self.agent._interrupt_requested}\n")
-                    for _ci, _ch in enumerate(self.agent._active_children):
-                        _f.write(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n")
+                    _f.writelines(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n" for _ci, _ch in enumerate(self.agent._active_children))
             except Exception:
                 pass
             break
@@ -506,7 +518,8 @@ class CLIChatTurnMixin:
         # titling and the exit summary target the live child, not the ended parent.
         if (self.agent and getattr(self.agent, "session_id", None)
                 and self.agent.session_id != self.session_id):
-            self._transfer_session_yolo(self.session_id, self.agent.session_id)
+            from tools.approval_yolo import transfer_session_yolo
+            transfer_session_yolo(self.session_id, self.agent.session_id)
             self.session_id = self.agent.session_id
             self._write_terminal_breadcrumb()
             self._pending_title = None

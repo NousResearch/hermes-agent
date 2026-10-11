@@ -7,10 +7,13 @@
  *   1. **JSON-RPC sidecar** (`GatewayClient` → /api/ws) — a lightweight
  *      session used only for connection state (the "live" badge) and
  *      credential warnings. Independent of the PTY pane's session by
- *      design. The model badge does NOT come from here: it reads the
- *      effective config model over REST (`/api/model/info`), and the model
- *      picker writes config over REST (`/api/model/set`) then offers a
- *      dashboard reload so the running chat adopts the new model.
+ *      design. The model badge does NOT come from here: it prefers the
+ *      PTY chat session's runtime identity (`session.info` over the events
+ *      feed — the model actually answering, which changes when a provider
+ *      fallback replaces the configured primary mid-turn, #54509), falls
+ *      back to the effective config model over REST (`/api/model/info`),
+ *      and the model picker writes config over REST (`/api/model/set`)
+ *      then offers a dashboard reload so the running chat adopts it.
  *
  *   2. **Event subscriber** (/api/events?channel=…) — passive, receives
  *      every dispatcher emit from the PTY-side `tui_gateway.entry` that
@@ -76,6 +79,11 @@ interface SessionInfo {
 // path, mirroring the events feed's give-up contract.
 const SIDE_CAR_MAX_RECONNECT_ATTEMPTS = 5;
 
+// A socket that opens and dies within this window is a flap, not a recovery:
+// only a connection that stays open this long refills a reconnect budget.
+// Shared by the JSON-RPC sidecar and the events feed (#129393).
+const HEALTHY_OPEN_GRACE_MS = 10_000;
+
 // Surfaced once when the redial budget is exhausted. Only this module may
 // clear it (on the next successful open), matching how the events feed
 // owns its own banner messages.
@@ -97,6 +105,15 @@ const STATE_TONE: Record<ConnectionState, 'secondary' | 'warning' | 'success' | 
   open: 'success',
   closed: 'secondary',
   error: 'destructive'
+}
+
+/** The runtime model a `session.info` payload reports, or undefined when it
+ *  carries none (title-only updates) — config stays the badge's source then.
+ *  `session.info` is surface-specific on the wire, so narrow defensively. */
+function sessionInfoModel(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const model = (payload as { model?: unknown }).model
+  return typeof model === 'string' && model.trim() ? model : undefined
 }
 
 interface ChatSidebarProps {
@@ -152,14 +169,23 @@ export function ChatSidebar({
   const [info, setInfo] = useState<SessionInfo>({})
   const [modelOpen, setModelOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // The badge shows config.yaml's main model (`model.default`) via
-  // `/api/model/info` — the same value the Models page writes and a new chat
-  // session boots from. We deliberately don't use the sidecar's `session.info`
-  // model: that's a one-time snapshot of the throwaway sidecar agent taken when
-  // its session is created, and it never updates when the model is changed
-  // elsewhere, so the badge would go stale. Pass the chat profile explicitly so
-  // this card stays scoped to the PTY even if the global dashboard switcher
-  // changes while the chat is open.
+  // Runtime model identity of the PTY chat session, from its `session.info`
+  // broadcasts over the events feed. This is the model actually answering —
+  // when a provider fallback replaces the configured primary mid-turn
+  // (#54509), the end-of-turn `session.info` reports the fallback model, and
+  // the badge must follow it rather than attribute the response to the
+  // configured model that failed.
+  const [runtimeModel, setRuntimeModel] = useState('')
+  // The config fallback for the badge: config.yaml's main model
+  // (`model.default`) via `/api/model/info` — the same value the Models page
+  // writes and a new chat session boots from, shown until the PTY session
+  // has broadcast a runtime identity. We deliberately don't use the
+  // SIDECAR's `session.info` model: that's a one-time snapshot of the
+  // throwaway sidecar agent taken when its session is created, and it never
+  // updates when the model is changed elsewhere, so the badge would go
+  // stale. Pass the chat profile explicitly so this card stays scoped to
+  // the PTY even if the global dashboard switcher changes while the chat
+  // is open.
   const [effectiveModel, setEffectiveModel] = useState('')
   // Whether the effective model supports reasoning effort — gates the
   // ReasoningPicker. Read from the same `/api/model/info` capabilities the
@@ -204,6 +230,9 @@ export function ChatSidebar({
     if (prevScopeKey.current === scopeKey) return
     prevScopeKey.current = scopeKey
     setError(null)
+    // Fresh PTY child on the new scope: its runtime identity is unknown until
+    // its first `session.info` broadcast, so drop the previous chat's model.
+    setRuntimeModel('')
     // Fresh scope, fresh sidecar redial budget (#95951).
     sidecarRedialAttemptRef.current = 0
     sidecarGaveUpRef.current = false
@@ -246,19 +275,49 @@ export function ChatSidebar({
     // the counter; unmount or a scope switch (version bump) cancels the
     // pending timer because this effect tears down with the old client.
     let redialTimer: ReturnType<typeof setTimeout> | null = null;
+    let healthyOpenTimer: ReturnType<typeof setTimeout> | null = null;
+    // onState replays the current state synchronously. Ignore only that
+    // subscription-time snapshot; real transitions in the same effect must
+    // still consume the retry budget.
+    let replayingInitialState = true;
+    queueMicrotask(() => {
+      replayingInitialState = false;
+    });
     const offRedial = gw.onState((s) => {
+      if (replayingInitialState) {
+        return;
+      }
       if (s === "open") {
-        sidecarRedialAttemptRef.current = 0;
-        if (sidecarGaveUpRef.current) {
-          sidecarGaveUpRef.current = false;
-          setError((current) =>
-            current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
-          );
+        // A pending redialTimer would bump the version and tear down the
+        // connection that just opened (#129393).
+        if (redialTimer) {
+          clearTimeout(redialTimer);
+          redialTimer = null;
         }
+        if (healthyOpenTimer) {
+          clearTimeout(healthyOpenTimer);
+        }
+        // Do not reset the budget on every open: an open→immediate-close
+        // cycle would otherwise reset it forever. Reset only after a stable
+        // connection has remained open for the grace period.
+        healthyOpenTimer = setTimeout(() => {
+          healthyOpenTimer = null;
+          sidecarRedialAttemptRef.current = 0;
+          if (sidecarGaveUpRef.current) {
+            sidecarGaveUpRef.current = false;
+            setError((current: string | null) =>
+              current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
+            );
+          }
+        }, HEALTHY_OPEN_GRACE_MS);
         return;
       }
       if (s !== "closed" && s !== "error") {
         return;
+      }
+      if (healthyOpenTimer) {
+        clearTimeout(healthyOpenTimer);
+        healthyOpenTimer = null;
       }
       if (cancelled || redialTimer) {
         return;
@@ -314,6 +373,10 @@ export function ChatSidebar({
         clearTimeout(redialTimer)
         redialTimer = null
       }
+      if (healthyOpenTimer) {
+        clearTimeout(healthyOpenTimer)
+        healthyOpenTimer = null
+      }
       offRedial()
       offState()
       offSessionInfo()
@@ -339,6 +402,7 @@ export function ChatSidebar({
     }
     let unmounting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let healthyOpenTimer: ReturnType<typeof setTimeout> | null = null
     let attempt = 0
 
     // The banner is shared with `info.credential_warning` and the JSON-RPC
@@ -356,6 +420,10 @@ export function ChatSidebar({
     const scheduleReconnect = () => {
       if (unmounting || reconnectTimer) {
         return
+      }
+      if (healthyOpenTimer) {
+        clearTimeout(healthyOpenTimer)
+        healthyOpenTimer = null
       }
       if (attempt >= EVENTS_MAX_RECONNECT_ATTEMPTS) {
         surface(eventsGaveUpMessage())
@@ -408,8 +476,16 @@ export function ChatSidebar({
 
     const offState = feed.onState(state => {
       if (state === 'open') {
-        attempt = 0
         clearEventsBanner()
+        // Same rule as the sidecar: an open that dies within the grace window
+        // is a flap, not a recovery, so it must not refill the ladder.
+        if (healthyOpenTimer) {
+          clearTimeout(healthyOpenTimer)
+        }
+        healthyOpenTimer = setTimeout(() => {
+          healthyOpenTimer = null
+          attempt = 0
+        }, HEALTHY_OPEN_GRACE_MS)
       }
     })
 
@@ -417,6 +493,14 @@ export function ChatSidebar({
       const title = titleFromSessionInfoPayload(ev.payload)
       if (title !== undefined) {
         onSessionTitleChange?.(title)
+      }
+      // Runtime identity of the PTY chat session — the model actually
+      // answering, which a provider fallback can swap mid-turn (#54509).
+      // The gateway re-emits `session.info` at every turn end (and on model
+      // switches), so this stays current without any new plumbing.
+      const model = sessionInfoModel(ev.payload)
+      if (model !== undefined) {
+        setRuntimeModel(model)
       }
     })
     const offNewSession = feed.on('dashboard.new_session_requested', () => {
@@ -430,6 +514,10 @@ export function ChatSidebar({
       if (reconnectTimer) {
         clearTimeout(reconnectTimer)
         reconnectTimer = null
+      }
+      if (healthyOpenTimer) {
+        clearTimeout(healthyOpenTimer)
+        healthyOpenTimer = null
       }
       offClose()
       offState()
@@ -452,9 +540,12 @@ export function ChatSidebar({
     setVersion(v => v + 1)
   }, [])
 
-  // The picker writes config.yaml over REST and reloads — it doesn't ride the
-  // sidecar gateway session, so it's available whenever the sidebar is mounted.
-  const modelName = effectiveModel || info.model || '—'
+  // Runtime-first (#54509): the PTY session's `session.info` reports the
+  // model that is actually answering, so a provider-fallback swap shows the
+  // fallback model, not the configured primary that failed. Config remains
+  // the fallback until the PTY has broadcast a runtime identity (fresh chat,
+  // events feed still connecting).
+  const modelName = runtimeModel || effectiveModel || info.model || '—'
   const modelLabel = modelName.split('/').slice(-1)[0] ?? '—'
   const credential = credentialWarning(info.credential_warning)
   const banner = error ?? credential?.message ?? null

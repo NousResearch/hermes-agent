@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import status
+from datetime import UTC
 
 
 class TestGatewayPidState:
@@ -125,7 +127,6 @@ class TestGatewayPidState:
         def fake_kill(pid, sig):
             if pid == 99999:
                 raise ProcessLookupError
-            return None
 
         monkeypatch.setattr(status.os, "kill", fake_kill)
 
@@ -826,7 +827,7 @@ class TestScopedLocks:
         # unrelated process's name.  This confirms the PID was reused.
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/libexec/bluetoothuserd")
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
         assert acquired is True
         payload = json.loads(lock_path.read_text())
@@ -977,7 +978,7 @@ class TestScopedLocks:
         # Post-#21561: simulate "PID gone" via _pid_exists returning False.
         monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
         assert acquired is True
         payload = json.loads(lock_path.read_text())
@@ -1017,7 +1018,7 @@ class TestScopedLocks:
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "lead-gen-outreach"))
 
-        acquired, existing = status.acquire_scoped_lock(
+        acquired, _existing = status.acquire_scoped_lock(
             "telegram-bot-token", "secret", metadata={"platform": "telegram"}
         )
 
@@ -1183,7 +1184,7 @@ class TestTakeoverMarker:
             "target_start_time": 100,
             "replacer_pid": 99999,
             "replacer_hermes_home": str(tmp_path / "profiles" / "other"),
-            "written_at": datetime.now(timezone.utc).isoformat(),
+            "written_at": datetime.now(UTC).isoformat(),
         }))
 
         result = status.consume_takeover_marker_for_self()
@@ -1205,7 +1206,7 @@ class TestTakeoverMarker:
             "target_pid": os.getpid(),
             "target_start_time": 100,
             "replacer_pid": 99999,
-            "written_at": datetime.now(timezone.utc).isoformat(),
+            "written_at": datetime.now(UTC).isoformat(),
         }))
 
         result = status.consume_takeover_marker_for_self()
@@ -1369,6 +1370,12 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        # psutil sits between /proc and ps; left real, it reads whatever process holds this pid on the
+        # host (CI saw `/usr/sbin/haveged` at 873) and ps is never reached.
+        def _no_such_process(pid):
+            raise ProcessLookupError(pid)
+
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_no_such_process))
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n"),
@@ -1598,7 +1605,7 @@ class TestNormalizeUpdatedAt:
         assert isinstance(result, str)
         parsed = datetime.fromisoformat(result)
         assert parsed.tzinfo is not None
-        assert parsed == datetime.fromtimestamp(1750000000, tz=timezone.utc)
+        assert parsed == datetime.fromtimestamp(1750000000, tz=UTC)
 
 
     def test_iso_with_z_suffix_accepted(self):
@@ -1608,7 +1615,7 @@ class TestNormalizeUpdatedAt:
         assert result is not None
         parsed = datetime.fromisoformat(result)
         assert parsed.tzinfo is not None
-        assert parsed == datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+        assert parsed == datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
 
     def test_naive_iso_coerced_to_utc(self):
         from datetime import datetime, timezone
@@ -1618,7 +1625,7 @@ class TestNormalizeUpdatedAt:
         parsed = datetime.fromisoformat(result)
         assert parsed.tzinfo is not None
         assert parsed.utcoffset().total_seconds() == 0
-        assert parsed == datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+        assert parsed == datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
 
     def test_offset_aware_iso_round_trips_canonically(self):
         canonical = "2026-07-21T12:00:00+00:00"
@@ -1724,15 +1731,12 @@ class TestResolveGatewayLiveness:
 
         def _pid(pid_path=None, **kw):
             seen["pid_path"] = pid_path
-            return None
 
         def _reader(path=None):
             seen["status_path"] = path
-            return None
 
         def _runtime_pid(runtime, *, expected_home=None):
             seen["expected_home"] = expected_home
-            return None
 
         status.resolve_gateway_liveness(
             profile_dir=profile_dir,

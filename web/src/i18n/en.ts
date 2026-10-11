@@ -127,6 +127,8 @@ export const en: Translations = {
     sharedMetricsTitle: "Help improve Hermes?",
     sharedMetricsBody:
       "Shared metrics are bounded counters, never prompts, files, paths or error text. Collection stays on this machine; sending to Nous is a separate choice.",
+    sharedMetricsReaskBody:
+      "Asking once more: an earlier version could save \"No thanks\" before you saw this question.",
     sharedMetricsShare: "Send to Nous",
     sharedMetricsLocal: "Local only",
     sharedMetricsOff: "No thanks",
@@ -141,6 +143,7 @@ export const en: Translations = {
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",
+    actionFinishedOwed: "Updated, but still owed (re-run `hermes update` to finish)",
     actions: "Actions",
     agent: "Agent",
     activeSessions: "Active Sessions",
@@ -340,6 +343,7 @@ export const en: Translations = {
         'means "use the main model". Override per-task when you want a cheap/fast model for a specific job.',
       autoUseMain: "auto (use main model)",
       providerDefault: "(provider default)",
+      auxInherits: "inherits",
       resetAuxTitle: "Reset auxiliary models",
       resetAuxDescription:
         "Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.",

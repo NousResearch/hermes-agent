@@ -130,6 +130,7 @@ export const zh: Translations = {
   status: {
     actionFailed: "操作失败",
     actionFinished: "已完成",
+    actionFinishedOwed: "已更新，但仍有待完成的步骤（重新运行 `hermes update` 以完成）",
     actions: "操作",
     agent: "代理",
     activeSessions: "活跃会话",
@@ -326,6 +327,7 @@ export const zh: Translations = {
         "表示「使用主模型」。若想为特定任务使用更便宜/更快的模型，可按任务单独覆盖。",
       autoUseMain: "自动（使用主模型）",
       providerDefault: "（服务商默认）",
+      auxInherits: "继承",
       resetAuxTitle: "重置辅助模型",
       resetAuxDescription:
         "将所有辅助任务重置为「自动」？你为各项任务单独设置的覆盖都会被清除。",

@@ -180,7 +180,7 @@ export function ModelPickerDialog({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
         bodyClassName="gap-0 overflow-hidden p-0"
-        className={cn('max-h-[85vh] max-w-2xl', contentClassName)}
+        className={cn('max-h-[85vh] max-w-4xl', contentClassName)}
       >
         <DialogHeader className="border-b border-border px-4 py-3">
           <DialogTitle>{copy.title}</DialogTitle>
@@ -381,6 +381,7 @@ function ModelResults({
                       onSelectModel(provider, model)
                     }
                   }}
+                  title={model}
                   value={`${provider.slug}:${model}`}
                 >
                   <span className={cn('min-w-0 flex-1 truncate', dimmed && !isCurrent && 'text-muted-foreground')}>
@@ -614,7 +615,7 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
     ) : null
 
   return (
-    <span className="flex min-w-0 items-center gap-2">
+    <span className="flex min-w-0 items-center gap-2" title={`${provider.name} · ${provider.slug}`}>
       <span className="truncate">{provider.name}</span>
       <span className="font-mono text-xs font-normal normal-case tracking-normal text-muted-foreground">
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}

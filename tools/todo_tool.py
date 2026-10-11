@@ -16,6 +16,11 @@ MAX_TODO_ITEMS = 256
 # oversized result is dropped before parsing (AIAgent._hydrate_todo_store).
 MAX_TODO_RESULT_CHARS = 512_000
 _TRUNCATION_MARKER = "… [truncated]"
+_REPEATED_MARKER = " … [repeated]"
+# Consecutive identical units of this length (or shorter) repeated at least five
+# times are collapsed. The bound keeps the scan bounded after the content cap.
+_MAX_REPEAT_UNIT_CHARS = 80
+_MIN_REPEAT_COUNT = 5
 # Persisted as ordinary message content; ContextCompressor keys on this stable header to
 # tell the synthetic post-compaction row from a real user message.
 TODO_INJECTION_HEADER = "[Your active task list was preserved across context compression]"
@@ -131,11 +136,61 @@ class TodoStore:
         return "\n".join(lines) if len(lines) > 1 else None
 
     @staticmethod
+    def _collapse_repeated_units(content: str) -> str:
+        """Replace each consecutive run of five or more identical short units.
+
+        The longest qualifying span at an offset wins, preserving the first two
+        units so the resulting task still communicates what was removed.
+        """
+        n = len(content)
+        if n < _MIN_REPEAT_COUNT:
+            return content
+        parts: List[str] = []
+        i = 0
+        while i < n:
+            remain = n - i
+            best_span = 0
+            best_unit_len = 0
+            max_unit_len = min(_MAX_REPEAT_UNIT_CHARS, remain // _MIN_REPEAT_COUNT)
+            # A repeated unit must start with the same character at its next
+            # boundary. Searching those candidates avoids a Python-level
+            # 1..80 scan at every offset of ordinary text.
+            next_start = content.find(content[i], i + 1, i + max_unit_len + 1)
+            while next_start != -1:
+                unit_len = next_start - i
+                unit = content[i:i + unit_len]
+                count = 1
+                pos = i + unit_len
+                while pos + unit_len <= n and content[pos:pos + unit_len] == unit:
+                    count += 1
+                    pos += unit_len
+                if count >= _MIN_REPEAT_COUNT and count * unit_len > best_span:
+                    best_span = count * unit_len
+                    best_unit_len = unit_len
+                next_start = content.find(content[i], next_start + 1, i + max_unit_len + 1)
+            if best_unit_len:
+                unit = content[i:i + best_unit_len]
+                replacement = unit + unit + _REPEATED_MARKER
+                # A short run (for example, five single characters) costs more
+                # to annotate than it saves. Never turn a content cap into an
+                # expansion merely to mark a repeat.
+                if len(replacement) < best_span:
+                    parts.append(replacement)
+                    i += best_span
+                    continue
+                parts.append(content[i])
+                i += 1
+            else:
+                parts.append(content[i])
+                i += 1
+        return "".join(parts)
+
+    @staticmethod
     def _cap_content(content: str) -> str:
-        """Truncate to MAX_TODO_CONTENT_CHARS keeping the head (the actionable part) + marker."""
+        """Cap content first, then collapse repeated filler within the cap."""
         if len(content) > MAX_TODO_CONTENT_CHARS:
-            return content[:MAX_TODO_CONTENT_CHARS - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
-        return content
+            content = content[:MAX_TODO_CONTENT_CHARS - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+        return TodoStore._collapse_repeated_units(content)
 
     @staticmethod
     def _validate(item: dict[str, Any]) -> dict[str, str]:

@@ -47,6 +47,10 @@ export interface CompletionResponse {
 export interface SlashExecResponse {
   output?: string
   warning?: string
+  /** True when the worker's process_command returned False — the command said its caller
+   *  should exit (/handoff completed), so the pane quits like /quit instead of holding
+   *  a session lease the gateway has already claimed. */
+  exit?: boolean
 }
 
 // ── Remote Spending (Phase 2b) ───────────────────────────────────────

@@ -3787,10 +3787,11 @@ export interface SlashExecParams {
   command: string
   profile?: string | null
 }
-/** Plain worker/plugin text in ``output`` (+ ``warning``), or — when the command was rerouted to ``command.dispatch`` — that method's directive fields with ``type`` set. */
+/** Plain worker/plugin text in ``output`` (+ ``warning``), or — when the command was rerouted to ``command.dispatch`` — that method's directive fields with ``type`` set. ``exit`` is true when the worker's ``process_command`` returned False: the command said its caller should exit (``/handoff`` completed — #133725), so the client should terminate the pane like /quit would. */
 export interface SlashExecResult {
   output?: string | null
   warning?: string | null
+  exit?: boolean | null
   type?: DispatchType | null
   target?: string | null
   message?: string | null

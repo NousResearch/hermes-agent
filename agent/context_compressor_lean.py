@@ -88,9 +88,12 @@ def rebuild_lean_sections(
         quoted_user_texts(_build_verbatim_user_section(turns)),
         quoted_user_texts(carried.get(_LEAN_USER_MESSAGES_HEADING, "")),
     )
-    harvest = list(turns)
+    # The previous index is harvested first so a tie (equal mention count) goes to the newest region,
+    # matching the quote ordering; the counts are genuine mentions across the compacted regions.
+    harvest: list[dict[str, Any]] = []
     if carried.get(_LEAN_ANCHOR_HEADING):
         harvest.append({"role": "tool", "content": carried[_LEAN_ANCHOR_HEADING]})
+    harvest += list(turns)
     return narrative.rstrip() + "".join((
         _redact_compaction_text(_build_anchor_index(harvest)),
         _redact_compaction_text(_build_verbatim_user_section([{"role": "user", "content": q} for q in quotes])),

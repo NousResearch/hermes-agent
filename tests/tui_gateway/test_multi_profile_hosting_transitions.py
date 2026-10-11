@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 from tui_gateway import launch_profile_policy as lpp
 
 A_VAL = "a-only-secret-0001"
@@ -49,7 +49,7 @@ def test_send_keeps_external_source_value_over_raw_dotenv(two_homes, monkeypatch
     from hermes_cli import env_loader
     from hermes_cli.send_cmd import _load_hermes_env
 
-    root, b = two_homes
+    _root, b = two_homes
     # B's secret manager already hydrated for this process (a hydrated home is not re-pulled).
     monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME",
                         {str(b.resolve()): {"SHARED_TOKEN": "b-manager-fresh"}})
@@ -67,7 +67,7 @@ def test_launch_body_survives_first_secondary_activation(two_homes):
     resumes and still resolves its env-injected credential instead of raising."""
     from agent.secret_scope import get_secret, is_multiplex_active
 
-    root, b = two_homes
+    _root, b = two_homes
     entered, activated = threading.Event(), threading.Event()
     seen: dict = {}
 
@@ -94,7 +94,7 @@ def test_launch_body_survives_first_secondary_activation_on_the_dashboard(two_ho
     from agent.secret_scope import get_secret
     from hermes_cli import web_server_profiles as wsp
 
-    root, b = two_homes
+    _root, b = two_homes
     monkeypatch.setattr(wsp, "_resolve_profile_dir", lambda name: b)
     entered, activated = threading.Event(), threading.Event()
     seen: dict = {}
@@ -125,11 +125,17 @@ def test_release_resets_every_scope_when_one_reset_fails(two_homes, monkeypatch)
     scopes = server._profile_runtime_scope_tokens(str(b))
     assert current_secret_scope() is not None and get_hermes_home_override() == str(b)
 
+    real_reset = terminal_scope.reset_terminal_scope
+
     def exploding(_token):
         raise RuntimeError("terminal reset blew up")
 
     monkeypatch.setattr(terminal_scope, "reset_terminal_scope", exploding)
     server._release_build_profile_scopes(scopes)  # suppresses the re-raised failure
+    # The exploding reset left the terminal ContextVar bound to B's scope on this thread. The
+    # scenario is proven here; unbind it, or every later test in the process inherits B's scope.
+    real_reset(scopes.terminal)
+    assert terminal_scope.get_terminal_scope() is None
     assert current_secret_scope() is None
     assert get_hermes_home_override() is None
     assert Path(server._hermes_home) == root

@@ -25,6 +25,7 @@ def _reset_audit_sentinel():
 # ── SSH password-auth check ─────────────────────────────────────────────────
 
 
+@pytest.mark.platforms("macos")
 @pytest.mark.parametrize(
     ("returncode", "expected"),
     [(0, True), (113, False), (1, None)],
@@ -33,7 +34,6 @@ def test_macos_sshd_service_state_comes_from_launchctl(
     monkeypatch, returncode, expected
 ):
     """launchd service presence is the macOS Remote Login signal."""
-    monkeypatch.setattr(audit.sys, "platform", "darwin")
 
     class Result:
         def __init__(self, code):
@@ -48,6 +48,7 @@ def test_macos_sshd_service_state_comes_from_launchctl(
     assert audit._macos_sshd_service_active() is expected
 
 
+@pytest.mark.platforms("macos")
 @pytest.mark.parametrize(
     "error",
     [
@@ -57,7 +58,6 @@ def test_macos_sshd_service_state_comes_from_launchctl(
 )
 def test_macos_sshd_inspection_errors_are_unknown(monkeypatch, error):
     """Inspection failures preserve the conservative warning path."""
-    monkeypatch.setattr(audit.sys, "platform", "darwin")
 
     def fail_inspection(*args, **kwargs):
         raise error
@@ -67,9 +67,9 @@ def test_macos_sshd_inspection_errors_are_unknown(monkeypatch, error):
     assert audit._macos_sshd_service_active() is None
 
 
+@pytest.mark.platforms("not macos")
 def test_non_macos_skips_launchctl_and_preserves_warning(monkeypatch):
     """Other POSIX platforms keep the original config-based behavior."""
-    monkeypatch.setattr(audit.sys, "platform", "linux")
 
     def unexpected_launchctl(*args, **kwargs):
         raise AssertionError("launchctl must not run outside macOS")
@@ -174,7 +174,7 @@ def test_log_startup_security_warnings_emits_and_is_idempotent(monkeypatch, tmp_
     import logging
 
     monkeypatch.setattr(audit, "_is_root", lambda: True)
-    monkeypatch.setattr(audit, "_iter_sshd_config_lines", lambda: [])
+    monkeypatch.setattr(audit, "_iter_sshd_config_lines", list)
     monkeypatch.setattr(audit, "_in_container", lambda: False)
 
     with caplog.at_level(logging.WARNING, logger="hermes.security_audit"):

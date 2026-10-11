@@ -49,7 +49,10 @@ def _column(client, name):
 
 
 def _finish(client, task_id):
-    r = client.patch(f"/api/plugins/kanban/tasks/{task_id}", json={"status": "done"})
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "done", "result": "done", "summary": "done"},
+    )
     assert r.status_code == 200, r.text
 
 

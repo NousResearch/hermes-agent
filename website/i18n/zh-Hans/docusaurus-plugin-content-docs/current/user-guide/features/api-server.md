@@ -109,7 +109,7 @@ curl http://localhost:8642/v1/chat/completions \
 **流式传输**（`"stream": true`）：返回逐 token 响应块的 Server-Sent Events（SSE）。对于 **Chat Completions**，流使用标准 `chat.completion.chunk` 事件，以及 Hermes 自定义的 `hermes.tool.progress` 事件用于工具启动的 UX 展示。对于 **Responses**，流使用 OpenAI Responses 事件类型，如 `response.created`、`response.output_text.delta`、`response.output_item.added`、`response.output_item.done` 和 `response.completed`。
 
 **流中的工具进度：**
-- **Chat Completions**：Hermes 发出 `event: hermes.tool.progress` 以提供工具启动可见性，同时不污染持久化的 assistant 文本。
+- **Chat Completions**：Hermes 发出 `event: hermes.tool.progress` 以提供工具启动可见性，同时不污染持久化的 assistant 文本。无法处理具名 SSE 事件的严格 OpenAI 客户端可设置 `gateway.platforms.api_server.tool_progress_events: false`（默认 `true`）关闭这些帧；内容块不受影响。该开关仅作用于 Chat Completions——`/v1/runs/{id}/events` 始终发出工具事件，`/v1/capabilities` 中的 `tool_progress_events` 功能描述的正是这一点。
 - **Responses**：Hermes 在 SSE 流期间发出符合规范的 `function_call` 和 `function_call_output` 输出项，让客户端能够实时渲染结构化工具 UI。
 **模型推理**（仅当模型确实产生了推理内容且解析后的 `reasoning` 配置允许时才会发出；输入侧的关闭方式是 `model_options.reasoning.enabled: false`）：
 - **Chat Completions**：推理增量以 `choices[0].delta.reasoning_content` 块的形式到达（DeepSeek 风格的字段，Open WebUI、opencode 和 Vercel AI SDK 会将其渲染为思考块）；回答文本仍留在 `delta.content` 中。

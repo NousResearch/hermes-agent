@@ -28,7 +28,7 @@ class _RpcError(Exception):
     """Handler-level protocol error; sent verbatim as an error envelope."""
 
 
-def _rpc_start_bot(payload: Dict[str, Any], pm) -> Dict[str, Any]:
+def _rpc_start_bot(payload: dict[str, Any], pm) -> dict[str, Any]:
     # Whitelist kwargs we pass through to pm.start.
     kwargs = {k: payload[k] for k in _START_BOT_KEYS if k in payload}
     if "url" not in kwargs:
@@ -36,7 +36,7 @@ def _rpc_start_bot(payload: Dict[str, Any], pm) -> Dict[str, Any]:
     return pm.start(**kwargs)
 
 
-def _rpc_say(payload: Dict[str, Any], pm) -> Dict[str, Any]:
+def _rpc_say(payload: dict[str, Any], pm) -> dict[str, Any]:
     # The bot-side consumer only exists in realtime mode: ok=True means "enqueued", not "spoken".
     text = payload.get("text", "")
     active = pm._read_active()
@@ -85,7 +85,7 @@ class NodeServer:
         self._token = tok
         return tok
 
-    async def _handle_request(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_request(self, msg: dict[str, Any]) -> dict[str, Any]:
         """Validate + dispatch one decoded request; always returns an envelope, never raises.
         Envelope ``error`` is for auth/protocol failures and pm crashes; pm's own ``ok``/``error``
         results travel inside a normal response payload."""
@@ -105,7 +105,7 @@ class NodeServer:
             return _proto.make_response(req_id, handler(msg["payload"], pm))
         except _RpcError as exc:
             return _proto.make_error(req_id, str(exc))
-        except Exception as exc:  # noqa: BLE001 — surface any pm crash to client
+        except Exception as exc:
             return _proto.make_error(req_id, f"{type(exc).__name__}: {exc}")
 
     async def serve(self) -> None:

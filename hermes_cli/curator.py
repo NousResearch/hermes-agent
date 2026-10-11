@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -15,7 +15,7 @@ def _parse_ts(ts) -> Optional[datetime]:
         dt = datetime.fromisoformat(ts)
     except (TypeError, ValueError):
         return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
 def _fmt_ts(ts: Optional[str]) -> str:
@@ -24,7 +24,7 @@ def _fmt_ts(ts: Optional[str]) -> str:
     dt = _parse_ts(ts)
     if dt is None:
         return str(ts)
-    secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+    secs = int((datetime.now(UTC) - dt).total_seconds())
     for unit, div, limit in (("s", 1, 60), ("m", 60, 3600), ("h", 3600, 86400)):
         if secs < limit:
             return f"{secs // div}{unit} ago"
@@ -327,7 +327,7 @@ def _idle_days(record: dict) -> Optional[int]:
     immortal; None only when both fields are missing or unparseable."""
     ts = record.get("last_activity_at") or record.get("created_at")
     dt = _parse_ts(str(ts)) if ts else None
-    return None if dt is None else max(0, (datetime.now(timezone.utc) - dt).days)
+    return None if dt is None else max(0, (datetime.now(UTC) - dt).days)
 
 
 def _cmd_prune(args) -> int:
@@ -423,8 +423,7 @@ def _cmd_purge(args) -> int:
     import shutil
     import time
     from hermes_cli.config import cfg_get, load_config
-    from tools import skill_ledger
-    from tools.skill_usage import _archive_dir
+    from tools import skill_ledger, skill_usage
     ttl_days = getattr(args, "days", None)
     if ttl_days is None:
         ttl_days = int(cfg_get(load_config(), "curator", "archive_ttl_days", default=0) or 0)
@@ -433,13 +432,26 @@ def _cmd_purge(args) -> int:
             "curator: purge disabled (curator.archive_ttl_days is 0). Set the "
             "config key or pass --days N to purge archives older than N days.")
         return 1
-    archive_root = _archive_dir()
+    archive_root = skill_usage._archive_dir()
     if not archive_root.exists():
         print("curator: no archive directory — nothing to purge.")
         return 0
     cutoff = time.time() - ttl_days * 86400
+    usage = skill_usage.load_usage()
+
+    def _archived_ts(p: Path) -> float:
+        # The NEWER of the record's archived_at and the dir mtime: archives made before
+        # archive_skill stamped the mtime carry the skill's last-edit mtime, and a stale
+        # archived_at survives a manual un-archive + re-archive. Never purge before either says so.
+        # Key by the SKILL.md frontmatter name: older archives were flattened under the directory
+        # name (`accelerate` for `huggingface-accelerate`), which is not the usage-record key.
+        rec = usage.get(skill_usage._read_skill_name(p / "SKILL.md", fallback=p.name)) or {}
+        archived = rec.get("state") == skill_usage.STATE_ARCHIVED
+        at = skill_usage._parse_iso_timestamp(rec.get("archived_at")) if archived else None
+        return max(at.timestamp(), p.stat().st_mtime) if at else p.stat().st_mtime
+
     candidates = sorted(
-        p for p in archive_root.iterdir() if p.is_dir() and p.stat().st_mtime < cutoff)
+        p for p in archive_root.iterdir() if p.is_dir() and _archived_ts(p) < cutoff)
     if not candidates:
         print(f"curator: no archived skills older than {ttl_days}d.")
         return 0
@@ -578,10 +590,10 @@ def _cmd_usage(args) -> int:
         print("curator: no skills found")
         return 0
     provenance = [r.get("provenance", "agent") for r in rows]
-    counts = {k: provenance.count(k) for k in ("agent", "bundled", "hub")}
+    counts = {k: provenance.count(k) for k in ("agent", "bundled", "hub", "external")}
     print(
         f"skills: {len(rows)} total  "
-        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']})\n")
+        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']}  external={counts['external']})\n")
     print(
         f"  {'skill':40s}  {'origin':8s}  "
         f"{'use':>4s}  {'view':>4s}  {'patch':>5s}  {'act':>4s}  last_activity")
@@ -614,7 +626,7 @@ _SUBCOMMANDS = (
         _arg("--sort", choices=("activity", "recent", "name"), default="activity",
              help="Sort order: activity (most-used first, default), recent "
                   "(most-recently-active first), or name (alphabetical)"),
-        _arg("--provenance", choices=("agent", "bundled", "hub"), default=None,
+        _arg("--provenance", choices=("agent", "bundled", "hub", "external"), default=None,
              help="Only show skills of this origin"),
         _arg("--json", **_STORE_TRUE, help="Emit the full report as JSON instead of a table")),
     (

@@ -405,9 +405,7 @@ describe('renamed profile descriptors (#110200)', () => {
       remoteSource: true
     }
 
-    modules.chat.$groupChats.set(
-      rooms({ room: { log: [], members: [{ connectionId: 'local', name: 'niezale-ny' }] } })
-    )
+    modules.chat.$groupChats.set(rooms({ room: { log: [], members: [{ connectionId: 'local', name: 'niezale-ny' }] } }))
 
     const seated = modules.membership.groupChatMemberBots('room', [remoteTwin], {})
 

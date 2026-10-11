@@ -61,11 +61,12 @@ _RESOURCE_KEYS = (("cpu", "container_cpu", 1), ("memory", "container_memory", 51
                   ("disk", "container_disk", 51200), ("persistent_filesystem", "container_persistent", True))
 _CONTAINER_KEYS = (
     ("container_cpu", 1), ("container_memory", 5120), ("container_disk", 51200),
-    ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""),
+    ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""), ("vercel_image", ""),
     ("docker_volumes", []), ("docker_mount_cwd_to_workspace", False), ("docker_forward_env", []),
     ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
     ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
     ("docker_shared_container_key", ""), ("docker_orphan_reaper", True), ("docker_snap_compat", False),
+    ("docker_image_pinned", False),
 )
 _DOCKER_KWARGS = (
     ("volumes", "docker_volumes", []), ("auto_mount_cwd", "docker_mount_cwd_to_workspace", False),
@@ -73,21 +74,21 @@ _DOCKER_KWARGS = (
     ("run_as_host_user", "docker_run_as_host_user", False), ("network", "docker_network", True),
     ("extra_args", "docker_extra_args", []), ("persist_across_processes", "docker_persist_across_processes", True),
     ("shared_container_key", "docker_shared_container_key", ""), ("shm_size", "docker_shm_size", "1g"),
-    ("snap_compat", "docker_snap_compat", False),
+    ("snap_compat", "docker_snap_compat", False), ("image_pinned", "docker_image_pinned", False),
 )
 
 
-def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
+def _ssh_config_from_config(config: dict[str, Any]) -> dict:
     """``ssh_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``)."""
     return {out: config.get(key, default) for out, key, default in _SSH_KEYS}
 
 
-def _container_config_from_config(config: Dict[str, Any]) -> dict:
+def _container_config_from_config(config: dict[str, Any]) -> dict:
     """``container_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``)."""
     return {k: config.get(k, d) for k, d in _CONTAINER_KEYS}
 
 
-def _resources(cc: Dict[str, Any]) -> dict:
+def _resources(cc: dict[str, Any]) -> dict:
     """Common sandbox resource kwargs (cpu/memory in MB/disk in MB/persistence)."""
     return {out: cc.get(key, default) for out, key, default in _RESOURCE_KEYS}
 
@@ -96,13 +97,13 @@ def _is_supported_vercel_runtime(runtime: str) -> bool:
     return not runtime or runtime in _SUPPORTED_VERCEL_RUNTIMES
 
 
-def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
+def _get_modal_backend_state(modal_mode: object | None) -> dict[str, Any]:
     """Resolve direct vs managed Modal backend selection."""
     return resolve_modal_backend_state(modal_mode, has_direct=has_direct_modal_credentials(),
                                        managed_ready=is_managed_tool_gateway_ready("modal"))
 
 
-def _modal_unavailable_reason(modal_state: Dict[str, Any]) -> tuple[str, str]:
+def _modal_unavailable_reason(modal_state: dict[str, Any]) -> tuple[str, str]:
     """(log message, ValueError message) for a modal_state with no selected backend.
     Single decision shared by the requirements checker and the env builder."""
     gateway = nous_tool_gateway_unavailable_message("managed Modal execution")
@@ -182,7 +183,8 @@ _SANDBOX_ROWS = {
     "daytona": (lambda: importlib.import_module("tools.environments.daytona").DaytonaEnvironment, True,
                 lambda cc, kw: {"cpu": int(kw["cpu"])}),
     "vercel_sandbox": (lambda: importlib.import_module("tools.environments.vercel_sandbox").VercelSandboxEnvironment,
-                       False, lambda cc, kw: {"runtime": cc.get("vercel_runtime") or None}),
+                       False, lambda cc, kw: {"runtime": cc.get("vercel_runtime") or None,
+                                       "image": cc.get("vercel_image") or None}),
 }
 
 
@@ -234,8 +236,8 @@ _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singul
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
-                        ssh_config: dict = None, container_config: dict = None,
-                        local_config: dict = None, task_id: str = "default",
+                        ssh_config: dict | None = None, container_config: dict | None = None,
+                        local_config: dict | None = None, task_id: str = "default",
                         host_cwd: Optional[str] = None, probe_only: bool = False):
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
     for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
@@ -261,7 +263,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 #   pre(config) -> True (satisfied) / False (rejected, already logged) / None (continue);
 #   binary=(finder, version_arg, missing_log_or_None) runs ``<binary> <arg>``, ok iff rc == 0;
 #   module=(find_spec name, log message when absent);  post(config) -> bool.
-def _check_vercel(config: Dict[str, Any]) -> bool:
+def _check_vercel(config: dict[str, Any]) -> bool:
     """Runtime -> disk -> SDK -> auth (OIDC token, else the full TOKEN/PROJECT_ID/TEAM_ID tuple)."""
     runtime = (config.get("vercel_runtime") or "").strip()
     disk = config.get("container_disk", 51200)
@@ -272,7 +274,8 @@ def _check_vercel(config: Dict[str, Any]) -> bool:
         return _reject(f"Vercel Sandbox does not support custom TERMINAL_CONTAINER_DISK={disk}. "
                        "Use the default shared setting (51200 MB).")
     if importlib.util.find_spec("vercel") is None:
-        return _reject("vercel is required for the Vercel Sandbox terminal backend: pip install vercel")
+
+        return _reject("vercel is required for the Vercel Sandbox terminal backend. Run hermes setup terminal and select Vercel Sandbox.")
     from agent.secret_scope import get_secret
     if get_secret("VERCEL_OIDC_TOKEN"):
         return True
@@ -286,7 +289,7 @@ def _check_vercel(config: Dict[str, Any]) -> bool:
     return _reject(f"Vercel Sandbox backend {head} VERCEL_OIDC_TOKEN is supported for one-off local development only.")
 
 
-def _modal_pre(config: Dict[str, Any]) -> Optional[bool]:
+def _modal_pre(config: dict[str, Any]) -> Optional[bool]:
     modal_state = _get_modal_backend_state(config.get("modal_mode"))
     if modal_state["selected_backend"] == "managed":
         return True
@@ -295,27 +298,27 @@ def _modal_pre(config: Dict[str, Any]) -> Optional[bool]:
     return None
 
 
-def _ssh_pre(config: Dict[str, Any]) -> bool:
+def _ssh_pre(config: dict[str, Any]) -> bool:
     if config.get("ssh_host") and config.get("ssh_user"):
         return True
     return _reject("the SSH host and user are not configured (TERMINAL_SSH_HOST / TERMINAL_SSH_USER); "
                    "run `hermes setup terminal` to enter them or pick the 'local' backend")
 
 
-def _daytona_post(config: Dict[str, Any]) -> bool:
-    from daytona import Daytona  # noqa: F401 — SDK presence check (ImportError propagates)
+def _daytona_post(config: dict[str, Any]) -> bool:
+    from daytona import Daytona
     from agent.secret_scope import get_secret
     return get_secret("DAYTONA_API_KEY") is not None
 
 
-_BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
+_BACKEND_SPECS: dict[str, dict[str, Any]] = {
     "local": {},
     "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
                           "Docker is not installed — no docker executable in PATH or the usual install locations")},
     "singularity": {"binary": (lambda: shutil.which("apptainer") or shutil.which("singularity"), "--version", None)},
     "ssh": {"pre": _ssh_pre},
     "modal": {"pre": _modal_pre,
-              "module": ("modal", "modal is required for direct modal terminal backend: pip install modal")},
+              "module": ("modal", "modal is required for direct modal terminal backend. Run hermes setup terminal and select Modal.")},
     "vercel_sandbox": {"pre": _check_vercel},
     "daytona": {"post": _daytona_post},
 }
@@ -327,7 +330,7 @@ _PROBE_FAILED_REASONS = {
 }
 
 
-def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
+def _check_requirements(env_type: str, config: dict[str, Any]) -> bool:
     _record_unavailable_reason(None)
     spec = _BACKEND_SPECS[env_type]
     verdict = spec["pre"](config) if "pre" in spec else None
@@ -338,7 +341,7 @@ def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
         executable = finder()
         if not executable:
             return _reject(missing_msg or f"the {env_type!r} backend's executable was not found")
-        probe = subprocess.run([executable, arg], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+        probe = subprocess.run([executable, arg], capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
         if probe.returncode != 0:
             return _reject(f"{_PROBE_FAILED_REASONS[env_type]} (`{executable} {arg}` exited with code {probe.returncode})")
         return True
@@ -349,7 +352,7 @@ def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
     return True
 
 
-def _check_plugin_requirements(config: Dict[str, Any]) -> bool:
+def _check_plugin_requirements(config: dict[str, Any]) -> bool:
     _record_unavailable_reason(None)
     env_type = config["env_type"]
     provider = _get_plugin_env_provider(env_type)

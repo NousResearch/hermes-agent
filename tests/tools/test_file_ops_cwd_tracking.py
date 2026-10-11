@@ -14,8 +14,9 @@ the patch landed in a different directory's copy of the same file).
 Fix: _exec() now prefers the LIVE ``env.cwd`` over the init-time
 ``self.cwd``.  Explicit ``cwd`` arg to _exec still wins over both.
 """
-
 from __future__ import annotations
+
+import pytest
 
 import pytest
 
@@ -35,7 +36,7 @@ class _FakeEnv:
         self.cwd = start_cwd
         self.calls: list[dict] = []
 
-    def execute(self, command: str, cwd: str = None, **kwargs) -> dict:
+    def execute(self, command: str, cwd: str | None = None, **kwargs) -> dict:
         import subprocess
         self.calls.append({"command": command, "cwd": cwd})
         # Simulate cd by updating self.cwd (the real env does the same
@@ -52,6 +53,7 @@ class _FakeEnv:
             input=stdin_data,
             capture_output=True,
             text=True,
+            check=False,
         )
         return {
             "output": proc.stdout + proc.stderr,
@@ -73,7 +75,7 @@ class _WrapperEnv:
         import subprocess
         script = f"builtin cd -- {shlex.quote(cwd)} || exit 126\n{command}"
         proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, encoding="utf-8",
-                              input=kwargs.get("stdin_data"))
+                              input=kwargs.get("stdin_data"), check=False)
         return {"output": proc.stdout + proc.stderr, "returncode": proc.returncode}
 
 
@@ -116,7 +118,7 @@ class TestShellFileOpsCwdTracking:
             def execute(self, command, cwd=None, **kwargs):
                 import subprocess
                 proc = subprocess.run(["bash", "-c", command], cwd=cwd,
-                                      capture_output=True, text=True)
+                                      capture_output=True, text=True, check=False)
                 return {"output": proc.stdout, "returncode": proc.returncode}
 
         env = _NoCwdEnv()
@@ -124,6 +126,29 @@ class TestShellFileOpsCwdTracking:
         result = ops._exec("cat target.txt")
         assert result.exit_code == 0
         assert "fixed-content" in result.stdout
+
+    @pytest.mark.platforms("linux")
+    def test_patch_returns_success_only_when_file_actually_written(self, tmp_path):
+        """Safety rail: patch_replace success must reflect the real file state.
+
+        This test doesn't trigger the bug directly (it would require manual
+        corruption of the write), but it pins the invariant: when
+        patch_replace returns success=True, the file on disk matches the
+        intended content.  If a future write_file change ever regresses,
+        this test catches it.
+        """
+        target = tmp_path / "file.txt"
+        target.write_text("old content\n", encoding="utf-8")
+
+        env = _FakeEnv(start_cwd=str(tmp_path))
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        result = ops.patch_replace(str(target), "old content\n", "new content\n")
+        assert result.success is True
+        assert result.error is None
+        assert target.read_text(encoding="utf-8") == "new content\n", (
+            "patch_replace claimed success but file wasn't written correctly"
+        )
 
     def test_wrapper_cd_failure_names_the_invalid_working_directory(self, tmp_path):
         """When the backend's own ``builtin cd -- <cwd> || exit 126`` fails (a
@@ -167,25 +192,3 @@ class TestShellFileOpsCwdTracking:
         docker = ShellFileOperations(_WrapperEnv("/nope/docker", env_type="docker")).read_file_raw("/x")
         assert "/workspace" not in local.error
         assert "/workspace" in docker.error
-
-    def test_patch_returns_success_only_when_file_actually_written(self, tmp_path):
-        """Safety rail: patch_replace success must reflect the real file state.
-
-        This test doesn't trigger the bug directly (it would require manual
-        corruption of the write), but it pins the invariant: when
-        patch_replace returns success=True, the file on disk matches the
-        intended content.  If a future write_file change ever regresses,
-        this test catches it.
-        """
-        target = tmp_path / "file.txt"
-        target.write_text("old content\n", encoding="utf-8")
-
-        env = _FakeEnv(start_cwd=str(tmp_path))
-        ops = ShellFileOperations(env, cwd=str(tmp_path))
-
-        result = ops.patch_replace(str(target), "old content\n", "new content\n")
-        assert result.success is True
-        assert result.error is None
-        assert target.read_text(encoding="utf-8") == "new content\n", (
-            "patch_replace claimed success but file wasn't written correctly"
-        )

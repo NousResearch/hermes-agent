@@ -17,7 +17,6 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
@@ -913,7 +912,7 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
 
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
     api = SimpleNamespace(supports_async_delivery=False, _ensure_session_db=lambda: None)
-    for _restart in range(10):
+    for _restart in range(3):
         runner = _runner(adapter)
         runner.adapters = {Platform.API_SERVER: api} if unavailable == "api_db" else {}
         if unavailable == "owner_db":

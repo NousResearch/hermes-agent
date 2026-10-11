@@ -336,6 +336,7 @@ Certain tools are blocked for subagents even when the parent has them:
 - `memory` — no writes to shared persistent memory
 - `send_message` — no cross-platform side effects
 - `cronjob` — no scheduling more work in the parent's name
+- `start_chat` — no opening chats in the user's name
 
 Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work.
 
@@ -453,7 +454,7 @@ Closing the terminal monitor returns to your existing composer draft. Steering u
 
 **Background processes share the dock.** Anything the agent starts with `terminal(background=true)` (a build, a test run, a dev server, a CI poller) appears in a **Processes** block under the subagent rows the moment it spawns — `⚙ <command> · 42s · last: <latest output line>` — and flips in place to `✔ exit 0` / `✘ exit 1` / `✘ killed` when it ends, then leaves the dock about 60 seconds later (the completion notification in the conversation is the durable record). In the Classic CLI monitor, process rows sit under the agents: **Enter** shows the process log tail and **x** stops that one process; processes cannot be steered. The TUI `/agents` overlay lists the same block under the spawn tree (`/stop` ends every background process). Desktop shows the same processes as tiles above the composer.
 
-Press **F7** in the Classic CLI or TUI composer to toggle the dock between its multi-row preview and a single shaded summary line. The summary retains the live count and expand/restore hints, adding activity when space permits. Typing and sending remain available; opening and closing the monitor preserves your draft and insertion point. This is a local presentation choice, not a saved config change.
+Press **Ctrl+R** in the Classic CLI or TUI composer to toggle the dock between its multi-row preview and a single shaded summary line. **F7** remains an optional alias when the terminal forwards function keys. The summary retains the live count and expand/restore hints, adding activity when space permits. Typing and sending remain available; opening and closing the monitor preserves your draft and insertion point. This is a local presentation choice, not a saved config change.
 
 The live transcript tail is a bounded recent excerpt, not an unlimited conversation browser. A child leaving the live registry leaves the dock; completion messages and the TUI/Desktop history views remain the place to review finished work. Latest activity is an observation, not a percentage-complete estimate.
 
@@ -573,7 +574,7 @@ For **durable execution** that must survive session closure or process restart, 
 - Each subagent gets its **own terminal session** (separate from the parent)
 - Subagents inherit the parent's enabled toolsets; the model cannot select or widen them per call
 - **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
-- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`. Orchestrator subagents retain `delegate_task` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
+- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`, `start_chat`. Orchestrator subagents retain `delegate_task` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
 - **Cancellation follows ownership** — `/stop` or closing/resetting the owning session ends its background children and the synchronous descendants beneath them; each returns an interrupted completion carrying its partial output
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
@@ -664,7 +665,7 @@ delegation:
 
 When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
 
-Subagents compact where their parent does — the lower of `compression.threshold` × window and the global `compression.threshold_tokens` cap (256K on a 1M model by default). `delegation.compression_threshold_tokens` (default `0`, off) adds an optional absolute cap on a child's compaction *trigger*, applied as the lower of it and the ratio threshold; it never touches the request payload or the parent. A token count of at least 16000 enables it; `true` or `"200k"` are config errors that are warned and ignored. It stays off by default because a replay of a 1,393-agent run put 200K–400K caps within 5% of each other in cost once cache prefixes are intact, and every compaction is a chance to lose detail.
+Subagents compact where their parent does: at `compression.threshold` × window (0.50 by default), or the global `compression.threshold_tokens` cap when one is set and lower. `delegation.compression_threshold_tokens` (default `0`, off) adds an optional absolute cap on a child's compaction *trigger*, applied as the lower of it and the ratio threshold; it never touches the request payload or the parent. A token count of at least 16000 enables it; `true` or `"200k"` are config errors that are warned and ignored. It stays off by default because a replay of a 1,393-agent run put 200K–400K caps within 5% of each other in cost once cache prefixes are intact, and every compaction is a chance to lose detail.
 
 `delegation.request_overrides` works on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so it always takes effect. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. Explicit values merge **over** runtime- or parent-derived overrides: explicit top-level keys win, and `extra_body` is deep-merged one level, so a provider's own request personality (e.g. `thinking: {type: disabled}`) survives unless your key redefines it. See [Configuration → Delegation](../configuration.md#delegation) for details.
 

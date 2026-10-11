@@ -15,10 +15,9 @@ Both tests force exactly that interleaving and assert both writes land.
 from __future__ import annotations
 
 import threading
-import time
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.fixture
@@ -38,7 +37,7 @@ def client(monkeypatch, _isolate_hermes_home):
     return client
 
 
-def _race_second_writer_into_first_writers_save(monkeypatch, first, second, timeout: float = 5.0):
+def _race_second_writer_into_first_writers_save(monkeypatch, first, second, timeout: float = 1.5):
     """Deterministic lost-write interleaving: ``first`` runs until it reaches ``save_config``,
     then ``second`` is started and ``first`` waits (up to ``timeout``) for ``second`` to
     ``load_config`` before saving. Unlocked, ``second`` loads the stale document and its save
@@ -90,9 +89,9 @@ def test_custom_endpoint_upsert_racing_config_autosave_keeps_both_writes(client,
     """Saving a custom endpoint (sync-def handler on a worker thread) while the settings-page
     autosave (PUT /api/config) is in flight: the new ``providers`` entry AND the autosaved field
     both survive."""
-    autosave = lambda: client.put(  # noqa: E731
+    autosave = lambda: client.put(
         "/api/config", json={"config": {"display": {"personality": "canary"}}})
-    upsert = lambda: client.post(  # noqa: E731
+    upsert = lambda: client.post(
         "/api/providers/custom-endpoints",
         json={"id": "racebox", "name": "racebox", "base_url": "http://racebox:8000/v1", "model": "race-model",
               "discover_models": False})
@@ -115,8 +114,8 @@ def test_custom_endpoint_activate_racing_moa_save_keeps_both_writes(client, monk
     cfg["providers"] = {"racebox": {"base_url": "http://racebox:8000/v1", "model": "race-model", "api_key": "k"}}
     save_config(cfg)
 
-    activate = lambda: client.post("/api/providers/custom-endpoints/racebox/activate")  # noqa: E731
-    moa = lambda: client.put(  # noqa: E731
+    activate = lambda: client.post("/api/providers/custom-endpoints/racebox/activate")
+    moa = lambda: client.put(
         "/api/model/moa",
         json={"reference_models": [{"provider": "openrouter", "model": "openai/gpt-5.5"}],
               "aggregator": {"provider": "openrouter", "model": "openai/gpt-5.5"}})

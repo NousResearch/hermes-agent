@@ -41,7 +41,7 @@ class BrowserProvider(ProviderBase):
         ``hermes tools`` paint."""
 
     @abc.abstractmethod
-    def create_session(self, task_id: str) -> Dict[str, object]:
+    def create_session(self, task_id: str) -> dict[str, object]:
         """Create a cloud browser session and return the metadata dict from the module docstring.
         May raise ``ValueError`` (missing credentials) or ``RuntimeError`` (network / API failure);
         the dispatcher surfaces these to the user."""
@@ -55,12 +55,3 @@ class BrowserProvider(ProviderBase):
     def emergency_cleanup(self, session_id: str) -> None:
         """Best-effort teardown from atexit / signal handlers. Must tolerate missing credentials and
         network errors; must not raise."""
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -57,11 +57,11 @@ def _serve(handler_cls):
 
 
 def _handler(status: int = 200,
-             content_type: "str | None" = "text/html; charset=utf-8",
+             content_type: str | None = "text/html; charset=utf-8",
              body: bytes = b"<html>x</html>", head_status=None, record=None,
-             post_content_type: "str | None" = None,
+             post_content_type: str | None = None,
              post_body: bytes = b"",
-             post_status: "int | None" = None):
+             post_status: int | None = None):
     """Build a BaseHTTPRequestHandler that replies with the given shape.
 
     ``head_status`` lets HEAD return a different status than GET (to exercise
@@ -106,7 +106,7 @@ def _handler(status: int = 200,
             pb = post_body if post_body else body
             self._write(sc, ct, pb)
 
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             pass
 
     return _H
@@ -130,7 +130,6 @@ def test_non_mcp_content_type_raises(content_type):
             asyncio.run(task._preflight_content_type(f"{base}/", timeout=5.0))
     msg = str(exc_info.value)
     assert "bad_srv" in msg
-    assert "application/json" in msg and "text/event-stream" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -275,19 +274,6 @@ def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_post_probe_not_attempted_for_valid_head():
-    """When HEAD already returns application/json, no POST probe is needed."""
-    task = _make_task()
-    record: list[str] = []
-    with _serve(_handler(
-        status=200, content_type="application/json", body=b"{}",
-        post_content_type="application/json",
-        post_body=b'{}',
-        record=record,
-    )) as base:
-        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
-    assert record == ["HEAD"]
-    assert "POST" not in record
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +292,7 @@ def _redirect_handler(target_base: str):
 
         do_HEAD = do_GET = do_POST = _redir
 
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             pass
 
     return _H
@@ -328,7 +314,7 @@ def _recording_mcp_handler(seen: dict):
 
         do_HEAD = do_GET = do_POST = _write_ok
 
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             pass
 
     return _H

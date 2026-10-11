@@ -8,7 +8,8 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
-from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
+from tools.mcp_tool_common import (
+    _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout, mcp_feature_config)
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
@@ -265,15 +266,15 @@ class MCPServerRunMixin:
         self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
         # The _MCP_*_TYPES flags are False until the lazy SDK import runs.
         _core._ensure_mcp_sdk()
-        sampling_config = config.get("sampling", {})
+        sampling_on, sampling_config = mcp_feature_config(config, "sampling")
         self._sampling = (_sampling.SamplingHandler(self.name, sampling_config)
-                          if sampling_config.get("enabled", True) and _core._MCP_SAMPLING_TYPES else None)
+                          if sampling_on and _core._MCP_SAMPLING_TYPES else None)
         # elicitation/create lets a server ask for structured input mid-call; the handler
         # routes it through Hermes' approval system.
-        elicitation_config = config.get("elicitation", {})
+        elicitation_on, elicitation_config = mcp_feature_config(config, "elicitation")
         self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config,
                                                        call_context=lambda: self._pending_call_context)
-                             if elicitation_config.get("enabled", True) and _core._MCP_ELICITATION_TYPES else None)
+                             if elicitation_on and _core._MCP_ELICITATION_TYPES else None)
         if "url" in config and "command" in config:
             logger.warning("MCP server '%s' has both 'url' and 'command' in config. Using HTTP transport "
                            "('url'). Remove 'command' to silence this warning.", self.name)

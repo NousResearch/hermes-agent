@@ -485,7 +485,7 @@ def _create_matrix_session(proxy_url: str | None):
             return aiohttp.ClientSession(connector=ProxyConnector.from_url(proxy_url, rdns=True))
         except ImportError:
             logger.warning(
-                "aiohttp_socks not installed — SOCKS proxy %s ignored. Run: pip install aiohttp-socks", proxy_url)
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. Run: pip install aiohttp-socks", safe_url_for_log(proxy_url))
             return aiohttp.ClientSession(trust_env=gateway_trust_env())
     return aiohttp.ClientSession(proxy=proxy_url)
 

@@ -58,3 +58,40 @@ def test_branch_seed_tolerates_a_child_without_a_store(monkeypatch):
     parent = _parent_session([{"id": "t1", "content": "only task", "status": "pending"}], 3)
 
     server._seed_branch_todo_state(parent, SimpleNamespace())  # must not raise
+
+
+def test_branch_seed_uses_db_state_for_a_cold_parent(monkeypatch):
+    """The branch parent may have no live agent (cold resume); the persisted projection
+    seeds the child, and the parent session dict is not mutated (#136606)."""
+    monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
+    from tui_gateway import server
+    from tools.todo_tool import TodoStore
+
+    parent = {"agent": None, "todo_state": None}
+    child_agent = SimpleNamespace(_todo_store=TodoStore())
+
+    server._seed_branch_todo_state(parent, child_agent, db_state={
+        "todos": [{"id": "t1", "content": "persisted task", "status": "pending"}],
+        "revision": 12})
+
+    assert child_agent._todo_store.snapshot() == {
+        "todos": [{"id": "t1", "content": "persisted task", "status": "pending"}],
+        "revision": 12}
+    assert "_branch_todo_state" not in parent
+
+
+def test_branch_seed_prefers_live_state_over_db_state(monkeypatch):
+    monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
+    from tui_gateway import server
+    from tools.todo_tool import TodoStore
+
+    parent = _parent_session([{"id": "t1", "content": "live task", "status": "in_progress"}], 9)
+    child_agent = SimpleNamespace(_todo_store=TodoStore())
+
+    server._seed_branch_todo_state(parent, child_agent, db_state={
+        "todos": [{"id": "t2", "content": "stale persisted task", "status": "pending"}],
+        "revision": 3})
+
+    snapshot = child_agent._todo_store.snapshot()
+    assert snapshot["revision"] == 9
+    assert snapshot["todos"][0]["content"] == "live task"

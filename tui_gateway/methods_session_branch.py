@@ -73,24 +73,21 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
     return history or _visible_branch_history(in_memory_history)
 
 
-def _seed_branch_todo_state(session: dict, agent) -> None:
+def _seed_branch_todo_state(session: dict, agent, db_state: dict | None = None) -> None:
     """Carry the parent's todo list into the branch child.
 
     Branch history is the visible user/assistant projection (tool rows are dropped), so the
     child's ``_hydrate_todo_store`` finds no todo result and its store starts empty while the
     UI still shows the parent's list (#136606). Seed from the parent's authoritative snapshot:
-    the live/cached runtime state first, then the persisted cold-resume projection.
+    the live/cached runtime state first, then ``db_state`` (the persisted cold-resume
+    projection ``_branch_live`` read from the parent's state.db).
     """
-    state = _session_todo_state(session) or session.get("_branch_todo_state")
+    state = _session_todo_state(session) or db_state
     if not state or not state.get("todos"):
         return
     restore = getattr(getattr(agent, "_todo_store", None), "restore", None)
-    if not callable(restore):
-        return
-    try:
+    if callable(restore):
         restore(state["todos"], revision=state.get("revision") or 0)
-    except Exception:
-        logger.debug("branch todo seeding failed", exc_info=True)
 
 
 def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = False) -> dict:
@@ -114,7 +111,7 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         if db is None:
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
-        session["_branch_todo_state"] = _todo_state_from_db(db, old_key)
+        todo_state = _todo_state_from_db(db, old_key)
         history = _branch_source_history(db, session, old_key)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
@@ -136,8 +133,7 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         agent = _build_branch_agent(session, new_sid, new_key, history, source)
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
-    _seed_branch_todo_state(session, agent)
-    session.pop("_branch_todo_state", None)
+    _seed_branch_todo_state(session, agent, db_state=todo_state)
     if idem_key is not None:
         with _sessions_lock:
             _idempotency_keys[idem_key] = (new_sid, time.time())

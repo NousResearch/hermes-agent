@@ -204,6 +204,37 @@ class TestRoutedForeignHomeScope:
             assert ss.get_secret("ASSIGNEE_KEY") == "from-assignee"
 
 
+class TestMultiplexOwnHomeScopeEnvOverlay:
+    """#135298: under multiplex, a scope built for the process's OWN home keeps the
+    env fallthrough on a miss — the process env is that home's deployment config
+    (compose/systemd injection), and the primary config reload reads env-only
+    credentials like API_SERVER_KEY through it. A foreign-home scope keeps the
+    fail-closed miss even with multiplex on."""
+
+    def test_own_home_scope_miss_falls_through_under_multiplex(self, monkeypatch):
+        from hermes_constants import get_process_hermes_home
+
+        monkeypatch.setenv("API_SERVER_KEY", "sk-env-injected-0123456789abcdef")
+        token = ss.set_secret_scope({}, profile_home=str(get_process_hermes_home()))
+        try:
+            ss.set_multiplex_active(True)
+            assert ss.serves_routed_profile() is True
+            assert ss.get_secret("API_SERVER_KEY") == "sk-env-injected-0123456789abcdef"
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_foreign_home_scope_miss_still_fails_closed_under_multiplex(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("API_SERVER_KEY", "sk-env-injected-0123456789abcdef")
+        token = ss.set_secret_scope({}, profile_home=str(tmp_path / "other-profile"))
+        try:
+            ss.set_multiplex_active(True)
+            assert ss.serves_routed_profile() is True
+            assert ss.get_secret("API_SERVER_KEY") is None
+            assert ss.get_secret("API_SERVER_KEY", "d") == "d"
+        finally:
+            ss.reset_secret_scope(token)
+
+
 class TestScopeSetupRecovery:
     """A raise mid-scope-setup must release whatever was already bound — a leaked
     HERMES_HOME override or secret scope silently re-homes every later read in

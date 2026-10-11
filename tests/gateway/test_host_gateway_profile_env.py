@@ -71,6 +71,29 @@ class TestProfileEnvIsNotThePrimaryClaim:
         # not the named launcher's home.
         assert Path(default_home).resolve() != Path(worker_home).resolve()
 
+    def test_env_injected_api_server_key_enrolls_primary_config(
+        self, tmp_path, monkeypatch
+    ):
+        """#135298: the multiplex primary-config reload runs in the default root's
+        secret scope after set_multiplex_active(True); a credential injected only
+        via the process env (compose/systemd — absent from the default root's
+        .env) must still enroll its platform there, not silently vanish."""
+        from gateway import run as run_mod
+
+        default_home, _worker_home = _two_homes(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))  # default-root launch
+        monkeypatch.setenv("API_SERVER_KEY", "env-injected-" + "k" * 40)
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+        cfg = run_mod.load_gateway_config_for_runner()
+
+        assert cfg.multiplex_profiles is True
+        api = cfg.platforms.get(Platform.API_SERVER)
+        assert api is not None, (
+            "env-injected API_SERVER_KEY silently dropped from the primary config"
+        )
+        assert api.enabled
+
     @pytest.mark.asyncio
     async def test_named_launcher_starts_as_secondary(self, tmp_path, monkeypatch):
         from gateway.run import GatewayRunner

@@ -17,6 +17,7 @@ import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
 import { StartChatTool } from '@/components/assistant-ui/start-chat-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
+import { useHideTrajectoryGroups } from '@/components/assistant-ui/thread/trajectory-collapse'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { parseMaybeObject, toolCallFailed } from '@/components/assistant-ui/tool/fallback-model'
@@ -445,6 +446,24 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   )
 }
 
+const TrajectoryReasoningGroup: FC<{ children?: ReactNode; endIndex: number; startIndex: number }> = props => {
+  const hide = useHideTrajectoryGroups()
+  return (
+    <div data-trajectory-group="reasoning" hidden={hide}>
+      <ReasoningAccordionGroup {...props} />
+    </div>
+  )
+}
+
+const TrajectoryToolGroup: FC<{ children?: ReactNode; endIndex: number; startIndex: number }> = props => {
+  const hide = useHideTrajectoryGroups()
+  return (
+    <div data-trajectory-group="tool" hidden={hide}>
+      <ToolGroupSlot {...props} />
+    </div>
+  )
+}
+
 // Module-level constant so the `components` prop on `MessagePrimitive.Parts`
 // has a stable identity across renders. Without this every AssistantMessage
 // render would create a fresh `components` object, invalidating the memo on
@@ -454,8 +473,8 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
 // big chunk of the per-delta work.
 export const MESSAGE_PARTS_COMPONENTS = {
   Reasoning: ReasoningTextPart,
-  ReasoningGroup: ReasoningAccordionGroup,
+  ReasoningGroup: TrajectoryReasoningGroup,
   Text: TimelineMarkdownText,
-  ToolGroup: ToolGroupSlot,
+  ToolGroup: TrajectoryToolGroup,
   tools: { Fallback: ChainToolFallback }
 } as const

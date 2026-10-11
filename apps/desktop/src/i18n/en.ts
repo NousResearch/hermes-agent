@@ -1012,6 +1012,8 @@ export const en: Translations = {
       hideThreadTimelineDesc: 'Hide the navigation bars along the right edge of each conversation.',
       reasoningCollapsedTitle: 'Collapse thinking by default',
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
+      trajectoryCollapsedTitle: 'Collapse execution trajectory into summary',
+      trajectoryCollapsedDesc: 'Fold completed thoughts and tool steps into one summary once the final reply starts.',
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
@@ -4591,6 +4593,8 @@ export const en: Translations = {
       thought: 'Thought',
       thoughtBriefly: 'Thought briefly',
       thoughtFor: duration => `Thought for ${duration}`,
+      completedSteps: count => `Completed ${count} steps`,
+      completedStepsIn: (count, duration) => `Completed ${count} steps in ${duration}`,
       turnDuration: duration => `This turn took ${duration}`,
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,

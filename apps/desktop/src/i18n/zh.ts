@@ -778,6 +778,8 @@ export const zhOverrides = {
       hideThreadTimelineDesc: '隐藏每个对话右侧边缘的导航条。',
       reasoningCollapsedTitle: '默认折叠推理过程',
       reasoningCollapsedDesc: '保留流式推理内容，但在您打开前保持折叠。',
+      trajectoryCollapsedTitle: '将执行轨迹折叠为摘要',
+      trajectoryCollapsedDesc: '最终回复开始后，将已完成的推理和工具步骤收成一行摘要。',
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,

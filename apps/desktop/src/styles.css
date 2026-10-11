@@ -2124,7 +2124,9 @@ body.guest-pointer-lock :is(webview, iframe) {
    chevron column to escape into), so their headers and bodies share a
    common left edge with the model's text. */
 [data-slot='aui_assistant-message-content'] > [data-slot='tool-block'],
-[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'] {
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
+[data-slot='aui_assistant-message-content'] > [data-trajectory-group] > [data-slot='tool-block'],
+[data-slot='aui_assistant-message-content'] > [data-trajectory-group] > [data-slot='aui_thinking-disclosure'] {
   width: 100%;
   max-width: 100%;
 }
@@ -2340,16 +2342,28 @@ body.guest-pointer-lock :is(webview, iframe) {
   display: none;
 }
 
-/* Conversation block rhythm. assistant-ui renders each range as a direct child
-   of the message content with no per-part wrapper, so adjacency rules cover
-   every pairing — first block needs no reset, nested tool rows are untouched.
+/* Conversation block rhythm. assistant-ui normally renders each range as a
+   direct child of the message content. Folded trajectories retain a mounted
+   wrapper and receive the equivalent rules below; nested tool rows are untouched.
 
    One gap between top-level blocks, whatever they are. Spelling out which
    *pairs* qualified meant the live status line (not tool, thinking or prose)
    fell through every branch and carried its own half-size margin instead. */
 [data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_turn-activity'], .aui-md)
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_turn-activity'], .aui-md) {
+  > :is(
+    [data-slot='tool-block'],
+    [data-slot='aui_thinking-disclosure'],
+    [data-slot='aui_turn-activity'],
+    [data-trajectory-group]:not([hidden]):has(> :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])),
+    .aui-md
+  )
+  + :is(
+    [data-slot='tool-block'],
+    [data-slot='aui_thinking-disclosure'],
+    [data-slot='aui_turn-activity'],
+    [data-trajectory-group]:not([hidden]):has(> :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])),
+    .aui-md
+  ) {
   margin-top: var(--turn-block-gap);
 }
 
@@ -2367,6 +2381,26 @@ body.guest-pointer-lock :is(webview, iframe) {
    is the wrong hook here: it's absent on a multi-call tool GROUP, which is most
    of a real run, and present on rows nested inside one. */
 [data-slot='aui_assistant-message-content']
+  > :is(
+    [data-slot='tool-block'],
+    [data-slot='aui_thinking-disclosure'],
+    [data-slot='aui_turn-activity'],
+    [data-trajectory-group]:not([hidden]):has(> :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']))
+  )
+  + :is(
+    [data-slot='tool-block'],
+    [data-slot='aui_thinking-disclosure'],
+    [data-slot='aui_turn-activity'],
+    [data-trajectory-group]:not([hidden]):has(> :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']))
+  ) {
+  margin-top: var(--scaffold-block-gap);
+}
+
+/* ToolGroupSlot can emit several run/card roots. Once a trajectory wrapper
+   keeps that group mounted, preserve the former top-level sibling rhythm
+   inside the wrapper as well. */
+[data-slot='aui_assistant-message-content']
+  > [data-trajectory-group]:not([hidden])
   > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_turn-activity'])
   + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_turn-activity']) {
   margin-top: var(--scaffold-block-gap);
@@ -2379,6 +2413,13 @@ body.guest-pointer-lock :is(webview, iframe) {
    the block itself, not adjacency pairs: it needs the clearance whatever sits
    next to it, and adjacent margins collapse rather than stacking. */
 [data-slot='aui_assistant-message-content'] > [data-tool-row][data-file-edit] {
+  margin-block: var(--turn-block-gap);
+}
+
+/* Folded trajectory groups stay mounted so local disclosure and subscription
+   state survives expansion. Their wrapper is a top-level block, therefore the
+   existing child selectors also apply to its immediate rendered group roots. */
+[data-slot='aui_assistant-message-content'] > [data-trajectory-group] > [data-tool-row][data-file-edit] {
   margin-block: var(--turn-block-gap);
 }
 
@@ -2408,14 +2449,24 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='aui_turn-pair']
   > [data-slot='aui_assistant-message-root']:has(
     > [data-slot='aui_assistant-message-content']
-      > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_turn-activity']):last-child
+      > :is(
+        [data-slot='tool-block'],
+        [data-slot='aui_thinking-disclosure'],
+        [data-slot='aui_turn-activity'],
+        [data-trajectory-group]:not([hidden]):has(
+            > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
+          )
+      ):last-child
   ):not(:has([data-file-edit]))
   + [data-slot='aui_assistant-message-root']:has(
     > [data-slot='aui_assistant-message-content']
       > :is(
         [data-slot='tool-block'],
         [data-slot='aui_thinking-disclosure'],
-        [data-slot='aui_turn-activity']
+        [data-slot='aui_turn-activity'],
+        [data-trajectory-group]:not([hidden]):has(
+            > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
+          )
       ):first-child
   ):not(:has([data-file-edit])) {
   margin-top: calc(var(--scaffold-block-gap) - var(--conversation-turn-gap));

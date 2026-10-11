@@ -622,7 +622,12 @@ class PluginSettingFieldType(WireEnum):
 class PluginSettingField(Result):
     """One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub
     (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``
-    names the ``.env`` variable and ``has_value`` whether it is set."""
+    names the ``.env`` variable and ``has_value`` whether it is set.
+
+    ``section`` groups consecutive fields under a heading in the Plugins hub. It is the manifest's
+    ``section`` (or ``group``) key when it declares one, else ``None`` — an undeclared section renders
+    flat, exactly as before, so existing manifests are unaffected.
+    """
 
     key: str
     type: PluginSettingFieldType
@@ -634,6 +639,7 @@ class PluginSettingField(Result):
     choices: list[str] | None = None
     env: str | None = None
     has_value: bool | None = None
+    section: str | None = None
 
 
 class PluginServerState(WireEnum):

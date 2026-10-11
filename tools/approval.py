@@ -391,6 +391,23 @@ def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
             save_permanent_allowlist(snapshot)
 
 
+def _record_decision_ledger(*, session_key: str, kind: str, text: str) -> None:
+    """Best-effort durable approval history; a ledger failure never changes consent semantics."""
+    try:
+        from hermes_state_registry import acquire, release
+        from tools.approval_context import get_current_session_id
+        session_id = get_current_session_id()
+        if not session_id:
+            return
+        db = acquire()
+        try:
+            db.append_decision_ledger_entry(session_id, kind, text)
+        finally:
+            release(db)
+    except Exception:
+        logger.debug("Could not record decision ledger entry", exc_info=True)
+
+
 # --- Config persistence for permanent allowlist ---------------------------------------------------------------------
 
 def _read_permanent_allowlist() -> set:
@@ -796,6 +813,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if "{breaker}" in template:
             breaker = _denial_breaker_addendum(session_key)
         deny_reason = fmt.pop("deny_reason", None)
+        if outcome == "denied":
+            detail = f"denied: {description}" + (f" Reason: {deny_reason}" if deny_reason else "")
+            _record_decision_ledger(session_key=session_key, kind="denial", text=detail)
         extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
         return _denied(template.format(description=description, breaker=breaker, **fmt),
                        pattern_key=pattern_key, description=description,
@@ -805,6 +825,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, pattern_keys)
+            _record_decision_ledger(
+                session_key=session_key, kind="approval", text=f"{choice} approval: {description}"
+            )
         if spec.user_approved:
             return _user_approved(session_key, description)
         return _approved()

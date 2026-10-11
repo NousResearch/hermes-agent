@@ -794,3 +794,26 @@ The CLI shows caching status at startup:
 ## Context Pressure Warnings
 
 Intermediate context-pressure warnings have been removed (see the iteration-budget block in `agent/turn_iteration_prep.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.
+
+### Bounded decision ledger
+
+`hermes_state_ledger.py` owns session decision storage and `agent/conversation_compression_ledger.py`
+folds it into the compaction handoff. Ledger carriers are scaffolding, not a new user request.
+Their identity uses the existing durable message metadata, including when a real request shares
+the carrier, so reload and repeated compaction replace the old block without losing user intent.
+
+The ledger retains at most 50 events, preferring denials, corrections, approvals, then preferences;
+within a kind, newer events win. Reads remain chronological. Text is limited to 2,048 UTF-8 bytes
+and turn labels to 128 bytes. The complete injected block is limited to 8,192 UTF-8 bytes
+(including labels and omission markers). This also bounds characters and conservatively bounds
+byte-tokenizer tokens without assuming an English characters-per-token ratio. Full text receives
+the same priority order within the injection budget, while every retained event keeps its kind.
+
+Overlong text is replaced wholesale with an explicit omission marker: partial text could drop a
+trailing negation or approval scope. An omitted denial remains a denial; missing scope requires
+asking the user, never inferring permission. The existing forced secret redactor also scrubs text
+and turn labels before storage and replay, including credential-bearing URLs. Legacy ledger rows
+are sanitized before reading or copying. Redaction is heuristic, not an OS security boundary or a
+guarantee that arbitrary private text is recognized. Only the ledger is rewritten by this guard;
+ordinary transcript storage keeps its existing policy. Child copying retains event timestamps
+and its existing duplicate identity, caps the combined child ledger, and remains stable on retry.

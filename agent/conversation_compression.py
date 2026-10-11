@@ -2223,7 +2223,7 @@ def _message_text(message: Any) -> str:
 
 _SYNTHETIC_USER_FLAGS = (
     "_todo_snapshot_synthetic", "_empty_recovery_synthetic", "_verification_stop_synthetic", "_pre_verify_synthetic",
-    "_dropped_toolcall_nudge",
+    "_dropped_toolcall_nudge", "_decision_ledger_synthetic",
 )
 
 
@@ -2233,7 +2233,8 @@ def _is_real_user_message(message: Any) -> bool:
     anchor restoration."""
     if not isinstance(message, dict) or message.get("role") != "user":
         return False
-    if any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS):
+    from agent.conversation_compression_ledger import ledger_message_kind
+    if ledger_message_kind(message) == "synthetic" or any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS if flag != "_decision_ledger_synthetic"):
         return False
     text = _message_text(message).strip()
     if not text or text.startswith(_SYNTHETIC_USER_PREFIXES):
@@ -2372,30 +2373,6 @@ def _pruned_skill_reload_notice(compressed: list) -> str:
     )
 
 
-def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
-    """Fold the human anchor into an existing user-role scaffolding turn.
-    Used only when any insertion would create consecutive user turns. Anchor text leads, scaffolding follows,
-    and synthetic flags are cleared."""
-    anchor_content = anchor.get("content")
-    target_content = target.get("content")
-    if isinstance(anchor_content, list) or isinstance(target_content, list):
-
-        def _parts(content: Any) -> list:
-            return list(content) if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
-
-        _replace_message_content(target, _parts(anchor_content) + _parts(target_content))
-    else:
-        merged = f"{anchor_content or ''}\n\n{target_content or ''}".strip()
-        _replace_message_content(target, merged)
-    for flag in _SYNTHETIC_USER_FLAGS:
-        target.pop(flag, None)
-    # The anchor's text leads the composite, so the fold keeps the anchor's uid and records the
-    # scaffolding turn's (merge witness).
-    from agent.message_metadata import record_absorbed_message
-
-    record_absorbed_message(target, anchor, dropped_leads=True)
-
-
 CompressedUserTurnOutcome = Literal["inserted", "merged", "already_present", "placeholder_appended"]
 
 
@@ -2427,6 +2404,7 @@ def _insert_real_user_anchor(messages: list, anchor: dict) -> CompressedUserTurn
         return _place(len(messages))
     # Trailing user-role scaffolding (e.g. the todo snapshot): merge instead
     # of inserting a consecutive same-role message (#55677 strict templates).
+    from agent.conversation_compression_user_anchor import _merge_anchor_into_user_message
     _merge_anchor_into_user_message(messages[-1], anchor)
     messages[-1][_DB_PERSISTED_MARKER] = True
     return "merged"
@@ -2455,7 +2433,8 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     # #100053.
     for message in reversed(original_messages):
         if _is_real_user_message(message):
-            return _insert_real_user_anchor(compressed, _fresh_compaction_message_copy(message))
+            from agent.conversation_compression_ledger import strip_ledger_from_user_anchor
+            return _insert_real_user_anchor(compressed, _fresh_compaction_message_copy(strip_ledger_from_user_anchor(message)))
         if not isinstance(message, dict) or message.get("role") != "tool":
             continue
         steer_text = _extract_steer_text_from_message(message)
@@ -3286,6 +3265,8 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
     with _swallow('Could not carry rejected thinking on compression: %s'):
         from agent.anthropic_thinking_replay import carry_rejected_thinking_to_session
         carry_rejected_thinking_to_session(agent, old_session_id)
+    with _swallow('Could not migrate decision ledger on compression: %s'):
+        agent._session_db.copy_decision_ledger_entries(old_session_id, agent.session_id)
     if not old_title:
         return
     _src = None
@@ -4314,6 +4295,8 @@ def compress_context(
                 "active set (session=%s).", agent.session_id or "none",
             )
         _fold_todo_snapshot(agent, compressed)
+        from agent.conversation_compression_ledger import fold_decision_ledger
+        fold_decision_ledger(agent, compressed)
         compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(

@@ -81,6 +81,11 @@ class NousPortalAdapter(UpstreamAdapter):
                     )
             except Exception as exc:
                 if isinstance(exc, AuthError) and _is_terminal_nous_refresh_error(exc):
+                    # Snapshot the pre-quarantine token values so _save_state can do a
+                    # compare-and-swap against the on-disk state (defense against a concurrent
+                    # writer persisting fresh tokens between here and the save).
+                    state["_pre_quarantine_refresh_token"] = state.get("refresh_token")
+                    state["_pre_quarantine_access_token"] = state.get("access_token")
                     _quarantine_nous_oauth_state(state, exc, reason="proxy_refresh_failure")
                     self._save_state(state, quarantine_error=exc, quarantine_reason="proxy_refresh_failure")
                 raise RuntimeError(f"Failed to refresh Nous Portal credentials: {exc}") from exc
@@ -120,12 +125,50 @@ class NousPortalAdapter(UpstreamAdapter):
         quarantine_error: Optional[AuthError] = None,
         quarantine_reason: Optional[str] = None,
     ) -> None:
+        """Persist quarantine-cleared provider state, guarding against lost updates.
+
+        The *state* argument is a stale snapshot captured before the network refresh call.
+        Between that snapshot and this save, another process (gateway keepalive, cron worker,
+        ``hermes auth add``) may have persisted FRESH tokens. Blindly replacing the on-disk
+        ``nous`` section with the stale snapshot would clobber the new login.
+
+        Compare-and-swap: only clear tokens when the on-disk ``refresh_token`` and
+        ``access_token`` still match the snapshot's values. If they differ, a peer already
+        wrote newer credentials — skip the quarantine write-back entirely (the quarantine
+        logging already fired in ``_quarantine_nous_oauth_state`` before we arrive here).
+        """
         try:
             with _auth_store_lock():
                 store = _load_auth_store()
+                providers = store.setdefault("providers", {})
+                on_disk_state = providers.get("nous") or {}
+                # Compare-and-swap guard: only overwrite if the on-disk tokens still match
+                # the pre-quarantine snapshot. A mismatch means another writer persisted newer creds.
+                # Read from the transient annotations set in _get_credential (before
+                # _quarantine_nous_oauth_state popped the tokens) so the comparison is against
+                # the values that were on disk when the snapshot was taken.
+                stale_rt = state.pop("_pre_quarantine_refresh_token", None)
+                stale_at = state.pop("_pre_quarantine_access_token", None)
+                on_disk_rt = on_disk_state.get("refresh_token")
+                on_disk_at = on_disk_state.get("access_token")
+                tokens_match = (
+                    stale_rt == on_disk_rt and stale_at == on_disk_at
+                )
+                if not tokens_match:
+                    logger.info(
+                        "proxy: Nous on-disk tokens changed since snapshot was taken "
+                        "(fresh login or rotation by another writer); "
+                        "skipping quarantine write-back to preserve new credentials"
+                    )
+                    # Pool entries belonging to the dead credential may still need
+                    # quarantine — mismatch does not protect the pool (pool entries
+                    # are keyed by source, not by token value).
+                    if quarantine_error is not None and quarantine_reason:
+                        _quarantine_nous_pool_entries(store, quarantine_error, reason=quarantine_reason)
+                        _save_auth_store(store)
+                    return
                 if quarantine_error is not None and quarantine_reason:
                     _quarantine_nous_pool_entries(store, quarantine_error, reason=quarantine_reason)
-                providers = store.setdefault("providers", {})
                 providers["nous"] = state
                 _save_auth_store(store)
             _write_shared_nous_state(state)

@@ -123,6 +123,10 @@ def refresh_agent_mcp_tools(
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
     _reinject_authorized_dynamic_tools(agent, new_defs, new_names)
+    from tools.delivery_policy import effective_tool_definitions
+    new_defs = effective_tool_definitions(new_defs, getattr(agent, "_delivery_policy", None))
+    new_names = {_def_name(item) for item in new_defs}
+    staged_engine_names &= new_names
     # Registry membership is read OUTSIDE ``_agent_tools_lock``: taking ``registry._lock``
     # under the tools lock would be the first nesting of the two.
     prefix_registered: Optional[set] = None
@@ -229,6 +233,9 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     merged = _drop_gated_carried_tools(merged, carried)
     merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
+    from tools.delivery_policy import effective_tool_definitions
+    merged = effective_tool_definitions(merged, getattr(agent, "_delivery_policy", None))
+    merged_names = {_def_name(item) for item in merged}
     merged, merged_names = _drop_session_tools(agent, merged, merged_names)
     changed = merged != fresh_defs
     if changed:

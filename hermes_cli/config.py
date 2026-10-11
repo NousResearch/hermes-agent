@@ -3960,16 +3960,14 @@ def _cmd_config_check(args):
         print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
         print("    Run 'hermes config migrate' to add them")
 
-    from hermes_cli.config_check_diagnostics import config_check_diagnostics
+    from hermes_cli.config_check_diagnostics import config_check_diagnostics, emit_config_check_diagnostics
 
-    diagnostics = config_check_diagnostics(read_raw_config_readonly(), get_env_value)
-    if diagnostics:
-        print()
-        print(color("  Saved configuration:", Colors.BOLD))
-        for diagnostic in diagnostics:
-            print(color(f"    ⚠ {diagnostic}", Colors.YELLOW))
-
+    blocking = emit_config_check_diagnostics(
+        config_check_diagnostics(read_raw_config_readonly(), get_env_value), color, Colors,
+    )
     print()
+    if blocking:
+        raise SystemExit(1)
 
 
 _CONFIG_SUBCOMMANDS = {

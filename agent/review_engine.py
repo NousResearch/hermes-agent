@@ -1,6 +1,6 @@
 """Shared engine for the /review command — every surface calls this.
 
-/review spawns an independent, full-privilege background subagent (the same async rail as
+/review spawns an independent, read-only reviewer subagent (the same async rail as
 ``delegate_task(background=true)``) to review whatever the recent conversation presented;
 its result re-enters the spawning session as a normal async-delegation completion.
 Model routing: ``auxiliary.review`` when configured, else the parent agent's credentials,
@@ -168,7 +168,12 @@ def start_review(parent_agent, messages: list[dict[str, Any]], user_prompt: str 
     credentials_cfg = _load_review_credentials_cfg()
 
     from tools.delegate_tool import delegate_task
-    raw = delegate_task(goal=goal, context=context, background=True, parent_agent=parent_agent, credentials_cfg=credentials_cfg)
+    raw = delegate_task(
+        goal=goal, context=context, background=True, parent_agent=parent_agent,
+        credentials_cfg=credentials_cfg, delivery_role="reviewer",
+        acceptance_ledger=user_prompt.strip(),
+        required_skills=collect_parent_loaded_skills(parent_agent, messages),
+    )
     try:
         result = json.loads(raw)
     except Exception:

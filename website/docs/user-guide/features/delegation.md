@@ -52,6 +52,46 @@ delegate_task(tasks=[
 ])
 ```
 
+## Immutable software-delivery roles
+
+Delegation topology (`leaf` or depth-derived `orchestrator`) is separate from software-delivery authority. A task may set exactly one `delivery_role`: `implementer`, `reviewer`, `merger`, or `closure_controller`. Omitting it preserves ordinary non-delivery delegation. Set `delegation.require_delivery_role: true` only for installations where every delegated task is delivery work; an omitted or invalid role then fails closed.
+
+The runtime injects the role and acceptance contract into the child system prompt and filters the child's final effective tool list after composite/MCP expansion. It also checks fabricated tool calls and terminal actions at dispatch time. This is a capability boundary, not prompt-only guidance:
+
+- **implementer** — may edit, test, commit, push without force, and open a PR; cannot delegate its authority, independently approve/pass review, merge, or close;
+- **reviewer** — read-only evidence and test commands plus `read_file`, `search_files`, `skills_list`, and `skill_view`; no write/patch/skill-management, approval, merge, closure, or tracker mutation;
+- **merger** — read-only evidence plus the merge lifecycle, and only after `delivery_evidence` supplies a full exact SHA and independent-review and CI evidence that each identifies that SHA;
+- **closure_controller** — read-only post-merge acceptance plus closure actions, and only after a full merged SHA and merge and post-merge acceptance evidence that each identifies that SHA.
+
+Lifecycle commands are SHA-bound as well as evidence-gated: mergers must use `gh pr merge` with an explicit merge method and `--match-head-commit <exact_sha>`, while closure controllers may close a GitHub issue only when the `gh issue close` command carries the evidenced merged SHA (for example in `--comment`).
+
+`acceptance_ledger` is authoritative system content. `required_skills` names profile-scoped workflow skills the worker must load with `skill_view`; granting that read access never grants `skill_manage`. Delivery-role children do not inherit configured prefill dialogue, so operational policy is never represented as fabricated user/assistant turns.
+
+```python
+delegate_task(tasks=[{
+    "goal": "Review the production fix at the supplied commit",
+    "delivery_role": "reviewer",
+    "acceptance_ledger": "Verify authorization boundaries and run the focused suite.",
+    "required_skills": ["hermes-agent-dev"]
+}])
+```
+
+For a merger:
+
+```python
+delegate_task(tasks=[{
+    "goal": "Merge PR 123 if the supplied evidence still matches",
+    "delivery_role": "merger",
+    "delivery_evidence": {
+        "exact_sha": "0123456789abcdef0123456789abcdef01234567",
+        "independent_review": "Reviewer verdict PASS for this exact SHA",
+        "ci_evidence": "Required checks passed for this exact SHA"
+    }
+}])
+```
+
+`hermes config check` reports delivery policy stored in prefill dialogue, incompatible role/approval settings, and broad permanent command approvals without printing file contents or secrets.
+
 ## Structured Output (`output_schema`)
 
 Each task can carry an optional `output_schema`, a JSON Schema object the child's final answer must validate against. The child sees the schema up front as an output contract ("return ONLY the JSON value — no prose, no code fence"); when the answer comes back the parent validates it, and on failure sends the child exactly one bounded correction turn carrying the validation errors verbatim (the schema is not re-pasted). The task's result then gains `schema_valid` (true/false) and, on failure, `schema_errors`.

@@ -95,6 +95,8 @@ def _(rid, params, pdb, conn) -> dict:
         **_pick(params, "slug", "primary_path", "description", "icon", "color", "board_slug"))
     if params.get("use"):
         pdb.set_active(conn, pid)
+    from hermes_cli.observability.shared_metrics_signals import record_feature_used
+    record_feature_used("projects")
     proj = pdb.get_project(conn, pid)
     return _ok(rid, {"project": proj.to_dict() if proj else None})
 
@@ -286,7 +288,10 @@ def _discover_repos_payload(
         agg = _agg(root)
         agg["sessions"] += int(row.get("sessions") or 0)
         agg["last_active"] = max(agg["last_active"], float(row.get("last_active") or 0))
-    if backfill:
+    # A read-only handle (foreign-profile RPC) must not attempt the persistence write: it would
+    # raise and be swallowed here, silently dropping the backfill. That profile's own gateway
+    # backfills on its own refreshes.
+    if backfill and not getattr(db, "read_only", False):
         try:
             db.backfill_repo_roots(cwd_to_root)
         except Exception:
@@ -311,14 +316,15 @@ def _discover_repos_payload(
 
 
 # Not user conversations; subagent/compression children are dropped by include_children=False.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban"]
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot"]
 
 
 def _project_tree_row(r: dict) -> dict:
     """Project a SessionDB row to the minimal shape the sidebar renders (grouping fields +
     what ``SidebarSessionRow`` reads), minus the heavy columns."""
     row = {k: r.get(k) for k in (
-        "id", "_lineage_root_id", "_lineage_ids", "parent_session_id", "title", "preview")}
+        "id", "_lineage_root_id", "_lineage_ids", "parent_session_id",
+        "_reset_from", "_branched_from", "title", "preview")}
     row.update(
         started_at=r.get("started_at") or 0, ended_at=r.get("ended_at"),
         last_active=r.get("last_active") or r.get("started_at") or 0,

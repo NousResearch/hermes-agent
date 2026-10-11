@@ -7,6 +7,7 @@ import {
   $newChatWorkspaceTargetGeneration,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentCwdExplicit,
   setNewChatWorkspaceTarget
 } from '@/store/session'
 import type { SessionRuntimeInfo } from '@/types/hermes'
@@ -61,6 +62,9 @@ export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, reques
 
       if (!sessionId) {
         setCurrentCwd(trimmed)
+        // A folder chosen here is a deliberate workspace pick (#52589) — the
+        // gateway must let it beat a named profile's configured terminal.cwd.
+        setCurrentCwdExplicit(true)
         const workspaceGeneration = setNewChatWorkspaceTarget(trimmed)
 
         try {

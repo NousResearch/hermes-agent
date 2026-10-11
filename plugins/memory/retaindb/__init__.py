@@ -17,12 +17,12 @@ import sqlite3
 import threading
 import time
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, spawn_context_thread
 from agent.secret_scope import get_secret
 from agent.file_safety import raise_if_read_blocked
 from tools.registry import tool_error
@@ -186,7 +186,7 @@ class _WriteQueue:
 
     def __init__(self, client: _Client, db_path: Path):
         self._client, self._db_path, self._q = client, db_path, queue.Queue()
-        self._thread = threading.Thread(target=self._loop, name="retaindb-writer", daemon=True)
+        self._thread = spawn_context_thread(self._loop, name="retaindb-writer")
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()  # one cached connection per thread, all tracked in _connections
         self._connections: set[sqlite3.Connection] = set()
@@ -224,7 +224,7 @@ class _WriteQueue:
         self._close(*([conn] if conn is not None else []))
 
     def enqueue(self, user_id: str, session_id: str, messages: list) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._shutdown_lock:
             if self._shutdown:
                 return
@@ -327,11 +327,13 @@ class RetainDBMemoryProvider(MemoryProvider):
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        # Non-secret fields resolve env -> config.yaml (written by the Dashboard) -> default.
+        # Non-secret fields resolve env (profile-scoped) -> config.yaml (written by the Dashboard) -> default.
         cfg = {k: v.strip() for k, v in _load_retaindb_config().items() if isinstance(v, str)}
-        base_url = re.sub(r"/+$", "", os.environ.get("RETAINDB_BASE_URL") or cfg.get("base_url") or _DEFAULT_BASE_URL)
+        base_url = re.sub(r"/+$", "", get_secret("RETAINDB_BASE_URL", "") or cfg.get("base_url") or _DEFAULT_BASE_URL)
         # Project: RETAINDB_PROJECT > config.yaml > hermes-<profile> > "default" (API auto-creates "default").
-        project = os.environ.get("RETAINDB_PROJECT") or cfg.get("project")
+        # The project is the data partition: read through the secret scope so a multiplexed secondary's
+        # memories never land in the default profile's project.
+        project = get_secret("RETAINDB_PROJECT", "") or cfg.get("project")
         if not project:
             profile_name = os.path.basename(str(kwargs.get("hermes_home", "")))
             project = f"hermes-{profile_name}" if profile_name not in {"", ".hermes"} else "default"
@@ -341,10 +343,10 @@ class RetainDBMemoryProvider(MemoryProvider):
         from hermes_constants import get_hermes_home
         home = get_hermes_home()
         self._queue = _WriteQueue(self._client, home / "retaindb_queue.db")
-        soul = (home / "SOUL.md").read_text(encoding="utf-8", errors="replace").strip() if (home / "SOUL.md").exists() else ""
+        soul = (home / "SOUL.md").read_text(encoding="utf-8-sig", errors="replace").strip() if (home / "SOUL.md").exists() else ""
         if soul:  # seed agent identity from SOUL.md in background
-            seed = lambda: self._client.seed_agent_identity(self._agent_id, soul, source="soul_md")  # noqa: E731
-            threading.Thread(target=_quiet, args=("soul seed", seed), name="retaindb-soul-seed", daemon=True).start()
+            seed = lambda: self._client.seed_agent_identity(self._agent_id, soul, source="soul_md")
+            spawn_context_thread(_quiet, args=("soul seed", seed), name="retaindb-soul-seed").start()
 
     def system_prompt_block(self) -> str:
         project = self._client.project if self._client else "retaindb"
@@ -366,7 +368,7 @@ class RetainDBMemoryProvider(MemoryProvider):
                 self._client.ask_user(self._user_id, query, reasoning_level=self._reasoning_level(query)).get("answer") or "") or None),
             ("retaindb-agent-model", "agent model", "_agent_model", lambda: self._agent_model_or_none(self._client.get_agent_model(self._agent_id))),
         )
-        self._prefetch_threads = [threading.Thread(target=self._store, args=(label, attr, fetch), name=name, daemon=True)
+        self._prefetch_threads = [spawn_context_thread(self._store, args=(label, attr, fetch), name=name)
                                   for name, label, attr, fetch in jobs]
         for t in self._prefetch_threads:
             t.start()
@@ -404,7 +406,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         """Queue turn for async ingest. Returns immediately."""
         if not self._queue or not user_content:
             return
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self._queue.enqueue(self._user_id, session_id or self._session_id,
                             [{"role": "user", "content": user_content, "timestamp": now},
                              {"role": "assistant", "content": assistant_content, "timestamp": now}])
@@ -488,137 +490,3 @@ _TOOLS: dict[str, tuple[str | None, Callable[..., Any]]] = {
 def register(ctx) -> None:
     """Register RetainDB as a memory provider plugin."""
     ctx.register_memory_provider(RetainDBMemoryProvider())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-
-CONTEXT_SCHEMA = {
-    "name": "retaindb_context",
-    "description": "Synthesized context block — what matters most for the current task, pulled from long-term memory.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "Current task or question."},
-        },
-        "required": ["query"],
-    },
-}
-
-FILE_DELETE_SCHEMA = {
-    "name": "retaindb_delete_file",
-    "description": "Delete a stored file.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_id": {"type": "string", "description": "File ID to delete."},
-        },
-        "required": ["file_id"],
-    },
-}
-
-FILE_INGEST_SCHEMA = {
-    "name": "retaindb_ingest_file",
-    "description": "Chunk, embed, and extract memories from a stored file. Makes its contents searchable.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_id": {"type": "string", "description": "File ID to ingest."},
-        },
-        "required": ["file_id"],
-    },
-}
-
-FILE_LIST_SCHEMA = {
-    "name": "retaindb_list_files",
-    "description": "List files in the shared file store.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "prefix": {"type": "string", "description": "Path prefix to filter by, e.g. /reports/"},
-            "limit": {"type": "integer", "description": "Max results (default: 50)."},
-        },
-        "required": [],
-    },
-}
-
-FILE_READ_SCHEMA = {
-    "name": "retaindb_read_file",
-    "description": "Read the text content of a stored file by its file ID.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_id": {"type": "string", "description": "File ID returned from upload or list."},
-        },
-        "required": ["file_id"],
-    },
-}
-
-FILE_UPLOAD_SCHEMA = {
-    "name": "retaindb_upload_file",
-    "description": "Upload a file to the shared RetainDB file store. Returns an rdb:// URI any agent can reference.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "local_path": {"type": "string", "description": "Local file path to upload."},
-            "remote_path": {"type": "string", "description": "Destination path, e.g. /reports/q1.pdf"},
-            "scope": {"type": "string", "enum": ["USER", "PROJECT", "ORG"], "description": "Access scope (default: PROJECT)."},
-            "ingest": {"type": "boolean", "description": "Also extract memories from file after upload (default: false)."},
-        },
-        "required": ["local_path"],
-    },
-}
-
-FORGET_SCHEMA = {
-    "name": "retaindb_forget",
-    "description": "Delete a specific memory by ID.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "memory_id": {"type": "string", "description": "Memory ID to delete."},
-        },
-        "required": ["memory_id"],
-    },
-}
-
-PROFILE_SCHEMA = {
-    "name": "retaindb_profile",
-    "description": "Get the user's stable profile — preferences, facts, and patterns recalled from long-term memory.",
-    "parameters": {"type": "object", "properties": {}, "required": []},
-}
-
-REMEMBER_SCHEMA = {
-    "name": "retaindb_remember",
-    "description": "Persist an explicit fact, preference, or decision to long-term memory.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "content": {"type": "string", "description": "The fact to remember."},
-            "memory_type": {
-                "type": "string",
-                "enum": ["factual", "preference", "goal", "instruction", "event", "opinion"],
-                "description": "Category (default: factual).",
-            },
-            "importance": {"type": "number", "description": "Importance 0-1 (default: 0.7)."},
-        },
-        "required": ["content"],
-    },
-}
-
-SEARCH_SCHEMA = {
-    "name": "retaindb_search",
-    "description": "Semantic search across stored memories. Returns ranked results with relevance scores.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "What to search for."},
-            "top_k": {"type": "integer", "description": "Max results (default: 8, max: 20)."},
-        },
-        "required": ["query"],
-    },
-}
-# ---- END PLUGIN-COMPAT ----

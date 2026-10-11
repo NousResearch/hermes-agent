@@ -1,3 +1,4 @@
+import { foldPersonalityName } from '@/lib/personalities'
 import { asText, normalize } from '@/lib/text'
 import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
@@ -24,6 +25,19 @@ export const withoutKey = <T>(record: Record<string, T>, key: string) => {
 }
 
 export const redactedValue = (v: string) => (v.length <= 8 ? '••••' : `${v.slice(0, 4)}...${v.slice(-4)}`)
+
+// The backend wraps stored-key previews in a write-guard sentinel
+// (hermes_cli/web_routers/_common.redacted_credential_preview): show the inner
+// preview, and a plain mask for the label-less forms.
+export const credentialPreview = (value: null | string | undefined): null | string => {
+  if (!value?.startsWith('«redacted')) {
+    return value || null
+  }
+
+  const inner = /^«redacted:(.+)»$/.exec(value)?.[1]?.trim()
+
+  return inner || '••••••••'
+}
 
 // Longest-prefix match so a more specific group like ``MINIMAX_CN_`` is
 // chosen over its shorter parent ``MINIMAX_``. Falls back to the bucket
@@ -174,7 +188,12 @@ export function voiceFieldVisible(key: string, config: HermesConfigRecord): bool
     return false
   }
 
-  return provider === String(getNested(config, `${domain}.provider`) ?? '')
+  const selected = String(getNested(config, `${domain}.provider`) ?? '')
+  // Backend defaults when the key is unset: TTS → edge, STT → local.
+  // An empty string used to hide every nested model field.
+  const fallback = domain === 'tts' ? 'edge' : 'local'
+
+  return provider === (selected || fallback)
 }
 
 export function inferFieldSchema(value: unknown): ConfigFieldSchema {
@@ -238,10 +257,29 @@ export function setNested(obj: HermesConfigRecord, path: string, value: unknown)
 }
 
 function personalityOptions(config: HermesConfigRecord): string[] {
-  const custom = getNested(config, 'agent.personalities')
+  // The Python runtime (`hermes_cli.personality.available_personalities`) honours both
+  // the root-level `personalities` block and `agent.personalities` (agent wins on a name
+  // clash). Read both so a root-registered persona the CLI/gateway resolve also appears in
+  // the dropdown (#123297).
+  // Fold each key the way the runtime does (`available_personalities`:
+  // `str(name).strip().lower()`, dropping the neutral spellings) so a case-variant,
+  // whitespace-padded, or neutral-named block never surfaces a row the runtime can't
+  // resolve, and a root/agent case clash dedupes to one canonical name (#123297).
+  const customNames: string[] = []
 
-  const customNames =
-    custom && typeof custom === 'object' && !Array.isArray(custom) ? Object.keys(custom as Record<string, unknown>) : []
+  for (const key of ['personalities', 'agent.personalities']) {
+    const block = getNested(config, key)
+
+    if (isPlainObject(block)) {
+      for (const name of Object.keys(block)) {
+        const folded = foldPersonalityName(name)
+
+        if (folded) {
+          customNames.push(folded)
+        }
+      }
+    }
+  }
 
   return [...new Set(['', ...BUILTIN_PERSONALITIES, ...customNames])]
 }

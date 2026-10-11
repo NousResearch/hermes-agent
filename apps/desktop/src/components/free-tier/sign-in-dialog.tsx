@@ -18,9 +18,16 @@ import {
 import { getGlobalModelOptions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, Loader2 } from '@/lib/icons'
-import { FREE_TIER_MODEL, NOUS_PROVIDER_ID, refreshFreeTierStatus } from '@/store/free-tier'
+import {
+  $freeTierStatus,
+  FREE_TIER_MODEL,
+  friendlyWait,
+  NOUS_PROVIDER_ID,
+  refreshFreeTierStatus
+} from '@/store/free-tier'
 import {
   $freeTierSignIn,
+  $freeTierTurnCompleted,
   beginFreeTierSignIn,
   claimFreeTierSignIn,
   closeFreeTierSignIn,
@@ -28,9 +35,14 @@ import {
   copyFreeTierUrl,
   freeTierSignInClaim,
   type FreeTierSignInFailure,
-  releaseFreeTierSignIn
+  releaseFreeTierSignIn,
+  sameGatewayRoute,
+  stopFreeTierOffer,
+  syncFreeTierOffer
 } from '@/store/free-tier-sign-in'
 import { refreshOnboardingProviders } from '@/store/onboarding'
+import { $onboardingGate } from '@/store/onboarding-gate'
+import { $onboardingSurfaces } from '@/store/onboarding-presence'
 import { $currentModel, setModelPickerOpen } from '@/store/session'
 
 interface FreeTierSignInDialogProps {
@@ -72,6 +84,32 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
     }
   }, [owned, requestGateway, state.status])
 
+  // The sign-in offer rides every status read, and retries once guided
+  // onboarding leaves the screen. A completed free-tier turn re-reads the
+  // status, since that is when the backend arms the next offer. Only the
+  // owner (main windows) times it.
+  useEffect(() => {
+    if (!owned) {
+      return
+    }
+
+    const sync = () => syncFreeTierOffer($freeTierStatus.get(), requestGateway)
+
+    const stops = [
+      $freeTierStatus.listen(sync),
+      $onboardingGate.listen(sync),
+      $onboardingSurfaces.listen(sync),
+      $freeTierTurnCompleted.listen(() => void refreshFreeTierStatus(requestGateway, sameGatewayRoute()))
+    ]
+
+    sync()
+
+    return () => {
+      stops.forEach(stop => stop())
+      stopFreeTierOffer()
+    }
+  }, [owned, requestGateway])
+
   if (!owned || state.status === 'closed' || state.status === 'requested') {
     return null
   }
@@ -105,6 +143,19 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
   return (
     <Dialog onOpenChange={open => !open && closeFreeTierSignIn()} open>
       <DialogContent onOpenAutoFocus={preventCloseButtonAutoFocus}>
+        {state.status === 'offer' && (
+          <Screen body={copy.offer.body} heading={copy.offer.heading}>
+            <Actions>
+              <Button onClick={() => closeFreeTierSignIn()} size="sm" type="button" variant="text">
+                {copy.offer.notNow}
+              </Button>
+              <Button onClick={retry} type="button">
+                {copy.offer.signIn}
+              </Button>
+            </Actions>
+          </Screen>
+        )}
+
         {state.status === 'setting_up' && (
           <Screen heading={copy.signInHeading}>
             <Spinner>{state.minting ? copy.settingUp : copy.waiting}</Spinner>
@@ -188,14 +239,21 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
         )}
 
         {state.status === 'failed' && (
-          <Screen body={failureBody(state.kind, state.message, copy)} heading={failureHeading(state.kind, copy)}>
+          <Screen
+            body={failureBody(state.kind, state.message, state.retryAfter, copy)}
+            heading={failureHeading(state.kind, copy)}
+          >
             <Actions>
               <Button onClick={() => closeFreeTierSignIn()} size="sm" type="button" variant="text">
-                {copy.notNow}
+                {state.kind === 'unavailable' ? copy.done : copy.notNow}
               </Button>
-              <Button onClick={retry} type="button">
-                {state.kind === 'superseded' ? copy.startAgain : copy.tryAgain}
-              </Button>
+              {/* A terminal refusal (this version, a locked session, a proof-of-work
+                  request) has nothing to retry: the backend's sentence names the way out. */}
+              {state.kind === 'unavailable' ? null : (
+                <Button onClick={retry} type="button">
+                  {state.kind === 'superseded' ? copy.startAgain : copy.tryAgain}
+                </Button>
+              )}
             </Actions>
           </Screen>
         )}
@@ -207,11 +265,30 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
 type FreeTierCopy = Translations['freeTier']
 
 function failureHeading(kind: FreeTierSignInFailure, copy: FreeTierCopy): string {
-  return kind === 'timed_out' ? copy.timedOutHeading : copy.didNotComplete
+  switch (kind) {
+    case 'busy':
+      return copy.busyHeading
+
+    case 'timed_out':
+      return copy.timedOutHeading
+
+    default:
+      return copy.didNotComplete
+  }
 }
 
-function failureBody(kind: FreeTierSignInFailure, message: null | string, copy: FreeTierCopy): string {
+function failureBody(
+  kind: FreeTierSignInFailure,
+  message: null | string,
+  retryAfter: number,
+  copy: FreeTierCopy
+): string {
   switch (kind) {
+    case 'busy':
+      // The backend's sentence already names the wait it was given; ours fills
+      // in when an older backend sent none.
+      return message ?? copy.busyBody(friendlyWait(retryAfter || 60))
+
     case 'rejected':
       return copy.rejectedBody
 
@@ -224,9 +301,12 @@ function failureBody(kind: FreeTierSignInFailure, message: null | string, copy: 
     case 'timed_out':
       return copy.timedOutBody
 
+    case 'unreachable':
+      return message ?? copy.unreachableBody
+
     default:
       // The backend's own wording when it sent one — it names the specific
-      // refusal (a busy account, a transport failure) better than we can.
+      // refusal (this version, a locked session) better than we can.
       return message ?? copy.errorBody
   }
 }

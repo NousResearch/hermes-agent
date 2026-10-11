@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, SecretStr, StrictBool, field_validator
+from pydantic import BaseModel, SecretStr, StrictBool, field_validator
+
+
 class ConfigUpdate(BaseModel):
     config: dict
     profile: Optional[str] = None
@@ -17,6 +19,9 @@ class EnvVarUpdate(BaseModel):
     # Bearer for the OPENAI_BASE_URL connectivity probe (auth-gated /v1/models otherwise looks
     # "reachable but empty"); ignored by plain PUT /api/env.
     api_key: str = ""
+    # Sent by the Desktop's provider-connection forms: a key a tool panel also asks for (Gemini,
+    # xAI...) then still counts as a provider setup in shared metrics.
+    provider_setup: bool = False
 
 class EnvVarDelete(BaseModel):
     key: str
@@ -26,10 +31,17 @@ class EnvVarReveal(EnvVarDelete):
     pass
 
 class MemoryProviderConfigUpdate(BaseModel):
-    values: Dict[str, Any] = {}
+    values: dict[str, Any] = {}
 
 class MemoryProviderSetupRequest(BaseModel):
-    values: Dict[str, Any] = {}
+    values: dict[str, Any] = {}
+
+class CustomEndpointModelDetail(BaseModel):
+    """One ``/v1/models`` row with the routing metadata a gateway may advertise on a
+    reasoning alias (``gpt-5.6-sol-high`` → ``gpt-5.6-sol`` @ ``high``). See #93622."""
+    id: str
+    canonical_model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
 class CustomEndpointUpdate(BaseModel):
     id: str = ""
@@ -37,15 +49,19 @@ class CustomEndpointUpdate(BaseModel):
     base_url: str
     model: str
     api_key: Optional[str] = None
+    # Same choices as the CLI's custom-provider setup; "" = auto-detect at runtime.
+    # None (older UI payload) leaves a hand-written api_mode alone.
+    api_mode: Optional[Literal["", "chat_completions", "codex_responses", "anthropic_messages"]] = None
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False
-    models: Optional[List[str]] = None
+    models: Optional[list[str]] = None
+    model_details: Optional[list[CustomEndpointModelDetail]] = None
 
 class MessagingPlatformUpdate(BaseModel):
     enabled: Optional[bool] = None
-    env: Dict[str, str] = {}
-    clear_env: List[str] = []
+    env: dict[str, str] = {}
+    clear_env: list[str] = []
     # Explicit body profile beats the switcher's query param (same as other scoped writes).
     profile: Optional[str] = None
 
@@ -53,7 +69,7 @@ class TelegramOnboardingStart(BaseModel):
     bot_name: Optional[str] = None
 
 class TelegramOnboardingApply(BaseModel):
-    allowed_user_ids: List[str]
+    allowed_user_ids: list[str]
     profile: Optional[str] = None
 
 class WhatsAppOnboardingStart(BaseModel):
@@ -92,11 +108,13 @@ class ModelAssignment(BaseModel):
     scope="main" → model.provider + model.default; scope="auxiliary" → auxiliary.<task>.*
     (task="" = every auxiliary slot, task="__reset__" = reset every slot to provider="auto").
     """
-
     scope: str
     provider: str
     model: str
     task: str = ""
+    # Auxiliary only. Omitted → the task's override is left alone; explicit null → cleared
+    # (inherit the main agent's effort); a level → set. ``model_fields_set`` tells the two apart.
+    reasoning_effort: Optional[str] = None
     # Custom/local endpoint URL + key, honored on main AND auxiliary slots: the runtime resolvers
     # read model.base_url / auxiliary.<task>.base_url (+ .api_key) and ignore OPENAI_BASE_URL.
     base_url: str = ""
@@ -168,12 +186,12 @@ class GitFileBody(BaseModel):
 
 class GitPrListBody(BaseModel):
     path: str
-    branches: List[str] = []
+    branches: list[str] = []
     # PRs a session recovered from its transcript — known by number, not branch.
-    numbers: List[int] = []
+    numbers: list[int] = []
 
 class SessionPrScanBody(BaseModel):
-    ids: List[str] = []
+    ids: list[str] = []
 
 class GitCommitBody(BaseModel):
     path: str
@@ -198,6 +216,7 @@ class GitBranchSwitchBody(BaseModel):
 
 class CuratorPause(BaseModel):
     paused: bool
+
 class LearningNodeRef(BaseModel):
     id: str
     profile: Optional[str] = None
@@ -207,154 +226,30 @@ class LearningNodeEdit(BaseModel):
     content: str
     profile: Optional[str] = None
 
-
-class WisdomSuggestRequest(BaseModel):
-    skill: Optional[str] = None
-    local_skill_id: Optional[str] = None
-    description: Optional[str] = None
-    system_specification: Optional[Dict[str, Any]] = None
-    send_for_owner_only_server_review: bool = False
-    profile: Optional[str] = None
-
-
-class WisdomSetupRequest(BaseModel):
-    accept_disclosure: bool = False
-    profile: Optional[str] = None
-
-
-class WisdomScanRequest(BaseModel):
-    skill: Optional[str] = None
-    profile: Optional[str] = None
-
-
-class WisdomReviewRequest(BaseModel):
-    draft_id: str
-    acknowledge: bool = False
-    profile: Optional[str] = None
-    expected_hashes: Optional[Dict[str, str]] = None
-
-
-class WisdomPublicationRequest(BaseModel):
-    draft_id: str
-    expected_hashes: Dict[str, str]
-    publication_mode: Literal["open", "managed", "moderated"]
-    profile: Optional[str] = None
-    interaction_id: Optional[str] = None
-    session_id: Optional[str] = None
-
-
-class WisdomEditedFile(BaseModel):
-    path: str = Field(min_length=1, max_length=1024)
-    content_utf8: str = Field(max_length=256 * 1024)
-
-
-class WisdomPreparedSaveRequest(BaseModel):
-    draft_id: str
-    author_description: str = Field(min_length=1, max_length=4096)
-    files: List[WisdomEditedFile] = Field(min_length=2, max_length=32)
-    profile: Optional[str] = None
-
-
-class WisdomCandidateDismissRequest(BaseModel):
-    local_skill_id: str
-    content_hash: str
-    profile: Optional[str] = None
-
-
-class WisdomCandidateEventRequest(BaseModel):
-    event_id: str
-    profile: Optional[str] = None
-
-
-class WisdomReviseRequest(BaseModel):
-    draft_id: str
-    author_description: str = Field(min_length=1, max_length=4096)
-    files: List[WisdomEditedFile] = Field(min_length=2, max_length=32)
-    expected_content_hash: str
-    expected_author_description_hash: str
-    expected_package_manifest_hash: str
-    send_for_owner_only_server_review: bool = False
-    profile: Optional[str] = None
-
-
-class WisdomDecisionRequest(BaseModel):
-    draft_id: str
-    profile: Optional[str] = None
-
-
-class WisdomInstallPlanRequest(BaseModel):
-    reference: str
-    update_mode: Optional[Literal["MANUAL", "AUTO_WITH_NOTICE", "REQUIRED"]] = None
-    profile: Optional[str] = None
-
-
-class WisdomInstallApplyRequest(BaseModel):
-    receipt: str
-    accept_partial: bool = False
-    profile: Optional[str] = None
-
-
-class WisdomCheckRequest(BaseModel):
-    apply_automatic: bool = False
-    profile: Optional[str] = None
-
-
-class WisdomUpdatePlanRequest(BaseModel):
-    skill_id: str
-    profile: Optional[str] = None
-
-
-class WisdomUpdateApplyRequest(BaseModel):
-    receipt: str
-    accept_sensitive: bool = False
-    accept_partial: bool = False
-    preserve_modified: bool = False
-    profile: Optional[str] = None
-
-
-class WisdomUninstallRequest(BaseModel):
-    skill_id: str
-    profile: Optional[str] = None
-
-
-class WisdomNotificationRequest(BaseModel):
-    mark_seen: bool = False
-    profile: Optional[str] = None
-
-
-class WisdomConsentRequest(BaseModel):
-    model_config = {"extra": "forbid"}
-    interaction_id: str = Field(min_length=1, max_length=64)
-    session_id: str = Field(min_length=1, max_length=256)
-    action: str = Field(pattern=r"^(inspect(?:\.[0-9]{1,4})?|defer|confirm|recheck|setup\.(status|recover|clear))$")
-    profile: Optional[str] = None
-
-
-class WisdomSyncRetryRequest(BaseModel):
-    model_config = {"extra": "forbid"}
-    profile: Optional[str] = None
-
-
-class WisdomMutePrepareRequest(BaseModel):
-    model_config = {"extra": "forbid"}
-    profile: Optional[str] = None
-
-
-class WisdomMuteChooseRequest(WisdomMutePrepareRequest):
-    control_id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    duration: Optional[Literal["1_day", "1_week", "30_days", "forever"]]
 class DebugShareRequest(BaseModel):
     # Redaction scrubs credential-shaped tokens before logs leave the machine; opt-out only.
     redact: bool = True
     lines: int = 200  # recent log lines in the summary tail (full logs are separate)
 
-
 class TTSSpeakRequest(BaseModel):
     text: str
+
+class VoiceLiveSessionRequest(BaseModel):
+    """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior
+    text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model."""
+    sdp: str
+    history: Optional[list[dict[str, Any]]] = None
 
 class TTSLeaseRequest(BaseModel):
     """POST /api/audio/tts-lease: ``lease`` names the toggle/surface holding the lease
     (``desktop:read-aloud``, ``desktop:conversation``); ``active`` True acquires + warms, False releases."""
+    lease: str
+    active: bool = True
+
+class STTLeaseRequest(BaseModel):
+    """POST /api/audio/stt-lease: ``lease`` names the voice-input session holding the lease
+    (``desktop:voice-input:<renderer>``); ``active`` True acquires + pre-loads the local
+    STT model, False releases. Unlike TTS, release never unloads (shared engine)."""
     lease: str
     active: bool = True
 
@@ -363,11 +258,11 @@ class OAuthSubmitBody(BaseModel):
     code: str
 
 class BulkDeleteSessions(BaseModel):
-    ids: List[str]
+    ids: list[str]
     profile: Optional[str] = None
 
 class SessionImport(BaseModel):
-    sessions: List[Dict[str, Any]]
+    sessions: list[dict[str, Any]]
     profile: Optional[str] = None
 
 class SessionRename(BaseModel):
@@ -419,13 +314,18 @@ class CronJobCreate(BaseModel):
     schedule: str
     name: str = ""
     deliver: str = "local"
-    skills: Optional[List[str]] = None
+    # Finite repeat count (runs N times then completes); None = unlimited. Accepts the
+    # same user-facing strings the CLI accepts ('forever'/'once'/'3'). Normalization and
+    # validation happen in cron.jobs.create_job via normalize_repeat_value — the shared
+    # chokepoint with the CLI and update paths — so an unparseable value 400s there.
+    repeat: Optional[int | str] = None
+    skills: Optional[list[str]] = None
     model: Optional[str] = None
     provider: Optional[str] = None
     base_url: Optional[str] = None
     script: Optional[str] = None
     context_from: Optional[Any] = None
-    enabled_toolsets: Optional[List[str]] = None
+    enabled_toolsets: Optional[list[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
 
@@ -434,15 +334,14 @@ class CronJobUpdate(BaseModel):
 
 class AutomationBlueprintInstantiate(BaseModel):
     blueprint: str  # blueprint key, e.g. "morning-brief"
-    values: Dict[str, Any] = {}  # filled slot values from the form
-
+    values: dict[str, Any] = {}  # filled slot values from the form
 
 class MCPServerCreate(BaseModel):
     name: str
     url: Optional[str] = None
     command: Optional[str] = None
-    args: List[str] = []
-    env: Dict[str, str] = {}  # KEY=VALUE for stdio servers (API keys, etc.)
+    args: list[str] = []
+    env: dict[str, str] = {}  # KEY=VALUE for stdio servers (API keys, etc.)
     auth: Optional[str] = None  # "none" | "oauth" | "header" | None
     # One-time provisioning input; persisted only to the profile's .env.
     bearer_token: Optional[SecretStr] = None
@@ -450,7 +349,7 @@ class MCPServerCreate(BaseModel):
 
 class MCPServersReplace(BaseModel):
     # Whole-map replace (name → raw config) for the GUI mcp.json editor.
-    servers: Dict[str, Dict[str, Any]] = {}
+    servers: dict[str, dict[str, Any]] = {}
     profile: Optional[str] = None
 
 class MCPEnabledToggle(BaseModel):
@@ -459,7 +358,7 @@ class MCPEnabledToggle(BaseModel):
 
 class MCPCatalogInstall(BaseModel):
     name: str
-    env: Dict[str, str] = {}  # KEY=VALUE for entries declaring required env vars
+    env: dict[str, str] = {}  # KEY=VALUE for entries declaring required env vars
     enable: bool = True
     profile: Optional[str] = None
 
@@ -477,15 +376,14 @@ class PairingRevoke(BaseModel):
 class WebhookCreate(BaseModel):
     name: str
     description: Optional[str] = None
-    events: List[str] = []
+    events: list[str] = []
     prompt: Optional[str] = None
     script: Optional[str] = None
-    skills: List[str] = []
+    skills: list[str] = []
     deliver: str = "log"
     deliver_only: bool = False
     deliver_chat_id: Optional[str] = None
     secret: Optional[str] = None  # omit to auto-generate
-
 
 class WebhookEnabledToggle(BaseModel):
     enabled: bool
@@ -501,10 +399,8 @@ class MemoryProviderSelect(BaseModel):
 class MemoryReset(BaseModel):
     target: str = "all"  # "all" | "memory" | "user"
 
-
 class BackupRequest(BaseModel):
     output: Optional[str] = None  # defaults to a timestamped zip in the home dir
-
 
 class ImportRequest(BaseModel):
     archive: str
@@ -534,27 +430,31 @@ class SkillUninstallRequest(BaseModel):
 
 class SkillsUpdateRequest(BaseModel):
     profile: Optional[str] = None
+
 class ProfileCreate(BaseModel):
     name: str
     clone_from: Optional[str] = None
     clone_from_default: bool = False  # legacy clients; new ones send clone_from explicitly
     clone_all: bool = False
+    # Opt-in: also copy the source's messaging channels (bot tokens, allowlists, platform sections).
+    # Default False — a copied bot credential makes two profiles collide over one bot.
+    clone_channels: bool = False
     no_skills: bool = False
     description: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     # Profile-builder additions, applied best-effort AFTER the profile dir exists (a hiccup never 500s).
-    mcp_servers: List["MCPServerCreate"] = []
-    keep_skills: List[str] = []  # skills to KEEP: non-empty = replace semantics (unlisted seeded ones disabled)
+    mcp_servers: list[MCPServerCreate] = []
+    keep_skills: list[str] = []  # skills to KEEP: non-empty = replace semantics (unlisted seeded ones disabled)
     # Installed async via `hermes -p <name> skills install` (skills_hub.SKILLS_DIR is import-time-bound,
     # so HERMES_HOME can't redirect it); PIDs go back for the UI to poll.
-    hub_skills: List[str] = []
+    hub_skills: list[str] = []
 
 class ProfileRename(BaseModel):
     new_name: str
 
 class ProfileExport(BaseModel):
-    extra_files: Dict[str, str] = {}  # extra root-level files, filename → text
+    extra_files: dict[str, str] = {}  # extra root-level files, filename → text
     output: str = ""  # archive path; empty → a staging path under HERMES_HOME
 
 class ProfileImport(BaseModel):
@@ -609,7 +509,7 @@ class ToolsetModelSelect(BaseModel):
     profile: Optional[str] = None
 
 class ToolsetEnvUpdate(BaseModel):
-    env: Dict[str, str]
+    env: dict[str, str]
     profile: Optional[str] = None
 
 class ToolsetPostSetup(BaseModel):
@@ -629,6 +529,7 @@ class ThemeSetBody(BaseModel):
 
 class FontSetBody(BaseModel):
     font: str
+
 class _AgentPluginInstallBody(BaseModel):
     identifier: str
     force: bool = False
@@ -644,3 +545,4 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
+

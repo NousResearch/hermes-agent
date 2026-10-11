@@ -4,16 +4,24 @@ export interface SetupStatusSnapshot {
    *  ones). Carried for consumers that read the record — readiness itself
    *  still keys on `provider_configured` + `setup.runtime_check`. */
   ready?: boolean
-  free_tier?: boolean
+  free_tier_account?: boolean
+  free_tier_route?: boolean
   other_providers?: boolean
   inference_provider?: string
+  /** Present only when the boot bootstrap could not create the free-tier
+   *  identity: the failure code, its sentence, and whether / when a retry can
+   *  succeed. Same shape as `free_tier.status`. */
+  error?: string
+  error_code?: string
+  retryable?: boolean
+  retry_after?: number
 }
 
 export interface RuntimeCheckSnapshot {
   error?: string
   /** True when the resolved route is the free tier rather than a credential of
    *  the user's own. Absent on older backends. */
-  free_tier?: boolean
+  free_tier_route?: boolean
   model?: string
   ok?: boolean
   provider?: string
@@ -123,7 +131,7 @@ export function interpretRuntimeReadiness(
   // (free-tier chrome) don't have to re-issue setup.runtime_check. Left
   // undefined when the check said nothing — "absent" and "false" differ.
   const route = {
-    freeTier: typeof signals.runtime?.free_tier === 'boolean' ? signals.runtime.free_tier : undefined,
+    freeTier: typeof signals.runtime?.free_tier_route === 'boolean' ? signals.runtime.free_tier_route : undefined,
     model: normalizeMessage(signals.runtime?.model) ?? undefined
   }
 

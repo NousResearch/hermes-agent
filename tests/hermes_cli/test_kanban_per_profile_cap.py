@@ -20,6 +20,8 @@ def isolated_kanban_home_with_profiles(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_per_profile_cap_test_")
     for prof in ("alpha", "beta", "default"):
         os.makedirs(os.path.join(test_home, "profiles", prof), exist_ok=True)
+        with open(os.path.join(test_home, "profiles", prof, "config.yaml"), "w") as fh:
+            fh.write("{}\n")  # identity marker: a bare dir is not a profile
     monkeypatch.setenv("HERMES_HOME", test_home)
     for mod in list(sys.modules.keys()):
         if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
@@ -70,7 +72,7 @@ def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_pr
     from hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
-        ids = [kb.create_task(conn, title=f"a{i}", assignee="alpha") for i in range(3)]
+        [kb.create_task(conn, title=f"a{i}", assignee="alpha") for i in range(3)]
 
     # First tick: cap=1, only 1 alpha dispatched
     with kbc.connect_closing() as conn:

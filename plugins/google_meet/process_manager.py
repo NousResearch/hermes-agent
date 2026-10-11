@@ -21,19 +21,29 @@ from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
 
-from plugins.google_meet._jsonfile import read_json, write_json_atomic
+from utils import atomic_json_write
 
 
 def _root() -> Path:
     return Path(get_hermes_home()) / "workspace" / "meetings"
 
 
-def _read_active() -> Optional[Dict[str, Any]]:
-    return read_json(_root() / ".active.json")
+def _active_file() -> Path:
+    return _root() / ".active.json"
 
 
-def _write_active(data: Dict[str, Any]) -> None:
-    write_json_atomic(_root() / ".active.json", data)
+def _read_active() -> Optional[dict[str, Any]]:
+    p = _active_file()
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+
+
+def _write_active(data: dict[str, Any]) -> None:
+    atomic_json_write(_active_file(), data)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -54,7 +64,7 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
           auth_state: Optional[str] = None, guest_name: str = "Hermes Agent", duration: Optional[str] = None,
           session_id: Optional[str] = None, mode: str = "transcribe", realtime_model: Optional[str] = None,
           realtime_voice: Optional[str] = None, realtime_instructions: Optional[str] = None,
-          realtime_api_key: Optional[str] = None) -> Dict[str, Any]:
+          realtime_api_key: Optional[str] = None) -> dict[str, Any]:
     """Spawn the meet_bot subprocess for *url*, stopping any running bot first (one active meeting)."""
     from plugins.google_meet.meet_bot import _is_safe_meet_url, _meeting_id_from_url
     if not _is_safe_meet_url(url):
@@ -99,30 +109,55 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
     return {"ok": True, **record}
 
 
-def status() -> Dict[str, Any]:
+def status() -> dict[str, Any]:
     """Return the current meeting state, or ``{"ok": False, "reason": ...}``."""
     active = _read_active()
     if not active:
         return dict(_NO_ACTIVE)
     pid = int(active.get("pid", 0))
-    return {"ok": True, "alive": _pid_alive(pid), "pid": pid, "meetingId": active.get("meeting_id"),
-            "url": active.get("url"), "startedAt": active.get("started_at"), "outDir": active.get("out_dir"),
-            **(read_json(Path(active.get("out_dir", "")) / "status.json") or {})}
+    alive = _pid_alive(pid) if pid else False
+
+    status_path = Path(active.get("out_dir", "")) / "status.json"
+    bot_status: dict[str, Any] = {}
+    if status_path.is_file():
+        try:
+            bot_status = json.loads(status_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "alive": alive,
+        "pid": pid,
+        "meetingId": active.get("meeting_id"),
+        "url": active.get("url"),
+        "startedAt": active.get("started_at"),
+        "outDir": active.get("out_dir"),
+        **bot_status,
+    }
 
 
-def transcript(last: Optional[int] = None) -> Dict[str, Any]:
+def transcript(last: Optional[int] = None) -> dict[str, Any]:
     """Read the current transcript file (empty result if the bot hasn't written one yet)."""
     active = _read_active()
     if not active:
         return dict(_NO_ACTIVE)
     tp = Path(active.get("out_dir", "")) / "transcript.txt"
-    text = tp.read_text(encoding="utf-8", errors="replace") if tp.is_file() else ""
+    if not tp.is_file():
+        return {
+            "ok": True,
+            "meetingId": active.get("meeting_id"),
+            "lines": [],
+            "total": 0,
+            "path": str(tp),
+        }
+    text = tp.read_text(encoding="utf-8-sig", errors="replace")
     all_lines = [ln for ln in text.splitlines() if ln.strip()]
     return {"ok": True, "meetingId": active.get("meeting_id"),
             "lines": all_lines[-last:] if last else all_lines, "total": len(all_lines), "path": str(tp)}
 
 
-def enqueue_say(text: str) -> Dict[str, Any]:
+def enqueue_say(text: str) -> dict[str, Any]:
     """Append a ``say`` request to ``<out_dir>/say_queue.jsonl``.
     Refused when no meeting is active or the active bot is transcribe-only."""
     text = (text or "").strip()
@@ -145,7 +180,7 @@ def enqueue_say(text: str) -> Dict[str, Any]:
             "queue_path": str(queue_path)}
 
 
-def stop(*, reason: str = "requested") -> Dict[str, Any]:
+def stop(*, reason: str = "requested") -> dict[str, Any]:
     """SIGTERM the active bot (SIGKILL after 10s), then clear the active pointer."""
     active = _read_active()
     if not active:
@@ -160,6 +195,6 @@ def stop(*, reason: str = "requested") -> Dict[str, Any]:
             time.sleep(0.5)
         else:
             _kill(pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only plugin (google_meet registers no-op on Windows; see __init__.py)
-    (_root() / ".active.json").unlink(missing_ok=True)
+    _active_file().unlink(missing_ok=True)
     return {"ok": True, "reason": reason, "meetingId": active.get("meeting_id"),
             "transcriptPath": str(Path(out_dir) / "transcript.txt") if out_dir else None}

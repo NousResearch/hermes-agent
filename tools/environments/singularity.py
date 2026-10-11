@@ -21,7 +21,10 @@ from tools.environments.remote_common import bash_argv, run_capture
 
 logger = logging.getLogger(__name__)
 
-_SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
+def _snapshot_store() -> Path:
+    # Resolved per call: the multiplexed gateway serves every profile from one process, so an
+    # import-time path would keep every profile's snapshots in the launch profile's home.
+    return get_hermes_home() / "singularity_snapshots.json"
 
 
 def _find_singularity_executable() -> str:
@@ -51,11 +54,11 @@ def _ensure_singularity_available() -> str:
 
 
 def _load_snapshots() -> dict:
-    return _load_json_store(_SNAPSHOT_STORE)
+    return _load_json_store(_snapshot_store())
 
 
 def _save_snapshots(data: dict) -> None:
-    _save_json_store(_SNAPSHOT_STORE, data)
+    _save_json_store(_snapshot_store(), data)
 
 
 def _get_scratch_dir() -> Path:

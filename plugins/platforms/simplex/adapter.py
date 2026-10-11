@@ -2,7 +2,7 @@
 or ``docker run -p 5225:5225 simplexchat/simplex-chat-cli -p 5225``); JSON commands out, events in.
 
 Env: SIMPLEX_WS_URL (required; default ws://127.0.0.1:5225) · SIMPLEX_ALLOWED_USERS (numeric
-contactIds — stable across renames, see ``/contacts`` — or display names) · SIMPLEX_ALLOW_ALL_USERS ·
+contactIds — stable across renames, see ``/contacts``) · SIMPLEX_ALLOW_ALL_USERS ·
 SIMPLEX_AUTO_ACCEPT ('false' disables contact-request auto-accept; default true) ·
 SIMPLEX_GROUP_ALLOWED (group IDs or '*'; omit to ignore groups) · SIMPLEX_HOME_CHANNEL[_NAME] ·
 HERMES_SIMPLEX_TEXT_BATCH_DELAY (quiet seconds, default 0.8, merging rapid-fire inbound text).
@@ -18,15 +18,20 @@ import os
 import random
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from urllib.parse import unquote
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    decode_json_list_literal as _decode_json_list_literal, get_scoped_secret as _get_scoped_secret,
+    platform_gate_env as _platform_gate_env, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 from gateway.config import Platform, PlatformConfig
+from hermes_constants import hermes_home_key
 from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
@@ -45,8 +50,31 @@ _THUMB_URI_PREFIX = "data:image/jpg;base64,"
 _MEDIA_KIND_PRECEDENCE = (("audio/", MessageType.VOICE), ("image/", MessageType.PHOTO))  # first match wins
 
 
-def _parse_comma_list(value: str) -> List[str]:
+def _parse_comma_list(value: str) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
+
+
+# (hermes home key, names) already warned about. Module-level: every reconnect builds a FRESH adapter
+# (gateway/run_adapters.py), so an instance flag would re-warn on every retry while the daemon is down.
+_NAME_ALLOWLIST_WARNED: set = set()
+
+
+def _warn_name_allowlist_entries() -> None:
+    """Warn once per process per profile/allowlist value about SIMPLEX_ALLOWED_USERS entries authz ignores.
+
+    Reads and decodes the value exactly as authz does (``platform_gate_env`` + JSON list literal), so the
+    warning names only entries that really fail the contactId check."""
+    raw = _decode_json_list_literal(_platform_gate_env("SIMPLEX_ALLOWED_USERS"))
+    entries = [str(e).strip() for e in raw] if isinstance(raw, list) else _parse_comma_list(raw)
+    names = [u for u in entries if u and u != "*" and not u.isdigit()]
+    if not names:
+        return
+    key = (hermes_home_key(), frozenset(names))
+    if key in _NAME_ALLOWLIST_WARNED:
+        return
+    _NAME_ALLOWLIST_WARNED.add(key)
+    logger.warning("SimpleX: SIMPLEX_ALLOWED_USERS entries %s are not numeric contactIds and are ignored "
+                   "(display names are not trusted; see /contacts for IDs)", names)
 
 
 def _redact_id(contact_id: str) -> str:
@@ -84,13 +112,6 @@ def _send_cmd(chat_id: str, items: list) -> str:
     return f"/_send {target} json {json.dumps(items)}"
 
 
-async def _cancel_task(task: Optional[asyncio.Task]) -> None:
-    if task:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-
 class SimplexAdapter(BasePlatformAdapter):
     """SimpleX Chat adapter using the simplex-chat daemon WebSocket API."""
 
@@ -119,13 +140,12 @@ class SimplexAdapter(BasePlatformAdapter):
         self._last_ws_activity = 0.0
         self._pending_corr_ids: set = set()  # cosmetic echo filter: corrIds we minted, bounded
         self._max_pending_corr = 200
-        self._pending_file_transfers: Dict[int, dict] = {}  # awaiting rcvFileComplete, by fileId
-        self._pending_responses: Dict[str, asyncio.Future] = {}  # awaited command replies
+        self._pending_file_transfers: dict[int, dict] = {}  # awaiting rcvFileComplete, by fileId
+        self._pending_responses: dict[str, asyncio.Future] = {}  # awaited command replies
         self._corr_counter = 0
-        # Text batching state consumed by BasePlatformAdapter._enqueue_text_event.
-        self._text_batch_delay = float(os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8"))
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # SimpleX has no client-side split, so the split delay equals the plain one.
+        self._text_batch_delay_seconds = float(os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8"))
+        self._text_batch_split_delay_seconds = self._text_batch_delay_seconds
         logger.info(
             "SimpleX adapter initialized: url=%s auto_accept=%s groups=%s",
             self.ws_url, self.auto_accept, "enabled" if self.group_allow_from else "disabled")
@@ -139,6 +159,7 @@ class SimplexAdapter(BasePlatformAdapter):
         if not self.ws_url:
             logger.error("SimpleX: SIMPLEX_WS_URL is required")
             return False
+        _warn_name_allowlist_entries()  # before the probe so a daemon-down cold boot still warns
         try:  # quick connectivity check — open and immediately close
             async with _wsclient.connect(self.ws_url, open_timeout=10):
                 pass
@@ -156,8 +177,8 @@ class SimplexAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
-        await _cancel_task(self._ws_task)
-        await _cancel_task(self._health_task)
+        await cancel_task(self._ws_task)
+        await cancel_task(self._health_task)
         if self._ws:
             with contextlib.suppress(Exception):
                 await self._ws.close()
@@ -334,8 +355,8 @@ class SimplexAdapter(BasePlatformAdapter):
             logger.debug("SimpleX: ignoring message with no sender")
             return
         # Attachment: chatItem.chatItem.file (sibling of meta/content/chatDir).
-        media_urls: List[str] = []
-        media_types: List[str] = []
+        media_urls: list[str] = []
+        media_types: list[str] = []
         file_info = chat_item_data.get("file")
         if file_info and isinstance(file_info, dict):
             file_source = file_info.get("fileSource", {}) or {}
@@ -364,9 +385,9 @@ class SimplexAdapter(BasePlatformAdapter):
                             MessageType.DOCUMENT)
         ts_str = meta.get("itemTs") or meta.get("createdAt", "")
         try:
-            timestamp = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else datetime.now(tz=timezone.utc)
+            timestamp = datetime.fromisoformat(ts_str) if ts_str else datetime.now(tz=UTC)
         except (ValueError, AttributeError):
-            timestamp = datetime.now(tz=timezone.utc)
+            timestamp = datetime.now(tz=UTC)
         msg_event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
             media_types=media_types, timestamp=timestamp, raw_message=chat_item)
@@ -380,19 +401,6 @@ class SimplexAdapter(BasePlatformAdapter):
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         return f"{event.source.platform.value}:{event.source.chat_id}"
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
-        current_task = asyncio.current_task()
-        try:
-            await asyncio.sleep(self._text_batch_delay)
-            event = self._pending_text_batches.pop(key, None)
-            if event:
-                logger.info("[SimpleX] Flushing text batch %s (%d chars)", key, len(event.text or ""))
-                await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
 
     def _make_corr_id(self) -> str:
         """Mint a correlation ID and remember it for echo-filtering; the set is bounded by
@@ -426,7 +434,7 @@ class SimplexAdapter(BasePlatformAdapter):
         try:
             await ws.send(json.dumps({"corrId": corr_id, "cmd": command}))
             return await asyncio.wait_for(fut, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("SimpleX: command timed out: %s", command[:50])
         except Exception as e:
             logger.warning("SimpleX: command failed: %s — %s", command[:50], e)
@@ -443,7 +451,7 @@ class SimplexAdapter(BasePlatformAdapter):
         return SendResult(success=True) if result is not None else SendResult(success=False, error=error)
 
     async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send text; ``MEDIA:<path>`` tags (TTS / audio tools) are stripped and sent as native voice
         notes or documents. The text send is fire-and-forget: the daemon doesn't always return a corrId
@@ -463,7 +471,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 return media_result
         return SendResult(success=True)
 
-    async def list_channels(self) -> Optional[List[Dict[str, Any]]]:
+    async def list_channels(self) -> Optional[list[dict[str, Any]]]:
         """Enumerate contacts and allowed groups for the channel directory.
 
         Returns ``None`` (not ``[]``) when the WebSocket is down or the daemon is unresponsive so
@@ -475,7 +483,7 @@ class SimplexAdapter(BasePlatformAdapter):
         resp = await self._send_command("/contacts", timeout=10.0)
         if resp is None:
             return None
-        channels: List[Dict[str, Any]] = []
+        channels: list[dict[str, Any]] = []
         for contact in resp.get("contacts") or []:
             if not isinstance(contact, dict):
                 continue
@@ -515,6 +523,14 @@ class SimplexAdapter(BasePlatformAdapter):
                 img.save(png_path, "PNG")
             thumb = img.copy()
             thumb.thumbnail((128, 128))
+            if thumb.mode not in ("RGB", "L"):
+                if thumb.mode in ("RGBA", "LA", "P"):
+                    layer = thumb.convert("RGBA")
+                    background = Image.new("RGB", layer.size, (255, 255, 255))
+                    background.paste(layer, mask=layer.getchannel("A"))
+                    thumb = background
+                else:
+                    thumb = thumb.convert("RGB")
             buf = io.BytesIO()
             thumb.save(buf, "JPEG", quality=70)
             thumb_uri = _THUMB_URI_PREFIX + base64.b64encode(buf.getvalue()).decode()
@@ -546,7 +562,11 @@ class SimplexAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(e))
         if not file_path or not Path(file_path).exists():
             return SendResult(success=False, error="Image file not found")
-        png_path, thumb_uri = self._prepare_image(file_path)
+        try:
+            png_path, thumb_uri = self._prepare_image(file_path)
+        except Exception as exc:
+            logger.warning("SimpleX: failed to prepare image: %s", exc)
+            return SendResult(success=False, error=f"Failed to prepare image: {exc}")
         # /_send addresses by numeric ID; /f only accepts display names.
         item = {"filePath": png_path, "msgContent": {"type": "image", "image": thumb_uri, "text": caption or ""}}
         return await self._send_items(chat_id, [item], "Failed to send image")
@@ -579,7 +599,7 @@ class SimplexAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """SimpleX has no typing-indicator API — no-op."""
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         is_group = chat_id.startswith("group:")
         return {"chat_id": chat_id, "type": "group" if is_group else "dm", "name": chat_id[6:] if is_group else chat_id}
 
@@ -589,7 +609,7 @@ def check_requirements() -> bool:
     if not _get_scoped_secret("SIMPLEX_WS_URL"):
         return False
     try:
-        import websockets  # noqa: F401
+        import websockets
         return True
     except ImportError:
         return False
@@ -606,26 +626,23 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed ``PlatformConfig.extra`` from env BEFORE adapter construction so ``gateway status``
-    reflects env-only setups. ``None`` when not minimally configured; ``home_channel`` becomes
-    a ``HomeChannel`` via the core hook."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env BEFORE adapter
+    construction; ``None`` when ``SIMPLEX_WS_URL`` is unset."""
     ws_url = _get_scoped_secret("SIMPLEX_WS_URL", "").strip()
     if not ws_url:
         return None
-    seed: dict = {"ws_url": ws_url}
-    if auto_accept := _get_scoped_secret("SIMPLEX_AUTO_ACCEPT", "").strip().lower():
-        seed["auto_accept"] = auto_accept not in {"0", "false", "no"}
-    if group_allowed := _get_scoped_secret("SIMPLEX_GROUP_ALLOWED", "").strip():
-        seed["group_allowed"] = group_allowed
-    if home := _get_scoped_secret("SIMPLEX_HOME_CHANNEL", "").strip():
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("SIMPLEX_HOME_CHANNEL_NAME", "").strip() or home}
-    return seed
+    seed = _seed_extra_from_env((
+        ("SIMPLEX_AUTO_ACCEPT", "auto_accept", lambda v: v.lower() not in {"0", "false", "no"}),
+        ("SIMPLEX_GROUP_ALLOWED", "group_allowed", None),
+    ), home_env="SIMPLEX_HOME_CHANNEL")
+    return {"ws_url": ws_url, **seed}
+
 
 
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *,
-    thread_id: Optional[str] = None, media_files: Optional[List[str]] = None, force_document: bool = False,
-) -> Dict[str, Any]:
+    thread_id: Optional[str] = None, media_files: Optional[list[str]] = None, force_document: bool = False,
+) -> dict[str, Any]:
     """Ephemeral WebSocket send for ``tools/send_message_tool`` when the gateway runner is not in
     this process (``hermes cron``). ``thread_id``/``force_document`` are signature parity only;
     ``media_files`` is accepted but only the text body is delivered — SimpleX file transfers need
@@ -633,11 +650,11 @@ async def _standalone_send(
     try:
         import websockets as _wsclient
     except ImportError:
-        return {"error": "websockets not installed. Run: pip install websockets"}
+        return send_error("websockets not installed. Run: pip install websockets")
     extra = getattr(pconfig, "extra", {}) or {}
     ws_url = _get_scoped_secret("SIMPLEX_WS_URL") or extra.get("ws_url", "ws://127.0.0.1:5225")
     if not ws_url:
-        return {"error": "SimpleX standalone send: SIMPLEX_WS_URL is required"}
+        return send_error("SimpleX standalone send: SIMPLEX_WS_URL is required")
     try:
         payload = {
             "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",
@@ -647,40 +664,34 @@ async def _standalone_send(
             await asyncio.sleep(0.5)  # let the daemon process the command before closing
         return {"success": True, "platform": "simplex", "chat_id": chat_id}
     except Exception as e:
-        return {"error": f"SimpleX send failed: {e}"}
+        return send_error(f"SimpleX send failed: {e}")
 
 
 _SETUP_PROMPTS = (
     ("SIMPLEX_WS_URL", "Daemon WebSocket URL (default ws://127.0.0.1:5225)"),
-    ("SIMPLEX_ALLOWED_USERS", "Allowed contactIds or display names (comma-separated; blank=skip)"),
+    ("SIMPLEX_ALLOWED_USERS", "Allowed contactIds (comma-separated; blank=skip)"),
     ("SIMPLEX_GROUP_ALLOWED", "Allowed group IDs (comma-separated, or '*' for any; blank=disable groups)"),
     ("SIMPLEX_AUTO_ACCEPT", "Auto-accept incoming contact requests? (true/false, default true)"),
     ("SIMPLEX_HOME_CHANNEL", "Home channel contact/group ID (or empty)"))
 
 
 def interactive_setup() -> None:
-    """Minimal stdin wizard for ``hermes setup gateway`` → SimpleX; writes ``~/.hermes/.env``."""
-    print(
-        "\nSimpleX Chat setup\n------------------\nRequirements:\n"
-        "  1. simplex-chat daemon running (e.g. `simplex-chat -p 5225`).\n"
-        "  2. Python package `websockets` installed (`pip install websockets`).\n")
-    try:
-        from hermes_cli.config import get_env_value, save_env_value
-    except ImportError:
-        print("hermes_cli.config not available; set SIMPLEX_* vars manually in ~/.hermes/.env")
+    """``hermes setup gateway`` → SimpleX wizard (writes ``~/.hermes/.env``); CLI helpers are lazy-imported."""
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import print_header, print_info, prompt
+    from hermes_cli.setup_platforms import declines_reconfigure
+    print_header("SimpleX Chat")
+    if declines_reconfigure("SimpleX", "Reconfigure SimpleX?", "SIMPLEX_WS_URL"):
         return
-
-    for var, prompt in _SETUP_PROMPTS:
-        existing = get_env_value(var) if callable(get_env_value) else None
-        suffix = " [keep current]" if existing else ""
-        try:
-            value = input(f"{prompt}{suffix}: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            continue
+    for line in ("Requirements:", "  1. simplex-chat daemon running (e.g. `simplex-chat -p 5225`).",
+                 "  2. Python package `websockets` installed (`pip install websockets`)."):
+        print_info(line)
+    for var, question in _SETUP_PROMPTS:
+        suffix = " [keep current]" if get_env_value(var) else ""
+        value = prompt(f"{question}{suffix}")
         if value:
             save_env_value(var, value)
-    print("Done. Make sure the simplex-chat daemon is running before starting the gateway.")
+    print_info("Done. Make sure the simplex-chat daemon is running before starting the gateway.")
 
 
 def register(ctx) -> None:

@@ -1,44 +1,30 @@
-/**
- * THE PARTING SIGNPOST — one lit moment, at the one moment it earns itself.
- *
- * The handoff is the only point in the run where the ground moves under the
- * user: they were talking to Hermes on its own profile, and they land mid-build
- * in a session of their own. The chat they just spent five minutes in is still
- * there, one square away in the profile rail, and nothing on screen says so.
- *
- * So as they land, the rail lights up once. A single accent-lit step, not a
- * tour: the whole appeal of this flow is that it happens in conversation, and
- * spending that on a click-through at the last beat would be a poor trade.
- *
- * Skipped for the user who answered "I'll figure it out" — they were offered a
- * look around and declined, and this is the shape of a look around. Their
- * version of this is a line in the chat (see the runbook's step 4).
- */
+import { translateNow } from '@/i18n'
+import { readLocalSetupEligibility } from '@/store/local-setup-offer'
 
-import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
-import { TOUR_OPTIONS } from '@/store/onboarding-script'
-
-/** The rail's tour handle (profile-switcher.tsx). `data-tour` rather than the
- *  `data-slot` beside it because only the former is identity to
- *  collectTourTargets — so this is the same selector the model gets back when
- *  it scans for targets, not a private one this file made up. */
+/** Tour handles (`data-tour`). A targets scan returns these same selectors, so a curated step and a
+ *  model-driven step point at the same node. */
 const RAIL = '[data-tour="profile-rail"]'
+const SESSIONS = '[data-tour="sessions-sidebar"]'
+const MODEL_PILL = '[data-tour="model-pill"]'
 
-/** Did they wave off the look around? Read from the guide transcript, because
- *  the pick IS a user turn there and the option text is pinned by the script
- *  (that is what TOUR_OPTIONS is for — both sides read the same constant). */
-export function declinedLookAround(messages: ChatMessage[]): boolean {
-  return messages.some(message => message.role === 'user' && chatMessageText(message).trim() === TOUR_OPTIONS.none)
-}
+/** Eligibility is one status + catalog read, usually already cached. The tour does not wait longer than this. */
+const LOCAL_FIT_WAIT_MS = 1500
 
-/** The rail mounts a render or two after the handoff swaps profiles, so wait
- *  for the node rather than firing into an empty DOM (the engine would return
- *  a no-match and the moment would pass silently). Gives up quietly. */
-async function waitForRail(timeoutMs = 6000): Promise<boolean> {
+/** Waits for a visible node. The profile rail mounts a render or two after the handoff switches profiles, and
+ *  the tour engine returns a no-match for a selector that is not in the DOM yet. Returns false on timeout. */
+async function waitFor(selector: string, timeoutMs = 6000, ready = () => true): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
-    if (document.querySelector(RAIL)) {
+    const visible =
+      ready() &&
+      [...document.querySelectorAll(selector)].some(node => {
+        const { width, height } = node.getBoundingClientRect()
+
+        return width > 0 && height > 0 && !node.closest('[data-pane-hidden]')
+      })
+
+    if (visible) {
       return true
     }
 
@@ -48,23 +34,62 @@ async function waitForRail(timeoutMs = 6000): Promise<boolean> {
   return false
 }
 
-/** Light the rail with the parting line. Never throws, never blocks the
- *  handoff — this is the nicety at the end, not part of the machinery. */
-export async function showProfileSignpost(): Promise<void> {
-  if (!(await waitForRail())) {
+/** The caller does not await this, so the tour does not delay the handoff. `onHandoffChat` is true while the
+ *  started task chat is the one on screen: the tour waits for it to open and drops if the user moves on. */
+export async function showHandoffTour(onHandoffChat: () => boolean): Promise<void> {
+  if (!(await waitFor(RAIL, 6000, onHandoffChat))) {
     return
   }
 
-  // Imported here, not at the top: this module is reachable from the boot path
-  // through the handoff hook, and driver.js plus its stylesheet are exactly
-  // what run-tour.ts keeps off it.
-  const { showTourStep } = await import('@/lib/tour')
+  const [sessionsVisible, localModel, pillVisible] = await Promise.all([
+    waitFor(SESSIONS, 1500),
+    localStepModel(),
+    waitFor(MODEL_PILL, 1500)
+  ])
 
-  await showTourStep({
-    accent: true,
-    selector: RAIL,
-    side: 'right',
-    text: "You're in your own workspace now, and this is where the profiles live. The chat we just had is still in there — come back to it whenever you want a hand.",
-    title: 'Hermes is still next door'
+  const localVisible = localModel !== null && pillVisible
+  const copy = (key: string, ...args: unknown[]) => translateNow(`handoffTour.${key}`, ...args)
+  // Imported here instead of at the top: this module is reachable from the boot path through intro.ts
+  // (finishGuidedOnboarding), and run-tour.ts keeps driver.js and its stylesheet out of that path.
+  const { startTour } = await import('@/lib/tour')
+
+  if (!onHandoffChat()) {
+    return
+  }
+
+  await startTour([
+    { accent: true, selector: RAIL, side: 'right', text: copy('profileText'), title: copy('profileTitle') },
+    ...(sessionsVisible
+      ? [{ selector: SESSIONS, side: 'right' as const, text: copy('sessionsText'), title: copy('sessionsTitle') }]
+      : []),
+    { accent: true, selector: RAIL, side: 'right', text: copy('stayText'), title: copy('stayTitle') },
+    ...(localVisible
+      ? [
+          {
+            accent: true,
+            selector: MODEL_PILL,
+            side: 'top' as const,
+            text: copy('localText', localModel),
+            title: copy('localTitle')
+          }
+        ]
+      : [])
+  ])
+}
+
+/** Display name of the model this machine can run, or null when it doesn't qualify or the read is slow. */
+async function localStepModel(): Promise<null | string> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const timeout = new Promise<null>(resolve => {
+    timer = setTimeout(() => resolve(null), LOCAL_FIT_WAIT_MS)
   })
+
+  const fit = readLocalSetupEligibility().then(({ fit }) => fit?.model.display_name ?? null)
+
+  try {
+    return await Promise.race([fit, timeout])
+  } finally {
+    clearTimeout(timer)
+  }
 }

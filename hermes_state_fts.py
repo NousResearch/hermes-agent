@@ -5,12 +5,14 @@ FTS-scoped corruption detection and the atomic fail-open trigger detach."""
 import logging
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Sequence
 
 from hermes_constants import get_hermes_home
-from hermes_state_common import FTS_CJK_STALE_KEY, FTS_STALE_KEY, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS
-from hermes_state_errors import is_fts_scoped_corruption_error
+from hermes_state_common import (FTS_CJK_STALE_KEY, FTS_STALE_KEY, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS,
+    routed_sessions_setting)
+from hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -102,8 +104,9 @@ def fts5_cjk_so_path() -> Path:
 
 
 def _cjk_fts_config_enabled() -> bool:
-    """config.yaml ``sessions.cjk_fts`` (default on), via its env bridge."""
-    return os.getenv("HERMES_CJK_FTS", "1").strip().lower() not in ("0", "false", "off", "no")
+    """config.yaml ``sessions.cjk_fts`` (default on) for the profile being served."""
+    value = routed_sessions_setting("cjk_fts", "HERMES_CJK_FTS")
+    return value is None or str(value).strip().lower() not in ("0", "false", "off", "no")
 
 
 def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
@@ -348,46 +351,68 @@ class SessionFtsSetupMixin:
         gateway transcript retry: see :func:`hermes_state_errors.is_fts_scoped_corruption_error`."""
         return is_fts_scoped_corruption_error(exc)
 
-    def _enter_fts_fail_open(self, exc: sqlite3.DatabaseError) -> bool:
+    def _enter_fts_fail_open(
+        self, exc: sqlite3.DatabaseError, *, deadline: float | None = None, patience_s: float | None = None,
+    ) -> bool:
         """Detach corrupt FTS indexes so canonical writes can continue. Breadcrumb +
         trigger drop commit atomically: once triggers are absent the index has a
-        gap of unknown extent, so nobody may reinstall them without a full rebuild."""
+        gap of unknown extent, so nobody may reinstall them without a full rebuild.
+
+        A busy write lock is waited out on the caller's write budget (default
+        ``_WRITE_PATIENCE_S``), like ``_execute_write``: the writer connection's busy
+        timeout is only 1 s, and the usual holder is a sibling writer detaching the
+        same corrupt index — giving up after 1 s cost that turn's canonical write."""
         if not self._fts_enabled or not self._is_fts_write_corruption_error(exc):
             return False
-        self._raise_if_db_corrupt()
-        self._halt_if_db_generation_changed()
-        try:
-            with self._lock:
-                self._conn.execute("BEGIN IMMEDIATE")
-                try:
-                    self._conn.execute(
-                        "INSERT INTO state_meta (key, value) VALUES (?, '1') "
-                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                        (FTS_STALE_KEY,),
-                    )
-                    cjk_triggers_present = self._conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' "
-                        f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)}) "
-                        "LIMIT 1",
-                        _FTS_CJK_TRIGGERS,
-                    ).fetchone()
-                    if cjk_triggers_present:
+        if patience_s is None:
+            patience_s = self._WRITE_PATIENCE_S
+        if deadline is None:
+            deadline = time.monotonic() + patience_s
+        while True:
+            # Re-checked every attempt: a sibling may quarantine the file while we wait for the
+            # lock, and nothing may be committed on a quarantined handle.
+            self._raise_if_db_corrupt(storage=True)
+            try:
+                with self._lock:
+                    self._raise_if_db_replaced()
+                    if self._conn is None:
+                        self._reopen_after_close_locked(context="write")
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
                         self._conn.execute(
                             "INSERT INTO state_meta (key, value) VALUES (?, '1') "
                             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                            (FTS_CJK_STALE_KEY,),
+                            (FTS_STALE_KEY,),
                         )
-                    self._drop_all_fts_triggers(self._conn.cursor())
-                    self._conn.commit()
-                except BaseException:
-                    self._conn.rollback()
-                    raise
-        except sqlite3.Error as detach_exc:
-            logger.error(
-                "Could not detach corrupt FTS indexes; canonical write still cannot proceed: %s",
-                detach_exc,
-            )
-            return False
+                        cjk_triggers_present = self._conn.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type = 'trigger' "
+                            f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)}) "
+                            "LIMIT 1",
+                            _FTS_CJK_TRIGGERS,
+                        ).fetchone()
+                        if cjk_triggers_present:
+                            self._conn.execute(
+                                "INSERT INTO state_meta (key, value) VALUES (?, '1') "
+                                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                                (FTS_CJK_STALE_KEY,),
+                            )
+                        self._drop_all_fts_triggers(self._conn.cursor())
+                        self._conn.commit()
+                    except BaseException:
+                        self._conn.rollback()
+                        raise
+                break
+            except sqlite3.Error as detach_exc:
+                if (
+                    isinstance(detach_exc, sqlite3.OperationalError) and is_sqlite_lock_error(detach_exc)
+                    and self._sleep_before_write_retry(deadline, patience_s)
+                ):
+                    continue
+                logger.error(
+                    "Could not detach corrupt FTS indexes; canonical write still cannot proceed: %s",
+                    detach_exc,
+                )
+                return False
         self._fts_stale = True
         self._fts_enabled = False
         self._trigram_available = False

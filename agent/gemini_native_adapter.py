@@ -637,9 +637,17 @@ def _text_part_signature(part: dict[str, Any]) -> Optional[str]:
     return sig if isinstance(sig, str) and sig and "functionCall" not in part else None
 
 
-def _part_function_call(part: dict[str, Any]) -> Optional[dict[str, Any]]:
-    fc = part.get("functionCall")
-    return fc if isinstance(fc, dict) and fc.get("name") else None
+def _part_function_call(part: dict[str, Any], response: dict[str, Any], candidate: dict[str, Any]) -> Optional[dict[str, Any]]:
+    if "functionCall" not in part:
+        return None
+    fc = part["functionCall"]
+    if isinstance(fc, dict) and isinstance(fc.get("name"), str) and fc["name"] and (fc.get("args") is None or isinstance(fc["args"], dict)):
+        return fc
+    details = {key: response[key] for key in ("responseId", "modelVersion", "usageMetadata") if key in response}
+    if "finishReason" in candidate:
+        details["finishReason"] = candidate["finishReason"]
+    details["functionCall"] = fc
+    raise GeminiAPIError("Gemini returned a malformed function call", code="gemini_invalid_tool_call", details=details)
 
 
 def _prompt_is_blocked(response: dict[str, Any]) -> bool:
@@ -670,8 +678,11 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
         cand = candidates[0] if isinstance(candidates[0], dict) else {}
         content_obj = cand.get("content")
         parts = content_obj.get("parts") if isinstance(content_obj, dict) else []
+    native_reason = (cand or {}).get("finishReason")
+    blocked_tools = _prompt_is_blocked(resp) or (isinstance(native_reason, str) and _FINISH_REASON_MAP.get(native_reason) == "content_filter")
     pieces: dict[bool, list[str]] = {False: [], True: []}  # is_thought → text pieces
     tool_calls: list[SimpleNamespace] = []
+    native_calls: list[dict[str, Any]] = []
     text_signature = None
     for index, part in enumerate(parts or []):
         if not isinstance(part, dict):
@@ -680,20 +691,25 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
         if text is not None:
             pieces[is_thought].append(text)
             text_signature = _text_part_signature(part) or text_signature
-        elif fc := _part_function_call(part):
-            tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
+        elif not blocked_tools and (fc := _part_function_call(part, resp, cand or {})):
+            native_calls.append(part)
+            tool_calls.append(_tool_call_ns(fc["name"], _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
     usage = (
         _usage_from_metadata(metadata)
         if (metadata := resp.get("usageMetadata")) is not None
         else None
     )
     finish_reason = "content_filter" if _prompt_is_blocked(resp) else _candidate_finish_reason(resp, cand or {}, bool(tool_calls))
+    if finish_reason == "length":
+        tool_calls = []
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
                               tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None,
                               extra_content=_tool_call_extra_from_part({"thoughtSignature": text_signature}))
     response = _envelope(resp.get("modelVersion"), "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason),
                          usage, response_id=resp.get("responseId"))
+    if cand is not None and finish_reason == "length":
+        response.native = SimpleNamespace(finish_reason=cand.get("finishReason"), function_call_parts=native_calls)
     if cand is not None and finish_reason == "content_filter":
         response.native = SimpleNamespace(finish_reason=cand.get("finishReason"))
     return response
@@ -788,6 +804,8 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
     if not candidates and not (metadata or model or event.get("responseId") or prompt_blocked):
         return []
     cand = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else {}
+    native_reason = cand.get("finishReason")
+    blocked_tools = prompt_blocked or (isinstance(native_reason, str) and _FINISH_REASON_MAP.get(native_reason) == "content_filter")
     parts = (cand.get("content") or {}).get("parts") or []
     chunks: list[_GeminiStreamChunk] = []
     for part_index, part in enumerate(parts):
@@ -801,8 +819,8 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
             chunks.append(_make_stream_chunk(model=model, content=text))
         if sig := _text_part_signature(part):
             chunks.append(_make_stream_chunk(model=model, text_signature=sig))
-        if fc := _part_function_call(part):
-            name = str(fc["name"])
+        if not blocked_tools and (fc := _part_function_call(part, event, cand)):
+            name = fc["name"]
             args_str = _dump_call_args(fc, sort_keys=True)
             call_key, slot = _tool_call_slot(fc, part, part_index, args_str, tool_call_indices)
             if slot is None:
@@ -810,6 +828,7 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
             # Gemini re-sends the full args each event; emit only the new suffix.
             last_arguments = slot["last_arguments"]
             slot["last_arguments"] = args_str
+            slot["native"] = part
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
                      "arguments": args_str.removeprefix(last_arguments)}
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
@@ -818,6 +837,8 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
         finish_reason = _candidate_finish_reason(event, cand, bool(tool_call_indices))
     if finish_reason:
         finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
+        if finish_reason == "length":
+            finish_chunk.native = SimpleNamespace(finish_reason=cand.get("finishReason"), function_call_parts=[slot["native"] for slot in tool_call_indices.values()])
         if not prompt_blocked and finish_reason == "content_filter":
             finish_chunk.native = SimpleNamespace(finish_reason=cand.get("finishReason"))
         chunks.append(finish_chunk)

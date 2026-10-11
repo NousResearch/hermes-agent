@@ -149,7 +149,10 @@ class _ChatStreamAccumulator:
 
     def finish(self) -> Any:
         tool_calls = None
-        if self.tool_calls_acc:
+        if self.tool_calls_acc and not (
+            self.finish_reason == "length"
+            and getattr(self.native, "finish_reason", None) == "MAX_TOKENS"
+        ):
             tool_calls = [
                 SimpleNamespace(
                     id=acc["id"],

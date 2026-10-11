@@ -1232,3 +1232,211 @@ def test_native_empty_response_is_not_completion(streamed, native):
         if streamed:
             _aggregate_chat_stream(response)
     assert error.value.code == "gemini_invalid_response"
+def _native_function_completion(function_call, *, reason, streamed, async_mode):
+    import asyncio
+    import httpx
+    from agent.auxiliary_client import (
+        _aggregate_chat_stream,
+        _aggregate_chat_stream_async,
+    )
+    from agent.gemini_native_adapter import AsyncGeminiNativeClient, GeminiNativeClient
+
+    facts = {
+        "responseId": "observed-id",
+        "modelVersion": "observed-model",
+        "usageMetadata": {
+            "promptTokenCount": 2,
+            "candidatesTokenCount": 1,
+            "totalTokenCount": 3,
+        },
+    }
+    candidate = {
+        "content": {
+            "parts": [
+                {"text": "partial"},
+                {"functionCall": function_call, "thoughtSignature": "signed-thought"},
+            ]
+        }
+    }
+    native = {**facts, "candidates": [{**candidate, "finishReason": reason}]}
+    frames = [
+        {**facts, "candidates": [candidate]},
+        {"candidates": [{"finishReason": reason}]},
+    ]
+    if reason in {"SAFETY", "BLOCKLIST"}:
+        frames = [native]
+    body = (
+        "".join("data: " + json.dumps(frame) + "\n\n" for frame in frames)
+        + "data: [DONE]\n\n"
+    )
+    with GeminiNativeClient(
+        api_key="fixture",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: (
+                    httpx.Response(200, text=body)
+                    if streamed
+                    else httpx.Response(200, json=native)
+                )
+            )
+        ),
+    ) as client:
+        kwargs = {
+            "model": "requested",
+            "messages": [{"role": "user", "content": "Answer."}],
+            "stream": streamed,
+        }
+        if not async_mode:
+            result = client.chat.completions.create(**kwargs)
+            return _aggregate_chat_stream(result) if streamed else result
+
+        async def complete():
+            result = await AsyncGeminiNativeClient(client).chat.completions.create(
+                **kwargs
+            )
+            return await _aggregate_chat_stream_async(result) if streamed else result
+
+        return asyncio.run(complete())
+
+
+def _expected_function_completion(function_call, *, reason, streamed):
+    dispatch = reason == "STOP"
+    tool = SimpleNamespace(
+        id="observed-call",
+        type="function",
+        function=SimpleNamespace(
+            name="search", arguments=json.dumps(function_call.get("args") or {})
+        ),
+        **(
+            {
+                "index": 1,
+                "extra_content": {"google": {"thought_signature": "signed-thought"}},
+            }
+            if not streamed
+            else {}
+        ),
+    )
+    return SimpleNamespace(
+        id="observed-id",
+        model="observed-model",
+        object="chat.completion",
+        **({"created": 100} if not streamed else {}),
+        choices=[
+            SimpleNamespace(
+                index=0,
+                finish_reason={"STOP": "tool_calls", "MAX_TOKENS": "length"}.get(
+                    reason, "content_filter"
+                ),
+                message=SimpleNamespace(
+                    role="assistant",
+                    content="partial",
+                    tool_calls=[tool] if dispatch else None,
+                    reasoning=None,
+                    reasoning_details=None,
+                    **(
+                        {"reasoning_content": None, "extra_content": None}
+                        if not streamed
+                        else {}
+                    ),
+                ),
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=2,
+            completion_tokens=1,
+            total_tokens=3,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=0),
+        ),
+        **(
+            {
+                "native": SimpleNamespace(
+                    finish_reason="MAX_TOKENS",
+                    function_call_parts=[
+                        {
+                            "functionCall": function_call,
+                            "thoughtSignature": "signed-thought",
+                        }
+                    ],
+                )
+            }
+            if reason == "MAX_TOKENS"
+            else (
+                {"native": SimpleNamespace(finish_reason=reason)}
+                if not dispatch
+                else {}
+            )
+        ),
+    )
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("reason", ["STOP", "MAX_TOKENS"])
+def test_native_tool_dispatch_requires_completed_generation(
+    reason, streamed, async_mode, monkeypatch
+):
+    monkeypatch.setattr("agent.gemini_native_adapter.time.time", lambda: 100)
+    function_call = {"id": "observed-call", "name": "search", "args": {"q": "abc"}}
+    response = _native_function_completion(
+        function_call, reason=reason, streamed=streamed, async_mode=async_mode
+    )
+    assert response == _expected_function_completion(
+        function_call, reason=reason, streamed=streamed
+    )
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize(
+    "function_call,valid,reason",
+    [
+        ({"id": "observed-call", "name": "search", "args": {}}, True, "STOP"),
+        ({"id": "observed-call", "name": "search"}, True, "STOP"),
+        ({"id": "observed-call", "name": "search", "args": None}, True, "STOP"),
+        ({"id": "observed-call", "name": True, "args": {}}, False, "STOP"),
+        ({"id": "observed-call", "name": 1, "args": {}}, False, "STOP"),
+        ({"id": "observed-call", "args": {}}, False, "STOP"),
+        ({"id": "observed-call", "name": "", "args": {}}, False, "STOP"),
+        ({"id": "observed-call", "name": "search", "args": False}, False, "STOP"),
+        ({"id": "observed-call", "name": "search", "args": 0}, False, "STOP"),
+        ({"id": "observed-call", "name": "search", "args": []}, False, "STOP"),
+        ({"id": "observed-call", "name": "search", "args": "{}"}, False, "STOP"),
+        (False, False, "STOP"),
+        ({"id": "observed-call", "name": "search", "args": False}, True, "SAFETY"),
+        ({"id": "observed-call", "name": "search", "args": False}, True, "BLOCKLIST"),
+    ],
+)
+def test_native_function_call_preserves_argument_types(
+    function_call, valid, reason, streamed, async_mode, monkeypatch
+):
+    from agent.gemini_native_adapter import GeminiAPIError
+
+    monkeypatch.setattr("agent.gemini_native_adapter.time.time", lambda: 100)
+    if valid:
+        response = _native_function_completion(
+            function_call, reason=reason, streamed=streamed, async_mode=async_mode
+        )
+        assert response == _expected_function_completion(
+            function_call, reason=reason, streamed=streamed
+        )
+        return
+
+    with pytest.raises(GeminiAPIError) as error:
+        _native_function_completion(
+            function_call, reason=reason, streamed=streamed, async_mode=async_mode
+        )
+    assert (error.value.code, error.value.details) == (
+        "gemini_invalid_tool_call",
+        {
+            "responseId": "observed-id",
+            "modelVersion": "observed-model",
+            "usageMetadata": {
+                "promptTokenCount": 2,
+                "candidatesTokenCount": 1,
+                "totalTokenCount": 3,
+            },
+            "functionCall": function_call,
+            **({"finishReason": "STOP"} if not streamed else {}),
+        },
+    )

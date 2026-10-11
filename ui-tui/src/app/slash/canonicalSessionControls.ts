@@ -58,6 +58,17 @@ export interface MutationSnapshot {
  * fresh `session.resume`; `payload` may be a function of that same snapshot (a rewind names its
  * target row from it) and return null for "nothing to do". Metadata edits (`rename`) carry no
  * generation fence, matching Desktop's `retainedMutation(..., withGeneration=false)`. */
+/** Only a session's very next control may retry an ambiguous one: any other verb retires the rest. */
+export function retireCanonicalControls(gw: MutationGateway, sid: string, keep?: string) {
+  const requests = pending.get(gw)
+
+  for (const key of [...(requests?.keys() ?? [])]) {
+    if (key !== keep && JSON.parse(key)[0] === sid) {
+      requests!.delete(key)
+    }
+  }
+}
+
 export async function mutateCanonical(
   gw: MutationGateway,
   sid: string,
@@ -75,6 +86,7 @@ export async function mutateCanonical(
   // A derived payload is keyed by operation alone: a lost-reply retry must re-present the
   // original target, never re-derive one from a transcript the first attempt already rewound.
   const key = JSON.stringify([sid, operation, typeof payload === 'function' ? null : payload])
+  retireCanonicalControls(gw, sid, key)
   let params = requests.get(key)
 
   if (!params) {

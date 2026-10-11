@@ -7,6 +7,7 @@ import { pendingInputOwner, savePendingInput } from '../lib/pendingInputs.js'
 import type { Msg } from '../types.js'
 
 import { markBubbleShown } from './pendingBubbles.js'
+import { retireCanonicalControls } from './slash/canonicalSessionControls.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -340,6 +341,7 @@ export function submitPrompt(
       return
     }
 
+    retireCanonicalControls(deps.gw, sid)
     deps.gw
       .request<PromptSubmitResponse>(
         item?.controlMethod ?? 'prompt.submit',

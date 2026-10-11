@@ -217,6 +217,7 @@ export class CanonicalDesktopProtocol {
   private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean): Record<string, unknown> {
     const owner = canonicalSessionKey(sessionId, profile)
     const key = JSON.stringify([owner, operation, payload])
+    this.retireMutations(owner, key)
     const retained = this.mutations.get(key)
 
     if (retained) { return retained }
@@ -243,10 +244,17 @@ export class CanonicalDesktopProtocol {
     return method !== 'session.create' && params.profile !== undefined ? { ...prepared, profile: params.profile } : prepared
   }
 
+  // Only a session's very next control may retry an ambiguous one: any other verb retires the rest.
+  private retireMutations(owner: string, keep?: string) {
+    for (const key of [...this.mutations.keys()]) { if (key !== keep && JSON.parse(key)[0] === owner) { this.mutations.delete(key) } }
+  }
+
   private preparePayload(method: string, params: Record<string, unknown>): Record<string, unknown> {
     const mutation = this.prepareMutation(method, params)
 
     if (mutation) { return mutation }
+
+    if (method === 'prompt.submit') { this.retireMutations(canonicalSessionKey(params.session_id, params.profile)) }
 
     if (method === 'session.create') { return this.prepareCreate(params) }
 

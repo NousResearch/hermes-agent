@@ -68,6 +68,7 @@ export const zhHantOverrides = {
   boot: zhHantBoot.boot,
   notifications: zhHantDiagnostics.notifications,
   remoteDisplayBanner: zhHantBoot.remoteDisplayBanner,
+  previewDraft: zhHantBoot.previewDraft,
   butterbar: zhHantBoot.butterbar,
   billingBlock: zhHantCommon.billingBlock,
   sendDiagnostics: zhHantDiagnostics.sendDiagnostics,

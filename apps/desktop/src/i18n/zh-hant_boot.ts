@@ -61,6 +61,11 @@ export const zhHantBoot = {
   remoteDisplayBanner: {
     message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
   },
+  previewDraft: {
+    discardTitle: '捨棄未儲存的變更？',
+    discardBody: label => `${label} 有尚未儲存的變更。關閉分頁會捨棄這些變更。`,
+    discardConfirm: '捨棄變更'
+  },
   butterbar: {
     goTo: (index, total) => `顯示第 ${index} 則通知，共 ${total} 則`,
     legal: {
@@ -338,5 +343,5 @@ export const zhHantBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'updates' | 'install' | 'onboarding'
+  'boot' | 'remoteDisplayBanner' | 'previewDraft' | 'butterbar' | 'updates' | 'install' | 'onboarding'
 >

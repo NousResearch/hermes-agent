@@ -49,7 +49,7 @@ import {
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
 import { markPreviewTabMissing, openPreview, type PreviewTarget } from '@/store/preview'
-import { setPreviewDirty } from '@/store/preview-edit'
+import { previewDraft, setPreviewDraft } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
@@ -745,6 +745,14 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
 
 export type PreviewViewMode = 'diff' | 'rendered' | 'source'
 
+/** The editor state a (re)mounted preview starts from: the draft parked in the
+ *  store when its body last unmounted dirty, else a clean read view. */
+function restoredDraft(url: string) {
+  const parked = previewDraft(url)
+
+  return parked ? { ...parked, editing: true } : { baseline: '', draft: '', editing: false, scope: '' }
+}
+
 export function LocalFilePreview({
   onClose,
   onSelectRendered,
@@ -772,11 +780,14 @@ export function LocalFilePreview({
   // never re-renders this (large) component — `dirty` is the only render-worthy
   // signal and it flips just once when crossing the clean↔dirty boundary.
   // `selfReload` re-runs the load after a save without the parent.
-  const [editing, setEditing] = useState(false)
-  const draftRef = useRef('')
-  const baselineRef = useRef('')
-  const editorScopeRef = useRef('')
-  const [dirty, setDirty] = useState(false)
+  // A draft parked in the store (this body unmounted while dirty: session
+  // switch, tab eviction) comes back on mount instead of being lost.
+  const [restored] = useState(() => restoredDraft(target.url))
+  const [editing, setEditing] = useState(restored.editing)
+  const draftRef = useRef(restored.draft)
+  const baselineRef = useRef(restored.baseline)
+  const editorScopeRef = useRef(restored.scope)
+  const [dirty, setDirty] = useState(restored.editing)
   const [editorKey, setEditorKey] = useState(0)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<null | string>(null)
@@ -794,15 +805,23 @@ export function LocalFilePreview({
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
+    const parked = restoredDraft(target.url)
     setUserMode(null)
-    setEditing(false)
-    setDirty(false)
+    setEditing(parked.editing)
+    setDirty(parked.editing)
     setSaving(false)
     setSaveError(null)
     setConflict(false)
-    draftRef.current = ''
-    baselineRef.current = ''
-  }, [filePath, reloadKey])
+    draftRef.current = parked.draft
+    baselineRef.current = parked.baseline
+    editorScopeRef.current = parked.scope
+    // Keyed on file IDENTITY only. The global reload tick (workspace events,
+    // unrelated saves elsewhere) must NOT reset an in-progress edit: the load
+    // effect below deliberately renders the editor before its own loading
+    // branch so background re-reads can't drop the draft — a reloadKey here
+    // would undo exactly that protection (found via E2E: saving one file
+    // killed a draft being typed in another preview tab).
+  }, [filePath, target.url])
 
   // In source mode HTML files take the same path as plain text files; the
   // pane owns the rendered (webview) mode. `previewKind === 'binary'` arrives
@@ -950,18 +969,30 @@ export function LocalFilePreview({
   // Per-keystroke: update the draft ref (no render) and only set `dirty` when it
   // actually changes — React bails on an identical value, so a long typing run
   // triggers a single re-render at most.
-  const handleEditorChange = useCallback((value: string) => {
-    draftRef.current = value
-    const next = value !== baselineRef.current
-    setDirty(prev => (prev === next ? prev : next))
-  }, [])
+  const draftUrl = target.url
 
-  // Publish the unsaved state to the rail so the tab can show a modified dot.
-  // Keyed by url; cleared on unmount/tab-change so a stale dot never lingers.
+  const handleEditorChange = useCallback(
+    (value: string) => {
+      draftRef.current = value
+      const next = value !== baselineRef.current
+      setDirty(prev => (prev === next ? prev : next))
+      // Mirror every keystroke into the store (a Map write, no render) so an
+      // unmount at any moment keeps the latest text.
+      setPreviewDraft(
+        draftUrl,
+        next ? { baseline: baselineRef.current, draft: value, scope: editorScopeRef.current } : null
+      )
+    },
+    [draftUrl]
+  )
+
+  // Leaving edit mode, or reaching a clean buffer, drops the parked draft.
+  // Deliberately no unmount cleanup: an unmount while dirty is exactly the
+  // case the parked draft exists for. Closing the tab forgets it.
   useEffect(() => {
-    setPreviewDirty(target.url, editing && dirty)
-
-    return () => setPreviewDirty(target.url, false)
+    if (!editing || !dirty) {
+      setPreviewDraft(target.url, null)
+    }
   }, [target.url, editing, dirty])
 
   const beginEdit = () => {
@@ -1128,7 +1159,7 @@ export function LocalFilePreview({
         <div className="min-h-0 flex-1 overflow-hidden">
           <CodeEditor
             filePath={filePath}
-            initialValue={baselineRef.current}
+            initialValue={draftRef.current}
             key={editorKey}
             onCancel={cancelEdit}
             onChange={handleEditorChange}

@@ -6,6 +6,11 @@ export const deNotices = {
     message: reason =>
       `Software-Rendering aktiv — Remote-Display erkannt (${reason}). GPU-Beschleunigung ist deaktiviert, um Flackern zu verhindern.`
   },
+  previewDraft: {
+    discardTitle: 'Nicht gespeicherte Änderungen verwerfen?',
+    discardBody: label => `${label} enthält Änderungen, die noch nicht gespeichert sind. Beim Schließen des Tabs gehen sie verloren.`,
+    discardConfirm: 'Änderungen verwerfen'
+  },
   butterbar: {
     goTo: (index, total) => `Hinweis ${index} von ${total} anzeigen`,
     legal: {
@@ -16,4 +21,4 @@ export const deNotices = {
       after: '.'
     }
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'previewDraft' | 'butterbar'>

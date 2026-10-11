@@ -725,6 +725,215 @@ def test_every_vault_tool_is_in_the_browser_toolset():
 
 
 class TestTwoFactor:
+    @staticmethod
+    def _code_page(monkeypatch, origin="https://acme.test"):
+        """Install a supervised OTP page and return the secret-eval expressions."""
+        from tools import browser_vault_tool
+
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Verification code",
+                     "autocomplete": "one-time-code"}]
+        expressions = []
+        monkeypatch.setattr(browser_vault_tool, "_focus_bound_origin", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            browser_vault_tool,
+            "_eval_js",
+            lambda task_id, expression: {"success": True, "result": json.dumps(controls)
+                                         if "querySelectorAll" in expression else origin},
+        )
+        monkeypatch.setattr(
+            browser_vault_tool,
+            "_eval_js_secret",
+            lambda task_id, expression: expressions.append(expression) or {"success": True, "result": '{"filled": 1}'},
+        )
+        return expressions
+
+    def test_trusted_code_handoff_fills_without_exposing_the_code(self, monkeypatch):
+        from tools import browser_vault_tool
+
+        expressions = self._code_page(monkeypatch)
+        code_handle = browser_vault_tool.register_browser_vault_code(
+            "246810", task_id="handoff-task", origin="https://acme.test"
+        )
+
+        raw = browser_vault_tool.browser_vault_enter_code(code_handle=code_handle, task_id="handoff-task")
+        out = json.loads(raw)
+
+        assert out["success"] and out["source"] == "trusted_handoff"
+        assert "246810" not in raw
+        assert re.search(r'"value": "246810"', expressions[0])
+
+    def test_trusted_code_handoff_rejects_wrong_task_or_origin(self, monkeypatch):
+        from tools import browser_vault_tool
+
+        self._code_page(monkeypatch)
+        task_bound = browser_vault_tool.register_browser_vault_code("246810", task_id="right-task")
+        wrong_task = json.loads(browser_vault_tool.browser_vault_enter_code(code_handle=task_bound, task_id="wrong-task"))
+        assert wrong_task["error_type"] == "handoff_task_mismatch"
+
+        self._code_page(monkeypatch, origin="https://other.test")
+        origin_bound = browser_vault_tool.register_browser_vault_code(
+            "246810", task_id="right-task", origin="https://acme.test"
+        )
+        wrong_origin = json.loads(browser_vault_tool.browser_vault_enter_code(code_handle=origin_bound, task_id="right-task"))
+        assert wrong_origin["error_type"] == "handoff_origin_mismatch"
+
+    def test_trusted_code_handoff_rejects_expired_handle(self, monkeypatch):
+        from tools import browser_vault_tool
+
+        self._code_page(monkeypatch)
+        clock = [100.0]
+        monkeypatch.setattr(browser_vault_tool.time, "monotonic", lambda: clock[0])
+        code_handle = browser_vault_tool.register_browser_vault_code("246810", task_id="handoff-task", ttl_seconds=1)
+        clock[0] = 102.0
+
+        out = json.loads(browser_vault_tool.browser_vault_enter_code(code_handle=code_handle, task_id="handoff-task"))
+        assert out["error_type"] == "handoff_expired"
+
+    def test_trusted_code_handoff_is_single_use(self, monkeypatch):
+        from tools import browser_vault_tool
+
+        self._code_page(monkeypatch)
+        code_handle = browser_vault_tool.register_browser_vault_code("246810", task_id="handoff-task")
+        assert json.loads(browser_vault_tool.browser_vault_enter_code(code_handle=code_handle, task_id="handoff-task"))["success"]
+
+        replay = json.loads(browser_vault_tool.browser_vault_enter_code(code_handle=code_handle, task_id="handoff-task"))
+        assert replay["error_type"] == "handoff_replayed"
+
+    def test_no_handoff_preserves_the_user_prompt_fallback(self, monkeypatch):
+        from tools import browser_vault_tool
+        from agent.vault_backends import unlock as unlock_mod
+
+        expressions = self._code_page(monkeypatch)
+        unlock_mod.set_code_prompt_callback(lambda site, hint: "246810")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="handoff-task"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+
+        assert out["success"] and out["source"] == "user"
+        assert re.search(r'"value": "246810"', expressions[0])
+
+    def _registry_code_page(self, monkeypatch, behavior=None):
+        from tools import browser_vault_tool
+
+        secret_eval = browser_vault_tool._eval_js_secret
+        writes = self._code_page(monkeypatch)
+        monkeypatch.setattr(browser_vault_tool, "_eval_js_secret", secret_eval)
+
+        class Supervisor:
+            def evaluate_runtime(self, expression):
+                writes.append(expression)
+                return behavior(expression) if behavior else {"ok": True, "result": '{"filled": 1}'}
+
+        monkeypatch.setattr(browser_vault_tool, "_ensure_supervisor", lambda task_id: Supervisor())
+        return writes
+
+    def test_handoff_registry_is_headless_model_blind_and_profile_owned(self, monkeypatch, tmp_path, caplog):
+        from agent.redact import clear_vault_redaction_values
+        from agent.vault_backends import unlock
+        from tools import browser_vault_tool
+        from tools.browser_cdp_tool import _redact_cdp_output
+        from tools.browser_tool_snapshot import _redact_browser_output
+        from tools.registry import registry
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        writes = self._registry_code_page(monkeypatch)
+        monkeypatch.setattr(unlock, "can_prompt_here", lambda: False)
+        monkeypatch.setattr(unlock, "get_code_prompt_callback", lambda: pytest.fail("handoff must never prompt"))
+        owner = set_hermes_home_override(tmp_path / "owner")
+        try:
+            handle = browser_vault_tool.register_browser_vault_code("246 810", task_id="owned", origin="https://acme.test")
+            foreign = set_hermes_home_override(tmp_path / "foreign")
+            try:
+                denied = json.loads(registry.dispatch("browser_vault_enter_code", {"code_handle": handle}, task_id="owned"))
+                assert denied["error_type"] == "handoff_owner_mismatch" and writes == []
+            finally:
+                reset_hermes_home_override(foreign)
+            # Model args cannot replace the dispatcher-bound task identity.
+            raw = registry.dispatch("browser_vault_enter_code", {"code_handle": handle, "task_id": "foreign"}, task_id="owned")
+            assert json.loads(raw)["success"] and len(writes) == 1
+            assert '"value": "246810"' in writes[0]
+            assert "246810" not in raw and "246 810" not in raw
+            echo = {"dom": {"246810": "246810"}, "snapshot": "Code 246810"}
+            assert "246810" not in json.dumps(_redact_cdp_output(echo))
+            assert "246810" not in json.dumps(_redact_browser_output(echo))
+            assert "246810" not in caplog.text and "246 810" not in caplog.text
+        finally:
+            clear_vault_redaction_values()
+            reset_hermes_home_override(owner)
+
+    @pytest.mark.parametrize("failure", ["server_error", "origin_changed", "cancelled"])
+    def test_handoff_consumed_before_failure_and_cannot_fall_back(self, monkeypatch, failure):
+        from tools import browser_vault_tool
+        from tools.registry import registry
+
+        def outcome(expression):
+            if failure == "cancelled":
+                raise KeyboardInterrupt("cancelled fake page write")
+            if failure == "origin_changed":
+                return {"ok": True, "result": '{"refused": "origin_changed"}'}
+            return {"ok": False, "error": "fake rejected 246810"}
+
+        writes = self._registry_code_page(monkeypatch, outcome)
+        handle = browser_vault_tool.register_browser_vault_code("246810", task_id="owned", origin="https://acme.test")
+        if failure == "cancelled":
+            with pytest.raises(KeyboardInterrupt):
+                registry.dispatch("browser_vault_enter_code", {"code_handle": handle}, task_id="owned")
+        else:
+            raw = registry.dispatch("browser_vault_enter_code", {"code_handle": handle}, task_id="owned")
+            assert not json.loads(raw)["success"] and "246810" not in raw
+        assert len(writes) == 1
+        replay = registry.dispatch("browser_vault_enter_code", {"code_handle": handle}, task_id="owned")
+        assert json.loads(replay)["error_type"] == "handoff_replayed"
+        assert "246810" not in replay and len(writes) == 1
+
+    @pytest.mark.parametrize("code_handle", ["", "otp_unregistered", "246810"])
+    def test_headless_without_trusted_handoff_never_injects_a_code(self, monkeypatch, code_handle):
+        from agent.vault_backends import unlock
+        from tools.registry import registry
+
+        writes = self._registry_code_page(monkeypatch)
+        monkeypatch.setattr(unlock, "get_code_prompt_callback", lambda: None)
+        monkeypatch.setattr(unlock, "can_prompt_here", lambda: False)
+        raw = registry.dispatch("browser_vault_enter_code", {"code_handle": code_handle}, task_id="owned")
+        assert json.loads(raw)["error_type"] == ("handoff_invalid" if code_handle else "prompt_unavailable")
+        assert "246810" not in raw and writes == []
+
+    def test_handoff_respects_human_lease_before_read_and_again_before_write(self, monkeypatch, tmp_path):
+        from tools import browser_tool, browser_vault_tool
+        from tools.bot_desktop import lease, runtime
+        from tools.registry import registry
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
+        monkeypatch.setitem(browser_tool._active_sessions, "owned", {"session_name": "fixture", "features": {"local": True}})
+        lease._reset_for_tests()
+        try:
+            writes = self._registry_code_page(monkeypatch)
+            handle = browser_vault_tool.register_browser_vault_code("246810", task_id="owned", origin="https://acme.test")
+            lease.acquire("human")
+            denied = registry.dispatch("browser_vault_enter_code", {"code_handle": handle}, task_id="owned")
+            assert json.loads(denied)["code"] == "human_has_control" and writes == []
+            lease.release("human")
+            inspect = browser_vault_tool._eval_js
+
+            def takeover(task_id, expression):
+                result = inspect(task_id, expression)
+                if "querySelectorAll" in expression:
+                    lease.acquire("human")
+                return result
+
+            monkeypatch.setattr(browser_vault_tool, "_eval_js", takeover)
+            raw = registry.dispatch("browser_vault_enter_code", {"code_handle": handle}, task_id="owned")
+            assert json.loads(raw)["code"] == "human_has_control" and writes == [] and "246810" not in raw
+            lease.release("human")
+            monkeypatch.setattr(browser_vault_tool, "_eval_js", inspect)
+            replay = registry.dispatch("browser_vault_enter_code", {"code_handle": handle}, task_id="owned")
+            assert json.loads(replay)["error_type"] == "handoff_replayed" and writes == []
+        finally:
+            lease._reset_for_tests()
+
     def test_totp_matches_rfc6238_vector_and_seed_normalisation(self):
         from agent.vault_store import VaultError, normalize_otp_secret, totp_now
 

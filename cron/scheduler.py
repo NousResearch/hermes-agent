@@ -2420,6 +2420,17 @@ class _CronAgentSetup:
     fallback_notice: Optional[str] = None
 
 
+def _resolve_cron_max_iterations(job: dict, cfg: dict):
+    """Resolve a narrow per-job turn cap, falling back to the global setting."""
+    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+    value = job.get("max_turns")
+    if value is None:
+        value = cfg.get("agent", {}).get("max_turns")
+    if value is None:
+        value = cfg.get("max_turns")
+    return _resolve_turn_limit(value)
+
+
 def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _CronAgentSetup:
     """Resolve model/runtime/reasoning/pool for the run, in the original gate order: exfil guard ->
     preflight (may block) -> runtime (+ fallback chain) -> credential pool -> MCP."""
@@ -2427,12 +2438,8 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup = _CronAgentSetup(model=jc.model)
     setup.prefill_messages = _load_prefill_messages(_cfg, job_id)
 
-    # resolve_turn_limit() honors none/unlimited (sys.maxsize) and explicit 0 / null.
-    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
-    _mt = _cfg.get("agent", {}).get("max_turns")
-    if _mt is None:
-        _mt = _cfg.get("max_turns")
-    setup.max_iterations = _resolve_turn_limit(_mt)
+    # Optional job-scoped cap; jobs without it retain global behavior.
+    setup.max_iterations = _resolve_cron_max_iterations(job, _cfg)
 
     # Runtime backstop (CWE-200/522): fail closed BEFORE resolution on a provider/base_url pair
     # that would ship a stored credential off-host; hand-written jobs bypass create-time checks.

@@ -485,9 +485,12 @@ def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
     """True when Gemini will spend output tokens on thinking: thought tokens bill against ``maxOutputTokens``,
     so a global 4096/16384 cap can be consumed entirely by high thinking (``finishReason=MAX_TOKENS``, no answer)."""
     normalized = _normalize_thinking_config(thinking_config) or {}
-    budget, has_level = normalized.get("thinkingBudget"), "thinkingLevel" in normalized
+    budget, level = normalized.get("thinkingBudget"), normalized.get("thinkingLevel")
+    has_level = level is not None
     if normalized.get("includeThoughts") is False:
-        return has_level or bool(budget)
+        # ``minimal`` without thoughts is the off switch on families that reject ``thinkingBudget``
+        # (Gemma 4): no thought tokens are spent, so a small explicit cap (title generation) stands.
+        return (has_level and level != "minimal") or bool(budget)
     return bool(normalized) and not (isinstance(budget, int) and budget <= 0 and not has_level)
 
 

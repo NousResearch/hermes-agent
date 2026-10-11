@@ -274,7 +274,9 @@ class MicroCompactionMixin:
         # Cumulative iff it subsumes an earlier marker; captured before summarizing.
         _cumulative = bool(self._micro_compact_rolling_summary.strip())
 
-        exchange_text = self._serialize_for_summary(messages[exchange_start:exchange_end])
+        exchange_text = self._serialize_for_summary(
+            self._summary_input_turns(messages[exchange_start:exchange_end]),
+        )
         _exchange_tokens = estimate_tokens_rough(exchange_text)
         updated_summary = self._micro_summarize_one(exchange_text)
         if updated_summary is None:

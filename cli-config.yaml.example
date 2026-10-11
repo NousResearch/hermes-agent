@@ -1292,9 +1292,6 @@ agent:
   # Default 3.
   # max_verify_nudges: 3
 
-  # Enable verbose logging
-  verbose: false
-  
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)

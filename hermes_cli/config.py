@@ -965,6 +965,9 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal", "allow_all_users",
     "timeouts",          # unified timeout resolution section (agent/deadline.py)
+    "tool_budget",       # legacy spelling of tool_output, still read by tools/budget_config.py
+    "worktree", "worktree_sync",  # cli.py / hermes_cli/cli_commands_mixin.py (hermes -w defaults)
+    "unauthorized_dm_decline_message",  # gateway/config.py top-level form
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
@@ -3229,6 +3232,45 @@ _PLATFORM_CONTAINER_KEYS = frozenset({"platforms"})
 # Top-level keys whose sub-keys are accepted without deep checking.
 _OPEN_SUBKEY_TOP_LEVEL_KEYS = _OPEN_DICT_TOP_LEVEL_KEYS | _DYNAMIC_TOP_LEVEL_KEYS | _SCHEMA_DEFINED_DICT_KEYS
 
+# Documented, runtime-read sub-keys that DEFAULT_CONFIG deliberately omits (a seeded default would
+# change the reader's ``get(key, fallback)`` semantics, or the value is an open mapping). Each entry
+# names its reader; ``*`` matches one user-supplied segment; anything BELOW a registered path is
+# accepted. Both ``hermes config set`` and ``hermes doctor`` consult this, so a documented key is
+# never flagged as a typo on either surface. Corpus: the YAML blocks of
+# ``website/docs/user-guide/configuration.md`` (``tests/hermes_cli/test_doctor_unknown_config_keys.py``
+# asserts every documented key validates — register the reader here when adding one).
+_RUNTIME_READ_CONFIG_KEYS = frozenset({
+    "agent.reasoning_effort",                  # hermes_constants.py
+    "agent.personalities",                     # hermes_cli/personality.py (open mapping)
+    "auxiliary.*.max_concurrency",             # agent/auxiliary_client.py::_get_task_max_concurrency
+    "auxiliary.*.fallback_chain",              # agent/auxiliary_client.py::_fallback_chain_entry
+    "code_execution.timeout",                  # tools/code_execution_tool.py
+    "code_execution.max_tool_calls",           # tools/code_execution_tool.py
+    "dashboard.ssh_isolated_idle_grace_s",     # hermes_cli/web_server.py
+    "delegation.worktree_isolation",           # tools/delegate_tool_config.py::_get_worktree_isolation
+    "display.tool_progress",                   # gateway display resolve_display_setting("tool_progress")
+    "display.cleanup_progress",                # gateway/run_turn.py
+    "skills.config",                           # SKILL.md frontmatter settings (open mapping)
+    "skills.creation_nudge_interval",          # agent/agent_init.py
+    "stt.provider",                            # hermes_cli/tools_config_providers.py
+    "stt.prompt",                              # tools/transcription_tools.py (pre_transcription base)
+    "terminal.docker_persist_across_processes",  # tools/terminal_tool_backends.py
+    "terminal.docker_orphan_reaper",           # tools/terminal_tool_backends.py
+    "terminal.lifetime_seconds",               # tools/terminal_scope.py
+    "tts.speed",                               # tools/tts_tool_providers.py (global fallback)
+    "tts.*.speed",                             # per-provider speed (edge/openai/xai/minimax/...)
+    "tts.openai.base_url",                     # tools/tts_tool_openai.py
+})
+
+
+def _is_runtime_read_path(segments: list[str]) -> bool:
+    """Whether *segments* is, or lies below, a ``_RUNTIME_READ_CONFIG_KEYS`` entry."""
+    for pattern in _RUNTIME_READ_CONFIG_KEYS:
+        parts = pattern.split(".")
+        if len(parts) <= len(segments) and all(p == "*" or p == s for p, s in zip(parts, segments)):
+            return True
+    return False
+
 
 def _known_top_level_keys() -> set[str]:
     """Return the union of known top-level config keys for validation.
@@ -3287,6 +3329,11 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
         if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict) or not node:
             return True, None
         if seg not in node:
+            # A documented key the runtime reads without a seeded default (registry above) is
+            # known, and so is anything below it; checked before the wrong-prefix / fuzzy paths
+            # so ``display.tool_progress`` is not "corrected" to ``tool_progress_command``.
+            if _is_runtime_read_path(segments):
+                return True, None
             # ``gateway.discord.<field>``: the path minus its wrong prefix is itself a known key.
             # Checked BEFORE the fuzzy sibling: a structural match is proof, a fuzzy match is a
             # guess, and ``agent.gateway.strict`` must be refused as ``gateway.strict`` rather

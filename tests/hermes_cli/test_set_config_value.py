@@ -497,9 +497,11 @@ class TestSchemaValidation:
         assert f"Did you mean: {suggestion}" in err
 
     @pytest.mark.parametrize("key,value,expected,suggestion", [
-        # ``stt.provider`` is read at runtime (tools/transcription_tools.py) but has no seeded
-        # default: a stored value is an explicit user pick, so the schema walk must not refuse it.
-        ("stt.provider", "whisper", "whisper", None),
+        # ``dashboard.some_unseeded_knob`` stands for a runtime setting with no seeded default
+        # and no registry entry: a stored value is an explicit user pick, so the schema walk must
+        # not refuse it. (``stt.provider`` used to be the exemplar; it is now registered in
+        # ``_RUNTIME_READ_CONFIG_KEYS`` because the runtime reads it, so it is no longer a notice.)
+        ("dashboard.some_unseeded_knob", "whisper", "whisper", None),
         # TRADE-OFF made explicit: a same-section typo (``agent.max_turnz``) is indistinguishable
         # from an unseeded key, so it is written too — the user gets the sibling suggestion
         # (``agent.max_turns``) instead of a refusal.

@@ -200,7 +200,7 @@ class TestCapabilityProbe:
             init_py=(
                 "def register(ctx):\n"
                 "    int(ctx.get_config('timeout_seconds', 180))\n"
-                "    ctx.register_tool('t', schema={}, handler=lambda **kw: None)\n"),
+                "    ctx.register_tool('t', toolset='t', schema={}, handler=lambda **kw: None)\n"),
         )
         report = validate_plugin_dir(d)
         assert report.ok, report.failures
@@ -216,11 +216,66 @@ class TestCapabilityProbe:
             init_py=(
                 "def register(ctx):\n"
                 "    assert getattr(ctx, 'profile_path', None) is None\n"
-                "    ctx.register_platform('probe', object)\n"
-                "    ctx.register_tool('t', schema={}, handler=lambda **kw: None)\n"),
+                "    ctx.register_platform('probe', 'Probe', object, lambda: True)\n"
+                "    ctx.register_tool('t', toolset='t', schema={}, handler=lambda **kw: None)\n"),
         )
         report = validate_plugin_dir(d)
         assert report.ok, report.failures
+
+    def test_probe_rejects_calls_the_real_context_would_reject(self, tmp_path):
+        """The pre-toolset ``register_tool(name, schema, handler)`` form raises TypeError in the real
+        loader; the probe must fail too, not record a tool the loader never registers."""
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "provides_tools": ["t"]},
+            init_py="def register(ctx):\n    ctx.register_tool('t', {}, lambda args: '')\n",
+        )
+        report = validate_plugin_dir(d)
+        assert not report.ok
+        assert any(
+            "register_tool() does not match PluginContext.register_tool" in f and "'handler'" in f
+            for f in report.failures
+        ), report.failures
+
+    def test_probe_checks_calls_on_unstubbed_context_methods(self, tmp_path):
+        """Methods without a recording stub are still bound against the real signature."""
+        d = _make_plugin(
+            tmp_path,
+            manifest=dict(BASE_MANIFEST),
+            init_py="def register(ctx):\n    ctx.register_context_engine()\n",
+        )
+        report = validate_plugin_dir(d)
+        assert not report.ok
+        assert any(
+            "register_context_engine() does not match" in f and "'engine'" in f for f in report.failures
+        ), report.failures
+
+
+def test_context_signatures_drop_only_the_bound_receiver():
+    from hermes_cli.plugin_validate import _context_signatures
+
+    class Ctx:
+        def method(self, name, handler, flag=False, *rest, **extra):
+            pass
+
+        @staticmethod
+        def static(value):
+            pass
+
+        @classmethod
+        def klass(cls, value):
+            pass
+
+    sigs = _context_signatures(Ctx, ["method", "static", "klass"])
+    assert sigs["method"] == [
+        ["name", "POSITIONAL_OR_KEYWORD", False],
+        ["handler", "POSITIONAL_OR_KEYWORD", False],
+        ["flag", "POSITIONAL_OR_KEYWORD", True],
+        ["rest", "VAR_POSITIONAL", False],
+        ["extra", "VAR_KEYWORD", False],
+    ]
+    assert sigs["static"] == [["value", "POSITIONAL_OR_KEYWORD", False]]
+    assert sigs["klass"] == [["value", "POSITIONAL_OR_KEYWORD", False]]
 
 
 class TestModelProviderKind:

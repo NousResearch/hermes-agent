@@ -13,6 +13,7 @@ tools/hooks/middleware are compared against the manifest's declared
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -195,6 +196,7 @@ def _check_requires_env(report: ValidationReport, manifest: dict) -> None:
 # calling providers.register_provider at import.
 _PROBE_SCRIPT = r"""
 import importlib.util
+import inspect
 import json
 import sys
 
@@ -206,6 +208,40 @@ options = json.loads(sys.argv[3])
 context_methods = set(options["context_methods"])
 provider_kind = options["kind"] == "model-provider"
 
+
+class _Optional:
+    # Only the presence of a default crosses the process boundary, so render it as ``=...``.
+    def __repr__(self):
+        return "..."
+
+
+def _signature(params):
+    return inspect.Signature([
+        inspect.Parameter(
+            name, getattr(inspect.Parameter, kind),
+            default=_Optional() if has_default else inspect.Parameter.empty)
+        for name, kind, has_default in params
+    ])
+
+
+# Parameter lists of the real PluginContext methods, also computed by the parent:
+# a call the real context would reject (a missing ``toolset``/``handler`` after an
+# API change) must fail here too, not record a registration the loader never makes.
+context_signatures = {
+    name: _signature(params) for name, params in options["context_signatures"].items()
+}
+
+
+def _check_call(method, args, kwargs):
+    sig = context_signatures.get(method)
+    if sig is None:
+        return
+    try:
+        sig.bind(*args, **kwargs)
+    except TypeError as exc:
+        raise TypeError("%s() does not match PluginContext.%s%s: %s" % (method, method, sig, exc)) from None
+
+
 recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "providers": [], "trusted_inbound": []}
 
 
@@ -215,21 +251,27 @@ class RecordingContext:
     plugin_id = "hermes_validate_probe_plugin"
 
     def register_tool(self, name, *args, **kwargs):
+        _check_call("register_tool", (name,) + args, kwargs)
         recorded["tools"].append(str(name))
 
     def register_hook(self, hook_name, callback):
+        _check_call("register_hook", (hook_name, callback), {})
         recorded["hooks"].append(str(hook_name))
 
     def register_middleware(self, kind, callback):
+        _check_call("register_middleware", (kind, callback), {})
         recorded["middleware"].append(str(kind))
 
     def register_command(self, name, *args, **kwargs):
+        _check_call("register_command", (name,) + args, kwargs)
         recorded["commands"].append(str(name))
 
     def register_cli_command(self, name, *args, **kwargs):
+        _check_call("register_cli_command", (name,) + args, kwargs)
         recorded["commands"].append(str(name))
 
     def register_platform(self, name, *args, **kwargs):
+        _check_call("register_platform", (name,) + args, kwargs)
         if kwargs.get("trusted_inbound"):
             recorded["trusted_inbound"].append(str(name))
 
@@ -247,6 +289,7 @@ class RecordingContext:
         # register() in the probe alone.
         if name in context_methods:
             def _noop(*args, **kwargs):
+                _check_call(name, args, kwargs)
                 return None
 
             return _noop
@@ -312,15 +355,36 @@ emit(recorded)
 """
 
 
+def _context_signatures(context: type, methods: List[str]) -> Dict[str, list]:
+    """``{method: [[param, kind, has_default], ...]}`` for *context*'s methods, excluding the
+    bound receiver, in a JSON form the probe rebuilds into ``inspect.Signature``."""
+    signatures: Dict[str, list] = {}
+    for name in methods:
+        try:
+            sig = inspect.signature(getattr(context, name))
+        except (TypeError, ValueError):
+            continue
+        params = list(sig.parameters.values())
+        # Plain functions read off the class still list ``self``; static/class methods do not.
+        if params and not isinstance(inspect.getattr_static(context, name), (staticmethod, classmethod)):
+            params = params[1:]
+        signatures[name] = [
+            [p.name, p.kind.name, p.default is not inspect.Parameter.empty] for p in params
+        ]
+    return signatures
+
+
 def _probe_options(manifest: dict) -> dict:
     from hermes_cli.plugins import PluginContext
 
+    methods = sorted(
+        n for n in dir(PluginContext)
+        if not n.startswith("_") and callable(getattr(PluginContext, n))
+    )
     return {
         "kind": str(manifest.get("kind") or ""),
-        "context_methods": sorted(
-            n for n in dir(PluginContext)
-            if not n.startswith("_") and callable(getattr(PluginContext, n))
-        ),
+        "context_methods": methods,
+        "context_signatures": _context_signatures(PluginContext, methods),
     }
 
 

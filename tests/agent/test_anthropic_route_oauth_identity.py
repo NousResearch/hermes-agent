@@ -69,3 +69,29 @@ def test_key_cmd_oauth_route_builds_claude_code_identity_on_main_and_aux_clients
     monkeypatch.setattr(aux, "_resolve_custom_runtime", lambda: ("https://api.minimax.io/anthropic", key_cmd, "anthropic_messages"))
     third_party_aux, _model = aux._try_custom_endpoint()
     assert isinstance(third_party_aux, AnthropicAuxiliaryClient) and third_party_aux.chat.completions._is_oauth is False
+
+
+def test_anonymous_custom_runtime_rewrap_keeps_oauth_identity():
+    """A session whose live runtime is the anonymous ``custom`` provider (named-provider label lost) still
+    routes aux tasks through ``_maybe_wrap_anthropic``; it must apply the same identity rule (#114967)."""
+    pytest.importorskip("anthropic")
+    from agent.auxiliary_client import AnthropicAuxiliaryClient, resolve_provider_client
+
+    def key_cmd():
+        return OAUTH
+
+    for key in (OAUTH, key_cmd):
+        native, _model = resolve_provider_client(
+            "custom", "claude-opus-5", explicit_base_url="https://api.anthropic.com",
+            explicit_api_key=key, api_mode="anthropic_messages")
+        assert isinstance(native, AnthropicAuxiliaryClient) and native.chat.completions._is_oauth is True
+
+    console, _model = resolve_provider_client(
+        "custom", "claude-opus-5", explicit_base_url="https://api.anthropic.com",
+        explicit_api_key=CONSOLE, api_mode="anthropic_messages")
+    assert isinstance(console, AnthropicAuxiliaryClient) and console.chat.completions._is_oauth is False
+
+    third_party, _model = resolve_provider_client(
+        "custom", "claude-opus-5", explicit_base_url="https://api.minimax.io/anthropic",
+        explicit_api_key=OAUTH, api_mode="anthropic_messages")
+    assert isinstance(third_party, AnthropicAuxiliaryClient) and third_party.chat.completions._is_oauth is False

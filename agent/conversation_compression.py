@@ -431,7 +431,14 @@ def _capture_authoritative_cooldown_under_lease(
         if session_db is None or not session_id:
             # Unbound compressors have no durable row to mutate or restore.
             return None, None
-        raw_reader = getattr(type(session_db), "get_compression_failure_cooldown_row", None)
+        missing = object()
+        raw_reader = getattr(
+            type(session_db),
+            "get_compression_failure_cooldown_row",
+            missing,
+        )
+        if raw_reader is missing:
+            return None, None
         if not callable(raw_reader):
             return False, None
         # Read the raw persisted row: the active getter filters expired rows and is not a lossless rollback snapshot.

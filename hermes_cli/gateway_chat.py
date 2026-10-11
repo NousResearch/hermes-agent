@@ -88,6 +88,11 @@ def wants_latest(args):
 
 
 def validate_options(args):
+    from hermes_cli.cli_cache_scope import validate_cache_scope_args
+    try:
+        validate_cache_scope_args(args)
+    except ValueError as exc:
+        raise GatewayClientError(f"Unsupported --cache-scope: {exc}") from exc
     unsupported = [name for name in _UNSUPPORTED if getattr(args, name, None)]
     if getattr(args, "create_if_missing", False) and not continue_title(args):
         unsupported.append("create-if-missing without -c <name>")
@@ -210,6 +215,8 @@ async def run_gateway_chat(args, emitter=None):
             policy.update(env_launch_flags())
             policy.update(client_env_policy(parameters))
             cwd = await asyncio.to_thread(_caller_cwd, args)
+            from hermes_cli.cli_cache_scope import gateway_cache_policy
+            policy.update(gateway_cache_policy(args, cwd))
             if "cwd" in parameters:
                 policy["cwd"] = cwd
             elif getattr(args, "in_dir", None):

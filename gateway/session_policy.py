@@ -15,7 +15,7 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env'})
+                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env', 'cache_scope'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
@@ -322,6 +322,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     if unknown or not isinstance(source, str) or source not in SURFACES:
         _refuse(f'params.{unknown[0]}' if unknown else 'source',
                 'unknown create field' if unknown else f'not a surface: {source!r}')
+    from gateway.session_cache_scope import validate_cache_scope
+    validate_cache_scope(params)
     bad_bypass = next((name for name in BYPASS_FIELDS if name in params and type(params[name]) is not bool), None)
     if bad_bypass:
         _refuse(bad_bypass, 'must be a boolean')

@@ -54,6 +54,7 @@ def _gateway_launch(cli):
             "ignore_rules": getattr(cli, "ignore_rules", False) or None,
             "run_budget": getattr(cli, "_explicit_run_budget", None),
             "verbose": getattr(cli, "verbose", False) or None,
+            "cache_scope": getattr(cli, "_cli_prompt_cache_scope", None),
             "skills": _explicit_launch_skills(cli)}
 
 

@@ -46,6 +46,8 @@ class CanonicalCreateParams(ProfileParams):
     run_budget: float | None = None
     # The classic CLI's `-v`: the session agent's status lines are not quieted.
     verbose: bool = False
+    # Hashed single-query cache routing, not a session/history identity or a raw user label.
+    cache_scope: str | None = None
     # A shell-launched client's allowlisted environment (HERMES_* behaviour values, toolchain PATH/venv),
     # applied to this session only; never echoed in ``launch_request``.
     client_env: dict[str, str] | None = None

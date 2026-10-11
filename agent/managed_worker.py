@@ -430,7 +430,8 @@ def _construct_agent(frame, factory, policy, **kwargs):
         if kwargs['api_key'] is None:
             from gateway.session_worker_construct import worker_api_key
             kwargs['api_key'] = worker_api_key(policy, kwargs)
-        return factory(**kwargs)
+        from gateway.session_cache_scope import bind_session_cache_scope
+        return bind_session_cache_scope(factory(**kwargs), policy)
     except Exception as exc:
         from gateway.session_kanban import record_start_failure
         record_start_failure(frame, exc)

@@ -1706,6 +1706,8 @@ def cmd_chat(args):
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
     use_tui = _resolve_use_tui(args)
+    from hermes_cli.cli_cache_scope import validate_chat_cache_scope
+    cache_scope = validate_chat_cache_scope(args, use_tui)
     if use_tui:
         _refuse_unforwarded_tui_flags(args)
 
@@ -1722,10 +1724,7 @@ def cmd_chat(args):
 
     _start_chat_background_prefetch()
 
-    # --yolo: bypass all dangerous command approvals. main() also sets this
-    # before _prepare_agent_startup() — the authoritative site, since it runs
-    # before tool imports freeze _YOLO_MODE_FROZEN. This is a safety net for
-    # callers that invoke cmd_chat directly (e.g. subcommand dispatch).
+    # Safety net for direct callers; startup sets --yolo before tool imports freeze _YOLO_MODE_FROZEN.
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
     # --ignore-rules: skip AGENTS.md/SOUL.md/.cursorrules injection, memory
@@ -1770,6 +1769,7 @@ def cmd_chat(args):
         "query": args.query,
         "oneshot": bool(getattr(args, "oneshot_exit", False)),
         "run_budget": getattr(args, "run_budget", None),
+        "cache_scope": cache_scope,
         "output_format": getattr(args, "output_format", "text"),
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,

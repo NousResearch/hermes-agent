@@ -161,6 +161,8 @@ class GatewaySessionStore:
         if title:
             params["title"] = title
         params.update(self.client_env())
+        if "cache_scope" in params and "cache_scope" not in self._create_parameters:
+            raise GatewayClientError("Gateway does not support --cache-scope; update the gateway")
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
         warning = (snapshot.get("info") or {}).get("config_warning")
         if warning:
@@ -440,6 +442,8 @@ def _classic_only_policy(launch):
         policy["run_budget"] = float(launch["run_budget"])
     if launch.get("verbose"):
         policy["verbose"] = True
+    if launch.get("cache_scope") is not None:
+        policy["cache_scope"] = launch["cache_scope"]
     return policy
 
 

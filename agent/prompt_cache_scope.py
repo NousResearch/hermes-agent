@@ -136,11 +136,14 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
 
 def resolve_prompt_cache_scope(agent: Any) -> str:
     """Rotation-stable cache-scope id: the inherited parent scope of a same-model cache-parity
-    fork, else the declared scope, else the compression-lineage root of ``agent.session_id``
+    fork, else an explicit fresh CLI scope, else the declared scope or compression-lineage root
     (the physical id without ancestry/DB). Memoized on the agent."""
     inherited = getattr(agent, "_inherited_cache_scope", None)
     if isinstance(inherited, str) and inherited:
         return _apply_fork_tag(agent, inherited)
+    explicit = getattr(agent, "_cli_prompt_cache_scope", None)
+    if isinstance(explicit, str) and explicit:
+        return explicit
     sid = str(getattr(agent, "session_id", None) or "")
     if not sid:
         return ""

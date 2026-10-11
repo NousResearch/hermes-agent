@@ -200,6 +200,8 @@ On a local Wayland session (`XDG_SESSION_TYPE=wayland`, or `WAYLAND_DISPLAY` set
 
 On **Hyprland** (including Omarchy) the HUD is floated and pinned through the compositor's IPC after it maps — otherwise Hyprland tiles it like any other window, `always-on-top` is ignored, and compositor drag does nothing. No extra window rule is required.
 
+**KDE Plasma** on Wayland needs no such hint for the HUD, but it is the one session where `read_window_below` and the HUD's window tracking depend on asking the compositor. Enumerating other applications' windows goes through the X11 `_NET_CLIENT_LIST_STACKING` property by default, which on Wayland lists XWayland clients only — normally none, because every window is a native Wayland client. A Plasma Wayland session would therefore answer with an empty list while the screen is full of windows, and an empty list is indistinguishable from nothing being underneath. Hermes asks KWin directly for this session, over the compositor's scripting interface, so app names and titles arrive as they do on Hyprland.
+
 A few compositors (notably COSMIC) ignore `always-on-top` for native Wayland windows. To restore pinning there, run the app under XWayland:
 
 ```yaml

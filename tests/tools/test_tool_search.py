@@ -886,3 +886,52 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+
+class TestListingGroups:
+    """``listing_groups`` picks the groups that list tool names, whatever their size."""
+
+    @staticmethod
+    def _defs(toolset, count):
+        from tools.registry import registry
+        defs = []
+        for i in range(count):
+            name = f"{toolset.replace('-', '_')}_op_{i}"
+            registry.register(name=name, handler=lambda args, **kw: "{}",
+                              schema=_td(name, "Deferred.")["function"], toolset=toolset)
+            defs.append(_td(name, "Deferred."))
+        return defs
+
+    @staticmethod
+    def _search_description(tool_search_config):
+        from pathlib import Path
+        from tools.tool_search import assemble_tool_defs
+        Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
+            f"tools:\n  tool_search:\n{tool_search_config}", encoding="utf-8")
+        defs = (TestListingGroups._defs("mcp-big", 40) + TestListingGroups._defs("mcp-small", 2)
+                + TestListingGroups._defs("mcp-tiny", 1))
+        result = assemble_tool_defs(defs, context_length=1_000_000)
+        search = next(t for t in result.tool_defs if t["function"]["name"] == "tool_search")
+        return search["function"]["description"], result.listing_form
+
+    def test_listed_groups_show_names_and_the_rest_share_one_line(self):
+        desc, form = self._search_description("    enabled: 'on'\n    listing_groups: [big]\n")
+        assert "mcp_big_op_39" in desc
+        assert "mcp_small_op_0" not in desc and "mcp_tiny_op_0" not in desc
+        assert "small (2), tiny (1)" in desc
+        assert form == "mixed"
+
+    def test_registry_names_pin_their_heading(self):
+        desc, _ = self._search_description("    enabled: 'on'\n    listing_groups: [mcp-big]\n")
+        assert "mcp_big_op_39" in desc and "mcp_small_op_0" not in desc
+
+    def test_unmatched_names_log_a_warning(self, caplog):
+        with caplog.at_level("WARNING", logger="tools.tool_search_catalog"):
+            desc, form = self._search_description("    enabled: 'on'\n    listing_groups: [nope]\n")
+        assert form == "groups" and "mcp_big_op_0" not in desc
+        assert "matches no listing group" in caplog.text and "big, small, tiny" in caplog.text
+
+    def test_unset_listing_groups_keeps_size_based_listing(self):
+        desc, form = self._search_description("    enabled: 'on'\n")
+        assert all(name in desc for name in ("mcp_big_op_39", "mcp_small_op_0", "mcp_tiny_op_0"))
+        assert form == "full"

@@ -51,6 +51,8 @@ class ToolSearchConfig:
     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
     defer_tools: Optional[frozenset] = None
+    # None = collapse by size; a list names the listing groups that show tool names, the rest collapse.
+    listing_groups: Optional[frozenset] = None
 
     @property
     def effective_defer_tools(self) -> frozenset:
@@ -72,6 +74,12 @@ class ToolSearchConfig:
                 "(e.g. [todo_list, computer_use]; [] keeps every tool eager) - "
                 "using the curated default set.", defer_raw)
             defer_raw = None
+        groups_raw = raw.get("listing_groups")
+        if groups_raw is not None and not isinstance(groups_raw, (list, tuple, set)):
+            logger.warning(
+                "tools.tool_search.listing_groups is %r, expected a YAML list of group names "
+                "(e.g. [kanban, github]) - collapsing groups by size.", groups_raw)
+            groups_raw = None
         return cls(
             enabled=_tri_state(raw.get("enabled", "auto")),
             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
@@ -80,8 +88,12 @@ class ToolSearchConfig:
             max_search_limit=max_search_limit,
             listing=_tri_state(raw.get("listing", "auto")),
             listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
-            defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
-                         if isinstance(defer_raw, (list, tuple, set)) else None))
+            defer_tools=_name_set(defer_raw), listing_groups=_name_set(groups_raw))
+
+
+def _name_set(raw: Optional[Any]) -> Optional[frozenset]:
+    """A YAML list of names as a frozenset of stripped non-empty strings; None stays None."""
+    return None if raw is None else frozenset(str(n).strip() for n in raw if str(n).strip())
 
 
 _TRI_STATE_ALIASES = {"true": "on", "1": "on", "yes": "on", "false": "off", "0": "off", "no": "off"}
@@ -371,7 +383,7 @@ def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optio
     listing_budget = listing_token_budget(config, context_length)
     if config.listing != "off":
         listing, listing_form = build_catalog_listing_with_form(
-            deferrable, max_tokens=listing_budget)
+            deferrable, max_tokens=listing_budget, shown=config.listing_groups)
     bridge = bridge_tool_schemas(len(deferrable), listing=listing, listing_form=listing_form,
                                  connections_granted=connections_granted)
     tier = 1 if listing_form in ("full", "names", "mixed") else 2

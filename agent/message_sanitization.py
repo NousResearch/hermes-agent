@@ -942,6 +942,11 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     named = {key for key in sent if _NAMED_FIELD_RES[key].search(body)}
     if not named:
         return frozenset()
+    if "duplicate field" in body:
+        # Alias collision, not a schema that lacks the field: the named key is the one the schema
+        # READS and the carrier riding along under an alias is the duplicate. Keep ``reasoning_content``
+        # (the wire field) no matter which key the body names; drop only the alias carriers.
+        return frozenset(sent & {R, RD})
     return frozenset(sent & (_ALL_CARRIERS if RC in named else {R, RD}))
 
 

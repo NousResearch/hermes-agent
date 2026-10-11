@@ -212,7 +212,7 @@ class TestNotepadCaps:
 
     def test_job_total_cap_counts_utf8_key_and_value_bytes(self, notepad, monkeypatch):
         # "ключ"=8 bytes, "значение"=16 -> 24;  "鍵"=3 bytes, "日本語"=9 -> 12.
-        # 24 + 12 = 36 fills the cap exactly, yet only 17 characters are stored.
+        # 24 + 12 = 36 fills the cap exactly, yet only 16 characters are stored.
         monkeypatch.setattr(notepad, "MAX_JOB_TOTAL_BYTES", 36)
         sibling = ("ключ", "значение")
         target = ("鍵", "日本語")

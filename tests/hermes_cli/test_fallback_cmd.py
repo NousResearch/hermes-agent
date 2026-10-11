@@ -70,6 +70,35 @@ class TestExtractFallback:
         from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
         assert _extract_fallback_from_model_cfg({"provider": "openrouter"}) is None
 
+    @pytest.mark.parametrize(
+        "credential, expected",
+        [
+            ({"api_key": "${MY_CUSTOM_KEY}"}, {"key_env": "MY_CUSTOM_KEY"}),
+            ({"api_key": "sk-literal"}, {"api_key": "sk-literal"}),
+            ({"key_env": "MY_CUSTOM_KEY"}, {"key_env": "MY_CUSTOM_KEY"}),
+            ({"api_key_env": "MY_CUSTOM_KEY"}, {"key_env": "MY_CUSTOM_KEY"}),
+            ({}, {}),
+        ],
+        ids=["env-reference", "literal-key", "key-env", "api-key-env-alias", "no-credential"],
+    )
+    def test_carries_credential_pointer(self, credential, expected):
+        from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
+        base = {"provider": "custom", "base_url": "https://api.example.com/v1"}
+        entry = _extract_fallback_from_model_cfg({**base, "default": "some-model", **credential})
+        assert entry == {**base, "model": "some-model", **expected}
+
+    def test_env_reference_entry_resolves_to_the_env_value(self, monkeypatch):
+        from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
+        from hermes_cli.fallback_config import resolve_entry_api_key
+        monkeypatch.setenv("MY_CUSTOM_KEY", "sk-from-env")
+        entry = _extract_fallback_from_model_cfg({
+            "provider": "custom",
+            "default": "some-model",
+            "base_url": "https://api.example.com/v1",
+            "api_key": "${MY_CUSTOM_KEY}",
+        })
+        assert resolve_entry_api_key(entry) == "sk-from-env"
+
 # ---------------------------------------------------------------------------
 # cmd_fallback_list
 # ---------------------------------------------------------------------------

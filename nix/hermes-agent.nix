@@ -35,6 +35,7 @@
   branch ? null,
   dirty ? false,
   lastModified ? null,
+  lastModifiedDate ? null,
   # Overridable parameters
   version ? "0.0.0",
   distance ? 0,

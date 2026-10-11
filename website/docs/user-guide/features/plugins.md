@@ -568,6 +568,7 @@ working but are **deprecated** in favor of the consent flow:
 | `llm.profile_override` | `llm.allow_profile_override` |
 | `llm.task_override` | `llm.allow_task_override` |
 | `gateway.platform_actions` | `allow_platform_actions` |
+| `gateway.hosted_room_ingress` | `allow_hosted_room_ingress` |
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
@@ -626,6 +627,78 @@ surface — per the #64176 round-2 design correction it requires its own
 capability (`gateway.raw_events`) with a "no stability guarantee" label and a
 separate design, and has not shipped.
 :::
+
+### Hosted Group Chat ingress (`ctx.hosted_rooms`)
+
+`ctx.hosted_rooms` lets a Telegram platform-handler plugin admit an
+authenticated group message into an existing hosted Group Chat room (the same
+`HostedRoomService` the desktop Group Chat uses) and read back the attributed
+replies. It is the supported seam, so a relay plugin never imports
+`tui_gateway` internals. **Off by default, fail closed.** Each call checks
+three things in order: the `gateway.hosted_room_ingress` capability (legacy key
+`allow_hosted_room_ingress`, read from the plugin's own profile config), a
+running hosted-room worker in this process, and a room protocol this facade
+supports. If any check fails, the call returns a typed `disabled` result and
+nothing is written. No verb raises, so a relay handler in PTB group `-1` can
+never break ordinary Telegram handling.
+
+```python
+from hermes_cli.plugin_hosted_rooms import TelegramRoomBinding
+
+binding = TelegramRoomBinding(          # operator-pinned; validated on construction
+    room_id="relay-room", chat_id=-100123, thread_id=42,   # thread_id=None: non-topic messages
+    sender_ids=frozenset({1384262162}),
+)
+status = ctx.hosted_rooms.describe()    # FacadeStatus(facade_version, enabled, reason, room_protocol)
+
+async def on_update(update, context):   # registered via ctx.register_platform_handler("telegram", ...)
+    result = await ctx.hosted_rooms.submit_telegram_update(binding, update)
+    # IngressResult(status, reason, event_id, seq, event); result.ok for accepted/duplicate
+
+page = ctx.hosted_rooms.outcomes(binding, since_seq=cursor)   # OutcomePage(enabled, reason, outcomes, cursor)
+ctx.hosted_rooms.stop(binding, cancel_id="kill-1")            # StopResult(status, reason, tasks)
+```
+
+**Version discovery.** `FACADE_VERSION` (currently `1`) changes only when the
+contract breaks. `describe().room_protocol` is the gateway's hosted-room
+protocol. If that protocol is missing or not in `SUPPORTED_ROOM_PROTOCOLS`, the
+reason is `incompatible_gateway` and every verb stays disabled until Hermes and
+the facade agree again.
+
+**Ingress contract.** The facade reads every coordinate from the
+adapter-delivered `Update` itself; the plugin cannot supply sender, chat,
+topic or message ids separately. An update is admitted only when it is a new
+(not edited) text message in a group or supergroup, it matches the binding's
+chat and topic exactly, and the sender is in `sender_ids` and is not a bot.
+Forwarded messages, `sender_chat` posts and `via_bot` messages are refused.
+The room event id is `tg:<chat_id>:<message_id>`, and the actor is recorded as
+`telegram:<sender_id>`. A redelivered update returns `duplicate`. Reusing a
+message id with different text returns `rejected/event_conflict`. `status` is
+one of `accepted`, `duplicate`, `disabled`, `rejected`, or `failed`, and
+`reason` is one of `capability_not_granted`, `hosted_rooms_unavailable`,
+`incompatible_gateway`, `edit_not_admitted`, `unsupported_message`,
+`invalid_coordinates`, `not_group_chat`, `forwarded`, `sender_chat`, `via_bot`,
+`bot_sender`, `chat_mismatch`, `topic_mismatch`, `sender_not_allowed`,
+`room_not_found`, `event_conflict`, `not_room_authority`, `invalid_event`, or
+`internal_error`.
+
+**Outcomes.** `outcomes()` returns terminal member turns from the binding's
+topic only. Each one carries `status` (`settled`, `passed`, `failed`,
+`cancelled`, or `deferred`), `member_id`, and `profile` taken from the room
+roster, plus `source_event_id` (the `tg:` event that started the round). `text`
+is set only on a settled reply. A member message whose turn has not settled
+yet is never returned, and the returned `cursor` stops just before it.
+
+**Cancellation.** `stop()` fences the room and cancels its queued or running
+turns. Cancelled turns then come back from `outcomes()` as `cancelled`.
+Cancelling the `submit_telegram_update` await does not undo an append that has
+already started; retrying the same update afterwards returns `duplicate`.
+
+**Not provided.** Room creation, roster changes and **publication**: the
+facade has no send verb, so posting a reply back to Telegram stays behind its
+own reviewed gate. Granting `gateway.hosted_room_ingress` means allowlisted
+group members can trigger turns for the room's profiles, so grant it only to a
+relay you trust.
 
 ### Discovering plugins — the Hermes plugin catalog
 

@@ -34,6 +34,7 @@ from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
+from hermes_cli.plugins_mcp import MCP_RESULT_CHAR_CAP, mcp_envelope
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
@@ -293,6 +294,13 @@ class PluginContext:
         from hermes_cli.platform_actions import PlatformActions
         return PlatformActions(self.plugin_id)
 
+    @cached_property
+    def hosted_rooms(self):
+        """Disabled-first hosted Group Chat facade (``gateway.hosted_room_ingress``); see
+        :mod:`hermes_cli.plugin_hosted_rooms`. Verbs return typed results, never raise."""
+        from hermes_cli.plugin_hosted_rooms import HostedRoomFacade
+        return HostedRoomFacade(self.plugin_id, self._manager.home_path)
+
     def _wrong_type(self, obj: Any, base_class: type, label: str, article: str = "a") -> bool:
         """Warn-and-ignore gate shared by every registrar that requires a base class."""
         if isinstance(obj, base_class):
@@ -535,31 +543,9 @@ class PluginContext:
         raw = _make_tool_handler(server, tool, timeout)(dict(arguments or {}))
         logger.debug("Plugin %s called MCP %s/%s (timeout=%ss, %d chars returned)",
                      self.manifest.name, server, tool, timeout, len(raw or ""))
-        return self._mcp_envelope(raw)
+        return mcp_envelope(raw)
 
-    _MCP_RESULT_CHAR_CAP = 65536
-
-    @classmethod
-    def _mcp_envelope(cls, raw: Any) -> dict[str, Any]:
-        """Normalize an MCP handler result string into a stable envelope."""
-        if not isinstance(raw, str):
-            raw = "" if raw is None else str(raw)
-        truncated = len(raw) > cls._MCP_RESULT_CHAR_CAP
-        if truncated:
-            raw = raw[: cls._MCP_RESULT_CHAR_CAP] + "… [truncated]"
-        try:
-            parsed: Any = json.loads(raw)
-        except (ValueError, TypeError):
-            parsed = None
-        if isinstance(parsed, dict) and "error" in parsed:
-            envelope: dict[str, Any] = {"ok": False, "error": parsed["error"]}
-        elif isinstance(parsed, dict) and "result" in parsed:
-            envelope = {"ok": True, "result": parsed["result"]}
-            if "structuredContent" in parsed:
-                envelope["structuredContent"] = parsed["structuredContent"]
-        else:
-            envelope = {"ok": True, "result": parsed if parsed is not None else raw}
-        return {**envelope, "truncated": True} if truncated else envelope
+    _MCP_RESULT_CHAR_CAP = MCP_RESULT_CHAR_CAP
 
     @staticmethod
     def _mcp_allowlist(plugin_id: str) -> list[str]:

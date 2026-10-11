@@ -451,12 +451,15 @@ class HostedRoomService:
         self.runtime.wakeup()
         return room
 
-    def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
+    def send(
+        self, *, room_id: str, event_id: str, payload: Any, actor_id: str = "desktop",
+    ) -> dict[str, Any]:
+        """Append one user message; ``actor_id`` names the authenticated human (``telegram:<id>``)."""
         normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
         event = hosted_rooms.append_event(
             self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
-            actor={"kind": "user", "id": "desktop"}, payload=normalized,
+            actor={"kind": "user", "id": actor_id}, payload=normalized,
             authority_gateway_id=gateway_id, authority_epoch=epoch)
         binding = next((b for b in self.bindings() if b.room_id == room_id), None)
         if binding is None:

@@ -191,6 +191,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseBackendScopeKey,
+  profileNameFromScope,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registryDialConnectionId,
@@ -11070,7 +11071,7 @@ async function ensureRegistryBackend(
     managedConnectionUpdateGate.assertCanDial(id, managedUpdateCorrelation)
   }
 
-  const profileKey = String(profile ?? '').trim() || 'default'
+  const profileKey = profileNameFromScope(profile)
   let resolvedRegistrySshConfig
   let registryEffectiveFingerprintPromise: null | Promise<string> = null
 
@@ -11153,7 +11154,7 @@ async function ensureRegistryBackend(
     // can't collide with the v1 remote descriptor cached at the bare key.
     profileDeletionGate.assertCanStart(profileKey)
 
-    const rawProfile = String(profile ?? '').trim()
+    const rawProfile = profileKey
 
     const localProfileExists = rawProfile
       ? directoryExists(path.join(HERMES_HOME, 'profiles', rawProfile.toLowerCase()))
@@ -11172,7 +11173,7 @@ async function ensureRegistryBackend(
     }
 
     if (localRoute.delegate) {
-      return ensureBackend(profile, { passive, spawnPriority })
+      return ensureBackend(profileKey, { passive, spawnPriority })
     }
 
     const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)

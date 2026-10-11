@@ -1443,6 +1443,17 @@ model calls and tools. Queued follow-up turns resume the refresh after the previ
 stream finishes. Pausing for an approval or question affects only that Telegram
 topic, not other topics in the same chat.
 
+In private-chat topics, Telegram clients may show native typing only under All
+Messages. Hermes also refreshes a topic-local, ephemeral **Thinking…** draft every
+10 seconds while work is active. This works with answer streaming disabled too.
+When an answer is streaming, activity refreshes preserve that draft's text instead
+of replacing it with a blank placeholder. Final messages clear the preview; without
+a final message (for example, cancellation), Telegram expires it after about 30
+seconds. No progress message is added to history. Set
+`platforms.telegram.extra.topic_activity_preview: false` to disable this preview
+without disabling native typing. Older Bot API servers that reject empty drafts
+fall back to native typing, with a cooldown between preview attempts.
+
 After a foreground turn returns, running background delegations and terminal jobs
 with `notify_on_complete: true` continue to refresh typing in their owning topic.
 Long-lived servers without completion notification do not keep the bot typing.

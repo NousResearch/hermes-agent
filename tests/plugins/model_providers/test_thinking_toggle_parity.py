@@ -34,6 +34,41 @@ def test_thinking_toggle_and_effort_never_both_on_moonshot_wire(reasoning_config
         assert (extra_body, top_level) == ({"thinking": {"type": "disabled"}}, {})
 
 
+def test_batch_reasoning_disabled_disables_deepseek_and_kimi_wires(monkeypatch):
+    """``hermes batch --reasoning_disabled`` sends a bare ``effort=none`` config.
+
+    Keep that batch-runner shape in the regression rather than hand-writing an
+    ``enabled=False`` config: profile wires must treat both disabled forms alike.
+    """
+    import sys
+    from types import SimpleNamespace
+
+    # The profile suite does not require Fire; stub only its import so this
+    # regression can exercise batch_runner.main's config construction.
+    monkeypatch.setitem(sys.modules, "fire", SimpleNamespace())
+    import batch_runner
+
+    captured = {}
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run(self, *, resume):
+            assert resume is False
+
+    monkeypatch.setattr(batch_runner, "BatchRunner", FakeRunner)
+    batch_runner.main(dataset_file="prompts.jsonl", batch_size=1, run_name="disabled", reasoning_disabled=True)
+
+    reasoning_config = captured["reasoning_config"]
+    assert reasoning_config == {"effort": "none"}
+    for provider, model in (("deepseek", "deepseek-v4-pro"), ("kimi-coding", "kimi-k3")):
+        extra_body, top_level = get_provider_profile(provider).build_api_kwargs_extras(
+            reasoning_config=reasoning_config, model=model
+        )
+        assert (extra_body, top_level) == ({"thinking": {"type": "disabled"}}, {})
+
+
 @pytest.mark.parametrize("reasoning_config", REASONING_MATRIX, ids=str)
 def test_ox_alpha_translation_on_zen(reasoning_config):
     extra_body, top_level = get_provider_profile("opencode-zen").build_api_kwargs_extras(

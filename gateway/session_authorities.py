@@ -148,6 +148,13 @@ def all_authorities(runner):
     return [authority] if authority is not None else []
 
 
+def require_serving(authority):
+    """Refuse a verb reached through a stale connection to a retired authority: its ownership is
+    released, and until a successor bumps the epoch its own epoch still passes the store fence."""
+    if getattr(authority, 'retired', False):
+        raise RuntimeStoreError('runtime_retired')
+
+
 def admission_owner(authority, session_id):
     """The admission identity a physical store row answers to: its compression root, then the
     local creation id a canonical reset forks under (a reset child is not a compression child, so

@@ -340,7 +340,8 @@ async def refresh_receipt(authority, home, key):
 
 def relay_operation(connection, operation, params):
     authority, actor = connection.authority, connection.actor
-    from gateway.session_authorities import served_profile_name
+    from gateway.session_authorities import require_serving, served_profile_name
+    require_serving(authority)  # the outbox/roster/replies belong to the home's next owner
     home = Path(authority.db.db_path).parent.resolve()
     name = served_profile_name(home)
     _home(authority, actor, name)

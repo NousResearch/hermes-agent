@@ -40,12 +40,14 @@ def test_detects_each_documentation_form(drift, monkeypatch):
     docs = (
         "Set `agent.max_turns` to cap a run.\n"
         "Every `auxiliary.<task>.timeout` is in seconds; `display.pet.*` tunes the pet.\n"
+        "Per model: `providers.<id>.models.<model>.timeout_seconds`.\n"
         "```yaml\ncompression:\n  threshold: 0.5\n```\n"
         "This sentence has emphasis on *agent.* things.\n"
     )
     monkeypatch.setattr(drift, "_docs_text", lambda: docs)
     monkeypatch.setattr(drift, "config_leaves", lambda: [
         "agent.max_turns", "auxiliary.vision.timeout", "display.pet.size",
-        "compression.threshold", "agent.secret_knob", "auxiliary.vision.api_key"])
+        "compression.threshold", "agent.secret_knob", "auxiliary.vision.api_key",
+        "providers.nous.models.hermes.timeout_seconds"])
     monkeypatch.setattr(drift, "slash_commands", list)
     assert drift.find_gaps()["config"] == ["agent.secret_knob", "auxiliary.vision.api_key"]

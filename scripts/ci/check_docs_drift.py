@@ -27,7 +27,7 @@ SLASH_PAGE = DOCS / "reference" / "slash-commands.md"
 BASELINE = Path(__file__).with_name("docs_drift_baseline.json")
 _FENCE = re.compile(r"```ya?ml[^\n]*\n(.*?)```", re.DOTALL)
 _DOTTED = re.compile(r"(?<![\w.])[A-Za-z_][\w-]*(?:\.[A-Za-z_][\w-]*)+")
-_PLACEHOLDER = re.compile(r"(?<![\w.])((?:[a-z_][\w-]*\.)+(?:<[\w-]+>|\*)(?:\.(?:[a-z_][\w-]*|\*))*)")
+_PLACEHOLDER = re.compile(r"(?<![\w.])((?:[a-z_][\w-]*\.)+(?:<[\w-]+>|\*)(?:\.(?:[a-z_][\w-]*|<[\w-]+>|\*))*)")
 # Globs only count inside inline code (`auxiliary.*.provider`): bare `*` in prose is emphasis.
 _CODE_SPAN = re.compile(r"`([^`\n]+)`")
 
@@ -62,7 +62,7 @@ def slash_commands() -> list[str]:
         sys.path.insert(0, str(ROOT))
     from hermes_cli.commands import COMMAND_REGISTRY
 
-    return sorted(c.name for c in COMMAND_REGISTRY if not getattr(c, "hidden", False))
+    return sorted(c.name for c in COMMAND_REGISTRY)
 
 
 def _yaml_paths(text: str) -> set[str]:
@@ -71,7 +71,6 @@ def _yaml_paths(text: str) -> set[str]:
     from hermes_yaml import safe_load
     from ruamel.yaml.error import YAMLError
 
-    warnings.simplefilter("ignore")  # ruamel's YAML 1.1 float notes on doc snippets are noise here
     paths: set[str] = set()
 
     def flat(d: dict, pre: tuple[str, ...]) -> None:
@@ -82,10 +81,12 @@ def _yaml_paths(text: str) -> set[str]:
                 flat(v, p)
 
     for m in _FENCE.finditer(text):
-        try:
-            doc = safe_load(m.group(1))
-        except YAMLError:  # a partial or templated snippet documents nothing reliably
-            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # ruamel's YAML 1.1 float notes on doc snippets
+            try:
+                doc = safe_load(m.group(1))
+            except YAMLError:  # a partial or templated snippet documents nothing reliably
+                continue
         if isinstance(doc, dict):
             flat(doc, ())
     return paths

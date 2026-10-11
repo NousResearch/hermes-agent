@@ -1274,7 +1274,10 @@ def create_task(
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
-                task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
+                task_status, tenant = initial_task_state(
+                    conn, parents, initial_status, triage, tenant,
+                    creator_task_id=creator_task_id,
+                )
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1592,7 +1595,11 @@ def link_tasks(
         _link(conn, parent_id, child_id)
         # If child was ready but parent is not yet terminal, demote child to todo
         # (archived counts as terminal, matching _parents_satisfied/recompute_ready).
-        if _task_status(conn, parent_id) not in ("done", "archived"):
+        # Creator-parent edges are provenance only (#106994) and do not gate readiness.
+        if (
+            _task_status(conn, parent_id) not in ("done", "archived")
+            and _creator_task_id_from_created_event(conn, child_id) != parent_id
+        ):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -2084,12 +2091,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?", (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if _parents_satisfied(conn, task_id):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2122,13 +2124,36 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
 
 # --- Claim / complete / block ---
 
+def _creator_task_id_from_created_event(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Provenance creator from the ``created`` event; None when missing/unparseable."""
+    event = _latest_event(conn, task_id, "created")
+    if event is None:
+        return None
+    creator = _json_dict(_row_get(event, "payload")).get("creator_task_id")
+    if isinstance(creator, str):
+        creator = creator.strip()
+        if creator:
+            return creator
+    return None
+
+
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
+    """Return whether every direct parent is terminal for dependency gating.
+
+    A parent that is also this task's ``creator_task_id`` is provenance only
+    and does not block readiness (#106994). Missing/unparseable creator
+    payload keeps the old gate (fail-open).
+    """
+    creator = _creator_task_id_from_created_event(conn, task_id)
     return conn.execute(
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
+        "AND p.status NOT IN ('done', 'archived') "
+        "AND (? IS NULL OR l.parent_id != ?) "
+        "LIMIT 1", (task_id, creator, creator),
     ).fetchone() is None
 
 
@@ -2406,10 +2431,8 @@ def release_stale_claims(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND claim_expires IS NOT NULL AND claim_expires < ? "
-                # A worker that registered its own pid since the SELECT keeps its claim.
-                "AND worker_pid IS ?",
-                (retry_status, row["id"], row["claim_lock"], now, row["worker_pid"]),
+                "AND claim_expires IS NOT NULL AND claim_expires < ?",
+                (retry_status, row["id"], row["claim_lock"], now),
             )
             if cur.rowcount != 1:
                 continue
@@ -4397,22 +4420,6 @@ def latest_summaries(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[
     return {r["task_id"]: r["summary"] for r in rows}
 
 
-def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, int]:
-    """``{task_id: started_at of the run ``tasks.current_run_id`` points at}``
-    in one query; tasks with no active run (NULL or dangling pointer) are omitted."""
-    ids = list(task_ids)
-    if not ids:
-        return {}
-    placeholders = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        "SELECT t.id AS task_id, r.started_at AS started_at FROM tasks t "
-        "JOIN task_runs r ON r.id = t.current_run_id "
-        f"WHERE t.id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    return {r["task_id"]: r["started_at"] for r in rows}
-
-
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
 from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
@@ -4448,3 +4455,88 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from typing import Mapping  # noqa: F401,E402
+from dataclasses import field  # noqa: F401,E402
+import hashlib  # noqa: F401,E402
+import random  # noqa: F401,E402
+import shutil  # noqa: F401,E402
+import threading  # noqa: F401,E402
+
+DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
+
+def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:
+    """Return ``(parent_id, result)`` for every done parent of ``task_id``."""
+    rows = conn.execute(
+        """
+        SELECT t.id AS id, t.result AS result
+        FROM tasks t
+        JOIN task_links l ON l.parent_id = t.id
+        WHERE l.child_id = ? AND t.status = 'done'
+        ORDER BY t.completed_at ASC
+        """,
+        (task_id,),
+    ).fetchall()
+    return [(r["id"], r["result"]) for r in rows]
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'DEFAULT_BUSY_TIMEOUT_MS': ('hermes_cli.kanban_db_connect', 'DEFAULT_BUSY_TIMEOUT_MS'),
+    'DEFAULT_LOG_BACKUP_COUNT': ('hermes_cli.kanban_db_dispatch', 'DEFAULT_LOG_BACKUP_COUNT'),
+    'DEFAULT_LOG_ROTATE_BYTES': ('hermes_cli.kanban_db_dispatch', 'DEFAULT_LOG_ROTATE_BYTES'),
+    'DERIVED_MAX_IN_PROGRESS_CEILING': ('hermes_cli.kanban_db_dispatch', 'DERIVED_MAX_IN_PROGRESS_CEILING'),
+    'DERIVED_MAX_IN_PROGRESS_FLOOR': ('hermes_cli.kanban_db_dispatch', 'DERIVED_MAX_IN_PROGRESS_FLOOR'),
+    'KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS': ('hermes_cli.kanban_db_dispatch', 'KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS'),
+    'KanbanDbCorruptError': ('hermes_cli.kanban_db_connect', 'KanbanDbCorruptError'),
+    'MEMORY_GUARD_MB_PER_WORKER': ('hermes_cli.kanban_db_dispatch', 'MEMORY_GUARD_MB_PER_WORKER'),
+    'RepairResult': ('hermes_cli.kanban_db_connect', 'RepairResult'),
+    'add_notify_sub': ('hermes_cli.kanban_db_notify', 'add_notify_sub'),
+    'advance_notify_cursor': ('hermes_cli.kanban_db_notify', 'advance_notify_cursor'),
+    'check_respawn_guard': ('hermes_cli.kanban_db_dispatch', 'check_respawn_guard'),
+    'claim_unseen_events_for_sub': ('hermes_cli.kanban_db_notify', 'claim_unseen_events_for_sub'),
+    'configured_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'configured_max_in_progress'),
+    'connect': ('hermes_cli.kanban_db_connect', 'connect'),
+    'connect_closing': ('hermes_cli.kanban_db_connect', 'connect_closing'),
+    'count_notify_subs': ('hermes_cli.kanban_db_notify', 'count_notify_subs'),
+    'count_running_tasks': ('hermes_cli.kanban_db_dispatch', 'count_running_tasks'),
+    'count_running_tasks_other_boards': ('hermes_cli.kanban_db_dispatch', 'count_running_tasks_other_boards'),
+    'derive_default_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'derive_default_max_in_progress'),
+    'detect_crashed_workers': ('hermes_cli.kanban_db_dispatch', 'detect_crashed_workers'),
+    'detect_stale_running': ('hermes_cli.kanban_db_dispatch', 'detect_stale_running'),
+    'dispatch_once': ('hermes_cli.kanban_db_dispatch', 'dispatch_once'),
+    'enforce_max_runtime': ('hermes_cli.kanban_db_dispatch', 'enforce_max_runtime'),
+    'has_spawnable_ready': ('hermes_cli.kanban_db_dispatch', 'has_spawnable_ready'),
+    'has_spawnable_review': ('hermes_cli.kanban_db_dispatch', 'has_spawnable_review'),
+    'heartbeat_worker': ('hermes_cli.kanban_db_dispatch', 'heartbeat_worker'),
+    'list_notify_subs': ('hermes_cli.kanban_db_notify', 'list_notify_subs'),
+    'purge_stale_done_notify_subs': ('hermes_cli.kanban_db_notify', 'purge_stale_done_notify_subs'),
+    'reap_worker_zombies': ('hermes_cli.kanban_db_dispatch', 'reap_worker_zombies'),
+    'reconcile_orphaned_running': ('hermes_cli.kanban_db_dispatch', 'reconcile_orphaned_running'),
+    'remove_notify_sub': ('hermes_cli.kanban_db_notify', 'remove_notify_sub'),
+    'repair_db': ('hermes_cli.kanban_db_connect', 'repair_db'),
+    'resolve_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'resolve_max_in_progress'),
+    'resolve_workspace': ('hermes_cli.kanban_db_workspace', 'resolve_workspace'),
+    'review_dispatch_enabled': ('hermes_cli.kanban_db_dispatch', 'review_dispatch_enabled'),
+    'rewind_notify_cursor': ('hermes_cli.kanban_db_notify', 'rewind_notify_cursor'),
+    'run_daemon': ('hermes_cli.kanban_db_dispatch', 'run_daemon'),
+    'set_branch_name': ('hermes_cli.kanban_db_workspace', 'set_branch_name'),
+    'set_workspace_path': ('hermes_cli.kanban_db_workspace', 'set_workspace_path'),
+    'unseen_events_for_sub': ('hermes_cli.kanban_db_notify', 'unseen_events_for_sub'),
+    'worker_log_rotation_config': ('hermes_cli.kanban_db_dispatch', 'worker_log_rotation_config'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

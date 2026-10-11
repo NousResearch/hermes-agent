@@ -156,6 +156,8 @@ TOOLSETS = {
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
+    # Granted only during child construction, not in core bundles or configurable menus.
+    "delegation_reply": _ts("Subagent-only explicit result delivery", ["delegate_tool_reply"]),
     "kanban": _ts(
         "Kanban multi-agent coordination — only active when the agent is spawned by "
         "the kanban dispatcher (HERMES_KANBAN_TASK env set). The dispatcher runs "
@@ -382,12 +384,12 @@ def resolve_toolset(name: str, visited: set[str] | None = None, *, include_regis
             return list(cached)
         visited = set()
 
-    # "all"/"*" span every toolset so new toolsets are included automatically, except the ones a
-    # session platform gates: a profile gets those only when its config names them.
+    # "all"/"*" span public toolsets; session-gated and child-only delivery toolsets
+    # require explicit grants from their owning surface or child construction.
     if name in {"all", "*"}:
         all_tools: set[str] = set()
         for toolset_name in get_toolset_names():
-            if toolset_name not in TOOLSET_SESSION_PLATFORMS:
+            if toolset_name != "delegation_reply" and toolset_name not in TOOLSET_SESSION_PLATFORMS:
                 all_tools.update(resolve_toolset(toolset_name, visited.copy(), include_registry=include_registry))
         return sorted(all_tools)
 

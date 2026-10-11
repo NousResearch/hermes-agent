@@ -326,6 +326,9 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
     else:
         from toolsets import TOOLSET_SESSION_PLATFORMS, get_all_toolsets
         for ts_name in get_all_toolsets():
+            # Internal delivery is explicitly granted by child construction, never by "all tools".
+            if ts_name == "delegation_reply":
+                continue
             if ts_name not in TOOLSET_SESSION_PLATFORMS:
                 tools.update(resolve_toolset(ts_name))
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled

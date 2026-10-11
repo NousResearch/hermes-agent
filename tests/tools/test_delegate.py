@@ -321,9 +321,8 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
-                self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
-                )
+                # Alias paths (e.g. /var/tmp -> /tmp) still name the same profile database.
+                self.assertEqual(Path(child_db.db_path).resolve(), Path(parent_db.db_path).resolve())
             finally:
                 if child_db is not None:
                     child_db.close()
@@ -1186,7 +1185,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
         self.assertEqual(
             MockAgent.call_args[1]["enabled_toolsets"],
-            ["web", "browser"],
+            ["web", "browser", "delegation_reply"],
         )
 
 

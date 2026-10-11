@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional, Set
 
 from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,31 @@ def _is_home_like_working_dir(working_dir: Path) -> bool:
     return False
 
 
+def _resolve_working_dir(working_dir: Optional[str]) -> Path:
+    """Anchor directory for the tracker, surviving a deleted process cwd.
+
+    A long-running gateway can end up with its process cwd pointing at a
+    since-deleted scratch dir (cron review workdirs under a tmp prefix); every
+    ``os.getcwd()`` there raises ``FileNotFoundError`` and used to kill each
+    cron job at construction time. Windows adds a twist: ``Path.resolve()``
+    itself consults ``os.getcwd()`` (ntpath.realpath), so even explicit
+    working dirs need the guard. Fall back to the persistent Hermes home when
+    no cwd can be had at all — always a valid directory, never a scratch tree.
+    """
+    if working_dir:
+        try:
+            return Path(working_dir).resolve()
+        except OSError:
+            logger.warning("cannot resolve working dir %s (process cwd gone)", working_dir)
+            return Path(working_dir).expanduser()
+    try:
+        return Path(os.getcwd()).resolve()
+    except OSError:
+        fallback = get_hermes_home()
+        logger.warning("process cwd is gone; anchoring subdirectory hints on %s", fallback)
+        return fallback
+
+
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
 
@@ -141,7 +167,12 @@ class SubdirectoryHintTracker:
         # AGENTS.md/CLAUDE.md injection at startup must not get the same files spliced into
         # tool results later — cron jobs relaying exact stdout leaked them to chat (#9441).
         self.enabled = enabled
-        self.working_dir = Path(working_dir or os.getcwd()).resolve()
+        # ``_resolve_working_dir`` survives a deleted process cwd: a long-running gateway
+        # whose cwd was a since-removed scratch dir would otherwise raise ``FileNotFoundError``
+        # here and take every cron job down at construction time. On Windows even the
+        # explicit-working-dir branch needs the guard (``Path.resolve()`` consults
+        # ``os.getcwd()`` via ntpath.realpath).
+        self.working_dir = _resolve_working_dir(working_dir)
         # $HOME is not a project (#76902): the packaged Desktop app with no default project
         # dir configured resolves its cwd (and TERMINAL_CWD) to home, and the containment
         # check is then vacuously true for the whole home subtree — every AGENTS.md /

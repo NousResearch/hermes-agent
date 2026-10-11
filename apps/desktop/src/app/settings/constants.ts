@@ -485,7 +485,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     gptLive: {
       voice: 'GPT-Live Voice',
       instructions: 'GPT-Live Persona'
-    }
+    },
+    silenceDuration: 'End Turn After Silence'
   },
   stt: {
     enabled: 'Speech To Text',
@@ -675,7 +676,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
       voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
       instructions:
         'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
-    }
+    },
+    silenceDuration:
+      'Seconds of continuous silence after you stop speaking before the turn ends and is submitted. The same setting (voice.silence_duration) also controls CLI voice mode; 3.0s is the built-in default.'
   },
   tts: {
     xai: {
@@ -831,6 +834,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
       'voice.max_recording_seconds',
+      'voice.silence_duration',
       'voice.client_direct'
     ]
   },

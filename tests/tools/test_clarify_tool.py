@@ -4,6 +4,7 @@ import json
 
 from tools.clarify_tool import (
     clarify_tool,
+    _flatten_choice,
     MAX_CHOICES,
     MAX_QUESTIONS,
     CLARIFY_SCHEMA,
@@ -79,6 +80,79 @@ class TestClarifyToolCallbackHandling:
 
         result = _ask(mock_callback, [{"question": "Q?"}])
         assert result["responses"][0]["user_response"] == "response with spaces"
+
+
+
+
+class TestClarifyDictChoices:
+    """Dict-shaped choices must be unwrapped to user-facing text at the source.
+
+    LLMs sometimes emit [{"description": "..."}] instead of bare strings. The
+    naive str(c) coercion leaked the Python dict repr onto every surface (CLI
+    panel, Discord buttons, Telegram list) AND returned it verbatim as the
+    user's answer. _flatten_choice normalises at the one platform-agnostic
+    entry point so the whole class is fixed in one place.
+    """
+
+    def test_flatten_unwraps_label_first(self):
+        assert _flatten_choice({"label": "Short", "description": "Long"}) == "Short"
+
+
+    def test_dict_choices_reach_callback_as_clean_text(self):
+        """``_flatten_choice`` unwraps dict-shaped choices to display text.
+
+        On the (post-main) public API, ``clarify_tool(questions=...)`` requires
+        ``choices`` to be a list of strings — this helper is the platform-side
+        defensive guard against legacy dict-shaped inputs (``{"label": ...}``,
+        ``{"value": ...}``, ``{"name": ...}``) that may still flow through
+        platform adapters or older serialized replies.
+
+        ``value`` (and ``name``) sit LAST in the lookup tuple so a dict carrying
+        both a ``label`` and a ``value`` still surfaces the label; but when the
+        agent emits ``{"value": "a) Pause..."}`` as its only key, that's a label
+        too — dropping it caused the mattermost v3 picker regression (the user
+        got a bare ``❓ question`` because ``choices_offered=None`` made the
+        picker fall through to the base class).
+        """
+        assert _flatten_choice({"choice": "Tight", "description": "Tight, covers all 3 points"}) \
+            == "Tight, covers all 3 points"
+        assert _flatten_choice({"description": "Loose layout"}) == "Loose layout"
+        assert _flatten_choice({"value": "abc"}) == "abc"
+        assert _flatten_choice("A plain string choice") == "A plain string choice"
+
+    def test_flatten_unwraps_label_before_value(self):
+        """``label`` wins over ``value`` when both are present — preserves the
+        existing priority order so the original anti-repr-leak invariant holds."""
+        assert _flatten_choice({"label": "L", "value": "raw-enum"}) == "L"
+
+    def test_flatten_unwraps_value_only_dict(self):
+        """Regression guard: the agent emits ``{"value": "a) ..."}`` thinking
+        ``value`` is its label key. Pre-fix: returned ``""`` → choice dropped →
+        ``choices_offered=None`` → mattermost picker fell through to bare text."""
+        assert _flatten_choice({"value": "a) Pause and evaluate"}) == "a) Pause and evaluate"
+
+    def test_flatten_unwraps_name_only_dict(self):
+        """``name`` mirrors ``value`` for symmetry with labels-with-enum schemas."""
+        assert _flatten_choice({"name": "choice-id"}) == "choice-id"
+
+    def test_flatten_still_rejects_non_label_only_dict(self):
+        """A dict with neither label/description/text/title nor name/value still
+        returns ``""`` (so we never leak a Python repr onto a user surface)."""
+        assert _flatten_choice({"choice": "Tight"}) == ""
+        assert _flatten_choice({"foo": "bar"}) == ""
+
+    def test_batch_choices_offered_survives_value_only_dicts(self):
+        """Regression guard at the helper level: ``_flatten_choice`` accepts the
+        agent's ``{"value": "..."}`` choice shape (the only-key case that was
+        silently dropped, causing the mattermost v3 picker to fall through to
+        bare text). The public API on current main requires string choices; this
+        test pins the helper contract for any platform adapter that still uses
+        it."""
+        assert _flatten_choice({"value": "a) Pause"}) == "a) Pause"
+        assert _flatten_choice({"value": "b) Push"}) == "b) Push"
+        # two-key combinations — label still wins
+        assert _flatten_choice({"label": "Squash", "value": "raw"}) == "Squash"
+        assert _flatten_choice({"label": "No squash", "value": "raw"}) == "No squash"
 
 
 class TestClarifySchema:

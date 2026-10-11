@@ -142,6 +142,14 @@ def validate_openai_usage(
         "response."
     ):
         kind = "codex"
+    completion = data.get("data")
+    if (
+        not data.get("choices")
+        and data.get("success") is not False
+        and isinstance(completion, dict)
+        and completion.get("choices")
+    ):
+        validate_openai_usage(completion, kind=kind)
     if isinstance(data.get("response"), dict):
         validate_openai_usage(data["response"], kind="codex")
     usage = data.get("usage")

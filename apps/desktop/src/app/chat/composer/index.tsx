@@ -42,7 +42,10 @@ import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
+import { type DroppedFile, extractDroppedFiles } from '../hooks/use-composer-actions'
+
 import { AttachmentList } from './attachments'
+import { resolvePastedFileCandidates } from './clipboard-files'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -58,7 +61,13 @@ import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import {
+  markActiveComposer,
+  onComposerAttachFilesRequest,
+  onComposerAttachImagesRequest,
+  requestComposerAttachImages,
+  requestComposerInsert
+} from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerBranch } from './hooks/use-composer-branch'
@@ -535,6 +544,48 @@ export function ChatBar({
     recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
   }
 
+  // Pair a paste's DOM snapshot with the OS file-list the user actually copied.
+  // The cloned File objects carry no path; the IPC roundtrip restores it so the
+  // drop pipeline can attach by reference instead of uploading an opaque blob
+  // (#118181). Image-only pastes still surface through onAttachImageBlob.
+  const attachPastedFiles = useCallback(async (snapshot: DroppedFile[], imageBlobs: Blob[], text: string): Promise<boolean> => {
+    const candidates = await resolvePastedFileCandidates(snapshot, () =>
+      window.hermesDesktop?.readClipboardFilePaths?.() ?? Promise.resolve({ status: 'unsupported', files: [] })
+    )
+
+    if (candidates.some(item => item.path) && await onAttachDroppedItems?.(candidates)) {
+      requestMainFocus()
+
+      return true
+    }
+
+    if (imageBlobs.length === 0 && !text) {
+      // WSL screenshots can carry neither native paths nor DOM image bytes.
+      void onPasteClipboardImage?.({ silent: true })
+    }
+
+    return false
+  }, [onAttachDroppedItems, onPasteClipboardImage, requestMainFocus])
+
+  // Paste-to-focus route: clipboard files from an unfocused ⌘V ride the bus
+  // and the active composer resolves them, just like a focused paste.
+  useEffect(() => onComposerAttachFilesRequest(({ snapshot, imageBlobs, text = '', target }) => {
+    if (target === scope.target) {
+      triggerHaptic('selection')
+      void attachPastedFiles(snapshot, imageBlobs, text).then(handled => {
+        if (handled) {
+          return
+        }
+
+        requestComposerAttachImages(imageBlobs, { target })
+
+        if (text && !DATA_IMAGE_URL_RE.test(text)) {
+          requestComposerInsert(pathifyRefs(linkifyUrls(text)), { mode: 'inline', target })
+        }
+      })
+    }
+  }), [attachPastedFiles, scope.target])
+
   // Cut never reaches the handler above: React's onBeforeInput is a
   // keypress/textInput polyfill and does not observe the native
   // `beforeinput` event, so Chromium's deleteByCut input type is invisible to
@@ -544,8 +595,12 @@ export function ChatBar({
     recordUndoPoint()
   }
 
-  const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
-    const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
+  const pasteImagesAndText = (imageBlobs: Blob[], pastedText: string) => {
+    const editor = editorRef.current
+
+    if (!editor) {
+      return
+    }
 
     if (imageBlobs.length > 0 && onAttachImageBlob) {
       triggerHaptic('selection')
@@ -555,15 +610,7 @@ export function ChatBar({
       }
     }
 
-    // Trim surrounding whitespace so a copy that dragged along leading/trailing
-    // blank lines (common when selecting from terminals, code blocks, web pages)
-    // doesn't dump multiline padding into the composer. Internal newlines are
-    // preserved — only the edges are cleaned up.
-    const pastedText = sanitizeComposerInput(event.clipboardData.getData('text').trim())
-
     if (!pastedText) {
-      event.preventDefault()
-
       if (imageBlobs.length > 0) {
         return
       }
@@ -582,12 +629,8 @@ export function ChatBar({
     }
 
     if (DATA_IMAGE_URL_RE.test(pastedText)) {
-      event.preventDefault()
-
       return
     }
-
-    event.preventDefault()
 
     // Pasting exactly one link while composer text is selected turns that text
     // into a markdown link instead of replacing it — the behavior every rich
@@ -596,12 +639,12 @@ export function ChatBar({
     const exactLink = resolveExactLinkPaste(pastedText)
 
     if (exactLink) {
-      const label = selectionLinkLabel(event.currentTarget)
+      const label = selectionLinkLabel(editor)
 
       if (label) {
         recordUndoPoint()
-        insertComposerContentsAtCaret(event.currentTarget, markdownLinkFor(label, exactLink))
-        scheduleFlushEditorToDraft(event.currentTarget)
+        insertComposerContentsAtCaret(editor, markdownLinkFor(label, exactLink))
+        scheduleFlushEditorToDraft(editor)
 
         return
       }
@@ -614,8 +657,6 @@ export function ChatBar({
     // attachment can't be created (missing bridge, write failure) so the
     // paste is never lost.
     if (onAttachPastedText && shouldConvertPasteToAttachment(pastedText)) {
-      const editor = event.currentTarget
-
       void Promise.resolve(onAttachPastedText(pastedText)).then(attached => {
         if (attached) {
           triggerHaptic('selection')
@@ -637,11 +678,36 @@ export function ChatBar({
     // A paste into an open `@url:`/`@file:` scope CONSUMES that scope instead of
     // stacking on it — the scope is the browse mode the user is pasting into,
     // not text they typed and want to keep (`@url:@url:\`https://…\``).
-    const scope = openDirectiveScope(event.currentTarget)
+    const scope = openDirectiveScope(editor)
 
     recordUndoPoint()
-    insertComposerContentsAtCaret(event.currentTarget, pathifyRefs(linkifyUrls(pastedText)), scope)
-    scheduleFlushEditorToDraft(event.currentTarget)
+    insertComposerContentsAtCaret(editor, pathifyRefs(linkifyUrls(pastedText)), scope)
+    scheduleFlushEditorToDraft(editor)
+  }
+
+  const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    // Chromium strips the native identity from pasted File objects (#118181).
+    // Capture every fallback payload before DataTransfer detaches, then decide
+    // whether native paths handled the paste after the IPC roundtrip.
+    const snapshot = event.clipboardData.files.length > 0 ? extractDroppedFiles(event.clipboardData) : null
+    const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
+    // Trim only the edges; internal newlines remain part of the pasted content.
+    const text = sanitizeComposerInput(event.clipboardData.getData('text').trim())
+    event.preventDefault()
+
+    if (snapshot) {
+      triggerHaptic('selection')
+      void attachPastedFiles(snapshot, imageBlobs, text).then(handled => {
+        // Empty file pastes already tried the host screenshot fallback above.
+        if (!handled && (imageBlobs.length > 0 || text)) {
+          pasteImagesAndText(imageBlobs, text)
+        }
+      })
+
+      return
+    }
+
+    pasteImagesAndText(imageBlobs, text)
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {

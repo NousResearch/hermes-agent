@@ -54,10 +54,10 @@ class _ProbeClient:
     def __init__(self, *a: Any, **k: Any) -> None:
         pass
 
-    async def __aenter__(self) -> "_ProbeClient":
+    async def __aenter__(self) -> _ProbeClient:
         return self
 
-    async def __aexit__(self, *a: Any) -> bool:
+    async def __aexit__(self, *a: object) -> bool:
         return False
 
     async def post(self, *a: Any, **k: Any) -> Any:
@@ -70,8 +70,8 @@ class _ProbeClient:
         return _Resp()
 
 
-def _capture_kills(monkeypatch: pytest.MonkeyPatch) -> List[Tuple[int, int]]:
-    kills: List[Tuple[int, int]] = []
+def _capture_kills(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    kills: list[tuple[int, int]] = []
 
     def _fake_kill(pid: int, sig: int) -> None:
         kills.append((pid, sig))
@@ -110,7 +110,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     _seed_manifests(tmp_path)
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
-    spawned: Dict[str, Any] = {}
+    spawned: dict[str, Any] = {}
     hidden_flags = 0x08000000
     monkeypatch.setattr(
         "hermes_cli._subprocess_compat.windows_hide_flags",
@@ -126,7 +126,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
         def poll() -> None:
             return None
 
-    def _fake_popen(cmd: List[str], **kwargs: Any) -> _FakeProc:
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _FakeProc:
         spawned["cmd"] = cmd
         spawned["kwargs"] = kwargs
         return _FakeProc()
@@ -164,7 +164,7 @@ async def test_start_sidecar_local_mode_omits_cloud_credentials(
     _seed_manifests(tmp_path)
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
-    spawned: Dict[str, Any] = {}
+    spawned: dict[str, Any] = {}
 
     class _FakeProc:
         pid = 999
@@ -175,7 +175,7 @@ async def test_start_sidecar_local_mode_omits_cloud_credentials(
         def poll() -> None:
             return None
 
-    def _fake_popen(cmd: List[str], **kwargs: Any) -> _FakeProc:
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _FakeProc:
         spawned["kwargs"] = kwargs
         return _FakeProc()
 
@@ -207,7 +207,7 @@ async def test_start_sidecar_cold_installs_missing_deps(
     _seed_manifests(tmp_path)
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
-    installs: List[str] = []
+    installs: list[str] = []
 
     def _fake_install() -> None:
         installs.append("ran")
@@ -264,7 +264,7 @@ async def test_start_sidecar_reinstalls_empty_node_modules(
     (tmp_path / "node_modules").mkdir()  # empty — spectrum-ts absent
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
-    installs: List[str] = []
+    installs: list[str] = []
     monkeypatch.setattr(
         photon_adapter, "_reinstall_sidecar_deps", lambda: installs.append("ran")
     )
@@ -300,7 +300,7 @@ async def test_start_sidecar_refuses_conflicted_manifest_before_install(
         "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> main\n", encoding="utf-8"
     )
     (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
-    installs: List[str] = []
+    installs: list[str] = []
     monkeypatch.setattr(
         photon_adapter, "_reinstall_sidecar_deps", lambda: installs.append("ran")
     )
@@ -336,9 +336,9 @@ async def test_reap_inspects_listeners_off_the_event_loop(
     monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _ProbeClient)
 
     main_thread = threading.current_thread()
-    seen: Dict[str, Any] = {}
+    seen: dict[str, Any] = {}
 
-    def _fake_find(port: int) -> List[int]:
+    def _fake_find(port: int) -> list[int]:
         seen["find"] = threading.current_thread()
         return [4242]
 

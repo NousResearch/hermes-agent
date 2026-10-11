@@ -26,11 +26,11 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     return PhotonAdapter(cfg)
 
 
-def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]:
+def _capture_sidecar(adapter: PhotonAdapter) -> list[tuple[str, dict[str, Any]]]:
     """Replace ``_sidecar_call`` with a recorder that returns a fixed id."""
-    calls: List[Tuple[str, Dict[str, Any]]] = []
+    calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
         calls.append((path, body))
         return {"ok": True, "messageId": "msg-123"}
 
@@ -87,13 +87,13 @@ async def test_standalone_send_text_then_attachments(
     img.write_bytes(b"\x89PNG fake")
     monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
 
-    posted: List[Tuple[str, Dict[str, Any]]] = []
+    posted: list[tuple[str, dict[str, Any]]] = []
 
     class _Resp:
         status_code = 200
 
         @staticmethod
-        def json() -> Dict[str, Any]:
+        def json() -> dict[str, Any]:
             return {"ok": True, "messageId": "m-9"}
 
     class _FakeClient:
@@ -106,7 +106,7 @@ async def test_standalone_send_text_then_attachments(
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, url: str, json: Dict[str, Any], headers=None):
+        async def post(self, url: str, json: dict[str, Any], headers=None):
             posted.append((url, json))
             return _Resp()
 

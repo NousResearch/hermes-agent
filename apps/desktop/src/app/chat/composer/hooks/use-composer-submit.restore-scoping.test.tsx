@@ -12,6 +12,7 @@ import {
   announceNewSessionDraftKey,
   clearSessionDraft,
   mainComposerScope,
+  rotateFreshDraftKey,
   stashSessionDraft,
   takeSessionDraft
 } from '@/store/composer'
@@ -140,6 +141,7 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     busyRef,
     creatingSessionRef,
     getRoutedStoredSessionId: () => route,
+    routedSessionId: route,
     getRouteToken,
     navigate: to => {
       route = routeSessionId(String(to))
@@ -181,7 +183,6 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     activeQueueSessionKey,
     attachments,
     busy: false,
-    compacting: false,
     disabled: false,
     inputDisabled: false,
     drainNextQueued: async () => false,
@@ -498,4 +499,39 @@ it('does not treat arbitrary navigation during a real create as assignment of th
   expect(takeSessionDraft(null).text.trim()).toBe('unsent first question')
   act(() => navigate(null))
   expect(editorText()).toBe('unsent first question')
+})
+
+it('sends the first prompt of a chat keyed by its per-lifecycle fresh-draft scope', async () => {
+  // The composer keys an unsaved chat by `__new__:<uuid>` (composer/index.tsx
+  // activeQueueSessionKey), not null. That scope must still read as
+  // "pre-session" so the created session is not taken for composer drift.
+  const freshKey = rotateFreshDraftKey()
+  stashSessionDraft(freshKey, 'hello from a fresh chat', [])
+  $newChatRoute.set({ connectionId: 'connection-fresh-key', profile: 'default' })
+  vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, method) => {
+    if (method === 'session.create') {
+      return { session_id: 'rt-B', stored_session_id: 'stored-B', info: {} }
+    }
+
+    if (method === 'prompt.submit') {
+      return { status: 'streaming' }
+    }
+
+    throw new Error(`unexpected ${method}`)
+  })
+
+  seed({ pendingScope: freshKey }, null)
+  expect(editorText()).toBe('hello from a fresh chat')
+  act(() => handles.submit.submitDraft())
+  await waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalledTimes(2))
+  expect(
+    vi.mocked(requestGatewayForAgent).mock.calls.map(([, , method, params]) => ({
+      method,
+      text: (params as { text?: string } | undefined)?.text
+    }))
+  ).toEqual([
+    { method: 'session.create', text: undefined },
+    { method: 'prompt.submit', text: 'hello from a fresh chat' }
+  ])
+  expect(route).toBe('stored-B')
 })

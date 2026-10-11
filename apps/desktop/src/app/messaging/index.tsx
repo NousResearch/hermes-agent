@@ -20,6 +20,7 @@ import {
   getPairing,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
+  type MessagingPlatformUpdate,
   type PairingUser,
   revokePairing,
   type TelegramOnboardingApplyResponse,
@@ -46,6 +47,7 @@ import { ListRow } from '../settings/primitives'
 import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { AllowlistField } from './allowlist-field'
 import { PlatformAvatar } from './platform-icon'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
@@ -86,6 +88,20 @@ const trimEdits = (edits: Record<string, string>): Record<string, string> =>
       .map(([k, v]) => [k, v.trim()])
       .filter(([, v]) => v)
   )
+
+/** A saved allowlist emptied in its editor is a clear: trimEdits alone reads "" as untouched. */
+function platformChanges(platform: MessagingPlatformInfo, draft: Record<string, string>): MessagingPlatformUpdate {
+  const env = trimEdits(draft)
+
+  const clearEnv = platform.env_vars
+    .filter(field => field.is_list && field.is_set && draft[field.key]?.trim() === '')
+    .map(field => field.key)
+
+  return clearEnv.length ? { env, clear_env: clearEnv } : { env }
+}
+
+const hasChanges = (update: MessagingPlatformUpdate) =>
+  Object.keys(update.env || {}).length + (update.clear_env?.length ?? 0) > 0
 
 /** Stable row identity: a user id is only unique within its platform. */
 const pairingKey = (user: PairingUser) => `${user.platform}:${user.user_id}`
@@ -388,18 +404,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }
 
   async function handleSave(platform: MessagingPlatformInfo) {
-    const env = trimEdits(edits[platform.id] || {})
+    const update = platformChanges(platform, edits[platform.id] || {})
 
-    if (Object.keys(env).length === 0) {
+    if (!hasChanges(update)) {
       return
     }
 
     setSaving(`env:${platform.id}`)
 
     try {
-      const result = await updateMessagingPlatform(platform.id, { env }, scopeProfile)
-      setEdits(current => ({ ...current, [platform.id]: {} }))
+      const result = await updateMessagingPlatform(platform.id, update, scopeProfile)
+      // Refresh before dropping the drafts so list editors re-seed from the saved value, not the old one.
       await refreshPlatforms()
+      setEdits(current => ({ ...current, [platform.id]: {} }))
       settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
@@ -581,7 +598,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                 actionBar={
                   selected && (
                     <PlatformActionBar
-                      hasEdits={Object.keys(trimEdits(edits[selected.id] || {})).length > 0}
+                      hasEdits={hasChanges(platformChanges(selected, edits[selected.id] || {}))}
                       onSave={() => void handleSave(selected)}
                       onToggle={enabled => void handleToggle(selected, enabled)}
                       platform={selected}
@@ -1061,6 +1078,33 @@ function MessagingField({
   const options = field.options || []
   const selectedValue = edits[field.key] || field.value || field.default_value || options[0]?.value || ''
 
+  const tools = (
+    <>
+      {field.url && (
+        <Tip label={m.openDocs}>
+          <Button asChild className="size-8 shrink-0" variant="ghost">
+            <a href={field.url} rel="noreferrer" target="_blank">
+              <ExternalLink className="size-3.5" />
+            </a>
+          </Button>
+        </Tip>
+      )}
+      {/* A list clears by removing its last entry and saving; a second trash icon would read as "remove row". */}
+      {field.is_set && !field.is_list && (
+        <Tip label={m.clearField(field.key)}>
+          <Button
+            className="size-8 shrink-0"
+            disabled={saving === `clear:${field.key}`}
+            onClick={() => onClear(field.key)}
+            variant="ghost"
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </Tip>
+      )}
+    </>
+  )
+
   return (
     <ListRow
       action={
@@ -1069,6 +1113,15 @@ function MessagingField({
             onChange={value => onEdit(field.key, value)}
             options={options.map(option => ({ id: option.value, label: option.label }))}
             value={selectedValue}
+          />
+        ) : field.is_list ? (
+          <AllowlistField
+            field={field}
+            fieldId={fieldId}
+            label={copy.label}
+            onEdit={onEdit}
+            pending={edits[field.key]}
+            tools={tools}
           />
         ) : (
           <div className="flex w-full items-center gap-2 @2xl:w-88">
@@ -1080,27 +1133,7 @@ function MessagingField({
               type={field.is_password ? 'password' : 'text'}
               value={edits[field.key] || ''}
             />
-            {field.url && (
-              <Tip label={m.openDocs}>
-                <Button asChild className="size-8 shrink-0" variant="ghost">
-                  <a href={field.url} rel="noreferrer" target="_blank">
-                    <ExternalLink className="size-3.5" />
-                  </a>
-                </Button>
-              </Tip>
-            )}
-            {field.is_set && (
-              <Tip label={m.clearField(field.key)}>
-                <Button
-                  className="size-8 shrink-0"
-                  disabled={saving === `clear:${field.key}`}
-                  onClick={() => onClear(field.key)}
-                  variant="ghost"
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </Tip>
-            )}
+            {tools}
           </div>
         )
       }

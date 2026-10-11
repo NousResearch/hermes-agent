@@ -70,10 +70,7 @@ test('readWslWindowsClipboardImage decodes the first candidate that returns a PN
     'Bypass',
     '-EncodedCommand'
   ])
-  assert.equal(
-    Buffer.from(calls[0].args.at(-1), 'base64').toString('utf16le'),
-    WSL_CLIPBOARD_IMAGE_SCRIPT
-  )
+  assert.equal(Buffer.from(calls[0].args.at(-1), 'base64').toString('utf16le'), WSL_CLIPBOARD_IMAGE_SCRIPT)
 })
 
 test('readWslWindowsClipboardImage returns null and stops when stdout is empty (no image)', () => {

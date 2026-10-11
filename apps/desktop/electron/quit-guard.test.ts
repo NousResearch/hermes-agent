@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { type ActiveWork, backendOwnedByApp, mergeActiveWork, normalizeActiveWork, quitPromptFor, shouldGuardWindowClose } from './quit-guard'
+import {
+  type ActiveWork,
+  backendOwnedByApp,
+  mergeActiveWork,
+  normalizeActiveWork,
+  quitPromptFor,
+  shouldGuardWindowClose
+} from './quit-guard'
 
 test('normalizeActiveWork drops junk and keeps the count at least the title count', () => {
   assert.deepEqual(normalizeActiveWork(null), { count: 0, titles: [] })
@@ -133,6 +140,10 @@ test('mergeActiveWork keeps a live count when the per-window map reads empty', (
 
 test('an idle cache does not resurrect finished work', () => {
   // The cache is only refreshed by real publishes, so count=0 clears it.
-  const merged = mergeActiveWork([{ count: 0, titles: [] }, { count: 0, titles: [] }])
+  const merged = mergeActiveWork([
+    { count: 0, titles: [] },
+    { count: 0, titles: [] }
+  ])
+
   assert.equal(merged.count, 0)
 })

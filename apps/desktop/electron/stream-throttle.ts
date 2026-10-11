@@ -141,6 +141,7 @@ export function createStreamThrottle(
             timers.clearTimeout(trailing)
             trailing = null
           }
+
           if (!unthrottled) {
             unthrottled = true
             applyAll()

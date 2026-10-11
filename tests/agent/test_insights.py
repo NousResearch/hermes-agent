@@ -222,7 +222,6 @@ class TestInsightsPopulated:
         """A session that switches models mid-flight is split across both
         models in the breakdown, not dumped on the initial model (#51607).
         """
-        now = time.time()
         db.create_session(session_id="sw", source="cli",
                           model="deepseek/deepseek-v4-pro")
         # 40k tokens on deepseek, then switch and 50k on opus.
@@ -534,7 +533,7 @@ class TestEdgeCases:
         assert report["platforms"][0]["platform"] == "cli"
 
         # Terminal format should NOT show platform section for single platform
-        text = engine.format_terminal(report)
+        engine.format_terminal(report)
         # (it still shows platforms section if there's only cli and nothing else)
         # Actually the condition is > 1 platforms OR non-cli, so single cli won't show
 

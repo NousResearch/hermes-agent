@@ -520,6 +520,12 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         # Keep one Node version across targets. If unofficial musl publication
         # lags nodejs.org, the later artifact pin/download fails before the
         # lockfile is written rather than selecting glibc bytes on musl.
+        # The termux .deb is a separate supplier that lags nodejs.org by weeks
+        # (#134029): like Python's bionic row, it stays a manual pin — resolve
+        # over the nodejs.org-served targets or the pin step 404s on a .deb
+        # the termux pool has never shipped.
+        if target == "linux-arm64-bionic":
+            return []
         return node_latest_versions()
 
     def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:

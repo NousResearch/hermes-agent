@@ -1,9 +1,11 @@
 """Regression coverage for provider-authoritative cloud browser expiry."""
 
+import hashlib
 from unittest.mock import Mock
 
 from tools import browser_tool
 from plugins.browser.browser_use import provider as browser_use_provider
+from tools import browser_tool_lifecycle as bt_lifecycle
 from tools import browser_tool_session as bt_session
 from tools import browser_tool_cloud as bt_cloud
 
@@ -41,6 +43,74 @@ def test_browser_use_preserves_provider_timeout(monkeypatch):
     session = provider.create_session("task-1")
 
     assert session["expires_at"] == "2030-01-01T00:05:00Z"
+
+
+def test_uuid_browser_session_uses_compact_socket_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(bt_session._bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bt_session.os, "makedirs", Mock())
+    monkeypatch.setattr(bt_session._lifecycle, "_write_owner_pid", Mock())
+    session_name = "hermes_12345678-1234-5678-1234-567812345678_ab12cd34"
+
+    socket_dir = bt_session._prepare_session_socket_dir(session_name)
+
+    assert len(socket_dir.rsplit("/", 1)[-1]) == len("agent-browser-") + 16
+    assert socket_dir.endswith("agent-browser-" + hashlib.sha256(
+        session_name.encode("utf-8")).hexdigest()[:16])
+
+
+def test_orphan_reaper_recovers_session_name_from_compact_socket_dir(monkeypatch, tmp_path):
+    session_name = "hermes_12345678-1234-5678-1234-567812345678_ab12cd34"
+    socket_dir = tmp_path / ("agent-browser-" + hashlib.sha256(
+        session_name.encode("utf-8")).hexdigest()[:16])
+    socket_dir.mkdir()
+    (socket_dir / f"{session_name}.owner_pid").write_text("123", encoding="utf-8")
+
+    monkeypatch.setattr(bt_lifecycle._bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bt_lifecycle._bt, "_REAL_PROFILE_SESSION", "real-profile")
+    monkeypatch.setattr(bt_lifecycle._bt, "_active_sessions", {})
+    monkeypatch.setattr(bt_lifecycle, "_best_effort", lambda label, fn: None)
+    reap = Mock(return_value=False)
+    monkeypatch.setattr(bt_lifecycle, "_reap_socket_dir", reap)
+
+    bt_lifecycle._reap_orphaned_browser_sessions()
+
+    reap.assert_called_once_with(str(socket_dir), session_name, {"real-profile"})
+
+
+def test_orphan_reaper_recovers_session_name_from_pid_marker(monkeypatch, tmp_path):
+    session_name = "hermes_12345678-1234-5678-1234-567812345678_ab12cd34"
+    socket_dir = tmp_path / ("agent-browser-" + hashlib.sha256(
+        session_name.encode("utf-8")).hexdigest()[:16])
+    socket_dir.mkdir()
+    (socket_dir / f"{session_name}.pid").write_text("123", encoding="utf-8")
+
+    monkeypatch.setattr(bt_lifecycle._bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bt_lifecycle._bt, "_REAL_PROFILE_SESSION", "real-profile")
+    monkeypatch.setattr(bt_lifecycle._bt, "_active_sessions", {})
+    monkeypatch.setattr(bt_lifecycle, "_best_effort", lambda label, fn: None)
+    reap = Mock(return_value=False)
+    monkeypatch.setattr(bt_lifecycle, "_reap_socket_dir", reap)
+
+    bt_lifecycle._reap_orphaned_browser_sessions()
+
+    reap.assert_called_once_with(str(socket_dir), session_name, {"real-profile"})
+
+
+def test_release_session_resources_uses_compact_socket_dir(monkeypatch, tmp_path):
+    session_name = "hermes_12345678-1234-5678-1234-567812345678_ab12cd34"
+    socket_dir = tmp_path / ("agent-browser-" + hashlib.sha256(
+        session_name.encode("utf-8")).hexdigest()[:16])
+    socket_dir.mkdir()
+
+    monkeypatch.setattr(bt_lifecycle._bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bt_lifecycle, "_forget_session_tracking", Mock())
+    kill = Mock(return_value=True)
+    monkeypatch.setattr(bt_lifecycle, "_kill_verified_daemon", kill)
+
+    bt_lifecycle._release_session_resources("task-1", {"session_name": session_name})
+
+    kill.assert_called_once_with(str(socket_dir), session_name)
+    assert not socket_dir.exists()
 
 
 def test_live_cloud_session_is_reused(monkeypatch):

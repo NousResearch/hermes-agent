@@ -167,7 +167,10 @@ def _prepare_session_socket_dir(session_name: str) -> str:
     """Create the per-session socket dir (parallel workers must not share one) and claim it
     with our PID BEFORE first use — another hermes process's orphan reaper rmtree's any
     ownerless agent-browser-* dir in the shared tmpdir."""
-    socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
+    # agent-browser appends the full session name to this directory when constructing its
+    # Unix socket path. Keep the externally visible session name intact, but use a compact,
+    # deterministic directory component so UUID-shaped names do not exceed AF_UNIX limits.
+    socket_dir = _lifecycle._socket_dir_for_session(session_name)
     os.makedirs(socket_dir, mode=0o700, exist_ok=True)
     _lifecycle._write_owner_pid(socket_dir, session_name)
     return socket_dir

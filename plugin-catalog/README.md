@@ -118,6 +118,25 @@ meaningful:
    go upstream as a PR to its author. A fork that renames, rebrands or adds small
    changes is declined in favour of the original. A listed fork names its origin
    in its disclosure line (`Derived from <entry>`).
+17. **No unscannable executable payloads.** Everything a reviewer and the
+   install scanner read at the pinned commit must be source they can read. A
+   plugin must not ship a compiled binary (a native executable or library of
+   any OS — detected by file header, not extension: ELF, Mach-O, PE/`MZ`,
+   WebAssembly), committed Python bytecode (`.pyc`/`.pyo`, including sourceless
+   or hash-forged caches that run instead of the `.py` beside them), or an
+   archive whose members are not themselves reviewable source. A plain-text
+   source bundle (a `.tar.gz` of `.py`/`.ts`/`.md` the plugin unpacks) is read
+   like any other source; a bundle hiding a binary is not. The scanner cannot
+   read machine code, and a checksum committed in the same commit only proves
+   the file was not changed after that commit, not where it came from. If a
+   plugin genuinely needs a native component, the binary must be built by the
+   plugin repository's own public GitHub Actions from source in that repository
+   and carry a GitHub build attestation (`actions/attest-build-provenance`) tying
+   it to that workflow and commit; the gate verifies the attestation against the
+   pinned commit (`gh attestation verify --repo <owner/repo> --source-digest
+   <pinned sha>`). A binary a user's own machine fetches at setup time is allowed
+   only from the upstream tool's official source, pinned by checksum, and
+   disclosed (rule 13) — never bundled and never from an unofficial mirror.
 <!-- admission-rules:end -->
 
 The step-by-step submission guide, with the same rules and what reviewers check,

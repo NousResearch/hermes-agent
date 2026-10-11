@@ -387,6 +387,29 @@ class PythonEnvironment:
         result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
+        self._repair_linkage()
+
+    def _repair_linkage(self) -> None:
+        """Give on-device extensions their libpython before validation runs.
+
+        On Termux, ``uv sync`` installs extensions whose DT_NEEDED lacks
+        libpython, which bionic's ``dlopen`` then cannot resolve, and the
+        next startup validation discards the generation. Best effort by
+        design: the environment is already built, and a failed repair must
+        not lose it — validation still guards the result.
+        """
+        from pm.termux_linkage import repair
+
+        try:
+            patched = repair(self.destination)
+            if patched and self.output is not None:
+                print(
+                    f"linked {patched} extension(s) to libpython",
+                    file=self.output,
+                    flush=True,
+                )
+        except Exception:
+            return
 
     def export_requirements(self, source: Path, out: Path, *, extras: Sequence[str] = (),
                             timeout: int = 1800) -> None:
@@ -418,6 +441,7 @@ class PythonEnvironment:
         result = self._run(command, cwd=requirements.parent, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("pip", result.returncode, result.stderr or result.stdout)
+        self._repair_linkage()
 
     def install_wheelhouse(self, source: Path, wheelhouse: Path, *, timeout: int = 1800) -> None:
         """Install rebuilt wheels whose hashes the bundle manifest owns, not uv.lock."""

@@ -446,6 +446,10 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
                          config: Optional[ToolSearchConfig] = None,
                          connector_search: Optional[Any] = None) -> str:
     config = config or load_config()
+    # Legacy callers (cached tool definitions / model-layer normalization) still send the
+    # singular ``query`` key (#133107); tolerate it — ``queries`` stays authoritative.
+    if "queries" not in args and "query" in args:
+        args = {**args, "queries": args["query"]}
     queries, err = _string_list_arg(args, "queries", dedupe=False, max_items=_MAX_QUERIES_PER_CALL,
                                     retry_hint="Retry with fewer, more targeted queries.")
     if err:

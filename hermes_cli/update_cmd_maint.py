@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.update_cmd_common import _best_effort
+from datetime import UTC
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -142,7 +143,7 @@ def _print_fts_optimize_available_notice() -> None:
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'messages_fts'"
         ).fetchone()
-        needs_upgrade = bool(row) and getattr(db, "_db_needs_fts_storage_upgrade")(db._conn)
+        needs_upgrade = bool(row) and db._db_needs_fts_storage_upgrade(db._conn)
         # Interrupted optimize-storage: v23 table shape but backfill markers / trash
         # tables remain. Re-running resumes it, so offer the command again.
         interrupted = bool(
@@ -238,10 +239,10 @@ def _format_time_ago(iso_ts: str) -> str:
     """Render an ISO timestamp as `Xh ago` / `Xd ago` / `Xm ago`. Best effort."""
     try:
         from datetime import datetime, timezone
-        ts = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        ts = datetime.fromisoformat(iso_ts)
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        secs = int((datetime.now(timezone.utc) - ts).total_seconds())
+            ts = ts.replace(tzinfo=UTC)
+        secs = int((datetime.now(UTC) - ts).total_seconds())
         if secs < 60:
             return "just now"
         if secs < 3600:
@@ -260,7 +261,7 @@ def _reload_process_scan_modules() -> None:
 
 
 def _finish_dashboard_update_cleanup(
-    node_failures: list[str], already_restarted_units: "set[str] | None" = None
+    node_failures: list[str], already_restarted_units: set[str] | None = None
 ) -> None:
     """Historical updater hook; do not continue a pre-PM update after the swap."""
     from hermes_cli._old_updater import stop_for_relaunch
@@ -583,6 +584,7 @@ def _ensure_fhs_path_guard() -> None:
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             timeout=10,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return  # no bash or probe hung — don't block update on this
@@ -702,7 +704,7 @@ def _run_quick_snapshots() -> Optional[str]:
             keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
         )
         if _sibling_snaps:
-            print(f"◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
+            print("◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
             _record_update_step(
                 "sibling_profile_snapshots",
                 True,

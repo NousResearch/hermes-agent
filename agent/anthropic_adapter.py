@@ -197,6 +197,16 @@ def _accepts_thinking_disable(model: str) -> bool:
     )
 
 
+def _is_pre_thinking_haiku(model: str) -> bool:
+    """Haiku generations that never get a thinking request (through 4.5). Haiku 5.5+ uses adaptive thinking."""
+    from agent.anthropic_thinking_policy import claude_family_version
+
+    if "haiku" not in model.lower():
+        return False
+    parsed = claude_family_version(model)
+    return parsed is None or parsed[0] != "haiku" or parsed[1] < (5, 5)
+
+
 def _forbids_sampling_params(model: str) -> bool:
     """True for models that 400 on any non-default temperature/top_p/top_k (Opus 4.7 and later;
     unknown Claude defaults to forbidding). The 4.6 family and the legacy manual-thinking families
@@ -248,14 +258,14 @@ _CLAUDE_CODE_PREFIXES = (
 _CLAUDE_CODE_NAMES = ("claude", "claude-code")
 
 
-def _claude_code_candidates() -> List[str]:
+def _claude_code_candidates() -> list[str]:
     """Executable paths to try, deduped and filtered to files that exist.
 
     Two passes: every PATH hit first (what the user's shell would run), then the
     well-known install prefixes. A single nested loop would probe a stale prefix
     ``claude`` before a current PATH ``claude-code``.
     """
-    seen: Dict[str, None] = {}
+    seen: dict[str, None] = {}
     for name in _CLAUDE_CODE_NAMES:
         hit = shutil.which(name)
         if hit:
@@ -288,6 +298,7 @@ def _detect_claude_code_version() -> str:
             result = subprocess.run(
                 [cmd, "--version"],
                 stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+                check=False,
             )
             if result.returncode == 0 and result.stdout.strip():
                 version = result.stdout.strip().split()[0]  # "2.1.74 (Claude Code)" or "2.1.74"
@@ -351,12 +362,12 @@ def _common_betas_for_base_url(base_url: str | None, *, drop_context_1m_beta: bo
     return betas
 
 
-def _beta_header(betas: list) -> Dict[str, str]:
+def _beta_header(betas: list) -> dict[str, str]:
     """``{"anthropic-beta": ...}`` when there are betas, else ``{}``."""
     return {"anthropic-beta": ",".join(betas)} if betas else {}
 
 
-def _attribution_headers() -> Dict[str, str]:
+def _attribution_headers() -> dict[str, str]:
     """Same client-attribution set sent to OpenRouter / Vercel AI Gateway / Fireworks."""
     return {
         "HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
@@ -371,13 +382,13 @@ def _client_timeout(timeout):
     return Timeout(timeout=float(read), connect=10.0)
 
 
-def _base_client_kwargs(base_url, timeout) -> tuple[str, Dict[str, Any]]:
+def _base_client_kwargs(base_url, timeout) -> tuple[str, dict[str, Any]]:
     """Shared SDK constructor kwargs -> ``(normalized_base_url, kwargs)``. Retry is delegated to
     hermes's outer loop (``max_retries=0``): the SDK default of 2 uses its own backoff that ignores
     Retry-After and double-retries inside our loop. Any trailing ``/v1`` is stripped because the
     SDK appends ``/v1/messages``. Azure's ``api-version`` goes through ``default_query`` so the
     base_url is not corrupted into ``/anthropic?api-version=.../v1/messages``."""
-    kwargs: Dict[str, Any] = {"timeout": _client_timeout(timeout), "max_retries": 0}
+    kwargs: dict[str, Any] = {"timeout": _client_timeout(timeout), "max_retries": 0}
     normalized = re.sub(r"/v1/?$", "", _normalize_base_url_text(base_url).rstrip("/"))
     if normalized:
         kwargs["base_url"] = normalized
@@ -387,7 +398,7 @@ def _base_client_kwargs(base_url, timeout) -> tuple[str, Dict[str, Any]]:
 
 
 def _build_anthropic_client_with_bearer_hook(
-    token_provider, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False
+    token_provider, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`. The SDK stores
     ``api_key``/``auth_token`` as static strings, so per-request bearer refresh (Microsoft's
@@ -414,7 +425,7 @@ def _build_anthropic_client_with_bearer_hook(
     return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
-def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], route: str = None):
+def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route: str | None = None):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
     ``route`` is the caller's un-normalized base_url (the ``/v1`` form ``custom_providers`` entries are
     keyed by; ``kwargs["base_url"]`` has it stripped) for the per-provider ``extra_headers`` lookup.
@@ -439,7 +450,7 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], route:
     return sdk.Anthropic(**kwargs)
 
 
-def _custom_provider_extra_headers(base_url) -> Dict[str, str]:
+def _custom_provider_extra_headers(base_url) -> dict[str, str]:
     """``extra_headers`` of the ``custom_providers`` entry routed at *base_url*, else ``{}``.
     SECURITY: values routinely carry credentials (Cloudflare Access tokens) — never log them."""
     if not base_url:
@@ -470,7 +481,7 @@ def _auth_style(api_key, base_url, normalized_base_url) -> str:
     return "api_key"
 
 
-def build_anthropic_client(api_key, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False):
+def build_anthropic_client(api_key, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
     :func:`_build_anthropic_client_with_bearer_hook`). ``timeout`` overrides the 900s read timeout
@@ -537,7 +548,7 @@ def _normalize_to_mcp_wire(name: str) -> str:
     return _MCP_TOOL_PREFIX + name.removeprefix("mcp_")
 
 
-def _oauth_wire_namer(anthropic_tools: List[Dict[str, Any]]):
+def _oauth_wire_namer(anthropic_tools: list[dict[str, Any]]):
     """Return ``name -> OAuth wire name`` for this request's tool set. An alias must never collide
     with a wire name owned by a non-alias tool: two identical tool names in one request is a hard
     400, strictly worse than the bug being fixed. Mirrors normalize_response's "registered tool
@@ -596,10 +607,10 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     return system
 
 
-def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int) -> Dict[str, Any]:
+def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max_tokens: int) -> dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
-    manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
+    manual-only compat endpoints (MiniMax) get budget_tokens. Haiku through 4.5 gets none. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
     so "summarized" is requested to keep the activity feed populated."""
     if reasoning_config.get("enabled") is False:
@@ -609,7 +620,7 @@ def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max
         if _model_matches(model, _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS):
             return {"thinking": {"type": "between_tools"}}
         return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
-    if "haiku" in model.lower():
+    if _is_pre_thinking_haiku(model):
         return {}
     effort = str(reasoning_config.get("effort", "medium")).lower()
     if _supports_adaptive_thinking(model):
@@ -630,11 +641,11 @@ _TOOL_CHOICE_MAP = {None: {"type": "auto"}, "auto": {"type": "auto"}, "required"
 
 
 def build_anthropic_kwargs(
-    model: str, messages: List[Dict], tools: Optional[List[Dict]], max_tokens: Optional[int],
-    reasoning_config: Optional[Dict[str, Any]], tool_choice: Optional[str] = None,
+    model: str, messages: list[dict], tools: Optional[list[dict]], max_tokens: Optional[int],
+    reasoning_config: Optional[dict[str, Any]], tool_choice: Optional[str] = None,
     is_oauth: bool = False, preserve_dots: bool = False, context_length: Optional[int] = None,
     base_url: str | None = None, fast_mode: bool = False, drop_context_1m_beta: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build kwargs for anthropic.messages.create(). ``max_tokens`` is the OUTPUT cap for one
     response; ``context_length`` is the TOTAL window (input + output). ``max_tokens=None`` uses the
     model's native output ceiling; if that exceeds ``context_length`` (small local endpoints) it is
@@ -656,7 +667,7 @@ def build_anthropic_kwargs(
     to_wire = _oauth_wire_namer(anthropic_tools) if is_oauth else None
     if to_wire:
         system = _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire)
-    kwargs: Dict[str, Any] = {"model": model, "messages": anthropic_messages, "max_tokens": effective_max_tokens}
+    kwargs: dict[str, Any] = {"model": model, "messages": anthropic_messages, "max_tokens": effective_max_tokens}
     if system:
         kwargs["system"] = system
     if anthropic_tools:
@@ -671,8 +682,8 @@ def build_anthropic_kwargs(
             }
     # Map reasoning_config to Anthropic's thinking parameter. Claude 4.6+ models use adaptive thinking +
     # output_config.effort. Older models use manual thinking with budget_tokens. MiniMax Anthropic-compat
-    # endpoints support thinking (manual mode only, not adaptive). Haiku does NOT support extended thinking
-    # — skip entirely. Kimi / Moonshot models also use adaptive thinking: their Anthropic-compatible
+    # endpoints support thinking (manual mode only, not adaptive). Haiku through 4.5 gets no thinking
+    # request; Haiku 5.5+ is adaptive. Kimi / Moonshot models also use adaptive thinking: their Anthropic-compatible
     # endpoints (api.moonshot.cn/anthropic, api.kimi.com/coding) accept ``thinking.type="adaptive"`` +
     # ``output_config.effort``, and the replay-validation 400s that originally motivated dropping the
     # parameter (#13848) no longer occur. (Kimi on chat_completions enables thinking via extra_body in the

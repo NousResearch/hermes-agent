@@ -184,7 +184,7 @@ async def test_websocket_loop_reconnects_when_read_goes_silent(monkeypatch, capl
         task.cancel()
         try:
             await asyncio.wait_for(task, 5.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except (TimeoutError, asyncio.CancelledError):
             pass
 
     assert len(sockets) >= 2, "idle read watchdog did not force a reconnect"
@@ -247,7 +247,7 @@ async def test_websocket_loop_reconnects_when_discovery_send_sees_closed_socket(
         task.cancel()
         try:
             await asyncio.wait_for(task, 5.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except (TimeoutError, asyncio.CancelledError):
             pass
 
     assert len(sockets) >= 2, "a closed socket seen by the discovery sweep did not force a reconnect"
@@ -286,7 +286,7 @@ async def test_websocket_loop_backs_off_and_publishes_retrying_on_clean_relay_cl
         task.cancel()
         try:
             await asyncio.wait_for(task, 5.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except (TimeoutError, asyncio.CancelledError):
             pass
 
     assert len(sockets) == 1, f"clean close must back off before reconnecting, got {len(sockets)} connects in 0.3s"
@@ -526,8 +526,6 @@ def test_restricted_channels_skipped_during_subscribe():
     adapter = _make_adapter()
     adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
     adapter._restricted_channels.add(CHANNEL)
-
-    subscriptions = {}
 
     class _CountingWs:
         sent = []

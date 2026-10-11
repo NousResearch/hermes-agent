@@ -104,7 +104,7 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         app = single(root.glob("mac*/*.app"))
         subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
         signature = subprocess.run(["codesign", "-dv", "--verbose=4", str(app)], check=True, capture_output=True, text=True, encoding="utf-8")
-        team = re.search(r"^TeamIdentifier=([A-Z0-9]{10})$", signature.stderr, re.M)
+        team = re.search(r"^TeamIdentifier=([A-Z0-9]{10})$", signature.stderr, re.MULTILINE)
         if not team:
             raise ValueError("Signed app has no Developer ID team")
         with zipfile.ZipFile(package) as archive:
@@ -200,7 +200,9 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
     by_name = {item["path"]: item for item in files}
     packages = []
     for row in rows:
-        stamp_matches(row, tag, commit)
+        # record() verified each package's own stamp; a row is metadata and carries no baseVersion.
+        if row.get("commit") != commit or row.get("tag") != tag:
+            raise ValueError("Built package provenance does not match the release")
         filename = universal_name if row["platform"] == "windows" else row["filename"]
         item = by_name[filename]
         packages.append({k: v for k, v in {**row, "artifact": {"url": item["url"], "sha256": item["sha256"]}}.items() if k != "filename"})

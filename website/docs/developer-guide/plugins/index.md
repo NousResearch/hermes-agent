@@ -43,6 +43,18 @@ See the full [Pluggable interfaces table](../../user-guide/features/plugins.md#p
 Plugins that integrate **someone else's product or project** — observability/metrics backends, vendor SaaS connectors, analytics dashboards, paid-service tie-ins — are built and distributed as **standalone plugin repos**, not merged into `NousResearch/hermes-agent`. Users install them into `~/.hermes/plugins/` or via a pip entry point; everything in this guide works the same way from a standalone repo. This is a coupling-and-maintenance decision (the core moves fast and we don't own your backend), not a quality bar — a plugin can be excellent and still belong in its own repo. Promote it in the Nous Research Discord `#plugins-skills-and-skins` channel. See [CONTRIBUTING.md](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md) for the policy.
 :::
 
+:::tip Already built in: check here before you hand-roll it
+Hermes already ships these for plugin authors:
+
+- **Run the catalog check locally:** `hermes plugins validate /path/to/your-plugin --install-deps` runs the same check catalog CI runs. See [Submitting to the Plugin Catalog](./catalog-submission.md).
+- **Test your plugin in isolation:** `hermes plugins doctor [path-or-id]` runs the same discovery, manifest parser, `register(ctx)` and registries Hermes uses, with a temporary `HERMES_HOME`. See [Validate with Plugin Doctor](#validate-with-plugin-doctor).
+- **Keep state across updates:** `plugin_data_dir()` and `plugin_db()` give your plugin a data directory that survives `hermes plugins update` and `remove` and follows the active profile. See [Store durable state](#store-durable-state).
+- **Declare Python dependencies:** list them under `python_dependencies` in `plugin.yaml`, or in a `pyproject.toml` next to it. See [Python dependencies](#python-dependencies).
+- **Ship skills with your plugin:** register them with `ctx.register_skill()`. See [Bundle skills](#bundle-skills).
+- **Ask for privileged host surfaces:** declare them under `capabilities:` so users get a single consent screen. See [Declaring capabilities](#declaring-capabilities).
+- **Make LLM calls:** use `ctx.llm`, which comes with host-owned credentials and a fail-closed trust gate. See [Plugin LLM Access](../plugin-llm-access.md).
+:::
+
 ## Portable Agent Plugins v1 packages
 
 Hermes can also install and load directory packages that target the Agent
@@ -102,6 +114,32 @@ across a cross-origin redirect. Legacy `sse` entries are reported and
 skipped. Agent Plugins v1 does not define trust, permissions, provenance, or a
 sandbox. Enabling a package grants its instructions and local executable the
 same full-trust posture as other installed Hermes plugins.
+
+A package can ask Hermes to gate one of its MCP servers, the same way a user's
+`trust: untrusted` does in `config.yaml`. Use it for servers whose tools spend
+money, trade, send messages or change accounts, so the user approves each
+write-capable call instead of relying on the skill's instructions alone:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "trade": { "trust": "untrusted" }
+      }
+    }
+  }
+}
+```
+
+The server name must match an `mcp.json` entry. With `untrusted`, every tool
+call to that server that is not annotated `readOnlyHint: true` asks the user
+first, and fails closed where nobody can answer (cron, unattended runs). The
+only other accepted value is `full`, the default, so a package can narrow
+access but never widen it. A `config.yaml` server with the same name replaces
+the package's entry, including its trust. Other harnesses ignore this extension.
+`trust` can sit beside `app`, `requires` and `liveness` in the same server
+entry (see [Application declarations](./application-declarations.md)).
 
 The [rendered specification](https://agent-plugins.org/specification) currently
 labels v1.0.0 a Working Draft, while the
@@ -213,7 +251,10 @@ cd ~/.hermes/plugins/calculator
 manifest parser, namespaced import, `register(ctx)`, hook registry, and tool
 registry used by Hermes itself. It reports invalid hook names, callbacks that do
 not accept `**kwargs`, registration failures, and drift between declared and
-registered tools/hooks. Pass `--ci` to exit non-zero on an error:
+registered tools/hooks. For a package with a `desktop/plugin.js`, it also warns
+when the Desktop app is running a stale copy of it (see
+[Developing a unified package](../desktop-plugin-sdk.md#developing-a-unified-package)).
+Pass `--ci` to exit non-zero on an error:
 
 ```bash
 hermes plugins doctor . --ci
@@ -241,6 +282,13 @@ provides_hooks:
 ```
 
 This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." The `provides_tools` and `provides_hooks` fields are lists of what the plugin registers.
+
+List every tool your `register()` registers in `provides_tools`. The field does **not** decide whether a user-installed plugin's tools load: once the plugin is enabled, everything `register()` registers is available, declared or not. What it does drive:
+
+- **`hermes plugins validate`**: the "declared tools" check fails when the registered tools don't match the list, which blocks catalog admission.
+- **Catalog listing**: the "N tools" chips and tool-name search in the catalog and the dashboard/Desktop Plugins page.
+- **Dashboard auth hint**: only declared tools' availability checks are used to show "needs auth" and the `hermes auth <name>` command.
+- **Bundled `kind: platform` plugins only**: the field is the switch that loads `tools.py` in CLI/TUI sessions while the adapter stays deferred. See [Outbound client tools](../adding-platform-adapters.md#outbound-client-tools-provides_tools).
 
 Optional fields you could add:
 ```yaml
@@ -300,6 +348,84 @@ Hermes reads these from installed metadata without importing your code, so
 `hermes plugins capabilities` and the consent flow stay accurate for pip
 installs.
 
+### Use the user's Codex sign-in (core-made requests)
+
+A plugin that needs the user's ChatGPT / Codex subscription (minting an OpenAI
+Realtime client secret, calling a Codex backend endpoint) must **not** read,
+refresh or rewrite `~/.codex/auth.json` or Hermes's `auth.json`. Codex refresh
+tokens are single-use: a plugin that refreshes on its own races Hermes's locked
+refresh, and the loser's rotation chain gets revoked, signing the user out.
+Ask Hermes to make the request instead. Hermes resolves the credential through
+its own refresh path, attaches `Authorization` itself and returns only the
+response. Your code never sees the token.
+
+Declare the sign-in in `plugin.yaml`:
+
+```yaml
+name: live-voice
+requires_auth:
+  - openai-codex
+```
+
+Then call the public helper. It is a plain function, so dashboard plugins
+(`dashboard/plugin_api.py`) and vendored modules can import it as well as
+`register(ctx)` code:
+
+```python
+from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
+
+def mint_client_secret(session: dict) -> dict:
+    try:
+        resp = credentialed_provider_request(
+            "openai-codex", "POST", "https://api.openai.com/v1/realtime/client_secrets",
+            json={"session": session}, timeout=15)
+    except ProviderNotSignedIn as exc:
+        return {"ok": False, "error": str(exc)}  # tells the user how to sign in
+    if resp.status != 200:
+        return {"ok": False, "error": f"client secret failed ({resp.status}): {resp.text[:300]}"}
+    return {"ok": True, **resp.json()}
+```
+
+This replaces a hand-rolled helper that read `~/.codex/auth.json`, POSTed to
+`auth.openai.com/oauth/token` when the token was near expiry and wrote the
+result back. Delete that code; there is no refresh step left for the plugin.
+
+`credentialed_provider_request(provider, method, url, *, json=None, headers=None, timeout=30.0)`
+returns a `ProviderResponse` (`status`, `headers`, `body`, `.text`, `.json()`).
+The rules:
+
+- **Declared plugins only.** The caller is the plugin whose file is on the call
+  stack. Hermes finds it under the plugins directory and reads its
+  `plugin.yaml`. A plugin that does not list the provider in `requires_auth`,
+  and code outside any installed plugin, gets `PermissionError`. Call the helper
+  from your own function. Handing the bare helper to `run_in_executor` leaves no
+  plugin frame on the stack, so the call is refused.
+- **Provider origins only.** For `openai-codex` the token is sent only to
+  `https://chatgpt.com` and `https://api.openai.com`. Any other URL raises
+  `PermissionError` before a request is made. A profile whose Codex credential
+  routes to a custom gateway is refused too, because that key belongs to the
+  gateway.
+- **No redirects.** A 3xx response comes back as-is and is never followed, so
+  the header cannot reach a third host.
+- **Profile-scoped.** The credential is the active profile's Codex sign-in, the
+  same one chat uses (`hermes auth add openai-codex`, or the Codex sign-in in the
+  desktop app). When there is none you get `ProviderNotSignedIn`, whose message
+  names the sign-in command.
+- Your own `headers` are sent too, except any that would replace the
+  `Authorization` (or account) headers Hermes attaches.
+
+`requires_auth` appears in `hermes plugins show <name>` and at install time, and
+a catalog re-pin that adds it asks the user before updating. Like capabilities,
+this is consent and visibility. It is **not a sandbox**: in-process plugin code
+can still read any file the user can, and reviewers reject plugins that do.
+
+**Usage panels:** don't call the usage endpoints yourself. Use
+`agent.account_usage.fetch_account_usage("openai-codex", read_only=True)`. It
+returns an `AccountUsageSnapshot` (plan, session/weekly windows with
+`used_percent` and `reset_at`) and never refreshes or rotates a credential.
+**Sign-out** belongs to Hermes, not to a plugin: point users at
+`hermes auth logout openai-codex` instead of deleting credential files.
+
 ### Manifest v2 reference
 
 `plugin.yaml` also supports an additive **v2 schema** (#64165). Every field is
@@ -320,6 +446,7 @@ this Hermes understands still loads with a warning.
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
+| `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
 
 ```yaml
 # plugin.yaml — manifest v2 example
@@ -708,7 +835,8 @@ config_schema:
 **Secrets never touch `config.yaml`.** A `secret` field carries only the `.env`
 name and whether a value is set; the Desktop stores the value through the same
 credential route as provider API keys (`PUT /api/env`), and your plugin reads it
-with `os.environ.get("MY_PLUGIN_API_KEY")` — exactly like a `requires_env` entry.
+with `get_secret("MY_PLUGIN_API_KEY")` from `agent.secret_scope` — exactly like a `requires_env` entry.
+Never read `.env`, `auth.json` or another tool's credential files yourself (catalog rule 11).
 The `plugins.manage settings` action refuses secret keys and any value whose type
 or `choices` disagree with the schema.
 
@@ -1731,12 +1859,12 @@ class MyPlatformAdapter(BasePlatformAdapter):
     async def disconnect(self): ...
 
 def check_requirements():
-    import os
-    return bool(os.environ.get("MYPLATFORM_TOKEN"))
+    from agent.secret_scope import get_secret
+    return bool(get_secret("MYPLATFORM_TOKEN"))
 
 def _env_enablement():
-    import os
-    tok = os.getenv("MYPLATFORM_TOKEN", "").strip()
+    from agent.secret_scope import get_secret
+    tok = (get_secret("MYPLATFORM_TOKEN") or "").strip()
     if not tok:
         return None
     return {"token": tok}
@@ -1791,8 +1919,8 @@ class MyMemoryProvider(MemoryProvider):
         return "my-memory"
 
     def is_available(self) -> bool:
-        import os
-        return bool(os.environ.get("MY_MEMORY_API_KEY"))
+        from agent.secret_scope import get_secret
+        return bool(get_secret("MY_MEMORY_API_KEY"))
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id

@@ -101,11 +101,11 @@ class CatalogEntry:
     # GGUF general.architecture; prices architecture-specific buffers (estimator._WINDOW_COMPUTE_BYTES)
     # before the file is on disk.
     architecture: str = ""
-    mmproj: "AssetFile | None" = None    # vision projector, downloads with model
-    draft: "AssetFile | None" = None     # spec-decode draft model (e.g. DSpark)
+    mmproj: AssetFile | None = None    # vision projector, downloads with model
+    draft: AssetFile | None = None     # spec-decode draft model (e.g. DSpark)
     # MTP head shipped as its own file (the model carries none): the engine loads it as the
     # draft for MTP spec decode. Downloads with the model.
-    mtp_head: "AssetFile | None" = None
+    mtp_head: AssetFile | None = None
     sampling: dict = field(default_factory=dict)  # INI long-form launch defaults
     # Oldest llama.cpp release tag that can load this model (day-0 architectures need the release
     # where their support landed). Empty means any installed engine.
@@ -220,7 +220,7 @@ _PRODUCT_DEFAULTS = {
 }
 
 
-def _hardware_key(budget: HardwareBudget, backend: str) -> "tuple[str, str, str]":
+def _hardware_key(budget: HardwareBudget, backend: str) -> tuple[str, str, str]:
     """(platform, backend, reference GPU name) for the shipped tables; the name is empty when the
     GPU is not recognized."""
     # Drivers may append a parenthesized description to the stable device name.
@@ -246,16 +246,16 @@ def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: H
 
 
 def recommended_entry(budget: HardwareBudget,
-                      entries: "tuple[CatalogEntry, ...] | None" = None, *, backend: str = "auto"
-                      ) -> "tuple[CatalogEntry, str] | None":
+                      entries: tuple[CatalogEntry, ...] | None = None, *, backend: str = "auto"
+                      ) -> tuple[CatalogEntry, str] | None:
     """The catalog's default pick for THIS machine, with its reason key.
 
     Callers pass pre-filtered entries when some are ineligible for reasons the catalog can't know
     (engine too old). Reasons: product-default (the product's maker chose this entry and it runs
     resident); best-quality-resident (quality won among resident entries clearing the pleasant
-    floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality candidate);
-    fastest-resident (nothing resident clears the floor). Returns None when no eligible entry
-    runs resident; spilled models remain available for explicit selection.
+    floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality candidate).
+    Returns None when no eligible entry runs resident at the pleasant floor; slower and spilled
+    models remain available for explicit selection.
     """
     pool = CATALOG if entries is None else entries
     fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
@@ -275,9 +275,7 @@ def recommended_entry(budget: HardwareBudget,
         pick = max(pleasant, key=lambda t: (t[0].quality, -t[1].variant.size_bytes))[0]
         floor_gated = any(e.quality > pick.quality for e, _ in resident)
         return (pick, "speed-gated-quality" if floor_gated else "best-quality-resident")
-    if resident:
-        return (max(resident, key=speed)[0], "fastest-resident")
-    # A spilled model may be usable, but it is not a recommendation. Keep it
+    # A slow or spilled model may be usable, but it is not a recommendation. Keep it
     # discoverable through Browse so the user can opt in with the degradation visible.
     return None
 
@@ -298,7 +296,7 @@ _refresh_lock = threading.Lock()
 _last_refresh_attempt = 0.0
 
 
-def _asset_from(d: "dict | None") -> "AssetFile | None":
+def _asset_from(d: dict | None) -> AssetFile | None:
     if not d:
         return None
     return AssetFile(path=d["path"], size_bytes=int(d["size_bytes"]), local=d.get("local"),
@@ -316,7 +314,7 @@ _SCALAR_FIELDS = {
 }
 
 
-def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
+def _load_catalog(doc: dict) -> tuple[CatalogEntry, ...]:
     """Parse a catalog document. Unknown fields are ignored (newer catalogs stay readable by older
     apps); a major schema bump is the signal that they wouldn't be, and the caller skips it."""
     if int(doc.get("schema_version", 0)) != _SCHEMA_VERSION:
@@ -339,14 +337,14 @@ def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
     return tuple(entries)
 
 
-def _packaged_catalog() -> "tuple[CatalogEntry, ...]":
+def _packaged_catalog() -> tuple[CatalogEntry, ...]:
     from importlib.resources import files
 
     raw = files("hermes_cli.local_runtime").joinpath("catalog.json").read_text(encoding="utf-8-sig")
     return _load_catalog(json.loads(raw))
 
 
-CATALOG: "tuple[CatalogEntry, ...]" = _packaged_catalog()
+CATALOG: tuple[CatalogEntry, ...] = _packaged_catalog()
 
 
 def refresh_catalog(force: bool = False) -> bool:
@@ -364,7 +362,7 @@ def refresh_catalog(force: bool = False) -> bool:
         req = urllib.request.Request(_CATALOG_URL, headers={"User-Agent": "hermes-local-runtime"})
         with urllib.request.urlopen(req, timeout=10) as r:
             fetched = _load_catalog(json.load(r))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("catalog refresh skipped: %s", exc)
         return False
     if fetched != CATALOG:
@@ -385,7 +383,7 @@ def catalog_by_id() -> dict[str, CatalogEntry]:
     return {entry.id: entry for entry in CATALOG}
 
 
-def find_entry_for_model(model_id: str) -> "tuple[CatalogEntry, QuantVariant] | None":
+def find_entry_for_model(model_id: str) -> tuple[CatalogEntry, QuantVariant] | None:
     """Locate the entry + variant that owns a staged model id."""
     for entry in CATALOG:
         for variant in entry.variants:
@@ -394,6 +392,6 @@ def find_entry_for_model(model_id: str) -> "tuple[CatalogEntry, QuantVariant] | 
     return None
 
 
-def entry_for_model(model_id: str) -> "CatalogEntry | None":
+def entry_for_model(model_id: str) -> CatalogEntry | None:
     hit = find_entry_for_model(model_id)
     return hit[0] if hit is not None else None

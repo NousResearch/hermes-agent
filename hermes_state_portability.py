@@ -9,7 +9,7 @@ import json
 import math
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
@@ -18,6 +18,7 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
 from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
+import itertools
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -87,7 +88,7 @@ def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Op
 _PROMPT_RESOLVED_SQL = "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved"
 
 
-def _export_timings(messages: List[Dict[str, Any]], session_id: Optional[str] = None) -> Dict[str, Any]:
+def _export_timings(messages: list[dict[str, Any]], session_id: Optional[str] = None) -> dict[str, Any]:
     """Text-free timing evidence for a session export.
 
     Exports get attached to bug reports; a reader should not have to infer from raw
@@ -106,9 +107,9 @@ def _export_timings(messages: List[Dict[str, Any]], session_id: Optional[str] = 
     intervals = [{
         "from_message_id": prev.get("id"), "to_message_id": nxt.get("id"),
         "from_role": prev.get("role"), "to_role": nxt.get("role"),
-        "gap_ms": max(0, int(round((nxt_ts - prev_ts) * 1000))),
-    } for (prev, prev_ts), (nxt, nxt_ts) in zip(timestamped, timestamped[1:])]
-    iso = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()  # noqa: E731
+        "gap_ms": max(0, round((nxt_ts - prev_ts) * 1000)),
+    } for (prev, prev_ts), (nxt, nxt_ts) in itertools.pairwise(timestamped)]
+    iso = lambda ts: datetime.fromtimestamp(ts, tz=UTC).isoformat()
     first_ts, last_ts = (timestamped[0][1], timestamped[-1][1]) if timestamped else (None, None)
     return {
         "source": "message_timestamps",
@@ -118,7 +119,7 @@ def _export_timings(messages: List[Dict[str, Any]], session_id: Optional[str] = 
         "message_timestamps": {"available": len(timestamped), "missing": len(messages) - len(timestamped)},
         "first_message_at": iso(first_ts) if first_ts is not None else None,
         "last_message_at": iso(last_ts) if last_ts is not None else None,
-        "wall_clock_ms": max(0, int(round((last_ts - first_ts) * 1000))) if timestamped else None,
+        "wall_clock_ms": max(0, round((last_ts - first_ts) * 1000)) if timestamped else None,
         "largest_gap_ms": max(i["gap_ms"] for i in intervals) if intervals else None,
         "role_counts": dict(role_counts),
         "tool_result_count": role_counts.get("tool", 0),
@@ -190,7 +191,7 @@ class SessionPortabilityMixin:
         return cls._session_compact_cols_sql
 
     @classmethod
-    def _rich_row(cls, row) -> Dict[str, Any]:
+    def _rich_row(cls, row) -> dict[str, Any]:
         """Session row dict with ``_preview_raw`` shaped into ``preview``."""
         s = cls._session_row_dict(row)
         s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
@@ -201,7 +202,7 @@ class SessionPortabilityMixin:
         with self._read_ctx() as conn:
             return conn.execute(sql, params).fetchall()
 
-    def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
+    def distinct_session_cwds(self, include_archived: bool = False) -> list[dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery. Aggregates
         across ALL history; children/branches count (a worktree session is a real
         workspace signal)."""
@@ -215,7 +216,7 @@ class SessionPortabilityMixin:
         return [{"cwd": r["cwd"], "sessions": int(r["sessions"] or 0), "last_active": float(r["last_active"] or 0)}
                 for r in rows]
 
-    def list_cron_job_runs(self, job_id: str, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
+    def list_cron_job_runs(self, job_id: str, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
         """Run sessions of one cron job, newest first, in the ``list_sessions_rich`` row shape.
         Cron runs are flat ``cron_{job_id}_{timestamp}`` sessions that never compress or
         branch, so this skips ``list_sessions_rich``'s compression-chain CTE /
@@ -231,7 +232,7 @@ class SessionPortabilityMixin:
         )
         return [self._rich_row(row) for row in self._read_rows(query, (prefix, prefix_hi, limit, offset))]
 
-    def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
+    def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.
         ``compact_rows=True`` omits the ``system_prompt`` blob. Public alias:
         :meth:`get_session_rich_row` (web server hydration)."""
@@ -239,7 +240,7 @@ class SessionPortabilityMixin:
 
     get_session_rich_row = _get_session_rich_row
 
-    def _get_session_rich_rows_batch(self, session_ids, compact_rows: bool = False) -> Dict[str, Dict[str, Any]]:
+    def _get_session_rich_rows_batch(self, session_ids, compact_rows: bool = False) -> dict[str, dict[str, Any]]:
         """Enriched rows for many sessions in one query, keyed by id; missing ids are absent
         (a page of compression tips resolves in one round trip)."""
         ids = [sid for sid in session_ids if sid]
@@ -249,7 +250,7 @@ class SessionPortabilityMixin:
         # callers exist. Chunk here — the single choke point.
         _CHUNK = 900
         if len(ids) > _CHUNK:
-            result: Dict[str, Dict[str, Any]] = {}
+            result: dict[str, dict[str, Any]] = {}
             for start in range(0, len(ids), _CHUNK):
                 result.update(self._get_session_rich_rows_batch(ids[start:start + _CHUNK], compact_rows=compact_rows))
             return result
@@ -261,7 +262,7 @@ class SessionPortabilityMixin:
         )
         return {s["id"]: s for s in map(self._rich_row, self._read_rows(query, ids))}
 
-    def list_skill_scaffolded_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
+    def list_skill_scaffolded_sessions(self, limit: int = 200) -> list[dict[str, Any]]:
         """Titled sessions whose first user turn was a ``/skill`` invocation or a gateway
         auto-load scaffold (their titles describe the expanded skill body, not the
         request). Returns ``id``, ``title`` and the first-turn ``content`` so callers can
@@ -283,13 +284,13 @@ class SessionPortabilityMixin:
 
     # ── Export ─────────────────────────────────────────────────────────────
 
-    def _with_messages(self, session: Dict[str, Any], include_compacted: bool = False,
-                       include_inactive: bool = False) -> Dict[str, Any]:
+    def _with_messages(self, session: dict[str, Any], include_compacted: bool = False,
+                       include_inactive: bool = False) -> dict[str, Any]:
         messages = self.get_messages(session["id"], include_inactive=include_inactive, include_compacted=include_compacted)
         return {**session, "messages": messages, "timings": _export_timings(messages, session["id"])}
 
     def export_session(self, session_id: str, include_compacted: bool = False,
-                       include_inactive: bool = False) -> Optional[Dict[str, Any]]:
+                       include_inactive: bool = False) -> Optional[dict[str, Any]]:
         """Export a single session with all its messages as a dict. ``include_compacted`` adds the turns
         in-place compaction archived (the history the user still sees); it stays off for payloads that go
         back through :meth:`import_sessions`, because that projection is deduped and ordered for display, and
@@ -299,7 +300,7 @@ class SessionPortabilityMixin:
         return self._with_messages(session, include_compacted, include_inactive) if session else None
 
     def export_session_lineage(self, session_id: str, include_compacted: bool = False,
-                               include_inactive: bool = False) -> Optional[Dict[str, Any]]:
+                               include_inactive: bool = False) -> Optional[dict[str, Any]]:
         """Export a compression lineage as one logical session dict (flags as in :meth:`export_session`)."""
         lineage_ids = self.get_compression_lineage(session_id)
         if not lineage_ids:
@@ -315,8 +316,8 @@ class SessionPortabilityMixin:
             "messages": messages, "timings": _export_timings(messages, session_id),
         }
 
-    def export_all(self, source: str = None, include_compacted: bool = False,
-                   include_inactive: bool = False) -> List[Dict[str, Any]]:
+    def export_all(self, source: str | None = None, include_compacted: bool = False,
+                   include_inactive: bool = False) -> list[dict[str, Any]]:
         """Export all sessions (with messages) as dicts, e.g. for JSONL backup (flags as in
         :meth:`export_session`; that display read dedupes per session, so it skips the batched read).
         Backups that go back through :meth:`import_sessions` pass ``include_inactive`` so
@@ -342,7 +343,7 @@ class SessionPortabilityMixin:
         return [{**session, "messages": messages_by_session[session["id"]],
                  "timings": _export_timings(messages_by_session[session["id"]], session["id"])} for session in sessions]
 
-    def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> Dict[str, Any]:
+    def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> dict[str, Any]:
         """Adopt *session_id*'s full compression lineage from *donor_db* (stranded-bot-session
         heal: a profile bot's rows accumulated in the DEFAULT profile's state.db before the
         desktop routed session RPCs by target session). Pure composition
@@ -514,7 +515,7 @@ class SessionPortabilityMixin:
             return default
         return number
 
-    def _normalize_import_message(self, message: Dict[str, Any], message_index: int) -> Dict[str, Any]:
+    def _normalize_import_message(self, message: dict[str, Any], message_index: int) -> dict[str, Any]:
         """Type-check one payload message; raises ValueError naming the offending field."""
         clean_message = dict(message)
         role = clean_message.get("role")
@@ -576,7 +577,7 @@ class SessionPortabilityMixin:
             return None
         return number if math.isfinite(number) else None
 
-    def _normalize_import_session(self, raw: Dict[str, Any], session_id: str, messages: list) -> Dict[str, Any]:
+    def _normalize_import_session(self, raw: dict[str, Any], session_id: str, messages: list) -> dict[str, Any]:
         """Type-check one payload session + its messages; raises ValueError."""
         clean_session = dict(raw)
         clean_session["id"] = session_id
@@ -595,16 +596,16 @@ class SessionPortabilityMixin:
             if isinstance(value, int) and not isinstance(value, bool) and not (
                     self._SQLITE_INT_MIN <= value <= self._SQLITE_INT_MAX):
                 raise ValueError(f"{field} is outside SQLite's integer range")
-        clean_messages: List[Dict[str, Any]] = []
+        clean_messages: list[dict[str, Any]] = []
         for message_index, message in enumerate(messages):
             clean_messages.append(self._normalize_import_message(message, message_index))
         return {"session": clean_session, "messages": clean_messages}
 
-    def _validate_import_payload(self, sessions: List[Dict[str, Any]]) -> tuple:
+    def _validate_import_payload(self, sessions: list[dict[str, Any]]) -> tuple:
         """Size/shape/type validation of the whole payload; returns ``(normalized_items,
         errors)``. Every rejected entry is reported."""
-        normalized: List[Dict[str, Any]] = []
-        errors: List[Dict[str, Any]] = []
+        normalized: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         totals = {"messages": 0, "bytes": 0}
         for index, raw in enumerate(sessions):
@@ -621,7 +622,7 @@ class SessionPortabilityMixin:
             normalized.append({"index": index, **item})
         return normalized, errors
 
-    def _validate_import_session(self, raw: Any, session_id: str, seen_ids: set, totals: Dict[str, int]) -> Dict[str, Any]:
+    def _validate_import_session(self, raw: Any, session_id: str, seen_ids: set, totals: dict[str, int]) -> dict[str, Any]:
         """One payload session -> normalized item; ValueError(message) on rejection. *totals*
         accumulate before their limit check (a rejected oversize entry still counts)."""
         if not isinstance(raw, dict):
@@ -655,7 +656,7 @@ class SessionPortabilityMixin:
             raise ValueError("messages exceeds the total import limit")
         return item
 
-    def _import_session_row(self, conn, raw: Dict[str, Any], messages: List[Dict[str, Any]], session_id: str) -> None:
+    def _import_session_row(self, conn, raw: dict[str, Any], messages: list[dict[str, Any]], session_id: str) -> None:
         """INSERT one normalized session + its messages; counts fixed up after."""
         started_at = coerce_epoch(raw.get("started_at"), session_id=session_id, field="started_at")
         params = {
@@ -677,8 +678,8 @@ class SessionPortabilityMixin:
         # A row exported archived (``include_inactive``) must stay archived: inserted live, compacted or
         # rewound turns would re-enter model context. Flags are coerced like the int session columns, so a
         # hand-edited "0" archives and a missing/null/unparsable flag imports live (older exports have none).
-        live: List[Dict[str, Any]] = []
-        archived: List[Dict[str, Any]] = []
+        live: list[dict[str, Any]] = []
+        archived: list[dict[str, Any]] = []
         for msg in sanitized_messages:
             (live if self._coerce_or(msg.get("active"), int, 1) else archived).append(msg)
         self._insert_message_rows(conn, session_id, sanitized_messages, prune_checkpoints=False)
@@ -695,7 +696,7 @@ class SessionPortabilityMixin:
                       session_id))
 
     @staticmethod
-    def _attach_import_parents(conn, parent_updates: List[tuple]) -> int:
+    def _attach_import_parents(conn, parent_updates: list[tuple]) -> int:
         """Re-attach imported children whose parent exists (in the store or the same payload)
         without creating a cycle; returns the detached count. Only the closing edge of a
         cycle is dropped, so later entries can still attach to the now-root session."""
@@ -729,7 +730,7 @@ class SessionPortabilityMixin:
                 detached += 1
         return detached
 
-    def import_sessions(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def import_sessions(self, sessions: list[dict[str, Any]]) -> dict[str, Any]:
         """Import sessions exported by :meth:`export_session` or ``export_all``. Existing ids
         are skipped. A child keeps its parent only when the parent exists or is in the
         same payload; otherwise it is detached so partial imports pass FK validation.
@@ -753,9 +754,9 @@ class SessionPortabilityMixin:
             return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}
 
         def _do(conn):
-            imported_ids: List[str] = []
-            skipped_ids: List[str] = []
-            parent_updates: List[tuple[str, str]] = []
+            imported_ids: list[str] = []
+            skipped_ids: list[str] = []
+            parent_updates: list[tuple[str, str]] = []
             for item in normalized:
                 raw = item["session"]
                 session_id = str(raw.get("id") or "").strip()

@@ -107,7 +107,7 @@ def test_verify_fleet_hands_stale_rows_to_survivor_signalling(monkeypatch):
     import hermes_cli.update_cmd_fleet as fleet_mod
     import hermes_cli.update_cmd_fleet_verify as fleet_verify
     import hermes_cli.update_cmd_stale_survivors as surv
-    import hermes_cli.update_cmd as update_cmd
+    from hermes_cli import update_cmd
     from hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
 
     stale_fleet = [{"profile": "default", "pid": 4242, "state": "stale", "code_sha": "a" * 40}]

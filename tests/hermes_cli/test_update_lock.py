@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import update_lock
 from hermes_cli.update_lock import (
     HANDOFF_PID_ENV,
     UPDATE_MARKER_MAX_AGE_SECONDS,
@@ -755,6 +756,7 @@ class TestAncestryHandoff:
         result = subprocess.run(
             [sys.executable, "-I", "-B", "-c", middle],
             capture_output=True, text=True, timeout=120,
+            check=False,
         )
         assert result.returncode == 0, result.stderr
         assert "ADOPTED" in result.stdout
@@ -792,6 +794,7 @@ class TestAncestryHandoff:
             result = subprocess.run(
                 [sys.executable, "-I", "-S", "-B", "-c", leaf],
                 capture_output=True, text=True, timeout=120,
+                check=False,
             )
             assert result.returncode == 0, result.stderr
             assert "REFUSED" in result.stdout
@@ -940,6 +943,7 @@ def test_unwritable_lock_file_still_locks_the_checkout(tmp_path):
          "sys.exit(0 if UpdateLock(path=__import__('pathlib').Path(sys.argv[1]), install_root=sys.argv[2]).acquire() else 3)",
          str(tmp_path / "b" / ".hermes-update-in-progress"), str(root)],
         cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)}, stdin=subprocess.DEVNULL, timeout=60,
+        check=False,
     )
     first.release()
     assert second.returncode == 3, "a second update ran while the read-only-locked checkout was held"
@@ -979,3 +983,23 @@ def test_checkout_lock_never_writes_through_a_link_to_a_file_outside_the_install
     assert lock.acquire() is False
     assert lock.holder is not None and lock.holder.reason
     assert outside.read_bytes() == b"PRECIOUS USER DATA"
+
+
+def test_whole_second_creation_time_in_our_own_second_is_us(marker):
+    """The macOS hand-off shell writes `ct:<secs>.000` (ps lstart has no sub-second part) for the
+    update child it names as delegate. That is our incarnation, so the child adopts the claim
+    instead of refusing its own hand-off as "another update"."""
+    import math
+
+    own = process_create_time()
+    assert update_lock.incarnation_live(os.getpid(), float(math.floor(own))) is True
+
+    parent = os.getppid()
+    marker.write_text(
+        f"{parent}\n{int(time.time())}\nct:{math.floor(process_create_time(parent))}.000\n"
+        f"delegate:{os.getpid()} ct:{math.floor(own)}.000\n",
+        encoding="utf-8", newline="",
+    )
+    assert update_lock.judge_marker(marker.read_bytes())[0] == "ours"
+    # A whole second from an EARLIER second is a killed update's pid reused: still not us.
+    assert update_lock.incarnation_live(os.getpid(), float(math.floor(own)) - 1) is False

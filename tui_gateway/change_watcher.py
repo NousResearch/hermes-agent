@@ -102,7 +102,7 @@ def _pet_sig() -> tuple:
         if active := _active_pet():
             pet, scale = active
             return (pet.slug, _pet_sheet_revision(pet.spritesheet), scale)
-    except Exception:  # noqa: BLE001 - cosmetic, never break the watcher
+    except Exception:
         pass
     return ("off",)
 
@@ -114,7 +114,7 @@ def _pet_changed_payload() -> dict:
             pet, scale = active
             return {"enabled": True, "slug": pet.slug, "displayName": pet.display_name,
                     "scale": scale, "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)}
-    except Exception:  # noqa: BLE001 - cosmetic, never break the watcher
+    except Exception:
         pass
     return {"enabled": False}
 
@@ -177,7 +177,7 @@ def _session_db_content_sig(db_path: Path):
                 digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
                 digest.update(b"\0")
             signature = (fields, digest.digest())
-    except Exception:  # noqa: BLE001 - preserve the old wake-up signal if the read probe cannot run
+    except Exception:
         # A busy/locked read after a good one keeps the last digest and leaves the cached mtime
         # stale so the next pass re-reads: digest -> mtime -> digest would broadcast twice.
         if cached is not None and cached[1] is not None and cached[1][0] != "mtime-fallback":
@@ -284,16 +284,16 @@ def _bot_relay_outbox_sig():
 # persists platform connect/disconnect/health (the Messaging page's status signal).
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
-    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), lambda: {}),
-    "sessions.changed": (0.5, _sessions_sig, lambda: {}),
+    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), dict),
+    "sessions.changed": (0.5, _sessions_sig, dict),
     # Projects created/switched by CLI or agent tooling write projects.db without any
     # state.db movement, so sessions.changed never fires and the desktop Projects
     # sidebar goes stale until a manual refresh (#56757).
-    "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), lambda: {}),
-    "projects.changed": (2.0, _projects_sig, lambda: {}),
-    "pairing.changed": (2.0, _pairing_sig, lambda: {}),
+    "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), dict),
+    "projects.changed": (2.0, _projects_sig, dict),
+    "pairing.changed": (2.0, _pairing_sig, dict),
     # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.
-    "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, lambda: {})}
+    "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, dict)}
 
 # state.db moves on every append of a streaming turn and gateway_state.json on
 # in-flight bookkeeping; the floor coalesces bursts to one broadcast per window,
@@ -315,7 +315,7 @@ def _broadcast_watched_changes(now: float | None = None) -> None:
         _change_checked_at[event] = now
         try:
             sig = sig_fn()
-        except Exception:  # noqa: BLE001 - a broken probe must not kill the loop
+        except Exception:
             continue
         if event not in _change_sigs:
             _change_sigs[event] = sig

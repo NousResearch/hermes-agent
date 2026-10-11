@@ -1,10 +1,12 @@
 """Bundled-skill maintenance ops: reset, diff, list-modified, opt-out, remove-pristine.
 Profile-scoped paths and patchable helpers resolve through ``_ss()`` at call time."""
 
+import os
+import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from tools.skills_sync_optional import _skill_file_list, _ss
+from tools.skills_sync_optional import _ignore_runtime_cache, _skill_file_list, _ss
 
 
 def _bundled_state():
@@ -78,7 +80,10 @@ def ensure_bundled_skill(name: str) -> dict:
     """Make bundled ``name`` active: ``{ok, action, path, message}``, action ``present`` (any active
     copy, user edits included, is left alone), ``restored`` (copied from the bundled source and
     re-tracked, so an opt-out, curator prune or manual delete no longer hides it), or
-    ``hub_shadowed`` (a hub install owns the name; it is the user's to remove, never overwritten)."""
+    ``hub_shadowed`` (a hub install owns the name; it is the user's to remove, never overwritten).
+    A restore into a leftover dir only adds the missing files (a user file is never overwritten) and
+    the manifest records the bundled hash, so a dest that kept user files reads as user-modified and
+    ``hermes update`` leaves it alone: intended, the user's data wins."""
     from tools import skill_usage
     ss, manifest, bundled_dir, bundled_by_name = _bundled_state()
     src = bundled_by_name[name]
@@ -88,15 +93,29 @@ def ensure_bundled_skill(name: str) -> dict:
             f"'{name}' is a built-in skill, but a skill installed from the hub uses the same name and "
             f"shadows it. To get the built-in back: `hermes skills uninstall {name}`, then "
             f"`hermes skills install {name}`.")}
+    # The rglob walk does not descend a symlinked category the loader follows, so the canonical
+    # SKILL.md counts as present too.
+    skill_md = dest / "SKILL.md"
     active = next((md.parent for md in ss._iter_active_skill_mds()
-                   if ss._read_skill_name(md, md.parent.name) == name), None)
+                   if ss._read_skill_name(md, md.parent.name) == name), None) or (
+        dest if skill_md.is_file() and ss._read_skill_name(skill_md, name) == name else None)
     if active is not None or name in ss._build_external_skill_index():
         return {"ok": True, "action": "present", "path": active, "message": ""}
     try:  # the hub's containment check: a symlinked category must not carry the copy out of skills/
+        from pm.filesystem import is_junction
         from tools.skills_hub_install import _resolve_lock_install_path
         rel = dest.relative_to(ss._skills_dir()).as_posix()
         _resolve_lock_install_path(rel, dest.name)
-        ss._copy_dir(src, dest)
+        # A dir with no SKILL.md (a delete or earlier copy that died partway) is no skill; filling in
+        # its missing files beats failing with EEXIST on every retry. A link inside it would carry the
+        # copy out of skills/, and a SKILL.md there is another skill: refuse both.
+        if os.path.lexists(skill_md):
+            raise ValueError("the directory holds a different skill's SKILL.md")
+        if dest.exists() and any(p.is_symlink() or is_junction(p) for p in dest.rglob("*")):
+            raise ValueError("the leftover directory contains a symlink or junction")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dest, ignore=_ignore_runtime_cache, dirs_exist_ok=True,
+                        copy_function=lambda s, d: d if os.path.lexists(d) else shutil.copy2(s, d))
     except (OSError, ValueError) as e:
         return {"ok": False, "action": "not_restored", "path": dest,
                 "message": f"Could not copy the built-in skill '{name}' to {dest}: {e}"}
@@ -107,14 +126,14 @@ def ensure_bundled_skill(name: str) -> dict:
     return {"ok": True, "action": "restored", "path": dest, "message": ""}
 
 
-def list_user_modified_bundled_skills() -> List[dict]:
+def list_user_modified_bundled_skills() -> list[dict]:
     """Bundled skills ``hermes update`` keeps because the user edited them (same test the sync
     loop uses). Name-sorted ``{"name", "dest", "bundled_src"}`` dicts."""
     ss = _ss()
     if not (manifest := ss._read_manifest()):
         return []
     bundled_dir = ss._get_bundled_dir()
-    modified: List[dict] = []
+    modified: list[dict] = []
     for skill_name, skill_dir in ss._discover_bundled_skills(bundled_dir):
         origin_hash = manifest.get(skill_name, "")  # empty = untracked/un-baselined v1: next sync handles it
         dest = ss._compute_relative_dest(skill_dir, bundled_dir)
@@ -123,7 +142,7 @@ def list_user_modified_bundled_skills() -> List[dict]:
     return sorted(modified, key=lambda e: e["name"])
 
 
-def _read_for_diff(path: Path) -> Tuple[Optional[bytes], Optional[str]]:
+def _read_for_diff(path: Path) -> tuple[Optional[bytes], Optional[str]]:
     """``(raw_bytes, text)`` for diffing; ``text=None`` for binary, ``(None, None)`` if unreadable."""
     try:
         data = path.read_bytes()
@@ -153,7 +172,7 @@ def diff_bundled_skill(name: str) -> dict:
         return _fail(True, f"No local copy of '{name}' found at {dest}.")
     user_files = set(_skill_file_list(dest))
     stock_files = set(_skill_file_list(bundled_src))
-    diffs: List[dict] = []
+    diffs: list[dict] = []
     for rel in sorted(user_files | stock_files):
         if rel not in stock_files:
             diffs.append({"path": rel, "status": "added", "diff": f"+ only in your copy: {rel}"})
@@ -211,8 +230,8 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
     their manifest entry so a later opt-in re-seed treats them as new.
     Returns ``{ok, removed, skipped: [{name, reason}], dry_run, message}``."""
     ss, manifest, bundled_dir, bundled_by_name = _bundled_state()
-    removed: List[str] = []
-    skipped: List[dict] = []
+    removed: list[str] = []
+    skipped: list[dict] = []
     for name, origin_hash in sorted(manifest.items()):
         src = bundled_by_name.get(name)
         if src is None:

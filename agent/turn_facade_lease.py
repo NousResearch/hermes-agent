@@ -10,6 +10,7 @@ bodies run on per-handle workers), not per-turn threads.
 import logging
 import os
 import threading
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -24,6 +25,10 @@ _REASON_LEASE_LOST = "session turn lease lost"
 
 LEASE_TTL_SECONDS = 300.0
 LEASE_WAIT_SECONDS = 1800.0
+# SessionDB's default write patience: a renewal waits this long for the write lock, never past the authority.
+_REFRESH_WRITE_PATIENCE_S = 20.0
+# Headroom before expiry for one BEGIN IMMEDIATE blocked in the writer's 1s busy handler, plus jitter.
+_REFRESH_EXPIRY_MARGIN_S = 2.0
 
 
 class DurableTurnLease:
@@ -34,11 +39,15 @@ class DurableTurnLease:
     written only under ``_lock``.
     """
 
-    def __init__(self, agent, db, session_id: str, holder: str) -> None:
+    def __init__(self, agent, db, session_id: str, holder: str, *, expires_at: Optional[float] = None) -> None:
         self.agent = agent
         self.db = db
         self.session_id = session_id  # id at admission; release always targets this row
         self.holder = holder
+        # Wall clock, same as the row's expires_at, never later than it: the row's committed expiry at
+        # admission, then a timestamp taken BEFORE each successful renewal (the store stamps expiry
+        # before its lock wait). Only a successful renewal moves it.
+        self._authority_deadline = time.time() + LEASE_TTL_SECONDS if expires_at is None else expires_at
         self.stop = threading.Event()
         self.refresh_interval = float(getattr(agent, "_session_turn_lease_refresh_interval", 60.0))
         self._lock = threading.Lock()
@@ -181,19 +190,41 @@ class DurableTurnLease:
             if agent._execution_thread_id is not None:
                 _set_interrupt(False, agent._execution_thread_id)
 
+    def _stop_on_exhausted_authority(self) -> bool:
+        """State.db stayed locked until no renewal can land before the row expires: stop now."""
+        logger.warning("Session turn lease refresh stayed locked through its lifetime: %s", self._current_session_id())
+        self._interrupt_turn("Session turn lease could not be refreshed; stopping to protect the transcript.")
+        return False
+
     def refresh_tick(self):
-        """One periodic renewal (every ``refresh_interval`` via the shared scheduler); a miss or
-        error interrupts the turn. Returning False stops the timer.
+        """One periodic renewal (every ``refresh_interval`` via the shared scheduler). A real
+        miss (rowcount 0) or a non-lock error interrupts the turn. A SQLite lock is a missed
+        tick only while the next attempt still lands before ``_authority_deadline``. Returning
+        False stops the timer.
+
+        Acquisition reclaims a row once ``expires_at <= now``, even if the old process is
+        alive. Holder-qualified release does not block that path, so a run of lock errors
+        must not keep this turn active up to and past the deadline. A successful renewal
+        is the only thing that moves the deadline.
 
         The holder-qualified UPDATE fences a late refresher from a successor lease. The façade's
         finally sets ``stop`` before releasing, so a holder-fenced miss observed after stop is not
         a loss."""
         if self.stop.is_set():
             return False
+        started = time.time()
+        # The whole renewal must finish before the authority runs out: a renewal still waiting on the
+        # write lock past expiry keeps this turn running while a successor reclaims the row. The
+        # margin covers one BEGIN IMMEDIATE that blocks in SQLite's busy handler past the patience.
+        patience = self._authority_deadline - _REFRESH_EXPIRY_MARGIN_S - started
+        if patience <= 0:
+            return self._stop_on_exhausted_authority()
         try:
             if self.db.refresh_session_turn_lease(
-                self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS
+                self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS,
+                patience_s=min(_REFRESH_WRITE_PATIENCE_S, patience),
             ):
+                self._authority_deadline = started + LEASE_TTL_SECONDS
                 return None
             if self.stop.is_set():
                 return False
@@ -201,9 +232,21 @@ class DurableTurnLease:
                 "Lost session turn lease while turn is active: %s", self._current_session_id()
             )
             self._interrupt_turn("Session turn lease lost; stopping to protect the transcript.")
-        except Exception:
+        except Exception as exc:
             if self.stop.is_set():
                 return False
+            from hermes_state_errors import is_sqlite_lock_error
+
+            if is_sqlite_lock_error(exc):
+                # The scheduler will not try again until one interval from now. If that attempt
+                # could not finish before the row expiry, stop before a successor can claim it.
+                if time.time() + self.refresh_interval + _REFRESH_EXPIRY_MARGIN_S >= self._authority_deadline:
+                    return self._stop_on_exhausted_authority()
+                logger.warning(
+                    "Session turn lease refresh hit a SQLite lock; will retry: %s",
+                    self._current_session_id(),
+                )
+                return None
             logger.warning(
                 "Failed to refresh session turn lease: %s", self._current_session_id(), exc_info=True,
             )
@@ -218,8 +261,23 @@ class TurnLeaseAdmission:
     """Outcome of ``admit_durable_turn_lease``: exactly one of ``lease`` / ``early_result`` may be set."""
 
     lease: Optional[DurableTurnLease] = None
-    early_result: Optional[Dict[str, Any]] = None
-    conversation_history: Optional[List[Dict[str, Any]]] = None
+    early_result: Optional[dict[str, Any]] = None
+    conversation_history: Optional[list[dict[str, Any]]] = None
+
+
+def _committed_lease_expiry(db, session_id: str, holder: str, floor: float) -> float:
+    """The admitted row's committed ``expires_at``; when unreadable, ``floor + TTL`` (taken before
+    acquisition, so never later than the real expiry). Overstating it lets a successor reclaim the
+    row while this turn still believes it holds the lease."""
+    reader = getattr(db, "session_turn_lease_expires_at", None)
+    if callable(reader):
+        try:
+            committed = reader(session_id, holder)
+            if isinstance(committed, (int, float)):
+                return float(committed)
+        except Exception:
+            logger.debug("Could not read the admitted turn lease expiry; using the pre-acquire floor", exc_info=True)
+    return floor + LEASE_TTL_SECONDS
 
 
 def _durable_session_exists(db, session_id: str) -> Optional[bool]:
@@ -237,8 +295,8 @@ def _durable_session_exists(db, session_id: str) -> Optional[bool]:
 
 
 def admit_durable_turn_lease(
-    agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
-    conversation_history: Optional[List[Dict[str, Any]]],
+    agent, *, session_id: str, relay_turn_id: str, task_context: dict[str, Any],
+    conversation_history: Optional[list[dict[str, Any]]],
 ) -> TurnLeaseAdmission:
     """Acquire the session turn lease (the row need not exist yet); build (not start) its threads.
 
@@ -283,6 +341,7 @@ def admit_durable_turn_lease(
             f"⏳ Still waiting for the other Hermes process on this session ({int(elapsed)}s)..."
         )
 
+    authority_floor = time.time()  # every acquisition attempt stamps its expiry after this instant
     if not db.acquire_session_turn_lease(
         session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
         on_wait=_on_wait, on_contended=_on_contended,
@@ -293,7 +352,9 @@ def admit_durable_turn_lease(
 
     # Assign only after admission so the finally cannot release a holder that never owned the
     # row; persist paths read the agent attr so a late flush is fenced in the same transaction.
-    lease = DurableTurnLease(agent, db, session_id, holder)
+    lease = DurableTurnLease(
+        agent, db, session_id, holder, expires_at=_committed_lease_expiry(db, session_id, holder, authority_floor),
+    )
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
@@ -343,8 +404,8 @@ def admit_durable_turn_lease(
 
 
 def carry_unadmitted_user_message(
-    early_result: Dict[str, Any], user_message: Any, persist_user_message: Any, *,
-    timestamp: Optional[float], display_kind: Optional[str], display_metadata: Optional[Dict[str, Any]],
+    early_result: dict[str, Any], user_message: Any, persist_user_message: Any, *,
+    timestamp: Optional[float], display_kind: Optional[str], display_metadata: Optional[dict[str, Any]],
     platform_id: Optional[str],
 ) -> None:
     """A follow-up that interrupted the lease wait must not consume the accepted input: append it to
@@ -362,7 +423,7 @@ def carry_unadmitted_user_message(
         not isinstance(user_message, list) or isinstance(persist_user_message, list)
     ):
         durable_content = persist_user_message
-    deferred_user: Dict[str, Any] = {
+    deferred_user: dict[str, Any] = {
         "role": "user", "content": durable_content, _PERSIST_AFTER_ADMISSION_INTERRUPT: True,
     }
     if isinstance(user_message, str) and user_message != durable_content:
@@ -376,7 +437,7 @@ def carry_unadmitted_user_message(
     append_message(early_result["messages"], deferred_user, timestamp=timestamp)
 
 
-def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> Dict[str, Any]:
+def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> dict[str, Any]:
     base = {"messages": list(conversation_history or []), "api_calls": 0, "completed": False}
     if getattr(agent, "_interrupt_requested", False):
         logger.info("session turn lease wait aborted by interrupt: %s", session_id)

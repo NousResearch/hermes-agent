@@ -36,6 +36,7 @@ if ($ChannelRequest) { $identityArgs += @('--channel-request', $ChannelRequest) 
 $Expected = (Run-Node (@($Metadata, 'identity') + $identityArgs)) | ConvertFrom-Json
 Run-Node @($Metadata, 'prepare', '--work', $Work, '--out', $Out)
 . (Join-Path $Assets 'windows-bundle-metadata.ps1')
+. (Join-Path $Assets 'windows-bundle-plugin-smoke.ps1')
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $HomeDir = Join-Path $Work 'home'
 $UserData = Join-Path $Work 'user-data'
@@ -78,11 +79,11 @@ try {
     $displayVersion = (Run-Node (@($Metadata, 'stamp', '--platform', 'win32', '--stamp', $stampPath) + $identityArgs)) | ConvertFrom-Json
     if ($ChannelRequest) {
         if ($pkg.Version.ToString() -cne $displayVersion) { throw 'Package version disagrees with channel request' }
-    } else {
-        $semverBase = ($displayVersion -split '-')[0]
-        if (-not $pkg.Version.ToString().StartsWith($semverBase + '.', [StringComparison]::Ordinal)) { throw 'Package version disagrees with stamped semver' }
-        if (-not $Tag -and $pkg.Version.ToString() -cne ($displayVersion + '.0')) { throw 'Commit package must use stamped semver with zero revision' }
+    } elseif (-not $Tag) {
+        if ($pkg.Version.ToString() -cne ($displayVersion + '.0')) { throw 'Commit package must use stamped semver with zero revision' }
     }
+    # A tagged package carries the release-time native quad (msix-shared.mjs nativeQuad), not its semver.
+    # Stable admission checks that quad against the claim epoch; here it must only match the input manifest (above).
     @{ packageFullName=$pkg.PackageFullName; publisher=$pkg.Publisher; architecture=$pkg.Architecture.ToString();
         version=$pkg.Version.ToString(); exe=$exe; root=$root; stamp=$stamp } |
         ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Out 'installed-identity.json')
@@ -92,6 +93,8 @@ try {
         Run-Node @((Join-Path $Assets 'desktop-smoke.ts'), '--exe', $exe, '--root', $root, '--origin', 'bundled',
             '--home', $HomeDir, '--user-data', $UserData, '--out', $Out, '--phase', 'installed', '--expect-commit', $Commit)
     } finally { Pop-Location }
+    # Plugins whose Python dependencies PM builds must work inside the package (#135236).
+    Test-BundlePluginInstall $root $Out
 } catch {
     $failed = $true
     $_ | Out-String | Set-Content -LiteralPath (Join-Path $Out 'native-install-error.txt')

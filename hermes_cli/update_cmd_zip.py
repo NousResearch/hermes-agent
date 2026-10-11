@@ -17,6 +17,7 @@ from typing import Collection, Optional
 from hermes_cli._early_recovery import _keep_aside
 from hermes_cli._early_recovery_zip import (
     ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap, write_zip_swap_journal, zip_entry_identity, zip_swap_owner_lock)
+from hermes_cli.update_cmd_common import _record_stop
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -342,6 +343,7 @@ def _abort_zip_update_if_dirty_tree() -> None:
     print("  Overlaying the ZIP would overwrite uncommitted edits and permanently delete untracked files.")
     print(_STASH_HINT)
     print("  To inspect: git status --porcelain")
+    _record_stop("local_changes_blocked")
     _m().sys.exit(1)
 
 
@@ -514,6 +516,7 @@ def _journaled_stage_and_swap(extracted: str, entries: list[str], root: Path, ta
             print(f"✗ ZIP fallback aborted before the swap: {recheck_reason}.")
             print("  Files appeared in the checkout while the update was downloading; committing the swap would delete them.")
             print(_STASH_HINT)
+            _record_stop("local_changes_blocked")
             _m().sys.exit(1)
         # Pre-commit gate: a target whose startup modules do not compile is refused untouched, judged
         # under the interpreter the target admits (``startup_syntax_error``, review N15).
@@ -545,6 +548,18 @@ def _journaled_stage_and_swap(extracted: str, entries: list[str], root: Path, ta
     return staged
 
 
+def _zip_stop_class(exc: BaseException, *, downloaded: bool) -> str:
+    """Closed stop token for a failed ZIP update: by exception type and errno, never its text."""
+    import errno
+
+    if getattr(exc, "errno", None) == errno.ENOSPC or (
+            isinstance(exc, RuntimeError) and str(exc).startswith("not enough free disk space")):
+        return "disk_full"  # _require_staging_space's own refusal, or ENOSPC mid-copy
+    if isinstance(exc, SyntaxError):
+        return "target_syntax_error"  # the pre-commit gate refused the extracted tree; nothing moved
+    return "zip_failed" if downloaded else "download_failed"
+
+
 def _download_and_swap_zip(branch: str, zip_url: str, target_sha: str | None = None) -> Optional[str]:
     """Download the source ZIP for *branch* and two-phase swap it into the checkout; return the commit it
     installed: the archive's own, which must equal ``target_sha`` when one is pinned.
@@ -558,9 +573,11 @@ def _download_and_swap_zip(branch: str, zip_url: str, target_sha: str | None = N
     from urllib.request import urlretrieve
     print("→ Downloading latest version...")
     tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
+    downloaded = False
     try:
         zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
         urlretrieve(zip_url, zip_path)
+        downloaded = True
         print("→ Extracting...")
         _extract_zip_safely(zip_path, tmp_dir)
         # The installed identity comes from the downloaded bytes (``git archive``'s comment), pinned or
@@ -589,6 +606,7 @@ def _download_and_swap_zip(branch: str, zip_url: str, target_sha: str | None = N
         # Two-phase replace commits all or rolls all back, so no mixed tree here — don't push a needless reinstall.
         print("  Your existing install was left in place.")
         print("  Re-run `hermes update` to retry; if the agent won't start, reinstall from https://hermes-agent.nousresearch.com")
+        _record_stop(_zip_stop_class(e, downloaded=downloaded))
         _m().sys.exit(1)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -614,6 +632,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
             "or NTFS filter holding files open) and rerun `hermes update "
             f"--branch {branch}`, or update against main with `hermes update`."
         )
+        _record_stop("branch_unsupported")
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
     # Older callers lack the snapshot/receipt/lifecycle handoff. Refuse before swap.

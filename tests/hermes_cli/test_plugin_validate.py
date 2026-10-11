@@ -489,7 +489,7 @@ def test_install_deps_probe_imports_from_the_synced_environment(tmp_path: Path, 
     import sys
 
     import pm
-    import pm.environments as environments
+    from pm import environments
     from hermes_cli.plugins_cmd_catalog import cmd_validate
 
     deps = tmp_path / "synced-site-packages"
@@ -500,6 +500,8 @@ def test_install_deps_probe_imports_from_the_synced_environment(tmp_path: Path, 
     synced_env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(Path(__file__).resolve().parents[2]), str(deps)])}
     monkeypatch.setattr(pm, "sync_venv", lambda **_kw: None)
     monkeypatch.setattr(environments, "project_python", lambda _root: Path(sys.executable))
+    monkeypatch.setattr(environments, "selected_venv", lambda _root: tmp_path / "synced-venv")
+    monkeypatch.setattr(environments, "venv_command", lambda _root, _venv, options=(): [sys.executable, *options])
     monkeypatch.setattr(environments, "activation_environment", lambda _root: synced_env)
 
     try:

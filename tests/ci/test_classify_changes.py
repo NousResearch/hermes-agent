@@ -658,7 +658,7 @@ def test_main_recovers_pr_files_instead_of_fail_open(monkeypatch, capsys):
 
 
 def test_main_still_fail_opens_when_recovery_is_empty(monkeypatch, capsys):
-    monkeypatch.setattr(_mod, "pull_request_changed_files", lambda: [])
+    monkeypatch.setattr(_mod, "pull_request_changed_files", list)
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 

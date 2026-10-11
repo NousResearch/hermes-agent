@@ -30,6 +30,14 @@ def _resume_wake_after_interrupt() -> None:
 
 
 # ── interrupt / steer / redirect ─────────────────────────────────────
+def _note_user_input(session: dict) -> None:
+    """Mark the running turn as touched by the user (also covers compute-host turns, whose agent
+    flag never reaches this process); popped by the turn's own finally."""
+    with session["history_lock"]:
+        if session.get("running"):
+            session["_turn_user_input"] = True
+
+
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
     _tts_stream_stop()  # keypress barge-in also silences streaming TTS (voice is process-global)
@@ -45,6 +53,7 @@ def _(rid, params: dict) -> dict:
                     resume_wake = False
                     return _ok(rid, {"status": "not_interrupted", "interrupted": False})
         sid = str(params.get("session_id") or "")
+        _note_user_input(session)
         if _session_uses_compute_host(session):
             try:
                 _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
@@ -99,6 +108,7 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         session, err = _sess_nowait(params, rid)
         if err:
             return err
+        _note_user_input(session)
         agent = session.get("agent")
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.

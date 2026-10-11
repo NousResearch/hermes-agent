@@ -27,13 +27,13 @@ from hermes_cli.sizefmt import format_bytes
 # provider API (Issue #26193) ---------------------------------------------------------------------------
 BUILTIN_PREFIXES = frozenset({"diff", "staged", "file", "folder", "git", "url"})
 
-_context_reference_providers: dict[str, "ContextReferenceProvider"] = {}
+_context_reference_providers: dict[str, ContextReferenceProvider] = {}
 
 
 class ContextCompletionItem:
     """A single autocomplete result from a context reference provider."""
 
-    __slots__ = ("text", "display", "meta")
+    __slots__ = ("display", "meta", "text")
 
     def __init__(self, text: str, display: str = "", meta: str = "") -> None:
         self.text = text

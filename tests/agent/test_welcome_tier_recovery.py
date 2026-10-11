@@ -292,7 +292,8 @@ class TestFreeTierCooldownCutoff:
             is_rate_limited=True, error_msg="429", api_kwargs=None, api_messages=[], messages=[],
             conversation_history=[], api_call_count=1, approx_tokens=10, provider="nous", base_url=WELCOME,
             model="nous/welcome")
-        assert "resets in ~2 min" in result["final_response"]
+        assert "refreshes in about 2 minutes" in result["final_response"]
+        assert result["free_tier"]["kind"] == "rate_limited"
 
     def test_a_subagent_of_a_desktop_session_keeps_waiting(self):
         """The child runs in a copy of the parent's context, so it reads the parent's source."""

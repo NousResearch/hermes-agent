@@ -56,7 +56,7 @@ class ProcessTerminationMixin:
                 subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
                     encoding='utf-8', errors='replace', timeout=10, creationflags=windows_hide_flags(),
-                    stdin=subprocess.DEVNULL)
+                    stdin=subprocess.DEVNULL, check=False)
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 _sigterm_quietly()
             return
@@ -130,7 +130,7 @@ class ProcessTerminationMixin:
                     logger.info("Escalated to SIGKILL for pid %d (ignored SIGTERM within %.1fs grace)", proc.pid, grace)
 
     @staticmethod
-    def _live_descendants(pid: int) -> List[int]:
+    def _live_descendants(pid: int) -> list[int]:
         """PIDs of living non-zombie descendants of host PID ``pid`` (best-effort)."""
         try:
             import psutil
@@ -146,7 +146,7 @@ class ProcessTerminationMixin:
     # escalated kill as incomplete.
     _KILL_SETTLE_SECONDS = 1.0
 
-    def _post_kill_survivors(self, session: "ProcessSession") -> List[int]:
+    def _post_kill_survivors(self, session: "ProcessSession") -> list[int]:
         """Host PIDs still alive once the kill signals have had time to land (#115490).
 
         Fail-closed: anything unverifiable counts as a survivor, so a kill
@@ -160,8 +160,8 @@ class ProcessTerminationMixin:
                 return survivors
             time.sleep(0.05)
 
-    def _probe_survivors(self, session: "ProcessSession") -> List[int]:
-        survivors: List[int] = []
+    def _probe_survivors(self, session: "ProcessSession") -> list[int]:
+        survivors: list[int] = []
         proc = getattr(session, "process", None)
         if proc is not None:
             try:

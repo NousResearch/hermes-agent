@@ -52,7 +52,7 @@ def _git_proc_running() -> bool:
         argv = (["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"]
                 if os.name == "nt" else ["pgrep", "-x", "git"])
         proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               timeout=10, creationflags=windows_hide_flags())
+                               timeout=10, creationflags=windows_hide_flags(), check=False)
         if os.name == "nt":
             return "git.exe" in proc.stdout.lower()
         return proc.returncode == 0
@@ -62,7 +62,7 @@ def _git_proc_running() -> bool:
 
 
 def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, min_age_seconds: Optional[int],
-                 default_age: int, skip_msg: str, log_removed: Callable[[Path, int], None]) -> List[str]:
+                 default_age: int, skip_msg: str, log_removed: Callable[[Path, int], None]) -> list[str]:
     """Shared guard + age-floor sweep. Never raises; skips anything it cannot stat/unlink."""
     if not directory.is_dir():
         return []
@@ -70,7 +70,7 @@ def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, m
         logger.debug(skip_msg)
         return []
     cutoff = time.time() - (min_age_seconds if min_age_seconds is not None else default_age)
-    removed: List[str] = []
+    removed: list[str] = []
     for entry in candidates():
         try:
             if entry.is_file() and (st := entry.stat()).st_mtime < cutoff:
@@ -92,7 +92,7 @@ def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, m
     return removed
 
 
-def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
+def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> list[str]:
     """Remove abandoned ``.git`` lock files under ``repo_root``; returns the removed paths.
 
     Removes only when older than the age floor AND no git process is running. Never raises: a lock we cannot
@@ -105,6 +105,131 @@ def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = N
         skip_msg="git process running; skipping stale-lock sweep",
         log_removed=lambda p, _size: logger.info("Removed stale git lock %s", p),
     )
+
+
+def release_dead_index_lock(repo_root: Path) -> bool:
+    """Drop ``.git/index.lock`` when the git that took it is proven gone, whatever its age.
+
+    A git killed while it held the index lock (an update's tree killed by the user, a probe killed
+    by its own timeout) leaves it behind, and every later merge/stash/reset refuses with "File
+    exists". The age floor above keeps such a lock for 10 minutes, so the next ``hermes update``
+    died at its fast-forward (#132089; the Windows crash cell ``mid_fetch``).
+
+    Two conditions, both required. A killed update run must be behind the lock
+    (:func:`_killed_update_owns`): necessary, never sufficient, since a user's ``git commit`` can take
+    the lock after that run died. And no git of ANY form may be working in this checkout: a
+    ``git commit`` waiting in the editor has closed its lock fd, so an absent fd proves nothing, and
+    it runs as ``git``, a dashed ``git-commit``, an alias or ``git.exe``. Linux reads every process's
+    cwd, path arguments and ``GIT_DIR`` through /proc (``_early_recovery._held_open`` with
+    ``any_git``); macOS keeps the lock while any git runs (``ps`` cannot say where); Windows scans
+    with psutil (:func:`_windows_git_in_checkout`). Whatever cannot be read keeps the lock. An
+    interrupted tree move owns its own lock judgement, so its marker defers to that repair.
+    """
+    from hermes_cli._early_recovery import _git_dir, _release_dead_index_lock, interrupted_pull_marker
+
+    root = Path(repo_root)
+    git_dir = _git_dir(root)
+    lock = git_dir / "index.lock"
+    if not lock.exists() or interrupted_pull_marker(root).exists():
+        return False
+    if not _killed_update_owns(lock):
+        return False
+    if os.name == "nt" and _windows_git_in_checkout(root) is not False:
+        return False
+    return _release_dead_index_lock(git_dir, root, any_git=True)
+
+
+def _receipt_time(value: object) -> Optional[float]:
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _killed_update_owns(lock: Path) -> bool:
+    """The last update run that started before ``lock`` was written died unfinished, its processes gone.
+
+    Read from the durable per-run records (read-only), not only ``latest.json``: a retry that kept
+    the then-live lock and failed replaced ``latest.json``, and the killed run's evidence must
+    still stand once the lock's git is gone. A run that started after the lock was written cannot
+    have left it, so a later run never discharges an earlier killed one.
+    """
+    import json
+
+    from hermes_cli import update_receipt
+
+    try:
+        written = lock.stat().st_mtime
+    except OSError:
+        return False
+    records: list[dict] = []
+    try:
+        for directory in update_receipt._receipt_dirs():
+            for path in directory.glob("update_*.json"):
+                try:
+                    record = json.loads(path.read_text(encoding="utf-8-sig"))
+                except (OSError, ValueError):
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+    except OSError:
+        pass
+    latest = update_receipt.read_latest_receipt()
+    if isinstance(latest, dict):
+        records.append(latest)  # a store from before per-run records
+    runs: dict[str, tuple[float, dict]] = {}
+    for record in records:
+        started = _receipt_time(record.get("started_at"))
+        if started is None or started > written:
+            continue
+        key = str(record.get("update_id") or id(record))
+        held = runs.get(key)
+        # One run, several copies (its archive, latest.json, a profile mirror): a terminal copy wins.
+        if held is None or (held[1].get("outcome") in ("running", "interrupted")
+                            and record.get("outcome") not in ("running", "interrupted")):
+            runs[key] = (started, record)
+    if not runs:
+        return False
+    _started, last = max(runs.values(), key=lambda run: run[0])
+    return last.get("outcome") in ("running", "interrupted") and not update_receipt._owner_alive(last)
+
+
+def _windows_git_in_checkout(root: Path) -> bool | None:
+    """Whether any git (``git.exe``, a dashed ``git-<sub>.exe``) works in ``root``; None when unknowable.
+
+    Works in: its cwd, a path argument or a ``GIT_DIR``-style variable is inside the checkout or
+    its git dir, compared by path components (``hermes-backup`` is not inside ``hermes``). Scoped to
+    the checkout: a system-wide check would keep the lock whenever any editor or terminal elsewhere
+    runs git, which on Windows is most of the time. A git whose cwd cannot be read keeps the lock.
+    """
+    from hermes_cli._early_recovery import _NEVER_LOCKS, _checkout_places, _git_dir, _git_program, \
+        _git_subcommand_of, git_works_in
+
+    try:
+        import psutil
+    except ImportError:
+        return None
+    places = _checkout_places(root, _git_dir(Path(root)))
+    try:
+        for proc in psutil.process_iter(["pid", "name", "cwd", "cmdline", "environ"]):
+            info = proc.info
+            if info.get("pid") == os.getpid():
+                continue
+            args = [str(a) for a in info.get("cmdline") or () if a]
+            if _git_program(info.get("name") or "") is None and not (args and _git_program(args[0])):
+                continue
+            if _git_subcommand_of(args or [info.get("name") or ""]) in _NEVER_LOCKS:
+                continue
+            cwd = info.get("cwd")
+            if git_works_in(args or [info.get("name") or "git"], cwd, info.get("environ"), places):
+                return True
+            if not cwd and proc.is_running():
+                return None  # a git we cannot inspect may be working here
+    except Exception:  # health: allow BLE001 -- a failed scan keeps the lock, never drops it
+        return None
+    return False
 
 
 def _pack_dir(repo_root: Path) -> Path:
@@ -208,7 +333,7 @@ def _migrate_earlier_maintenance_keys(repo_root: Path) -> None:
         logger.warning("Could not migrate earlier maintenance keys in %s", repo_root)
 
 
-def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
+def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> list[str]:
     """Remove aborted-transfer temp pack files; same contract as clear_stale_git_locks.
 
     Resolves ``.git/objects/pack`` for a checkout and ``objects/pack`` for a bare repo such as
@@ -229,7 +354,7 @@ def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = N
     )
 
 
-def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
+def _git_stdout_lines(repo_root: Path, args: list[str]) -> list[str]:
     """Run a read-only git query in ``repo_root``; [] on any failure."""
     try:
         result = run_git(
@@ -245,7 +370,7 @@ def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
         return []
 
 
-def _batch_missing_parents(repo_root: Path, candidates: List[str]) -> set[str]:
+def _batch_missing_parents(repo_root: Path, candidates: list[str]) -> set[str]:
     """Return local commit objects whose parent objects are missing.
 
     Parents are read from the commit *header* only (lines before the first blank
@@ -337,7 +462,7 @@ class _ShallowLock:
         self._path = shallow_path
         self._lock_path = shallow_path.with_name(shallow_path.name + ".lock")
 
-    def __enter__(self) -> "_ShallowLock":
+    def __enter__(self) -> _ShallowLock:
         try:
             fd = os.open(self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
@@ -498,7 +623,7 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
         return 0
 
 
-def _partial_clone_filter(repo_root: Path, **run_kwargs) -> "str | None":
+def _partial_clone_filter(repo_root: Path, **run_kwargs) -> str | None:
     """The checkout's own ``remote.origin.partialclonefilter``, or None for a non-partial clone."""
     result = run_git(
         ["git"], ["config", "--get", "remote.origin.promisor"],
@@ -593,7 +718,7 @@ def is_partial_clone_pack_objects_crash(stderr: str) -> bool:
 
 
 def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.CompletedProcess],
-                                      git_cmd: List[str], fetch_args: List[str],
+                                      git_cmd: list[str], fetch_args: list[str],
                                       repo_root: Path) -> subprocess.CompletedProcess:
     """Run a fetch; on the pack-objects BUG, mark the unmarked packs and retry it once.
 
@@ -636,7 +761,7 @@ def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
                "--filter=blob:none", "origin"]
     fetch_kwargs = dict(cwd=str(repo_root), capture_output=True, text=True,
                         encoding="utf-8", errors="replace", timeout=900, **run_kwargs)
-    subprocess.run([*refetch, "--tags"], check=False, **fetch_kwargs)
+    subprocess.run([*refetch, "--tags"], **fetch_kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **run_kwargs; an explicit check=False would raise TypeError
     if not _history_trees_complete(repo_root, **run_kwargs):
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), check=True,
                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
@@ -675,7 +800,7 @@ def convert_treeless_checkout_first(repo_root: Path) -> None:
 
 
 def _git_version(**run_kwargs) -> tuple:
-    out = subprocess.run(["git", "--version"], capture_output=True, text=True, encoding="utf-8",
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True, encoding="utf-8",  # noqa: PLW1510 -- forwarding wrapper: **run_kwargs may carry check
                          errors="replace", timeout=30, **run_kwargs).stdout
     match = re.search(r"(\d+)\.(\d+)", out)
     return (int(match[1]), int(match[2])) if match else (0, 0)
@@ -684,7 +809,7 @@ def _git_version(**run_kwargs) -> tuple:
 def _history_trees_complete(repo_root: Path, **run_kwargs) -> bool:
     """Whether every tree in HEAD's history is local, checked without fetching (~3 s for this repo)."""
     env = dict(run_kwargs.pop("env", None) or noninteractive_git_env(), GIT_NO_LAZY_FETCH="1")
-    walk = subprocess.run(
+    walk = subprocess.run(  # noqa: PLW1510 -- forwarding wrapper: **run_kwargs may carry check
         ["git", "rev-list", "--objects", "--filter=blob:none", "--missing=print", "HEAD"],
         cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=300, env=env, **run_kwargs,

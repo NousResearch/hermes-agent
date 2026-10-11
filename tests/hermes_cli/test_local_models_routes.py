@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 # The real loopback range server (shared with tests/pm): importing the
 # fixture name at module scope registers it for these tests too.
-from tests.pm._range_server import dl_server, url as _srv_url  # noqa: F401
+from tests.pm._range_server import dl_server, url as _srv_url
 
 
 @pytest.fixture

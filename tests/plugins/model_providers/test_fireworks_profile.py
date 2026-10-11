@@ -14,7 +14,7 @@ import pytest
 def fireworks_profile():
     """Resolve the registered Fireworks profile through the real discovery path."""
     # Importing model_tools triggers plugin discovery, registering the profile.
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("fireworks")

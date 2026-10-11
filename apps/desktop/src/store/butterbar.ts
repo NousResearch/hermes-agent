@@ -38,12 +38,14 @@ export const $butterbarDismissed = persistentAtom<string[]>(
   Codecs.json<string[]>(sanitizeKeys)
 )
 
-export const $butterbarItems = computed([$registered, $closedThisRun, $butterbarDismissed], (items, closed, dismissed) =>
-  items
-    .filter(item => !closed.includes(item.id) && !(item.persistKey && dismissed.includes(item.persistKey)))
-    .map((item, order) => ({ item, order }))
-    .sort((a, b) => (b.item.priority ?? 0) - (a.item.priority ?? 0) || a.order - b.order)
-    .map(({ item }) => item)
+export const $butterbarItems = computed(
+  [$registered, $closedThisRun, $butterbarDismissed],
+  (items, closed, dismissed) =>
+    items
+      .filter(item => !closed.includes(item.id) && !(item.persistKey && dismissed.includes(item.persistKey)))
+      .map((item, order) => ({ item, order }))
+      .sort((a, b) => (b.item.priority ?? 0) - (a.item.priority ?? 0) || a.order - b.order)
+      .map(({ item }) => item)
 )
 
 /** Put a notice in the bar from anywhere. Re-registering an id replaces it in

@@ -346,7 +346,7 @@ so glass and message-bubble transparency do not reveal scrolling text.
 
 ## Chat typography
 
-Appearance → Typography keeps **UI Scale** as whole-window zoom (90% by
+Appearance → Typography keeps **UI Scale** as whole-window zoom (100% by
 default). **Chat Text Size** is a separate desktop-local multiplier (110% by
 default) on conversation text and the composer editor, including floating and
 inline-edit composers.

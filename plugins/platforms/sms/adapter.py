@@ -160,7 +160,7 @@ class SmsAdapter(BasePlatformAdapter):
     # -- Outbound ------------------------------------------------------------
 
     async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         url, headers = _messages_endpoint(self._account_sid, self._auth_token)
         session = self._http_session or _new_session(trust_env=gateway_trust_env())
@@ -184,7 +184,7 @@ class SmsAdapter(BasePlatformAdapter):
             if not self._http_session and session:  # close only a fallback session we created
                 await session.close()
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "dm"}
 
     def format_message(self, content: str) -> str:

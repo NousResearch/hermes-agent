@@ -16,7 +16,7 @@ from tools import web_tools_truncate
 def test_store_full_text_is_bounded(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # Force the cache dir under the temp home.
-    from hermes_constants import get_hermes_dir  # noqa: F401
+    from hermes_constants import get_hermes_dir
     huge = "x\n" * (web_tools_truncate.MAX_STORED_TEXT_CHARS)  # > MAX_STORED_TEXT_CHARS chars
     assert len(huge) > web_tools_truncate.MAX_STORED_TEXT_CHARS
     path = web_tools_truncate._store_full_text("https://example.com/big", huge)

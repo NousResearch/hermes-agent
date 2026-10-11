@@ -301,8 +301,8 @@ class CLITuiRuntimeMixin:
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             def _prewarm_agent_runtime() -> None:
                 try:
-                    import run_agent  # noqa: F401  (imports model_tools + tool registry)
-                    import openai  # noqa: F401
+                    import run_agent
+                    import openai
                 except Exception:
                     logger.debug("agent runtime pre-import failed", exc_info=True)
 

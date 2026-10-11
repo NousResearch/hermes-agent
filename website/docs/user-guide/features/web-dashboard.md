@@ -1209,6 +1209,8 @@ The Vite dev server at `http://localhost:5173` proxies `/api` requests to the Fa
 
 The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-style components. Production builds output to `hermes_cli/web_dist/` which the FastAPI server serves as a static SPA.
 
+The build is CPU- and memory-intensive (Vite 8's Rust-native Rolldown bundler parallelizes across cores), so it is **resource-bounded by default**: the V8 heap is capped (`--max-old-space-size`, sized from the container's memory limit) and the native bundler's thread pool is limited to half the available cores (`RAYON_NUM_THREADS`), preventing the 200%+ CPU spikes and OOMs small VPS hosts otherwise hit during a build (#63338). Override with `HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE` / `HERMES_WEB_BUILD_THREADS`; set `HERMES_WEB_BUILD_LIGHT=1` to tighten the caps (1 thread, 1 GB heap) when the host cannot spare full CPU.
+
 ## Automatic Build on Update
 
 When you run `hermes update`, the web frontend is automatically rebuilt if `npm` is available. This keeps the dashboard in sync with code updates. If `npm` isn't installed, the update skips the frontend build and `hermes dashboard` will build it on first launch.

@@ -24,15 +24,15 @@ from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 
-def approval_input_words(input_key: str) -> Tuple[str, ...]:
+def approval_input_words(input_key: str) -> tuple[str, ...]:
     """Typed-reply synonyms for ``approval.inputs.<input_key>`` (comma-lists): the English words
     ALWAYS match, plus the active language's list, so a Polish pack can add "tak" without losing
     "yes". Lower-cased, de-duplicated, order preserved (English first)."""
-    seen: Dict[str, None] = {}
+    seen: dict[str, None] = {}
     key = f"approval.inputs.{input_key}"
     for raw in (t(key, lang=DEFAULT_LANGUAGE), t(key)):
         if raw == key:  # catalog miss: t() echoes the key
@@ -69,7 +69,7 @@ def _tail_has_slot(tail: str, slot: str) -> bool:
 
 def _same_chat_key_slots(
     key: str, *, prefix: str, chat_id: str, scope_id: Optional[str],
-) -> Optional[Tuple[str, str]]:
+) -> Optional[tuple[str, str]]:
     """``(chat_type, tail)`` when ``key`` names the SAME chat as ``prefix`` + ``chat_id``, else None.
 
     ``prefix`` is the key's fixed-shape head, ``agent:<profile>:<platform>:``. Everything after it is
@@ -102,7 +102,7 @@ class GatewayBusySessionMixin:
         state = self._peek_session_state(session_key)
         return state.conversation.queued_events if state else None
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
+    def _enqueue_fifo(self, session_key: str, queued_event: MessageEvent, adapter: Any) -> None:
         """Append a /queue event to the FIFO chain for a session."""
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
@@ -114,8 +114,8 @@ class GatewayBusySessionMixin:
         queued_event._gateway_accepted = True
 
     def _promote_queued_event(
-        self, session_key: str, adapter: Any, pending_event: Optional["MessageEvent"]
-    ) -> Optional["MessageEvent"]:
+        self, session_key: str, adapter: Any, pending_event: Optional[MessageEvent]
+    ) -> Optional[MessageEvent]:
         """Promote the next overflow item after the slot drained.
 
         ``pending_event`` None → the overflow head becomes the pending event; otherwise the head is
@@ -138,7 +138,7 @@ class GatewayBusySessionMixin:
             depth += 1
         return depth
 
-    def _rescue_orphaned_overflow(self, session_key: str, adapter: Any) -> Optional["MessageEvent"]:
+    def _rescue_orphaned_overflow(self, session_key: str, adapter: Any) -> Optional[MessageEvent]:
         """Pop the oldest orphaned FIFO overflow event for an idle session (None if nothing to rescue).
 
         ``queued_events`` drains only at the post-turn promotion site; a busy window ending without
@@ -359,10 +359,10 @@ class GatewayBusySessionMixin:
     @staticmethod
     def _lookup_session_id_under_store_lock(session_store, session_key: str):
         """Sync helper run in the thread pool: read session_id under the store lock."""
-        # noqa: SLF001 — intentional private access; runs off the event loop.
-        with session_store._lock:  # noqa: SLF001
-            session_store._ensure_loaded_locked()  # noqa: SLF001
-            entry = session_store._entries.get(session_key)  # noqa: SLF001
+
+        with session_store._lock:
+            session_store._ensure_loaded_locked()
+            entry = session_store._entries.get(session_key)
         return getattr(entry, "session_id", None) if entry is not None else None
 
     # Metadata that must match for two pending events to merge into one slot.
@@ -515,14 +515,14 @@ class GatewayBusySessionMixin:
 
     # Bare-word approval replies → (verb, args) for the synthesized slash command. English words
     # (and the thumbs) always match; ``approval.inputs.*`` adds the active language's synonyms.
-    _PLAINTEXT_APPROVAL_EXTRA_WORDS: Dict[str, tuple] = {"👍": ("approve", ""), "👎": ("deny", "")}
-    _PLAINTEXT_APPROVAL_INPUT_KEYS: Tuple[Tuple[str, tuple], ...] = (
+    _PLAINTEXT_APPROVAL_EXTRA_WORDS: dict[str, tuple] = {"👍": ("approve", ""), "👎": ("deny", "")}
+    _PLAINTEXT_APPROVAL_INPUT_KEYS: tuple[tuple[str, tuple], ...] = (
         ("approve", ("approve", "")), ("deny", ("deny", "")),
         ("always", ("approve", "always")), ("session", ("approve", "session")))
 
-    def _plaintext_approval_words(self) -> Dict[str, tuple]:
+    def _plaintext_approval_words(self) -> dict[str, tuple]:
         """Word → (verb, args) for the active language: the English list ∪ ``t("approval.inputs.<k>")``."""
-        words: Dict[str, tuple] = dict(self._PLAINTEXT_APPROVAL_EXTRA_WORDS)
+        words: dict[str, tuple] = dict(self._PLAINTEXT_APPROVAL_EXTRA_WORDS)
         for input_key, verb_args in self._PLAINTEXT_APPROVAL_INPUT_KEYS:
             for word in approval_input_words(input_key):
                 words.setdefault(word, verb_args)
@@ -582,7 +582,7 @@ class GatewayBusySessionMixin:
 
     async def _resolve_busy_steer_or_redirect(
         self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
-    ) -> "GatewayRunner._BusySteerOutcome":
+    ) -> GatewayRunner._BusySteerOutcome:
         """Apply interrupt->queue demotions, then attempt steer (steer mode) or redirect (interrupt mode)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         # Steer injects mid-run via running_agent.steer(), falling back to queue (nothing lost) when
@@ -723,7 +723,7 @@ class GatewayBusySessionMixin:
         return steer_ack_enabled
 
     @property
-    def _BUSY_DEMOTED_TAIL(self) -> str:  # noqa: N802 — long-standing mixin attr name
+    def _BUSY_DEMOTED_TAIL(self) -> str:
         return t("gateway.busy.demoted_tail")
 
     def _compose_busy_ack_message(
@@ -921,7 +921,7 @@ class GatewayBusySessionMixin:
         "loop", "refine", "review", "voice",
     )
 
-    def _command_handler_table(self, names) -> Dict[str, Any]:
+    def _command_handler_table(self, names) -> dict[str, Any]:
         return {
             name: getattr(
                 self, self._COMMAND_HANDLER_ALIASES.get(name, f"_handle_{name.replace('-', '_')}_command"),
@@ -949,7 +949,7 @@ class GatewayBusySessionMixin:
         return self._command_handler_table(self._IDLE_COMMANDS)
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
-    _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
+    _BUSY_SPECIAL_HANDLERS: dict[str, str] = {
         k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
     }
 
@@ -1137,7 +1137,7 @@ class GatewayBusySessionMixin:
             suffix = t("gateway.unauthorized.admin_only_none")
         return t("gateway.unauthorized.admin_only", command=canonical_cmd, suffix=suffix)
 
-    def _same_chat_runs(self, source: SessionSource, own_key: str) -> List[Tuple[str, str, str]]:
+    def _same_chat_runs(self, source: SessionSource, own_key: str) -> list[tuple[str, str, str]]:
         """``(key, chat_type, tail)`` for every OTHER running turn in the caller's chat (``tail`` is
         the key text after the chat id, ``""`` when the key ends there).
 
@@ -1166,8 +1166,8 @@ class GatewayBusySessionMixin:
         return runs
 
     def _sibling_thread_run_keys(
-        self, source: SessionSource, runs: List[Tuple[str, str, str]],
-    ) -> List[str]:
+        self, source: SessionSource, runs: list[tuple[str, str, str]],
+    ) -> list[str]:
         """Keys from ``runs`` belonging to OTHER participants in the caller's own thread (per-user
         thread mode keys are ``...:{thread_id}:{user_id}``, so another user's run is invisible to the
         caller's own ``/stop``). Callers still gate on authz."""
@@ -1182,8 +1182,8 @@ class GatewayBusySessionMixin:
         ]
 
     def _chat_scoped_run_keys(
-        self, source: SessionSource, runs: List[Tuple[str, str, str]],
-    ) -> List[str]:
+        self, source: SessionSource, runs: list[tuple[str, str, str]],
+    ) -> list[str]:
         """Keys from ``runs`` for ANY session of the same chat, whatever the chat_type/thread/
         participant slots. Two supported shapes make a /stop key miss a run in the same chat (found
         via Slack's native stop button, gateway-gateway#286): a top-level channel turn keys
@@ -1287,7 +1287,7 @@ class GatewayBusySessionMixin:
 
     async def _maybe_confirm_destructive_slash(
         self, *, event: MessageEvent, command: str, title: str, detail: str, execute
-    ) -> Union[str, "EphemeralReply", None]:
+    ) -> str | EphemeralReply | None:
         """Gate a destructive session slash command (/new, /reset, /undo).
 
         ``execute()`` (async → str | EphemeralReply) runs immediately when
@@ -1410,7 +1410,7 @@ class GatewayBusySessionMixin:
         # Text fallback — the prompt message itself is the direct reply.
         return message
 
-    def _read_user_config(self) -> Dict[str, Any]:
+    def _read_user_config(self) -> dict[str, Any]:
         """Raw config.yaml for gate lookups that must see on-disk changes without a restart."""
         try:
             from hermes_cli.config import load_config

@@ -56,7 +56,7 @@ _activity_callback_local = threading.local()
 # Foreground commands in flight in THIS process, across every environment. Each runs in its
 # own session/process group, so a host that exits mid-command (TUI client gone, SIGTERM) would
 # orphan the whole tree; the process-exit funnel ``cleanup_all_environments`` kills them.
-_live_foreground: dict[int, tuple["BaseEnvironment", "ProcessHandle"]] = {}
+_live_foreground: "dict[int, tuple[BaseEnvironment, ProcessHandle]]" = {}
 # Reentrant, and the hard-exit path only ever takes it with a timeout: a signal handler can run
 # on a thread that already holds it.
 _live_foreground_cond = threading.Condition(threading.RLock())
@@ -257,7 +257,7 @@ class BaseEnvironment(ABC):
         """
         return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
-    def __init__(self, cwd: str, timeout: int, env: dict = None):
+    def __init__(self, cwd: str, timeout: int, env: dict | None = None):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
@@ -589,7 +589,6 @@ class BaseEnvironment(ABC):
     def _before_execute(self) -> None:
         """Hook before each command. Remote backends (SSH, Modal, Daytona)
         trigger their FileSyncManager here; bind-mount backends and Local don't."""
-        pass
 
     def _mark_recreated(self) -> None:
         """Flag that the live container/sandbox was replaced while serving the

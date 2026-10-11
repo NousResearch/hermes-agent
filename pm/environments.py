@@ -338,6 +338,37 @@ def project_python(project_root: Path) -> Path:
     return venv_python(selected_venv(project_root))
 
 
+def _payload_store_python(root: Path) -> Path | None:
+    """A sealed payload's own interpreter when a venv must not be entered through its own."""
+    manifest = _payload_manifest(root)
+    if manifest is None or str(manifest.get("target", "")).endswith("-bionic"):
+        return None  # Termux payloads launch through their venv interpreter by design.
+    relative = manifest.get("runtime", {}).get("storePython")
+    if not isinstance(relative, str) or not relative:
+        return None
+    return _payload_path(root, relative, "interpreter")
+
+
+def venv_command(project_root: Path, venv: Path, options: tuple[str, ...] | list[str] = ()) -> list[str]:
+    """The argv prefix that runs Python inside *venv*; append a script, ``-c`` or ``-m``.
+
+    A sealed payload never enters a venv through ``Scripts\\python.exe``. That redirector sits
+    outside the package and starts PM's writable copy of the Python (``pm._uv._toolchain``),
+    and a process on that copy has no package identity, so Windows refuses it the package's
+    git, rg and PM worker (WinError 5). Instead the payload's own interpreter attaches the
+    venv's site-packages (``pm/_venv_entry.py``): the same contract as the payload's
+    launchers and its PM worker. Elsewhere the venv's interpreter runs as is. *options* are
+    interpreter flags (``-I``, ``-u``, ``-X …``).
+    """
+    root = Path(project_root).resolve()
+    store_python = _payload_store_python(root)
+    if store_python is None:
+        return [str(venv_python(venv)), *options]
+    entry = Path(__file__).resolve().with_name("_venv_entry.py")
+    flags = [*options, *([] if "-S" in options else ["-S"])]
+    return [str(store_python), *flags, str(entry), str(site_packages(Path(venv)))]
+
+
 def venv_python_version(venv: Path) -> tuple[int, int] | None:
     """The interpreter version a POSIX venv actually holds, or ``None``.
 
@@ -471,9 +502,10 @@ def activate_dependencies(project_root: Path) -> None:
     # `hermes` off PATH must hit the checkout's own launcher first, never the venv's copy.
     # A sealed payload's launchers live in <payload>/bin instead.
     directories = [payload_command_dir(project_root) or project_root.resolve() / ".hermes" / "bin"]
-    # A shipped venv's Windows redirectors read pyvenv.cfg `home`, which still names the
-    # build machine, so every executable in its Scripts fails on the user's machine.
-    if not (os.name == "nt" and environment == payload_venv(project_root)):
+    # A sealed payload's Windows venv redirectors never go on PATH: a shipped venv's still
+    # names the build machine, and a generation built since names PM's writable Python copy,
+    # which cannot start the package's executables (see venv_command).
+    if not (os.name == "nt" and _payload_manifest(project_root.resolve()) is not None):
         directories.append(venv_bin_dir(environment))
     prefix = [str(path) for path in directories if path.is_dir()]
     if prefix:

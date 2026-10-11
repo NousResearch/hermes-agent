@@ -52,7 +52,7 @@ def _state_endpoint() -> dict | None:
     return {"base_url": base_url, "api_key": state.get("api_key", "")}
 
 
-def managed_root() -> "tuple[str, str] | None":
+def managed_root() -> tuple[str, str] | None:
     """(base_root, api_key) of the managed router, or None. Resolved through the
     ownership-guarded reader, not a raw state-file read: on the shared stable port a foreign
     install's server answers /health for anyone, and a raw read would attach callers to someone
@@ -126,7 +126,7 @@ def _kick_managed_boot(config: dict | None) -> None:
             from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
 
             ensure_local_runtime(_load_config_if_none(config))
-        except Exception:  # noqa: BLE001 — best-effort; resolution falls back
+        except Exception:
             logger.warning("on-demand managed-server boot failed", exc_info=True)
         finally:
             _KICK_LOCK.release()

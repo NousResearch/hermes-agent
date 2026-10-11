@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
+import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
   language: {
@@ -762,7 +763,8 @@ export const zhHantSettings = {
       driverHealth: '驅動程式健康狀態'
     },
     about: {
-      updates: '更新'
+      updates: '更新',
+      channel: zhHantUpdateChannel
     },
     config: {
       minimizeToTrayTitle: '最小化至系統匣',
@@ -793,7 +795,12 @@ export const zhHantSettings = {
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
-      showOptions: '顯示選項'
+      showOptions: '顯示選項',
+      developerTitle: '開發者',
+      resetOnboardingTitle: '重設初始設定',
+      resetOnboardingDesc: '刪除設定聊天、重建設定設定檔，並再次執行首次設定。你自己的設定檔、聊天和外掛都會保留。',
+      resetOnboardingAction: '重設',
+      resetOnboardingFailed: '無法重設初始設定'
     },
     hudModifier: {
       title: '輕按叫出 HUD',
@@ -1099,12 +1106,11 @@ export const zhHantSettings = {
         'product-default': '這台機器的預設模型，由其製造商選定。',
         'best-quality-resident': '在完全駐留 GPU 且保持全速的模型中品質最高。推薦會在品質與該硬體的預計速度之間權衡。',
         'speed-gated-quality':
-          '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。',
-        'fastest-resident': '沒有模型能在該硬體上達到全速；這是完全駐留 GPU 記憶體中最快的一個。'
+          '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。'
       } as Record<string, string>,
       noRecommendationTitle: '此裝置暫無自動推薦模型',
       noRecommendationDetail:
-        '自動設定需要一個可完全放入 GPU 記憶體或統一記憶體的精選模型。你仍可在下方自行選擇，或瀏覽更多模型。',
+        '自動設定需要一個可完全駐留 GPU 記憶體或統一記憶體並保持全速的精選模型。你仍可在下方自行選擇，或瀏覽更多模型。',
       noRecommendationAction: '瀏覽模型',
       quickstartConfigure: '讓我選擇',
       downloaded: '已下載',

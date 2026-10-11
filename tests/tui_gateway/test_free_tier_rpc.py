@@ -10,7 +10,7 @@ import time
 import pytest
 
 import tui_gateway.server as srv
-from hermes_cli import anon_auth
+from hermes_cli import anon_auth, free_tier_offer
 from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 
 
@@ -175,3 +175,28 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
     _set_guest_off(monkeypatch)
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))
     assert _call("free_tier.provision") == {"has_guest": False, "enabled": False}
+
+
+def test_sign_in_offer_is_reported_then_claimed_once(guest, monkeypatch):
+    now = [10_000.0]
+    monkeypatch.setattr(free_tier_offer, "_clock", lambda: now[0])
+    assert "nudge_due_in" not in _call("free_tier.status")
+    assert _call("free_tier.claim_nudge") == {"claimed": False}
+
+    free_tier_offer.record_task_done()
+    assert _call("free_tier.status")["nudge_due_in"] == free_tier_offer.OFFER_DELAY_S
+    assert _call("free_tier.claim_nudge") == {"claimed": False}  # not due yet
+
+    now[0] += free_tier_offer.OFFER_DELAY_S
+    assert _call("free_tier.status")["nudge_due_in"] == 0
+    assert _call("free_tier.claim_nudge") == {"claimed": True}
+    assert _call("free_tier.claim_nudge") == {"claimed": False}
+    assert "nudge_due_in" not in _call("free_tier.status")  # nothing finished since the offer
+
+
+def test_sign_in_offer_is_moot_once_signed_in(guest, monkeypatch):
+    monkeypatch.setattr(free_tier_offer, "_clock", lambda: 10_000.0)
+    free_tier_offer.record_task_done()
+    monkeypatch.setattr(anon_auth, "has_guest", lambda: False)
+    assert "nudge_due_in" not in _call("free_tier.status")
+    assert _call("free_tier.claim_nudge") == {"claimed": False}

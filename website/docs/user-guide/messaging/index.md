@@ -646,6 +646,8 @@ hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed he
 
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
+An installed unit (or launchd plist) belongs to the `HERMES_HOME` it pins. A gateway started from a different home, such as a test or scratch home that happens to resolve to the same service name, never rewrites it: `gateway run`, `start`, `restart` and `install --force` refuse with a message naming both homes and leave the file alone. To deliberately point an existing service at the current home, run `hermes gateway install --force-unit-path`.
+
 :::note Inside a container, only the system scope is offered
 `hermes gateway install` (and the `hermes gateway setup` wizard) refuse to install a **user** service when Hermes detects it is running inside a container. A user unit lands in `~/.config/systemd/user`, and when that home is bind-mounted from the host (podman/distrobox), the host's own `systemd --user` enables and starts the same unit — a second gateway polling the same bot token. Run the gateway as the container's main process (`hermes gateway run`, with a container restart policy), or in a systemd container (systemd as PID 1) install the isolated system scope: `sudo hermes gateway install --system --run-as-user <user>`.
 :::

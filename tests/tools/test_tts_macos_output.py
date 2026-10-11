@@ -38,7 +38,7 @@ def _run_stream(monkeypatch):
     monkeypatch.setattr("hermes_cli.config.get_env_value",
                         lambda name, default=None: "fake-key"
                         if name == "ELEVENLABS_API_KEY" else default)
-    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: {})
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", dict)
 
     class _FakeTTS:
         def __init__(self, *a, **k):

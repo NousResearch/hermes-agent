@@ -6,7 +6,7 @@ import re
 import sys
 from datetime import timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Iterable, Optional
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -225,6 +225,65 @@ def _last_run_display(job: dict[str, Any]) -> str:
     return display
 
 
+def _route_label(model: str, provider: str) -> str:
+    return (model or "unset") + (f" ({provider})" if provider else "")
+
+
+def _unpinned_route(cfg: dict[str, Any]) -> tuple[str, str, str]:
+    """``(model, provider, source)`` an unpinned job follows: ``cron.model`` first, then the main
+    model. Same precedence as ``cron.scheduler._load_cron_job_config``; the provider falls back to the
+    main one because ``resolve_runtime_provider`` reads the persisted global config when none is given."""
+    cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
+    main = cfg.get("model")
+    if isinstance(main, dict):
+        main_model = str(main.get("default") or main.get("model") or main.get("name") or "").strip()
+        main_provider = str(main.get("provider") or "").strip()
+    else:
+        main_model, main_provider = str(main or "").strip(), ""
+    # The scheduler hands cron.model_provider to the runtime whether or not cron.model is set.
+    provider = str(cron_cfg.get("model_provider") or "").strip() or main_provider
+    if cron_model := str(cron_cfg.get("model") or "").strip():
+        return cron_model, provider, "cron.model"
+    if main_model:
+        return main_model, provider, "main model"
+    from cron.env_settings import cron_env_setting
+    return cron_env_setting("HERMES_MODEL").strip(), provider, "HERMES_MODEL"
+
+
+def _job_model_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
+    """``Model`` and ``Fallback`` rows for an agent-backed job; none for ``no_agent`` jobs (no model).
+
+    An unpinned job follows ``cron.model`` or the main model at fire time, so switching the main
+    model silently re-routes it, and it inherits the global fallback chain. A pinned job keeps its
+    own route and never borrows that chain. The rows say which case applies."""
+    if job.get("no_agent"):
+        return []
+    from cron.scheduler import _job_route_pinned
+    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
+
+    cfg = load_user_config_effective()
+    route_model, route_provider, source = _unpinned_route(cfg)
+    pinned = _job_route_pinned(job)
+    if pinned:
+        # A partial pin keeps what it does not set from the same sources an unpinned job follows.
+        model = str(job.get("model") or "").strip() or route_model
+        provider = str(job.get("provider") or "").strip() or route_provider
+        route = f"{_route_label(model, provider)}  [pinned]"
+    else:
+        route = f"{_route_label(route_model, route_provider)}  [follows {source} — changes if it changes]"
+    chain = scoped_fallback_chain(get_fallback_chain(cfg), None, pinned=pinned, owner="cron job")
+    if chain:
+        fallback = " → ".join(_route_label(e["model"], e["provider"]) for e in chain)
+    elif pinned:
+        fallback = "none (a pinned job does not use the fallback chain)"
+        if get_fallback_chain(cfg):
+            fallback += f" — `hermes cron edit {job.get('id', '<id>')} --unpin` lets it follow the chain"
+    else:
+        fallback = "none configured — add one with `hermes fallback add`"
+    return [("Model", route), ("Fallback", fallback)]
+
+
 def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
     """``(label, value)`` detail rows for one job in ``cron list``."""
     # `repeat` / `deliver` may be present-but-null (dict-default only covers a missing key).
@@ -239,6 +298,7 @@ def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
     mon_state = job.get("monitor_state") or {}
     latest_execution = job.get("latest_execution") or {}
     optional = [
+        *_job_model_rows(job),
         ("Skills", ", ".join(skills) if skills else ""),
         ("Script", job.get("script")),
         ("Monitor", f"{monitor_source} (agent runs only on output change)" if monitor_source

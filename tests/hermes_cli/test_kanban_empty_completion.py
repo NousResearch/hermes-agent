@@ -63,7 +63,7 @@ def test_whitespace_stored_result_does_not_count(conn):
 def test_review_approval_exempt(conn):
     tid = kb.create_task(conn, title="review-me", assignee="coder")
     assert kb.claim_task(conn, tid, claimer=kb._claimer_id()) is not None
-    assert kb.request_review(conn, tid, summary="please look") is True
+    assert kb.request_review(conn, tid, summary="please look", reviewer="reviewer") is True
     assert kb.get_task(conn, tid).status == "review"
     assert kb.complete_task(conn, tid) is True
     assert kb.get_task(conn, tid).status == "done"

@@ -716,7 +716,7 @@ def _review_handoff_task(
         kb.claim_task(conn, tid)
         run_id = kb.get_task(conn, tid).current_run_id
         assert kb.request_review(
-            conn, tid, summary=summary, expected_run_id=run_id,
+            conn, tid, summary=summary, expected_run_id=run_id,reviewer="reviewer"
         ) is True
         return tid
     finally:

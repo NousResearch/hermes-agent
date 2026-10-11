@@ -59,7 +59,7 @@ def _task_in(client, src: str) -> str:
         elif src == "scheduled":
             assert kb.schedule_task(conn, tid, reason="x")
         elif src == "review":
-            assert kb.request_review(conn, tid, summary="s", force=True)
+            assert kb.request_review(conn, tid, summary="s", force=True, reviewer="reviewer")
         elif src == "done":
             assert kb.complete_task(conn, tid, summary="s", force=True)
         elif src == kw.ARCHIVED:

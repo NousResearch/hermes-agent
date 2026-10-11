@@ -3341,6 +3341,29 @@ def request_review(
                         "latest changes_requested event is missing or "
                         "malformed); pass reviewer= explicitly",
                     )
+                if reviewer is None:
+                    # First review with no durable reviewer provenance. Fail
+                    # closed against self-review (t_d3290431): the review-lane
+                    # dispatcher spawns the row's *assignee*, so leaving
+                    # assignee untouched on a card with implementer provenance
+                    # (any run on the card) routes the review back to the
+                    # implementer's profile -- the implementer would become its
+                    # own reviewer. Only a never-claimed card whose assignee is
+                    # already the dedicated reviewer (operator flow:
+                    # ``kanban create --assignee <reviewer>`` -> request-review,
+                    # zero runs on the card) can safely infer reviewer :=
+                    # assignee.
+                    ever_run = trow["current_run_id"] is not None or conn.execute(
+                        "SELECT 1 FROM task_runs WHERE task_id = ? LIMIT 1",
+                        (task_id,),
+                    ).fetchone() is not None
+                    if ever_run:
+                        return _ret(
+                            False, "first review with no durable reviewer "
+                            "provenance would leave assignee = implementer "
+                            "(self-review); pass reviewer= explicitly",
+                        )
+                    reviewer = trow["assignee"]
             reviewer = _canonical_assignee(reviewer)
             # The actor is the run that did the work. ``assignee`` is the actor
             # only while a worker holds the card; on a never-claimed card it is
@@ -3407,94 +3430,8 @@ def request_review(
     return _ret(True)
 
 
-def _prior_reviewer(conn: sqlite3.Connection, task_id: str):
-    """Reviewer recorded by the latest ``changes_requested`` run's event.
-    ``None`` = first review (no such run); ``False`` = a run exists but its
-    provenance is missing/malformed."""
-    changes_run = conn.execute(
-        "SELECT id FROM task_runs "
-        "WHERE task_id = ? AND outcome = 'changes_requested' "
-        "ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    if changes_run is None:
-        return None
-    changes_event = _latest_event(conn, task_id, "changes_requested", changes_run["id"])
-    reviewer = _json_dict(_row_get(changes_event, "payload")).get("reviewer")
-    return reviewer if isinstance(reviewer, str) and reviewer.strip() else False
-
-
 def _nonblank_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value.strip() else None
-
-
-def request_changes(
-    conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
-) -> tuple[bool, Optional[str]]:
-    """Close an active reviewer run (claimed from ``review``) and hand the task
-    back to the implementer from the latest ``review_requested`` event, parent
-    gating reapplied. Returns ``(ok, implementer | reason)``."""
-    reason = str(redact_review_value(reason or "")).strip()
-    if not reason:
-        return False, "reason is required"
-
-    with write_txn(conn):
-        task_row = conn.execute(
-            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
-        ).fetchone()
-        if task_row is None:
-            return False, "task not found"
-        current_run_id = task_row["current_run_id"]
-        if task_row["status"] != "running" or current_run_id is None:
-            return False, "task is not in an active review run"
-        if expected_run_id is not None and int(current_run_id) != int(expected_run_id):
-            return False, "run_id mismatch"
-
-        claimed_event = _latest_event(conn, task_id, "claimed", current_run_id)
-        claimed_payload = _json_dict(_row_get(claimed_event, "payload"))
-        if claimed_payload.get("source_status") != "review":
-            return False, "active run was not claimed from review"
-
-        requested_event = _latest_event(conn, task_id, "review_requested")
-        if requested_event is None:
-            return False, "no prior review_requested event"
-        implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
-        if implementer is None:
-            return False, "review handoff has no valid implementer provenance"
-        reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
-
-        new_status = _landing_status_after_parents(conn, task_id)
-        # consecutive_failures deliberately PRESERVED: a review transition is
-        # not evidence the pathology cleared; only complete_task resets it.
-        cur = conn.execute(
-            """
-            UPDATE tasks
-               SET status = ?,
-                   assignee = COALESCE(?, assignee),
-                   claim_lock = NULL,
-                   claim_expires = NULL,
-                   worker_pid = NULL, worker_started_at = NULL
-             WHERE id = ? AND status = 'running' AND current_run_id = ?
-            """,
-            (new_status, implementer, task_id, int(current_run_id)),
-        )
-        if cur.rowcount != 1:
-            return False, "task changed during review handoff"
-        run_id = _end_run(
-            conn, task_id, outcome="changes_requested", status=new_status, summary=reason,
-        )
-        _append_event(
-            conn,
-            task_id,
-            "changes_requested",
-            {
-                "reason": reason,
-                "implementer": implementer,
-                "reviewer": reviewer,
-                "status": new_status,
-            },
-            run_id=run_id,
-        )
-    return True, implementer
 
 
 def promote_task(
@@ -4414,6 +4351,10 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
+from hermes_cli.kanban_db_review import (
+    _prior_reviewer,
+    request_changes,
+)
 from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
     _dir_holds_board,

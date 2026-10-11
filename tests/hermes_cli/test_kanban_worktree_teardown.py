@@ -317,7 +317,7 @@ def test_live_parent_scratch_survives_last_child_archived(
         if live_status == "blocked":
             assert kb.block_task(conn, parent, reason="waiting")
         elif live_status == "review":
-            assert kb.request_review(conn, parent, summary="please review", force=True)
+            assert kb.request_review(conn, parent, summary="please review", force=True, reviewer="reviewer")
         assert kb.archive_task(conn, child)
         assert kb.get_task(conn, parent).status == live_status
     assert (ws / "work.txt").is_file()

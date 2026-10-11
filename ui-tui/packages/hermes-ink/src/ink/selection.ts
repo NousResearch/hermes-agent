@@ -37,15 +37,16 @@ export type SelectionState = {
   scrolledOffAbove: string[]
   /** Symmetric: rows scrolled out BELOW when dragging up. Appended. */
   scrolledOffBelow: string[]
-  /** Soft-wrap bits parallel to scrolledOffAbove — true means the row
-   *  is a continuation of the one before it (the `\n` was inserted by
-   *  word-wrap, not in the source). Captured alongside the text at
+  /** Soft-wrap markers parallel to scrolledOffAbove. A nonzero value means
+   *  the row is a continuation of the one before it (the `\n` was inserted
+   *  by word-wrap, not in the source); a negative value restores one
+   *  wrap-trimmed source separator. Captured alongside the text at
    *  scroll time since the screen's softWrap bitmap shifts with content.
    *  getSelectedText uses these to join wrapped rows back into logical
    *  lines. */
-  scrolledOffAboveSW: boolean[]
+  scrolledOffAboveSW: number[]
   /** Parallel to scrolledOffBelow. */
-  scrolledOffBelowSW: boolean[]
+  scrolledOffBelowSW: number[]
   /** Pre-clamp anchor row. Set when shiftSelection clamps anchor so a
    *  reverse scroll can restore the true position and pop accumulators.
    *  Without this, PgDn (clamps anchor) → PgUp leaves anchor at the wrong
@@ -894,13 +895,13 @@ function selectionContentBounds(
 }
 
 /** Extract text from one screen row. When the next row is a soft-wrap
- *  continuation (screen.softWrap[row+1]>0), clamp to that content-end
+ *  continuation (screen.softWrap[row+1]!==0), clamp to that content-end
  *  column and skip the trailing trim so the word-separator space survives
  *  the join. See Screen.softWrap for why the clamp is necessary. */
 function extractRowText(screen: Screen, row: number, colStart: number, colEnd: number): string {
   const noSelect = screen.noSelect
   const rowOff = row * screen.width
-  const contentEnd = row + 1 < screen.height ? screen.softWrap[row + 1]! : 0
+  const contentEnd = row + 1 < screen.height ? Math.abs(screen.softWrap[row + 1]!) : 0
   const lastCol = contentEnd > 0 ? Math.min(colEnd, contentEnd - 1) : colEnd
   let line = ''
 
@@ -933,9 +934,9 @@ function extractRowText(screen: Screen, row: number, colStart: number, colEnd: n
  *  into logical lines. push(text, sw) appends a newline before text
  *  only when sw=false (i.e. the row starts a new logical line). Rows
  *  with sw=true are concatenated onto the previous row. */
-function joinRows(lines: string[], text: string, sw: boolean | undefined): void {
+function joinRows(lines: string[], text: string, sw: number | undefined): void {
   if (sw && lines.length > 0) {
-    lines[lines.length - 1] += text
+    lines[lines.length - 1] += `${sw < 0 ? ' ' : ''}${text}`
   } else {
     lines.push(text)
   }
@@ -987,7 +988,7 @@ export function getSelectedText(s: SelectionState, screen: Screen): string {
     const rowEnd = Math.min(row === end.row ? end.col : screen.width - 1, screen.width - 1)
     const bounds = selectionContentBounds(screen, row, rowStart, rowEnd)
 
-    joinRows(lines, bounds ? extractRowText(screen, row, bounds.first, bounds.last) : '', sw[row]! > 0)
+    joinRows(lines, bounds ? extractRowText(screen, row, bounds.first, bounds.last) : '', sw[row])
   }
 
   for (let i = 0; i < s.scrolledOffBelow.length; i++) {
@@ -1039,13 +1040,13 @@ export function captureScrolledRows(
   const width = screen.width
   const sw = screen.softWrap
   const captured: string[] = []
-  const capturedSW: boolean[] = []
+  const capturedSW: number[] = []
 
   for (let row = lo; row <= hi; row++) {
     const colStart = row === start.row ? start.col : 0
     const colEnd = row === end.row ? end.col : width - 1
     captured.push(extractRowText(screen, row, colStart, colEnd))
-    capturedSW.push(sw[row]! > 0)
+    capturedSW.push(sw[row]!)
   }
 
   if (side === 'above') {

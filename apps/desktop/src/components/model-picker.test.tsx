@@ -200,9 +200,13 @@ describe('ModelPickerDialog search ranking', () => {
   it.each([
     ['gpt.4o', 'gpt-4o'],
     ['claude_3', 'claude-3-opus'],
-    ['qwen3-8', 'qwen3.8-flash']
+    ['qwen3-8', 'qwen3.8-flash'],
+    // Aggregator ids carry a vendor prefix: the `/` folds like every other separator,
+    // whether the user types the shorthand (`Qwen-3.8`) or the owner with a space.
+    ['Qwen-3.8', 'Qwen/Qwen3.8-Flash'],
+    ['Qwen Qwen3.8', 'Qwen/Qwen3.8-Flash']
   ])('separator variant %s still lists %s', async (query, expected) => {
-    const catalog = ['gpt-4o', 'claude-3-opus', 'qwen3.8-flash']
+    const catalog = ['gpt-4o', 'claude-3-opus', 'qwen3.8-flash', 'Qwen/Qwen3.8-Flash']
 
     vi.mocked(requestModelOptions).mockResolvedValue({
       providers: [{ slug: 'nous', name: 'Nous', models: catalog, authenticated: true }]

@@ -193,6 +193,10 @@ def _draw_plain_row(stdscr, y: int, line: str, max_x: int, *, is_cursor: bool) -
 
 
 _WORD_BOUNDARY = frozenset("-_/. ")
+# Length-preserving search fold, 1:1 with ``searchFold`` in apps/shared/src/fuzzy.ts: lower-case,
+# and every ``_WORD_BOUNDARY`` separator becomes a space, so a query typed with one separator
+# still matches a target written with another (``Qwen-3.8`` finds ``Qwen/Qwen3.8-Flash``).
+_SEPARATOR_FOLD = str.maketrans({ch: " " for ch in "-_/."})
 
 
 def _is_boundary(target: str, index: int) -> bool:
@@ -234,8 +238,11 @@ def _token_score(orig: str, lower: str, token: str) -> float | None:
 
 def _fuzzy_score(label: str, query: str) -> float | None:
     """Multi-token AND score (``fuzzyScoreMulti``): sum of per-token scores, None if any fails."""
-    lower = label.lower()
-    scores = [_token_score(label, lower, token) for token in query.lower().split()]
+    lower = label.lower().translate(_SEPARATOR_FOLD)
+    scores = [
+        _token_score(label, lower, token)
+        for token in query.lower().translate(_SEPARATOR_FOLD).split()
+    ]
     return None if None in scores else sum(scores)
 
 

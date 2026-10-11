@@ -637,6 +637,7 @@ class GatewayConfig:
     on_all_adapters_down: str = "exit"  # "exit" | "stay_alive"; GATEWAY_ON_ALL_ADAPTERS_DOWN overrides
     unauthorized_dm_behavior: str = "pair"  # UNAUTHORIZED_DM_BEHAVIORS
     unauthorized_dm_decline_message: str = ""  # "decline" reply text; empty → DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
+    pairing_message: str = ""  # Unauthorized-DM pairing reply; empty → built-in CLI guidance
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
@@ -650,7 +651,7 @@ class GatewayConfig:
         "on_all_adapters_down",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
-        "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+        "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message", "pairing_message",
     )
 
     def __post_init__(self) -> None:
@@ -810,6 +811,7 @@ class GatewayConfig:
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),
             unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),
+            pairing_message=str(pick("pairing_message") or "").strip(),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
@@ -829,6 +831,12 @@ class GatewayConfig:
         if choice is not None:
             return choice
         return "ignore" if platform == Platform.EMAIL else self.unauthorized_dm_behavior
+
+    def get_pairing_message(self, platform: Optional[Platform] = None) -> str:
+        """Configured pairing text, with a per-platform value taking precedence."""
+        platform_cfg = self.platforms.get(platform) if platform else None
+        platform_message = platform_cfg.extra.get("pairing_message") if platform_cfg else None
+        return str(platform_message or self.pairing_message or "").strip()
 
     def get_notice_delivery(self, platform: Optional[Platform] = None) -> str:
         """Effective notice-delivery mode ("public"/"private") for a platform."""

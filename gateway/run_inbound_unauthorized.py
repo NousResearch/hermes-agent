@@ -37,13 +37,34 @@ def pairing_profile_arg(pairing_store) -> str:
     return ""
 
 
-def pairing_code_reply(platform_name: str, code: str, profile_arg: str = "") -> str:
+def pairing_code_reply(
+    platform_name: str, code: str, profile_arg: str = "", pairing_message: str = ""
+) -> str:
     """The DM a first-time sender receives: what happened, how long the code lives, what to do
     whether they are the owner or a guest, and that they must message again after approval."""
+    if pairing_message:
+        # Deliberately replace only the documented placeholders.  A managed deployment's prose
+        # can contain other braces without making an unauthorized DM fail to receive its code.
+        return pairing_message.replace("{code}", code).replace("{platform}", platform_name)
+
     hours = max(1, CODE_TTL_SECONDS // 3600)
     validity = t("gateway.pairing.validity_hour" if hours == 1 else "gateway.pairing.validity_hours", hours=hours)
     approve_cmd = f"hermes {profile_arg}pairing approve {platform_name} {code}"
     return t("gateway.pairing.code_reply", code=code, validity=validity, approve_cmd=approve_cmd)
+
+
+def pairing_reply_for_source(runner, source, pairing_store, code: str) -> str:
+    """Use the receiving bot's configuration without borrowing another profile's message."""
+    config = getattr(runner, "config", None)
+    if getattr(config, "multiplex_profiles", False):
+        owner = runner._adapter_profile_for_source(source)
+        primary = getattr(runner, "_primary_profile_name", None) or "default"
+        if owner and owner != primary:
+            config = (getattr(runner, "_profile_configs", None) or {}).get(owner)
+    resolver = getattr(config, "get_pairing_message", None)
+    message = resolver(source.platform) if callable(resolver) else ""
+    platform_name = source.platform.value if source.platform else "unknown"
+    return pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store), message)
 
 
 def pairing_rate_limited_reply() -> str:

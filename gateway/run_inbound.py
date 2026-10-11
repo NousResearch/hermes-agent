@@ -28,7 +28,7 @@ from gateway.run_common import _UNSET
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
-    UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
+    UnauthorizedOwnerNotifier, pairing_reply_for_source, pairing_rate_limited_reply,
     unauthorized_owner_hint,
 )
 from gateway.session import (
@@ -120,7 +120,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         code = pairing_store.generate_code(platform_name, source.user_id, source.user_name or "")
         adapter = self._delivery_adapter_for(source)
         if code:
-            reply = pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store))
+            reply = pairing_reply_for_source(self, source, pairing_store, code)
         else:
             reply = pairing_rate_limited_reply()
         if adapter:

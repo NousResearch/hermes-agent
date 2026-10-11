@@ -80,9 +80,11 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
 def test_new_failure_creates_incident_and_is_new(monkeypatch, tmp_path):
     inc = _point_db(monkeypatch, tmp_path)
 
-    inc_id, is_new = inc.upsert_incident("job-1", "Provider timeout: read timed out")
+    # ``reopened`` is True only for a resolved incident re-opening; a first-ever row is a
+    # creation (proven by the row below) and returns False.
+    inc_id, reopened = inc.upsert_incident("job-1", "Provider timeout: read timed out")
 
-    assert is_new is True
+    assert reopened is False
     assert inc_id.startswith("job-1_")
     row = inc.get_incident(inc_id)
     assert row is not None
@@ -115,12 +117,11 @@ def test_incidents_list_newest_instant_first_across_dst_fall_back(monkeypatch, t
 def test_same_signature_dedups_same_incident(monkeypatch, tmp_path):
     inc = _point_db(monkeypatch, tmp_path)
 
-    id1, new1 = inc.upsert_incident("job-1", "Provider timeout: read timed out")
-    id2, new2 = inc.upsert_incident("job-1", "PROVIDER TIMEOUT: read timed out   ")
+    id1, reopened1 = inc.upsert_incident("job-1", "Provider timeout: read timed out")
+    id2, reopened2 = inc.upsert_incident("job-1", "PROVIDER TIMEOUT: read timed out   ")
 
     assert id1 == id2, "normalized (case/whitespace) signature must dedup"
-    assert new1 is True
-    assert new2 is False
+    assert reopened1 is False and reopened2 is False, "neither write re-opened anything"
     assert inc.count_incidents() == 1
     # Refresh updates last_seen but never resets an open state.
     assert inc.get_incident(id1)["state"] == "detected"
@@ -130,10 +131,10 @@ def test_error_change_mints_new_incident(monkeypatch, tmp_path):
     inc = _point_db(monkeypatch, tmp_path)
 
     id1, _ = inc.upsert_incident("job-1", "provider timeout")
-    id2, new2 = inc.upsert_incident("job-1", "provider rate limit 429")
+    id2, reopened2 = inc.upsert_incident("job-1", "provider rate limit 429")
 
     assert id1 != id2
-    assert new2 is True
+    assert reopened2 is False, "a freshly minted signature is a creation, not a re-open"
     assert inc.count_incidents() == 2
 
 
@@ -230,9 +231,9 @@ def test_acked_signature_stays_closed_on_refresh(monkeypatch, tmp_path):
 def test_missing_db_no_crash(monkeypatch, tmp_path):
     inc = _point_db(monkeypatch, tmp_path)
 
-    inc_id, is_new = inc.upsert_incident("job-1", "boom")
+    inc_id, reopened = inc.upsert_incident("job-1", "boom")
 
-    assert is_new is True
+    assert reopened is False, "creation is not a re-open; the row asserts creation"
     assert (tmp_path / "cron" / "executions.db").is_file()
     assert inc.list_incidents() == [inc.get_incident(inc_id)]
     assert inc.count_incidents() == 1
@@ -424,3 +425,77 @@ def test_alerted_gate_honours_cooldown_opt_out_and_legacy_rows(monkeypatch, tmp_
     assert inc.ack_incident(inc_id) is True
     monkeypatch.setattr(sched, "_failure_repeat_alert_hours", lambda: 0)
     assert sched._upsert_incident_for_failure(job, "repeat boom") == (True, inc_id)
+
+
+
+# ── reopen counter (recurrence visibility) ─────────────────────────────────
+
+
+def test_reopen_count_tracks_recurrence(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+
+    iid, reopened = inc.upsert_incident("job-rec", "chronic boom")
+    assert reopened is False and inc.get_incident(iid)["reopen_count"] == 0
+
+    # Refresh while open: not a re-open, counter stays.
+    iid2, reopened = inc.upsert_incident("job-rec", "chronic boom")
+    assert iid2 == iid and reopened is False
+    assert inc.get_incident(iid)["reopen_count"] == 0
+
+    # Recover, then break the same way again: the resolved row re-opens and counts.
+    assert inc.close_incidents_for_recovered_job("job-rec") == 1
+    _, reopened = inc.upsert_incident("job-rec", "chronic boom")
+    assert reopened is True
+    row = inc.get_incident(iid)
+    assert row["state"] == "detected" and row["reopen_count"] == 1
+    assert row["alerted_at"] is None and row["closed_at"] is None
+
+    # Chronic incidents grow a history instead of flattening into one shape.
+    inc.close_incidents_for_recovered_job("job-rec")
+    _, reopened = inc.upsert_incident("job-rec", "chronic boom")
+    assert reopened is True and inc.get_incident(iid)["reopen_count"] == 2
+
+
+def test_pre_counter_rows_migrate_to_null_not_zero(monkeypatch, tmp_path):
+    """Old-shape ledgers (no ``reopen_count``) must read *not measured*, never a silent 0: a
+    DEFAULT on the ALTER would attest "never reopened" for rows that were never counted."""
+    import sqlite3
+
+    inc = _point_db(monkeypatch, tmp_path)
+    path = inc.EXECUTIONS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE cron_incidents (
+             id TEXT PRIMARY KEY, job_id TEXT NOT NULL, error_sig TEXT NOT NULL,
+             state TEXT NOT NULL, failure_type TEXT NOT NULL DEFAULT 'unknown',
+             first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, acked_at TEXT,
+             alerted_at TEXT, closed_at TEXT, error TEXT NOT NULL, output_file TEXT)"""
+    )
+    conn.execute(
+        "INSERT INTO cron_incidents (id, job_id, error_sig, state, first_seen_at, "
+        "last_seen_at, error) VALUES ('old1', 'job-old', 'deadbeefcafe', 'closed', "
+        "'2026-01-01T00:00:00-05:00', '2026-01-02T00:00:00-05:00', 'ancient failure')")
+    conn.commit()
+    conn.close()
+
+    row = inc.get_incident("old1")  # opening the store runs _initialize_schema in place
+    assert row is not None and row["state"] == "closed"
+    assert row["reopen_count"] is None, "pre-counter history must not inherit a measured 0"
+
+
+def test_reopen_from_null_pre_counter_counts_one(monkeypatch, tmp_path):
+    """The COALESCE path: a re-open where the counter is NULL starts at 1, not NULL+1."""
+    import sqlite3
+
+    inc = _point_db(monkeypatch, tmp_path)
+    iid, _ = inc.upsert_incident("job-null", "boom again")
+    conn = sqlite3.connect(inc.EXECUTIONS_FILE)
+    conn.execute("UPDATE cron_incidents SET reopen_count=NULL WHERE id=?", (iid,))
+    conn.commit()
+    conn.close()
+
+    assert inc.close_incidents_for_recovered_job("job-null") == 1
+    _, reopened = inc.upsert_incident("job-null", "boom again")
+    assert reopened is True
+    assert inc.get_incident(iid)["reopen_count"] == 1

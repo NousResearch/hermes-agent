@@ -385,9 +385,13 @@ def cron_incidents(args) -> int:
         error_text = re.sub(r"\s+", " ", inc.get("error") or "").strip()
         if len(error_text) > 160:
             error_text = error_text[:157].rstrip() + "..."
+        # A pre-counter row (NULL) says so; 0 is a measured truth, not an absence.
+        reopen_display = ("pre-counter" if inc.get("reopen_count") is None
+                          else f"{inc['reopen_count']}x")
         rows = [("Job", inc["job_id"]), ("Type", inc.get("failure_type", "unknown")),
                 ("First seen", inc.get("first_seen_at", "?")),
-                ("Last seen", inc.get("last_seen_at", "?")), ("Error", error_text),
+                ("Last seen", inc.get("last_seen_at", "?")),
+                ("Reopened", reopen_display), ("Error", error_text),
                 ("Output", inc.get("output_file"))]
         print(f"  {color(inc['id'], Colors.YELLOW)}  {state_display}")
         for label, value in rows:

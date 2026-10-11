@@ -400,6 +400,55 @@ describe('ChatSidebar empty-profile sections', () => {
   })
 })
 
+describe('ChatSidebar messaging sections across grouping views', () => {
+  // A gateway thread (Telegram/…) is excluded from recents by design
+  // (MESSAGING_SESSION_SOURCE_IDS) and rendered in its own platform section.
+  // Gating that section on `!worktreeGroupingActive` made the thread vanish
+  // ENTIRELY the moment the sidebar grouped by project: absent from the
+  // project tree (recents excludes the source) and absent from its platform
+  // section (the gate). Messaging threads are orthogonal to which repo you are
+  // coding in, so the platform sections must survive every grouping (#90579).
+  const telegramThread = (id: string, last_active: number) =>
+    makeSessionInfo({ connection_id: 'local', id, last_active, profile: 'default', source: 'telegram', title: id })
+
+  beforeEach(() => {
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [{ id: 'local', label: 'This computer', kind: 'local', tokenSet: false, tokenPreview: null }]
+    } as NonNullable<typeof $connectionsRegistry.value>)
+    $profiles.set([{ name: 'default', is_default: true }] as typeof $profiles.value)
+    $sessions.set([
+      makeSessionInfo({ connection_id: 'local', id: 'desk', last_active: 60, profile: 'default', title: 'desk' })
+    ])
+    $messagingSessions.set([telegramThread('tg-one', 50)])
+    $messagingTruncated.set(false)
+    $sidebarMessagingOpenIds.set(['telegram'])
+    $sessionsLoading.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    setSidebarAgentsGrouped(false)
+    $projectTree.set([])
+    $messagingSessions.set([])
+    $sidebarMessagingOpenIds.set([])
+    $sessions.set([])
+    $profiles.set([])
+    $connectionsRegistry.set(null)
+  })
+
+  it('keeps the Telegram section rendered when the sidebar groups by project', () => {
+    setSidebarAgentsGrouped(true)
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getAllByText('Telegram').length).toBeGreaterThan(0)
+    expect(screen.getByText('tg-one')).toBeTruthy()
+  })
+})
+
 describe('ChatSidebar messaging owners', () => {
   const telegram = (id: string, profile: string, last_active: number) =>
     makeSessionInfo({ connection_id: 'local', id, last_active, profile, source: 'telegram', title: id })

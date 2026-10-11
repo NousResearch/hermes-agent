@@ -6262,7 +6262,7 @@ _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 # Read-time resolution of auxiliary.<task> (plugin defaults, inherit_from) lives in its own module;
 # re-exported here because callers and tests reach it as agent.auxiliary_client._get_auxiliary_task_config.
-from agent.auxiliary_task_config import _get_auxiliary_task_config
+from agent.auxiliary_task_config import _get_auxiliary_task_config, task_extra_body
 
 
 class CompressionFastLane(NamedTuple):
@@ -6400,33 +6400,8 @@ def _with_custom_endpoint_extra_body(
 
 def _get_task_extra_body(task: str) -> dict[str, Any]:
     """Shallow copy of ``auxiliary.<task>.extra_body`` with ``reasoning_effort`` folded into
-    ``reasoning`` unless one is configured (more specific wins). MoA tasks are excluded: their
-    reasoning depth is per-slot in the preset."""
-    task_config = _get_auxiliary_task_config(task)
-    raw = task_config.get("extra_body")
-    result = dict(raw) if isinstance(raw, dict) else {}
-    if "reasoning" in result:
-        return result
-    effort = task_config.get("reasoning_effort")
-    if effort is None or effort == "":
-        return result
-    if task in ("moa_reference", "moa_aggregator"):
-        logger.warning(
-            "auxiliary.%s.reasoning_effort is not supported — MoA reasoning depth is per-slot: set reasoning_effort "
-            "on the preset's reference_models entries / aggregator instead (moa.presets.<name>...). Ignoring.",
-            task,
-        )
-        return result
-    from hermes_constants import parse_reasoning_effort
-    parsed = parse_reasoning_effort(effort)
-    if parsed is not None:
-        result["reasoning"] = parsed
-    else:
-        logger.warning(
-            "auxiliary.%s.reasoning_effort %r is not a valid level (none, minimal, low, medium, high, xhigh, max, ultra) — ignoring",
-            task, effort,
-        )
-    return result
+    ``reasoning`` (see ``auxiliary_task_config.task_extra_body``)."""
+    return task_extra_body(task, _get_auxiliary_task_config(task))
 
 
 # Per-task concurrency limiting: many sessions can spawn unbounded background aux calls, each

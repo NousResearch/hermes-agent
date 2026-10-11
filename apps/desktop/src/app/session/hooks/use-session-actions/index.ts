@@ -177,6 +177,7 @@ import { rememberedOwnerForResume } from './remembered-owner'
 import { restorePendingApproval } from './restore-pending-approval'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
+import { resolveResumedBusy, resumeRequestBaseline } from './resume-busy'
 import { createGatewaySession } from './session-create-request'
 import {
   createPersistedDisplayTranscriptProvenance,
@@ -201,7 +202,6 @@ import {
   preserveLocalPendingTurnMessages,
   reconcileDurableHistory,
   removeRepresentedLocalLiveProjection,
-  resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,
   restoreListedSession,
@@ -1709,9 +1709,8 @@ export function useSessionActions({
                   ? reconcileAuthoritativeMessages(activated.messages, cachedViewState.messages, activated)
                   : cachedViewState.messages
 
-              // #70449: never let the activate snapshot's stale running:false
-              // rewind a turn that started while the RPC was in flight — read
-              // the freshest cache entry, not the pre-await cachedViewState.
+              // #70449: running:false rewinds no turn newer than the RPC, but does
+              // settle a claim older than it (see resolveResumedBusy).
               const latestCachedState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
               const busyChangedWhileActivating = Boolean(
@@ -1725,7 +1724,7 @@ export function useSessionActions({
                 activated.running === false &&
                 !busyChangedWhileActivating
                   ? false
-                  : resolveResumedBusy(activated.running ?? cachedViewState.busy, Boolean(latestCachedState?.busy))
+                  : resolveResumedBusy(activated.running, latestCachedState ?? cachedViewState, activateBaselineState)
 
               restoreSessionTodosFromSnapshot(cachedRuntimeId, activated.todo_state, running)
 
@@ -2131,22 +2130,26 @@ export function useSessionActions({
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
         const resumeStartedAt = Date.now() / 1000
 
+        const busyAtResumeRequest = resumeRequestBaseline(sessionStateByRuntimeIdRef, storedSessionId)
+
         const resumePromise = singleFlightSessionResume(storedSessionId, () =>
-          requestForSession<SessionResumeResult>('session.resume', {
-            session_id: storedSessionId,
-            cols: 96,
-            source: 'desktop',
-            defer_history: !watchWindow,
-            // REST is the transcript authority for Desktop. Avoid duplicating a
-            // potentially huge compression lineage in the WebSocket response.
-            // Watch windows attach lazily (live mirror). Every other cold resume
-            // gets the gateway's default deferred build: the RPC returns the
-            // transcript immediately instead of blocking the switch on _make_agent
-            // (MCP discovery / prompt build), and the agent pre-warms in the
-            // background while the prefetch above paints the transcript.
-            ...(watchWindow ? { lazy: true } : { omit_messages: true }),
-            ...(sessionProfile ? { profile: sessionProfile } : {})
-          })
+          busyAtResumeRequest.capture(() =>
+            requestForSession<SessionResumeResult>('session.resume', {
+              session_id: storedSessionId,
+              cols: 96,
+              source: 'desktop',
+              defer_history: !watchWindow,
+              // REST is the transcript authority for Desktop. Avoid duplicating a
+              // potentially huge compression lineage in the WebSocket response.
+              // Watch windows attach lazily (live mirror). Every other cold resume
+              // gets the gateway's default deferred build: the RPC returns the
+              // transcript immediately instead of blocking the switch on _make_agent
+              // (MCP discovery / prompt build), and the agent pre-warms in the
+              // background while the prefetch above paints the transcript.
+              ...(watchWindow ? { lazy: true } : { omit_messages: true }),
+              ...(sessionProfile ? { profile: sessionProfile } : {})
+            })
+          )
         ).then(resumed => {
           resumeRuntimeBaselineMessages =
             sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
@@ -2306,10 +2309,7 @@ export function useSessionActions({
         // started while the resume RPC was in flight has already marked the
         // rebound runtime busy via gateway events; the snapshot must not
         // rewind it to idle just because the user opened the chat.
-        resumedRunning = resolveResumedBusy(
-          (resumed as { running?: boolean }).running,
-          Boolean(sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.busy)
-        )
+        resumedRunning = busyAtResumeRequest.resolve(resumed.session_id, (resumed as { running?: boolean }).running)
 
         restoreSessionTodosFromSnapshot(resumed.session_id, resumed.todo_state, resumedRunning)
 

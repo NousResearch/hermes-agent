@@ -21,7 +21,7 @@ import {
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import {
-  isTimeoutError,
+  isStalledDialError,
   RECONNECT_ATTEMPT_TIMEOUT_MS,
   SOURCE_SWITCH_DIAL_TIMEOUT_MS,
   withTimeout
@@ -635,6 +635,12 @@ export function liveSecondaryConnectionIds(): Set<string> {
   return live
 }
 
+/** Whether `scope` (a `registryBackendScopeKey`) is a pooled registry route:
+ *  one a connection switch leaves open for as long as live work claims it. */
+export function isPooledRegistryRoute(scope: string): boolean {
+  return Boolean(g.secondaries.get(scope)?.connectionId)
+}
+
 // Mirror a backend's connection state into the global composer state, but only
 // when that backend is the one the user is currently looking at. Lets the
 // composer reflect the active profile's socket without a background reconnect
@@ -905,16 +911,6 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 // (requestGatewayForAgent, openGatewayForAgent, ensureGatewayForAgent,
 // ensureActiveGatewayOpen) re-arms it with a fresh budget.
 const SECONDARY_STALLED_DIAL_BUDGET = 3
-
-function isStalledDialError(error: unknown): boolean {
-  if (isTimeoutError(error)) {
-    return true
-  }
-
-  const message = error instanceof Error ? error.message : String(error ?? '')
-
-  return message.includes('timed out while waiting for a free slot')
-}
 
 function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
   const reauthError = g.reauthFailures.get(entry.scope)?.error

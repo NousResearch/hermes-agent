@@ -23,6 +23,7 @@ import {
   resumeWithStoredTranscriptFallback
 } from '@/store/read-only-transcript'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
+import { isSessionGone } from '@/store/session-gone-latch'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import {
   profileScopeForSessionOwner,
@@ -52,6 +53,33 @@ import type { useSessionStateCache } from '../../session/hooks/use-session-state
 import type { GatewayRequester } from '../types'
 
 type SessionStateCache = ReturnType<typeof useSessionStateCache>
+
+/** The transcript a tile shows once `session.resume` binds `runtimeId`.
+ *
+ *  A resume can hand back a runtime this cache already holds — the backend
+ *  kept it parked after its socket closed. If that runtime is idle, its cached
+ *  messages are only what the tile painted before the socket went away: the
+ *  turn's remaining deltas and `message.complete` were never delivered, so a
+ *  frozen half-streamed reply would win over the persisted transcript that
+ *  holds the real answer. The REST read is authoritative for an idle runtime.
+ *  Only a turn still running keeps the cache, whose deltas are newer than any
+ *  REST read. */
+function resumedTileTranscript(
+  cached: ChatMessage[],
+  running: boolean,
+  prefetch: Awaited<ReturnType<typeof getLatestSessionMessages>> | null,
+  resumed: SessionResumeResult | undefined
+): ChatMessage[] {
+  if (!cached.length) {
+    return toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+  }
+
+  if (running) {
+    return cached
+  }
+
+  return mergeTileTranscript(cached, toChatMessages(prefetch?.messages ?? []))
+}
 
 function mergeTileTranscript(
   previous: ChatMessage[],
@@ -322,9 +350,7 @@ export function useSessionTileDelegate({
       resumeTile: async (storedSessionId, options) => {
         // A retained tile can still own its runtime after the primary view drops
         // its reverse lookup. Reconnect invalidates both bindings.
-        const existing =
-          runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
-          $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+        const existing = liveCachedRuntimeId(runtimeIdByStoredSessionIdRef.current, storedSessionId)
 
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
         const refreshTranscript = options?.refreshTranscript === true
@@ -477,8 +503,7 @@ export function useSessionTileDelegate({
               ? { reasoningEffortWire: info.reasoning_effort_wire }
               : {}),
             ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
-            messages:
-              state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+            messages: resumedTileTranscript(state.messages, Boolean(info?.running), prefetch, resumed)
           }),
           storedSessionId
         )
@@ -548,4 +573,27 @@ export function useSessionTileDelegate({
     sessionStateByRuntimeIdRef,
     updateSessionState
   ])
+}
+
+/** The runtime a tile for `storedSessionId` is already bound to, unless the
+ *  gateway has declared it gone.
+ *
+ *  That verdict is final for a runtime id. markRuntimeGone unbinds the tile so
+ *  it re-resumes, but the wiring cache's reverse entry still names the dead
+ *  id; handing it back to the warm path re-bound it, and a heal is one-shot
+ *  per runtime id, so the tile then sat on the phantom runtime for good:
+ *  frozen transcript, every poll latched off. */
+function liveCachedRuntimeId(runtimeIdByStoredSessionId: Map<string, string>, storedSessionId: string) {
+  const cached = runtimeIdByStoredSessionId.get(storedSessionId)
+  const runtimeId = cached ?? $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+
+  if (!runtimeId || !isSessionGone(runtimeId)) {
+    return runtimeId
+  }
+
+  if (cached === runtimeId) {
+    runtimeIdByStoredSessionId.delete(storedSessionId)
+  }
+
+  return undefined
 }

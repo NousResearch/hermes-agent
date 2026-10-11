@@ -33,8 +33,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
-import { type ChatMessage, chatMessageText, finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
-import type { ErrorSurface } from '@/lib/error-surface'
+import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
@@ -44,6 +43,7 @@ import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './c
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
+import { turnHasReply, withNoReplyNotice } from './no-reply-notice'
 import {
   adoptPendingRuntimeTabs,
   dropPreviewTabsForProfile,
@@ -55,7 +55,7 @@ import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { $projectTree } from './project-tree'
-import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
+import { $providerWaitSessions, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,
   $connection,
@@ -483,58 +483,6 @@ function settleEndedLiveTurn(runtimeId: string) {
       turnStartedAt: null
     }
   })
-}
-
-// Raised only after the backend confirmed the turn is over and no reply reached
-// this window, so Retry cannot run the prompt twice.
-const NO_REPLY_SURFACE: ErrorSurface = { code: 'no_reply', layer: 'runtime', retryable: true }
-const NO_REPLY_ERROR = 'Hermes ended this turn without a reply.'
-
-function turnHasReply(messages: ChatMessage[]): boolean {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-
-    if (message.hidden) {
-      continue
-    }
-
-    if (message.role === 'user') {
-      return false
-    }
-
-    if (message.role === 'assistant' && (message.error || chatMessageText(message).trim())) {
-      return true
-    }
-  }
-
-  return false
-}
-
-function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
-  const last = messages.findLast(message => !message.hidden)
-
-  // A turn that ran tools but never wrote text carries the notice on its own bubble.
-  if (last?.role === 'assistant') {
-    return messages.map(message =>
-      message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface: NO_REPLY_SURFACE } : message
-    )
-  }
-
-  const occurredAt = Date.now() / 1000
-
-  return [
-    ...messages,
-    {
-      completedAt: occurredAt,
-      error: NO_REPLY_ERROR,
-      errorSurface: NO_REPLY_SURFACE,
-      id: `assistant-no-reply-${Date.now()}`,
-      parts: [],
-      pending: false,
-      role: 'assistant',
-      timestamp: occurredAt
-    }
-  ]
 }
 
 /** Stamp the retry card on an ended turn that has no reply, never an intentional
@@ -986,28 +934,44 @@ export function dropSessionState(runtimeId: string) {
  *  computed working / attention sets drain to empty alongside the session list.
  *  Also disarms every watchdog timer and drops all settle-grace entries: a
  *  wiped gateway's sessions must not fire stale clears or linger in the
- *  sidebar merge keep-set after the switch. */
-export function clearAllSessionStates() {
-  for (const timer of sessionWatchdogTimers.values()) {
-    clearTimeout(timer)
+ *  sidebar merge keep-set after the switch. `survivors` keeps those runtimes'
+ *  state whole — watchdog, silence check, provider wait, event-source scope. */
+export function clearAllSessionStates(survivors: ReadonlySet<string> = new Set()) {
+  const drops = (runtimeId: string) => !survivors.has(runtimeId)
+
+  const dropFrom = <V>(byRuntimeId: Map<string, V>, release?: (value: V) => void) => {
+    for (const [runtimeId, value] of [...byRuntimeId]) {
+      if (drops(runtimeId)) {
+        release?.(value)
+        byRuntimeId.delete(runtimeId)
+      }
+    }
   }
 
-  sessionWatchdogTimers.clear()
-
-  for (const timer of sessionEventSilenceTimers.values()) {
-    clearTimeout(timer)
-  }
-
-  sessionEventSilenceTimers.clear()
-  silentTurnChecks.clear()
+  dropFrom(sessionWatchdogTimers, clearTimeout)
+  dropFrom(sessionEventSilenceTimers, clearTimeout)
+  dropFrom(silentTurnChecks)
   settledExpiry.clear()
-  unconfirmedReconnectSettles.clear()
-  clearAllProviderWaits()
-  sessionScopeByRuntimeId.clear()
-  sessionOwnerByRuntimeId.clear()
+
+  for (const [storedId, runtimeId] of [...unconfirmedReconnectSettles]) {
+    if (drops(runtimeId)) {
+      unconfirmedReconnectSettles.delete(storedId)
+    }
+  }
+
+  Object.keys($providerWaitSessions.get())
+    .filter(drops)
+    .forEach(runtimeId => clearSessionProviderWait(runtimeId))
+  dropFrom(sessionScopeByRuntimeId)
+  dropFrom(sessionOwnerByRuntimeId)
+  // Survivors are bound to stored ids, so none can own a pending preview tab.
   forgetPendingRuntimeTabs()
-  $stalledSessionIds.set([])
-  $sessionStates.set({})
+
+  const kept = Object.fromEntries(Object.entries($sessionStates.get()).filter(([runtimeId]) => !drops(runtimeId)))
+  const keptStoredIds = new Set(Object.values(kept).map(state => state.storedSessionId))
+
+  $stalledSessionIds.set($stalledSessionIds.get().filter(storedId => keptStoredIds.has(storedId)))
+  $sessionStates.set(kept)
 }
 
 /** Downgrade cached busy/awaiting states after a gateway reconnect.
@@ -1506,7 +1470,14 @@ if (!isSecondaryWindow() && !isBrowserWindow()) {
     }
 
     visibleTileScope = nextScope
-    $sessionTiles.set([...(tilesByProfile[nextScope] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
+    const incoming = tilesByProfile[nextScope] ?? []
+
+    // Stored tiles are runtime-less, but the wiring cache still maps each to
+    // the runtime it had before this scope was swapped out — one the backend
+    // has since detached — and resumeTile's warm path would repaint that
+    // frozen snapshot. Drop the bindings so each tile re-resumes.
+    sessionTileDelegate()?.dropRuntimeBindings?.(new Set(incoming.map(tile => tile.storedSessionId)))
+    $sessionTiles.set([...incoming, ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
   }
 
   $activeGatewayProfile.subscribe(restoreVisibleTiles)

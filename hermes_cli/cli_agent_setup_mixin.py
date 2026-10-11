@@ -219,8 +219,20 @@ def _resume_panel_colors() -> tuple:
 def _retire_agent(cli) -> None:
     """Drop ``cli.agent`` so the next turn rebuilds it, releasing its LLM clients first: the Codex
     app-server child (and MCP descendants) belongs to the instance, so ``self.agent = None`` alone
-    orphans it for the CLI process lifetime (#72548). Session tool state is kept (soft release)."""
+    orphans it for the CLI process lifetime (#72548). Session tool state is kept (soft release).
+    The discarded instance's background reviews are retired first: the deferred-review queue is
+    process-global, so a queued or preempted review would otherwise run later on this instance."""
     agent = cli.agent
+    if agent is not None:
+        from contextlib import suppress
+
+        from agent.background_review import retire_background_reviews
+
+        # Best-effort: a retirement failure must not skip the client release below.
+        with suppress(Exception):
+            retire_background_reviews(
+                agent, message="agent rebuilt", tool_reason="background review agent rebuilt",
+            )
     if agent is not None and hasattr(agent, "release_clients"):
         agent.release_clients()
     cli.agent = None

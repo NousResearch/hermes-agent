@@ -1,6 +1,6 @@
 """Shared file sync manager for remote execution backends.
 
-Tracks local file changes via mtime+size, detects deletions, and syncs to
+Tracks local file changes via stat signatures, detects deletions, and syncs to
 remote environments transactionally.  Used by SSH, Modal, and Daytona.
 Docker and Singularity use bind mounts (live host FS view) and don't need this.
 """
@@ -187,7 +187,7 @@ def _sha256_file(path: str) -> str:
 
 class FileSyncManager:
     """Tracks local file changes and syncs to a remote environment. Backends supply transport
-    callbacks (upload, delete) and a file-source callable; the manager handles mtime-based
+    callbacks (upload, delete) and a file-source callable; the manager handles stat-based
     change detection, deletion tracking, rate limiting, and transactional state."""
 
     def __init__(
@@ -204,7 +204,7 @@ class FileSyncManager:
         self._bulk_download_fn = bulk_download_fn
         self._delete_fn = delete_fn
         self._transaction_lock = threading.Lock()
-        self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
+        self._synced_files: dict[str, tuple[int, int, int, int]] = {}  # remote_path -> file stat signature
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
         self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
@@ -264,7 +264,7 @@ class FileSyncManager:
 
     def _plan_sync(
         self, current_files: list[tuple[str, str]]
-    ) -> tuple[list[tuple[str, str]], dict[str, tuple[float, int]], list[str]]:
+    ) -> tuple[list[tuple[str, str]], dict[str, tuple[int, int, int, int]], list[str]]:
         """Diff *current_files* against synced state -> ``(to_upload, new_synced_state, to_delete)``."""
         to_upload: list[tuple[str, str]] = []
         new_files = dict(self._synced_files)

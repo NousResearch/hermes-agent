@@ -18,7 +18,7 @@ _INJECTION_PATTERNS: list = [  # shared by local-skill and plugin-skill paths
     "ignore previous instructions", "ignore all previous", "you are now",
     "disregard your", "forget your instructions", "new instructions:",
     "system prompt:", "<system>", "]]>"]
-_SUPPORT_DIRS = ("references", "templates", "assets", "scripts")
+_SUPPORT_DIRS = ("references", "templates", "assets", "scripts", "evals")
 _SKILL_FILE_EXTS = {".md", ".py", ".yaml", ".yml", ".json", ".tex", ".sh"}
 
 

@@ -141,6 +141,13 @@ class TestValidateFilePath:
         assert _validate_file_path("scripts/train.py") is None
         assert _validate_file_path("assets/image.png") is None
 
+    def test_evals_dir_allowed(self):
+        # Evaluation cases are first-class skill supporting files —
+        # declarative (eval_cases.yaml) and scripted (.py/.js/etc.).
+        assert _validate_file_path("evals/eval_cases.yaml") is None
+        assert _validate_file_path("evals/run_evals.py") is None
+        assert _validate_file_path("evals/judge_prompt.txt") is None
+
     def test_path_traversal_blocked(self):
         assert _validate_file_path("references/../../../etc/passwd") is not None
 

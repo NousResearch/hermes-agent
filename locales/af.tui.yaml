@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "sessie se uitvoeringsidentiteit nie bes
 canonical.controls.launchToolsets: "gereedskapstelle vasgestel by sessiebegin: {0}"
 canonical.controls.modelUsage: "gebruik: /model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "/{0} is nog nie op die gedeelde gateway beskikbaar nie"
+canonical.controls.prefNotSaved: "/{0} geld slegs vir hierdie aansig; nie op die gedeelde gateway gestoor nie"
 canonical.controls.rowCost: "Geraamde koste"
 canonical.controls.unsupportedModelOption: "nie-ondersteunde kanonieke model-opsie: {0}"
 canonical.controls.usageLastTurnTitle: "Gebruik · laaste beurt"

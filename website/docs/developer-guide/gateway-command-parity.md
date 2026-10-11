@@ -28,7 +28,7 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/agents` (/tasks) | refused | refused: not available yet | refused: not available yet | slash.exec: refused | refused | gateway-wide: lists every chat's running agents and the process's async jobs |
 | `/approvals` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | port: per-session setting |
 | `/approve` | refused | approval.respond (prompt id) | slash.exec: refused | unavailable: messaging | refused | messaging-only |
-| `/battery` | refused | refused: not available yet | config.set; sidecar: system.battery | slash.exec: refused | refused | client-local (cli_only) |
+| `/battery` | refused | refused: not available yet | sidecar: system.battery (preference not saved) | slash.exec: refused | refused | client-local (cli_only) |
 | `/bg` | refused | refused: not available yet | refused: not available yet | action: background | refused |  |
 | `/blueprint` (/bp) | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
 | `/branch` (/fork) | refused | session.mutate branch | canonical route | action: branch | ACP fork_session |  |
@@ -51,7 +51,7 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/egress` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
 | `/export` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
 | `/fast` | refused | refused: not available yet | config.get; change refused: not available yet | unavailable: advanced | refused | port: per-session setting |
-| `/focus` | refused | refused: not available yet | config.set | slash.exec: refused | refused | client-local (cli_only) |
+| `/focus` | refused | refused: not available yet | local (preference not saved) | slash.exec: refused | refused | client-local (cli_only) |
 | `/footer` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | port: per-session setting |
 | `/goal` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
 | `/handoff` | refused | refused: not available yet | slash.exec: refused | action: handoff | refused | client-local (cli_only) |
@@ -106,7 +106,7 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/snapshot` (/snap) | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
 | `/start` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | messaging-only |
 | `/status` | read | slash.exec | canonical route | slash.exec (rpc fallback) | refused |  |
-| `/statusbar` (/sb) | refused | refused: not available yet | config.set | unavailable: terminal | refused | client-local (cli_only) |
+| `/statusbar` (/sb) | refused | refused: not available yet | local (preference not saved) | unavailable: terminal | refused | client-local (cli_only) |
 | `/steer` (/s) | refused | refused: not available yet | canonical route | slash.exec: refused | refused |  |
 | `/stop` | refused | session.interrupt | canonical route | action: stop | refused |  |
 | `/subgoal` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |

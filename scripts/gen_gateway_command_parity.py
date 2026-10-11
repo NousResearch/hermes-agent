@@ -121,7 +121,9 @@ def ink_cell(cmd, gateway, ink, served):
         return (", ".join(reads) + "; change refused: not available yet") if reads else "refused: not available yet"
     if "isCanonical" in block:
         return "canonical route"
-    return _rpc_cell(methods, served) if methods else "local"
+    cell = _rpc_cell(methods, served) if methods else "local"
+    # A client display preference: applied to the view, reported as not saved on the owner.
+    return cell + " (preference not saved)" if "saveDisplayPref(" in block else cell
 
 
 def _sidecar_live_session_methods():

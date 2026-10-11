@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "ідентичність виконан
 canonical.controls.launchToolsets: "набори інструментів зафіксовано під час запуску сеансу: {0}"
 canonical.controls.modelUsage: "використання: /model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "/{0} ще недоступна у спільному шлюзі"
+canonical.controls.prefNotSaved: "/{0} діє лише в цьому вікні; не збережено у спільному шлюзі"
 canonical.controls.rowCost: "Орієнтовна вартість"
 canonical.controls.unsupportedModelOption: "непідтримуваний канонічний параметр моделі: {0}"
 canonical.controls.usageLastTurnTitle: "Використання · останній хід"

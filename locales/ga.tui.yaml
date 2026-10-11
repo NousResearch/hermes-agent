@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "níl aitheantas forghníomhaithe an tse
 canonical.controls.launchToolsets: "tacair uirlisí socraithe ag tús an tseisiúin: {0}"
 canonical.controls.modelUsage: "úsáid: /model <samhail> [--provider <soláthraí>] [--session]"
 canonical.controls.notAvailable: "níl /{0} ar fáil ar an gateway comhroinnte fós"
+canonical.controls.prefNotSaved: "baineann /{0} leis an amharc seo amháin; níor sábháladh é ar an gateway comhroinnte"
 canonical.controls.rowCost: "Costas measta"
 canonical.controls.unsupportedModelOption: "rogha samhla canónaí gan tacaíocht: {0}"
 canonical.controls.usageLastTurnTitle: "Úsáid · an seal deireanach"

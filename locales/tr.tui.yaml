@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "oturum yürütme kimliği kullanılamı
 canonical.controls.launchToolsets: "araç setleri oturum başlangıcında sabitlendi: {0}"
 canonical.controls.modelUsage: "kullanım: /model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "/{0} paylaşılan gateway'de henüz kullanılamıyor"
+canonical.controls.prefNotSaved: "/{0} yalnızca bu görünüme uygulanır; paylaşılan gateway'e kaydedilmedi"
 canonical.controls.rowCost: "Tahmini maliyet"
 canonical.controls.unsupportedModelOption: "desteklenmeyen kanonik model seçeneği: {0}"
 canonical.controls.usageLastTurnTitle: "Kullanım · son tur"

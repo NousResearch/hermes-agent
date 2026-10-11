@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "工作階段執行身分無法使用；
 canonical.controls.launchToolsets: "工具集已在工作階段啟動時固定：{0}"
 canonical.controls.modelUsage: "用法：/model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "共用閘道尚不支援 /{0}"
+canonical.controls.prefNotSaved: "/{0} 僅套用於此檢視；未儲存到共用閘道"
 canonical.controls.rowCost: "預估費用"
 canonical.controls.unsupportedModelOption: "不支援的標準模型選項：{0}"
 canonical.controls.usageLastTurnTitle: "用量 · 上一輪"

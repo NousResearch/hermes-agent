@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "セッションの実行 ID を取得�
 canonical.controls.launchToolsets: "ツールセットはセッション起動時に固定されています: {0}"
 canonical.controls.modelUsage: "使い方: /model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "/{0} は共有ゲートウェイではまだ利用できません"
+canonical.controls.prefNotSaved: "/{0} はこの表示にのみ適用されます。共有ゲートウェイには保存されません"
 canonical.controls.rowCost: "推定コスト"
 canonical.controls.unsupportedModelOption: "未対応のモデルオプション: {0}"
 canonical.controls.usageLastTurnTitle: "使用量 · 直前のターン"

@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "هوية تنفيذ الجلسة غير
 canonical.controls.launchToolsets: "مجموعات الأدوات ثابتة منذ بدء الجلسة: {0}"
 canonical.controls.modelUsage: "الاستخدام: /model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "/{0} غير متاح على البوّابة المشتركة بعد"
+canonical.controls.prefNotSaved: "/{0} يسري على هذا العرض فقط؛ لم يُحفظ على البوّابة المشتركة"
 canonical.controls.rowCost: "التكلفة التقديرية"
 canonical.controls.unsupportedModelOption: "خيار نموذج قانوني غير مدعوم: {0}"
 canonical.controls.usageLastTurnTitle: "الاستخدام · الدور الأخير"

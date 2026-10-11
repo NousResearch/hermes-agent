@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "идентификатор выполн
 canonical.controls.launchToolsets: "наборы инструментов зафиксированы при запуске сеанса: {0}"
 canonical.controls.modelUsage: "использование: /model <модель> [--provider <провайдер>] [--session]"
 canonical.controls.notAvailable: "/{0} пока недоступна в общем шлюзе"
+canonical.controls.prefNotSaved: "/{0} действует только в этом окне; не сохранено в общем шлюзе"
 canonical.controls.rowCost: "Оценочная стоимость"
 canonical.controls.unsupportedModelOption: "неподдерживаемый параметр модели: {0}"
 canonical.controls.usageLastTurnTitle: "Использование · последний ход"

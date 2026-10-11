@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "세션 실행 ID를 사용할 수 없�
 canonical.controls.launchToolsets: "도구 세트는 세션 시작 시 고정됨: {0}"
 canonical.controls.modelUsage: "사용법: /model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "/{0}은(는) 공유 게이트웨이에서 아직 사용할 수 없어요"
+canonical.controls.prefNotSaved: "/{0}은(는) 이 화면에만 적용돼요. 공유 게이트웨이에는 저장되지 않아요"
 canonical.controls.rowCost: "예상 비용"
 canonical.controls.unsupportedModelOption: "지원하지 않는 모델 옵션: {0}"
 canonical.controls.usageLastTurnTitle: "사용량 · 마지막 턴"

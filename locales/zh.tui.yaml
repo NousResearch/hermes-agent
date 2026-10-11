@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "会话执行身份不可用；请重新
 canonical.controls.launchToolsets: "工具集已在会话启动时固定：{0}"
 canonical.controls.modelUsage: "用法：/model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "共享网关暂不支持 /{0}"
+canonical.controls.prefNotSaved: "/{0} 仅应用于此视图；未保存到共享网关"
 canonical.controls.rowCost: "预估费用"
 canonical.controls.unsupportedModelOption: "不支持的规范模型选项：{0}"
 canonical.controls.usageLastTurnTitle: "用量 · 上一轮"

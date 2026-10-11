@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "a munkamenet végrehajtási identitása
 canonical.controls.launchToolsets: "a munkamenet indításakor rögzített eszközkészletek: {0}"
 canonical.controls.modelUsage: "használat: /model <modell> [--provider <szolgáltató>] [--session]"
 canonical.controls.notAvailable: "a /{0} még nem érhető el a megosztott átjárón"
+canonical.controls.prefNotSaved: "a /{0} csak erre a nézetre vonatkozik; nincs mentve a megosztott átjárón"
 canonical.controls.rowCost: "Becsült költség"
 canonical.controls.unsupportedModelOption: "nem támogatott kanonikus modellbeállítás: {0}"
 canonical.controls.usageLastTurnTitle: "Használat · utolsó kör"

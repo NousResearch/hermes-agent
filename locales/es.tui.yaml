@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "identidad de ejecución de la sesión n
 canonical.controls.launchToolsets: "conjuntos de herramientas fijados al iniciar la sesión: {0}"
 canonical.controls.modelUsage: "uso: /model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "/{0} aún no está disponible en el gateway compartido"
+canonical.controls.prefNotSaved: "/{0} se aplica solo a esta vista; no se guarda en el gateway compartido"
 canonical.controls.rowCost: "Costo estimado"
 canonical.controls.unsupportedModelOption: "opción de modelo canónico no admitida: {0}"
 canonical.controls.usageLastTurnTitle: "Uso · último turno"

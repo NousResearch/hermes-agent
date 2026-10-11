@@ -96,6 +96,7 @@ canonical.controls.identityUnavailable: "Ausführungsidentität der Sitzung nich
 canonical.controls.launchToolsets: "Toolsets beim Sitzungsstart festgelegt: {0}"
 canonical.controls.modelUsage: "Verwendung: /model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "/{0} ist auf dem geteilten Gateway noch nicht verfügbar"
+canonical.controls.prefNotSaved: "/{0} gilt nur für diese Ansicht; nicht auf dem geteilten Gateway gespeichert"
 canonical.controls.rowCost: "Geschätzte Kosten"
 canonical.controls.unsupportedModelOption: "nicht unterstützte kanonische Modelloption: {0}"
 canonical.controls.usageLastTurnTitle: "Nutzung · letzter Zug"

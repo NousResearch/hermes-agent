@@ -167,7 +167,8 @@ export function registerFsIpc({
       resolveGitBinary(),
       identifier,
       await desktopPluginsRoot(),
-      Boolean(payload?.force)
+      Boolean(payload?.force),
+      { ref: payload?.ref, catalogName: payload?.catalogName }
     )
   })
 

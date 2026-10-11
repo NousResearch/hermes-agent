@@ -92,11 +92,11 @@ class CLITuiMixin:
     """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments."""
 
     def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
-        """Visible height for the top/bottom input separator rules."""
+        """Visible height for the top/bottom input separator rules. Not tied to
+        ``_status_bar_suppressed_after_resize``: collapsing these static rows with the
+        status bar made the input block jump while a resize settled."""
         if position not in {"top", "bottom"}:
             raise ValueError(f"Unknown input rule position: {position}")
-        if getattr(self, "_status_bar_suppressed_after_resize", False):
-            return 0
         if position == "top":
             return 1
         return 0 if self._use_minimal_tui_chrome(width=width) else 1

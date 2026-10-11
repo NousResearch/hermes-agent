@@ -733,6 +733,46 @@ def _paint_held(seq: int, paint, app=None) -> bool:
         return True
 
 
+@contextmanager
+def _coalesced_output(output):
+    """One terminal write for a whole paint sequence, so no intermediate frame is shown.
+
+    ``renderer.erase()`` + ``paint_now()`` + ``renderer.reset()`` + ``app._redraw()`` write
+    several times: the erase blanks the chrome, the text prints, the redraw paints the chrome
+    again. Each ``Output.flush()`` ships its own buffer, so the terminal renders the blank
+    chrome in between — invisible on a local terminal (a couple of ms) but a visible flicker
+    over a slow link (ssh, tmux passthrough), on every streamed line (#1624).
+
+    Buffering the whole sequence and flushing once makes the terminal render only the final
+    state: the erase, the printed line and the repainted chrome arrive as a single write.
+
+    Anything written but never flushed inside the block is still flushed on the way out, so
+    a caller that appends to the buffer without calling ``flush()`` cannot lose output.
+    """
+    flush = output.flush
+    buffered = []
+
+    def _deferred_flush():
+        # Keep the buffer; the real flush runs once, at the end of the with-block.
+        if getattr(output, "_buffer", None):
+            buffered.append("".join(output._buffer))
+            output._buffer = []
+
+    output.flush = _deferred_flush
+    try:
+        yield
+    finally:
+        output.flush = flush
+        # Whatever is still buffered was written but never flushed; replaying it keeps
+        # the single-write guarantee without dropping it.
+        if buffered or getattr(output, "_buffer", None):
+            if getattr(output, "_buffer", None):
+                buffered.append("".join(output._buffer))
+                output._buffer = []
+            output._buffer = buffered
+            flush()
+
+
 def _cprint(text: str):
     """Print ANSI text through prompt_toolkit's renderer (patch_stdout swallows raw ANSI).
 
@@ -820,16 +860,27 @@ def _cprint(text: str):
                 screen = renderer._last_screen
                 floor = max(floor, renderer._min_available_height, screen.height if screen else 0)
             columns = app.output.get_size().columns
-            renderer.erase()
-            paint_now()
-            renderer.reset()
-            printed = sum(_line_rows(line, columns) for line in text.split("\n"))
-            if app.output.get_size().columns != columns:
-                _add_suspect_rows(printed)
-            if floor is not None:
-                _set_chrome_floor(max(0, floor - printed))
-            app._request_absolute_cursor_position()
-            app._redraw()
+            # Erase + print + redraw as ONE terminal write: split, the erase leaves the
+            # chrome blank for the frame in between, which reads as a flicker over ssh (#1624).
+            with _coalesced_output(app.output):
+                renderer.erase()
+                paint_now()
+                renderer.reset()
+                # reset() drops _last_size along with _last_screen. Without it the next
+                # render sees a "size change" (Renderer.render: `_last_size != size`) even
+                # though the terminal never resized, which throws away _last_screen and
+                # forces a full repaint that re-derives the chrome height from scratch —
+                # the height then follows whatever the footer widgets measure that frame,
+                # so the input block jumps a row. Restore the size; the screen itself stays
+                # invalidated, because the line just printed really did change it.
+                renderer._last_size = app.output.get_size()
+                printed = sum(_line_rows(line, columns) for line in text.split("\n"))
+                if app.output.get_size().columns != columns:
+                    _add_suspect_rows(printed)
+                if floor is not None:
+                    _set_chrome_floor(max(0, floor - printed))
+                app._request_absolute_cursor_position()
+                app._redraw()
 
     try:
         loop.call_soon_threadsafe(_schedule)

@@ -44,7 +44,7 @@ arm_source_redirect "$2" "$3" "$4"
 
     def run(body):
         return subprocess.run(["bash", "-c", setup + body, "bash", str(HELPER), str(repo), str(work), str(serve), old, new],
-                              env=env, text=True, capture_output=True, timeout=30)
+                              env=env, text=True, capture_output=True, timeout=30, check=False)
 
     result = run('''[ "$(git -C "$2" remote get-url origin)" = 'https://github.com/NousResearch/hermes-agent.git' ]
 git clone -q https://github.com/NousResearch/hermes-agent.git "$3/clone"

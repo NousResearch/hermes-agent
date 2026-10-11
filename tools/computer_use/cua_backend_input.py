@@ -15,7 +15,7 @@ _FOREGROUND_UNSUPPORTED_MSG = ("The connected cua-driver action schema does not 
                                "package version describes the live schema.")
 # (what, extra args) pointer addressing form; ``extra`` is None when the caller did not supply that form and
 # may be a callable when computing it has side effects (capability probes) that must follow the refusal checks.
-_Variant = tuple[str, Union[None, dict[str, Any], Callable[[], dict[str, Any]]]]
+_Variant = tuple[str, None | dict[str, Any] | Callable[[], dict[str, Any]]]
 
 def _refuse(action: str, message: str, **fields: Any) -> ActionResult:
     return ActionResult(ok=False, action=action, message=message, **fields)

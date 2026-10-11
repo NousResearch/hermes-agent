@@ -987,12 +987,12 @@ class ConfigIssue:
     hint: str
 
 
-def _issue(issues: list["ConfigIssue"], severity: str, message: str, hint: str) -> None:
+def _issue(issues: list[ConfigIssue], severity: str, message: str, hint: str) -> None:
     issues.append(ConfigIssue(severity, message, hint))
 
 
 def _require_fields(
-    issues: list["ConfigIssue"], entry: dict[str, Any], label: str,
+    issues: list[ConfigIssue], entry: dict[str, Any], label: str,
     fields: tuple[tuple[str, str], ...], suffix: str = "") -> None:
     """Append a warning for every falsy ``field`` of *entry* (message: ``<label> is missing '<f>' field``)."""
     for field, hint in fields:
@@ -1174,7 +1174,7 @@ def _validate_quoted_containers(config: dict[str, Any], issues: list[ConfigIssue
                    "or remove the quotes in config.yaml")
 
 
-def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list["ConfigIssue"]:
+def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[ConfigIssue]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
     if config is None:
@@ -3188,7 +3188,7 @@ def edit_config():
         return
 
     print(f"Opening {config_path} in {editor}...")
-    subprocess.run([editor, str(config_path)])
+    subprocess.run([editor, str(config_path)], check=False)
 
 
 def _default_value_for_key(dotted_key: str):
@@ -4100,7 +4100,7 @@ def platform_manifest_stamp(home: Optional[Path] = None) -> tuple:
 
 
 def _platform_plugin_manifests(home: Optional[Path] = None, source: PlatformManifestSource = "all", *,
-                               strict: bool = False, skipped: "list | None" = None):
+                               strict: bool = False, skipped: list | None = None):
     """Yield ``(dir_name, manifest_dict)`` for every platform plugin manifest (see
     :func:`_platform_manifest_paths`). ``strict`` raises when a manifest cannot be read instead of
     skipping it: the child-env scrub must not lose a declared secret to an I/O error. Only a
@@ -4173,7 +4173,7 @@ def platform_manifest_secret_envs(home: Optional[Path] = None, source: PlatformM
     return _manifest_secret_envs(_platform_plugin_manifests(home, source, strict=strict))
 
 
-def platform_manifest_secret_scan(home: Optional[Path] = None) -> "tuple[frozenset[str], bool]":
+def platform_manifest_secret_scan(home: Optional[Path] = None) -> tuple[frozenset[str], bool]:
     """``home``'s user-installed platform plugin secrets, strictly read, and whether the scan was
     complete: False when a plugin dir or flat manifest could not be read or parsed, so the caller
     keeps the denials it already knew instead of releasing them on a failed discovery."""
@@ -4182,14 +4182,14 @@ def platform_manifest_secret_scan(home: Optional[Path] = None) -> "tuple[frozens
     return names, not skipped
 
 
-def _inject_platform_plugin_env_vars() -> "frozenset[str] | None":
+def _inject_platform_plugin_env_vars() -> frozenset[str] | None:
     """Populate OPTIONAL_ENV_VARS from platform plugin manifests (bundled AND user-installed) so
     Teams / IRC / Google Chat and third-party platforms are configurable in the ``hermes config`` /
     Desktop Gateway form without the core knowing they exist. Failures are swallowed so a
     malformed plugin.yaml can't break CLI import. Returns the bundled manifests' secret names, or
     None when a bundled manifest could not be read (the policy then re-reads strictly).
     """
-    bundled: "list | None" = []
+    bundled: list | None = []
     try:
         bundled = list(_platform_plugin_manifests(source="bundled", strict=True))
     except OSError:
@@ -4218,4 +4218,4 @@ def _inject_platform_plugin_env_vars() -> "frozenset[str] | None":
 # one: the config form keeps the core entry, and the child-env scrub keeps a plugin that lists
 # OPENAI_API_KEY from turning a provider key into an adapter secret.
 CORE_DECLARED_ENV_NAMES: frozenset[str] = frozenset(OPTIONAL_ENV_VARS)
-BUNDLED_PLATFORM_SECRET_ENVS: "frozenset[str] | None" = _inject_platform_plugin_env_vars()
+BUNDLED_PLATFORM_SECRET_ENVS: frozenset[str] | None = _inject_platform_plugin_env_vars()

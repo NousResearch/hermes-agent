@@ -32,7 +32,7 @@ SNAPSHOT_STALE_AFTER_S = 15 * 60.0
 
 _lock = threading.Lock()
 # slot key (home, provider, identity_id, base_url) → snapshot
-_snapshots: dict[tuple[str, str, str, str], "AccountUsageSnapshot"] = {}
+_snapshots: dict[tuple[str, str, str, str], AccountUsageSnapshot] = {}
 # slot key → monotonic time the stored snapshot's fetch STARTED (late-fetch guard)
 _started: dict[tuple[str, str, str, str], float] = {}
 # slot key → monotonic time of the last refresh try (success or failure)
@@ -87,7 +87,7 @@ def _identity_id_for(provider: str, entry: Any) -> str:
 
 
 def remember_account_usage(
-    provider: Optional[str], snapshot: Optional["AccountUsageSnapshot"],
+    provider: Optional[str], snapshot: Optional[AccountUsageSnapshot],
     *, identity_id: Optional[str] = None, base_url: Optional[str] = None,
     started_monotonic: Optional[float] = None,
 ) -> None:
@@ -127,12 +127,12 @@ def remember_account_usage(
 
 def cached_account_usage(
     provider: str, *, identity_id: Optional[str] = None, base_url: Optional[str] = None,
-) -> Optional["AccountUsageSnapshot"]:
+) -> Optional[AccountUsageSnapshot]:
     with _lock:
         return _snapshots.get(_key(provider, identity_id, base_url))
 
 
-def snapshot_is_stale(snapshot: Optional["AccountUsageSnapshot"]) -> bool:
+def snapshot_is_stale(snapshot: Optional[AccountUsageSnapshot]) -> bool:
     """True when the snapshot is too old to render as a live gauge (the picker shows state
     ``unknown`` instead of trusting its percentages)."""
     from agent.account_usage import AccountUsageSnapshot as _Snapshot

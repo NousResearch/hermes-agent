@@ -134,6 +134,12 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   error/waiting states win; nothing shows without a visible pet
   (`ctx.pet.visible`). `ctx.pet.clear(id?)`. Never locate the pet canvas in
   the DOM or overlay it yourself.
+- `ctx.runAction('view.showBrowser')` — run a built-in app action through the
+  same handler as its shortcut/palette entry, so a rebound shortcut can't break
+  it; returns `{ ok: true }` or `{ ok: false, reason: 'unknown'|'denied'|'unavailable', error }`
+  (never throws). View/navigation actions only; `ctx.listActions()` lists them
+  (`PluginAppActionId` / `PLUGIN_APP_ACTIONS`). Never dispatch a synthetic
+  `KeyboardEvent` to trigger an app shortcut.
 - `ctx.i18n.register({ en, ja, ... })` — ship your OWN locale bundles, scoped
   to your plugin (never edit core `en.ts`). Values are literal strings or
   interpolator functions; nested trees are addressed by dot-path. Read them

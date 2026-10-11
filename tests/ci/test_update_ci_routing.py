@@ -415,7 +415,7 @@ def test_marker_corpus_change_runs_every_language_that_reads_it():
 def _tracked_mentions(name: str) -> list[str]:
     try:
         out = subprocess.run(["git", "-C", str(_REPO), "grep", "-l", "-F", name, "--", "."],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, timeout=60, check=False)
     except OSError:
         pytest.skip("git unavailable: cannot list the fixture's consumers")
     if out.returncode not in (0, 1):
@@ -574,7 +574,7 @@ def test_replay_python3_is_the_replay_interpreter_when_its_dir_has_only_python(t
              "print(json.dumps([sys.executable, workflow_steps.outputs(json.loads(sys.argv[1]), {})]))")
     env = {**os.environ, "PYTHONPATH": str(_REPO)}
     result = subprocess.run([str(interpreter), "-c", probe, json.dumps(_PROBE_STEP)], cwd=_REPO, env=env,
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stderr
     replay_python, out = json.loads(result.stdout)
     assert out["py3"] == replay_python

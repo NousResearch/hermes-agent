@@ -238,7 +238,8 @@ def discover(repository: str, run=output) -> list[dict]:
         commit = claim_ref["commit"]
         claim = _tag_message(claim_tag, claim_ref["object"], run)
         try:
-            validate_claim(claim, version=version, attempt=attempt, commit=commit)
+            # Normalized: a claim cut before the opt-in platform flags reads them as false.
+            claim = validate_claim(claim, version=version, attempt=attempt, commit=commit)
         except ValueError as error:
             raise ValueError(f"{claim_tag} metadata is invalid") from error
         claim_epoch = claim["claimEpoch"]
@@ -254,7 +255,11 @@ def discover(repository: str, run=output) -> list[dict]:
         final = None
         retry = None
 
-        if final_ref is not None:
+        if marker_ref(version, attempt) in refs:
+            # An abandoned attempt is spent whatever its version became: a later attempt
+            # may have won and been tagged at another commit (v0.21.6: rc.4 after rc.1-3).
+            state, retry = "burned", None
+        elif final_ref is not None:
             if set(final_ref) != {"object", "commit"}:
                 raise ValueError(f"{tag} must be an annotated remote tag")
             if final_ref["commit"] != commit:
@@ -269,9 +274,6 @@ def discover(repository: str, run=output) -> list[dict]:
                 state, needs_retarget = "burned", False
             else:
                 state, needs_retarget = classify_final_release(tag, claim_tag, release)
-        elif marker_ref(version, attempt) in refs:
-            # The attempt was abandoned and its version has no final tag.
-            state, retry = "burned", None
         else:
             if release is not None and (release.get("tag_name") != claim_tag
                                         or release.get("draft") is not True
@@ -304,7 +306,9 @@ def discover(repository: str, run=output) -> list[dict]:
             "retry": retry if final_ref is None else None,
         })
 
-    return sorted(records, key=lambda record: _key(record["version"]))
+    # Attempt order inside a version: git lists refs by name (rc.10 before rc.2), and
+    # reconcile indexes by version with the last record winning, i.e. the newest attempt.
+    return sorted(records, key=lambda record: (_key(record["version"]), record["attempt"]))
 
 
 def channel_head(desktop_head: str | None, records: list[dict],

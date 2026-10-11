@@ -211,6 +211,7 @@ def _probe_python(python_path: str, code: str, *, text: bool = False):
             [python_path, "-c", code], timeout=5, capture_output=True, text=text,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL, env=delegated_child_subprocess_env(),
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
         return None

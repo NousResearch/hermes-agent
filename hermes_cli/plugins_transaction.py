@@ -186,7 +186,7 @@ def update_plugin(
                 raise pc.PluginOperationError(
                     f"The updated plugin renamed itself to '{installed_name}', but that plugin already exists.")
             pc._check_manifest_version(manifest, installed_name)
-            pc._scan_merged_tree(staged, source, merged, force=False)
+            pc._scan_merged_tree(staged, source, merged, force=False, reviewed_pin=catalog_entry is not None)
             pc._copy_example_files(staged, pc._console())
             _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
             if tree_digest(target) != before:

@@ -302,6 +302,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ pluginsHub: false })
     }
 
+    if (overlay.connectors) {
+      return patchOverlayState({ connectors: false })
+    }
+
     if (overlay.sessions) {
       return patchOverlayState({ sessions: false })
     }

@@ -649,14 +649,30 @@ function enqueueRelayDelivery(sender: RelayConnection, envelope: RelayEnvelope, 
 }
 
 function relayDeliverParams(sender: RelayConnection, envelope: RelayEnvelope, envelopeId: string) {
-  return {
+  // Canonical bot_relay.deliver forbids the legacy from_* sender fields, so the
+  // sender rides the authenticated author shape instead (bot:<connection>/<profile>,
+  // mirroring tools/bot_relay.delivery_turn_author). The legacy bridge forwards an
+  // explicit author through rather than deriving one, so both dialects attribute
+  // the turn to the sending bot instead of the recipient human.
+  const fromProfile = String(envelope?.from_profile || '')
+  const fromHandle = String(envelope?.from_handle || '').trim() || fromProfile
+  const fromConnection = String(sender.id)
+
+  const params: Record<string, unknown> = {
     id: envelopeId,
     profile: String(envelope?.target_profile || ''),
-    message: String(envelope?.message || ''),
-    from_profile: String(envelope?.from_profile || ''),
-    from_handle: String(envelope?.from_handle || ''),
-    from_connection: String(sender.id)
+    message: String(envelope?.message || '')
   }
+
+  if (fromProfile) {
+    params.author = {
+      id: fromConnection ? `bot:${fromConnection}/${fromProfile}` : `bot:${fromProfile}`,
+      name: fromHandle,
+      is_bot: true
+    }
+  }
+
+  return params
 }
 
 /** Act on a `bot_relay.deliver` answer: only a settled/failed receipt for THIS

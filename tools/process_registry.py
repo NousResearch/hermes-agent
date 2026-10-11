@@ -1209,7 +1209,34 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         # Guard against the `A && B &` subshell-wait trap (issue #68915).
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
-        safe_command = _rewrite_bg(command)
+        # Background sudo needs the same rewrite the foreground path gets from
+        # BaseEnvironment._prepare_command: without it a `sudo` here reads EOF on
+        # stdin=DEVNULL and cannot authenticate, so even a configured SUDO_PASSWORD never
+        # reaches it (#133622). _transform_sudo_command returns the password line to PREPEND
+        # to the process stdin — sudo -S consumes exactly one line and passes the rest through.
+        #
+        # Order matters: the sudo rewrite must see the ORIGINAL command. Run after the
+        # compound-background rewrite it misses `A && sudo B &`, because that rewrite wraps the
+        # tail in braces and the sudo is no longer in a position the rewriter matches.
+        _sudo_stdin = ""
+        try:
+            from tools.terminal_tool_sudo import _transform_sudo_command
+            _sudo_cmd, _sudo_stdin = _transform_sudo_command(command)
+        except Exception as _sudo_exc:
+            # A password lookup failure must not stop the spawn; sudo then fails with its own
+            # diagnostic, exactly as it does today.
+            logger.debug("sudo rewrite skipped for background spawn: %s", _sudo_exc)
+            _sudo_cmd = None
+        safe_command = _rewrite_bg(_sudo_cmd or command)
+        # `_rewrite_bg` turns `A && sudo B &` into `A && { sudo B & }`, so the trailing `&` of the
+        # ORIGINAL command is what says the list gets forked — test that, not the rewritten tail.
+        if _sudo_stdin and command.rstrip().endswith("&"):
+            # A backgrounded list forks: bash reads the pipe in the parent, so the password never
+            # reaches the backgrounded sudo. Bind it with a heredoc instead, which follows the
+            # fork — the same helper BaseEnvironment uses for backends that cannot take a pipe.
+            from tools.environments.base import BaseEnvironment
+            safe_command = BaseEnvironment._embed_stdin_heredoc(safe_command, _sudo_stdin)
+            _sudo_stdin = ""
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
                                     persist_on_release=persist_on_release)
         pty_scope_attempted = False
@@ -1235,6 +1262,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         spawn_env = self._spawn_env(env_vars)
         if session.systemd_unit:
             spawn_env = systemd_user_bus_env(spawn_env)
+        # A `sudo -S` in a background command reads its password from stdin, so the pipe path
+        # needs a writable pipe carrying that one line — DEVNULL would hand it EOF (#133622).
+        # With no sudo in the command the original DEVNULL is kept: a background process must
+        # never block waiting on input the caller is not going to send.
+        _stdin_kwargs: dict = {"stdin": subprocess.DEVNULL}
+        if _sudo_stdin:
+            try:
+                _stdin_kwargs = {"stdin": subprocess.PIPE}
+            except Exception:  # pragma: no cover - PIPE is always available
+                _stdin_kwargs = {"stdin": subprocess.DEVNULL}
         # start_new_session is REQUIRED with systemd-run --scope too: the scope does not
         # give the worker a new session, so from an interactive TUI the worker would
         # share the foreground process group and background spawns would stop the whole
@@ -1242,8 +1279,14 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         # the scope attaches to the invoked process, not the spawning session.
         proc = subprocess.Popen(
             spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
-            errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-            start_new_session=True, **_popen_kwargs)
+            errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            start_new_session=True, **_stdin_kwargs, **_popen_kwargs)
+        if _sudo_stdin:
+            # _pipe_stdin (not a bare text-mode write): Windows would translate the newline to
+            # CRLF and sudo would read the password as "correct-horse\r" and reject a correct
+            # password — the same corruption it exists to prevent for write_file payloads.
+            from tools.environments.base_output import _pipe_stdin
+            _pipe_stdin(proc, _sudo_stdin)
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)

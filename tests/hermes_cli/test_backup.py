@@ -211,6 +211,199 @@ class TestShouldExclude:
 # _iter_backup_files tests
 # ---------------------------------------------------------------------------
 
+def _make_pytest_numbered_dir(root: Path, prefix: str, n: int = 0) -> Path:
+    """Mimic ``_pytest.pathlib.make_numbered_dir``: ``<prefix><n>`` plus the sibling
+    ``<prefix>current`` symlink pytest points at the newest one (absolute target)."""
+    root.mkdir(parents=True, exist_ok=True)
+    d = root / f"{prefix}{n}"
+    d.mkdir()
+    (root / f"{prefix}current").symlink_to(d)
+    return d
+
+
+class TestPytestTempTreesExcluded:
+    """9 Oct 03:30 producer failure: deliberate ``corrupt.db`` pytest fixtures left by test and
+    review runs in a kanban workspace (``--basetemp`` under HERMES_HOME) failed the estate
+    backup. pytest's numbered temp dirs are recognised by their ``<stem>current`` symlink."""
+
+    @staticmethod
+    def _corrupt(path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not sqlite")
+        return path
+
+    def test_basetemp_fixture_corrupt_db_does_not_fail_backup(self, tmp_path, monkeypatch, capsys):
+        from hermes_cli.backup import run_backup
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        ws = hermes_home / "kanban/boards/estate/workspaces/t_4d2e52f6"
+        # --basetemp=<ws>/reviewer-r3-tmp: per-test dirs sit directly in the basetemp.
+        fixture = _make_pytest_numbered_dir(ws / "reviewer-r3-tmp", "test_gate_reader_missing_corru")
+        self._corrupt(fixture / "corrupt.db")
+        # Default basetemp under a TMPDIR inside HERMES_HOME: pytest-of-<user>/pytest-N/<test>N.
+        session = _make_pytest_numbered_dir(ws / "tmp/pytest-of-claudia", "pytest-", 1)
+        # Older numbered siblings carry no symlink of their own: pytest-0, ..._only_0..4.
+        self._corrupt(ws / "tmp/pytest-of-claudia/pytest-0/test_old0/corrupt.db")
+        older = _make_pytest_numbered_dir(ws / "core-tmp", "test_compression_filters_only_", 5)
+        self._corrupt(older.parent / "test_compression_filters_only_0/state.db")
+        self._corrupt(_make_pytest_numbered_dir(session, "test_scope_errors_never_fallba", 3)
+                      / ".hermes/profiles/corrupt/state.db")
+        (ws / "notes.md").write_text("kept\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        out_zip = tmp_path / "out.zip"
+
+        assert run_backup(Namespace(output=str(out_zip))) is True
+        out = capsys.readouterr().out
+        assert "SQLite safe copy failed" not in out and "could not be added" not in out
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert not any("corrupt" in n or "pytest-" in n for n in names)
+        assert "kanban/boards/estate/workspaces/t_4d2e52f6/notes.md" in names
+        assert {"config.yaml", "hermes_state.db"} <= names
+
+    @pytest.mark.parametrize("rel", [
+        "profiles/coder/state.db",
+        "kanban/boards/estate/kanban.db",
+        "kanban.db",
+        # A real DB beside a pytest tree, and in a dir that merely LOOKS numbered.
+        "kanban/boards/estate/workspaces/t_1/test_gate0/state.db",
+        "kanban/boards/estate/workspaces/t_1/pytest-0/state.db",
+    ])
+    def test_corrupt_real_db_still_fails(self, tmp_path, monkeypatch, capsys, rel):
+        from hermes_cli.backup import run_backup
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        fixture = _make_pytest_numbered_dir(
+            hermes_home / "kanban/boards/estate/workspaces/t_1/basetemp", "test_x")
+        self._corrupt(fixture / "corrupt.db")
+        self._corrupt(hermes_home / rel)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        assert run_backup(Namespace(output=str(tmp_path / "out.zip"))) is False
+        out = capsys.readouterr().out
+        assert f"{rel}: SQLite safe copy failed" in out
+        assert "1 file(s) could not be added" in out
+
+    def test_symlink_must_point_at_the_dir(self, tmp_path):
+        """A ``<stem>current`` symlink to something else (or a plain file) is not pytest's."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        a = root / "work/run0"
+        a.mkdir(parents=True)
+        (a / "data.txt").write_text("x")
+        (root / "work/runcurrent").symlink_to(root / "work")  # wrong target
+        b = root / "work/job0"
+        b.mkdir()
+        (b / "data.txt").write_text("y")
+        (root / "work/jobcurrent").write_text("not a link")
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert "work/run0/data.txt" in selected and "work/job0/data.txt" in selected
+
+    def test_moved_pytest_tree_still_recognised(self, tmp_path):
+        """pytest writes absolute targets; a relocated tree keeps its signature by name."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        base = root / "kanban/workspaces/t_9/basetemp"
+        base.mkdir(parents=True)
+        (base / "test_y0").mkdir()
+        (base / "test_y0/corrupt.db").write_bytes(b"not sqlite")
+        (base / "test_ycurrent").symlink_to("/elsewhere/basetemp/test_y0")
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert not any("test_y0" in s for s in selected)
+
+
+    @pytest.mark.parametrize("alias", [None, "coder0", "/unrelated/coder0"])
+    @pytest.mark.parametrize("corrupt", [True, False])
+    def test_alias_outside_task_workspace_never_hides_real_data(
+            self, tmp_path, monkeypatch, capsys, alias, corrupt):
+        """Gurney r1: a ``<stem>current -> <stem><N>`` alias is not pytest ownership. Outside a
+        kanban task workspace, a profile like ``profiles/coder0`` stays archived (healthy) or
+        fails closed (corrupt), whatever alias sits beside it, local or same-basename external."""
+        import sqlite3
+        from hermes_cli.backup import run_backup
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        rel = "profiles/coder0/state.db"
+        db = hermes_home / rel
+        if corrupt:
+            self._corrupt(db)
+        else:
+            db.parent.mkdir(parents=True)
+            with sqlite3.connect(db) as conn:
+                conn.execute("create table retained(value text)")
+                conn.execute("insert into retained values ('must survive')")
+            conn.close()
+        if alias:
+            (hermes_home / "profiles/codercurrent").symlink_to(alias)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        out_zip = tmp_path / "out.zip"
+
+        ok = run_backup(Namespace(output=str(out_zip)))
+        out = capsys.readouterr().out
+        if corrupt:
+            assert ok is False
+            assert f"{rel}: SQLite safe copy failed" in out
+        else:
+            assert ok is True
+            with zipfile.ZipFile(out_zip) as zf:
+                assert rel in zf.namelist()
+                restored = tmp_path / "restored.db"
+                restored.write_bytes(zf.read(rel))
+            with sqlite3.connect(restored) as conn:
+                assert conn.execute("select value from retained").fetchall() == [("must survive",)]
+            conn.close()
+
+    @pytest.mark.parametrize("parent", [
+        "work/basetemp",                          # arbitrary user dir at the root
+        "profiles/coder/skills/x/basetemp",       # inside a profile
+        "kanban/boards/estate/basetemp",           # board dir, not a task workspace
+        "kanban/workspaces",                       # the workspaces dir itself (task ids)
+    ])
+    def test_pytest_signature_outside_task_workspace_is_archived(self, tmp_path, parent):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        d = _make_pytest_numbered_dir(root / parent, "test_z")
+        (d / "data.txt").write_text("x")
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert f"{parent}/test_z0/data.txt" in selected
+
+    @pytest.mark.parametrize("ws", [
+        "kanban/workspaces/t_1",
+        "kanban/boards/estate/workspaces/t_1",
+        "profiles/cody/kanban/boards/sophia/workspaces/t_1",
+    ])
+    def test_pytest_tree_in_any_task_workspace_is_pruned(self, tmp_path, ws):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        d = _make_pytest_numbered_dir(root / ws / "review-tmp", "test_case")
+        self._corrupt(d / "corrupt.db")
+        (root / ws / "notes.md").write_text("kept")
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert f"{ws}/notes.md" in selected
+        assert not any("test_case0" in s for s in selected)
+
+
 class TestIterBackupFiles:
     def test_manual_and_automatic_paths_share_one_walk(self, tmp_path):
         """Both backup entry points must select the identical file set.

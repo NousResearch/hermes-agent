@@ -302,6 +302,16 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     def get_session_title(self, session_id):
         return self.get_session(session_id).get('title')
 
+    # Transcript-tail reads the agent core makes on its session_db (failed-turn boundary, in-place
+    # compaction coverage); a missing one raised AttributeError inside a best-effort guard.
+    def latest_conversation_role(self, session_id):
+        self._session(session_id)
+        return self._apply('session.tail_role', {})['value']
+
+    def get_message_role(self, session_id, row_id):
+        self._session(session_id)
+        return self._apply('session.row_role', {'row_id': int(row_id)})['value']
+
     def get_compression_failure_cooldown_row(self, session_id):
         row = self.get_session(session_id)
         return {'session_exists': True, 'cooldown_until': row.get('compression_failure_cooldown_until'),

@@ -4698,20 +4698,24 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
-            await self._release_turn_marker(event)
-            event._turn_marker_handoff = False  # a later run of this object clears its own marker
-            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
-            # alive.
-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
-            # Callback work or a late refresh may have recreated typing — one final bounded stop.
-            await self._stop_typing_refresh(
-                event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
-            # Flush any timer that missed the in-band drain, then reconcile ownership.
-            await self._flush_text_debounce_now(session_key)
-            self._finish_session_task(session_key, interrupt_event)
-            if group_turn_locked:
-                group_turn_lock.release()
+            try:
+                await self._release_turn_marker(event)
+                event._turn_marker_handoff = False  # a later run of this object clears its own marker
+                # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
+                # alive.
+                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                await self._fire_post_delivery_callback(session_key, interrupt_event)
+                # Callback work or a late refresh may have recreated typing — one final bounded stop.
+                await self._stop_typing_refresh(
+                    event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
+                # Flush any timer that missed the in-band drain, then reconcile ownership.
+                await self._flush_text_debounce_now(session_key)
+                self._finish_session_task(session_key, interrupt_event)
+            finally:
+                # Released even if cleanup above raises or is cancelled, so a failed tail can't
+                # deadlock the shared key for every chat in the group.
+                if group_turn_locked:
+                    group_turn_lock.release()
 
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot

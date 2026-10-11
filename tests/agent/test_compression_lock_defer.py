@@ -28,7 +28,6 @@ import pytest
 
 from agent.conversation_compression import compression_skipped_due_to_lock
 from run_agent import AIAgent
-import run_agent
 
 
 LOCK_HOLDER = "pid=4242:tid=1:agent=deadbeef:nonce=abcd1234"
@@ -160,11 +159,6 @@ class TestLockSkipSignalTypePin:
         ) is False
         assert compression_skipped_due_to_lock(SimpleNamespace()) is False
 
-    def test_magicmock_agent_auto_attribute_is_not_a_lock_skip(self):
-        """MagicMock agents auto-create truthy attributes; bare truthiness
-        would hijack every mocked agent in sibling suites into the lock-skip
-        branch (the #69870 × #69840 incident). The read must be type-pinned."""
-        assert compression_skipped_due_to_lock(MagicMock()) is False
 
     def test_truthy_non_true_non_str_values_are_not_lock_skips(self):
         for junk in (1, 1.0, ["holder"], {"holder": True}, object(), MagicMock()):

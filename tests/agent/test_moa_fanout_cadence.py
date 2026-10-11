@@ -114,10 +114,16 @@ def test_every_n_off_cadence_iterations_reuse_cached_guidance(monkeypatch, tmp_p
     assert len(ref_runs) == 1
     # Every iteration's aggregator request carries reference guidance...
     assert all(p["guidance"] for p in prepared)
-    # ...and the off-cadence ones reuse iteration 1's exact advice text.
+    # ...and the off-cadence ones reuse iteration 1's exact advice text, marked as
+    # predating the tool results they are now shown beside.
+    from agent.moa_loop import _STALE_GUIDANCE_NOTE
+
     assert "advice #1" in prepared[0]["guidance"]
-    assert prepared[1]["guidance"] == prepared[0]["guidance"]
-    assert prepared[2]["guidance"] == prepared[0]["guidance"]
+    assert _STALE_GUIDANCE_NOTE not in prepared[0]["guidance"]
+    for reused in prepared[1:]:
+        assert "advice #1" in reused["guidance"]
+        assert _STALE_GUIDANCE_NOTE in reused["guidance"]
+        assert reused["guidance"].replace(_STALE_GUIDANCE_NOTE, "") == prepared[0]["guidance"]
 
 
 

@@ -23,9 +23,13 @@ _fuzzy_cache: dict[str, tuple[float, list[str]]] = {}
 
 def _git_repo_files(root: str):
     """Yield ``git ls-files`` paths (tracked + untracked) relative to ``root``; empty outside a
-    repo or on git failure/timeout. Entries above ``root`` are skipped (Cmd-P workspace scope)."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    run_kw = dict(capture_output=True, timeout=2.0, check=False, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+    repo or on git failure/timeout. Entries above ``root`` are skipped (Cmd-P workspace scope).
+
+    :func:`noninteractive_git_env` (GHSA-7x36-8jrh-v4pw): runs on a keystroke in the session cwd,
+    and ``ls-files`` reads the index, which executes a repo-configured ``core.fsmonitor``."""
+    from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+    run_kw = dict(capture_output=True, timeout=2.0, check=False, stdin=subprocess.DEVNULL,
+                  creationflags=windows_hide_flags(), env=noninteractive_git_env())
     try:
         top_result = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"], **run_kw)
         if top_result.returncode != 0:
@@ -70,6 +74,10 @@ def _list_repo_files(root: str) -> list[str]:
     if not files:
         files = list(islice(_walk_repo_files(root), _FUZZY_CACHE_MAX_FILES))
     with _fuzzy_cache_lock:
+        # The TTL is only consulted on read, so a root that stops being queried (one .worktrees/<id>
+        # root per worktree flow, MBs each) would stay pinned for the process lifetime (#62950).
+        for stale in [r for r, (ts, _) in _fuzzy_cache.items() if now - ts >= _FUZZY_CACHE_TTL_S]:
+            del _fuzzy_cache[stale]
         _fuzzy_cache[root] = (now, files)
     return files
 

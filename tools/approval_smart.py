@@ -112,6 +112,16 @@ def _smart_approve(command: str, description: str) -> str:
         )
         logger.debug("Smart approvals: LLM call completed in %.1fs", time.monotonic() - _smart_t0)
         answer = (response.choices[0].message.content or "").strip().upper()
+        if not answer:
+            # WARNING, not DEBUG: an empty-but-200 body is an infrastructure failure, not a
+            # verdict — typically finish_reason=="length" after a reasoning model spent the
+            # whole max_tokens budget on hidden reasoning (#117428). It escalates like any
+            # uncertain outcome, but is indistinguishable from a genuine ESCALATE in the logs
+            # unless this fires above DEBUG.
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            logger.warning("Smart approvals: guardian returned an empty answer "
+                           "(finish_reason=%s), escalating", finish_reason)
+            return "escalate"
         return _VERDICTS.get(answer, "escalate")
     except Exception as e:
         # WARNING, not DEBUG: a failed/blocked guardian call is a real event

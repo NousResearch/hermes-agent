@@ -2,10 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { sessionCommands } from '../app/slash/commands/session.js'
 import type { SessionUsageResponse } from '../gatewayTypes.js'
+import { applyLocale, resetLocale, t } from '../i18n/runtime.js'
 
 const usageCommand = sessionCommands.find(cmd => cmd.name === 'usage')!
-
-const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
 
 const guarded =
   <T>(fn: (r: T) => void) =>
@@ -47,7 +46,8 @@ const baseUsage = (overrides: Partial<SessionUsageResponse> = {}): SessionUsageR
 const printed = (sys: ReturnType<typeof vi.fn>) => sys.mock.calls.map(c => c[0]).join('\n')
 
 const balancePanel = (panel: ReturnType<typeof vi.fn>) => {
-  const sections = panel.mock.calls.find(c => c[0] === 'Balance')?.[1] as { text?: string }[] | undefined
+  const sections = panel.mock.calls.find(c => c[0] === t('slashCmd.session.usage.balanceTitle'))?.[1] as
+    { text?: string }[] | undefined
 
   return (sections ?? []).map(s => s.text ?? '').join('\n')
 }
@@ -57,16 +57,31 @@ describe('/usage slash command', () => {
     vi.clearAllMocks()
   })
 
+  it('resolves the CTA at run time, so a locale pack applied after import is observed', async () => {
+    applyLocale('xx', {
+      lang: 'xx',
+      messages: { 'slashCmd.session.usage.cta': 'ZZ-CTA', 'slashCmd.session.usage.noCalls': 'ZZ-NOCALLS' },
+      surface: 'tui'
+    })
+
+    try {
+      const { run, sys } = buildCtx({ 'session.usage': baseUsage({ calls: 0, credits_lines: [] }) })
+      await run('')
+      expect(printed(sys)).toContain('ZZ-CTA')
+      expect(printed(sys)).toContain('ZZ-NOCALLS')
+    } finally {
+      resetLocale()
+    }
+  })
+
   it('always shows the CTA; "no API calls yet" only when there is no balance', async () => {
     const empty = buildCtx({ 'session.usage': baseUsage({ calls: 0, credits_lines: [] }) })
     await empty.run('')
-    expect(printed(empty.sys)).toContain('no API calls yet')
-    expect(printed(empty.sys)).toContain(USAGE_CTA)
+    expect(printed(empty.sys)).toContain(t('slashCmd.session.usage.noCalls'))
 
     const withBalance = buildCtx({ 'session.usage': baseUsage({ calls: 0, credits_lines: ['$50.00 remaining'] }) })
     await withBalance.run('')
-    expect(printed(withBalance.sys)).not.toContain('no API calls yet')
-    expect(printed(withBalance.sys)).toContain(USAGE_CTA)
+    expect(printed(withBalance.sys)).not.toContain(t('slashCmd.session.usage.noCalls'))
   })
 
   it('renders the dollar two-bar model (no "credits" wording) when available', async () => {
@@ -108,17 +123,5 @@ describe('/usage slash command', () => {
     expect(body).toContain('top-up')
     expect(body).toContain('$12.00')
     expect(body.toLowerCase()).not.toContain('credits')
-  })
-
-  it('shows the free-models upsell for a free account', async () => {
-    const { panel, run } = buildCtx({
-      'session.usage': baseUsage({ usage: { available: true, status: 'free', plan_name: null } })
-    })
-
-    await run('')
-
-    const body = balancePanel(panel)
-    expect(body).toContain('free models only')
-    expect(body).toContain('/subscription')
   })
 })

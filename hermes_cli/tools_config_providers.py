@@ -15,6 +15,7 @@ from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, 
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
 from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
+from tools.transcription_common import STT_MODEL_CATALOG, STT_MODEL_CONFIG_KEY
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger("hermes_cli.tools_config")
@@ -125,7 +126,17 @@ _PLUGIN_ROW_BUILDERS = {
     "Video Generation": _plugin_video_gen_providers,
     "Web Search & Extract": _plugin_web_search_providers,
     "Browser Automation": _plugin_browser_providers,
-    "Text-to-Speech": _plugin_tts_providers}
+    "Text-to-Speech": _plugin_tts_providers,
+    "Computer Use (macOS/Windows/Linux)": lambda: _computer_use_provider_rows()}
+
+
+def _computer_use_provider_rows() -> list[dict]:
+    """Rows for installed computer-use providers other than the built-in ``cua`` (hand-written row with its
+    install post-setup). Read from plugin.yaml without importing: an unselected provider stays dormant."""
+    from plugins.computer_use import DEFAULT_BACKEND, discover_computer_use_providers
+
+    return [{"name": name, "badge": "", "tag": desc, "env_vars": [], "computer_use_backend": name}
+            for name, desc in discover_computer_use_providers() if name != DEFAULT_BACKEND]
 
 
 def _visible_providers(
@@ -164,9 +175,8 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
     """Honest readiness state for a provider picker row.
     ``features`` avoids re-fetching portal state per row. ``is_active`` is the completed-setup fallback
     for post_setup hooks with no registered installed-check (selecting a row runs its hook)."""
-    from hermes_cli.tools_config import (
-        _POST_SETUP_READY, _provider_env_ready, _xai_credentials_present, get_nous_subscription_features,
-    )
+    from hermes_cli.tools_config import _POST_SETUP_READY, _provider_env_ready, get_nous_subscription_features
+    from hermes_cli.tools_config_post_setup import _POST_SETUP_AUTH_READY
 
     if provider.get("env_vars", []):
         return "ready" if _provider_env_ready(provider) else "needs_keys"
@@ -189,8 +199,9 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
 
     post_setup = provider.get("post_setup")
     if post_setup:
-        if post_setup == "xai_grok":
-            return "ready" if _xai_credentials_present() else "needs_auth"
+        auth_predicate = _POST_SETUP_AUTH_READY.get(post_setup)
+        if auth_predicate is not None:
+            return "ready" if auth_predicate() else "needs_auth"
         predicate = _POST_SETUP_READY.get(post_setup)
         if predicate is not None:
             try:
@@ -202,7 +213,20 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
             is_active = _is_provider_active(provider, config)
         return "ready" if is_active else "needs_setup"
 
-    return "ready"
+    return _web_registry_readiness(provider)
+
+
+def _web_registry_readiness(provider: dict) -> str:
+    """Keyless, untiered web rows are ready only when their registry provider is available: the only such
+    row's ``is_available()`` is an account login (OpenAI Native = openai-codex), hence ``needs_auth``.
+    Free-tier rows are exempt: they run on the public keyless ring, which ``is_available()`` ignores."""
+    backend = provider.get("web_backend")
+    if not backend or provider.get("web_tier"):
+        return "ready"
+    from agent.web_search_registry import get_provider
+
+    registered = get_provider(backend)
+    return "ready" if registered is None or registered.is_available() else "needs_auth"
 
 
 def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fresh: bool = False) -> bool:
@@ -224,7 +248,13 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fres
     selection_key = {"tts": "provider", "web": "backend", "browser": "cloud_provider"}.get(ts_key)
     if selection_key:
         section = config.get(ts_key, {})
-        return not isinstance(section, dict) or selection_key not in section
+        if not isinstance(section, dict):
+            return True
+        if selection_key in section:
+            return False
+        # Browser's "Browser Use" row writes browser.backend and leaves cloud_provider unset. Presence is no
+        # test of a choice here: browser.backend exists on every install after the defaults merge ("" = unset).
+        return not (ts_key == "browser" and _browser_backend(config))
     if ts_key == "image_gen":  # in-tree FAL backend OR any available plugin image gen provider satisfies
         return not fal_key_is_configured() and not _any_plugin_provider_available("agent.image_gen_registry")
     if ts_key == "video_gen":  # no in-tree fallback — every video backend is a plugin
@@ -332,10 +362,48 @@ def _web_tier_matches(provider: dict, config: dict) -> bool:
     return row_tier == ("paid" if has_key else "free")
 
 
+def _web_serving_backends(config: dict) -> set:
+    """Backend names serving web search / extract as configured: each capability's own
+    ``web.<cap>_backend`` override first, else the shared ``web.backend`` (``tools/web_tools.py``
+    dispatch order; legacy ``use_gateway: true`` reads as the managed ``nous`` selection).
+    Lower-cased and stripped like the dispatchers."""
+    raw_web_cfg = config.get("web")
+    web_cfg = raw_web_cfg if isinstance(raw_web_cfg, dict) else {}
+
+    def _name(key: str) -> str:
+        value = web_cfg.get(key)
+        return value.lower().strip() if isinstance(value, str) else ""
+
+    shared = NOUS_MANAGED_PROVIDER if is_truthy_value(web_cfg.get("use_gateway"), default=False) else _name("backend")
+    serving = {_name(key) or shared for key in ("search_backend", "extract_backend")}
+    serving.discard("")
+    return serving
+
+
+def _web_backend_active(provider: dict, config: dict) -> bool:
+    """True when a web row's ``web_backend`` serves either capability as configured: a vendor serving
+    one capability through its override is in use even when the shared key names a different one,
+    and a shared vendor shadowed by both overrides serves nothing. Managed Nous rows never reach
+    here — they answer in ``_managed_provider_active``."""
+    backend = provider.get("web_backend")
+    if not (backend and backend in _web_serving_backends(config) and _web_tier_matches(provider, config)):
+        return False
+    # Rows sharing one backend name (cloud "Firecrawl" vs the "Firecrawl Self-Hosted" setup row) differ only in
+    # the env var they configure, and the one whose var is set is what serves the call. A setup row needs its
+    # var; the registry row also stays active keyless (explicit ``firecrawl`` with no key = anonymous cloud)
+    # unless a sibling setup row's var is set instead.
+    from hermes_cli.tools_config import TOOL_CATEGORIES, _provider_env_ready
+    if not provider.get("env_vars") or _provider_env_ready(provider):
+        return True
+    return bool(provider.get("web_search_plugin_name")) and not any(
+        row.get("web_backend") == backend and row.get("env_vars") and _provider_env_ready(row)
+        for row in TOOL_CATEGORIES["web"]["providers"])
+
+
 # Managed-row marker -> (config section, key) the pick writes, in check order.
 _MANAGED_SELECTION_KEYS: tuple[tuple[str, str, str], ...] = (
     ("tts_provider", "tts", "provider"), ("stt_provider", "stt", "provider"),
-    ("browser_provider", "browser", "cloud_provider"), ("web_backend", "web", "backend"))
+    ("browser_provider", "browser", "cloud_provider"))
 
 
 def _has_marker(provider: dict, marker: str) -> bool:
@@ -366,13 +434,14 @@ def _managed_provider_active(provider: dict, config: dict, managed_feature: str,
         return feature.managed_by_nous
     # Browser Use mode is a driver on top of the provider (attaches to its CDP endpoint), so the browser
     # provider row stays active alongside the Browser Use row.
+    if _has_marker(provider, "web_backend"):
+        # Search and extract pick their route separately: the managed row serves whichever one
+        # resolves to the gateway (a ``nous`` override, or the shared ``nous`` selection).
+        return feature.managed_by_nous and NOUS_MANAGED_PROVIDER in _web_serving_backends(config)
     for marker, section, key in _MANAGED_SELECTION_KEYS:
         if _has_marker(provider, marker):
             current = cfg_get(config, section, key)
-            selected = current in {provider[marker], NOUS_MANAGED_PROVIDER}
-            if marker == "web_backend":
-                selected = selected and _web_tier_matches(provider, config)
-            return feature.managed_by_nous and selected
+            return feature.managed_by_nous and current in {provider[marker], NOUS_MANAGED_PROVIDER}
     return feature.managed_by_nous
 
 
@@ -409,10 +478,14 @@ def _browser_provider_active(provider: dict, config: dict) -> bool:
     return True
 
 
-def _browser_backend_active(provider: dict, config: dict) -> bool:
+def _browser_backend(config: dict) -> str:
+    """``browser.backend`` as a string; ``""`` when unset or empty (YAML 1.1 parses an unquoted ``off`` as False)."""
     backend = cfg_get(config, "browser", "backend")
-    if backend is False:
-        backend = "off"  # YAML 1.1: unquoted `off` parses as boolean False
+    return "off" if backend is False else (backend or "")
+
+
+def _browser_backend_active(provider: dict, config: dict) -> bool:
+    backend = _browser_backend(config)
     if backend == provider["browser_backend"]:
         return True
     if backend:
@@ -438,7 +511,7 @@ _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
     ("stt_provider", lambda p, c: (cfg_get(c, "stt", "provider") or "local") == p["stt_provider"]),
     ("browser_provider", _browser_provider_active),
     ("browser_backend", _browser_backend_active),
-    ("web_backend", lambda p, c: cfg_get(c, "web", "backend") == p["web_backend"] and _web_tier_matches(p, c)),
+    ("web_backend", _web_backend_active),
     ("computer_use_backend", lambda p, c: cfg_get(c, "computer_use", "backend") == p["computer_use_backend"]),
     ("imagegen_backend", _imagegen_backend_active))
 
@@ -635,28 +708,18 @@ def _select_plugin_gen_provider(section: str, plugin_name: str, config: dict, *,
 _select_plugin_image_gen_provider = partial(_select_plugin_gen_provider, "image_gen")
 _select_plugin_video_gen_provider = partial(_select_plugin_gen_provider, "video_gen")
 
-# Per-provider STT model catalogs for the picker; keys are ``stt.<provider>`` sections, first entry is the
-# default. Kept in sync with the dashboard selects (web_server _CONFIG_FIELD_META) and the desktop settings
-# enums (apps/desktop/src/app/settings/constants.ts).
-STT_MODEL_CATALOG = {
-    "local": ["base", "tiny", "small", "medium", "large-v3"],
-    "groq": ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
-    "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
-    "elevenlabs": ["scribe_v2", "scribe_v1"]}
-
-# ElevenLabs historically uses ``model_id`` instead of ``model``.
-_STT_MODEL_CONFIG_KEY = {"elevenlabs": "model_id"}
-
-
 def _configure_stt_model(stt_provider: str, config: dict) -> None:
-    """Prompt for the STT model after a provider pick (when a catalog exists)."""
+    """Prompt for the STT model after a provider pick (static catalog, or DeepInfra's live one)."""
     from hermes_cli.tools_config import _cfg_section, _prompt_choice
 
     catalog = STT_MODEL_CATALOG.get(stt_provider)
+    if catalog is None and stt_provider == "deepinfra":
+        from hermes_cli.models import deepinfra_model_ids
+        catalog = deepinfra_model_ids("stt")
     if not catalog:
         return
     prov_cfg = _cfg_section(_cfg_section(config, "stt"), stt_provider)
-    model_key = _STT_MODEL_CONFIG_KEY.get(stt_provider, "model")
+    model_key = STT_MODEL_CONFIG_KEY.get(stt_provider, "model")
     current = str(prov_cfg.get(model_key) or "").strip()
     ordered = list(catalog)
     chosen = ordered[_prompt_choice("  Select STT model:", ordered, ordered.index(current) if current in ordered else 0)]
@@ -698,6 +761,11 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
 
     if provider.get("web_backend"):
         web_cfg = _select_into(config, "web", "backend", provider["web_backend"], managed_feature)
+        if managed_feature:
+            # A whole-toolset managed pick governs both capabilities: per-capability pins resolve FIRST,
+            # so a leftover one would keep outranking the "nous" selection just written.
+            web_cfg.pop("search_backend", None)
+            web_cfg.pop("extract_backend", None)
         tier = provider.get("web_tier")
         tiers = web_cfg.setdefault("provider_tier", {}) if tier else web_cfg.get("provider_tier")
         if isinstance(tiers, dict):
@@ -825,7 +893,8 @@ def _print_provider_selection(provider: dict, managed_feature, *, reconfigure: b
         _print_success(f"  Browser engine set to: {provider['browser_engine']}")
     if provider.get("web_backend"):
         tier = f" ({provider['web_tier']} tier)" if reconfigure and provider.get("web_tier") else ""
-        _print_success(f"  Web backend set to: {provider['web_backend']}{tier}")
+        backend = NOUS_MANAGED_PROVIDER if managed_feature else provider["web_backend"]
+        _print_success(f"  Web backend set to: {backend}{tier}")
     if reconfigure and provider.get("computer_use_backend"):
         _print_success(f"  Computer Use backend set to: {provider['computer_use_backend']}")
 

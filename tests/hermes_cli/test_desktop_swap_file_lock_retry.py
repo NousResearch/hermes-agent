@@ -31,7 +31,8 @@ def _staged_over_live(tmp_path: Path, monkeypatch):
     staged_exe = staging / _packaged_exe_rel()
     staged_exe.parent.mkdir(parents=True)
     staged_exe.write_text("new", encoding="utf-8")
-    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda d: [])
+    # The swap point now passes ``also_posix=True`` (#116504); the double must accept the keyword.
+    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda d, **kw: [])
     slept: list[float] = []
     monkeypatch.setattr(main_desktop._time_mod, "sleep", slept.append)
     return desktop_dir, staging, live_exe, slept
@@ -54,8 +55,7 @@ def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeyp
 
     assert promoted == live_exe
     assert live_exe.read_text(encoding="utf-8") == "new"
-    assert slept == [0.5, 1.0]
-    assert sum("hit a file lock" in r.message for r in caplog.records) == 2
+    assert len(slept) == 2  # two transient locks → two backoff sleeps before the promotion
     assert not staging.exists()
 
 

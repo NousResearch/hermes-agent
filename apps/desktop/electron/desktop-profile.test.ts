@@ -8,6 +8,7 @@ import { test } from 'vitest'
 import {
   createDesktopProfilePreferences,
   resolveDesktopConnectionRequest,
+  resolveDesktopWindowLaunch,
   resolveDesktopWindowRoute
 } from './desktop-profile'
 import { WindowConnectionRouteRegistry } from './window-connection-route'
@@ -16,6 +17,7 @@ test('failed authoritative writes leave the previous default and listeners untou
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-profile-write-'))
   const target = path.join(root, 'active-profile.json')
   const changes: unknown[] = []
+
   const preferences = createDesktopProfilePreferences(target, {
     onDefaultChanged: route => changes.push(route),
     validateRoute: route => {
@@ -28,6 +30,7 @@ test('failed authoritative writes leave the previous default and listeners untou
   try {
     const original = { connectionId: null, profile: 'work' }
     preferences.setDefault(original)
+
     for (const invalid of [
       null,
       {},
@@ -37,6 +40,7 @@ test('failed authoritative writes leave the previous default and listeners untou
       assert.throws(() => preferences.setDefault(invalid))
       assert.deepEqual(preferences.getDefault(), original)
     }
+
     fs.mkdirSync(`${target}.tmp`)
     assert.throws(() => preferences.setDefault({ connectionId: 'remote', profile: 'personal' }))
     assert.deepEqual(preferences.getDefault(), original)
@@ -66,6 +70,15 @@ test('explicit routes are strict and never fall back to a different source windo
     connectionId: 'remote-a',
     profile: 'work'
   })
+  // Only an explicit route pins the window's New-session default; an inherited
+  // or fallback route seeds boot alone.
+  assert.deepEqual(resolveDesktopWindowLaunch(explicit, routes.get(1), fallback), { ...explicit, profileWindow: true })
+  assert.deepEqual(resolveDesktopWindowLaunch(undefined, routes.get(1), fallback), {
+    connectionId: 'remote-a',
+    profile: 'work',
+    profileWindow: false
+  })
+  assert.deepEqual(resolveDesktopWindowLaunch(undefined, null, fallback), { ...fallback, profileWindow: false })
   assert.deepEqual(routes.get(1), { connectionId: 'remote-a', profile: 'work', registryScoped: true })
   assert.throws(() => resolveDesktopWindowRoute({ profile: 'work' }, routes.get(1), fallback))
   assert.throws(() => resolveDesktopWindowRoute({ connectionId: null, profile: '../work' }, routes.get(1), fallback))
@@ -86,6 +99,7 @@ test('boot and reconnect retain the window route rather than a later global defa
       profile: route.profile
     })
   }
+
   assert.deepEqual(resolveDesktopConnectionRequest('other', routeA, 'last-used'), {
     connectionId: null,
     profile: 'other'

@@ -10,7 +10,7 @@ import os
 import tomllib
 from typing import Callable, Dict, Optional
 
-from tools.file_operations_common import LintResult
+from tools.file_operations_common import ExecuteResult, LintResult
 
 # Shell linters by extension (external toolchain). ``.tsx`` is deliberately absent:
 # it hits the "No linter" skip and LSP covers it when enabled.
@@ -22,11 +22,21 @@ LINTERS = {
     '.rs': 'rustfmt --check {file} 2>&1',
 }
 
+# Node linters Hermes runs on the host (local backend) under its PM-managed Node,
+# never the user's: the terminal PATH puts the user's dirs first, and ``npx tsc``
+# re-execs ``env node`` through that PATH.
+_MANAGED_NODE_LINTERS = {'.js': ('node', '--check'), '.ts': ('npx', 'tsc', '--noEmit')}
+
 # Per-file shell linters that flood phantom errors on real projects (single-file
 # ``tsc`` ignores tsconfig, ``go vet`` fails outside a module, ``rustfmt --check``
 # is style-only): skipped when an LSP server claims the file. py_compile /
 # node --check are file-local and correct so always run.
 _SHELL_LINTER_LSP_REDUNDANT = frozenset({'.ts', '.go', '.rs'})
+
+# Shell linters that resolve the toolchain from the checkout they run in: ``npx tsc`` runs the
+# repo's ``node_modules/.bin/tsc`` (or installs from the registry its ``.npmrc`` names) and
+# rustup honours its ``rust-toolchain.toml``.  Skipped on a local backend in an untrusted workspace.
+_SHELL_LINTER_RUNS_PROJECT_TOOLCHAIN = frozenset({'.ts', '.rs'})
 
 # Output substrings (case-insensitive) meaning the linter binary exists but could
 # not run → ``skipped`` so the write isn't flagged and the LSP tier still runs.
@@ -63,25 +73,26 @@ def _lint_json_inproc(content: str) -> tuple[bool, str]:
         return True, ""
     except json.JSONDecodeError as e:
         return False, f"JSONDecodeError: {e.msg} (line {e.lineno}, column {e.colno})"
-    except Exception as e:  # noqa: BLE001 — any parse failure is a lint failure
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
 def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
-    """In-process YAML syntax check; ``__SKIP__`` when PyYAML is missing. Syntax-only
-    (``yaml.parse``), NOT ``safe_load``: loading rejects valid multi-doc streams and
+    """In-process YAML syntax check; ``__SKIP__`` when ruamel.yaml is missing. Syntax-only
+    (``YAML.parse``), NOT ``safe_load``: loading rejects valid multi-doc streams and
     app tags (``!Sub``, ``!vault``), and this is a fail-closed WRITE gate."""
     try:
-        import yaml as _yaml
+        from ruamel.yaml import YAML
+        from ruamel.yaml.error import YAMLError
     except ImportError:
         return True, "__SKIP__"
     try:
-        for _event in _yaml.parse(content):
+        for _event in YAML(typ="safe").parse(content):
             pass
         return True, ""
-    except _yaml.YAMLError as e:
+    except YAMLError as e:
         return False, f"YAMLError: {e}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
@@ -95,20 +106,22 @@ def _lint_toml_inproc(content: str) -> tuple[bool, str]:
 
 
 def _lint_python_inproc(content: str) -> tuple[bool, str]:
-    """In-process Python syntax check via ast.parse (py_compile's scope, no subprocess)."""
+    """In-process Python syntax check via ast.parse (py_compile's scope, no subprocess). Parses the
+    bytes, as py_compile does, so a legacy ``coding:`` cookie is honoured for a file the edit paths
+    read with surrogateescape."""
     try:
-        ast.parse(content)
+        ast.parse(content.encode("utf-8", "surrogateescape"))
         return True, ""
     except SyntaxError as e:
         loc = f" (line {e.lineno}, column {e.offset})" if e.lineno else ""
         return False, f"{type(e).__name__}: {e.msg}{loc}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
 # In-process linters, preferred over shell linters (no subprocess). Each returns
 # (ok, error); error ``"__SKIP__"`` = unavailable dependency, counts as "no linter".
-LINTERS_INPROC: Dict[str, Callable[[str], tuple[bool, str]]] = {
+LINTERS_INPROC: dict[str, Callable[[str], tuple[bool, str]]] = {
     '.py': _lint_python_inproc,
     '.json': _lint_json_inproc,
     '.yaml': _lint_yaml_inproc,
@@ -155,12 +168,21 @@ class LintMixin:
             ))
         if ext in _SHELL_LINTER_LSP_REDUNDANT and self._lsp_will_handle(path):
             return LintResult(skipped=True, message=f"LSP server handles {ext} — shell linter skipped")
-        linter_cmd = LINTERS[ext]
-        base_cmd = linter_cmd.split()[0]
-        if not self._has_command(base_cmd):
-            return LintResult(skipped=True, message=f"{base_cmd} not available")
-        # Native Windows binaries need C:/... not MSYS /c/... (→ phantom ENOENT).
-        result = self._exec(linter_cmd.replace("{file}", self._escape_native_tool_arg(path)), timeout=30)
+        if ext in _SHELL_LINTER_RUNS_PROJECT_TOOLCHAIN and self._local_workspace_untrusted():
+            return LintResult(skipped=True, message=(
+                f"{LINTERS[ext].split()[0]} skipped: untrusted workspace (add it to lsp.trusted_workspaces to lint {ext} here)"))
+        if ext in _MANAGED_NODE_LINTERS and self._lsp_local_only():
+            base_cmd = _MANAGED_NODE_LINTERS[ext][0]
+            result = self._run_managed_node_linter(ext, path)
+            if result is None:
+                return LintResult(skipped=True, message=f"{base_cmd} not available (Hermes-managed Node not installed)")
+        else:
+            linter_cmd = LINTERS[ext]
+            base_cmd = linter_cmd.split()[0]
+            if not self._has_command(base_cmd):
+                return LintResult(skipped=True, message=f"{base_cmd} not available")
+            # Native Windows binaries need C:/... not MSYS /c/... (→ phantom ENOENT).
+            result = self._exec(linter_cmd.replace("{file}", self._escape_native_tool_arg(path)), timeout=30)
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
             from tools.ansi_strip import strip_ansi
             cleaned = strip_ansi(result.stdout).strip()
@@ -168,6 +190,31 @@ class LintMixin:
             first_line = next((ln.strip() for ln in cleaned.splitlines() if ln.strip()), cleaned[:120])
             return LintResult(skipped=True, message=f"{base_cmd} not usable: {first_line[:200]}")
         return LintResult(success=result.exit_code == 0, output=result.stdout.strip())
+
+    def _run_managed_node_linter(self, ext: str, path: str) -> Optional[ExecuteResult]:
+        """Run the ``ext`` Node linter on the host under PM's Node; None when PM has none."""
+        import shutil
+        import subprocess
+
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_constants import with_hermes_node_path
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path, hermes_subprocess_env
+
+        tool, *args = _MANAGED_NODE_LINTERS[ext]
+        executable = shutil.which(tool, path=with_hermes_node_path({"PATH": ""})["PATH"])
+        if executable is None:
+            return None
+        cwd = getattr(self.env, "cwd", None) or self.cwd
+        if _IS_WINDOWS:
+            path, cwd = _msys_to_windows_path(path), cwd and _msys_to_windows_path(cwd)
+        try:
+            proc = subprocess.run(
+                [executable, *args, path], cwd=cwd or None, env=with_hermes_node_path(hermes_subprocess_env()),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=windows_hide_flags(), check=False)
+        except subprocess.TimeoutExpired:
+            return ExecuteResult(stdout=f"{tool} timed out after 30s", exit_code=124)
+        return ExecuteResult(stdout=proc.stdout or "", exit_code=proc.returncode)
 
     def _check_lint_delta(self, path: str, pre_content: Optional[str],
                           post_content: Optional[str] = None) -> LintResult:
@@ -200,9 +247,22 @@ class LintMixin:
             return False
         try:
             from tools.environments.local import LocalEnvironment
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
         return isinstance(env, LocalEnvironment)
+
+    def _local_workspace_untrusted(self) -> bool:
+        """True iff on a local backend the linter's cwd lies outside every trusted workspace
+        (``workspace.is_trusted_workspace``): ``npx`` and rustup resolve the toolchain from there, not
+        from the linted file's directory.  Sandboxed backends answer False: their toolchain is not the host's."""
+        if not self._lsp_local_only():
+            return False
+        from agent.lsp.manager import parse_trusted_workspaces
+        from agent.lsp.workspace import is_trusted_workspace, operator_workspace_roots
+        from hermes_cli.config import load_config_readonly
+        lsp_cfg = load_config_readonly().get("lsp")
+        trusted = parse_trusted_workspaces(lsp_cfg.get("trusted_workspaces") if isinstance(lsp_cfg, dict) else None)
+        return not is_trusted_workspace(getattr(self.env, "cwd", None) or self.cwd, trusted, operator_workspace_roots())
 
     def _lsp_service(self):
         """The active LSPService, or None on a non-local backend / any failure.
@@ -212,18 +272,21 @@ class LintMixin:
         try:
             from agent.lsp import get_service
             return get_service()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     def _lsp_handles_extension(self, ext: str) -> bool:
-        """True iff some registered LSP server claims ``ext`` (static registry
-        only; safe on remote backends). Decides whether pre-write content is
-        worth capturing for the line-shift map."""
+        """True iff the active service (config-declared servers included) or, without one,
+        the static registry claims ``ext``. Decides whether pre-write content is worth
+        capturing for the line-shift map."""
         if not ext:
             return False
         try:
+            svc = self._lsp_service()
+            if svc is not None:
+                return svc.handles_extension(ext)
             from agent.lsp.servers import SERVERS
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
         return any(ext.lower() in srv.extensions for srv in SERVERS)
 
@@ -241,7 +304,7 @@ class LintMixin:
                     return False
                 d = parent
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     def _lsp_call(self, method: str, path: str, default):
@@ -252,7 +315,7 @@ class LintMixin:
             return default
         try:
             return getattr(svc, method)(path)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return default
 
     def _lsp_will_handle(self, path: str) -> bool:
@@ -272,18 +335,18 @@ class LintMixin:
         remaps baseline diagnostics into post-edit coordinates; otherwise every
         pre-existing diagnostic below an inserted line would look new."""
         svc = self._lsp_service()
-        if svc is None or not svc.enabled_for(path):
+        if svc is None or not self._lsp_will_handle(path):
             return ""
         line_shift = None
         if pre_content is not None and post_content is not None and pre_content != post_content:
             try:
                 from agent.lsp.range_shift import build_line_shift
                 line_shift = build_line_shift(pre_content, post_content)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 line_shift = None
         try:
             diagnostics = svc.get_diagnostics_sync(path, delta=True, line_shift=line_shift)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ""
         if not diagnostics:
             return ""
@@ -291,5 +354,5 @@ class LintMixin:
             from agent.lsp.reporter import report_for_file, truncate
             block = report_for_file(path, diagnostics)
             return truncate("LSP diagnostics introduced by this edit:\n" + block) if block else ""
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ""

@@ -7,15 +7,16 @@ import pytest
 from tools import checkpoint_manager as checkpoints
 
 
-@pytest.mark.parametrize("names", [
-    [" leading.txt", "报告.txt", "ordinary.txt"],
-    pytest.param(
-        [b" raw-\xff.txt", b"carriage\rreturn.txt", b"crlf\r\nname.txt"],
-        marks=pytest.mark.linux_only,
-        id="posix-byte-paths",
-    ),
-])
-def test_safe_restore_preserves_exact_paths_and_user_edits(tmp_path, monkeypatch, names):
+def test_safe_restore_preserves_exact_paths_and_user_edits(tmp_path, monkeypatch):
+    _assert_safe_restore(tmp_path, monkeypatch, [" leading.txt", "报告.txt", "ordinary.txt"])
+
+
+@pytest.mark.platforms("linux")
+def test_safe_restore_preserves_posix_byte_paths(tmp_path, monkeypatch):
+    _assert_safe_restore(tmp_path, monkeypatch, [b" raw-\xff.txt", b"carriage\rreturn.txt", b"crlf\r\nname.txt"])
+
+
+def _assert_safe_restore(tmp_path, monkeypatch, names):
     names = [os.fsdecode(name) for name in names]
     monkeypatch.setattr(checkpoints, "CHECKPOINT_BASE", tmp_path / "checkpoints")
     work = tmp_path / "project"
@@ -46,11 +47,16 @@ def test_safe_restore_preserves_exact_paths_and_user_edits(tmp_path, monkeypatch
     assert preserved.read_text(encoding="utf-8") == "user edit\n"
 
 
-@pytest.mark.parametrize("name", [
-    " oversized.bin",
-    pytest.param(b" oversized-\xff.bin", marks=pytest.mark.linux_only, id="posix-byte-path"),
-])
-def test_size_cap_applies_to_leading_space_paths(tmp_path, monkeypatch, name):
+def test_size_cap_applies_to_leading_space_paths(tmp_path, monkeypatch):
+    _assert_size_cap(tmp_path, monkeypatch, " oversized.bin")
+
+
+@pytest.mark.platforms("linux")
+def test_size_cap_applies_to_posix_byte_paths(tmp_path, monkeypatch):
+    _assert_size_cap(tmp_path, monkeypatch, b" oversized-\xff.bin")
+
+
+def _assert_size_cap(tmp_path, monkeypatch, name):
     name = os.fsdecode(name)
     monkeypatch.setattr(checkpoints, "CHECKPOINT_BASE", tmp_path / "checkpoints")
     work = tmp_path / "project"

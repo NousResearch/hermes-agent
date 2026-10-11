@@ -34,3 +34,15 @@ def test_ssh_port_non_default_still_saves(ssh_wizard):
     # Control: the deliberate skip is only for the default; a real port persists.
     ssh_wizard(["host.example.com", "me", "2222", "/tmp/key"])
     assert get_env_value("TERMINAL_SSH_PORT") == "2222"
+
+
+def test_docker_wizard_reports_the_resolved_podman_runtime(monkeypatch, capsys):
+    """Podman satisfies the docker backend, so the wizard must name it instead of warning."""
+    monkeypatch.setattr(setup_terminal, "find_docker", lambda: "/usr/bin/podman")
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda label, default=True: False)
+
+    setup_terminal._setup_backend_docker({"terminal": {}})
+
+    out = capsys.readouterr().out
+    assert "Podman found: /usr/bin/podman" in out
+    assert "not found in PATH" not in out

@@ -1,11 +1,12 @@
 name: web-search-plus
 repo: https://github.com/robbyczgw-cla/hermes-web-search-plus
-sha: 053fcce7432c58d7329ef556c971394c80040f98
-description: Multi-provider web search, URL extraction, quality reports, and opt-in research mode
+sha: 82cceb3c92496527a4f70ab043ba0f5794f7df35
+description: "Multi-provider web search, URL extraction, quality reports, and opt-in research mode. Disclosure — reads the operator's HERMES_HOME/config.yaml (read-only) for its own Desktop settings block (country, language, max_results, auto_routing, provider_order, searxng_url); may spawn an operator-configured local donsetch CLI as a subprocess (argv, no shell)."
 maintainer: robbyczgw-cla
 tier: community
 category: web
 docs_url: https://github.com/robbyczgw-cla/hermes-web-search-plus#readme
+version: "5.0.1"
 capabilities:
   provides_tools:
   - web_extract_plus

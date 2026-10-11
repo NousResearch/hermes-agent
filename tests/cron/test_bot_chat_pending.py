@@ -21,7 +21,7 @@ def test_cli_owner_deferral_and_attempt_fence(tmp_path, monkeypatch, error):
     lease, refusal = try_acquire_active_session(session_id="chat", surface="cli", config={}, registry_home=tmp_path)
     assert refusal is None and lease is not None
     run = Mock(side_effect=error, return_value=subprocess.CompletedProcess([], 0, "", ""))
-    monkeypatch.setattr(delivery.subprocess, "run", run)
+    monkeypatch.setattr(delivery, "_run_bot_chat_turn", run)
     monkeypatch.setattr(delivery.shutil, "which", lambda _: "/bin/hermes")
     job = {"id": "job", "execution_id": "execution"}
     try:
@@ -36,7 +36,11 @@ def test_cli_owner_deferral_and_attempt_fence(tmp_path, monkeypatch, error):
         assert queue.read_pending(key)["status"] == expected
         queue.drain()
         delivery._deliver_to_bot_chat(job, "output", "")
-        assert run.call_count == 1
+        # The failed turn is never retried; a timeout additionally drains ONE short
+        # degraded-delivery marker (its own turn), and its timeout queues nothing more.
+        assert run.call_count == (2 if error else 1)
+        markers = [r for _, r in queue._records(queue._root()) if r.get("degraded")]
+        assert len(markers) == (1 if error else 0)
     finally:
         lease.release()
         db.close()
@@ -69,12 +73,12 @@ def test_delivery_exception_retains_attempt_and_continues_siblings(tmp_path, mon
             raise PermissionError("target traversal denied after discovery")
         return original_is_dir(self)
 
-    def run(*args, **kwargs):
-        calls.append(kwargs["env"]["HERMES_HOME"])
+    def run(argv, env, report_path, timeout):
+        calls.append(env["HERMES_HOME"])
         return subprocess.CompletedProcess([], 0, "", "")
 
     monkeypatch.setattr(importlib.util, "find_spec", resolve_cli)
-    monkeypatch.setattr(delivery.subprocess, "run", run)
+    monkeypatch.setattr(delivery, "_run_bot_chat_turn", run)
     monkeypatch.setattr(Path, "is_dir", is_dir)
     queue.drain()
     assert queue.read_pending("b" * 64)["status"] == "ambiguous"
@@ -114,7 +118,7 @@ def test_policy_change_settles_diagnostic_without_waiting_for_cli_owner(tmp_path
     lease, refusal = try_acquire_active_session(session_id="chat", surface="cli", config={}, registry_home=tmp_path)
     assert refusal is None
     run = Mock()
-    monkeypatch.setattr(delivery.subprocess, "run", run)
+    monkeypatch.setattr(delivery, "_run_bot_chat_turn", run)
     job = {"id": "failure", "execution_id": "run"}
     try:
         assert "queued" in delivery._deliver_to_bot_chat(job, "diagnostic", "", for_failure=True)
@@ -169,3 +173,26 @@ def test_unreadable_deferred_receipt_does_not_block_siblings(tmp_path, monkeypat
     assert [r for r in caplog.records
             if "Unreadable deferred Bot Chat receipt" in r.message and "Permission denied" in r.message] and \
         sum("Unreadable deferred Bot Chat receipt" in r.message for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("payload", ["42", '"oops"', "[1, 2, 3]"])
+def test_non_dict_deferred_receipt_is_skipped_by_the_drain_and_fails_exact_id_reads_closed(
+        tmp_path, monkeypatch, caplog, payload):
+    """A receipt that parses but is not a JSON object is a bad file like any other: the drain
+    and new admissions skip it (warned once, preserved as evidence) and an exact-id read of it
+    never licenses an overwrite."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    queue.defer("a" * 64, {"id": "job"}, "healthy", "", tmp_path)
+    bad = queue._root() / f"{'e' * 64}.json"
+    bad.write_text(payload, encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    with caplog.at_level("ERROR", logger=queue.logger.name):
+        queue.drain()
+        queue.drain()
+        later = queue.defer("f" * 64, {"id": "job"}, "later", "", tmp_path)
+    assert seen == ["healthy"] and later["status"] == "queued"
+    assert sum("Unreadable deferred Bot Chat receipt" in r.message for r in caplog.records) == 1
+    with pytest.raises(ValueError):
+        queue.defer("e" * 64, {"id": "job"}, "same id", "", tmp_path)
+    assert bad.read_text(encoding="utf-8") == payload

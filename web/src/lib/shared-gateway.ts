@@ -33,11 +33,15 @@ const GATEWAY_STATE_COPY: Record<string, string> = {
   startup_failed: "Failed to start — see Logs",
 };
 
+/** A `degraded` record of a dead process is a watchdog exit, not a live gateway with channels down. */
+const GATEWAY_EXITED_DEGRADED_COPY = "Exited: a watchdog stopped a wedged gateway — see Logs";
+
 /** Plain description of the gateway's state; null/unknown falls back to running/stopped. */
 export function gatewayStateDescription(
   state: string | null | undefined,
   running: boolean | undefined,
 ): string {
+  if (state === "degraded" && running === false) return GATEWAY_EXITED_DEGRADED_COPY;
   if (state && GATEWAY_STATE_COPY[state]) return GATEWAY_STATE_COPY[state];
   return running ? GATEWAY_STATE_COPY.running : GATEWAY_STATE_COPY.stopped;
 }

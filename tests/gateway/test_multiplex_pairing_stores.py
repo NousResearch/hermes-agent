@@ -122,3 +122,109 @@ def test_routed_pairing_grant_mirror_stays_in_profile_scope(tmp_path, monkeypatc
     # Single-profile: no multiplex -> save still publishes to the process env.
     save_env_value("DISCORD_ALLOWED_USERS", "default-admin,222")
     assert os.environ["DISCORD_ALLOWED_USERS"] == "default-admin,222"
+
+
+class _ExplodingScope(dict):
+    """A bound secret scope whose resolution fails (resolver/backend error)."""
+    def get(self, name, default=None):
+        raise RuntimeError("resolver boom")
+
+
+def test_allowlist_env_read_never_borrows_on_scope_failure(tmp_path, monkeypatch):
+    """A bound-scope allowlist read that fails must propagate -- never borrow the
+    default profile's ``os.environ`` value. The unscoped path under multiplex keeps
+    the deliberate env read (launch profile's own value, the "Slack pattern").
+    Single-profile deployments keep the legacy ``os.environ`` read.
+    """
+    import os
+
+    import pytest
+
+    from agent import secret_scope as ss
+    from gateway import pairing
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "default-admin")
+
+    was_active = ss.is_multiplex_active()
+    ss.set_multiplex_active(True)
+    try:
+        # Deliberate: unscoped under multiplex is the launch profile's own env.
+        assert pairing._read_allowlist_env("DISCORD_ALLOWED_USERS") == "default-admin"
+
+        # Defect arm: a bound scope that errors must propagate, not borrow.
+        token = ss.set_secret_scope(_ExplodingScope())
+        try:
+            with pytest.raises(RuntimeError, match="resolver boom"):
+                pairing._read_allowlist_env("DISCORD_ALLOWED_USERS")
+        finally:
+            ss.reset_secret_scope(token)
+    finally:
+        ss.set_multiplex_active(was_active)
+
+    # Control: unscoped single-profile reads still see the process env.
+    assert pairing._read_allowlist_env("DISCORD_ALLOWED_USERS") == "default-admin"
+
+
+def test_allowlist_sync_does_not_persist_foreign_allowlist(tmp_path, monkeypatch):
+    """End-to-end: ``_sync_allowlist_add`` under a bound scope whose read fails
+    must propagate rather than borrow ``os.environ`` and persist the DEFAULT
+    profile's allowlist into a profile ``.env`` / the process env.
+    """
+    import os
+
+    import pytest
+
+    from agent import secret_scope as ss
+    from gateway import pairing
+
+    root = tmp_path / ".hermes"
+    root.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "default-admin")
+
+    was_active = ss.is_multiplex_active()
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope(_ExplodingScope())
+    try:
+        with pytest.raises(RuntimeError, match="resolver boom"):
+            pairing._sync_allowlist_add("discord", "111")
+    finally:
+        ss.reset_secret_scope(token)
+        ss.set_multiplex_active(was_active)
+
+    # The foreign allowlist was neither persisted nor merged into the process env.
+    env_file = root / ".env"
+    assert "111" not in (env_file.read_text() if env_file.exists() else "")
+    assert os.environ["DISCORD_ALLOWED_USERS"] == "default-admin"
+
+
+def test_allowlist_scoped_miss_configures_nothing(tmp_path, monkeypatch):
+    """A bound scope that lacks the var returns "" -- the allowlist is
+    unconfigured for this profile, so the sync is a no-op and nothing is
+    written (never the default profile's ``os.environ`` value).
+    """
+    import os
+
+    from agent import secret_scope as ss
+    from gateway import pairing
+    from gateway.run import _profile_runtime_scope
+
+    root = tmp_path / ".hermes"
+    prof = root / "profiles" / "b"
+    prof.mkdir(parents=True)
+    (prof / ".env").write_text("OTHER_KEY=x\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "default-admin")
+
+    was_active = ss.is_multiplex_active()
+    ss.set_multiplex_active(True)
+    try:
+        with _profile_runtime_scope(prof):
+            assert pairing._read_allowlist_env("DISCORD_ALLOWED_USERS") == ""
+            pairing._sync_allowlist_add("discord", "111")
+    finally:
+        ss.set_multiplex_active(was_active)
+
+    assert (prof / ".env").read_text().strip() == "OTHER_KEY=x"
+    assert os.environ["DISCORD_ALLOWED_USERS"] == "default-admin"

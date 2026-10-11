@@ -5,7 +5,8 @@ import { evictInkCaches } from '@hermes/ink'
 import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
-import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
+import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
@@ -16,9 +17,11 @@ import type {
   SessionTitleResponse,
   SetupStatusResponse
 } from '../gatewayTypes.js'
+import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
+import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
@@ -33,11 +36,11 @@ const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO,
 
 const statusFromLiveSession = (status?: string, running = false) => {
   if (status === 'waiting') {
-    return 'waiting for input…'
+    return t('session.status.waitingForInput')
   }
 
   if (status === 'starting') {
-    return 'starting agent…'
+    return t('session.status.startingAgent')
   }
 
   return running || status === 'working' ? 'running…' : 'ready'
@@ -59,12 +62,14 @@ export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg
   const user = String(inflight?.user ?? '').trim()
 
   return user
-    ? toTranscriptMessages([{
-        role: 'user',
-        text: user,
-        ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
-        ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
-      }])
+    ? toTranscriptMessages([
+        {
+          role: 'user',
+          text: user,
+          ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
+          ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
+        }
+      ])
     : []
 }
 
@@ -141,10 +146,19 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     sys
   } = opts
 
+  // Plugin on_session_finalize text comes back on the close result and is shown as system lines (never a
+  // model turn). `deferMessages`: the caller resets the transcript next and shows them itself afterwards.
   const closeSession = useCallback(
-    (targetSid?: null | string) =>
-      targetSid ? rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : Promise.resolve(null),
-    [rpc]
+    async (targetSid?: null | string, deferMessages = false) => {
+      const closed = targetSid ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : null
+
+      if (!deferMessages) {
+        closed?.messages?.forEach(message => sys(message))
+      }
+
+      return closed
+    },
+    [rpc, sys]
   )
 
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
@@ -195,19 +209,19 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const setup = await rpc<SetupStatusResponse>('setup.status', {})
 
       if (setup?.provider_configured === false) {
-        panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
-        patchUiState({ status: 'setup required' })
+        panel(setupRequiredTitle(), buildSetupRequiredSections())
+        patchUiState({ status: t('session.status.setupRequired') })
 
         return null
       }
 
       const previousSid = getUiState().sid
+      const closed = keepCurrent ? null : await closeSession(previousSid, true)
 
-      if (!keepCurrent) {
-        await closeSession(previousSid)
-      }
-
-      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      const r = await rpc<SessionCreateResponse>('session.create', {
+        cols: colsRef.current,
+        ...(STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD } : {})
+      })
 
       if (!r) {
         patchUiState({ status: 'ready' })
@@ -228,7 +242,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchUiState({
         info,
         sid: r.session_id,
-        status: info?.version ? 'ready' : 'starting agent…',
+        status: info?.version ? 'ready' : t('session.status.startingAgent'),
         storedSid,
         usage: usageFrom(info)
       })
@@ -249,6 +263,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         sys(msg)
       }
 
+      // After the reset above, so the closed session's plugin messages stay visible.
+      closed?.messages?.forEach(message => sys(message))
+
       if (requestedTitle) {
         rpc<SessionTitleResponse>('session.title', {
           session_id: r.session_id,
@@ -260,9 +277,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
 
             const nextTitle = (result.title ?? requestedTitle).trim()
-            const suffix = result.pending ? ' (queued while session initializes)' : ''
+            const suffix = result.pending ? t('session.lifecycle.titleQueuedSuffix') : ''
             patchUiState({ sessionTitle: nextTitle })
-            sys(`session title set: ${nextTitle}${suffix}`)
+            sys(`${t('session.lifecycle.sessionTitleSet', nextTitle)}${suffix}`)
           })
           .catch((err: unknown) => {
             if (getUiState().sid !== r.session_id) {
@@ -270,7 +287,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
 
             const message = err instanceof Error ? err.message : String(err)
-            sys(`warning: failed to set session title: ${message}`)
+            sys(`warning: ${t('session.lifecycle.failedToSetTitle', message)}`)
           })
       }
 
@@ -287,7 +304,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const newLiveSession = useCallback(
-    (msg = 'new live session started', title?: string) => {
+    (msg = t('session.lifecycle.newLiveSessionStarted'), title?: string) => {
       patchOverlayState({ sessions: false })
 
       return startNewSession(msg, title, true)
@@ -298,14 +315,16 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const activateLiveSession = useCallback(
     (id: string) => {
       patchOverlayState({ sessions: false })
-      patchUiState({ status: 'switching session…' })
+      patchUiState({ status: t('session.status.switchingSession') })
+      // The card belongs to the session being left; the activated one answers with its own.
+      clearConnectionOperation()
 
       gw.request<SessionActivateResponse>('session.activate', { session_id: id })
         .then(raw => {
           const r = asRpcResult<SessionActivateResponse>(raw)
 
           if (!r) {
-            sys('error: invalid response: session.activate')
+            sys(`error: ${t('session.common.invalidResponse', 'session.activate')}`)
 
             return patchUiState({ status: 'ready' })
           }
@@ -330,6 +349,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
+
+          if (r.pending_connection) {
+            applyConnectionRequest(r.pending_connection)
+          }
+
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
@@ -344,24 +368,25 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const resumeById = useCallback(
     (id: string) => {
       patchOverlayState({ sessions: false })
-      patchUiState({ status: 'resuming…' })
+      patchUiState({ status: t('session.status.resuming') })
 
       return rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
         if (setup?.provider_configured === false) {
-          panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
-          patchUiState({ status: 'setup required' })
+          panel(setupRequiredTitle(), buildSetupRequiredSections())
+          patchUiState({ status: t('session.status.setupRequired') })
 
           return
         }
 
         const previousSid = getUiState().sid
 
-        return gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+        return gw
+          .request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
             const r = asRpcResult<SessionResumeResult>(raw)
 
             if (!r) {
-              sys('error: invalid response: session.resume')
+              sys(`error: ${t('session.common.invalidResponse', 'session.resume')}`)
 
               return patchUiState({ status: 'ready' })
             }
@@ -387,6 +412,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)
+
+            if (r.pending_connection) {
+              applyConnectionRequest(r.pending_connection)
+            } else {
+              clearConnectionOperation()
+            }
+
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
 
@@ -404,12 +436,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const guardBusySessionSwitch = useCallback(
-    (what = 'switch sessions') => {
+    (what = t('session.lifecycle.switchSessions')) => {
       if (!getUiState().busy) {
         return false
       }
 
-      sys(`interrupt the current turn before trying to ${what}`)
+      sys(t('session.lifecycle.interruptBeforeSwitch', what))
 
       return true
     },

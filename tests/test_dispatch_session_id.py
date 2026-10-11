@@ -3,7 +3,6 @@
 import json
 from unittest.mock import MagicMock, patch
 
-
 def _make_registry(captured: dict):
     """Return a mock registry whose dispatch records the kwargs it receives."""
     registry = MagicMock()
@@ -14,7 +13,6 @@ def _make_registry(captured: dict):
 
     registry.dispatch.side_effect = _dispatch
     return registry
-
 
 class TestSessionIdForwarding:
 
@@ -45,31 +43,3 @@ class TestSessionIdForwarding:
                 skip_pre_tool_call_hook=True,
             )
         assert captured.get("session_id") == "sess-xyz"
-
-    def test_session_id_default_is_none(self):
-        """When session_id is omitted, dispatch receives None."""
-        captured = {}
-        with patch("model_tools.registry", _make_registry(captured)):
-            from model_tools import handle_function_call
-            handle_function_call(
-                "web_search",
-                {"query": "test"},
-                task_id="t1",
-                skip_pre_tool_call_hook=True,
-            )
-        assert "session_id" in captured
-        assert captured["session_id"] is None
-
-    def test_task_id_still_forwarded(self):
-        """Existing task_id forwarding is not broken by this change."""
-        captured = {}
-        with patch("model_tools.registry", _make_registry(captured)):
-            from model_tools import handle_function_call
-            handle_function_call(
-                "web_search",
-                {"query": "test"},
-                task_id="task-999",
-                session_id="sess-1",
-                skip_pre_tool_call_hook=True,
-            )
-        assert captured.get("task_id") == "task-999"

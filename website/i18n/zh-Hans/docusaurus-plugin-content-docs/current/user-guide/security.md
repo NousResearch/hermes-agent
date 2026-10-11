@@ -73,7 +73,7 @@ YOLO 模式在 CLI 和 gateway 会话中均可使用。在内部，它会设置 
 YOLO 模式会禁用会话中**所有**危险命令安全检查——**但硬性黑名单除外**（见下文）。仅在完全信任所生成命令的情况下使用（例如，在一次性环境中经过充分测试的自动化脚本）。
 :::
 
-对于破坏性会话斜杠命令（`/clear`、`/new` / `/reset`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands)。
+对于破坏性会话斜杠命令（`/clear`、`/new` / `/reset`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#破坏性命令的确认提示)。
 
 ### 硬性黑名单（始终生效的底线）
 
@@ -441,7 +441,7 @@ terminal:
 - 凭据文件以**只读**方式挂载到 Docker 容器中
 - Skills Guard 在安装前会扫描技能内容中的可疑环境变量访问模式
 - 缺失/未设置的变量永远不会被注册（不存在的内容无法泄露）
-- Hermes 基础设施密钥（提供商 API 密钥、gateway token）不应添加到 `env_passthrough`——它们有专用机制
+- Hermes 基础设施密钥（提供商 API 密钥、gateway token）不应添加到 `env_passthrough`——它们有专用机制。声明此类名称时会被拒绝；已声明的名称若之后被某个平台适配器占用（例如在技能加载后才注册的插件适配器），从那时起便不再转发
 
 ## MCP 凭据处理
 
@@ -495,7 +495,7 @@ security:
 
 当请求被阻止的 URL 时，工具会返回一条错误，说明该域名已被策略阻止。黑名单在 `web_search`、`web_extract`、`browser_navigate` 及所有支持 URL 的工具中均强制执行。
 
-完整详情请参见配置指南中的[网站黑名单](/user-guide/configuration#website-blocklist)。
+完整详情请参见配置指南中的[网站黑名单](./configuration.md#网站黑名单)。
 
 ### SSRF 防护
 
@@ -541,30 +541,16 @@ security:
 地址段（连接仍然发往代理，由代理自行解析真实目标），回环、RFC 1918、链路本地、CGNAT 和云元数据
 目标依然被拦截。
 
-### Tirith 预执行安全扫描
+### 内容级命令检查
 
-Hermes 集成了 [tirith](https://github.com/sheeki03/tirith) 用于在执行前进行内容级命令扫描。Tirith 能检测单纯模式匹配所遗漏的威胁：
+危险命令检测器还会标记两类仅靠破坏性动词列表无法发现的内容：
 
-- 同形字 URL 欺骗（国际化域名攻击）
-- 管道传解释器模式（`curl | bash`、`wget | sh`）
-- 终端注入攻击
+- `curl`/`wget` 请求体中携带机密：机密命名的变量（`-d "k=$OPENAI_API_KEY"`）或凭据文件（`-F file=@.env`、`-T ~/.ssh/id_rsa`、`--post-file=/etc/passwd`），或把凭据文件通过管道传给上传中的 `curl`/`wget`。`Authorization` 请求头属于正常 API 用法，不会被标记。
+- 不可见或双向 Unicode 控制字符（零宽空格、从右到左覆盖、隔离符），它们会让你批准的命令与实际执行的命令不同。表情符号连接序列不会被标记。
 
-Tirith 在首次使用时从 GitHub Releases 自动安装，并进行 SHA-256 校验和验证（若 cosign 可用，还会进行 cosign 来源验证）。
+两者都和其他危险模式一样进入正常审批流程。
 
-```yaml
-# 在 ~/.hermes/config.yaml 中
-security:
-  tirith_enabled: true       # 启用/禁用 tirith 扫描（默认：true）
-  tirith_path: "tirith"      # tirith 二进制路径（默认：PATH 查找）
-  tirith_timeout: 5          # 子进程超时（秒）
-  tirith_fail_open: true     # tirith 不可用时允许执行（默认：true）
-```
-
-当 `tirith_fail_open` 为 `true`（默认）时，若 tirith 未安装或超时，命令照常执行。在高安全性环境中，将其设置为 `false` 可在 tirith 不可用时阻止命令执行。
-
-Tirith 为 Linux（x86_64 / aarch64）和 macOS（x86_64 / arm64）提供预构建二进制文件。在没有预构建二进制文件的平台（Windows 等）上，tirith 会被静默跳过——模式匹配防护仍然运行，CLI 不会显示"不可用"横幅。若要在 Windows 上使用 tirith，请在 WSL 下运行 Hermes。
-
-Tirith 的判定与审批流程集成：安全命令直接通过，可疑和被阻止的命令会触发用户审批，并附上完整的 tirith 发现（严重性、标题、描述、更安全的替代方案）。用户可以批准或拒绝——默认选择为拒绝，以确保无人值守场景的安全。
+早期版本在这里内置了外部 tirith 扫描器，现已移除；升级会删除 `security.tirith_*` 设置，且不会启用任何替代项。
 
 ### 上下文文件注入防护
 
@@ -648,35 +634,33 @@ hermes doctor --ack <advisory-id>
 
 ### 可选依赖的懒加载安装
 
-许多功能（Mistral TTS、ElevenLabs、Honcho 记忆、Bedrock、Slack、Matrix 等）依赖并非每个用户都需要的 Python 包。Hermes 在首次使用时**懒加载**安装这些包，而非在 `hermes-agent[all]` 下急切安装。实现位于 `tools/lazy_deps.py`。
+PM 通过 `pyproject.toml` 中的 extras 管理可选 Python 功能。
+源码安装选择 `all` extra，原生桌面包预装目标平台支持的所有 extras。
+这两种集合并不相同。
 
-此方案解决的权衡问题：
+当功能请求缺失的 extra 时，`pm.ensure_import("extra-name")` 使用与插件准入相同的依赖事务：
 
-- **脆弱性。** 当某个额外依赖的传递依赖在 PyPI 上不可用时（因恶意软件被隔离、被撤回、上传损坏），整个 `[all]` 解析会失败，新安装会静默回退到精简版本——同时丢失 10 个以上不相关的额外功能。懒加载安装将每个后端隔离，使一个受损依赖不会破坏不相关的功能。
-- **臃肿。** 只使用一个提供商的用户不再需要拉取数百个永远不会导入的包。
+1. 检查平台支持和 `security.allow_lazy_installs`。
+2. 在候选环境中统一准备核心依赖、现有 extras 和已启用插件的依赖。
+3. 没有插件成员时保持提交的锁文件不变；有成员时从先前选择开始解析，然后执行冻结同步。
+4. 验证候选环境后才发布新选择。失败会保留原环境，不会自动禁用或删除其他插件。
+5. 若当前进程仍使用旧环境，则提示重启，不在进程中直接替换已导入的库。
 
-工作原理：
+已发布的源码、锁文件和签名载荷保持不变。新增依赖使用包外的可写存储。
+插件依赖共享完整 Python 环境，不是相互隔离的沙箱。
+兼容的传递依赖可以更新，但声明的约束和精确固定版本仍有效。
+失败通过 `pm.InstallError` 和同步记录报告。
 
-1. 后端模块在其首次导入路径的顶部调用 `ensure("feature.name")`。
-2. 若依赖缺失，`ensure` 检查 `config.yaml` 中的 `security.allow_lazy_installs`（默认 `true`），并为允许列表中的规格运行 venv 作用域的 `pip install`。
-3. 若安装失败或用户已禁用懒加载安装，调用会抛出 `FeatureUnavailable`，附带实际的 pip stderr 和指向 `hermes tools` 的提示。
+关闭按需安装：
 
-`tools/lazy_deps.py` 强制执行的安全保证：
-
-| 保证 | 含义 |
-|---|---|
-| 仅限 venv 作用域 | 安装目标为活跃 venv 中的 `sys.executable`——绝不安装到系统 Python |
-| 仅按名称从 PyPI 安装 | 规格接受 `"package>=1.0,<2"` 语法。不允许 `--index-url`、`git+https://` 或 `file:` 路径——恶意的 `config.yaml` 无法重定向安装 |
-| 允许列表 | 只有出现在内置 `LAZY_DEPS` 映射中的规格才能通过此路径安装。功能名称中的拼写错误**不会**获得任意安装语义 |
-| 可选退出 | 设置 `security.allow_lazy_installs: false` 可完全禁用运行时安装。适用于受限网络或严格安全态势 |
-| 无静默重试 | 失败以 `FeatureUnavailable` 形式呈现——不缓存错误状态，不发生重试风暴 |
-
-禁用运行时安装：
-
-```yaml
-# ~/.hermes/config.yaml
-security:
-  allow_lazy_installs: false
+```bash
+hermes config set security.allow_lazy_installs false
 ```
 
-禁用后，需要可选依赖的后端会提示用户手动运行安装（`pip install …`）或通过 `hermes tools` 选择其他后端。
+已安装的依赖仍可使用。显式安装命令与按需安装不同。
+关闭懒加载且存在包内冻结功能列表时，请求的 Python extra 名称仍受该列表限制。
+该设置不是禁止显式插件准入或手动包管理命令的沙箱。
+官方 Docker 镜像还通过内部策略关闭按需安装，仅更改配置不能覆盖它。
+
+用 `hermes tools` 和 `hermes doctor` 检查缺失需求。
+不要向签名载荷或系统 Python 执行 pip 安装。详见[包管理](../reference/package-management.md)。

@@ -259,7 +259,7 @@ npm start
 6. 点击 **Save** 将皮肤 YAML 写入 `~/.hermes/skins/`。
 7. 点击 **Activate** 将其设为当前皮肤（更新 `config.yaml` 中的 `display.skin`）。
 
-Hermes Mod 遵循 `HERMES_HOME` 环境变量，因此也适用于[配置文件](/user-guide/profiles)。
+Hermes Mod 遵循 `HERMES_HOME` 环境变量，因此也适用于[配置文件](../profiles.md)。
 
 ## 操作说明
 

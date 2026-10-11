@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhCompressionFieldDescriptions, zhCompressionFieldLabels } from './zh_compression'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
@@ -1066,21 +1067,7 @@ export const zhOverrides = {
         userCharLimit: '画像预算',
         provider: '记忆提供方'
       },
-      context: {
-        engine: '上下文引擎'
-      },
-      compression: {
-        enabled: '自动压缩',
-        threshold: '压缩阈值',
-        codexGpt55Autoraise: 'Codex 压缩自动提高',
-        targetRatio: '压缩目标',
-        protectLastN: '保护最近消息'
-      },
-      auxiliary: {
-        compression: {
-          timeout: '压缩模型超时（秒）'
-        }
-      },
+      ...zhCompressionFieldLabels,
       delegation: {
         model: '子智能体模型',
         provider: '子智能体提供方',
@@ -1138,18 +1125,7 @@ export const zhOverrides = {
         memoryEnabled: '保存有助于未来会话的持久记忆。',
         userProfileEnabled: '维护一份精简的用户偏好画像。'
       },
-      context: {
-        engine: '在接近上下文上限时管理长对话的策略。'
-      },
-      compression: {
-        enabled: '当对话变大时对较早的上下文进行摘要。',
-        codexGpt55Autoraise: '为受支持的 ChatGPT Codex OAuth 模型将压缩阈值提高到 85%。'
-      },
-      auxiliary: {
-        compression: {
-          timeout: '每次调用辅助压缩模型的等待秒数（默认 120）。本地模型较慢时请调高。'
-        }
-      },
+      ...zhCompressionFieldDescriptions,
       browser: {
         useRealProfile:
           '本地浏览使用你的真实登录状态。Hermes 会把你默认浏览器的配置（Cookie、登录、偏好）复制为受管快照，并用自带的 Chromium 驱动它——不会直接打开你的实时配置，且每次运行都会从实时配置刷新副本。还允许智能体在配置了云端浏览器后端时，按需打开本地真实配置会话。仅支持 Chromium 系浏览器（Chrome、Edge、Brave、Brave Origin、Chromium）；默认浏览器不是 Chromium 系时会给出明确报错。默认关闭。'

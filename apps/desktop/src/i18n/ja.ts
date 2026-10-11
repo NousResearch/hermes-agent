@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
+import { jaCompressionFieldDescriptions, jaCompressionFieldLabels } from './ja_compression'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
@@ -889,21 +890,7 @@ export const jaOverrides = {
         userCharLimit: 'プロファイル予算',
         provider: 'メモリプロバイダー'
       },
-      context: {
-        engine: 'コンテキストエンジン'
-      },
-      compression: {
-        enabled: '自動圧縮',
-        threshold: '圧縮しきい値',
-        codexGpt55Autoraise: 'Codex 圧縮の自動引き上げ',
-        targetRatio: '圧縮目標',
-        protectLastN: '保護する直近メッセージ'
-      },
-      auxiliary: {
-        compression: {
-          timeout: '圧縮モデルのタイムアウト（秒）'
-        }
-      },
+      ...jaCompressionFieldLabels,
       delegation: {
         model: 'サブエージェントモデル',
         provider: 'サブエージェントプロバイダー',
@@ -958,18 +945,7 @@ export const jaOverrides = {
         memoryEnabled: '将来のセッションに役立つ永続メモリを保存します。',
         userProfileEnabled: 'ユーザーの好みをまとめた簡潔なプロファイルを維持します。'
       },
-      context: {
-        engine: '長い会話がコンテキスト上限に近づいたときの管理戦略です。'
-      },
-      compression: {
-        enabled: '会話が大きくなったとき、古いコンテキストを要約します。',
-        codexGpt55Autoraise: '対応する ChatGPT Codex OAuth モデルの圧縮しきい値を 85% に引き上げます。'
-      },
-      auxiliary: {
-        compression: {
-          timeout: '補助圧縮モデルの呼び出しごとに待機する秒数（既定 120）。遅いローカルモデルでは値を上げてください。'
-        }
-      },
+      ...jaCompressionFieldDescriptions,
       voice: {
         autoTts: 'アシスタントの応答を自動で読み上げます。'
       },

@@ -17,17 +17,7 @@ DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
 
 
-def _aux(timeout, *, reasoning_effort=True, **extra):
-    """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
-
-    reasoning_effort=False omits that key (MoA blocks configure depth per slot);
-    ``extra`` keys are appended after the standard ones.
-    """
-    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
-    if reasoning_effort:
-        d["reasoning_effort"] = ""
-    d.update(extra)
-    return d
+from hermes_cli.config_defaults_aux import _aux  # noqa: E402 -- after the image constants, before DEFAULT_CONFIG
 
 
 DEFAULT_CONFIG = {
@@ -598,6 +588,7 @@ DEFAULT_CONFIG = {
         # (~3x fewer retained tokens; a few extra summarizer calls at the boundary). "legacy" =
         # 0.20×threshold verbatim tail (100-240K tokens on big windows).
         "tail_mode": "lean",
+        "warm_handoff": "off",  # off | on | auto: the main model writes the summary on its cached prompt
         # protect_last_n: minimum recent messages kept uncompressed, honoured up to a small count
         # floor; the verbatim tail is otherwise token-bounded and never above 20% of the window.
         "protect_last_n": 20,

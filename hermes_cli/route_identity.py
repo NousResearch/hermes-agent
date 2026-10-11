@@ -124,3 +124,11 @@ async def should_clear_context_pin_async(*args: Any) -> bool:
     cold-start disk I/O."""
     import asyncio
     return await asyncio.to_thread(should_clear_context_pin, *args)
+
+
+def aux_inherits_main_route(agent: Any, aux_model: str, aux_base_url: str) -> bool:
+    """True when an auxiliary client is the main model on the main endpoint."""
+    if str(aux_model or "").strip().lower() != str(getattr(agent, "model", "") or "").strip().lower():
+        return False
+    main_base = normalize_route_base_url(str(getattr(agent, "base_url", "") or ""))
+    return not main_base or normalize_route_base_url(aux_base_url) == main_base

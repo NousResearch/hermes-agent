@@ -566,7 +566,8 @@ export const zhHantSettings = {
         threshold: '壓縮閾值',
         codexGpt55Autoraise: 'Codex 壓縮自動提高',
         targetRatio: '壓縮目標',
-        protectLastN: '保護最近訊息'
+        protectLastN: '保護最近訊息',
+        warmHandoff: '熱快取交接'
       },
       auxiliary: {
         compression: {
@@ -635,7 +636,9 @@ export const zhHantSettings = {
       },
       compression: {
         enabled: '對話變大時摘要較早的上下文。',
-        codexGpt55Autoraise: '為支援的 ChatGPT Codex OAuth 模型將壓縮閾值提高到 85%。'
+        codexGpt55Autoraise: '為支援的 ChatGPT Codex OAuth 模型將壓縮閾值提高到 85%。',
+        warmHandoff:
+          '由主模型在其已快取的提示上撰寫壓縮摘要，支援提示快取的伺服器只需讀取新訊息。壓縮使用同一模型時更快。自動：僅當壓縮使用主模型且伺服器回報快取權杖時啟用。開啟：一律嘗試。關閉：一律使用壓縮模型。任何失敗都會回退到一般摘要。'
       },
       auxiliary: {
         compression: {

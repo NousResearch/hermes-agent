@@ -38,8 +38,10 @@ from agent.conversation_compression_telemetry import (
 )
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+from agent.prefix_request import build_prefix_request
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 from agent.usage_anchor import set_usage_anchor
+from hermes_cli.route_identity import aux_inherits_main_route
 from hermes_state_ids import new_session_id as mint_session_id
 from hermes_state_pidns import holder_namespace_token
 
@@ -1743,7 +1745,7 @@ def _compression_lock_holder(agent: Any) -> str:
 
 def _supported_compression_kwargs(
     compress_fn: Any, *, current_tokens: Optional[int], focus_topic: Optional[str], force: bool,
-    memory_context: str, bypass_cooldown: bool = False,
+    memory_context: str, bypass_cooldown: bool = False, prefix_request: Any = None,
 ) -> dict:
     """Return only compression kwargs accepted by an engine callable.
     Inspecting first keeps older plugin signatures compatible without catching ``TypeError`` and running a
@@ -1753,6 +1755,7 @@ def _supported_compression_kwargs(
         candidates["bypass_cooldown"] = True
     if memory_context:
         candidates["memory_context"] = memory_context
+    candidates.update({"prefix_request": prefix_request} if prefix_request is not None else {})
     try:
         parameters = inspect.signature(compress_fn).parameters
     except (TypeError, ValueError):
@@ -2036,15 +2039,6 @@ def _lower_threshold_to_aux_context(
     )
 
 
-def _aux_inherits_main_route(agent: Any, aux_model: str, aux_base_url: str) -> bool:
-    """True when the auxiliary compression client is the main model on the main endpoint."""
-    from hermes_cli.route_identity import normalize_route_base_url
-    if str(aux_model or "").strip().lower() != str(getattr(agent, "model", "") or "").strip().lower():
-        return False
-    main_base = normalize_route_base_url(str(getattr(agent, "base_url", "") or ""))
-    return not main_base or normalize_route_base_url(aux_base_url) == main_base
-
-
 def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the aux compression context is below the threshold.
     Called from ``AIAgent.__init__`` (CLI sees it via ``_vprint``); the gateway wires ``status_callback``
@@ -2098,7 +2092,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
             _aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(agent, "provider", "")
         )
         _aux_cfg_ctx = getattr(agent, "_aux_compression_context_length_config", None)
-        if _aux_cfg_ctx is None and _aux_inherits_main_route(agent, aux_model, aux_base_url):
+        if _aux_cfg_ctx is None and aux_inherits_main_route(agent, aux_model, aux_base_url):
             # Same model on the same route: reuse the main model's already-resolved window (which honours
             # model.context_length / provider pins). Re-resolving from scratch lost the pin and auto-lowered
             # the session threshold to a catch-all catalog value (#89500, #45519).
@@ -2981,13 +2975,13 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
 
 def _resolve_compress_call(
     agent: Any, *, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool, memory_context: str,
-    bypass_cooldown: bool,
+    bypass_cooldown: bool, prefix_request: Any = None,
 ) -> tuple[Callable[..., Any], dict[str, Any]]:
     """Bind ``compress()`` and only the kwargs its signature accepts."""
     compress_fn = agent.context_compressor.compress
     compress_kwargs = _supported_compression_kwargs(
         compress_fn, current_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
-        bypass_cooldown=bypass_cooldown,
+        bypass_cooldown=bypass_cooldown, prefix_request=prefix_request,
     )
     if memory_context.strip() and "memory_context" not in compress_kwargs:
         engine_name = getattr(agent.context_compressor, "name", type(agent.context_compressor).__name__)
@@ -3929,7 +3923,7 @@ def _run_summary_phase(
         memory_context = _pre_compress_memory_context(agent, messages, checkpoint_required)
         compress_fn, compress_kwargs = _resolve_compress_call(
             agent, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
-            bypass_cooldown=bypass_cooldown,
+            bypass_cooldown=bypass_cooldown, prefix_request=build_prefix_request(agent, messages, commit_fence),
         )
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(

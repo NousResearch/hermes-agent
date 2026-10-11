@@ -235,6 +235,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'agent.image_input_mode': ['auto', 'native', 'text'],
   'approvals.mode': ['manual', 'smart', 'off'],
   'code_execution.mode': ['project', 'strict'],
+  // agent/context_compressor.py::normalize_warm_handoff reads these three values.
+  'compression.warm_handoff': ['auto', 'on', 'off'],
   'context.engine': ['compressor', 'default', 'custom'],
   // '' = inherit the agent's own effort; the rest is the shared scale.
   'delegation.reasoning_effort': ['', ...REASONING_EFFORTS],
@@ -584,7 +586,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     threshold: 'Compression Threshold',
     codexGpt55Autoraise: 'Codex Compression Auto-Raise',
     targetRatio: 'Compression Target',
-    protectLastN: 'Protected Recent Messages'
+    protectLastN: 'Protected Recent Messages',
+    warmHandoff: 'Warm Handoff'
   },
   auxiliary: {
     compression: {
@@ -659,7 +662,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   compression: {
     enabled: 'Summarize older context when conversations get large.',
-    codexGpt55Autoraise: 'Raise compression to 85% for supported ChatGPT Codex OAuth models.'
+    codexGpt55Autoraise: 'Raise compression to 85% for supported ChatGPT Codex OAuth models.',
+    warmHandoff:
+      'Let the main model write the compression summary on its cached prompt, so a server with prompt caching reads only the new messages. Faster when compression uses the same model. Auto: only when compression uses the main model, the server reports cached tokens, and the last request finished less than 5 minutes ago. On: always try it. Off: always use the compression model. Any failure falls back to the normal summary.'
   },
   auxiliary: {
     compression: {
@@ -776,6 +781,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'compression.codex_gpt55_autoraise',
       'compression.target_ratio',
       'compression.protect_last_n',
+      'compression.warm_handoff',
       'auxiliary.compression.timeout'
     ]
   },

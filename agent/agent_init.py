@@ -1587,7 +1587,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_app_server_auto=app_server_auto,
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
-        idle_compact_after_seconds=idle_compact_after_seconds,
+        idle_compact_after_seconds=idle_compact_after_seconds, warm_handoff=cfg.get("warm_handoff", "off"),
     )
 
 
@@ -1999,7 +1999,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
-            custom_providers=_custom_providers,
+            custom_providers=_custom_providers, warm_handoff=cs.warm_handoff,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

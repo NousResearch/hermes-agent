@@ -106,8 +106,8 @@ def _run_interrupted_during_connect(monkeypatch, agent, reader, api_mode):
         monkeypatch.setattr(helpers._StreamingCall, "_call_wire", _wire)
         monkeypatch.setattr(agent, "_create_request_anthropic_client", _fake_anthropic_client)
     else:
-        monkeypatch.setattr(helpers._StreamingCall, "_open_chat_stream",
-                            lambda self, stream_kwargs: _LateStream(self, reader))
+        monkeypatch.setattr(helpers, "open_main_chat_stream",
+                            lambda driver, stream_kwargs, capture_store: _LateStream(driver, reader))
     with pytest.raises(InterruptedError):
         helpers.interruptible_streaming_api_call(
             agent, {"model": "m", "messages": [{"role": "user", "content": "hi"}]})

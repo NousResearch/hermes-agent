@@ -357,6 +357,59 @@ auxiliary model is re-probed immediately: the trigger is clamped again before th
 compaction on the new window, or restored to the main model's own value when the
 auxiliary model now fits.
 
+### Warm handoff (`compression.warm_handoff`)
+
+By default the summary is a separate auxiliary request: a new prompt with a cut-down
+transcript, so the server cannot reuse the prompt cache of the conversation. With
+`warm_handoff`, a compaction first sends the **last main-model request of the session once
+more**, with the history rows that came after it and one appended instruction. The system
+prompt, tools, and request settings stay the same, so a server with prefix caching (vLLM,
+SGLang, llama.cpp, LM Studio, and hosted APIs that cache prompts) reads only the new rows. The
+main model then writes a five-heading Markdown handoff (Goal, User instructions, Current
+state, Key facts, Next step), which becomes the summary text. The tail selection and the
+summary carrier are unchanged.
+
+| Value | Behavior |
+| --- | --- |
+| `off` (default) | Always use the auxiliary summary call. |
+| `on` | Always try the warm request first. |
+| `auto` | Try it only when `auxiliary.compression` resolves to the main model, the server reported cached prompt tokens for the last main request, and that request completed less than 5 minutes ago. |
+
+Any refusal or failure falls back to the normal auxiliary summary call in the same attempt:
+no capture yet (for example right after a resume), a history row that a hook rewrote, another API mode than
+`chat_completions`, a request with settings that cannot be replayed, a history that does not
+start with the captured request, a request that would not fit the context window (checked
+with the server-reported prompt count of the captured request), a provider error, a timeout
+(120 s), or a reply without the five headings. The log line `Compression warm handoff
+accepted: elapsed_s=… prompt_tokens=… cache_read_tokens=…` shows each accepted handoff.
+
+The speedup needs the same model and a prompt cache. A summary that goes to a different,
+smaller model cannot reuse the cache of the main model; `auto` therefore skips the warm
+request in that case.
+
+`auto` cannot ask the server whether it caches prompts, so it uses the last main response as
+evidence: `usage.prompt_tokens_details.cached_tokens` greater than 0. Servers that cache but
+do not report this counter are skipped; use `on` for them.
+
+| Server | Prefix cache | Reports `cached_tokens` | `auto` |
+| --- | --- | --- | --- |
+| Hosted APIs with prompt caching | yes | yes | used |
+| vLLM | yes (default) | only with `--enable-prompt-tokens-details` | used with that flag |
+| SGLang | yes, radix cache (default) | only with `--enable-cache-report` | used with that flag |
+| TensorRT-LLM `trtllm-serve` | yes, KV block reuse | yes | used |
+| llama.cpp `llama-server` | yes, per slot | yes | used |
+| MLX `mlx_lm.server` | yes | yes | used when the cache holds |
+| Ollama (`/v1`) | yes | no | skipped |
+| LM Studio | yes | no | skipped |
+
+Cost on a paid API: the auxiliary summary is also a new, uncached request, but a small one,
+because the summarizer input cuts long messages and is capped at 160,000 characters. The warm
+request sends the whole conversation, almost all of it as cached tokens, and its reply is
+usually shorter. With a valid cache the two cost about the same. A cache that expired (hosted
+prompt caches expire after minutes without use) makes the warm request a full-price read of
+the whole conversation; `auto` therefore skips it when the last main request is older than
+5 minutes. `on` always tries it.
+
 ### Per-model threshold overrides
 
 `compression.model_thresholds` lets you trigger compaction at different points

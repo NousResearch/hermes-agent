@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
+import { esCompressionFieldDescriptions, esCompressionFieldLabels } from './es_compression'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
 import { esNotices } from './es_notices'
@@ -1347,21 +1348,7 @@ export const esOverrides = {
         userCharLimit: 'Presupuesto de perfil',
         provider: 'Proveedor de memoria'
       },
-      context: {
-        engine: 'Motor de contexto'
-      },
-      compression: {
-        enabled: 'Compresión automática',
-        threshold: 'Umbral de compresión',
-        codexGpt55Autoraise: 'Aumento automático de compresión de Codex',
-        targetRatio: 'Objetivo de compresión',
-        protectLastN: 'Mensajes recientes protegidos'
-      },
-      auxiliary: {
-        compression: {
-          timeout: 'Tiempo de espera del modelo de compresión (s)'
-        }
-      },
+      ...esCompressionFieldLabels,
       delegation: {
         model: 'Modelo de subagente',
         provider: 'Proveedor de subagente',
@@ -1425,19 +1412,7 @@ export const esOverrides = {
         memoryEnabled: 'Guarda memorias duraderas que pueden ayudar en sesiones futuras.',
         userProfileEnabled: 'Mantiene un perfil compacto de preferencias del usuario.'
       },
-      context: {
-        engine: 'Estrategia para gestionar conversaciones largas cerca del límite de contexto.'
-      },
-      compression: {
-        enabled: 'Resume contexto antiguo cuando las conversaciones crecen.',
-        codexGpt55Autoraise: 'Sube la compresión al 85 % para los modelos compatibles de ChatGPT Codex OAuth.'
-      },
-      auxiliary: {
-        compression: {
-          timeout:
-            'Segundos de espera del modelo auxiliar de compresión por llamada (120 por defecto). Súbelo para modelos locales lentos.'
-        }
-      },
+      ...esCompressionFieldDescriptions,
       voice: {
         autoTts: 'Lee automáticamente en voz alta las respuestas del asistente.',
         voiceChatMode:

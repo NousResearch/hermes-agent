@@ -10,6 +10,12 @@ import pytest
 
 from hermes_cli import worktree_ops
 
+# Import ``cli`` at module level (collection time), before the real-home I/O
+# guard fixtures install: the session's first in-test ``import cli`` triggers
+# hermes_bootstrap dependency activation, which stats real-hermes-home paths
+# that the guard refuses (see tests/home_io_guard.py).
+import cli
+
 
 @pytest.fixture
 def git_repo(tmp_path):
@@ -189,13 +195,11 @@ class TestWorktreeLockReaping:
         return p
 
     def test_live_locked_survives_at_any_age(self, git_repo):
-        import cli
         wt = self._mk(cli, git_repo, "hermes-live", pid=os.getpid())
         cli._prune_stale_worktrees(str(git_repo))
         assert wt.exists(), "live-locked worktree (this pid) must never be reaped"
 
     def test_dead_locked_clean_is_reaped(self, git_repo):
-        import cli
         wt = self._mk(cli, git_repo, "hermes-dead", pid=999999)
         # sanity: this is the accumulation bug — remove --force alone can't do it
         assert worktree_ops._worktree_lock_is_live(str(git_repo), str(wt)) == "dead"
@@ -203,25 +207,21 @@ class TestWorktreeLockReaping:
         assert not wt.exists(), "dead-locked clean worktree should be unlocked + reaped"
 
     def test_dead_locked_dirty_survives(self, git_repo):
-        import cli
         wt = self._mk(cli, git_repo, "hermes-deaddirty", pid=999999, dirty=True)
         cli._prune_stale_worktrees(str(git_repo))
         assert wt.exists(), "dead-locked worktree with uncommitted work must survive"
 
     def test_dead_locked_unpushed_survives(self, git_repo):
-        import cli
         wt = self._mk(cli, git_repo, "hermes-deadunp", pid=999999, unpushed=True)
         cli._prune_stale_worktrees(str(git_repo))
         assert wt.exists(), "dead-locked worktree with unpushed commits must survive"
 
     def test_unlocked_clean_stale_is_reaped(self, git_repo):
-        import cli
         wt = self._mk(cli, git_repo, "hermes-nolock", pid=None)
         cli._prune_stale_worktrees(str(git_repo))
         assert not wt.exists(), "clean unlocked stale worktree should be reaped"
 
     def test_dirty_survives_over_72h(self, git_repo):
-        import cli
         wt = self._mk(cli, git_repo, "hermes-dirty72", pid=None, dirty=True, age_h=100)
         cli._prune_stale_worktrees(str(git_repo))
         assert wt.exists(), "dirty worktree must survive even past the 72h tier"
@@ -333,13 +333,11 @@ class TestWidenedPruner:
     # -- named (non hermes-*) directories are now covered ------------------
 
     def test_named_clean_stale_tree_is_reaped(self, git_repo):
-        import cli
         wt, _ = self._mk(git_repo, "salvage-12345", age_h=80)
         cli._prune_stale_worktrees(str(git_repo))
         assert not wt.exists(), "clean named tree past 72h soft tier should be reaped"
 
     def test_named_tree_gets_3x_grace(self, git_repo):
-        import cli
         wt, _ = self._mk(git_repo, "salvage-fresh", age_h=48)
         cli._prune_stale_worktrees(str(git_repo))
         assert wt.exists(), "named tree under 72h must be kept (3x scratch timeline)"
@@ -348,7 +346,6 @@ class TestWidenedPruner:
     # -- squash-merge escape hatch ------------------------------------------
 
     def test_squash_merged_tree_is_reaped(self, git_repo):
-        import cli
         wt, sha = self._mk(git_repo, "hermes-merged", commit=True, age_h=100)
         self._merge_upstream(git_repo, sha)
         assert cli._worktree_has_unpushed_commits(str(wt)), (
@@ -496,7 +493,6 @@ class TestPruneParallelEquivalence:
         return out
 
     def test_single_and_multi_worker_agree(self, git_repo, monkeypatch):
-        import cli
 
         # Phase A — force the serial path (pool sized to 1 worker).
         board = self._board(git_repo, tag="a")
@@ -524,7 +520,6 @@ class TestPruneParallelEquivalence:
 
     def test_pool_failure_falls_back_to_serial(self, git_repo, monkeypatch):
         """A ThreadPoolExecutor failure must not block startup."""
-        import cli
 
         wt, sha = self._mk(git_repo, "hermes-poolfail", commit=True)
         self._merge_upstream(git_repo, sha)
@@ -601,7 +596,6 @@ class TestShallowCloneDeepening:
         """Build the incident shape: shallow clone at A, worktree at A,
         upstream advances to B, shallow fetch moves origin/main to B.
         Worktree HEAD (A) is now disconnected from origin/main (B)."""
-        import cli
 
         up = self._upstream(tmp_path)
         clone = self._shallow_clone(tmp_path, up)
@@ -625,7 +619,6 @@ class TestShallowCloneDeepening:
 
     def test_shallow_disconnect_reproduces_false_unpushed(self, tmp_path):
         """Sanity: without deepening, the primitive misreports unpushed."""
-        import cli
 
         _, _clone, wt = self._stuck_worktree(tmp_path)
         assert cli._worktree_has_unpushed_commits(str(wt)), (
@@ -634,7 +627,6 @@ class TestShallowCloneDeepening:
         )
 
     def test_repo_is_shallow_detection(self, tmp_path, git_repo):
-        import cli
 
         up = self._upstream(tmp_path)
         clone = self._shallow_clone(tmp_path, up)
@@ -643,7 +635,6 @@ class TestShallowCloneDeepening:
         assert cli._repo_is_shallow(str(tmp_path / "nonexistent")) is False
 
     def test_deepen_connects_history_and_clears_false_unpushed(self, tmp_path):
-        import cli
 
         up, clone, wt = self._stuck_worktree(tmp_path)
         assert cli._worktree_has_unpushed_commits(str(wt))
@@ -663,7 +654,6 @@ class TestShallowCloneDeepening:
 
     def test_pruner_deepens_and_reaps_stuck_worktree(self, tmp_path):
         """E2E: the startup pruner itself unshallows and reaps the tree."""
-        import cli
 
         _, clone, wt = self._stuck_worktree(tmp_path)
         cli._prune_stale_worktrees(str(clone))
@@ -674,7 +664,6 @@ class TestShallowCloneDeepening:
 
     def test_deepen_offline_fails_soft_and_preserves(self, tmp_path):
         """Unreachable remote: deepen fails, verdicts stay conservative."""
-        import cli
 
         _, clone, wt = self._stuck_worktree(tmp_path)
         # Point origin somewhere that does not exist.
@@ -693,7 +682,6 @@ class TestShallowCloneDeepening:
 
     def test_real_unpushed_work_survives_deepening(self, tmp_path):
         """Deepening must not turn genuinely unpushed commits reapable."""
-        import cli
 
         _, clone, wt = self._stuck_worktree(tmp_path)
         (wt / "real-work.txt").write_text("novel\n")
@@ -748,7 +736,6 @@ class TestPrMergedEscapeHatch:
         monkeypatch.setenv("PATH", f"{gh.parent}:{os.environ['PATH']}")
 
     def test_merged_pr_tree_is_reaped(self, git_repo, tmp_path, monkeypatch):
-        import cli
         wt = self._mk_diverged(git_repo, "hermes-rebase-merged")
         assert worktree_ops._worktree_commits_all_merged_upstream(str(wt)) is False, (
             "precondition: cherry must NOT consider this merged — the PR "
@@ -761,14 +748,12 @@ class TestPrMergedEscapeHatch:
         )
 
     def test_no_merged_pr_preserved(self, git_repo, tmp_path, monkeypatch):
-        import cli
         wt = self._mk_diverged(git_repo, "hermes-pr-open")
         self._stub_gh(tmp_path, monkeypatch, stdout="[]")
         cli._prune_stale_worktrees(str(git_repo))
         assert wt.exists(), "no merged PR -> still unpushed work, preserve"
 
     def test_gh_failure_fails_safe(self, git_repo, tmp_path, monkeypatch):
-        import cli
         wt = self._mk_diverged(git_repo, "hermes-gh-down")
         self._stub_gh(tmp_path, monkeypatch, stdout="", exit_code=1)
         cli._prune_stale_worktrees(str(git_repo))
@@ -777,7 +762,6 @@ class TestPrMergedEscapeHatch:
     def test_dirty_tree_never_reaped_even_with_merged_pr(
         self, git_repo, tmp_path, monkeypatch
     ):
-        import cli
         wt = self._mk_diverged(git_repo, "hermes-dirty-merged")
         (wt / "uncommitted.txt").write_text("in-flight\n")
         self._age(wt, 100)

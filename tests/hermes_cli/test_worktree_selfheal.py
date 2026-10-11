@@ -17,6 +17,12 @@ from pathlib import Path
 
 import pytest
 
+# Import ``cli`` at module level (collection time), before the real-home I/O
+# guard fixtures install: the session's first in-test ``import cli`` triggers
+# hermes_bootstrap dependency activation, which stats real-hermes-home paths
+# that the guard refuses (see tests/home_io_guard.py).
+import cli
+
 
 def _git(cwd, *args, check=True):
     return subprocess.run(
@@ -110,7 +116,6 @@ class TestMaintainPackHealth:
         return self._pack_count(repo)
 
     def test_repacks_at_threshold(self, repo, monkeypatch):
-        import cli
         from hermes_cli import worktree_ops
 
         made = self._make_packs(repo, 12)
@@ -128,7 +133,6 @@ class TestMaintainPackHealth:
         assert (repo / ".git" / "objects" / "pack" / "multi-pack-index").exists()
 
     def test_noop_below_threshold(self, repo, monkeypatch):
-        import cli
         from hermes_cli import worktree_ops
 
         made = self._make_packs(repo, 2)
@@ -139,9 +143,7 @@ class TestMaintainPackHealth:
         assert self._pack_count(repo) == made, "below threshold must be a no-op"
 
     def test_fail_soft_on_missing_pack_dir(self, tmp_path):
-        from cli import _maintain_pack_health
-
-        _maintain_pack_health(str(tmp_path / "not-a-repo"))  # must not raise
+        cli._maintain_pack_health(str(tmp_path / "not-a-repo"))  # must not raise
 
 
 class TestRepackStampede:

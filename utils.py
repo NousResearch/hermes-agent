@@ -751,7 +751,7 @@ def base_url_path(base_url: str) -> str:
 def model_forces_max_completion_tokens(model: str) -> bool:
     """True for OpenAI families that reject ``max_tokens`` (HTTP 400 ``unsupported_parameter``)."""
     m = (model or "").strip().lower().rsplit("/", 1)[-1]
-    return m.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "o1", "o3", "o4"))
+    return m.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "gpt-6", "o1", "o3", "o4"))
 
 
 def base_url_origin(base_url: str) -> tuple[str, str, int]:

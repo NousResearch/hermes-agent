@@ -365,6 +365,17 @@ class TestAzureFoundryModelApiMode:
         # gpt-5 family on Responses API uniformly.
         assert azure_foundry_model_api_mode("gpt-5-mini") == "codex_responses"
 
+    def test_gpt6_family_uses_responses(self):
+        """GPT-6.x deployments serve /chat/completions 400s (max_tokens rejected,
+        function tools + reasoning_effort rejected); /v1/responses works."""
+        assert azure_foundry_model_api_mode("gpt-6") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6.1-sol-1") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6.1-sol") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6-luna-1") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6-luna") == "codex_responses"
+        # vendor-prefixed deployment ids resolve to the bare slug
+        assert azure_foundry_model_api_mode("openai/gpt-6.1-sol-1") == "codex_responses"
+
     def test_codex_family_uses_responses(self):
         assert azure_foundry_model_api_mode("codex") == "codex_responses"
         assert azure_foundry_model_api_mode("codex-mini") == "codex_responses"

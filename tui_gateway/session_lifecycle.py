@@ -270,31 +270,53 @@ def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool
     return True
 
 
+def _holder_turns_may_run_isolated() -> bool:
+    """Whether this profile runs Desktop turns in an isolated compute-host CHILD (``dashboard.turn_isolation``).
+
+    With isolation on, a backend's turn executes in a child process that records the durable turn
+    marker under ITS OWN pid (the child runs the same ``prompt_turn._record_turn_marker``), so an
+    absent or differently-attributed marker cannot prove the lease holder has no turn in flight.
+    Read off the profile whose registry holds the lease — the same registry implies the same
+    profile, so this process's effective config is the holder's. Fail CLOSED: anything that keeps
+    the flag from being read as off reports "may be isolated".
+    """
+    try:
+        return bool((_load_dashboard_process_isolation_config() or {}).get("turn_isolation"))
+    except Exception:
+        logger.debug("cannot resolve dashboard.turn_isolation; assuming isolated turns", exc_info=True)
+        return True
+
+
 def _holder_turn_in_flight(holder: dict, home) -> bool:
     """True when the lease holder still has a turn in flight for this chat. Fail CLOSED.
 
-    The durable turn marker (``tui_gateway.turn_marker``, #94778) already answers this across
-    processes: it is written when a turn starts and cleared on any conclusion, and it names the
-    writer's pid. A marker for this chat whose writer is the HOLDER's pid means the holder is still
-    running a turn there — its client is gone, so its output goes nowhere and taking the lease over
-    would let two agents append to one stored session. Anything unreadable (no key, no holder pid,
-    an unreadable marker, an unprovable writer) counts as in flight.
+    The durable turn marker (``tui_gateway.turn_marker``, #94778) answers this across processes: it
+    is written when a turn starts — for EVERY turn that can run, blank prompt text included — and
+    cleared on any conclusion, and it names the writer's pid. A marker for this chat whose writer is
+    the HOLDER's pid means the holder is still running a turn there; its client is gone, so its
+    output goes nowhere and taking the lease over would let two agents append to one stored session.
+
+    When no marker names the holder, that is proof it is idle ONLY for an in-process turn. With
+    ``dashboard.turn_isolation`` the turn runs in a compute-host child that writes the marker under
+    its own pid, so the same absence proves nothing — that case refuses (see
+    ``_holder_turns_may_run_isolated``). Anything unreadable (no key, no holder pid, an unreadable
+    marker file, an unprovable writer) counts as in flight.
     """
     key = str(holder.get("session_id") or "")
     holder_pid = holder.get("pid")
     if (not key or not isinstance(holder_pid, int) or isinstance(holder_pid, bool) or holder_pid <= 0):
         return True
     try:
-        from tui_gateway.turn_marker import marker_writer_state, read_turn_marker
-        marker = read_turn_marker(Path(home) if home else Path(get_hermes_home()), key)
+        from tui_gateway.turn_marker import turn_in_flight
+        if turn_in_flight(Path(home) if home else Path(get_hermes_home()), key, writer_pid=holder_pid):
+            return True
     except Exception:
+        # Includes MarkerUnreadable: a marker file we cannot parse may name a live turn.
         logger.debug("Cannot read the turn marker for %s", key, exc_info=True)
         return True
-    if not isinstance(marker, dict):
-        return False  # nothing in flight (or a concluded turn's marker already cleared)
-    if int(marker.get("writer_pid") or 0) != holder_pid:
-        return False  # not this holder's marker (unsurvivable attribution: a crash marker with no pid)
-    return marker_writer_state(marker) != "dead"
+    # No marker names the holder. For an in-process turn that is proof it is idle (the marker is
+    # written at turn start and cleared on any conclusion); under turn isolation it is not.
+    return _holder_turns_may_run_isolated()
 
 
 def _same_desktop_holder_may_be_superseded(holder: dict, *, home=None) -> bool:
@@ -393,6 +415,15 @@ def _sync_lease_client_attachment(session: dict | None, attached: bool) -> None:
     lease = session.get("active_session_lease")
     if lease is None or not getattr(lease, "enabled", False) or getattr(lease, "released", False):
         return
+    if attached is False:
+        # The detach publish happens OUTSIDE _session_resume_lock (the registry write is I/O), so a
+        # session.resume can rebind a live client in that window. Publishing the stale False would
+        # fence a holder that HAS a live client on its next turn (a sibling then supersedes it and
+        # the user gets SESSION_NOT_OWNED back). Attach/detach serialize on _session_transport_lock
+        # (a leaf lock), so the live transport wins: re-check at write time.
+        with _session_transport_lock:
+            if _session_has_live_transport(session):
+                attached = True
     if session.get("_lease_client_attached") is attached:
         return
     try:

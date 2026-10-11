@@ -5,7 +5,17 @@ reads it (``_maybe_schedule_auto_continue``). Stored per ``HERMES_HOME`` (profil
 entries older than ``_MAX_AGE_SECS`` and cap the count so a crash streak can't grow the file. Every
 function is best-effort — marker bookkeeping must never break a turn — so I/O errors degrade to "no
 marker" instead of raising. A marker also carries its writer's pid + start time (``marker_writer_state``): "a
-marker exists" only implies the writer died when no live sibling backend wrote it (#94778)."""
+marker exists" only implies the writer died when no live sibling backend wrote it (#94778).
+
+Two DIFFERENT questions are asked of this file, so there are two readers:
+
+* ``read_turn_marker`` — the crash auto-continue contract. A marker with no prompt TEXT is nothing to
+  re-submit, so it reads as None and a blank/attachment-only turn is never auto-continued.
+* ``read_turn_marker_entry`` / ``turn_in_flight`` — the cross-process "is a turn running for this
+  chat?" contract used by the Desktop lease takeover (``session_lifecycle._holder_turn_in_flight``).
+  Every turn that can run records a marker (blank prompt included), so this reader has NO prompt
+  requirement and reports "unreadable marker file" separately from "no marker"
+  (``MarkerUnreadable``), letting a fail-closed caller tell the two apart."""
 
 from __future__ import annotations
 
@@ -27,6 +37,15 @@ _MAX_PROMPT_CHARS = 64_000
 
 _lock = threading.Lock()
 _file_lock_holder = threading.local()
+
+
+class MarkerUnreadable(Exception):
+    """The durable turn-marker FILE exists but cannot be read or parsed.
+
+    Raised by ``read_turn_marker_entry`` so a caller that must fail closed can tell "the marker file
+    is unreadable" (it may name a live turn) from "there is no marker" (nothing was recorded).
+    ``read_turn_marker`` keeps its best-effort contract and never raises.
+    """
 
 
 def _marker_path(home: Path | str) -> Path:
@@ -83,16 +102,28 @@ def marker_writer_state(entry: dict) -> str:
     return "unknown" if live is None else ("alive" if live else "dead")
 
 
-def _load(path: Path) -> dict[str, dict]:
+def _load_strict(path: Path) -> dict[str, dict] | None:
+    """Markers keyed by session id; ``None`` when the FILE could not be read or parsed as an object.
+
+    A missing file is ``{}`` (no marker was ever written) — only an existing-but-unreadable file is
+    the fail-closed signal, which is exactly the distinction ``MarkerUnreadable`` carries.
+    """
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         return {}
     except Exception:
-        logger.debug("unreadable turn-marker file %s; starting fresh", path, exc_info=True)
-        return {}
-    return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+        logger.debug("unreadable turn-marker file %s", path, exc_info=True)
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {k: v for k, v in data.items() if isinstance(v, dict)}
+
+
+def _load(path: Path) -> dict[str, dict]:
+    """``_load_strict`` degraded to "no marker": the WRITE path repairs a broken file with a fresh one."""
+    return _load_strict(path) or {}
 
 
 def _prune(entries: dict[str, dict], now: float) -> dict[str, dict]:
@@ -124,11 +155,19 @@ def _update(home: Path | str, session_key: str, mutate, what: str) -> None:
 def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attempts: int = 0,
                       auto_continue: bool = True, notification_category: str | None = None) -> None:
     """Persist the marker for a turn that is about to run. ``attempts`` = how many auto-continues led to
-    this run (0 for a user-initiated turn); the crash-loop breaker reads it back on the next resume."""
-    if not session_key or not prompt:
+    this run (0 for a user-initiated turn); the crash-loop breaker reads it back on the next resume.
+
+    The prompt may be BLANK — an attachment-only or programmatic turn still runs, and it must still
+    leave cross-process proof that "a turn is in flight" for this chat (see ``turn_in_flight``). A
+    non-string prompt (a client that sent structured content) is recorded as blank text rather than
+    refused. ``read_turn_marker`` keeps its non-empty-prompt contract, so a blank marker is never
+    auto-continued.
+    """
+    if not session_key:
         return
+    text = prompt if isinstance(prompt, str) else ""
     now = time.time()
-    entry = {"attempts": max(0, int(attempts)), "prompt": prompt[:_MAX_PROMPT_CHARS], "started_at": now,
+    entry = {"attempts": max(0, int(attempts)), "prompt": text[:_MAX_PROMPT_CHARS], "started_at": now,
              "auto_continue": bool(auto_continue), **_writer_identity()}
     if notification_category == "diagnostic":
         entry["notification_category"] = notification_category
@@ -143,14 +182,64 @@ def clear_turn_marker(home: Path | str, session_key: str) -> None:
         _update(home, session_key, lambda e: {k: v for k, v in e.items() if k != session_key} if session_key in e else None, "clear")
 
 
+def read_turn_marker_entry(home: Path | str, session_key: str) -> dict[str, Any] | None:
+    """The RAW durable marker recorded for ``session_key``, prompt included even when blank, or None
+    when no marker exists. Raise :class:`MarkerUnreadable` when the marker file exists but cannot be
+    read or parsed, so a caller that must fail closed can tell that from "no marker at all"
+    (``read_turn_marker`` deliberately cannot: it never raises)."""
+    if not session_key:
+        return None
+    path = _marker_path(home)
+    with _lock:
+        entries = _load_strict(path)
+    if entries is None:
+        raise MarkerUnreadable(f"unreadable turn-marker file {path}")
+    entry = entries.get(session_key)
+    return entry if isinstance(entry, dict) else None
+
+
+def _entry_writer_pid(entry: dict[str, Any]) -> int:
+    try:
+        return int(entry.get("writer_pid") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def turn_in_flight(home: Path | str, session_key: str, *, writer_pid: int | None = None) -> bool:
+    """Is a turn recorded in flight for ``session_key``? No prompt requirement — every turn that can
+    run records a marker, blank prompt included (see ``record_turn_start``).
+
+    ``writer_pid``, when given, is the process whose turn we are asking about (the lease holder):
+    a marker naming it answers "alive writer -> in flight, provably dead writer -> not". A marker
+    naming somebody ELSE is NOT this writer's turn and reports False here — the caller decides what
+    an unattributable marker means (``session_lifecycle._holder_turn_in_flight`` refuses when the
+    holder's profile can run isolated turns, whose compute-host CHILD writes the marker under its
+    own pid). Raises :class:`MarkerUnreadable` for an unreadable marker file.
+    """
+    entry = read_turn_marker_entry(home, session_key)
+    if not isinstance(entry, dict):
+        return False
+    if writer_pid is not None and _entry_writer_pid(entry) != writer_pid:
+        return False
+    return marker_writer_state(entry) != "dead"
+
+
 def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | None:
-    """The marker left by a turn that never concluded, or None."""
+    """The marker left by a turn that never concluded, or None.
+
+    This is the CRASH AUTO-CONTINUE contract, not the "is a turn in flight" one: a marker with no
+    prompt TEXT (an attachment-only turn, or a marker from a build that recorded no prompt) is
+    nothing to re-submit, so it reads as None and is never auto-continued. Use
+    ``read_turn_marker_entry``/``turn_in_flight`` to ask the liveness question. Best-effort: an
+    unreadable file answers None, exactly like "no marker".
+    """
     if not session_key:
         return None
     try:
-        with _lock:
-            entry = _load(_marker_path(home)).get(session_key)
-        prompt = str(entry.get("prompt") or "") if isinstance(entry, dict) else ""
+        entry = read_turn_marker_entry(home, session_key)
+        if not isinstance(entry, dict):
+            return None
+        prompt = str(entry.get("prompt") or "")
         if not prompt.strip():
             return None
         return {"attempts": max(0, int(entry.get("attempts") or 0)), "prompt": prompt, "started_at": _started_at(entry),

@@ -145,6 +145,7 @@ def test_acceptance_runs_gh_as_the_assignee_profile(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
     assignee_home = launch_home / "profiles" / "b"
     assignee_home.mkdir(parents=True)
+    (assignee_home / "config.yaml").write_text("")  # managed profile home: ready owner gate (t_f7992f0f)
     (assignee_home / ".env").write_text("GH_TOKEN=b-token\n", encoding="utf-8")
     # Ambient residue that must NOT decide the login.
     monkeypatch.setenv("GH_TOKEN", "launch-token")
@@ -185,6 +186,7 @@ def test_assignee_without_own_gh_login_never_falls_through_to_ambient_login(tmp_
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
     assignee_home = launch_home / "profiles" / "b"
     assignee_home.mkdir(parents=True)
+    (assignee_home / "config.yaml").write_text("")  # managed profile home: ready owner gate (t_f7992f0f)
     (assignee_home / ".env").write_text("", encoding="utf-8")
     monkeypatch.setenv("GH_TOKEN", "launch-token")
     monkeypatch.setenv("GH_CONFIG_DIR", "/nonexistent/launch/gh")

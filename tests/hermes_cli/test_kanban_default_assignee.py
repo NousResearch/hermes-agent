@@ -14,9 +14,12 @@ import pytest
 
 @pytest.fixture()
 def isolated_kanban_home(tmp_path, monkeypatch):
-    """Fresh HERMES_HOME with a clean kanban DB."""
+    """Fresh HERMES_HOME with a clean kanban DB and kanban.default_assignee=default."""
     test_home = tmp_path / ".hermes"
     test_home.mkdir()
+    (test_home / "config.yaml").write_text(
+        "kanban:\n  default_assignee: default\n", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(test_home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     from hermes_cli import kanban_db
@@ -39,6 +42,8 @@ def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_hom
     from hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
+        # t_f7992f0f: creation-time default fill only happens on managed
+        # profile homes; here the dispatcher still applies it (#27145).
         task_id = kb.create_task(conn, title="t1", assignee=None)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(

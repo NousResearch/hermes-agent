@@ -140,6 +140,18 @@ class GatewayAdapterLifecycleMixin:
                     platform.value, timeout, suffix,
                 )
 
+    async def _teardown_all_adapters(self) -> None:
+        """Shutdown: ``_bounded_adapter_teardown`` for every adapter, secondary profiles' included."""
+        for platform, adapter in list(self.adapters.items()):
+            await self._bounded_adapter_teardown(adapter, platform)
+        # Disconnect secondary-profile adapters (multiplex mode).
+        _profile_adapters = getattr(self, "_profile_adapters", {})
+        for _prof, _amap in list(_profile_adapters.items()):
+            for platform, adapter in list(_amap.items()):
+                await self._bounded_adapter_teardown(adapter, platform, profile=_prof)
+            _amap.clear()
+        _profile_adapters.clear()
+
     @staticmethod
     def _env_timeout_override(name: str) -> Optional[float]:
         """Non-negative float from env var ``name``; None when unset or unparseable (warned)."""

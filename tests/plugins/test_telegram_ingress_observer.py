@@ -13,9 +13,10 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import threading
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -522,3 +523,72 @@ async def test_end_follows_the_stop_steps_and_only_a_normal_finish_is_clean(monk
 
     assert open_during == [True]
     assert recorder.events[-1]["steps_clean"] is (failure is None)
+
+
+async def _stop(gateway):
+    """SIGTERM's shutdown, ``GatewayRunner.stop()``, over the connected adapter; the process exits
+    right after it returns, taking the daemon delivery thread with it."""
+    from tests.gateway.restart_test_helpers import make_restart_runner
+
+    runner, _ = make_restart_runner(gateway.adapter)
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"), \
+            patch("cron.scheduler.mark_job_run"):
+        await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_returns_once_the_end_is_delivered(monkeypatch, tmp_path):
+    recorder = _Recorder()
+
+    def slow_end(**event):
+        if event["kind"] == "end":
+            time.sleep(0.5)
+        recorder(**event)
+
+    with _home(tmp_path):
+        gateway = _Gateway(monkeypatch, tmp_path, [], slow_end)
+        await gateway.connect()
+        await _stop(gateway)
+        end = recorder.events[-1]
+
+    assert (end["kind"], end["steps_clean"], end["event_no"]) == ("end", True, len(recorder.events))
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_observer_holds_gateway_stop_only_for_the_drain_limit(monkeypatch, tmp_path, caplog):
+    """The drain is bounded and never blocks the event loop; an end it gives up on stays undelivered."""
+    from gateway import ingress_observer
+
+    monkeypatch.setattr(ingress_observer, "SHUTDOWN_DRAIN_SECONDS", 0.3)
+    recorder, stalled = _Recorder(), []
+
+    def stalled_end(**event):
+        if event["kind"] == "end":
+            stalled.append(time.monotonic())
+            recorder.release.wait()
+        recorder(**event)
+
+    ticks = []
+
+    async def serve():
+        while True:
+            ticks.append(time.monotonic())
+            await asyncio.sleep(0.01)
+
+    with _home(tmp_path):
+        gateway = _Gateway(monkeypatch, tmp_path, [], stalled_end)
+        await gateway.connect()
+        serving = asyncio.ensure_future(serve())
+        try:
+            with caplog.at_level(logging.WARNING, logger="gateway.run"):
+                await asyncio.wait_for(_stop(gateway), WAIT)
+            returned, kinds = time.monotonic(), [event["kind"] for event in recorder.events]
+        finally:
+            serving.cancel()
+            recorder.release.set()
+    await recorder.until(lambda events: events[-1]["kind"] == "end")
+
+    assert "end" not in kinds and 0.3 <= returned - stalled[0] < 1.5
+    draining = [tick for tick in ticks if tick >= stalled[0]]
+    assert max(later - earlier for earlier, later in zip(draining, draining[1:])) < 0.2
+    assert "gateway_ingress_observer delivery still running 0.3s" in caplog.text

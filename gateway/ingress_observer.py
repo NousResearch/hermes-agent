@@ -3,10 +3,10 @@
 Fire sites number each event of a connection (an *epoch*) gap-free and hand it to one
 process-wide queue without waiting; one daemon thread delivers it to the plugin callbacks in the
 profile scope captured when the epoch opened, each callback getting its own read-only copy. The
-gateway never waits for, retries or changes behaviour because of an observer, and every structure
-this path owns is bounded: the queue (events and accounted bytes), each connection's fetch
-association map, the per-epoch seal state (open epochs plus a few closed ones) and the
-constant-size fault records.
+gateway never waits for, retries or changes behaviour because of an observer; only its shutdown
+gives the queue up to ``SHUTDOWN_DRAIN_SECONDS`` to be delivered. Every structure this path owns
+is bounded: the queue (events and accounted bytes), each connection's fetch association map, the
+per-epoch seal state (open epochs plus a few closed ones) and the constant-size fault records.
 
 Each delivery carries ``prev``, the outcome of the previous *delivered* event of its epoch
 (an event's own outcome is only ever published by its successor), and the epoch's sticky
@@ -36,6 +36,7 @@ _MAX_CLOSED_EPOCHS = 16
 _COUNTER_CAP = 2**31 - 1  # counters saturate here instead of wrapping
 _LATE_AFTER_SECONDS = 0.25
 _IDLE_EXIT_SECONDS = 60.0  # an idle delivery thread exits; the next event starts it again
+SHUTDOWN_DRAIN_SECONDS = 2.0  # how long gateway shutdown waits for queued events, each epoch's end included
 
 Build = Callable[..., tuple[dict[str, Any], int]]
 
@@ -231,14 +232,14 @@ def _deliver(manager: Any, payload: dict[str, Any]) -> tuple[str, Optional[BaseE
 
 class _Dispatcher:
     """The process-wide bounded queue, its delivery thread (at most one, started on demand) and
-    the seal state of every open epoch plus at most ``_MAX_CLOSED_EPOCHS`` closed ones. Shutdown
-    never waits for it."""
+    the seal state of every open epoch plus at most ``_MAX_CLOSED_EPOCHS`` closed ones."""
 
     def __init__(self) -> None:
         self._ready = threading.Condition()
         self._events: deque[_Event] = deque()
         self._bytes = 0
         self._thread: Optional[threading.Thread] = None
+        self._draining = False
         self._seals: dict[_Stream, _Seal] = {}
 
     def open(self, stream: _Stream) -> None:
@@ -270,11 +271,21 @@ class _Dispatcher:
             self._ready.notify()
         return True
 
+    def drain(self) -> Optional[threading.Thread]:
+        """Have the delivery thread exit once the queue is empty instead of idling, and return it
+        (None when there is none) for the caller to await with a bound. Never blocks."""
+        with self._ready:
+            if self._thread is not None:
+                self._draining = True
+                self._ready.notify()
+            return self._thread
+
     def _run(self) -> None:
         while True:
             with self._ready:
-                if not self._ready.wait_for(lambda: self._events, _IDLE_EXIT_SECONDS):
-                    self._thread = None
+                self._ready.wait_for(lambda: self._events or self._draining, _IDLE_EXIT_SECONDS)
+                if not self._events:  # idle too long, or drained
+                    self._thread, self._draining = None, False
                     return
                 event = self._events.popleft()
                 self._bytes -= event.size
@@ -315,3 +326,8 @@ class _Dispatcher:
 
 
 _dispatcher = _Dispatcher()
+
+
+def drain() -> Optional[threading.Thread]:
+    """For gateway shutdown once every adapter has disconnected: see ``_Dispatcher.drain``."""
+    return _dispatcher.drain()

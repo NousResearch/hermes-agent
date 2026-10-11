@@ -416,6 +416,30 @@ def test_an_idle_delivery_thread_exits_and_one_restarts_on_demand(observer, disp
     assert dispatcher._thread is not first
 
 
+def test_a_drain_never_blocks_and_ends_the_thread_once_the_queue_is_delivered(observer, dispatcher, monkeypatch):
+    monkeypatch.setattr(ingress_observer, "_IDLE_EXIT_SECONDS", 60.0)  # any exit below is the drain's
+    assert ingress_observer.drain() is None  # no thread, nothing to wait for
+    epoch = _epoch()
+    observer.block(epoch)  # 1, held inside the callback
+    started = time.monotonic()
+    thread = ingress_observer.drain()
+    epoch.end(0, steps_clean=True)  # 2, queued while draining
+    assert time.monotonic() - started < 0.1 and thread is dispatcher._thread and thread.is_alive()
+    observer.hold.set()
+    thread.join(WAIT)
+
+    assert not thread.is_alive() and dispatcher._thread is None
+    assert [event["kind"] for event in observer.events] == ["observed", "end"]
+    _epoch("2").emit("start", 0)
+    observer.wait(3)
+    later = dispatcher._thread
+    later.join(0.3)
+    assert later.is_alive()  # a thread started after a drain idles again
+    assert ingress_observer.drain() is later
+    later.join(WAIT)
+    assert not later.is_alive()
+
+
 def test_a_failed_end_delivery_still_retires_the_epoch(observer, dispatcher):
     observer.fail_before.add(2)
     epoch = _epoch()

@@ -201,6 +201,7 @@ def _install_fake_tools_package():
 
     sys.modules["tools.environments.base"] = types.SimpleNamespace(
         BaseEnvironment=_DummyEnvironment,
+        AmbiguousExecutionError=_DummyConnectionError,
         EnvironmentConnectionError=_DummyConnectionError,
     )
     sys.modules["tools.environments.local"] = types.SimpleNamespace(LocalEnvironment=_DummyEnvironment)

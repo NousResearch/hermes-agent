@@ -6,10 +6,17 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChatSessionList } from './ChatSessionList'
+import { AUTOMATION_SESSION_SOURCES } from '@/pages/SessionsPage_sources'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const { getSessions } = vi.hoisted(() => ({ getSessions: vi.fn() }))
+
+vi.mock('@nous-research/ui/ui/components/checkbox', () => ({
+  Checkbox: ({ checked, ...props }: { checked?: boolean } & React.InputHTMLAttributes<HTMLInputElement>) => (
+    <input type="checkbox" readOnly checked={checked ?? false} {...props} />
+  )
+}))
 
 vi.mock('@nous-research/ui/ui/components/button', () => ({
   Button: ({
@@ -52,6 +59,7 @@ vi.mock('@/i18n', () => ({
       sessions: {
         newChat: 'New chat',
         noSessions: 'No sessions',
+        showAutomationSessions: 'Show automation sessions',
         title: 'Sessions',
         untitledSession: 'Untitled session'
       }
@@ -157,6 +165,74 @@ describe('ChatSessionList', () => {
 
     expect(getSessions).toHaveBeenCalledTimes(2)
     expect(container.textContent).toContain('Newly created session')
+  })
+
+  it('excludes automation sources from the listing by default', async () => {
+    getSessions.mockResolvedValueOnce(response('first', 'First session'))
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ChatSessionList activeSessionId={null} />
+        </MemoryRouter>
+      )
+    })
+
+    expect(getSessions).toHaveBeenCalledTimes(1)
+    expect(getSessions).toHaveBeenCalledWith(
+      30,
+      0,
+      {
+        profile: '',
+        order: 'recent',
+        excludeSources: AUTOMATION_SESSION_SOURCES
+      },
+      'recent'
+    )
+    expect(container.textContent).toContain('First session')
+  })
+
+  it('includes automation sessions once the toggle is switched on', async () => {
+    getSessions
+      .mockResolvedValueOnce(response('first', 'First session'))
+      .mockResolvedValueOnce(response('run', 'Orchestrator run'))
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ChatSessionList activeSessionId={null} />
+        </MemoryRouter>
+      )
+    })
+
+    expect(getSessions).toHaveBeenCalledWith(
+      30,
+      0,
+      expect.objectContaining({ excludeSources: AUTOMATION_SESSION_SOURCES }),
+      'recent'
+    )
+
+    const toggleLabel = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Show automation sessions')
+    )
+    expect(toggleLabel).toBeTruthy()
+
+    await act(async () => {
+      toggleLabel!.click()
+    })
+
+    expect(getSessions).toHaveBeenCalledTimes(2)
+    expect(getSessions).toHaveBeenLastCalledWith(
+      30,
+      0,
+      {
+        profile: '',
+        order: 'recent',
+        excludeSources: []
+      },
+      'recent'
+    )
+    expect(container.textContent).toContain('Orchestrator run')
   })
 
   it('waits for the Chat tab to become active before loading or polling', async () => {

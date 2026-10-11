@@ -167,6 +167,7 @@ export const hu: Translations = {
     failedToDeleteSelected: "Nem sikerült törölni a kijelölt munkameneteket",
     resumeInChat: "Folytatás a csevegésben",
     newChat: "Új csevegés",
+    showAutomationSessions: "Automatizálási munkamenetek megjelenítése",
     workspace: "munkaterület",
     workspaceDefault: "Alapértelmezett",
     workspaceRescan: "Tárolók újrakeresése",

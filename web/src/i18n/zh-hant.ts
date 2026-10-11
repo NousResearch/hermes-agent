@@ -167,6 +167,7 @@ export const zhHant: Translations = {
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
     newChat: "新對話",
+    showAutomationSessions: "顯示自動化會話",
     workspace: "工作區",
     workspaceDefault: "預設",
     workspaceRescan: "重新掃描儲存庫",

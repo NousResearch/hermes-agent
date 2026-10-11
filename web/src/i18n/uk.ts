@@ -167,6 +167,7 @@ export const uk: Translations = {
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
     newChat: "Новий чат",
+    showAutomationSessions: "Показати сеанси автоматизації",
     workspace: "робоча папка",
     workspaceDefault: "За замовчуванням",
     workspaceRescan: "Пересканувати репозиторії",

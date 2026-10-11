@@ -165,6 +165,7 @@ export const zh: Translations = {
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
     newChat: "新对话",
+    showAutomationSessions: "显示自动化会话",
     workspace: "工作区",
     workspaceDefault: "默认",
     workspaceRescan: "重新扫描仓库",

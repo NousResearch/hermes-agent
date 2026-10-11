@@ -8,6 +8,8 @@ after the agent finishes its current task — not silently dropped.
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
+
 
 from gateway.run import _dequeue_pending_event
 from gateway.platforms.base import (
@@ -188,10 +190,10 @@ class TestBusyInputModeQueueFifo:
         runner.adapters = {Platform.TELEGRAM: adapter}
         return runner, adapter
 
-    def _text_event(self, text: str) -> MessageEvent:
+    def _text_event(self, text: str, user_id: str = "u1") -> MessageEvent:
         # profile=None: a MagicMock auto-attribute reads as a truthy stamped
         # profile and trips fail-closed adapter resolution (AGENTS.md #17).
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None, user_id=user_id, user_id_alt=None)
         return MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
@@ -220,8 +222,10 @@ class TestBusyInputModeQueueFifo:
 
 
 
-    def _media_event(self, path: str, mime: str, message_type: MessageType, text: str = "") -> MessageEvent:
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+    def _media_event(
+        self, path: str, mime: str, message_type: MessageType, text: str = "", user_id: str = "u1",
+    ) -> MessageEvent:
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None, user_id=user_id, user_id_alt=None)
         return MessageEvent(
             text=text, message_type=message_type, source=source,
             media_urls=[path], media_types=[mime], message_id=f"m-{path}",
@@ -265,3 +269,22 @@ class TestBusyInputModeQueueFifo:
         assert head.media_urls == ["/tmp/a.jpg", "/tmp/b.jpg"]
         assert "first" in head.text and "second" in head.text
         assert runner._queue_depth(session_key, adapter=adapter) == 1
+
+
+    @pytest.mark.parametrize("message_type", [MessageType.TEXT, MessageType.PHOTO], ids=["text", "photo"])
+    def test_another_senders_followup_does_not_join_a_pending_photo(self, message_type):
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:group:shared"
+        runner._queue_or_replace_pending_event(
+            session_key, self._media_event("/tmp/a.jpg", "image/jpeg", MessageType.PHOTO, text="look at this"))
+        followup = (
+            self._text_event("unrelated question", user_id="u2") if message_type == MessageType.TEXT
+            else self._media_event("/tmp/b.jpg", "image/jpeg", MessageType.PHOTO, text="mine", user_id="u2")
+        )
+
+        runner._queue_or_replace_pending_event(session_key, followup)
+
+        head = adapter._pending_messages[session_key]
+        assert ((head.text, head.media_urls, head.source.user_id), runner._queued_events.get(session_key, [])) == (
+            ("look at this", ["/tmp/a.jpg"], "u1"), [followup],
+        )

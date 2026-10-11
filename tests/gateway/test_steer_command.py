@@ -53,6 +53,7 @@ def _make_runner(session_entry: SessionEntry):
     adapter = MagicMock()
     adapter.send = AsyncMock()
     adapter._pending_messages = {}
+    adapter._pending_dispatch_reservations = {}
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)

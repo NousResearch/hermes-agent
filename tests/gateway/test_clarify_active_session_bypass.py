@@ -139,3 +139,55 @@ async def test_active_session_bypass_uses_profile_namespaced_key_under_multiplex
     assert adapter._pending_messages == {}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["/stop", "/approve", "custom answer"])
+async def test_inline_dispatch_reports_a_handler_removed_during_topic_recovery(
+    monkeypatch, caplog, text
+):
+    import threading
+
+    from gateway.platforms.event import ProcessingOutcome
+
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _ClarifyBypassAdapter()
+    adapter.set_message_handler(AsyncMock(return_value="reply"))
+    event = _event(text)
+    event.source.chat_type = "dm"
+    key = adapter._event_session_key(event)
+    guard = asyncio.Event()
+    adapter._active_sessions[key] = guard
+    owner = asyncio.current_task()
+    assert owner is not None
+    adapter._session_tasks[key] = owner
+    entered, resume = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    outcomes = []
+
+    def recover(input_event):
+        loop.call_soon_threadsafe(entered.set)
+        assert resume.wait(2)
+
+    async def complete(input_event, outcome):
+        outcomes.append((input_event.message_id, outcome))
+
+    adapter._topic_recovery_fn = lambda _source: None
+    monkeypatch.setattr(adapter, "_apply_topic_recovery", recover)
+    monkeypatch.setattr(adapter, "on_inline_processing_complete", complete)
+    cm.register("clarify-inline", key, "Pick one", ["A", "B"])
+    try:
+        task = asyncio.create_task(adapter.handle_message(event))
+        await asyncio.wait_for(entered.wait(), 2)
+        adapter._message_handler = None
+        resume.set()
+        await asyncio.wait_for(task, 2)
+        assert (
+            outcomes,
+            adapter._pending_messages,
+            adapter._active_sessions.get(key) is guard,
+            "No gateway message handler is installed" in caplog.text,
+        ) == ([("msg1", ProcessingOutcome.FAILURE)], {}, True, True)
+    finally:
+        resume.set()
+        _clear_clarify_state()

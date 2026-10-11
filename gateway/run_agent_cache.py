@@ -4,6 +4,7 @@ for GatewayRunner (MRO mixin). ``gateway.run`` internals are imported lazily ins
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import logging
 import threading
@@ -14,7 +15,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
-from gateway.session import SessionSource, build_session_context_prompt
+from gateway.run_inbound_turn_context import reports_turn_context
+from gateway.session import SessionSource, build_session_context_prompt, with_chat_metadata_from
 from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -45,6 +47,10 @@ def _tuple_agent(entry: Any) -> Any:
 
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
+
+    if TYPE_CHECKING:
+        _discard_parked_event = GatewayRunner._discard_parked_event
+        _complete_discarded_event = GatewayRunner._complete_discarded_event
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
@@ -400,6 +406,8 @@ class GatewayAgentCacheMixin:
             return
         state = self._peek_session_state(session_key)
         if state is not None:
+            for queued_event in state.conversation.queued_events:
+                self._discard_parked_event(queued_event)
             state.conversation.clear()
         # Legacy plain-dict stores still in _CONVERSATION_SCOPED_STATE (not yet folded into
         # SessionState), e.g. _pending_model_notes. SessionState-backed names resolve to MutableMapping
@@ -584,6 +592,8 @@ class GatewayAgentCacheMixin:
                     overflow.remove(wake)
             if wake is not None:
                 adapter._pending_messages[session_key] = wake
+            if parked is not None and parked is not wake:
+                await self._complete_discarded_event(parked)
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:
@@ -591,7 +601,7 @@ class GatewayAgentCacheMixin:
             # the successor generation — the displaced /stop tail must not wipe its slot.
             self._drop_turn_slot(session_key, run_generation=_generation_at_interrupt)
 
-    async def _refresh_agent_cache_message_count(self, session_key: str, session_id: Optional[str]) -> None:
+    async def _refresh_agent_cache_message_count(self, session_key: Optional[str], session_id: Optional[str]) -> None:
         """Re-baseline a cached agent's stored message_count after THIS turn — the coherence guard
         rebuilds on mismatch, so without this every turn would rebuild and destroy prompt caching.
         Only the count is refreshed, only if the same agent is still cached. DB errors leave the
@@ -702,6 +712,16 @@ class GatewayAgentCacheMixin:
         except Exception:
             # Durability protects cache continuity; a store outage must not block the user turn.
             logger.debug("Failed to persist prompt pin for %s", session_key, exc_info=True)
+
+    def _prompt_session_context(self, context, session_entry):
+        """*context* for the session-context prompt. When the receiving adapter reports chat changes
+        through ``prepare_turn_context``, the prompt keeps the names and topic from the session
+        origin, so a rename does not rewrite the system prompt. Tools read *context* itself and see
+        the current names."""
+        origin = session_entry.origin if session_entry else None
+        if origin is None or not reports_turn_context(self._intake_adapter_for(context.source)):
+            return context
+        return dataclasses.replace(context, source=with_chat_metadata_from(context.source, origin))
 
     def _pinned_session_context_prompt(
         self, context, redact_pii: bool, session_key: Optional[str], *, internal: bool = False,

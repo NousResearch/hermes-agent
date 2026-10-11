@@ -63,7 +63,7 @@ def _runner(adapter):
     runner = object.__new__(TurnRunner)
     runner._ctx = SimpleNamespace(
         _status_adapter=adapter, _status_chat_id="C1", _status_thread_metadata={"thread_id": "t1"},
-        session_key=SESSION, source=SimpleNamespace(chat_id="C1", platform="telegram", session_key=SESSION),
+        session_key=SESSION, source=SimpleNamespace(chat_id="C1", platform="telegram", session_key=SESSION, user_id="requester"),
     )
 
     class _Fut:
@@ -104,7 +104,7 @@ def test_timeout_edits_the_card_to_say_the_command_did_not_run(pending_entry, tm
     assert "NOT run" in content and "5 minutes" in content
     assert adapter.sends == [], "an editable card needs no extra message"
     # ``notify`` is A2A's turn-final marker; an approval card must not carry it (#132516).
-    assert adapter.card_metadata == [{"thread_id": "t1"}]  # no notify: A2A's turn-final marker
+    assert adapter.card_metadata == [{"thread_id": "t1", "requester_user_id": "requester", "approval_id": pending_entry.approval_id}]  # no notify: A2A's turn-final marker
 
 
 @pytest.mark.parametrize("text_fallback", [False, True])

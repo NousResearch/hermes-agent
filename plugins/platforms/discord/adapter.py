@@ -1257,13 +1257,22 @@ def _read_discord_prompt_timeout() -> int:
     return seconds
 
 
+from plugins.platforms.discord.inbound_context import DiscordInboundContextMixin
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
+from plugins.platforms.discord.platform_events import DiscordPlatformEventsMixin
+
+from plugins.platforms.discord.pending_replay import DiscordPendingReplayMixin
+from plugins.platforms.discord.access_policy import DiscordAccessPolicyMixin
+
+from plugins.platforms.discord.approval import DiscordApprovalMixin
+
+
+class DiscordAdapter(DiscordPendingReplayMixin, DiscordAccessPolicyMixin, DiscordApprovalMixin, DiscordPlatformEventsMixin, DiscordInboundContextMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
                      BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
@@ -1586,6 +1595,14 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 await adapter_self._on_platform_message_delete(message)
 
             @self._client.event
+            async def on_raw_message_delete(payload):
+                await adapter_self._on_raw_message_delete(payload)
+
+            @self._client.event
+            async def on_raw_bulk_message_delete(payload):
+                await adapter_self._on_raw_bulk_message_delete(payload)
+
+            @self._client.event
             async def on_thread_create(thread):
                 await adapter_self._on_platform_thread_create(thread)
 
@@ -1721,78 +1738,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 return False, False
         elif self._dedup.contains(message_id):
             return False, False
-        if message.author == self._client.user:
-            return False, False
-        if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
-            return False, False
-        role_authorized = False
-        if getattr(message.author, "bot", False):
-            allow_bots = self._get_allow_bots()
-            bot_tag_continuation = self._is_bot_tag_debounce_continuation(message)
-            if allow_bots == "none":
-                return False, False
-            if (
-                allow_bots == "mentions"
-                and not self._self_is_explicitly_mentioned(message)
-                and not bot_tag_continuation
-            ):
-                return False, False
-            if (
-                self._discord_bots_require_inline_mention()
-                and not self._self_is_raw_mentioned(message)
-                and not bot_tag_continuation
-            ):
-                return False, False
-        else:
-            msg_guild = getattr(message, "guild", None)
-            is_dm = isinstance(message.channel, discord.DMChannel) or msg_guild is None
-            msg_channel_ids = None
-            if not is_dm:
-                msg_channel_ids = {str(message.channel.id)}
-                parent_id = self._get_parent_channel_id(message.channel)
-                if parent_id:
-                    msg_channel_ids.add(parent_id)
-            if not self._is_allowed_user(
-                str(message.author.id), message.author, guild=msg_guild, is_dm=is_dm,
-                channel_ids=msg_channel_ids,
-            ):
-                self._warn_if_fail_closed_default()
-                return False, False
-            role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
-        raw_self_mention = self._self_is_explicitly_mentioned(message)
-        if not isinstance(message.channel, discord.DMChannel) and (
-            message.mentions or raw_self_mention
-        ):
-            other_bots_mentioned = any(
-                mentioned.bot and mentioned != self._client.user
-                for mentioned in message.mentions
-            )
-            if other_bots_mentioned and not raw_self_mention:
-                return False, False
-            ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
-            if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
-                # A thread the bot joined is not someone else's conversation, and the other two
-                # ingress paths already exempt it: _dispatch_recovered_message() and
-                # _handle_message(). Admission runs on both and can veto what they admit, so
-                # without this a third-party mention in a bot thread is dropped here even though
-                # the same message with no mention at all is admitted. ``thread_require_mention``
-                # still gates multi-bot threads, inside _in_bot_thread().
-                if not self._in_bot_thread(message):
-                    parent_id = None
-                    if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                        parent_id = str(message.channel.parent_id)
-                    free_channels = self._discord_free_response_channels()
-                    channel_keys = self._discord_channel_keys(message, parent_id)
-                    if "*" not in free_channels and not (channel_keys & free_channels):
-                        # Every other silent return in this function is at least guessable from
-                        # the outside; this one is not, and an operator seeing no log line cannot
-                        # tell it apart from the gateway never receiving the event.
-                        logger.debug(
-                            "[%s] admission: dropping message %s — mentions others, not self, "
-                            "not a bot thread, channel not free-response",
-                            self.name, getattr(message, "id", "?"))
-                        return False, False
-        return True, role_authorized
+        return self._discord_source_admission(message)
 
     async def _dispatch_discord_message(self, message: Any) -> bool:
         """Apply Discord ingress policy and dispatch one live event."""
@@ -1809,149 +1755,16 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
 
     # --- gateway_platform_event fire-sites ---
 
-    def _thread_id_and_chat_for_channel(self, channel) -> tuple[Optional[str], Optional[str]]:
-        """Return ``(thread_id, chat_id)``; for a thread chat_id is the thread id (dispatch session key)."""
-        if channel is None:
-            return None, None
-        chan_id = getattr(channel, "id", None)
-        if chan_id is None:
-            return None, None
-        is_thread = isinstance(channel, getattr(discord, "Thread", ()))
-        return (str(chan_id) if is_thread else None), str(chan_id)
 
-    def _source_for_platform_event(
-        self, *, chat_id: str, user_id: Optional[str], user_name: Optional[str],
-        thread_id: Optional[str], guild_id: Optional[str], message_id: Optional[str] = None,
-    ):
-        """Build the SessionSource the gateway authorizes against; missing identity raises (fail closed)."""
-        if not user_id or not chat_id:
-            raise ValueError("gateway_platform_event requires actor and chat identities")
-        return self.build_source(
-            chat_id=chat_id, chat_type="thread" if thread_id else "group", user_id=user_id,
-            user_name=user_name, thread_id=thread_id, guild_id=guild_id, message_id=message_id,
-        )
 
-    async def _fire_platform_event(self, event: dict[str, Any], source) -> None:
-        """Forward one envelope to the gateway boundary; no callback -> fail closed, errors never escape."""
-        handler = getattr(self, "_platform_event_handler", None)
-        if handler is None:
-            return
-        try:
-            await handler(event, source)
-        except Exception:
-            logger.debug("[%s] gateway_platform_event dispatch error", self.name, exc_info=True)
 
-    @staticmethod
-    def _platform_events_subscribed() -> bool:
-        """has_hook fast-path shared by every Discord fire-site."""
-        try:
-            from hermes_cli.lifecycle import has_hook
-            return has_hook("gateway_platform_event")
-        except Exception:
-            return False
 
-    async def _emit_platform_event(self, event_type: str, build) -> None:
-        """Normalize one event via ``build()`` -> ``(payload, source_kwargs)`` (None drops) and dispatch."""
-        if not self._platform_events_subscribed():
-            return
-        try:
-            built = build()
-            if built is None:
-                return
-            payload, source_kwargs = built
-            event = {"platform": "discord", "event_type": event_type, "payload": payload}
-            source = self._source_for_platform_event(**source_kwargs)
-        except Exception:
-            logger.debug("[%s] %s normalize error", self.name, event_type, exc_info=True)
-            return
-        await self._fire_platform_event(event, source)
 
-    def _message_event_parts(self, message, extra_payload):
-        """Shared normalizer for message edit/delete: (payload, source kwargs) or None."""
-        author = getattr(message, "author", None)
-        if author is not None and getattr(author, "bot", False):
-            return None  # bot's own progressive edits are noise, not user events
-        thread_id, chat_id = self._thread_id_and_chat_for_channel(getattr(message, "channel", None))
-        message_id = getattr(message, "id", None)
-        if chat_id is None or message_id is None:
-            return None
-        guild = getattr(message, "guild", None)
-        payload = {
-            "chat_id": str(chat_id)[:128], "message_id": str(message_id)[:128],
-            "thread_id": thread_id[:128] if thread_id else None, **extra_payload(message, author),
-        }
-        return payload, dict(
-            chat_id=str(chat_id), user_id=str(getattr(author, "id", "") or "") or None,
-            user_name=getattr(author, "display_name", None), thread_id=thread_id,
-            guild_id=str(getattr(guild, "id", "")) if guild else None, message_id=str(message_id),
-        )
 
-    @staticmethod
-    def _thread_event_parts(thread, extra_payload):
-        """Shared normalizer for thread create/rename; the owner is the authorized actor
-        because Discord's event carries none (same trade-off as ``message_deleted``)."""
-        thread_id = getattr(thread, "id", None)
-        owner_id = getattr(thread, "owner_id", None)
-        if thread_id is None:
-            return None
-        parent_id = getattr(thread, "parent_id", None)
-        guild = getattr(thread, "guild", None)
-        payload = {
-            "thread_id": str(thread_id)[:128],
-            "parent_chat_id": str(parent_id)[:128] if parent_id is not None else None,
-            **extra_payload(thread, owner_id),
-        }
-        return payload, dict(
-            chat_id=str(thread_id), user_id=str(owner_id) if owner_id is not None else None,
-            user_name=None, thread_id=str(thread_id),
-            guild_id=str(getattr(guild, "id", "")) if guild else None,
-        )
 
-    async def _on_platform_message_edit(self, before, after) -> None:
-        """Normalize ``on_message_edit`` into event_type ``message_edited``."""
-        def _extra(message, author):
-            text = getattr(message, "content", None)
-            edited_at = getattr(message, "edited_at", None)
-            return {
-                "text": text[:8192] if isinstance(text, str) else None,
-                "edited_at": (
-                    str(edited_at.isoformat())[:64]
-                    if edited_at is not None and hasattr(edited_at, "isoformat")
-                    else None
-                ),
-            }
-        message = after if after is not None else before
-        await self._emit_platform_event("message_edited", lambda: self._message_event_parts(message, _extra))
 
-    async def _on_platform_message_delete(self, message) -> None:
-        """Normalize ``on_message_delete`` into ``message_deleted``. Discord omits the
-        deleter, so the author (the only cached identity) is the source; uncached deletions never fire."""
-        def _extra(message, author):
-            return {"author_id": str(getattr(author, "id", "") or "")[:128] or None}
-        await self._emit_platform_event("message_deleted", lambda: self._message_event_parts(message, _extra))
 
-    async def _on_platform_thread_create(self, thread) -> None:
-        """Normalize ``on_thread_create`` into event_type ``thread_created``."""
-        def _extra(thread, owner_id):
-            name = getattr(thread, "name", None)
-            return {
-                "name": name[:256] if isinstance(name, str) else None,
-                "owner_id": str(owner_id)[:128] if owner_id is not None else None,
-            }
-        await self._emit_platform_event("thread_created", lambda: self._thread_event_parts(thread, _extra))
 
-    async def _on_platform_thread_update(self, before, after) -> None:
-        """Normalize ``on_thread_update`` renames into ``thread_renamed``; non-rename updates are dropped."""
-        def _build():
-            old_name = getattr(before, "name", None)
-            new_name = getattr(after, "name", None)
-            if old_name == new_name or not isinstance(new_name, str):
-                return None
-            return self._thread_event_parts(after, lambda _t, _o: {
-                "old_name": old_name[:256] if isinstance(old_name, str) else None,
-                "new_name": new_name[:256],
-            })
-        await self._emit_platform_event("thread_renamed", _build)
 
     async def _cancel_bot_task(self) -> None:
         """Cancel and await the background client.start() task, if running."""
@@ -4148,77 +3961,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         except Exception:
             return False
 
-    def _is_allowed_user(
-        self, user_id: str, author=None, *, guild=None, is_dm: bool = False,
-        channel_ids: Optional[set[str]] = None,
-    ) -> bool:
-        """Allow via DISCORD_ALLOWED_USERS/ROLES (OR); with no allowlists, validated channel
-        context may pass on DISCORD_ALLOWED_CHANNELS (never voice). Role checks are guild-scoped:
-        DMs use user IDs only unless ``discord.dm_role_auth_guild`` names one guild (no escalation).
-        """
-        # getattr fallbacks: test fixtures build the adapter via object.__new__ and skip __init__.
-        allowed_users = getattr(self, "_allowed_user_ids", set())
-        allowed_roles = getattr(self, "_allowed_role_ids", set())
-        has_users = bool(allowed_users)
-        has_roles = bool(allowed_roles)
-        # Pairing is a first-class grant in the gateway auth union; honor it here too.
-        if self._is_pairing_approved_user(user_id):
-            return True
-        if not has_users and not has_roles:
-            if self._discord_allow_all_users():
-                return True
-            if self._gateway_allow_all_users():
-                return True
-            # Channel-scoped access needs validated channel context; not a user-wide bypass.
-            # In shared channels, respond only when addressed — unless require_mention is disabled, in which
-            # case respond to every message. A NIP-10 thread reply whose direct parent is one of our
-            # messages is treated as addressed (parity with Signal/WhatsApp; fixes #75826 — e.g. Desktop
-            # "/approve session" replies that never type @name). Explicit addressing is a text @mention OR a
-            # signed recipient p-tag (#92781). DMs always dispatch.
-            if (
-                not is_dm
-                and channel_ids is not None
-                and self._discord_channel_ids_allowed(channel_ids)
-            ):
-                return True
-            return False
-        # "*" is the open-mode wildcard (mirrors other DISCORD_* lists; ``claw migrate`` emits it).
-        if has_users and ("*" in allowed_users or user_id in allowed_users):
-            return True
-        if not has_roles:
-            return False
-        # DM path: roles need explicit opt-in via ``discord.dm_role_auth_guild`` (else cross-guild leakage).
-        if is_dm or guild is None:
-            dm_guild_id = _read_dm_role_auth_guild()
-            if dm_guild_id is None:
-                return False
-            if self._client is None:
-                return False
-            dm_guild = self._client.get_guild(dm_guild_id)
-            if dm_guild is None:
-                return False
-            return self._guild_member_has_role(dm_guild, user_id, allowed_roles)
-        # Guild path: scoped to THIS guild. 1) Prefer the passed Member (correct guild by construction).
-        direct_roles = getattr(author, "roles", None) if author is not None else None
-        author_guild = getattr(author, "guild", None)
-        if direct_roles and (author_guild is None or author_guild.id == guild.id):
-            if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
-                return True
-        # 2) Fallback: resolve Member in this guild only — NEVER scan other mutual guilds.
-        return self._guild_member_has_role(guild, user_id, allowed_roles)
 
-    @staticmethod
-    def _guild_member_has_role(guild, user_id: str, allowed_roles: set) -> bool:
-        """Look ``user_id`` up as a member of ``guild`` only and test its roles."""
-        try:
-            uid_int = int(user_id)
-        except (TypeError, ValueError):
-            return False
-        m = guild.get_member(uid_int)
-        if m is None:
-            return False
-        m_roles = getattr(m, "roles", None) or []
-        return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
 
     def _warn_if_fail_closed_default(self) -> None:
         """Log once when Discord is rejecting traffic with no allowlist set."""
@@ -5746,34 +5489,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                  + len(self._approval_mention_content() or "") + 1)
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
-    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Send an approval with content as its canonical payload and an embed for state."""
-        def _build(_channel):
-            content = prompt.text
-            mention_content = self._approval_mention_content()
-            if mention_content:
-                content = f"{mention_content}\n{content}"
-            embed = discord.Embed(
-                title=_truncate_discord_component_text(f"⚠️ {t('gateway.exec_approval.header')}", _DISCORD_EMBED_TITLE_LIMIT),
-                color=discord.Color.orange(),
-            )
-            require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
-            choices = set(prompt.choices)
-            view = ExecApprovalView(
-                session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
-                admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
-                allow_session="session" in choices, smart_denied=prompt.smart_denied,
-            )
-            send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
-            if mention_content:
-                allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
-                if allowed_mentions_cls is not None:
-                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
-                        users=True, roles=False, everyone=False, replied_user=False,
-                    )
-            return send_kwargs, view
-        return await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -6135,235 +5850,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 return _Snowflake(int(_ref_mid))
         return None
 
-    async def _handle_message(
-        self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
-    ) -> bool:
-        """Handle one Discord message and report whether it reached dispatch."""
-        # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
-        #
-        # Config (discord.* in config.yaml or DISCORD_* env vars):
-        #   discord.require_mention: Require @mention in server channels (default: true)
-        #   discord.free_response_channels: Channel IDs where bot responds without mention
-        #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
-        #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
-        #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
-        #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
-        #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
-        thread_id = None
-        parent_channel_id = None
-        is_thread = isinstance(message.channel, discord.Thread)
-        if is_thread:
-            thread_id = str(message.channel.id)
-            parent_channel_id = self._get_parent_channel_id(message.channel)
-        is_voice_linked_channel = False
-        # Save stripped text now: create_thread() can clobber message.content (breaks /command detection).
-        raw_content = message.content.strip()
-        normalized_content = raw_content
-        mention_prefix = False
-        snapshot_attachments = []
-        if hasattr(message, "message_snapshots") and message.message_snapshots:
-            snapshot_text_parts = []
-            for snap in message.message_snapshots:
-                if getattr(snap, "content", None):
-                    snapshot_text_parts.append(snap.content.strip())
-                snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
-            if snapshot_text_parts and not raw_content:
-                raw_content = "\n".join(snapshot_text_parts)
-                normalized_content = raw_content
-        if self._self_is_explicitly_mentioned(message):
-            mention_prefix = True
-            if self._client.user:
-                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
-            message.content = normalized_content
-        if not isinstance(message.channel, discord.DMChannel):
-            channel_ids = {str(message.channel.id)}
-            if parent_channel_id:
-                channel_ids.add(parent_channel_id)
-            channel_keys = self._discord_channel_keys(message, parent_channel_id)
-            allowed_channels = self._get_allowed_channels()
-            if allowed_channels:
-                if "*" not in allowed_channels and not (channel_keys & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
-                    return False
-            ignored_channels = self._get_ignored_channels()
-            if "*" in ignored_channels or (channel_keys & ignored_channels):
-                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
-                return False
-            free_channels = self._discord_free_response_channels()
-            require_mention = self._discord_require_mention()
-            # Voice-linked text channel is free-response while voice is active (exact channel only).
-            voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
-            current_channel_id = str(message.channel.id)
-            is_voice_linked_channel = current_channel_id in voice_linked_ids
-            is_free_channel = (
-                "*" in free_channels
-                or bool(channel_keys & free_channels)
-                or is_voice_linked_channel
-            )
-            in_bot_thread = self._in_bot_thread(message)
-            if require_mention and not is_free_channel and not in_bot_thread:
-                if (
-                    not self._self_is_explicitly_mentioned(message)
-                    and not mention_prefix
-                    and not self._is_bot_tag_debounce_continuation(message)
-                ):
-                    return False
-        # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
-        auto_threaded_channel = None
-        if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            no_thread_channels = self._get_no_thread_channels()
-            # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
-            skip_thread = bool(channel_keys & no_thread_channels) or (
-                is_free_channel and not self._discord_free_response_auto_thread()
-            )
-            auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
-            is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
-                thread = await self._auto_create_thread(message)
-                if thread:
-                    parent_channel_id = str(message.channel.id)
-                    is_thread = True
-                    thread_id = str(thread.id)
-                    # Pre-seed dedup: message.create_thread() fires a second MESSAGE_CREATE for the
-                    # starter (id == thread.id, maybe type=default); mark it so it can't trigger a rerun.
-                    # Must run before the first await below: mark_async yields to the loop, and the
-                    # echo's _discord_message_admission would otherwise claim the id first.
-                    self._dedup.is_duplicate(str(thread.id))
-                    auto_threaded_channel = thread
-                    await self._threads.mark_async(thread_id)
-                else:
-                    # Auto-threading is the routing target; do NOT fall back to an inline parent-channel
-                    # reply (dumps the task into a shared channel). Surface an error and skip the run.
-                    try:
-                        # That breaks thread-first Discord workflows by dumping a new task into a shared
-                        # channel. Surface a short visible error so the user can retry once Discord
-                        # recovers, and skip agent invocation for this message. See #20243.
-                        await message.channel.send(
-                            self.warning_text(
-                                t("platform.discord.thread.auto_create_failed"),
-                                t("platform.discord.thread.auto_create_failed_generic"))
-                        )
-                    except Exception as notify_error:
-                        logger.warning(
-                            "[%s] Failed to notify user of auto-thread failure: %s", self.name,
-                            notify_error,
-                        )
-                    return False
-        referenced_attachments = []
-        reference = getattr(message, "reference", None)
-        resolved_reference = getattr(reference, "resolved", None) if reference else None
-        if resolved_reference is not None:
-            referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
-        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
-        if normalized_content.startswith("/"):
-            msg_type = MessageType.COMMAND
-        elif all_attachments:
-            msg_type = self._attachment_message_type(all_attachments[0])
-        else:
-            msg_type = MessageType.TEXT
-        effective_channel = auto_threaded_channel or message.channel
-        if isinstance(message.channel, discord.DMChannel):
-            chat_type = "dm"
-            chat_name = message.author.name
-        elif is_thread:
-            chat_type = "thread"
-            chat_name = self._format_thread_chat_name(effective_channel)
-        else:
-            chat_type = "group"
-            chat_name = getattr(message.channel, "name", str(message.channel.id))
-            if hasattr(message.channel, "guild") and message.channel.guild:
-                chat_name = f"{message.channel.guild.name} / #{chat_name}"
-        # The session channel's topic, as the auto-thread's next message reads it; forum threads inherit it.
-        chat_topic = self._get_effective_topic(effective_channel, is_thread=is_thread)
-        guild = getattr(message, "guild", None)
-        source = self.build_source(
-            chat_id=str(effective_channel.id),
-            chat_name=chat_name,
-            chat_type=chat_type,
-            user_id=str(message.author.id),
-            user_name=message.author.display_name,
-            thread_id=thread_id,
-            chat_topic=chat_topic,
-            is_bot=getattr(message.author, "bot", False),
-            guild_id=str(guild.id) if guild else None,
-            parent_chat_id=parent_channel_id,
-            message_id=str(message.id),
-            role_authorized=role_authorized,
-            auto_thread_created=auto_threaded_channel is not None,
-            auto_thread_initial_name=(
-                getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
-                or self._derive_auto_thread_name(message.content or "")
-            ) if auto_threaded_channel is not None else None,
-        )
-        media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
-            all_attachments)
-        event_text = normalized_content
-        if pending_text_injection:
-            event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
-        # ── History backfill ─────────────────────────────────────────
-        # With require_mention, messages between bot turns never reach the transcript; fetch
-        # history after the bot's last message (cold start: last N, stop at first self-message)
-        # and prepend it. DMs skipped (every DM triggers the bot); in-flight arrivals not captured.
-        _channel_context = None
-        _is_dm = isinstance(message.channel, discord.DMChannel)
-        if not _is_dm and self._discord_history_backfill():
-            # Backfill on a gap: mention-gated channels, any thread (processing/restart gaps), any
-            # reply (hydrate context around the referenced message). DMs/fresh auto-threads: nothing.
-            _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
-            _is_reply = message.reference is not None
-            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
-                _backfill_text = await self._fetch_channel_context(
-                    message.channel, before=message,
-                    reply_target=self._reply_target(message.reference) if _is_reply else None,
-                )
-                if _backfill_text:
-                    _channel_context = _backfill_text
-        # Keep empty user messages out of the session; with channel_context a bare mention = "catch me up".
-        if (not event_text or not event_text.strip()) and not _channel_context:
-            # Bare mention-only ping with no media/text/backfill: drop rather than spawn an empty turn.
-            if (mention_prefix and not media_urls and not pending_text_injection):
-                logger.info(
-                    "[%s] Ignoring mention-only message from %s in %s", self.name,
-                    getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
-                    getattr(message.channel, "id", "unknown"),
-                )
-                return False
-            event_text = "(The user sent a message with no text content)"
-        _chan = message.channel
-        _parent_id = str(getattr(_chan, "parent_id", "") or "")
-        _chan_id = str(getattr(_chan, "id", ""))
-        _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
-        _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
-        reply_to_id = None
-        reply_to_text = None
-        if message.reference:
-            reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
-        event = MessageEvent(
-            text=event_text, message_type=msg_type, source=source, raw_message=message,
-            message_id=str(message.id), media_urls=media_urls, media_types=media_types,
-            media_text_inlined=media_text_inlined,
-            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
-            timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
-            channel_context=_channel_context,
-        )
-        if (
-            getattr(getattr(message, "author", None), "bot", False)
-            and self._is_bot_tag_debounce_continuation(message)
-        ):
-            event._bot_tag_debounce = True  # type: ignore[attr-defined]
-
-        # Track participation so follow-ups in this thread don't need @mention.
-        if thread_id:
-            await self._threads.mark_async(thread_id)
-        # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
-            self._enqueue_text_event(event)
-        else:
-            await self.handle_message(event)
-        return True
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         """A bot handoff's continuation chunks arrive at Discord's send rate (~1/s), so a
@@ -6481,96 +5967,9 @@ def _define_discord_view_classes() -> None:
             self._disable_all()
             await self._expire_embed(t("platform.discord.prompt.expired_footer"))
 
-    class ExecApprovalView(_HermesView):
-        """Allow Once / Allow Session / Always Allow / Deny buttons for a dangerous command.
-        Clicks call ``resolve_gateway_approval()`` — the same mechanism as the text ``/approve`` flow."""
+    from .approval import create_exec_approval_view
 
-        def __init__(
-            self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
-            require_admin: bool = False, admin_user_ids: Optional[set] = None,
-            allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
-        ):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
-            self.session_key = session_key
-            self.require_admin = require_admin
-            self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
-            self._localize_buttons(
-                allow_once="gateway.exec_approval.action_once", allow_session="gateway.exec_approval.action_session",
-                allow_always="gateway.exec_approval.action_always", deny="gateway.exec_approval.action_deny")
-            if smart_denied or not allow_session:
-                self.remove_item(self.allow_session)
-                self.remove_item(self.allow_always)
-            elif not allow_permanent:
-                self.remove_item(self.allow_always)
-
-        def _check_auth(self, interaction: discord.Interaction) -> bool:
-            """Base admission always required; with ``require_admin`` the clicker must
-            also be an admin. Fails closed (logged once) when no admins are configured."""
-            if not super()._check_auth(interaction):
-                return False
-            if not self.require_admin:
-                return True
-            user = getattr(interaction, "user", None)
-            try:
-                uid = str(getattr(user, "id", "") or "")
-            except Exception:
-                uid = ""
-            if uid and uid in self.admin_user_ids:
-                return True
-            if not self.admin_user_ids:
-                logger.warning(
-                    "[Discord] require_admin_for_exec_approval is enabled but "
-                    "no admins are configured (allow_admin_from is empty) — "
-                    "exec approval buttons are disabled for everyone. Add "
-                    "admin user IDs under the discord platform's "
-                    "allow_admin_from, or disable the toggle."
-                )
-            return False
-
-        async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
-            """Resolve the approval via the gateway approval queue and update the embed."""
-            if not await self._gate(
-                interaction, resolved_msg=t("platform.discord.approval.already_resolved"),
-                unauth_msg=_unauthorized(),
-            ):
-                return
-            label = t(label_key)
-            self.resolved = True
-            # Unblock the waiting agent thread FIRST. A click after the approval
-            # wait timed out (count == 0) must not claim "Approved".
-            try:
-                from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
-                logger.info(
-                    "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
-                )
-            except Exception as exc:
-                logger.error("Failed to resolve gateway approval from button: %s", exc)
-                count = 0
-            if not count:
-                color = discord.Color.dark_grey()
-                label = t("platform.discord.approval.expired")
-            await self._finalize_embed(
-                interaction, color,
-                t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
-
-        # Decorator labels are placeholders; ``_localize_buttons`` in __init__ sets the real text.
-        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
-        async def allow_once(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "once", discord.Color.green(), "platform.discord.approval.resolved_once")
-
-        @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
-        async def allow_session(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "session", discord.Color.blue(), "platform.discord.approval.resolved_session")
-
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
-        async def allow_always(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "always", discord.Color.purple(), "platform.discord.approval.resolved_always")
-
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
-        async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "deny", discord.Color.red(), "platform.discord.approval.resolved_deny")
+    ExecApprovalView = create_exec_approval_view(_HermesView)
 
     class SlashConfirmView(_HermesView):
         """Approve Once / Always Approve / Cancel for slash-command confirmations (``/reload-mcp``,
@@ -7449,4 +6848,5 @@ def register(ctx) -> None:
         max_message_length=2000,
         emoji="🎮",
         allow_update_command=True,
+        reads_non_conversational_mark=True,
     )

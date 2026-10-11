@@ -65,6 +65,8 @@ matrix:
   require_mention: true           # 在房间中要求 @提及（默认：true）
   free_response_rooms:            # 免除提及要求的房间
     - "!abc123:matrix.org"
+  channel_prompts: {}             # 按内部房间 ID 配置的可选 Prompt
+  channel_skill_bindings: []      # 按内部房间 ID 配置的可选技能
   auto_thread: true               # 自动为响应创建线程（默认：true）
   dm_mention_threads: false       # 在 DM 中被 @提及时创建线程（默认：false）
 ```
@@ -379,6 +381,58 @@ MATRIX_ALLOWED_ROOMS="!abc123def456:matrix.example.org,!opsroom789:matrix.exampl
 :::tip
 查找房间 ID：在 Element 中，进入房间 → **设置** → **高级** → **内部房间 ID**（以 `!` 开头）。
 :::
+
+## 按房间设置 Prompt
+
+使用 `matrix.channel_prompts` 可为各个 Matrix 房间设置持续生效的指令。键必须是
+完整的内部房间 ID，而不是房间名称、别名、用户 ID 或 Matrix 线程事件 ID。
+Matrix 线程使用其所属房间的配置项。
+
+```yaml
+matrix:
+  channel_prompts:
+    "!abc123:matrix.org": |
+      You are a research assistant. Focus on academic sources,
+      citations, and concise synthesis.
+    "!def456:matrix.org": |
+      Code review mode. Be precise about edge cases and
+      performance implications.
+```
+
+在匹配房间的每一轮交互中，Hermes 都会临时注入对应 Prompt，不会将其写入
+会话历史记录。未匹配的房间以及空白或仅含空格的配置项不会应用任何 Prompt。
+
+Hermes 在 gateway 启动时读取 `channel_prompts`。修改配置项后，请重启 gateway。
+新的 Prompt 随后会应用于该房间中的所有对话，包括正在进行的对话。发送 `/new`
+可开始一个从第一条消息起就使用新 Prompt 的对话。Discord 和 Slack 的频道
+Prompt 行为相同。
+
+房间主题会单独作为不可信元数据出现在会话上下文中。Hermes 不会将主题文本
+视为指令。有人修改主题后，该房间中的对话会从下一条消息起看到新主题，Hermes
+会为每个这样的对话重建一次会话上下文。如果 Hermes 无法读取主题或房间名称
+（例如对 homeserver 的请求超时），它会保留上一次读取到的值。
+
+## 按房间绑定技能
+
+使用 `matrix.channel_skill_bindings` 可在特定房间的新会话开始时自动加载一个或
+多个已安装的技能：
+
+```yaml
+matrix:
+  channel_skill_bindings:
+    - id: "!abc123:matrix.org"
+      skills:
+        - arxiv
+        - writing-plans
+    - id: "!def456:matrix.org"
+      skill: code-review
+```
+
+绑定 ID 必须是完整的内部房间 ID，而不是房间名称、别名、用户 ID 或 Matrix
+线程事件 ID。Matrix 线程使用其所属房间的绑定。技能仅在会话开始时加载。更改
+绑定后，请先重启 gateway，再运行 `/new` 开始新会话。未匹配的房间和空绑定不会
+加载技能。
+你可以将技能绑定与 `channel_prompts` 结合使用，为房间添加每轮生效的指令。
 
 ## 故障排查
 

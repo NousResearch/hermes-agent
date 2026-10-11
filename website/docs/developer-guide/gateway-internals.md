@@ -24,6 +24,11 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | `gateway/platform_registry.py` | Adapter registry, factories, and deferred (lazy) loaders for bundled platform plugins |
 | `plugins/platforms/<name>/` | Bundled messaging adapters (most platforms: `adapter.py` + `plugin.yaml`) |
 | `gateway/platforms/` | Shared `base.py` plus legacy/direct adapters (Signal, API server, webhooks, …) |
+| `gateway/run_turn_execution.py` | Agent execution, proxy requests and streaming completion |
+| `gateway/platforms/base_lifecycle.py` | Shared processing hooks and outcome reactions |
+| `plugins/platforms/matrix/feedback.py` | Matrix processing feedback and read receipts |
+| `plugins/platforms/matrix/inbound_events.py` | Inbound event construction, dispatch and context admission |
+| `plugins/platforms/matrix/adapter_media.py` | Inbound Matrix media admission, download and caching |
 
 ## Architecture Overview
 
@@ -152,6 +157,7 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── slack/adapter.py        # Slack Socket Mode
 ├── whatsapp/adapter.py     # WhatsApp Business Cloud API
 ├── matrix/adapter.py       # Matrix via mautrix (optional E2EE)
+├── matrix/inbound_events.py # Inbound event construction and timestamps
 ├── mattermost/adapter.py   # Mattermost WebSocket API
 ├── email/adapter.py        # Email via IMAP/SMTP
 ├── sms/adapter.py          # SMS via Twilio
@@ -343,7 +349,7 @@ With `gateway.multiplex_profiles: true` one process serves the default profile p
 |---|---|
 | Routed turn | `gateway/run.py::_profile_runtime_scope(home)` via `run_turn.py::_profile_scope_for_source` |
 | Agent release / eviction (TTL, LRU, memory pressure) | `gateway/run_agent_cache.py::_run_release_in_profile_scope` |
-| Shutdown | `gateway/run_shutdown.py::_finalize_session` |
+| Shutdown | `gateway/run_shutdown.py::_finalize_session`; notices in `gateway/run_shutdown_notices.py`, process teardown in `gateway/run_shutdown_processes.py` |
 | Post-turn media delivery | `gateway/platforms/base.py::_media_delivery_scope` |
 | Cron tick | `cron/scheduler_provider.py::_profile_cron_scope(home)` (one ticker, profiles in sequence) |
 | Child processes (`hermes -p X` workers, relay turns, browser drivers) | `tools/environments/local.py::served_profile_child_env` |

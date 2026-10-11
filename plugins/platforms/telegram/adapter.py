@@ -13,6 +13,9 @@ import time
 from contextvars import ContextVar
 from datetime import datetime, timezone, UTC
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from plugins.platforms.telegram.inbound_context import TelegramInboundContextMixin
+from plugins.platforms.telegram.text_batching import TelegramTextBatchingMixin
+from plugins.platforms.telegram.delayed_delivery import TelegramDelayedDeliveryMixin
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -180,6 +183,7 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+from plugins.platforms.telegram.media_batching import TelegramMediaBatchingMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -511,7 +515,10 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+from plugins.platforms.telegram.approval import TelegramApprovalMixin
+
+
+class TelegramAdapter(TelegramApprovalMixin, TelegramMediaBatchingMixin, TelegramInboundContextMixin, TelegramHeldInboundMixin, TelegramTextBatchingMixin, TelegramDelayedDeliveryMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -700,7 +707,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
         self._model_picker_state: dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: dict[str, dict] = {}
-        self._approval_state: dict[int, str] = {}  # message_id → session_key
+        self._approval_state: dict[int, Any] = {}
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, str] = {}  # clarify_id → session_key
         # "important" (default): only final responses, approvals and slash confirmations notify;
@@ -3282,45 +3289,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             if getattr(self, attr, None) is not current_task:
                 setattr(self, attr, None)
 
-    async def _cancel_pending_delivery_tasks(self) -> None:
-        """Cancel every delayed-delivery task family before disconnect completes (media-group, photo-batch, text-batch flushes plus
-        polling recovery all sit behind ``asyncio.sleep()`` and would dispatch ``handle_message`` into a torn-down session)."""
-        current_task = asyncio.current_task()
-        pending_tasks = self._collect_live_tasks(
-            [
-                *self._media_group_tasks.values(), *self._pending_photo_batch_tasks.values(), *self._pending_text_batch_tasks.values(),
-                getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
-                # Hold-queue redispatch must be cancellable+awaitable on teardown too.
-                getattr(self, "_held_inbound_redispatch_task", None),
-           ],
-            current_task)
-        awaitable_tasks = [t for t in pending_tasks if asyncio.isfuture(t) or asyncio.iscoroutine(t)]
-        # Hold-queue redispatch must be cancellable+awaitable on teardown so it cannot dispatch
-        # handle_message into a torn-down session (same lifecycle rule teknium called out on #72037 for
-        # shielded flush dispatch).
-        for task in pending_tasks:
-            task.cancel()
-        if awaitable_tasks:
-            await asyncio.gather(*awaitable_tasks, return_exceptions=True)
-        # Salvage buffered inbound events before clearing maps — unless permanent fatal, where no
-        # reconnect can drain and hold would re-orphan them.
-        if self._is_permanent_fatal():
-            n_pending = len(self._pending_text_batches) + len(self._pending_photo_batches) + len(self._media_group_events)
-            if n_pending:
-                logger.warning("[Telegram] Non-retryable fatal teardown; discarding %d pending inbound batch(es)", n_pending)
-        else:
-            for events, where in (
-                (self._pending_text_batches, "text-batch-teardown"), (self._pending_photo_batches, "photo-batch-teardown"),
-                (self._media_group_events, "media-group-teardown")):
-                for event in list(events.values()):
-                    self._hold_inbound_event(event, where=where)
-        for d in (
-            self._media_group_tasks, self._media_group_events, self._pending_photo_batch_tasks,
-            self._pending_photo_batches, self._pending_text_batch_tasks, self._pending_text_batches):
-            d.clear()
-        self._clear_task_attrs_except(
-            current_task, "_polling_error_task", "_polling_progress_verifier_task", "_held_inbound_redispatch_task")
-
     async def _await_disconnect_step(self, awaitable, timeout: float, step: str) -> bool:
         """Await one disconnect step; detach on timeout so teardown advances (``wait_for`` would wait for a
         PTB close that swallows ``CancelledError`` on a half-dead socket). Abandoned tasks are observed.
@@ -4228,22 +4196,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # Shorter than the base wording on purpose: two buttons share a row on mobile.
         return {choice: t(f"platform.telegram.approval.action_{choice}") for choice in ("once", "session", "always", "deny")}
 
-    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
-        text ``/approve`` flow."""
-        def build():
-            # Short monotonic ids in callback_data map back to session_key.
-            import itertools
-            if not hasattr(self, "_approval_counter"):
-                self._approval_counter = itertools.count(1)
-            approval_id = next(self._approval_counter)
-            buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
-                       for label, choice, _ in prompt.actions]
-            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
-                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
-        return await self._send_prompt(
-            "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
-            thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -4715,49 +4667,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             await query.answer(text=resolved)
         return session_key
 
-    async def _handle_exec_approval_callback(self, query, data: str, cb: dict[str, Any]) -> None:
-        """``ea:<choice>:<approval_id>`` — resolve a pending exec approval."""
-        parts = data.split(":", 2)
-        if len(parts) != 3:
-            return
-        choice = parts[1]  # once, session, always, deny
-        try:
-            approval_id = int(parts[2])
-        except (ValueError, IndexError):
-            await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
-            return
-        session_key = await self._claim_callback_state(
-            query, cb, self._approval_state, approval_id, _unauthorized(),
-            _toast("platform.telegram.approval.toast_already_resolved"))
-        if not session_key:
-            return
-        user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
-        # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
-        # (count == 0) must NOT claim "Approved" — the command was already denied.
-        try:
-            # Rendering happens after so the message reflects what actually occurred: a tap that lands after
-            # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
-            # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
-            logger.info(
-                "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
-        except Exception as exc:
-            logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
-            count = 0
-        if count:
-            label_key = {"once": "resolved_once", "session": "resolved_session", "always": "resolved_always", "deny": "resolved_deny"}.get(
-                choice, "resolved_generic")
-            label = t(f"platform.telegram.approval.{label_key}")
-            edit_text = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
-        else:
-            label = t("platform.telegram.approval.expired")
-            edit_text = t("platform.telegram.approval.expired_detail", label=label)
-        await query.answer(text=label[:_TOAST_LIMIT])
-        await self._edit_md_quiet(query, edit_text)
-        # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
-        if count and cb["chat_id"] is not None:
-            self.resume_typing_for_chat(str(cb["chat_id"]))
 
     async def _handle_slash_confirm_callback(self, query, data: str, cb: dict[str, Any]) -> None:
         """``sc:<choice>:<confirm_id>`` — resolve a slash-command confirmation."""
@@ -6331,29 +6240,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 if notice else f"[The user attempted to send a {kind}{named} but it could not be downloaded.]",
             )
 
-    def _observe_unmentioned_group_message(
-        self, message: Message, msg_type: MessageType, update_id: Optional[int] = None, event: Optional[MessageEvent] = None) -> None:
-        """Append skipped group chatter to the target session without dispatching."""
-        store = getattr(self, "_session_store", None)
-        if not store:
-            return
-        adapter_name = getattr(self, "name", "telegram")
-        try:
-            event = event or self._build_message_event(message, msg_type, update_id=update_id)
-            session_entry = store.get_or_create_session(self._telegram_group_observe_shared_source(event.source))
-            entry = {
-                "role": "user", "content": self._telegram_group_observe_attributed_text(event),
-                "timestamp": datetime.now(tz=UTC).isoformat(), "observed": True}
-            if event.message_id:
-                entry["message_id"] = str(event.message_id)
-            self._accept_update()
-            store.append_to_transcript(session_entry.session_id, entry)
-            logger.info(
-                "[%s] Telegram group message observed (no bot trigger): chat=%s from=%s", adapter_name,
-                getattr(getattr(message, "chat", None), "id", "unknown"), event.source.user_id or "unknown")
-        except Exception as exc:
-            self._fail_update_preparation()
-            logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
 
     def _is_own_message(self, message: Message) -> bool:
         """True when sent by this bot itself (echoed getUpdates must not count as incoming unread)."""
@@ -6531,49 +6417,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     # -- Text message aggregation (handles Telegram client-side splits) --
 
-    def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped batching key; topic recovery first so DM-topic batches coalesce on the recovered lane."""
-        self._apply_topic_recovery(event)
-        return super()._text_batch_key(event)
 
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
-        if self._should_drop_delayed_delivery():
-            self._hold_inbound_event(event, where="text-enqueue")
-            return
-        super()._enqueue_text_event(event)
-        self._accept_update()
 
-    async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:
-        """Shared delayed-flush body: sleep, pop, hold if teardown started, else dispatch. A cancel after
-        the pop but before durable dispatch re-holds the event (never lose it)."""
-        current_task = asyncio.current_task()
-        event = None
-        try:
-            await asyncio.sleep(delay)
-            # Superseded flush (a newer chunk re-armed the timer while our sleep was already done):
-            # CancelledError only lands at the next await, so check synchronously before the pop.
-            owner = tasks.get(key)
-            if owner is not None and owner is not current_task:
-                return
-            event = pending.pop(key, None)
-            if not event:
-                return
-            if self._should_drop_delayed_delivery():
-                self._hold_inbound_event(event, where=f"{where}-flush")
-                event = None
-                return
-            if log_fn is not None:
-                log_fn(event)
-            await self.handle_message(event)
-            event = None
-        except asyncio.CancelledError:
-            if event is not None:
-                self._hold_inbound_event(event, where=f"{where}-flush-cancelled")
-            raise
-        finally:
-            if tasks.get(key) is current_task:
-                tasks.pop(key, None)
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         """Adaptive delay: near-split-point last chunk → long delay (continuation almost certain);
@@ -6588,61 +6433,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return min(self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S)
         return self._text_batch_delay_seconds
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Telegram keeps its own flush body: a cancel after the pop must HOLD the event and re-raise
-        (PTB already acked the update; the hold queue redispatches after reconnect) rather than shield
-        the dispatch — teardown must be able to stop a flush from reaching a torn-down session."""
-        await self._flush_buffered(
-            self._pending_text_batches, self._pending_text_batch_tasks, key,
-            self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
-            lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
 
     # -- Photo batching --
 
-    def _photo_batch_key(self, event: MessageEvent, msg: Message) -> str:
-        """Return a batching key for Telegram photos/albums."""
-        session_key = self._event_session_key(event)
-        media_group_id = getattr(msg, "media_group_id", None)
-        return f"{session_key}:album:{media_group_id}" if media_group_id else f"{session_key}:photo-burst"
 
-    async def _flush_photo_batch(self, batch_key: str) -> None:
-        """Send a buffered photo burst/album as a single MessageEvent."""
-        await self._flush_buffered(
-            self._pending_photo_batches, self._pending_photo_batch_tasks, batch_key, self._media_batch_delay_seconds, "photo",
-            lambda ev: logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(ev.media_urls)))
 
-    def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
-        """Merge ``event`` into ``pending[key]`` (media + caption) or seed it."""
-        existing = pending.get(key)
-        if existing is None:
-            pending[key] = event
-            return
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
-        if event.text:
-            existing.text = self._merge_caption(existing.text, event.text)
 
-    def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
-        """Merge photo events into a pending batch and schedule flush."""
-        if self._should_drop_delayed_delivery():
-            self._hold_inbound_event(event, where="photo-enqueue")
-            return
-        self._merge_into_pending(self._pending_photo_batches, batch_key, event)
-        self._accept_update()
-        prior_task = self._pending_photo_batch_tasks.get(batch_key)
-        if prior_task and not prior_task.done():
-            prior_task.cancel()
-        self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
 
-    async def _route_photo_event(self, msg, event: MessageEvent) -> None:
-        """Album items debounce on media_group_id; singles go through the photo burst batcher."""
-        if self._drop_unresolved(event):  # identity FIRST: the batch lane is derived from it
-            return
-        media_group_id = getattr(msg, "media_group_id", None)
-        if media_group_id:
-            await self._queue_media_group_event(str(media_group_id), event)
-        else:
-            self._enqueue_photo_event(self._photo_batch_key(event, msg), event)
 
     @staticmethod
     def _ext_from_path(file_path: Optional[str], candidates, default: str) -> str:
@@ -6693,163 +6490,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         event.message_type = mtype
         logger.info(log_fmt, path)
 
-    async def _cache_inbound_document(self, msg, event: MessageEvent) -> bool:
-        """Cache a document attachment (image → photo path, video, else generic media + text injection).
-        Returns True when the event was already dispatched/routed so the caller must return."""
-        doc = msg.document
-        try:
-            original_filename = doc.file_name or ""
-            ext = os.path.splitext(original_filename)[1].lower() if original_filename else ""
-            doc_mime = (doc.mime_type or "").lower()  # some clients send "IMAGE/PNG"
-            if not ext and doc_mime:
-                ext = _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, "")
-                if not ext:
-                    ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}.get(doc_mime, "")
-            display = original_filename or doc_mime or ext or 'unknown'
-            # Size check before the image branch so image documents can't bypass the limit.
-            if not doc.file_size or doc.file_size > self._max_doc_bytes:
-                logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
-                return await self._dispatch_with_text(
-                    event, f"The document is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
-            # Screenshots/photos sent as documents take the image cache + batching path.
-            if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
-                file_obj = await doc.get_file()
-                image_bytes = await file_obj.download_as_bytearray()
-                image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
-                try:
-                    cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext)
-                except ValueError as e:
-                    logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
-                    return await self._dispatch_with_text(event, f"Image document '{display}' could not be read as an image.")
-                self._set_cached_media(
-                    event, cached_path, doc_mime if doc_mime.startswith(
-                        "image/"
-                    ) else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg"),
-                    MessageType.PHOTO, "[Telegram] Cached user image-document at %s")
-                await self._route_photo_event(msg, event)
-                return True
-            if not ext and doc.mime_type:
-                ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}.get(doc.mime_type, "")
-            if not ext and doc.mime_type:
-                # .jpg and .jpeg both map to image/jpeg; keep the first ext seen.
-                image_mime_to_ext: dict[str, str] = {}
-                for _ext, _mime in SUPPORTED_IMAGE_DOCUMENT_TYPES.items():
-                    image_mime_to_ext.setdefault(_mime, _ext)
-                ext = image_mime_to_ext.get(doc.mime_type, "")
-            if ext in SUPPORTED_VIDEO_TYPES:
-                file_obj = await doc.get_file()
-                video_bytes = await file_obj.download_as_bytearray()
-                self._set_cached_media(
-                    event, await cache_video_from_bytes_async(bytes(video_bytes), ext=ext), SUPPORTED_VIDEO_TYPES[ext], MessageType.VIDEO,
-                    "[Telegram] Cached user video document at %s")
-                await self.handle_message(event)
-                return True
-            # Any file type is accepted (authorization is the gate, not the extension); unknown types get
-            # application/octet-stream. Image documents already returned above.
-            file_obj = await doc.get_file()
-            raw_bytes = bytes(await file_obj.download_as_bytearray())
-            from gateway.platforms.base import cache_media_bytes_async
-            cached = await cache_media_bytes_async(raw_bytes, filename=original_filename or f"document{ext or '.bin'}", mime_type=doc_mime)
-            if cached is None:
-                return await self._dispatch_with_text(event, f"Document '{display}' could not be cached.")
-            event.media_urls = [cached.path]
-            event.media_types = [cached.media_type]
-            event.media_text_inlined = [False]  # flipped below once the text is actually injected
-            if cached.kind == "audio":
-                event.message_type = MessageType.AUDIO
-            logger.info("[Telegram] Cached user %s at %s (%s)", cached.kind, cached.path, cached.media_type)
-            # Inject text-readable content (≤100 KB). Gate on extension/MIME, NOT a blind UTF-8 decode:
-            # PDF/zip/docx have decodable ASCII headers. Binary files are surfaced as a cached path only.
-            MAX_TEXT_INJECT_BYTES = 100 * 1024
-            _is_text = ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/")
-            if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
-                try:
-                    text_content = raw_bytes.decode("utf-8")
-                    display_name = re.sub(r'[^\w.\- ]', '_', original_filename or f"document{ext or '.txt'}")
-                    injection = f"[Content of {display_name}]:\n{text_content}"
-                    event.text = f"{injection}\n\n{event.text}" if event.text else injection
-                    event.media_text_inlined = [True]
-                except UnicodeDecodeError:
-                    pass  # binary — agent has the cached path
-        except Exception as e:
-            logger.warning("[Telegram] Failed to cache document: %s", _redact_telegram_error_text(e), exc_info=True)
-            await self._surface_media_cache_failure(msg, event, "attachment", e, display_name=getattr(doc, "file_name", None) or None)
-        return False
 
-    async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming media messages, downloading images to local cache."""
-        msg = update.message
-        if not msg:
-            return
-        if not self._is_user_authorized_from_message(msg):
-            self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
-            return
-        if not self._should_process_message(msg):
-            if self._should_observe_unmentioned_group_message(msg):
-                _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
-                if msg.caption:
-                    _event.text = self._clean_bot_trigger_text(expand_link_entities(msg))
-                await self._cache_observed_media(msg, _event)
-                self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
-            return
-        event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
-        if msg.caption:
-            from plugins.platforms.telegram.telegram_context import group_trigger_text
-            event.text = group_trigger_text(self, msg, expand_link_entities(msg))
-        # Stickers: _handle_sticker overwrites event.text with its vision description, so observe attribution must run after it.
-        if msg.sticker:
-            await self._handle_sticker(msg, event)
-            await self.handle_message(self._apply_telegram_group_observe_attribution(event))
-            return
-        event = self._apply_telegram_group_observe_attribution(event)
-        # Cache photo locally: Telegram's file URLs expire (~1 hour) before vision may run.
-        if msg.photo:
-            try:
-                file_obj = await msg.photo[-1].get_file()  # PhotoSize list sorted by size; largest last
-                image_bytes = await file_obj.download_as_bytearray()
-                ext = self._ext_from_path(file_obj.file_path, [".png", ".webp", ".gif", ".jpeg", ".jpg"], ".jpg")
-                self._set_cached_media(
-                    event, await cache_image_from_bytes_async(bytes(image_bytes), ext=ext), f"image/{ext.lstrip('.')}", event.message_type,
-                    "[Telegram] Cached user photo at %s")
-                await self._route_photo_event(msg, event)
-                return
-            except Exception as e:
-                logger.warning("[Telegram] Failed to cache photo: %s", _redact_telegram_error_text(e), exc_info=True)
-                await self._surface_media_cache_failure(msg, event, "photo", e)
-        # Voice/audio cached for STT transcription; video for vision.
-        if msg.voice:
-            if await self._cache_inbound_av(msg, event, msg.voice, "voice message", "voice", ".ogg", "audio/ogg"):
-                return
-        elif msg.audio:
-            if await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3"):
-                return
-        elif msg.video:
-            if await self._cache_inbound_av(msg, event, msg.video, "video file", "video", ".mp4", "video/mp4"):
-                return
-        elif msg.document and await self._cache_inbound_document(msg, event):
-            return
-        media_group_id = getattr(msg, "media_group_id", None)
-        if media_group_id:
-            await self._queue_media_group_event(str(media_group_id), event)
-            return
-        await self.handle_message(event)
 
-    async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
-        """Debounce album items (shared media_group_id) into one MessageEvent so the second image isn't
-        treated as a new message interrupting the first."""
-        if self._should_drop_delayed_delivery():
-            self._hold_inbound_event(event, where="media-group-enqueue")
-            return
-        self._merge_into_pending(self._media_group_events, media_group_id, event)
-        self._accept_update()
-        prior_task = self._media_group_tasks.get(media_group_id)
-        if prior_task:
-            prior_task.cancel()
-        self._media_group_tasks[media_group_id] = asyncio.create_task(self._flush_media_group_event(media_group_id))
 
-    async def _flush_media_group_event(self, media_group_id: str) -> None:
-        await self._flush_buffered(
-            self._media_group_events, self._media_group_tasks, media_group_id, self.MEDIA_GROUP_WAIT_SECONDS, "media-group")
 
     async def _handle_sticker(self, msg: Message, event: MessageEvent) -> None:
         """Describe a sticker via vision, cached by file_unique_id; animated/video stickers get an emoji placeholder."""
@@ -7064,45 +6707,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 reply_to_text = None
         return reply_to_id, reply_to_text
 
-    def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:
-        """Build a MessageEvent from a Telegram message. ``update_id`` lets ``/restart`` record the
-        triggering offset so the new gateway process advances past it."""
-        chat = message.chat
-        user = message.from_user
-        telegram_chat_type = self._chat_type_str(chat)  # str() so PTB enums and plain-string mocks both work
-        chat_type = "group" if telegram_chat_type in {"group", "supergroup"} else ("channel" if telegram_chat_type == "channel" else "dm")
-        # Shared normalizer so gating and session routing agree (reply-UI anchors dropped, General → "1").
-        # Resolve routable thread id for DM topics and forum group topics via the shared normalizer, so
-        # gating and session routing agree on one value. Only real topic/forum messages keep a thread id;
-        # ordinary reply-UI anchors are dropped (they are not durable session threads and sends against them
-        # hit 'Message thread not found', #3206), while forum General-topic messages
-        # (message_thread_id=None) normalize to the General-topic id so replies route back to General
-        # (#22423).
-        thread_id_str = self._effective_message_thread_id(message)
-        chat_topic, topic_skill = self._resolve_topic_binding(message, chat_type, thread_id_str)
-        has_full_name = hasattr(chat, "full_name")
-        if user:
-            user_name = user.full_name
-        elif has_full_name and chat_type == "dm":
-            user_name = chat.full_name
-        else:
-            user_name = chat.title if chat_type == "channel" else None
-        source = self.build_source(
-            chat_id=str(chat.id), chat_name=chat.title or (chat.full_name if has_full_name else None), chat_type=chat_type,
-            user_id=(str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None)),
-            user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
-            is_bot=bool(getattr(user, "is_bot", False)) if user else False)
-        reply_to_id, reply_to_text = self._reply_context(message)
-        from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
-        from plugins.platforms.telegram.telegram_context import group_identity_prompt
-        _chat_id_str = str(chat.id)
-        channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
-        return MessageEvent(
-            text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
-            message_id=str(message.message_id), platform_update_id=update_id,
-            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
-            channel_prompt=group_identity_prompt(self, message, channel_prompt),
-            timestamp=message.date)
 
     # -- Message reactions (processing lifecycle) --
 

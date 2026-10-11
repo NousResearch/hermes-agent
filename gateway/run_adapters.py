@@ -70,6 +70,36 @@ UNRESOLVED_PROFILE_HOME = _UnresolvedProfileHome()
 class GatewayAdapterLifecycleMixin:
     """Adapter lifecycle: connect/teardown, fatal recovery, reconnect watcher, multiplex profiles."""
 
+    if TYPE_CHECKING:
+        _withdraw_queued_followups = GatewayRunner._withdraw_queued_followups
+
+    _startup_connect_task: Optional[asyncio.Task] = None
+    _startup_connect_cleanup_started: bool = False
+
+    async def _cancel_startup_connect_task(self) -> None:
+        task = self._startup_connect_task
+        if task is None:
+            return
+        if (
+            not self._startup_connect_cleanup_started
+            and not task.done()
+            and not task.cancelling()
+        ):
+            task.cancel()
+        if not await self._await_adapter_cleanup_with_timeout(
+            asyncio.gather(task, return_exceptions=True),
+            self._adapter_disconnect_timeout_secs(),
+        ):
+            logger.warning("Startup adapter cleanup timed out during shutdown")
+            return
+        if task.cancelled() or task.exception() is not None:
+            return
+        result = task.result()
+        if isinstance(result, list):
+            for item in result:
+                if not isinstance(item, Exception):
+                    await self._bounded_adapter_teardown(item[1], item[0])
+
     @staticmethod
     async def _wait_or_detach(task: asyncio.Future, timeout: float) -> bool:
         """Wait up to ``timeout`` for ``task``; on deadline (or our own cancellation) detach it. Not
@@ -118,6 +148,11 @@ class GatewayAdapterLifecycleMixin:
         timeout = self._adapter_disconnect_timeout_secs()
         suffix = f" (profile: {profile})" if profile else ""
         started_at = time.monotonic()
+        # Started messages that are still open complete as CANCELLED after the tasks are cancelled:
+        # cancel_background_tasks completes them last, and this second step, under a bound of its
+        # own, completes whatever that step did not reach, for example because it overran its bound
+        # (completing twice is a no-op). The worst case per adapter is three timeouts: cancelling,
+        # completing started messages, disconnecting.
         try:
             if not await self._await_adapter_cleanup_with_timeout(adapter.cancel_background_tasks(), timeout):
                 logger.warning(
@@ -126,6 +161,15 @@ class GatewayAdapterLifecycleMixin:
                 )
         except Exception as e:
             logger.debug("✗ %s background-task cancel error%s: %s", platform.value, suffix, e)
+        try:
+            if isinstance(adapter, BasePlatformAdapter) and not await self._await_adapter_cleanup_with_timeout(
+                    adapter._complete_started(), timeout):
+                logger.warning(
+                    "✗ %s started-message completion timed out after %.1fs - forcing continue%s",
+                    platform.value, timeout, suffix,
+                )
+        except Exception as e:
+            logger.debug("✗ %s started-message completion error%s: %s", platform.value, suffix, e)
         with _log_suppressed(
             logging.ERROR, "✗ %s disconnect error after %.2fs%s: %s",
             platform.value, time.monotonic() - started_at, suffix,
@@ -203,8 +247,15 @@ class GatewayAdapterLifecycleMixin:
         if timeout <= 0:
             return await adapter.connect(is_reconnect=is_reconnect)
         task = asyncio.ensure_future(adapter.connect(is_reconnect=is_reconnect))
-        if await self._wait_or_detach(task, timeout):
-            return bool(await task)
+        try:
+            if await self._wait_or_detach(task, timeout):
+                return bool(await task)
+        except asyncio.CancelledError:
+            await self._await_adapter_cleanup_with_timeout(
+                asyncio.gather(task, return_exceptions=True),
+                self._adapter_disconnect_timeout_secs(),
+            )
+            raise
         raise TimeoutError(f"{platform.value} connect timed out after {timeout:g}s")
 
     async def _connect_initial_adapter_with_timeout(self, adapter, platform) -> bool:
@@ -1326,8 +1377,16 @@ class GatewayAdapterLifecycleMixin:
                     success = await self._connect_initial_adapter_with_timeout(adapter, platform)
                 if not success:
                     logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
+            except asyncio.CancelledError:
+                with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                    await self._bounded_adapter_teardown(
+                        adapter, platform, profile=profile_name
+                    )
+                raise
             except Exception as e:
-                logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
+                logger.error(
+                    "✗ %s error (profile: %s): %s", platform.value, profile_name, e
+                )
                 success = False
             if not success:
                 await self._safe_adapter_disconnect(adapter, platform)
@@ -1356,6 +1415,7 @@ class GatewayAdapterLifecycleMixin:
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
         adapter.set_busy_session_handler(busy_session_handler or self._primary_busy_session_handler())
+        adapter.set_queued_withdrawal_handler(self._withdraw_queued_followups)
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)

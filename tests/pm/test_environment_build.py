@@ -53,6 +53,28 @@ def test_prune_site_pth_keeps_only_load_bearing_pth(tmp_path):
     assert sorted(p.name for p in posix_site.glob("*.pth")) == ["pywin32.pth"]
 
 
+def test_sync_retries_windows_missing_data_cleanup_race(tmp_path, monkeypatch):
+    from pm import environment
+
+    calls = []
+    failures = [
+        subprocess.CompletedProcess(["uv", "sync"], 1, "", "failed to remove directory x.data (os error 2)"),
+        subprocess.CompletedProcess(["uv", "sync"], 0, "", ""),
+    ]
+
+    env = environment.PythonEnvironment(
+        uv=tmp_path / "uv", python=tmp_path / "python",
+        destination=tmp_path / "venv", cache=tmp_path / "cache", env={},
+    )
+    monkeypatch.setattr(environment.sys, "platform", "win32")
+    monkeypatch.setattr(environment.PythonEnvironment, "_run",
+                        lambda _self, args, **kwargs: calls.append(args) or failures.pop(0))
+
+    env.sync(tmp_path)
+
+    assert calls == [["sync", "--frozen", "--all-packages", "--python", str(tmp_path / "python"), "--compile-bytecode"]] * 2
+
+
 @pytest.fixture
 def locked_project(tmp_path):
     uv = shutil.which("uv")

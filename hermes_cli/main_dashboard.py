@@ -261,14 +261,25 @@ def _launchd_plist_dirs() -> list[tuple[str, Path]]:
     ]
 
 
+def _hermes_wrapper_argv(argv: list[str]) -> bool:
+    """True when *argv* wraps the published launcher the way a launchd job legitimately does —
+    ``/bin/sh <home>/.hermes/bin/dashboard-serve`` or ``/bin/sh -c 'exec …/.hermes/bin/hermes
+    dashboard …'`` — a shape ``_parse_dashboard_runtime``'s ``hermes dashboard`` substring cannot
+    recognize, because the wrapper (not the launcher) is argv[0]. launchd jobs need the wrapper to
+    prep the versioned tool PATH the managed toolchain lives in. See #133272."""
+    return any(".hermes/bin/" in str(a) for a in argv)
+
+
 def _loaded_launchd_backend_jobs(
     plist_dirs: list[tuple[str, Path]] | None = None,
 ) -> list[tuple[str, str, list[str], int | None]]:
     """``(domain, label, program_arguments, live_pid)`` for every LOADED launchd job whose
     ``ProgramArguments`` is a ``hermes dashboard`` / ``hermes serve`` backend. macOS only (empty
-    elsewhere). Reads the plists (unreadable/malformed ones are skipped) and asks ``launchctl print``
-    per candidate label — a job that is not loaded in any domain is not returned, so an operator's
-    stale plist never claims a process."""
+    elsewhere). Reads the plists and asks ``launchctl print`` per candidate label — a job that is
+    not loaded in any domain is not returned, so an operator's stale plist never claims a process.
+    A plist plistlib cannot parse is kept as a candidate under its file-name label with no argv:
+    launchd accepts XML plistlib rejects (#133272), and the live-PID arm of
+    ``_launchd_job_owning_backend`` claims the process without needing the argv."""
     if sys.platform != "darwin":
         return []
     import plistlib
@@ -286,21 +297,28 @@ def _loaded_launchd_backend_jobs(
             try:
                 with open(plist_path, "rb") as f:
                     data = plistlib.load(f)
+            except OSError:
+                continue
             # ExpatError is NOT a ValueError: plistlib propagates it unwrapped for
-            # XML that is not well-formed (e.g. a hand-edited plist with a raw
-            # `&` in `ProgramArguments`), and one such operator file must skip —
-            # not abort — the whole post-pull cleanup scan.
-            except (OSError, ValueError, plistlib.InvalidFileException, ExpatError):
-                continue
-            if not isinstance(data, dict):
-                continue
-            label = str(data.get("Label") or "").strip()
-            args = data.get("ProgramArguments")
-            if not label or not isinstance(args, list) or not args:
-                continue
-            argv = [str(a) for a in args]
-            if _parse_dashboard_runtime(shlex.join(argv)) is None:
-                continue
+            # XML that is not well-formed (e.g. a hand-edited plist with a raw `&`
+            # in `ProgramArguments`, or a `--` inside a comment), and one such
+            # operator file must neither abort the whole post-pull cleanup scan
+            # (#114142) nor silently drop a job launchd has loaded (#133272) — the
+            # update would then book a supervised backend as ``manual-serve`` and
+            # respawn a detached copy into the job's own port. launchd's file-name
+            # convention keeps the label; the probe below rejects unloaded labels.
+            except (ValueError, plistlib.InvalidFileException, ExpatError):
+                label, argv = plist_path.stem, []
+            else:
+                if not isinstance(data, dict):
+                    continue
+                label = str(data.get("Label") or "").strip()
+                args = data.get("ProgramArguments")
+                if not label or not isinstance(args, list) or not args:
+                    continue
+                argv = [str(a) for a in args]
+                if _parse_dashboard_runtime(shlex.join(argv)) is None and not _hermes_wrapper_argv(argv):
+                    continue
             domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
             for domain in domains:
                 try:

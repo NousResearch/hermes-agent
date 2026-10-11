@@ -17,7 +17,7 @@ from agent.session_activity import (
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
+    _BRANCH_CHILD_SQL, _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
@@ -37,6 +37,22 @@ def workspace_key(row: dict[str, Any]) -> Optional[str]:
 
 def _delegate_from_json(col: str = "model_config") -> str:
     return _sql_json_extract(col, "$._delegate_from")
+
+
+# A branch/reset child is a user-visible conversation in its own right, so the delegate
+# marker must not override that classification: a gateway chat adopted as a routing peer
+# (``record_gateway_session_peer`` stamps ``source``/``session_key``) keeps whatever marker
+# its row was minted with, and a presence-only test then hides the LIVE conversation from
+# every picker — the sidebar row and the ``/api/status`` active-session count both read
+# this WHERE.  Delegation therefore excludes only rows that are NOT already a branch/reset
+# continuation, which still keeps orphaned delegate runs (``parent_session_id`` NULL, no
+# continuation edge) and live sub-agent runs out.  Shaped exactly like
+# ``_non_continuation_child_sql``: the marker is a fork signal, never a reason to drop a
+# certified continuation.
+_DELEGATE_HIDES_CHILD_SQL = (
+    f"({_BRANCH_CHILD_SQL.format(a='s')}"
+    f" OR {_RESET_CHILD_SQL.format(a='s')}"
+    f" OR {_delegate_from_json('s.model_config')} IS NULL)")
 
 
 # _merge_model_config_json's "no such row" result — distinct from the legal None
@@ -124,7 +140,7 @@ def _session_filter_where(
     if exclude_children and include_subagents:
         where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
     elif exclude_children:
-        where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
+        where += [_LISTABLE_CHILD_SQL, _DELEGATE_HIDES_CHILD_SQL]
     # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
     # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
     # stable markers plus legacy-compatible parent metadata. Branch sessions are identified two ways, OR'd

@@ -309,12 +309,11 @@ def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
 
 
 def _auth_store_has_provider(*keys: str) -> bool:
-    """True when ``auth.json`` has a ``providers`` entry under any of *keys*."""
+    """Use the runtime's profile-first, global-fallback provider lookup."""
     try:
-        from hermes_cli.auth import _load_auth_store
+        from hermes_cli.auth import _load_auth_store, _load_provider_state
         store = _load_auth_store()
-        providers_store = store.get("providers", {})
-        return bool(store and any(k in providers_store for k in keys))
+        return any(_load_provider_state(store, key) is not None for key in keys)
     except Exception as exc:
         logger.debug("Auth store check failed for %s: %s", keys[0] if keys else "", exc)
         return False

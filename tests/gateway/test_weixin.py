@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import time
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -277,6 +278,36 @@ class TestWeixinChunkDelivery:
         # rest of the current chunk and follow-up sends fail fast.
         assert send_message_mock.await_count == 2
         assert sleep_mock.await_count == 1
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_cooldown_short_circuit_carries_retry_after(self, send_message_mock):
+        """The rate-limited failure surfaces the breaker's remaining cooldown as ``retry_after``
+        so ``_send_with_retry`` sleeps the advertised delay once instead of tight-looping its own
+        backoff into a still-open breaker (#77836 field evidence: 7s of 2s/4s retries against a
+        12.9s cooldown, with the server reporting the exact remaining time on every attempt)."""
+        adapter = self._connected_adapter()
+        adapter._rate_limit_circuit_until = time.monotonic() + 12.9
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is False
+        assert "cooldown" in (result.error or "")
+        assert result.retry_after is not None
+        assert 12.0 <= result.retry_after <= 12.9
+        # The breaker short-circuits before any request is made.
+        send_message_mock.assert_not_awaited()
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_non_rate_limit_failure_carries_no_retry_after(self, send_message_mock):
+        """A plain iLink failure must not claim a server-advertised delay: the retry loop would
+        sleep for nothing."""
+        adapter = self._connected_adapter()
+        send_message_mock.side_effect = RuntimeError("iLink sendmessage error: ret=5 errcode=5 errmsg=boom")
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is False
+        assert result.retry_after is None
 
     @pytest.mark.parametrize("error_field", ["ret", "errcode"])
     @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)

@@ -163,9 +163,15 @@ _BG_DELETE_ACTIONS = ("replace", "remove")
 
 
 def destructive_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """The replace/remove ops of a staged memory payload, single-op or batch shape."""
+    """The replace/remove ops of a staged memory payload, single-op or batch shape.
+
+    Non-dict entries (a bare string/null emitted by a provider that loosely
+    serializes the batch shape) can never be destructive ops, so they are
+    skipped rather than raising AttributeError on ``.get`` and killing the
+    caller — e.g. an approval replay reading a loosely-staged payload."""
     ops = (payload.get("operations") or []) if payload.get("action") == "batch" else [payload]
-    return [op for op in ops if (op or {}).get("action") in _BG_DELETE_ACTIONS]
+    return [op for op in ops
+            if isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS]
 
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
@@ -253,6 +259,14 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     if operations:
         if not isinstance(operations, list):
             return _invalid("operations must be a list of {action, content?, old_text?} objects.")
+        if not all(isinstance(op, dict) for op in operations):
+            # A loose provider can serialize an entry as a bare string/null. Every
+            # downstream batch path assumes a dict (_batch_op_line, destructive_ops,
+            # store.apply_batch); reject up front with an actionable message instead
+            # of raising AttributeError mid-turn. An empty entry is caught here too.
+            return _invalid(
+                "operations entries must be {action, content?, old_text?} objects "
+                "(got a non-object entry; send one object per operation).")
         denied = _background_delete_gate(store, action, operations, target)
         if denied is not None:
             return "rejected", denied

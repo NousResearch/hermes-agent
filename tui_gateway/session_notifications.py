@@ -491,7 +491,9 @@ def _background_notifications_off(session: dict) -> bool:
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
-    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    from tools.async_delegation import (
+        claim_event_delivery, complete_event_delivery, release_event_delivery, return_completion_offer,
+    )
     try:
         claim = claim_event_delivery(evt, "tui-poller")
     except Exception as exc:  # shared ledger busy/unreadable: the durable row stays pending and replays
@@ -502,6 +504,9 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # the target. No turn will run, and nothing else clears ``running``: a busy session is exempt
         # from the reaper, keeps its lease, and never reaches its bot mailbox again.
         _notif_release_turn(session)
+        # This dequeued copy is gone, so let the orphan sweep offer the pending row again.
+        # A competing durable claim still gates replay until it expires; never release it here.
+        return_completion_offer(evt)
         return
     evt_type = evt.get("type")
     kwargs: dict = {}

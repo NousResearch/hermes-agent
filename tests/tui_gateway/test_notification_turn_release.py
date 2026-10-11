@@ -133,3 +133,68 @@ def test_the_poller_thread_survives_a_dispatch_that_raises(monkeypatch):
 
     assert not worker.is_alive()
     assert handled == [1, 1], "the second event must still be dispatched after the first one raised"
+
+
+@pytest.mark.parametrize("outcome", ["sqlite-error", "competing-claim", "delivered"])
+def test_discarded_completion_offer_recovers_without_stealing_a_claim(tmp_path, monkeypatch, outcome):
+    """A dequeued orphan stays retryable after failed admission, behind any live durable claim."""
+    from tools import async_delegation as ad
+    from tests.tools.test_async_delegation_orphan_sweep import _Home, _orphan, _row, _tui_session
+
+    ad._reset_for_tests()
+    home = tmp_path / "owner-home"
+    delegation_id = _orphan(home)
+    ready_at = _row(home, delegation_id)["updated_at"] + ad._ORPHAN_STALE_S + 1
+    events = queue.Queue()
+    started = _no_turn(monkeypatch)
+    session = _tui_session("bot-chat", home)
+    try:
+        with _Home(home):
+            assert ad.sweep_orphaned_completions(events, now=ready_at) == 1
+            event = events.get_nowait()
+            competing_claim = None
+            if outcome == "sqlite-error":
+                # Real SQLite failure at the claim write; the fault is gone before recovery.
+                with ad._transaction() as conn:
+                    conn.execute("""CREATE TRIGGER reject_claim BEFORE UPDATE OF delivery_claim
+                                    ON async_delegations WHEN NEW.delivery_claim IS NOT NULL
+                                    BEGIN SELECT RAISE(ABORT, 'claim storage failure'); END""")
+            elif outcome == "competing-claim":
+                competing_claim = ad.claim_event_delivery(event, "other-consumer")
+                assert competing_claim
+
+            assert server._notif_claim_turn(session)
+            server._notif_dispatch_event("owner", session, event, "completion")
+            row = _row(home, delegation_id)
+            if outcome == "delivered":
+                assert len(started) == 1
+                assert row["delivery_state"] == "delivered"
+            else:
+                assert session["running"] is False and started == []
+                assert row["delivery_state"] == "pending"
+                assert row["delivery_claim"] == competing_claim
+                if outcome == "sqlite-error":
+                    with ad._transaction() as conn:
+                        conn.execute("DROP TRIGGER reject_claim")
+                    retry_at = ready_at + 60
+                else:
+                    # Returning the in-memory offer must not release another consumer's lease.
+                    assert ad._ORPHAN_STALE_S + 1 < ad._CLAIM_LEASE_S
+                    unexpired_at = row["delivery_claimed_at"] + ad._ORPHAN_STALE_S + 1
+                    assert ad.sweep_orphaned_completions(events, now=unexpired_at) == 0
+                    assert _row(home, delegation_id)["delivery_claim"] == competing_claim
+                    retry_at = row["delivery_claimed_at"] + ad._CLAIM_LEASE_S + ad._ORPHAN_STALE_S + 1
+                    # Expire the competing lease as if its process stopped without acknowledging.
+                    from tests.tools.test_async_delegation_orphan_sweep import _set
+                    _set(home, delegation_id, delivery_claimed_at=row["delivery_claimed_at"] - ad._CLAIM_LEASE_S - 1)
+                assert ad.sweep_orphaned_completions(events, now=retry_at) == 1
+                replay = events.get_nowait()
+                assert replay["delegation_id"] == delegation_id
+                assert server._notif_claim_turn(session)
+                server._notif_dispatch_event("owner", session, replay, "completion")
+                assert len(started) == 1
+                assert _row(home, delegation_id)["delivery_state"] == "delivered"
+            assert ad.sweep_orphaned_completions(events, now=ready_at + 600) == 0
+            assert events.empty()
+    finally:
+        ad._reset_for_tests()

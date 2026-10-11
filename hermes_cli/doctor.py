@@ -58,6 +58,7 @@ from hermes_cli.doctor_state import (
     _check_skills_hub,
     _check_state_db,
 )
+from hermes_cli.doctor_security import _check_state_permissions
 
 _PROVIDER_ENV_HINTS = (
     "DEEPINFRA_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
@@ -115,6 +116,7 @@ DOCTOR_CHECKS = (
     ('Required Packages', _check_required_packages), (None, _check_web_dashboard_import),
     ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),
+    ('State File Permissions', _check_state_permissions),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
     ('Auth Providers', _check_auth_providers),

@@ -196,6 +196,14 @@ local MCP servers from the catalog (targets with `mcp: true`), so it is
 present whether or not you are signed in; only the managed-connector actions
 need the sign-in.
 
+You can link more than one account of the same app, each with its own name
+(see [Multiple connector accounts](./tool-gateway.md#multiple-connector-accounts)).
+Once a connector has two or more active accounts, each of its tools takes a
+`connector_alias` argument whose allowed values are your account names, and the
+tool description lists them (`Accounts: home, work.`), so `tool_search` and
+`tool_describe` show them. Every connector result entry carries `account`: the
+name the call ran under, or `null`.
+
 The desktop backend's account-list and disconnect APIs use the Portal's
 account-management service, including its organization membership checks and
 disconnect audit. An unavailable Portal does not fall back to direct gateway

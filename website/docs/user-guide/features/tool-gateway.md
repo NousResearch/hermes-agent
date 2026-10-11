@@ -119,6 +119,28 @@ The **Nous Subscription** row has one model picker that lists every model once. 
 
 Model ids, speeds, and prices live on the [Image Generation](./image-generation.md#supported-models) page. The set evolves — `hermes tools` → Image Generation shows the current live list.
 
+## Multiple connector accounts
+
+Connectors are hosted apps such as Gmail that the agent reaches through the Nous tool gateway (see [Tool Search → Connectors](./tool-search.md#connectors-remote-tools)). You can connect two or more accounts of one app, for example a Gmail `home` and a Gmail `work`.
+
+- **Names.** Each account has a name of 1 to 32 characters: lowercase letters, digits or `-`, starting with a letter or digit. An unnamed account shows the app's own account label.
+- **No default.** No account is the default. When you ask the agent to use an app with several named accounts, it must say which one.
+- **The agent names new accounts.** It picks the name from what you said and asks if it is unsure. It then tells you the name it chose, for example "Hermes named this Gmail account work. Rename it anytime." The desktop app, the TUI and the classic CLI show that line.
+- **Rename.** Rename an account anytime, or ask the agent to. Renaming needs a Nous Portal version that supports it; until then you see "This Nous Portal cannot rename connector accounts yet."
+- **Reconnect deletes nothing.** Reconnecting a broken account replaces it with a new one under the same name. The old one is kept as retired (disabled). Retired accounts stay listed but folded away.
+- **Remove is yours.** You remove an account yourself, one at a time. The agent never removes one.
+
+Once a connector has two or more active accounts, every tool of that connector takes a `connector_alias` field whose allowed values are your account names. The field is required when every active account is named and optional when some are unnamed.
+
+If the agent leaves it out when several accounts are named, or names one that does not exist, the call fails and the error lists the valid names. Every result reports the `account` it ran under.
+
+Manage accounts in any of these places:
+
+- The desktop app's **Connectors** page.
+- The TUI: `/connectors` (see [Slash Commands](../../reference/slash-commands.md#tools--skills)).
+- The CLI: `hermes connectors` (see [CLI Commands](../../reference/cli-commands.md#hermes-connectors)).
+- [Nous Portal](https://portal.nousresearch.com).
+
 ---
 
 ## Configuration reference

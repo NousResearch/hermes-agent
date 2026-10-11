@@ -54,11 +54,26 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _copilot_sources_suppressed() -> bool:
+    """True when `hermes auth remove copilot` has turned every source off.
+
+    The gh CLI login stays. This only stops Hermes from borrowing it.
+    """
+    try:
+        from hermes_cli.auth import is_source_suppressed
+    except Exception:
+        return False
+    sources = ["gh_cli", *(f"env:{name}" for name in COPILOT_ENV_VARS)]
+    return all(is_source_suppressed("copilot", source) for source in sources)
+
+
 def resolve_copilot_token() -> tuple[str, str]:
     """Resolve a GitHub token suitable for Copilot API use → (token, source); ("", "") if none.
 
     Raises ValueError if only a classic PAT is available.
     """
+    if _copilot_sources_suppressed():
+        return "", ""
     any_env_var_set = False
     for env_var in COPILOT_ENV_VARS:
         val = os.getenv(env_var, "").strip()

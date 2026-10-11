@@ -92,6 +92,36 @@ def _skill_line(item: dict) -> str:
     return f"    - {nm}: {desc}" if desc else f"    - {nm}"
 
 
+def _usage_model_label(agent) -> str:
+    """Model row for ``/usage``: the requested name, plus the served member and provider when a
+    proxy combo actually routed elsewhere. On a direct model this is exactly ``str(agent.model)``,
+    so existing output is unchanged; only a real mismatch adds the ``->member (provider)`` suffix.
+
+    Reads both names from ``agent.served_model.result_model_fields`` — the same helper the gateway
+    footer is fed from — but NOT the CLI status bar: ``_get_status_bar_snapshot`` reads
+    ``agent.model`` directly, and the footer consumes the per-turn dict snapshotted by
+    ``turn_finalizer`` while this reads a live agent outside a turn. The three surfaces can
+    therefore differ; they agree only while a turn is current. That helper also reports Hermes'
+    own primary -> active fallback as (requested=primary, served=active), which is why the
+    requested name comes from it rather than from ``agent.model``.
+    """
+    requested = str(getattr(agent, "model", "") or "")
+    served = None
+    try:
+        from agent.served_model import result_model_fields
+
+        fields = result_model_fields(agent)
+        served = fields.get("served_model")
+        requested = str(fields.get("requested_model") or requested or "")
+    except Exception:
+        served = None
+    served = str(served or "").strip()
+    if not served or served == requested:
+        return requested
+    provider = str(getattr(agent, "provider", "") or "").strip()
+    return f"{requested} ->{served} ({provider})" if provider else f"{requested} ->{served}"
+
+
 class CLIInfoMixin:
     """Informational views and reload flows for the interactive CLI: banner, help, tools, usage,
     insights, MCP/skills reload, bang shell."""
@@ -742,7 +772,7 @@ class CLIInfoMixin:
 
         print(f"  {t('cli.usage.header_session')}")
         print(f"  {'─' * 40}")
-        _label_row("cli.usage.label_model", str(agent.model))
+        _label_row("cli.usage.label_model", _usage_model_label(agent))
         _label_row("cli.usage.label_input_tokens", f"{input_tokens:>10,}")
         _label_row("cli.usage.label_output_tokens", f"{output_tokens:>10,}")
         if reasoning_tokens:

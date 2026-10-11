@@ -274,7 +274,7 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> dict[str, 
         status != previous_status
         or status in TERMINAL_STATUSES
         or bool(field_names & {
-            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
+            "output", "error", "usage", "run_usage", "pending_steer", "session_id", "shutdown_requested_at"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
@@ -962,9 +962,39 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
                 interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
+        baseline = _run_usage(agent)
+        baseline_calls = getattr(agent, "session_api_calls", 0)
+        metered_calls = 0
+        last_total = 0
+        # Usage arrives after provider calls, while run_conversation is still active.
+        # Publish a snapshot on the event loop, not from the executor thread.
+        def _usage_cb() -> None:
+            nonlocal metered_calls, last_total
+            cumulative = _run_usage(agent)
+            if any(cumulative[k] < baseline[k] for k in baseline):
+                return  # A reset is not a valid run-correlated snapshot.
+            snapshot = {k: cumulative[k] - baseline[k] for k in baseline}
+            if snapshot["total_tokens"] <= last_total:
+                return  # A missing/duplicate call is not metered.
+            last_total = snapshot["total_tokens"]
+            metered_calls += 1
+            def _publish() -> None:
+                current = self._run_statuses.get(run_id, {})
+                if current.get("status") in TERMINAL_STATUSES:
+                    return
+                self._set_run_status(run_id, current.get("status", "running"),
+                                     run_usage=snapshot, run_usage_final=False)
+            loop.call_soon_threadsafe(_publish)
+        agent._run_usage_callback = _usage_cb
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-        result, usage, served_runtime = await _submit_api_worker(
+        result, cumulative_usage, served_runtime = await _submit_api_worker(
             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+        valid_delta = all(cumulative_usage[k] >= baseline[k] for k in baseline)
+        usage = {k: cumulative_usage[k] - baseline[k] for k in baseline} if valid_delta else {}
+        calls = getattr(agent, "session_api_calls", None)
+        usage_final = (valid_delta and isinstance(calls, int) and isinstance(baseline_calls, int)
+                       and metered_calls > 0 and calls - baseline_calls == metered_calls
+                       and usage["total_tokens"] > 0)
         # Publish request metrics (daily counters + latency) with each completed run (#52323).
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
@@ -983,7 +1013,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 runtime=served_runtime, requested_runtime=requested if any(requested.values()) else None,
                 route_source=("model_routes" if run.agent_kwargs.get("route")
                               else "raw_request" if any(requested.values()) else "global"))
-            _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
+            _finish(status, fields, output=result.get("final_response", ""), usage=cumulative_usage,
+                    run_usage=usage, run_usage_final=usage_final, runtime=served_runtime)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise

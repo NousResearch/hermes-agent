@@ -212,8 +212,12 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome, python = '
         })
       ).pop() || ''
   } catch (cause) {
+    // The exec failing says nothing about the marker — the probe never ran.
+    // Still fail-closed, but as the transient transport error it is, matching
+    // the POSIX gate: an 'update-in-progress' kind here reports a dead
+    // transport as an update that is not happening (#134131).
     const error: any = new Error('Could not prove that the remote Hermes install is clear for SSH startup.')
-    error.kind = 'update-in-progress'
+    error.kind = 'transient-transport-error'
     error.cause = cause
     throw error
   }

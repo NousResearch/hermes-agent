@@ -895,6 +895,11 @@ prompt_caching:
 #   # per session. Unset = 3 inside delegated subagents, unlimited for the main
 #   # agent; a number applies everywhere; 0 = unlimited.
 #   max_calls_per_image: 3
+#   # User-attached images re-sent to a native-vision model when a turn's
+#   # history is rebuilt from the session DB (API server, restarts): the N most
+#   # recent of the conversation. Stored under <HERMES_HOME>/image_store, N per
+#   # session, removed with the session. 0 = store and replay none.
+#   replay_recent_images: 3
 #
 # auxiliary:
 #   # Image analysis: vision_analyze tool + browser screenshots

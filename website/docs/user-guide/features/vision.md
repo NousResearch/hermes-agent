@@ -241,3 +241,20 @@ vision:
 
 - **`embed_target_bytes`** — images above the budget (or wider than 1568 px) are downscaled to a JPEG that fits. 256 KB keeps ordinary screenshots cheap; dense phone screenshots of tables can come out unreadable at that size, so raise it (say `1048576`) when the model keeps calling figures "unreadable". Browser screenshots delivered natively use the same budget.
 - **`max_calls_per_image`** — how often the *same* image (region crops of it included; local paths compare by resolved path) may be embedded per session. Once the cap is hit the tool returns `"vision_analyze refused: this image has already been loaded into context N time(s) …"` instead of another embed, so the model answers from what it already sees. Left unset, only delegated `delegate_task` subagents are capped (at 3): they run unattended and cannot be steered mid-loop from the CLI, and a re-load loop there once burned 158 calls on five files. Set a number to cap every session, or `0` for unlimited everywhere.
+
+### Images in later turns: `vision.replay_recent_images`
+
+The session database stores user messages as text, with one `[screenshot]` line per attached image. A turn whose history is rebuilt from the database (for example every request to the [API server](api-server.md), or a resumed session) used to show the model that placeholder instead of the image, so a follow-up question about a photo sent one message earlier could not be answered.
+
+Hermes now keeps the images users attach and sends the most recent ones again, in their original position, when the model takes images natively (see [Image Routing](#image-routing-vision-capable-vs-text-only-models); with `agent.image_input_mode: text` nothing is replayed):
+
+```yaml
+vision:
+  replay_recent_images: 3   # default; 0 = store and replay none
+```
+
+- The **N most recent** images of the conversation are sent again as image parts, byte-identical to the turn that first sent them, so the provider's prompt cache stays valid. Older ones read `[image sent earlier, no longer attached]`. The request changes only when a newer image pushes one out of the window, at which point the cached prefix is rebuilt once from that message on.
+- Images are stored under `~/.hermes/image_store/` (per profile; one file per distinct image, readable only by your user) with a small reference file per message. The database and the session messages API stay text only.
+- Each session keeps only its N newest images. Deleting or pruning a session removes its images; the gateway's state.db housekeeping (at startup and hourly) removes images whose message is gone, for example after compaction. Setting `0` stops storing and replaying, and the next sweep deletes what was stored.
+- Images sent as remote URLs are not replayed (the provider would fetch them again on every later request, and an expired or deleted URL would fail the turn); they read like an older image.
+

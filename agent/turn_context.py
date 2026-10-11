@@ -1268,6 +1268,7 @@ def build_api_messages(
     canonical_messages = canonicalize_replay_history(messages[:split], now=turn_now) + messages[split:]
 
     api_messages = []
+    image_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for idx, msg in enumerate(canonical_messages):
         # Structural clone, NOT msg.copy(): in-place transforms below must not reach
         # persisted history via nested containers; see _clone_message_for_send.
@@ -1327,6 +1328,11 @@ def build_api_messages(
         # 'reasoning_details' is shaped by the replay policy above on chat_completions and
         # left intact for the native adapters (anthropic/bedrock rebuild signed blocks from it).
         api_messages.append(api_msg)
+        image_pairs.append((msg, api_msg))
+    # Rows rebuilt from the session DB carry ``[screenshot]`` markers: put the most recent stored
+    # images back on this wire copy (vision.replay_recent_images; native image input only).
+    from agent.image_store import rehydrate_for_agent
+    rehydrate_for_agent(agent, image_pairs)
 
     # A provider-rejected Anthropic signature is suppressed outside canonical history and
     # survives fresh request construction / process resume via session model_config.

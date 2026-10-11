@@ -122,6 +122,30 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
+# Sources that mark a session row as a subagent (child) transcript. Such a row is created by a
+# ``delegate_task`` / background fan-out child and can never own a chat's routing key.
+_SUBAGENT_SESSION_SOURCES = frozenset({"subagent"})
+
+
+def _is_subagent_child_row(row: Any) -> bool:
+    """True when a durable session row is a subagent (child) transcript.
+
+    ``created_source`` is authoritative and survives later surface flips: when a subagent session is
+    adopted by a chat route the gateway overwrites ``source`` with the parent's platform, so ``source``
+    alone is not enough. ``source`` is still checked for older rows written before ``created_source``.
+    """
+    if row is None:
+        return False
+    for key in ("created_source", "source"):
+        try:
+            value = row.get(key)
+        except AttributeError:
+            return False
+        if str(value or "").strip().lower() in _SUBAGENT_SESSION_SOURCES:
+            return True
+    return False
+
+
 class GatewayNotificationsMixin:
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
@@ -285,6 +309,26 @@ class GatewayNotificationsMixin:
             logger.warning(
                 "Async-delegation completion has unknown spawning session %s; "
                 "dropping injection (#55578 fail-closed).", pinned_session_id,
+            )
+            return None
+        # A SUBAGENT (child) session can never own a chat routing key. A subagent's
+        # background-process / watch completions carry the PARENT chat's ``session_key`` (the child
+        # runs under the parent's routing key) alongside the CHILD's own ``parent_session_id``; the
+        # gateway stamps that child id as this event's ``gateway_session_id`` (see the watch/
+        # completion injection above), so without this guard the switch below hands the chat's route
+        # to the child, ENDS the real chat session, and turns the subagent transcript into the chat's
+        # main session (the crosstalk bug). The chat turn then blocks on the durable turn lease the
+        # child still holds and ``agent/turn_facade_lease.py`` floods the chat every 15s with
+        # "Another Hermes process is using this session". Fail closed: the result stays in the
+        # delegation records.
+        if _is_subagent_child_row(pinned_row):
+            logger.warning(
+                "Async-delegation completion pinned to subagent session %s (created_source=%r) for "
+                "routing key %s; dropping injection instead of handing the chat route to a child "
+                "session (#55578 fail-closed).",
+                pinned_session_id,
+                pinned_row.get("created_source") or pinned_row.get("source"),
+                session_entry.session_key,
             )
             return None
         target_session_id = pinned_session_id

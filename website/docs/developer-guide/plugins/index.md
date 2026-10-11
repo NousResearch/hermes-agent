@@ -293,8 +293,8 @@ List every tool your `register()` registers in `provides_tools`. The field does 
 Optional fields you could add:
 ```yaml
 author: Your Name
-requires_env:          # gate loading on env vars; prompted during install
-  - SOME_API_KEY       # simple format — plugin disabled if missing
+requires_env:          # env vars to prompt for during install (does not gate loading)
+  - SOME_API_KEY       # simple format
   - name: OTHER_KEY    # rich format — shows description/url during install
     description: "Key for the Other service"
     url: "https://other.com/keys"
@@ -1060,7 +1060,7 @@ requires_env:
   - WEATHER_API_KEY
 ```
 
-If `WEATHER_API_KEY` isn't set, the plugin is disabled with a clear message. No crash, no error in the agent — just "Plugin weather disabled (missing: WEATHER_API_KEY)".
+`requires_env` is install-time metadata: it does **not** stop the plugin from loading when the variable is unset. To keep a tool hidden until its key exists, pass a `check_fn` to `ctx.register_tool`; providers should report `is_available() == False` until configured.
 
 When users run `hermes plugins install`, they're **prompted interactively** for any missing `requires_env` variables. Values are saved to `.env` automatically.
 

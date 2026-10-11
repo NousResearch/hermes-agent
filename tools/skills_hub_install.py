@@ -318,8 +318,13 @@ def check_for_skill_updates(
             results.append({**row, "status": "unavailable"})
             continue
         current_hash, latest_hash = entry.get("content_hash", ""), bundle_content_hash(bundle)
+        metadata = bundle.metadata if isinstance(bundle.metadata, dict) else {}
+        registry_security = metadata.get("registry_security")
+        registry_version = metadata.get("registry_version")
         results.append({
             **row, "status": "up_to_date" if current_hash == latest_hash else "update_available",
             "current_hash": current_hash, "latest_hash": latest_hash, "bundle": bundle,
+            **({"registry_security": registry_security} if isinstance(registry_security, dict) else {}),
+            **({"registry_version": registry_version} if isinstance(registry_version, str) else {}),
         })
     return results

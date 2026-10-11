@@ -756,6 +756,8 @@ describe('refreshSessions batches slices into one request', () => {
         messagingExclude: expect.arrayContaining(['cron'])
       })
     )
+    const request = listSidebarSessions.mock.calls.at(-1)?.[0]
+    expect(request.recentsExclude).not.toContain('acp')
   })
 
   it('does not start a refresh callback captured before a profile switch', async () => {

@@ -67,6 +67,37 @@ def test_all_profiles_register():
     )
 
 
+def test_bundled_plugin_parent_package_importable():
+    """The bundled plugins' parent package must resolve via a normal import (#134944).
+
+    Bundled plugins load under ``plugins.model_providers.<name>`` for a stable
+    import path, but ``plugins/model-providers`` cannot be imported under that
+    dotted name (hyphen). Without registering the parent package in
+    ``sys.modules``, any import that resolves the chain — as
+    ``from plugins.model_providers.custom import CustomProfile`` does once the
+    cached leaf modules are evicted — fails with ``ModuleNotFoundError: No
+    module named 'plugins.model_providers'``.
+    """
+    _clear_provider_caches()  # evicts plugins.model_providers.* including the parent
+    import providers as _pkg
+
+    _pkg.list_providers()
+
+    import importlib
+
+    parent = importlib.import_module("plugins.model_providers")
+    assert parent is sys.modules["plugins.model_providers"]
+    assert str(REPO_ROOT / "plugins" / "model-providers") in parent.__path__
+
+    # An absolute import of a bundled plugin must resolve even after its cached
+    # module is evicted: the parent's __path__ points at the plugin directory.
+    del sys.modules["plugins.model_providers.custom"]
+    custom = importlib.import_module("plugins.model_providers.custom")
+    assert custom.CustomProfile is not None
+
+    _clear_provider_caches()
+
+
 def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     """A user plugin with the same name must override the bundled profile."""
     # Point HERMES_HOME at a fresh temp dir

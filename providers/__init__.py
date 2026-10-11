@@ -42,6 +42,7 @@ import os
 import sys
 import threading
 import time
+import types
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -450,6 +451,26 @@ def _user_module_name(plugin_dir: Path, home_key: str) -> str:
     return f"_hermes_user_provider_{digest}_{plugin_dir.name.replace('-', '_')}"
 
 
+def _ensure_parent_package(module_name: str, plugin_dir: Path) -> None:
+    """Register the plugin module's parent package so the dotted name resolves.
+
+    Bundled plugins load under ``plugins.model_providers.<name>`` for a stable
+    import path, but the on-disk directory (``plugins/model-providers``) cannot
+    be imported under that dotted name. Without a registered parent, any import
+    that resolves the package chain — e.g. ``from plugins.model_providers.custom
+    import CustomProfile`` when the leaf module is not cached — fails with
+    ``ModuleNotFoundError: No module named 'plugins.model_providers'``. The stub
+    points ``__path__`` at the real plugin directory so uncached siblings still
+    resolve from disk; a pre-existing entry in ``sys.modules`` is never replaced.
+    """
+    parent_name = module_name.rpartition(".")[0]
+    if not parent_name or parent_name in sys.modules:
+        return
+    stub = types.ModuleType(parent_name)
+    stub.__path__ = [str(plugin_dir.parent)]
+    sys.modules[parent_name] = stub
+
+
 def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> None:
     """Import a single plugin directory so it self-registers.
 
@@ -482,6 +503,8 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
         module_name = f"plugins.model_providers.{plugin_dir.name.replace('-', '_')}"
     else:
         module_name = _user_module_name(plugin_dir, home_key)
+
+    _ensure_parent_package(module_name, plugin_dir)
 
     if module_name in sys.modules:
         return  # already imported

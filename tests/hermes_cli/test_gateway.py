@@ -529,6 +529,14 @@ class TestRestartWaitsForApiServerPort:
 
         assert gateway._wait_for_tcp_port_free("127.0.0.1", port, timeout=5.0) is True
 
+    def test_port_timeout_is_checked_with_a_bind(self, monkeypatch):
+        import socket
+
+        port = 43123
+        monkeypatch.setattr(gateway.time, "sleep", lambda _: None)
+        monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError))
+        assert gateway._wait_for_tcp_port_free("127.0.0.1", port, timeout=0.01) is True
+
     def test_wait_targets_the_configured_api_server_port_only_when_enabled(self, monkeypatch):
         import socket
 
@@ -645,6 +653,7 @@ class TestStopProfileGateway:
         assert gateway.stop_profile_gateway() is True
         assert calls == [(pid, True, 100)]
 
+    @pytest.mark.platforms("posix")
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
         calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}
 
@@ -679,6 +688,33 @@ class TestStopProfileGateway:
         assert calls["kill"] == 1          # one SIGTERM
         assert calls["remove"] == 0
         assert calls["reap_calls"] == 1    # orphan sweep ran after kill
+
+    @pytest.mark.platforms("windows")
+    def test_windows_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
+        import hermes_cli.gateway_windows as gateway_windows
+
+        pid = 12345
+        calls = {"force": None, "remove": 0, "reap": None}
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda target: 100)
+        monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
+        monkeypatch.setattr(gateway_windows, "_drain_gateway_pid", lambda target, timeout: False)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_force_terminate_known_gateway_pids",
+            lambda pids: calls.__setitem__("force", pids),
+        )
+        monkeypatch.setattr("gateway.status._pid_exists", lambda target: True)
+        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: calls.__setitem__("remove", 1))
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            gateway,
+            "_reap_unsupervised_gateway_orphans",
+            lambda extra_exclude=None: calls.__setitem__("reap", extra_exclude) or False,
+        )
+
+        assert gateway.stop_profile_gateway() is True
+        assert calls == {"force": {pid: 100}, "remove": 0, "reap": {pid}}
 
     def test_stop_profile_gateway_excludes_killed_pid_from_orphan_reap(self, monkeypatch):
         """The PID we killed must be excluded from the orphan sweep (#75936)."""

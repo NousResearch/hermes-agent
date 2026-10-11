@@ -32,6 +32,7 @@ from agent.model_metadata import (
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 from agent.turn_author import parse_turn_author
+from agent.turn_empty_response import _reset_turn_scoped_state
 
 logger = logging.getLogger(__name__)
 
@@ -1107,6 +1108,9 @@ def build_turn_context(
         agent, user_message, persist_user_message, persist_user_timestamp,
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
     )
+    # Stage the persisted row's kind for turn-scoped readers (the empty-response
+    # ladder collapses its paid retry budget on machinery turns, #135816).
+    _reset_turn_scoped_state(agent, user_msg)
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)

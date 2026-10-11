@@ -2279,6 +2279,7 @@ cli:
     failed: "連線失敗"
     authorized_no_tools: "已授權。工具無法使用。"
     connected: "已連線"
+    named_account: "Hermes 將這個 {name} 帳號命名為 {alias}。隨時可以重新命名。"
     waiting: "等待中…"
   editor:
     only_interactive: "外部編輯器只能在互動式 CLI 中使用。"

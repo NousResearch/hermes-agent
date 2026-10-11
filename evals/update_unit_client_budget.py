@@ -31,7 +31,7 @@ if catchup:
 unit = f"hermes-serve-audit-089c35aa-{tag}"
 cmd = ["systemctl", "--user"]
 def run(args):
-    return subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=65)
+    return subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=65, check=False)
 def pid():
     return run(cmd + ["show", unit, "--property=MainPID", "--value"]).stdout.strip()
 record: dict[str, object] = {"repo": repo, "tag": tag, "unit": unit, "home": str(home), "tier": "native disposable systemd service"}

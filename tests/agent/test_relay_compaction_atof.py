@@ -188,7 +188,7 @@ def test_committed_compaction_mark_resets_freshness_for_the_next_llm_start(tmp_p
     raw = json.dumps(mark)
     assert SECRET not in raw and "SANITIZED SUMMARY" not in raw
 
-    first, second, after = _llm_start_message_counts(events)
+    _first, second, after = _llm_start_message_counts(events)
     assert second < len(_transcript())  # not fresh: projected to the current user turn
     assert after == last_request_len  # fresh again after the compaction mark: full history
 

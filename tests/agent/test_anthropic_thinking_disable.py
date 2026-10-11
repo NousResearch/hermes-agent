@@ -112,6 +112,12 @@ class TestEnablePathIsUnchanged:
         kwargs = _kwargs("anthropic/claude-haiku-4.5", {"enabled": True, "effort": "high"})
         assert "thinking" not in kwargs
 
+    def test_haiku_55_thinks_adaptively(self) -> None:
+        """Haiku 5.5 is an adaptive-thinking model (Anthropic/Bedrock model tables); a blanket 'haiku'
+        skip sent it no thinking at all."""
+        kwargs = _kwargs("anthropic/claude-haiku-5.5", {"enabled": True, "effort": "high"})
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+
     def test_no_reasoning_config_sends_no_thinking_field(self) -> None:
         assert "thinking" not in _kwargs("anthropic/claude-opus-5", None)
 

@@ -71,12 +71,12 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
     env = {**os.environ, "RELEASE_NEEDS": json.dumps(success), "GITHUB_STEP_SUMMARY": str(summary), "PYTHONPATH": str(ROOT),
            "SKIP_BUNDLES": "false", "SKIP_TESTS": "false"}
     argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
-    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True).returncode == 0
-    empty = subprocess.run(argv[:4], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode == 0
+    empty = subprocess.run(argv[:4], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
     assert empty.returncode != 0
     assert "required-job list" in empty.stderr
     env["RELEASE_NEEDS"] = json.dumps({**success, "publication": {"result": "cancelled"}})
-    result = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    result = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
     assert result.returncode != 0
     assert "publication=cancelled" in result.stderr
 
@@ -96,17 +96,17 @@ def test_gate_requires_every_flag_removed_job_to_have_skipped(tmp_path, skip_bun
            "SKIP_BUNDLES": "true" if skip_bundles else "false",
            "SKIP_TESTS": "true" if skip_tests else "false"}
     argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
-    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True).returncode == 0
+    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode == 0
     # A removed job that ran anyway blocks the release, and so does an unflagged gate.
     removed = next(name for name, result in expected.items() if result == "skipped")
     env["RELEASE_NEEDS"] = json.dumps({**needs, removed: {"result": "success"}})
-    ran = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    ran = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
     assert ran.returncode != 0 and f"{removed}=success (expected skipped)" in ran.stderr
     env["RELEASE_NEEDS"] = json.dumps(needs)
     env["SKIP_BUNDLES"] = env["SKIP_TESTS"] = "false"
-    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True).returncode != 0
+    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode != 0
     del env["SKIP_TESTS"]
-    missing = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    missing = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
     assert missing.returncode != 0 and "SKIP_TESTS must be" in missing.stderr
 
 

@@ -632,6 +632,25 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
 
 export type SourceUpdateChannel = 'main' | 'stable'
 
+/** What a source checkout follows, for display; null where a package owns the channel. */
+export type SourceUpdateTrack = { kind: 'stable' } | { kind: 'main' } | { kind: 'branch'; name: string }
+
+export function sourceUpdateTrack(status: DesktopUpdateStatus | null): SourceUpdateTrack | null {
+  if (!status?.supported || (status.mechanism !== 'posix-handoff' && status.mechanism !== 'windows-handoff')) {
+    return null
+  }
+
+  if (status.channel === 'stable') {
+    return { kind: 'stable' }
+  }
+
+  if (status.channel !== undefined || !status.branch) {
+    return null
+  }
+
+  return status.branch === 'main' ? { kind: 'main' } : { kind: 'branch', name: status.branch }
+}
+
 /**
  * The selectable channel of a source checkout, or null where the selector must not
  * appear: packages own their channel, runtimes older than the flag cannot save one,

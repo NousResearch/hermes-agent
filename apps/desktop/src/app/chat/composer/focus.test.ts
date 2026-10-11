@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
@@ -55,6 +55,8 @@ function mountSurface(target: string, hidden = false) {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
   document.body.innerHTML = ''
   // `activeTarget` is module-level — a case that leaves a stale claim behind
   // would otherwise decide the next one.
@@ -63,6 +65,25 @@ afterEach(() => {
 })
 
 describe('focusComposerInput', () => {
+  it('does not clear a non-collapsed transcript selection', () => {
+    const input = mountInput()
+    const transcript = document.createElement('div')
+    transcript.textContent = 'text the user is selecting'
+    document.body.append(transcript)
+
+    const range = document.createRange()
+    range.selectNodeContents(transcript)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    focusComposerInput(input)
+
+    expect(selection.isCollapsed).toBe(false)
+    expect(transcript.contains(selection.anchorNode)).toBe(true)
+    expect(document.activeElement).not.toBe(input)
+  })
+
   it('does not steal the caret from another live composer', () => {
     const foreground = mountInput()
     const background = mountInput()
@@ -71,6 +92,83 @@ describe('focusComposerInput', () => {
     focusComposerInput(background)
 
     expect(document.activeElement).toBe(foreground)
+  })
+
+  it('does not clear an external selection made after focus retries are scheduled', () => {
+    vi.useFakeTimers()
+    const frames: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.push(callback)
+
+      return frames.length
+    })
+
+    const input = mountInput()
+    const focus = vi.spyOn(input, 'focus')
+    const outside = document.createElement('button')
+    const transcript = document.createElement('div')
+    transcript.textContent = 'text selected before delayed focus'
+    document.body.append(outside, transcript)
+    outside.focus()
+
+    focusComposerInput(input)
+    expect(focus).toHaveBeenCalledTimes(1)
+
+    // The initial focus has completed; this models the user selecting
+    // transcript text before the rAF and timer retries get to run.
+    outside.focus()
+    const range = document.createRange()
+    range.selectNodeContents(transcript)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    frames.forEach(callback => callback(0))
+    vi.runOnlyPendingTimers()
+
+    expect(focus).toHaveBeenCalledTimes(1)
+    expect(selection.isCollapsed).toBe(false)
+    expect(transcript.contains(selection.anchorNode)).toBe(true)
+    expect(document.activeElement).toBe(outside)
+  })
+
+  it('still focuses for a collapsed external selection', () => {
+    const input = mountInput()
+    const outside = document.createElement('button')
+    const transcript = document.createElement('div')
+    transcript.textContent = 'caret outside the editor'
+    document.body.append(outside, transcript)
+    outside.focus()
+
+    const range = document.createRange()
+    range.setStart(transcript.firstChild!, 0)
+    range.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    focusComposerInput(input)
+
+    expect(selection.isCollapsed).toBe(true)
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('still focuses when the non-collapsed selection belongs to this editor', () => {
+    const input = mountInput()
+    input.textContent = 'selected draft text'
+    const outside = document.createElement('button')
+    document.body.append(outside)
+    outside.focus()
+
+    const range = document.createRange()
+    range.selectNodeContents(input)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    focusComposerInput(input)
+
+    expect(document.activeElement).toBe(input)
   })
 
   it('still focuses when the caret is not already in a composer', () => {

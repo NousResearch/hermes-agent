@@ -538,7 +538,12 @@ jobs:
   publish-bundles:
     name: Publish tested bundle artifacts
     needs: [admit, acceptance, candidate-manifest]
-    if: needs.admit.outputs.skip-bundles != 'true'
+    # acceptance's own needs include signed-package arms that skip when there is no published
+    # baseline (the first bundled release). Without !cancelled() that skip propagates here and
+    # publication then refuses publish-bundles=skipped. acceptance itself is the gate.
+    if: >-
+      !cancelled() && needs.admit.outputs.skip-bundles != 'true'
+      && needs.acceptance.result == 'success' && needs.candidate-manifest.result == 'success'
     permissions:
       contents: write
       actions: read

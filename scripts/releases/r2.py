@@ -363,6 +363,10 @@ def read_public_receipt(base: str, key: str) -> dict:
         conn.close()
 
 
+class _TransferMismatch(ValueError):
+    """A completed download whose size or SHA256 disagrees with its receipt."""
+
+
 def download_public_object(base: str, key: str, file: Path, *, expected_size: int, expected_sha256: str) -> None:
     _download_url(public_artifact_url(base, key), file, lambda _attempt: {},
                   expected_size=expected_size, expected_sha256=expected_sha256)
@@ -393,12 +397,17 @@ def _download_url(url: str, file: Path, request_headers: Callable[[int], dict[st
                     digest.update(chunk)
                     size += len(chunk)
                     if size > expected_size:
-                        raise ValueError(f"Artifact checksum mismatch: {parsed.path}")
+                        raise _TransferMismatch(f"Artifact checksum mismatch: {parsed.path}")
                     output.write(chunk)
             if size != expected_size or digest.hexdigest() != expected_sha256:
-                raise ValueError(f"Artifact checksum mismatch: {parsed.path}")
+                raise _TransferMismatch(f"Artifact checksum mismatch: {parsed.path}")
             temporary.replace(file)
             return
+        except _TransferMismatch:
+            # The receipt is the authority: a body that disagrees with it is a bad transfer, so
+            # fetch again; a stored object that really differs fails the same way three times.
+            if attempt == 3:
+                raise
         except R2RequestError as error:
             if error.status not in _RETRYABLE_STATUSES or attempt == 3:
                 raise

@@ -910,6 +910,31 @@ from hermes_cli.main_tui_launch import (
 )
 
 
+def _latest_session_id(use_tui: bool) -> Optional[str]:
+    """MRU session for the active interface (implementation in ``main_resume_lookup``).
+
+    Kept as a thin wrapper on this module so the launch path and ``main_tui_launch`` keep
+    resolving it here — and so tests that patch ``hermes_cli.main._resolve_last_session``
+    still intercept the lookup the wrapper performs.
+    """
+    from hermes_cli import main_resume_lookup
+
+    return main_resume_lookup._latest_session_id(use_tui, resolve=_resolve_last_session)
+
+
+def _resolve_last_session(
+    source="cli", *, workspace_only: bool = False
+) -> Optional[str]:
+    """Most recently-used session ID for a source (or several); see ``main_resume_lookup``.
+
+    Thin wrapper for the same reason as ``_latest_session_id``: it is the patch point the
+    launch tests use.
+    """
+    from hermes_cli import main_resume_lookup
+
+    return main_resume_lookup._resolve_last_session(source, workspace_only=workspace_only)
+
+
 def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
     """Import-safe Termux check for cold-start-sensitive CLI paths."""
     check = env or os.environ
@@ -1318,38 +1343,6 @@ def _session_db():
                 db.close()
             except Exception:
                 pass
-
-
-def _latest_session_id(use_tui: bool) -> Optional[str]:
-    """MRU session for the active interface; a TUI launch falls back to the CLI MRU."""
-    last_id = _resolve_last_session(source="tui" if use_tui else "cli")
-    if not last_id and use_tui:
-        last_id = _resolve_last_session(source="cli")
-    return last_id
-
-
-def _resolve_last_session(source: str = "cli") -> Optional[str]:
-    """Look up the most recently-used session ID for a source.
-
-    Scoped to the current workspace first (git repo root, else cwd) so
-    ``hermes -c`` from repo A continues repo A's last session rather than the
-    global MRU. Falls back to the unscoped MRU when no session matches the
-    current workspace, preserving the old behaviour for fresh directories.
-    """
-    # A finite `hermes -z`/`chat -q` run is CLI history too: `hermes -z … --resume latest` chains on it.
-    if source == "cli":
-        from agent.session_source import CLI_FAMILY_SOURCES
-        source = sorted(CLI_FAMILY_SOURCES)
-    with _session_db() as db:
-        ws_key = _resolve_workspace_key()
-        if ws_key:
-            sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key)
-            if sessions:
-                return sessions[0]["id"]
-        # Fallback: global MRU for this source.
-        sessions = db.search_sessions(source=source, limit=1)
-        return sessions[0]["id"] if sessions else None
-    return None
 
 
 def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:

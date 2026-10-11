@@ -2135,7 +2135,14 @@ def _inject_context_engine_tools(agent):
             _tname = _schema["name"]
             if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
-            agent.tools.append({"type": "function", "function": _schema})
+            # Same sanitize pass registry tools get in model_tools: these schemas are
+            # appended AFTER that pass, so a top-level allOf/anyOf/oneOf conditional-required
+            # hint would otherwise survive to the wire and strict backends reject the ENTIRE
+            # request with HTTP 400 (#134383).
+            from tools.schema_sanitizer import sanitize_tool_schemas
+            agent.tools.append(
+                sanitize_tool_schemas([{"type": "function", "function": _schema}])[0]
+            )
             for _names in (agent.valid_tool_names, agent._context_engine_tool_names, _existing_tool_names):
                 _names.add(_tname)
 

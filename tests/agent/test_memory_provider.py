@@ -1204,6 +1204,48 @@ class TestMemoryInjectionRejectsMalformedSchema:
         assert agent.valid_tool_names == {"good_tool"}
 
 
+class TestMemoryInjectionSanitizesTopLevelCombinators:
+    """Provider schemas are appended AFTER model_tools' sanitize_tool_schemas pass, so
+    without the same treatment at the injection point one top-level allOf/anyOf/oneOf
+    conditional-required hint reaches the wire unsanitized and strict backends reject
+    the ENTIRE request with HTTP 400 (#134383)."""
+
+    def _agent_with(self, *schemas):
+        mgr = MemoryManager()
+        mgr.add_provider(FakeMemoryProvider("ext", tools=list(schemas)))
+        return SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=None,
+            tools=[],
+            valid_tool_names=set(),
+        )
+
+    def test_top_level_combinator_stripped_from_injected_provider_tool(self):
+        agent = self._agent_with({
+            "name": "x_memory_lookup",
+            "description": "d",
+            "parameters": {
+                "type": "object",
+                "properties": {"q": {"type": "string", "enum": ["a", "b"]}},
+                "required": ["q"],
+                "allOf": [
+                    {
+                        "if": {"properties": {"mode": {"const": "proposal"}}},
+                        "then": {"required": ["proposal"]},
+                    }
+                ],
+            },
+        })
+        assert inject_memory_provider_tools(agent) == 1
+        assert len(agent.tools) == 1
+        params = agent.tools[0]["function"]["parameters"]
+        for combinator in ("allOf", "anyOf", "oneOf"):
+            assert combinator not in params
+        # Only the TOP level is stripped: the legitimate parts survive untouched.
+        assert params["required"] == ["q"]
+        assert params["properties"]["q"]["enum"] == ["a", "b"]
+
+
 class TestTrivialPromptClassifier:
     """is_trivial_prompt — the shared gate for core prefetch + provider injection."""
 

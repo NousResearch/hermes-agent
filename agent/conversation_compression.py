@@ -1966,16 +1966,26 @@ def _lower_threshold_to_aux_context(
     Retention is recalibrated through its selected policy: lean is window-relative;
     only legacy follows the lowered threshold."""
     compressor = agent.context_compressor
+    if getattr(compressor, "tail_mode", None) == "lean":
+        # Lean never sends the main transcript to the summariser: the summary input is even-sampled to
+        # _SUMMARY_INPUT_MAX_CHARS and tail retention is derived from the main window, so the aux window
+        # does not gate the main trigger (#136170). This probe is not a clamped state — clear any stale
+        # clamp verdict so it is not replayed, mirroring the caller's symmetric un-clamp.
+        agent._last_feasibility_notice = None
+        agent._compression_warning = None
+        logger.debug(
+            "Lean tail mode: auxiliary compression model %s window (%d tokens) is below the main trigger; "
+            "the session threshold is unchanged because lean bounds the summary input itself.",
+            aux_model, aux_context,
+        )
+        return
     old_threshold = compressor.threshold_tokens
     new_threshold = compressor.threshold_tokens = aux_context
     # Durable ceiling: update_model() recomputes threshold_tokens from the main model on every window
     # correction and re-applies this through _apply_threshold_tokens_cap() (#114707).
     compressor._aux_context_ceiling = aux_context
     summary_target_ratio = getattr(compressor, "summary_target_ratio", None)
-    if getattr(compressor, "tail_mode", None) == "lean":
-        # Keep the window-relative policy owned by the compressor property.
-        compressor._tail_token_budget = None
-    elif isinstance(summary_target_ratio, (int, float)):
+    if isinstance(summary_target_ratio, (int, float)):
         compressor.tail_token_budget = int(new_threshold * summary_target_ratio)
     main_ctx = compressor.context_length
     if main_ctx:

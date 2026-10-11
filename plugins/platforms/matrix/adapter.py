@@ -83,6 +83,11 @@ from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_
 logger = logging.getLogger(__name__)
 
 _MATRIX_VOICE_WAVEFORM_BINS = 30
+_MATRIX_ROOM_ALIAS_TOKEN = re.compile(
+    r"((?<!https://matrix\.to/)(?<!http://matrix\.to/)#[^\s:\x00]+:[^\s\x00]+)")
+_MATRIX_MENTION_FULL_ID_END = r"(?![A-Za-z0-9-]|\.[A-Za-z0-9-]|:\S)"
+_MATRIX_MENTION_LOCALPART_START = r"(?<![@\w.=+/-])"
+_MATRIX_MENTION_LOCALPART_END = r"(?![\w=+/-]|\.+[\w=+/:-]|:\S)"
 
 
 def _run_media_tool(cmd: list, *, timeout: int, text: bool = False):
@@ -2938,18 +2943,42 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def _is_bot_mentioned(
         self, body: str, formatted_body: Optional[str] = None, mention_user_ids: Optional[list] = None) -> bool:
-        """True if the bot is mentioned; ``m.mentions.user_ids`` (MSC3952) is authoritative
-        even when the body has no ``@bot`` text (pills may live only in formatted_body)."""
+        """Match the bot's user ID in ``m.mentions.user_ids`` or an explicit body mention.
+
+        A bare localpart counts only with no mentioned users, since a bare display name next
+        to another user's pill may address that user. HTML pills use the same gate because
+        clients with ``m.mentions`` list their pill targets there. Explicit body forms still
+        count against a non-empty list because Element also lists the replied-to sender.
+        HTML reply quotes never count; callers supply the unquoted plain-text body.
+        """
         if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
             return True
-        if not body and not formatted_body:
+        if self._body_mentions_bot(body, bare_localpart=not mention_user_ids):
+            return True
+        if mention_user_ids or not formatted_body or not self._user_id:
             return False
-        if self._user_id and self._user_id in body:
+        formatted_body = re.sub(
+            r"<mx-reply\b[^>]*>.*?</mx-reply\s*>", "", formatted_body, flags=re.DOTALL | re.IGNORECASE)
+        pill = re.escape(f"matrix.to/#/{self._user_id}") + _MATRIX_MENTION_FULL_ID_END
+        return bool(re.search(pill, formatted_body))
+
+    def _body_mentions_bot(self, body: str, *, bare_localpart: bool) -> bool:
+        if not body:
+            return False
+        body = _MATRIX_ROOM_ALIAS_TOKEN.sub(" ", body)
+        if self._user_id and re.search(r"(?<!#)" + re.escape(self._user_id) + _MATRIX_MENTION_FULL_ID_END, body):
             return True
         localpart = self._user_localpart()
-        if localpart and re.search(r"\b" + re.escape(localpart) + r"\b", body, re.IGNORECASE):
+        if not localpart:
+            return False
+        mention_end = re.escape(localpart) + _MATRIX_MENTION_LOCALPART_END
+        local_mention = _MATRIX_MENTION_LOCALPART_START + r"(?<!#)@" + mention_end
+        if re.search(local_mention, body, re.IGNORECASE):
             return True
-        return bool(formatted_body and self._user_id and f"matrix.to/#/{self._user_id}" in formatted_body)
+        if not bare_localpart:
+            return False
+        bare_mention = _MATRIX_MENTION_LOCALPART_START + r"(?<![:#])" + mention_end
+        return bool(re.search(bare_mention, body, re.IGNORECASE))
 
     def _voice_may_park(self, room_id: str, body: str, content: dict, relates_to: dict,
                         mention_claimed: bool) -> bool:
@@ -2965,10 +2994,23 @@ class MatrixAdapter(BasePlatformAdapter):
         return not body.startswith("/") and not self._content_mentions_bot(body, content)
 
     def _content_mentions_bot(self, body: str, content: dict) -> bool:
-        """``_is_bot_mentioned`` fed from an event's content (MSC3952 ``m.mentions`` is authoritative)."""
-        mentions = content.get("m.mentions") or {}
+        """``_is_bot_mentioned`` fed from an event's content. Element sends ``m.mentions`` with
+        every message, and its ``user_ids`` is empty unless the user picked a pill or replied, so
+        an empty ``user_ids`` is treated like an absent one. A malformed ``m.mentions`` never
+        counts as a mention."""
+        mention_user_ids = None
+        if "m.mentions" in content:
+            mentions = content["m.mentions"]
+            mention_user_ids = mentions.get("user_ids", []) if isinstance(mentions, dict) else None
+            if not isinstance(mention_user_ids, list):
+                return False
+        if (content.get("m.relates_to") or {}).get("m.in_reply_to"):
+            _, author_id = _extract_reply_fallback(body)
+            if self._user_id and author_id == self._user_id:
+                return True
+            _, body = _split_reply_fallback(body)
         return self._is_bot_mentioned(
-            body, content.get("formatted_body"), mentions.get("user_ids") if isinstance(mentions, dict) else None)
+            body, content.get("formatted_body"), mention_user_ids)
 
     def _user_localpart(self) -> str:
         """``@bot:server`` -> ``bot``; empty when the user ID has no server part."""
@@ -2979,11 +3021,17 @@ class MatrixAdapter(BasePlatformAdapter):
         words, or "Hermes Agent" would become "Agent"."""
         if not body:
             return ""
-        if self._user_id:
-            body = body.replace(self._user_id, "")
+        parts = _MATRIX_ROOM_ALIAS_TOKEN.split(body)
         localpart = self._user_localpart()
-        if localpart:
-            body = re.sub(r'(?<![\w])@' + re.escape(localpart) + r'\b', '', body, flags=re.IGNORECASE)
+        for index in range(0, len(parts), 2):
+            if self._user_id:
+                full_id = r"(?<!#)" + re.escape(self._user_id) + _MATRIX_MENTION_FULL_ID_END
+                parts[index] = re.sub(full_id, "", parts[index])
+            if localpart:
+                local_mention = (_MATRIX_MENTION_LOCALPART_START + r"(?<!#)@" + re.escape(localpart)
+                                 + _MATRIX_MENTION_LOCALPART_END)
+                parts[index] = re.sub(local_mention, "", parts[index], flags=re.IGNORECASE)
+        body = "".join(parts)
         # Normalize spacing after mention removal.
         body = re.sub(r'[ \t]{2,}', ' ', body)
         body = re.sub(r'\s+([,.;:!?])', r'\1', body)

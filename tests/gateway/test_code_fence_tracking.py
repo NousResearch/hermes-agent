@@ -28,7 +28,10 @@ Test categories:
   I. Integration: what a fix would look like
 """
 
+import re
 from unittest.mock import MagicMock
+
+import pytest
 
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig, ensure_closed_code_fences
@@ -283,3 +286,31 @@ class TestSplitTextChunksFenceBalanced:
         chunks = GatewayStreamConsumer._split_text_chunks(text, 70)
         assert len(chunks) >= 2
         _assert_balanced(chunks, "fallback chunk")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  N. A chunk boundary next to a fence line never yields an empty code block
+# ═══════════════════════════════════════════════════════════════════════════
+
+_SPLITTERS = [
+    pytest.param(lambda t, n: BasePlatformAdapter.truncate_message(t, n), id="truncate_message"),
+    pytest.param(GatewayStreamConsumer._split_text_chunks, id="stream_fallback"),
+]
+_EMPTY_BLOCK = re.compile(r"(?m)^```[^\n]*\n```[ \t]*(?:\(\d+/\d+\))?$")
+
+
+@pytest.mark.parametrize("split", _SPLITTERS)
+@pytest.mark.parametrize("tail", ["\nExplanation.", "\n", "\n" + "y" * 30])
+def test_no_empty_block_when_boundary_meets_a_fence(split, tail):
+    """Roomote#3400/#3411: the original closing fence right after a boundary must be consumed,
+    not reopened as an empty block before trailing prose; same for an opener on a chunk's last line."""
+    for limit in (60, 100, 2000):
+        for body in range(10, limit + 20):
+            closing = f"```ts\n{'x' * body}\n```{tail}"
+            opening = f"{'p' * body}\n```ts\n{'x' * 20}\n```"
+            for text in (closing, opening):
+                chunks = split(text, limit)
+                assert not any(_EMPTY_BLOCK.search(c) for c in chunks), (limit, body, chunks)
+                _assert_balanced(chunks, "chunk")
+                kept = re.sub(r"```\w*|\s|\(\d+/\d+\)", "", "\n".join(chunks))
+                assert kept == re.sub(r"```\w*|\s", "", text)

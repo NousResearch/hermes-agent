@@ -14,7 +14,7 @@ import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Plus, Search, X } from '@/lib/icons'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { MODEL_OPTIONS_QUERY_OPTIONS, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import { confirm } from '@/store/confirm'
@@ -68,6 +68,7 @@ export function ModelVisibilityDialog({
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway: gw, profile, sessionId }),
+    ...MODEL_OPTIONS_QUERY_OPTIONS,
     enabled: open
   })
 

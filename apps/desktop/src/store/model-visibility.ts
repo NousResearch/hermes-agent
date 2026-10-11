@@ -210,15 +210,23 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
 function expandProviderDefaults(
   provider: ModelOptionProvider,
   target: Set<string>,
-  admit: (key: string) => boolean = () => true
+  admit: (key: string) => boolean = () => true,
+  /** Admit the provider's WHOLE current catalogue instead of only its curated
+   *  default slice. Set on the "models that arrived since the last curation"
+   *  path so a newly-appeared model is never held out of a curated provider
+   *  just because it is not one of that provider's featured/top-N entries —
+   *  which is how the selector silently stopped showing new models. */
+  all = false
 ): void {
   const families = collapseModelFamilies(provider.models ?? [])
 
   const featured = provider.featured_models ?? []
 
-  const defaults = featured.length
-    ? families.filter(family => featured.includes(family.id))
-    : families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)
+  const defaults = all
+    ? families
+    : featured.length
+      ? families.filter(family => featured.includes(family.id))
+      : families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)
 
   for (const family of defaults) {
     const key = modelVisibilityKey(provider.slug, family.id)
@@ -267,7 +275,10 @@ export function resolveVisibleKeys(
     if (!hasStoredProvider) {
       expandProviderDefaults(provider, next)
     } else if (known) {
-      expandProviderDefaults(provider, next, key => !known.has(key))
+      // `all`: a curated provider admits ANY model that appeared after the last
+      // curation, not only its featured/top-N slice — otherwise a live model the
+      // catalogue just started serving stays hidden behind the old shortlist.
+      expandProviderDefaults(provider, next, key => !known.has(key), true)
     }
   }
 

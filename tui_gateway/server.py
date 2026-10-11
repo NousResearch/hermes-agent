@@ -1208,6 +1208,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
             from agent.auxiliary_unavailable import ProviderNotConfiguredError
+            logger.error("Deferred agent build failed for session %s: %s", sid, e,
+                         exc_info=not isinstance(e, ProviderNotConfiguredError))
             current["agent_error"] = str(e)
             # A client can route "no provider is set up" to its setup flow instead of a dead-end
             # error toast — but only if it can tell. The sentence is for the reader, the code is
@@ -3017,6 +3019,7 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
         except Exception as exc:
             if _sessions.get(sid) is not session:
                 return
+            logger.exception("resume of %s failed loading its transcript (session %s)", stored_id, sid)
             message = resume_failed_message(exc)
             session.update(resume_hydrating=False, resume_history_error=message, agent_error=message)
             session["resume_history_ready"].set()

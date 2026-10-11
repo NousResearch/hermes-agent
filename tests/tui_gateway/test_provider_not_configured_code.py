@@ -66,6 +66,48 @@ def test_an_unrelated_build_failure_carries_no_code(monkeypatch, emitted):
     assert "code" not in payload
 
 
+@pytest.mark.parametrize("exc", [
+    RecursionError("maximum recursion depth exceeded"),
+    RuntimeError(""),
+    ProviderNotConfiguredError("No LLM provider configured"),
+])
+def test_failed_build_logs_traceback_without_changing_client_error(monkeypatch, emitted, tmp_path, exc):
+    """Regression for #134890: the caught build exception must remain diagnosable on disk."""
+    import logging
+    from tui_gateway import entry
+    from tui_gateway.user_messages import agent_init_failed_message
+
+    monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: None)
+    session = _fail_build(monkeypatch, exc)
+    logfile = tmp_path / "build.log"
+    handler = logging.FileHandler(logfile, encoding="utf-8")
+    server.logger.addHandler(handler)
+    try:
+        _run_build(session)
+        assert not session["_agent_build_thread"].is_alive()
+        assert session["agent_ready"].is_set()
+    finally:
+        server.logger.removeHandler(handler)
+        handler.close()
+
+    assert session["agent_error"] == str(exc)
+    errors = [payload for kind, payload in emitted if kind == "error"]
+    expected = {"message": agent_init_failed_message(exc)}
+    if isinstance(exc, ProviderNotConfiguredError):
+        expected["code"] = "provider_not_configured"
+    assert errors == [expected]
+    logged = logfile.read_text(encoding="utf-8")
+    if isinstance(exc, ProviderNotConfiguredError):
+        assert "Traceback (most recent call last)" not in logged
+        assert str(exc) in logged
+        assert len(logged.splitlines()) == 1
+    else:
+        assert "Traceback (most recent call last)" in logged
+        assert "_raise" in logged
+        assert type(exc).__name__ in logged
+    assert "sid" in logged
+
+
 class TestAgentInitRaisesTheNamedError:
     """Both "cannot serve this session" paths in agent_init raise the type, not a bare RuntimeError."""
 

@@ -793,6 +793,11 @@ if (REMOTE_DISPLAY_REASON) {
   )
 }
 
+// Acquire ownership before any pre-ready recovery ladder can write markers.
+// A secondary launch exits without before-quit cleanup, so it must not leave
+// booting evidence behind for the primary's next startup.
+const isPrimaryInstance: boolean = acquireSingleInstanceLock()
+
 // #108047: a local Windows renderer crash loop with STATUS_STACK_BUFFER_OVERRUN
 // (0xC0000409) is recovered by disabling GPU — NOT by dropping the sandbox
 // (that path stays owned by STATUS_BREAKPOINT / #38216). Must run before app
@@ -802,7 +807,7 @@ let windowsGpuStackCookieFallbackActive = false
 let windowsGpuStackCookieFallbackSticky = false
 let windowsGpuStackCookieRelaunchAttempted = false
 
-if (IS_WINDOWS) {
+if (isPrimaryInstance && IS_WINDOWS) {
   const windowsGpuUserData = app.getPath('userData')
 
   const gpuStackCookieDecision = decideWindowsGpuStackCookieLaunch({
@@ -912,7 +917,7 @@ nvidiaEglFallbackActive = NVIDIA_EGL_FALLBACK.enable
 // left behind by a launch that never reached first paint is itself evidence
 // of a GPU death (the "GPU process isn't usable" FATAL abort wins the race
 // against our relaunch handler), and the next launch engages from it.
-if (NVIDIA_DRIVER_MAJOR !== null) {
+if (isPrimaryInstance && NVIDIA_DRIVER_MAJOR !== null) {
   try {
     writeNvidiaEglMarker(app.getPath('userData'), NVIDIA_EGL_FALLBACK.nextMarker)
   } catch {
@@ -934,7 +939,7 @@ if (NVIDIA_EGL_FALLBACK.enable) {
 // Chromium's "GPU process isn't usable" FATAL abort ends the process, flip the
 // marker sticky, and relaunch once with SwiftShader. `killed` counts (the
 // #40077 GPU process died to Chromium's health-check SIGTERM, exit_code=15).
-if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
+if (isPrimaryInstance && NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
   app.on('child-process-gone', (_event, details) => {
     if (
       !shouldRelaunchForNvidiaGpuDeath({
@@ -987,7 +992,7 @@ let linuxGpuRelaunchAttempted = false
 const LINUX_GPU_SOFTWARE_ACTIVE =
   Boolean(REMOTE_DISPLAY_REASON) || NVIDIA_EGL_FALLBACK.enable || alreadyHasDisableGpu(process.argv, process.env)
 
-if (process.platform === 'linux') {
+if (isPrimaryInstance && process.platform === 'linux') {
   const linuxGpuUserData = app.getPath('userData')
 
   const linuxGpuDecision = decideLinuxGpuLaunch({
@@ -1034,6 +1039,28 @@ if (PASSWORD_STORE.store) {
   console.log(`[hermes] using password-store backend: ${PASSWORD_STORE.store}`)
 }
 
+// Only the lock-owning destination may adopt a workspace or start a backend.
+// #78101: on Linux/X11 a zombie/defunct Electron process leaves the
+// SingletonLock symlink behind with a PID that still answers kill(pid, 0),
+// so Chromium's own liveness probe keeps refusing every later launch and the
+// app silently exits. Clear a provably-dead owner and retry once; always log
+// when the lock is legitimately lost so the exit is diagnosable.
+function acquireSingleInstanceLock(): boolean {
+  if (app.requestSingleInstanceLock()) {
+    return true
+  }
+
+  const stalePid = removeStaleSingletonLock(app.getPath('userData'))
+
+  if (stalePid !== null) {
+    console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
+
+    return app.requestSingleInstanceLock()
+  }
+
+  return false
+}
+
 // Windows sandbox / GPU breakpoint crash recovery (#38216).
 //
 // Some hosts (AMD RX 6000 drivers, orphan AppContainer SIDs under %LOCALAPPDATA%,
@@ -1062,7 +1089,7 @@ let windowsNoSandboxRelaunchAttempted = false
 // recovery as #38216: two consecutive mid-boot aborts engage `--no-sandbox`,
 // an app update re-probes the sandbox once. Windows-only extras (ACL repair,
 // renderer crash-loop relaunch) stay inside the IS_WINDOWS branch.
-if (IS_WINDOWS || process.platform === 'linux') {
+if (isPrimaryInstance && (IS_WINDOWS || process.platform === 'linux')) {
   const windowsUserData = app.getPath('userData')
   const priorMarker = readSandboxMarker(windowsUserData)
 
@@ -1252,29 +1279,6 @@ if (INSTALL_STAMP) {
 
 const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
 
-// Only the lock-owning destination may adopt a workspace or start a backend.
-// #78101: on Linux/X11 a zombie/defunct Electron process leaves the
-// SingletonLock symlink behind with a PID that still answers kill(pid, 0),
-// so Chromium's own liveness probe keeps refusing every later launch and the
-// app silently exits. Clear a provably-dead owner and retry once; always log
-// when the lock is legitimately lost so the exit is diagnosable.
-function acquireSingleInstanceLock(): boolean {
-  if (app.requestSingleInstanceLock()) {
-    return true
-  }
-
-  const stalePid = removeStaleSingletonLock(app.getPath('userData'))
-
-  if (stalePid !== null) {
-    console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
-
-    return app.requestSingleInstanceLock()
-  }
-
-  return false
-}
-
-const isPrimaryInstance: boolean = acquireSingleInstanceLock()
 
 if (!isPrimaryInstance) {
   console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')

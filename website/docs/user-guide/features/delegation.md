@@ -672,3 +672,10 @@ Subagents compact where their parent does: at `compression.threshold` × window 
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.
 :::
+
+## Correlating children in hooks
+
+`subagent_start` and `subagent_stop` carry `parent_tool_call_id` (the parent's
+`delegate_task` call) and `task_index`, which together identify one child even
+when a batch repeats the same goal. Tool hooks fired by that child's own tool
+calls carry the same `parent_tool_call_id`. See [Event Hooks](hooks.md#subagent_start).

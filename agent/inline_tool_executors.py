@@ -285,7 +285,7 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
-    "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+    "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args, tool_call_id=ctx.tool_call_id),
 }
 
 

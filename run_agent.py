@@ -1327,7 +1327,7 @@ class AIAgent(
             from hermes_cli.mem_trim import trim_memory
             trim_memory(reason="large tool result")
 
-    def _dispatch_delegate_task(self, function_args: dict) -> str:
+    def _dispatch_delegate_task(self, function_args: dict, tool_call_id: Optional[str] = None) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
         from tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
         # Top-level MODEL delegations always run in the background (handle returned, results re-enter as
@@ -1340,6 +1340,7 @@ class AIAgent(
             background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
+            tool_call_id=tool_call_id,
         )
 
     _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")

@@ -109,6 +109,7 @@ def smoke_adapter():
             "require_mention": True,
             "strict_mention": True,
             "allow_bots": "mentions",
+            "allowed_bots": "B_PEER",
             "allowed_channels": "",
         },
     )

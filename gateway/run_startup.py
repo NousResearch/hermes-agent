@@ -986,15 +986,21 @@ class GatewayStartupMixin:
                 getattr(self, "_cron_drain_timeout", DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT),
             )
             if _alignment is not None and _alignment.get("mismatch"):
+                scope = _alignment.get("scope")
+                install_command = (
+                    "sudo hermes gateway install --force --system"
+                    if scope == "system" else "hermes gateway install --force"
+                )
+                scope_label = "system" if scope == "system" else "user"
                 logger.warning(
                     "Stale systemd unit detected: %s has TimeoutStopSec=%.0fs but drain_timeout=%.0fs "
                     "cron_drain_timeout=%.0fs (expected >=%.0fs). systemd may SIGKILL the gateway "
-                    "mid-drain. Run `hermes gateway install --force` to regenerate the unit, or shorten "
+                    "mid-drain. Run `%s` to regenerate the %s-scope unit, or shorten "
                     "agent.restart_drain_timeout / agent.cron_drain_timeout.",
                     _alignment.get("unit", "(unknown)"), _alignment["timeout_stop_sec"],
                     _alignment["drain_timeout"],
                     _alignment.get("cron_drain_timeout", DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT),
-                    _alignment["expected_min"],
+                    _alignment["expected_min"], install_command, scope_label,
                 )
 
     # Builtin platforms whose ``<P>_ALLOWED_USERS`` / ``<P>_ALLOW_ALL_USERS`` env vars count as an

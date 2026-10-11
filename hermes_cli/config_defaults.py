@@ -1799,6 +1799,10 @@ DEFAULT_CONFIG = {
 
     "cron": {
         "catch_up_missed": True,  # False skips recurring misses beyond the local grace window.
+        # Seconds a finished job's output may wait for a live gateway before it is dropped (marked
+        # failed) instead of sent late, e.g. 3600 so a morning brief queued during an outage is not
+        # delivered in the evening. 0 = wait forever (the default).
+        "delivery_max_age_seconds": 0,
         # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by
         # default: policy-denied in cron context to prevent unattended scheduling loops. Jobs
         # created this way are user-owned in the same flat jobs table. Interactive toolsets

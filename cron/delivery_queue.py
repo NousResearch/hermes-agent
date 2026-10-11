@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
@@ -34,6 +35,54 @@ _ACTIVE_DELIVERIES: set[str] = set()
 _TERMINAL = ("delivered", "failed", "unknown", "suppressed")
 MAX_TERMINAL_DELIVERIES = 1000
 DEFAULT_DELIVERY_WAIT_TIMEOUT_SECONDS = 300.0
+EXPIRED_ERROR = "expired: still queued after cron.delivery_max_age_seconds with no live gateway; not sent"
+
+
+def _max_age_seconds() -> float:
+    """``cron.delivery_max_age_seconds``; non-positive (the default) keeps pending rows forever."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        return float(cron_cfg.get("delivery_max_age_seconds", 0) or 0)
+    except Exception:
+        return 0.0
+
+
+def _expire_stale_unlocked(conn: sqlite3.Connection) -> int:
+    """Fail pending rows older than the configured max age instead of sending them late.
+
+    A row waits in ``pending`` until some gateway drains it. After a long outage
+    the next gateway would otherwise send every queued output however old: a
+    morning briefing in the evening, a reminder after its moment.
+    """
+    max_age = _max_age_seconds()
+    if max_age <= 0:
+        return 0
+    now = _hermes_now()
+    expired = 0
+    for row in conn.execute(
+        "SELECT execution_id, created_at FROM deliveries WHERE status='pending'"
+    ).fetchall():
+        try:
+            created = datetime.fromisoformat(row["created_at"])
+            age = (now - created).total_seconds()
+        except (TypeError, ValueError):
+            continue  # unparseable timestamp: never guess into dropping a send
+        if age <= max_age:
+            continue
+        cur = conn.execute(
+            """UPDATE deliveries SET status='failed', finished_at=?, error=?
+               WHERE execution_id=? AND status='pending'""",
+            (now.isoformat(), EXPIRED_ERROR, row["execution_id"]),
+        )
+        if cur.rowcount:
+            expired += 1
+            logger.warning(
+                "Cron delivery %s: queued %.0fs ago, older than cron.delivery_max_age_seconds; not sent",
+                row["execution_id"], age,
+            )
+    return expired
 
 
 def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
@@ -230,6 +279,8 @@ def claim_next() -> Optional[dict]:
     pid = os.getpid()
     started = _process_start_time(pid)
     with _transaction() as conn:
+        if _expire_stale_unlocked(conn):
+            _prune_terminal_unlocked(conn)
         # created_at carries a DST-varying offset: order by instant, not text.
         row = conn.execute(
             "SELECT execution_id FROM deliveries WHERE status='pending' "

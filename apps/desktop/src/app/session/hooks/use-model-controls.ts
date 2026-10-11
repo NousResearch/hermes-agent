@@ -28,7 +28,7 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffortWire
 } from '@/store/session'
-import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
+import { $sessionStates, publishSessionState, sessionTileDelegate } from '@/store/session-states'
 
 interface ModelControlsOptions {
   cacheOwnerConnectionId?: string
@@ -257,11 +257,10 @@ export function useModelControls({
       const liveSessionId = 'sessionId' in selection ? (selection.sessionId ?? null) : primaryRuntimeId
       const touchesPrimary = !liveSessionId || liveSessionId === primaryRuntimeId
 
-      const prevModel = touchesPrimary ? $currentModel.get() : ($sessionStates.get()[liveSessionId!]?.model ?? '')
+      const prevSlice = liveSessionId ? $sessionStates.get()[liveSessionId] : undefined
+      const prevModel = touchesPrimary ? $currentModel.get() : (prevSlice?.model ?? '')
 
-      const prevProvider = touchesPrimary
-        ? $currentProvider.get()
-        : ($sessionStates.get()[liveSessionId!]?.provider ?? '')
+      const prevProvider = touchesPrimary ? $currentProvider.get() : (prevSlice?.provider ?? '')
 
       const prevWire = touchesPrimary
         ? $currentReasoningEffortWire.get()
@@ -270,21 +269,48 @@ export function useModelControls({
       const prevSource = getCurrentModelSource()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
+      // PRIMARY_SESSION_VIEW treats `$sessionStates[runtimeId]` as
+      // authoritative for model/provider once a runtime exists. Painting only
+      // the composer atoms left the visible selector on the previous pair.
+      // Writes go through the session-tile delegate (updateSessionState) so
+      // the wiring cache, $sessionStates, and the focused view stay aligned.
+      // The wire stamp belongs to the old route: withdraw it on an optimistic
+      // paint (session.info re-stamps it) and restore it on rollback.
+      const paintLiveSlice = (model: string, provider: string, wire: string) => {
+        if (!liveSessionId) {
+          return
+        }
+
+        const delegate = sessionTileDelegate()
+
+        if (delegate) {
+          delegate.updateSession(liveSessionId, state => ({
+            ...state,
+            model,
+            provider,
+            reasoningEffortWire: wire
+          }))
+
+          return
+        }
+
+        const current = $sessionStates.get()[liveSessionId]
+
+        if (!current) {
+          return
+        }
+
+        publishSessionState(liveSessionId, { ...current, model, provider, reasoningEffortWire: wire })
+      }
+
       const paintSelection = () => {
         if (touchesPrimary) {
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
-        } else if (liveSessionId) {
-          // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
-          // belongs to the old route, so it is withdrawn until session.info re-stamps it.
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: selection.model,
-            provider: selection.provider,
-            reasoningEffortWire: ''
-          }))
         }
+
+        paintLiveSlice(selection.model, selection.provider, '')
       }
 
       const cacheSelection = (provider: string, model: string) => {
@@ -298,15 +324,9 @@ export function useModelControls({
           // The setters withdraw the wire stamp on a change; the old route's stamp is still true.
           setCurrentReasoningEffortWire(prevWire)
           setCurrentModelSource(prevSource)
-        } else if (liveSessionId) {
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: prevModel,
-            provider: prevProvider,
-            reasoningEffortWire: prevWire
-          }))
         }
 
+        paintLiveSlice(prevSlice?.model ?? prevModel, prevSlice?.provider ?? prevProvider, prevWire)
         cacheSelection(prevProvider, prevModel)
       }
 
@@ -370,19 +390,33 @@ export function useModelControls({
             confirmMessage: result.confirm_message,
             failureMessage: copy.modelSwitchFailed,
             finish: finishSwitch,
-            // Staleness guard — the session or model can move on while the
-            // dialog is open. Answering it must not clobber the newer choice:
-            // bail (with a notice) if the live state no longer matches the
-            // snapshot this prompt was created for.
-            isStale: () =>
-              touchesPrimary
-                ? $activeSessionId.get() !== liveSessionId ||
-                  $currentModel.get() !== prevModel ||
-                  $currentProvider.get() !== prevProvider
-                : !liveSessionId ||
-                  $sessionStates.get()[liveSessionId]?.model !== prevModel ||
-                  $sessionStates.get()[liveSessionId]?.provider !== prevProvider,
-            model: selection.model,
+            // Staleness guard — the warning can linger while the user picks
+            // a different model or switches sessions. Clicking Confirm must
+            // not clobber the newer choice: bail if the live state no longer
+            // matches the snapshot this notification was created for.
+            isStale: () => {
+              if ($activeSessionId.get() !== liveSessionId) {
+                return true
+              }
+
+              if (!liveSessionId) {
+                return $currentModel.get() !== prevModel || $currentProvider.get() !== prevProvider
+              }
+
+              const live = $sessionStates.get()[liveSessionId]
+
+              // No slice yet (fresh runtime / tests without a cache entry):
+              // compare composer atoms, the same snapshot the confirm toast
+              // rolled back to.
+              if (!live) {
+                return $currentModel.get() !== prevModel || $currentProvider.get() !== prevProvider
+              }
+
+              return (
+                live.model !== (prevSlice?.model ?? prevModel) ||
+                live.provider !== (prevSlice?.provider ?? prevProvider)
+              )
+            },
             repaint: () => {
               paintSelection()
               cacheSelection(selection.provider, selection.model)

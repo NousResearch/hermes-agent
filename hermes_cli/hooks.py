@@ -113,6 +113,12 @@ _DEFAULT_PAYLOADS = {
         "session_id": "test-session", "task_id": "test-task", "tool_call_id": "test-call",
         "result": '{"output": "hello"}', "duration_ms": 42,
     },
+    "transform_tool_result": {
+        "tool_name": "terminal", "args": {"command": "echo hello"}, "result": '{"output": "hello"}',
+        "task_id": "test-task", "session_id": "test-session", "tool_call_id": "test-call",
+        "turn_id": "test-turn", "api_request_id": "test-request", "duration_ms": 42,
+        "status": "ok", "error_type": None, "error_message": None,
+    },
     "pre_llm_call": {
         "session_id": "test-session", "user_message": "What is the weather?",
         "conversation_history": [], "is_first_turn": True, "model": "gpt-4", "platform": "cli",
@@ -211,7 +217,7 @@ def _cmd_test(args) -> None:
 
     specs = [s for s in shell_hooks.iter_configured_hooks(load_config()) if s.event == event]
     if for_tool:
-        specs = [s for s in specs if s.event not in {"pre_tool_call", "post_tool_call"} or s.matches_tool(for_tool)]
+        specs = [s for s in specs if s.event not in shell_hooks._MATCHER_EVENTS or s.matches_tool(for_tool)]
     if not specs:
         print(f"No shell hooks configured for event: {event}")
         if for_tool:
@@ -240,7 +246,7 @@ def _print_run_result(result: dict[str, Any]) -> None:
     # when the hook errored or timed out. A failing hook's decision is the one thing `hooks test` exists
     # to show — failed-open and failed-closed must not render identically (#115968).
     parsed = result.get("parsed")
-    if parsed:
+    if parsed is not None:
         print(f"      parsed (Hermes wire shape): {json.dumps(parsed)}")
     else:
         print("      parsed: <none — hook contributed nothing to the dispatcher>")

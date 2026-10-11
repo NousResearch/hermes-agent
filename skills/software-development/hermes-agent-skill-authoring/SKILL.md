@@ -145,6 +145,7 @@ A skill exists to make the agent's process more predictable — the agent reliab
 4. **Co-locate rules with the concept they govern.**
 5. **Use strong leading words** ("tight loop," "root cause," "regression test") over long repeated explanations.
 6. **Prune duplication and no-ops.** "Be careful" and "use best practices" don't change model behavior — replace with a checkable criterion or delete.
+7. **Route by the operation, not the topic.** The description names the operation that invokes the skill; the body gives the branches, the evidence each needs, and their stopping conditions. A mention, question, or discussion of the topic is not by itself a request to run a procedure. Conditional procedures live in `references/`, not in the entrypoint: guidance that fires only under some conditions is paid for on every load.
 
 ## Tests and Docs (required for repo skills)
 

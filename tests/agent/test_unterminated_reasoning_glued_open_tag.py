@@ -48,3 +48,18 @@ def test_cjk_tag_glued_continuation_stays():
     # ordinary prose starting with the tag word.
     text = "<思考的结论是这样的> 有些内容"
     assert strip_think_blocks(None, text) == text
+
+
+def test_element_name_extending_a_tag_stays():
+    # A legitimate XML/markup element whose name merely starts with a think-tag name is not a
+    # degenerate opener: the glued token is followed by `>` or `-`, not whitespace. Regression
+    # rows from the #136562 review.
+    assert strip_think_blocks(
+        None, "Here is the layout:\n<thoughts>\n  <item>a</item>\n</thoughts>\nDone."
+    ) == "Here is the layout:\n<thoughts>\n  <item>a</item>\n</thoughts>\nDone."
+    assert strip_think_blocks(
+        None, "Config:\n<reasoningEffort>high</reasoningEffort>\nThat's it."
+    ) == "Config:\n<reasoningEffort>high</reasoningEffort>\nThat's it."
+    assert strip_think_blocks(
+        None, "Answer:\n<thinkpad-model>X1</thinkpad-model>\nend"
+    ) == "Answer:\n<thinkpad-model>X1</thinkpad-model>\nend"

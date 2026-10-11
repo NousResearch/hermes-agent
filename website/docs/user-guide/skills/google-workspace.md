@@ -157,7 +157,7 @@ $GAPI sheets append SHEET_ID "Sheet1!A:C" --values '[["new","row","data"]]'
 $GAPI docs get DOC_ID
 ```
 
-Returns the document title and full text content.
+Returns the document title and full text content. Tables are included in document order, one pipe-delimited line per row (`| Part | Qty |`); multi-paragraph and nested-table cells are flattened onto their row.
 
 ## Contacts
 

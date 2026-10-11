@@ -191,7 +191,7 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
 
     creds = api_module.get_credentials()
 
-    saved = json.loads(token_path.read_text(encoding="utf-8"))
+    saved = json.loads(token_path.read_text(encoding="utf-8-sig"))
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
@@ -285,3 +285,36 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+def test_docs_get_renders_tables_in_document_order(api_module, monkeypatch, capsys):
+    """Tables are StructuralElements with a full body per cell; a paragraph-only
+    walk drops them. Each row becomes one pipe-delimited line, in place, with
+    multi-paragraph and nested-table cells flattened onto that line."""
+    def para(text):
+        return {"paragraph": {"elements": [{"textRun": {"content": text + "\n"}}]}}
+
+    def cell(*elements):
+        return {"content": list(elements)}
+
+    nested = {"table": {"tableRows": [{"tableCells": [cell(para("n1")), cell(para("n2"))]}]}}
+    doc = {
+        "title": "T", "documentId": "d",
+        "body": {"content": [
+            para("before"),
+            {"table": {"tableRows": [
+                {"tableCells": [cell(para("Name")), cell(para("Qty"))]},
+                {"tableCells": [cell(para("bolt"), para("(steel)")), cell(nested)]},
+            ]}},
+            para("after"),
+        ]},
+    }
+    monkeypatch.setattr(api_module, "_run_gws", lambda parts, params=None, body=None: doc)
+    api_module.docs_get(types.SimpleNamespace(doc_id="d", tab=None))
+    result = json.loads(capsys.readouterr().out)
+    assert result["body"] == (
+        "before\n"
+        "| Name | Qty |\n"
+        "| bolt (steel) | | n1 | n2 | |\n"
+        "after\n"
+    )

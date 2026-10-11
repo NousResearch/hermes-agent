@@ -794,6 +794,7 @@ const sidebars: SidebarsConfig = {
           type: 'category',
           label: 'Architecture',
           items: [
+            'developer-guide/project-layout',
             'developer-guide/architecture',
             'developer-guide/codebase-ownership',
             'developer-guide/agent-loop',

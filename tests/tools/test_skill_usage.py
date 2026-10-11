@@ -363,6 +363,41 @@ def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
     assert (skills_dir / "huggingface-accelerate" / "SKILL.md").exists()
 
 
+def test_essential_skills_are_protected_from_pruning(skills_home, monkeypatch):
+    """The system prompt points at every essential skill, so even ``prune_builtins`` must not archive one."""
+    from agent.skill_utils import ESSENTIAL_SKILLS
+    from tools import skill_usage
+
+    monkeypatch.setattr(skill_usage, "_prune_builtins_enabled", lambda: True)
+    skills_dir = skills_home / "skills"
+    for name in ESSENTIAL_SKILLS:
+        _write_skill(skills_dir, name)
+        (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
+        assert skill_usage.is_protected_builtin(name)
+        ok, _msg = skill_usage.archive_skill(name)
+        assert not ok
+        assert (skills_dir / name / "SKILL.md").exists()
+
+
+def test_archived_essential_skill_restores_without_prune_builtins(skills_home):
+    """An essential skill archived by an older build must come back even with ``prune_builtins`` off."""
+    from agent.skill_utils import ESSENTIAL_SKILLS
+    from tools import skill_usage
+
+    skills_dir = skills_home / "skills"
+    other = "ordinary-bundled"
+    names = [*ESSENTIAL_SKILLS, other]
+    for name in names:
+        _write_skill(skills_dir / ".archive", name)
+    (skills_dir / ".bundled_manifest").write_text("".join(f"{n}:abc\n" for n in names), encoding="utf-8")
+
+    for name in ESSENTIAL_SKILLS:
+        ok, msg = skill_usage.restore_skill(name)
+        assert ok, msg
+        assert (skills_dir / name / "SKILL.md").exists()
+    assert not skill_usage.restore_skill(other)[0]
+
+
 def test_forget_removes_record(skills_home):
     from tools.skill_usage import bump_view, forget, load_usage
     bump_view("x")
@@ -555,8 +590,7 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
             json.dumps({"installed": {name: {}}}), encoding="utf-8",
         )
     elif kind == "protected":
-        # Shipped set is currently empty (plan graduated to a built-in
-        # command) — stage a sentinel to exercise the mechanism.
+        # Stage a sentinel so the test does not depend on the shipped set.
         name = "sentinel-protected-skill"
         monkeypatch.setattr(skill_usage, "PROTECTED_BUILTIN_SKILLS", {name})
         _write_skill(skills_dir, name)

@@ -820,6 +820,12 @@ def _(rid, params: dict) -> dict:
             # built for exactly this race — see desktop's `runRewindSubmit`) waits
             # for `running` to clear and resubmits with the truncation intact.
             return _err(rid, 4009, "session busy")
+        if not params.get("queued"):
+            # A typed reply may answer the clarify card the running turn is blocked on (#134230)
+            # before busy routing steers/queues it behind that same wait.
+            if (clarify_reply := _answer_pending_clarify_from_chat(
+                    rid, sid, session, text, turn_author=turn_author)) is not None:
+                return clarify_reply
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
             display_kind=display_kind)

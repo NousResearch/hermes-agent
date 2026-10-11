@@ -401,6 +401,80 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     return fresh
 
 
+def _settle_clarify_request(request_id: str, result: dict) -> bool:
+    """Resolve one open ``clarify`` server request from the backend — the local registry first,
+    then the compute-host child that owns the wait (the same double path ``request.answer``
+    takes). False when neither owns the id (already settled by the card / timed out)."""
+    from tui_gateway import server_requests
+    frame = {"jsonrpc": "2.0", "id": request_id, "result": dict(result)}
+    return bool(server_requests.resolve_response(frame) or _relay_compute_host_response(frame))
+
+
+def _answer_pending_clarify_from_chat(rid, sid: str, session: dict, text: Any,
+                                      turn_author: dict | None = None) -> dict | None:
+    """Answer the session's pending ``clarify`` server request from a mid-turn typed reply (#134230).
+
+    The messaging-gateway route intercepts typed text before busy routing (``run_inbound._hm_clarify_reply``);
+    the TUI/desktop bridge had no equivalent, so a reply typed into the chat input steered or queued behind
+    the turn while the clarify card waited out its full timeout and the tool returned an empty
+    ``user_response`` — the user looks answered, the agent sees silence. Selection-shaped replies (a
+    number, a choice label, a multi-select list) and any text on an open-ended question resolve the
+    request in place, in the local registry or on the compute-host child that owns the wait; an
+    out-of-range selection keeps the card armed for a retry; free prose on a single choice prompt
+    releases the waiting tool empty and returns None so the message takes the normal busy path (the
+    gateway's TEXT_REJECTED_PROSE contract — that steer cannot drain while the tool blocks). None
+    everywhere else: the caller runs the normal busy routing."""
+    plain = text.strip() if isinstance(text, str) else ""
+    if not plain or plain.startswith("/") or turn_author is not None:
+        return None  # a slash command or a bot-relay injection is not a chat answer
+    from types import SimpleNamespace
+    from tui_gateway import server_requests
+    from tools.clarify_gateway import _coerce_text_response_detailed
+    pending = next((r for r in server_requests.open_requests(sid) if r.get("method") == "clarify"), None)
+    if pending is None:
+        mirrored = session.get("_compute_host_open_request")
+        if isinstance(mirrored, dict) and mirrored.get("method") == "clarify":
+            pending = {"id": mirrored.get("id"), "params": dict(mirrored.get("params") or {})}
+    if pending is None:
+        return None
+    params = pending.get("params") or {}
+    questions = params.get("questions")
+    target = None
+    if isinstance(questions, list) and questions:
+        locked = params.get("answers") if isinstance(params.get("answers"), dict) else {}
+        target = next((q for q in questions if isinstance(q, dict) and str(q.get("qid")) not in locked), None)
+        if target is None:
+            return None
+    # The gateway coerce contract is duck-typed: choices / multi_select / awaiting_text only.
+    choices = (target or params).get("choices")
+    choices = [c for c in choices if isinstance(c, str)] if isinstance(choices, list) and choices else None
+    entry = SimpleNamespace(choices=choices,
+                            multi_select=bool((target or params).get("multi_select")) and bool(choices),
+                            awaiting_text=choices is None)
+    coerced, reason = _coerce_text_response_detailed(entry, plain)
+    request_id = str(pending.get("id") or "")
+    if coerced is None and reason == "invalid_selection":
+        # Selection-shaped but out of range: keep the card armed — steering "7" into the model is worse.
+        logger.info("Clarify reply %r does not match any choice (session=%s); card kept armed", plain, sid)
+        return _ok(rid, {"status": "clarify_retry"})
+    if coerced is None:
+        if questions:
+            return None  # a batch stays editable; prose routes as a normal follow-up
+        _settle_clarify_request(request_id, {"answer": ""})  # deadlock break, mirrors the gateway
+        return None
+    if target is not None:
+        try:
+            if server_requests.lock_answer(request_id, str(target.get("qid")), coerced) is None \
+                    and _lock_compute_host_clarify(rid, request_id, str(target.get("qid")), coerced) is None:
+                return None  # settled under us (card click / timeout): fall through to busy routing
+        except ValueError:
+            return None
+    elif not _settle_clarify_request(request_id, {"answer": coerced}):
+        return None
+    logger.info("Clarify request %s answered from the chat input (session=%s)", request_id, sid)
+    return _ok(rid, {"status": "clarify_answered"})
+
+
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
                         turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry

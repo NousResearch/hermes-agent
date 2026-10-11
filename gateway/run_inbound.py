@@ -573,6 +573,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             _denied = self._check_slash_access(source, _cmd_def_inner.name)
             if _denied is not None:
                 return True, _denied
+            if _cmd_def_inner.name in ("stop", "new"):
+                await self._hm_cancel_queued_followups(_quick_key)
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
@@ -584,6 +586,27 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             self._hm_merge_pending_for_source(source, _quick_key, event)
             return True, None
         return False, None
+
+    async def _hm_cancel_queued_followups(self, _quick_key: str) -> None:
+        """Busy /stop and /new drop the human follow-up queued behind the running turn, as main
+        dropped the adapter slot; under session authority it sits in the durable FIFO instead.
+        Only still-queued ``messaging:*`` rows of this route's logical owner: automation wakes,
+        LOCAL/API input and ``unknown`` rows are untouched. Settled silently (no pause notice)."""
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None
+        if not sid or sid not in authority.sessions:
+            return
+        from gateway.session_contract import Principal, SessionRef
+        from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+        ref = SessionRef(authority.profile_id, sid)
+        actor = Principal('messaging-control', authority.profile_id,
+                          frozenset({'session:submit', 'session:control'}), 'busy-command')
+        for row in await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid):
+            if row['status'] == 'queued' and row['principal_id'].startswith('messaging:'):
+                # Claimed meanwhile (stale_generation): it runs as main's post-claim race does.
+                with suppress(RuntimeStoreError):
+                    await authority.cancel_queued(actor, ref, row['admission_id'])
 
     def _hm_busy_telegram_grace_queue(
         self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str

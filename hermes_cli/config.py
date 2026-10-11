@@ -13,6 +13,7 @@ import copy
 import difflib
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -1843,6 +1844,14 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
     if raw is None or isinstance(raw, bool):
         return default
     if isinstance(raw, (int, float)):
+        if isinstance(raw, float):
+            if math.isnan(raw):
+                # YAML ".nan": a malformed value, not an unlimited intent → default, never a crash
+                logger.debug("resolve_turn_limit: NaN max_turns (%r) → default %d", raw, default)
+                return default
+            if math.isinf(raw):
+                # YAML spells infinity ".inf": unlimited, like the string "inf" and -1
+                return TURN_LIMIT_UNLIMITED
         n = int(raw)
     elif isinstance(raw, str):
         s = raw.strip().lower()
@@ -1858,6 +1867,10 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
             except ValueError:
                 logger.debug("resolve_turn_limit: unparseable value %r → default %d", raw, default)
                 return default
+            except OverflowError:
+                # Floats that parse but overflow int() ("1e999", "+inf") are infinity:
+                # unlimited, same as the "inf" spelling ("nan" stays on the ValueError path)
+                return TURN_LIMIT_UNLIMITED
     else:
         # Unknown type (list, dict, …) — don't crash the agent over a bad config.
         logger.debug("resolve_turn_limit: unsupported type %s (%r) → default %d", type(raw).__name__, raw, default)

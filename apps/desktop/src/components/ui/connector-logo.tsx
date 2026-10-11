@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import { brandFor } from '@/lib/mcp-brands'
 import { cn } from '@/lib/utils'
 
@@ -71,9 +73,11 @@ export function connectorLogoSource(subject: ConnectorLogoSubject): string {
  * so a load event never tells us whether a logo exists.
  */
 export function ConnectorLogo({ className, connector }: { className?: string; connector: ConnectorLogoSubject }) {
+  const [failedIcon, setFailedIcon] = useState<null | string>(null)
   const label = connector.title || connector.name
   const brand = brandFor(connector.name)
-  const icon = brand ? '' : (connector.iconUrl ?? '')
+  const vendorIcon = connector.iconUrl ?? ''
+  const icon = brand || vendorIcon === failedIcon ? '' : vendorIcon
   const site = brand || icon ? '' : connectorLogoSource(connector)
 
   return (
@@ -84,7 +88,14 @@ export function ConnectorLogo({ className, connector }: { className?: string; co
       title={connector.title}
     >
       {icon ? (
-        <img alt="" aria-hidden className="size-full object-contain" src={icon} />
+        <img
+          alt=""
+          aria-hidden
+          className="size-full object-contain"
+          key={icon}
+          onError={() => setFailedIcon(icon)}
+          src={icon}
+        />
       ) : site ? (
         <Favicon fallback={monogramFor(label)} url={site} />
       ) : undefined}

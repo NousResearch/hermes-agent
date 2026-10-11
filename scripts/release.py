@@ -660,6 +660,13 @@ def main():
                              help="Emergency release: skip CI, Nix, PM bundle, install/update E2E, "
                                   "Termux, Windows, native smoke and upgrade acceptance jobs. "
                                   "Artifacts still build and publish.")
+    release_cmd.add_argument("--include-macos-intel", action="store_true",
+                             help="Also build, test and publish the macOS Intel (darwin-x64) desktop "
+                                  "bundle. Off by default: Intel macOS is not supported on main and "
+                                  "its runner adds over an hour to the release.")
+    release_cmd.add_argument("--include-termux", action="store_true",
+                             help="Also build, test and publish the Termux (Android aarch64) APT "
+                                  "package. Off by default.")
     # SUPPRESS keeps a --no-changelog given before the subcommand from being
     # reset by this parser's default.
     release_cmd.add_argument("--no-changelog", action="store_true", default=argparse.SUPPRESS,

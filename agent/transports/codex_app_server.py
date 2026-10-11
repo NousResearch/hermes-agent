@@ -90,7 +90,7 @@ class CodexAppServerClient:
 
     def __init__(
         self, codex_bin: str = "codex", codex_home: Optional[str] = None,
-        extra_args: Optional[list[str]] = None, env: Optional[dict[str, str]] = None,
+        extra_args: Optional[list[str]] = None, env: Optional[dict[str, str | None]] = None,
     ) -> None:
         self._codex_bin = codex_bin
         # codex needs LLM provider creds but must not receive Tier-1 Hermes secrets (gateway/GitHub/infra tokens).
@@ -104,7 +104,11 @@ class CodexAppServerClient:
         # still flow, matching copilot_acp_client (#29157 sibling spawn-site gap).
         spawn_env = hermes_subprocess_env(inherit_credentials=True)
         if env:
-            spawn_env.update(env)
+            for key, value in env.items():
+                if value is None:
+                    spawn_env.pop(key, None)
+                else:
+                    spawn_env[key] = value
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
 

@@ -104,6 +104,48 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
+
+def _long_option_prefix_re(names) -> str:
+    """Alternation matching any non-empty prefix of each long option name (getopt_long accepts
+    unambiguous prefixes): ``user`` -> ``u(?:s(?:e(?:r)?)?)?``."""
+    def one(name: str) -> str:
+        out = ''
+        for ch in reversed(name[1:]):
+            out = f'(?:{re.escape(ch)}{out})?'
+        return re.escape(name[0]) + out
+    return '(?:' + '|'.join(one(n) for n in names) + ')'
+
+
+# sudo's own option region: the words between `sudo` and the command it runs. sudo stops option
+# parsing at the first non-option word (getopt "+"), so `sudo -n sqlite3 -readonly` hands
+# `-readonly` to sqlite3 and must not be read as a sudo flag. Region words are dash tokens,
+# VAR=value assignments (sudo keeps parsing options after them), and the separate operand of a
+# value-taking option (`-u alice`, `-nu alice`, `--user alice`, `-p "pw: "`). A short cluster takes
+# the next word only when its first value-taking letter is its last character (getopt: `-uroot`
+# carries the value inline). Value-taking letters (case-sensitive; dash tokens keep their case in
+# the detection input): C c D g h p R r T t U u; `-a` (BSD auth type) is itself gated, so its
+# operand never matters. An operand never starts with `-`, so `sudo -u -S` still flags -S.
+# Uncertain cases err toward consuming the operand: that keeps scanning, never hides a flag.
+# Every region word may carry quoted spans (`-p 'pw: '`, `-p'pw: '`, `--prompt="pw: "`), so a
+# value with spaces does not end the scan before a later -S.
+_SUDO_WS = r'[^\S\n]+'
+_SUDO_WORD_PART = r'''(?:"[^"\n]*"|'[^'\n]*'|[^\s;|&"'])'''
+_SUDO_WORD_TAIL = _SUDO_WORD_PART + '*'
+_SUDO_OPERAND = r'(?!-)' + _SUDO_WORD_PART + '+'
+_SUDO_VALUE_SHORT = r'-(?-i:[AbBEeHiKklNnPSsVv])*(?-i:[CcDghpRrTtUu])'
+_SUDO_VALUE_LONG = '--' + _long_option_prefix_re((
+    'auth-type', 'chdir', 'chroot', 'close-from', 'command-timeout', 'group', 'host',
+    'login-class', 'other-user', 'prompt', 'role', 'type', 'user',
+))
+_SUDO_VALUE_OPT = rf'(?:{_SUDO_VALUE_SHORT}|{_SUDO_VALUE_LONG})(?={_SUDO_WS}(?!-)[^\s;|&])'
+_SUDO_OPTION_REGION = (
+    r'\bsudo\b(?:' + _SUDO_WS + r'(?:'
+    + _SUDO_VALUE_OPT + _SUDO_WS + _SUDO_OPERAND
+    + r'|(?!' + _SUDO_VALUE_OPT + r')-' + _SUDO_WORD_TAIL
+    + r'|[a-z_][a-z0-9_]*=' + _SUDO_WORD_TAIL
+    + r'))*?' + _SUDO_WS
+)
+
 HARDLINE_PATTERNS = [
     # Root path: any root-anchored path whose components collapse to "/" in the shell ("/", "//",
     # "/.", "/./", "/../..", optional trailing glob). Each inter-slash segment must be exactly "."
@@ -462,12 +504,13 @@ DANGEROUS_PATTERNS = [
     # Sudo stdin/askpass/shell/list-privs flags. The agent has no TTY, so sudo invocations that succeed
     # non-interactively read the password from stdin (-S) or askpass (-A); -s (shell) and -a (list) are gated as
     # privilege chains (read SUDO_PASSWORD from .env -> sudo -S -s). Plain `sudo cmd` is TTY-bound and excluded. Input
-    # is lowercased, so S/s and A/a collapse. Lazy `[^;|&\n]*?` allows flag args without spanning separators. sudo
+    # is lowercased, so S/s and A/a collapse. Option operands (`-u alice`) are skipped without spanning separators. sudo
     # resolves unambiguous long-flag prefixes: `--stdin` is the only long option starting with "st", `--askpass` the
-    # only one starting with "a".
-    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)', "sudo with privilege flag (stdin/askpass/shell/list)"),
+    # only one starting with "a". Both rules scan only sudo's own option region (_SUDO_OPTION_REGION), so a flag
+    # that belongs to the sudo'd program (`sudo -n sqlite3 -readonly db`) is not read as a sudo flag.
+    (_SUDO_OPTION_REGION + r'(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)', "sudo with privilege flag (stdin/askpass/shell/list)"),
     # Combined short-flag form (-nS, -sa, -las).
-    (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b', "sudo with combined-flag privilege escalation"),
+    (_SUDO_OPTION_REGION + r'-[a-z]*[sa][a-z]*\b', "sudo with combined-flag privilege escalation"),
     # Package-manager uninstall commands can remove installed software outside
     # the current project (notably `npm uninstall -g`). Treat their destructive
     # subcommands like other state-removing operations while leaving installs

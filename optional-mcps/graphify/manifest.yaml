@@ -1,0 +1,34 @@
+manifest_version: 1
+name: graphify
+description: Search indexed repository code, trace relationships, assess static change impact, and manage repository knowledge in Graphify.
+source: https://graphify.com/mcp
+
+transport:
+  type: http
+  url: https://api.graphify.com/mcp
+
+auth:
+  type: oauth
+
+# Let users choose from the live tool catalog during installation.
+# Some query tools can record query trails, and memory tools can write data.
+suggest:
+  keywords:
+    - graphify
+  hosts:
+    - graphify.com
+    - app.graphify.com
+
+post_install: |
+  Sign in to Graphify in the browser when Hermes requests OAuth authorization.
+  You need a Graphify workspace with a populated, indexed repository.
+  Restart your Hermes session after authentication, then ask Graphify to list
+  your workspaces and repositories and query a known function.
+
+  Review which tools to enable with:
+    hermes mcp configure graphify
+
+  Some queries can save query trails, and memory tools can persist or modify
+  repository knowledge. Results reflect the indexed snapshot; static impact
+  analysis and linked-test results do not run tests or prove runtime correctness.
+  Documentation: https://graphify.com/mcp

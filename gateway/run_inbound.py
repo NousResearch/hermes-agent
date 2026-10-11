@@ -1433,6 +1433,13 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             # Display names are attacker-influenceable: neutralize newlines/control chars or a
             # hostile name masquerades as a fake markdown section (mirrors build_session_context_prompt).
             _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
+            # The prefix is structural: ``[`` ... ``]`` delimits the name, so a name holding
+            # brackets would end it early (``[Ann] Smith] ...``) or forge bracketed structure
+            # inside a gateway-built line (#127053). Strip the delimiter here, not in the
+            # helper (whose other call sites render names outside brackets), then re-collapse
+            # whitespace the removal may leave behind. Runs before the Slack branch so a
+            # name-supplied ``]`` can never displace the trusted ``<@id>`` mention span.
+            _safe_user_name = " ".join(_safe_user_name.replace("[", "").replace("]", "").split())
             # Slack: expose the CURRENT speaker's verifiable `<@U...>` id so "mention me again" has a
             # trusted target (display names are ambiguous). user_id comes from the envelope, not user-editable.
             # See #17916.

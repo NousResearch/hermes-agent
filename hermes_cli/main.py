@@ -1389,10 +1389,32 @@ def _create_titled_session(title: str) -> Optional[str]:
         from hermes_state_registry import acquire
 
         new_session_id = mint_session_id()
+        # ``_resolve_chat_session_args`` applies ``--in`` before reaching this helper, so the
+        # process cwd is already the caller-selected workspace. Persist it on the placeholder
+        # row now: the later resume path intentionally keeps existing metadata and therefore
+        # cannot repair a NULL cwd/git identity on an otherwise empty session.
+        launch_cwd = os.getcwd()
+        from tui_gateway import git_probe
+
+        git_branch = git_probe.branch(launch_cwd)
+        git_repo_root = git_probe.common_repo_root(launch_cwd)
         # The CLI acquires the registry handle for this same path moments later; share it
         # instead of minting a second writer for one INSERT (close() releases the refcount).
         db = acquire()
-        db.create_session(new_session_id, source="cli")
+        db.create_session(
+            new_session_id,
+            source="cli",
+            cwd=launch_cwd,
+            git_repo_root=git_repo_root or None,
+        )
+        if git_branch or git_repo_root:
+            db.update_session_cwd(
+                new_session_id,
+                launch_cwd,
+                git_branch=git_branch or None,
+                git_repo_root=git_repo_root or None,
+                replace_git_meta=True,
+            )
         db.set_session_title(new_session_id, title)
         return new_session_id
     except Exception:

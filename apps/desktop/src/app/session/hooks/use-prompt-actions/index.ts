@@ -236,6 +236,7 @@ interface PromptActionsOptions {
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
+  startFreshSessionTile?: (runtimeId: string) => Promise<boolean | null>
   sttEnabled: boolean
   updateSessionState: (
     sessionId: string,
@@ -288,6 +289,7 @@ export function usePromptActions({
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
+  startFreshSessionTile,
   sttEnabled,
   updateSessionState
 }: PromptActionsOptions) {
@@ -643,6 +645,7 @@ export function usePromptActions({
     resumeStoredSession,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
+    startFreshSessionTile,
     submitPromptText,
     updateSessionState
   })

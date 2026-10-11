@@ -1,7 +1,12 @@
 name: hermes-quest
-description: "Read-only pixel-art RPG dashboard for Hermes Agent Kanban activity, with live events and replay; free text is hidden by default."
+description: >-
+  Read-only pixel-art RPG view of real Hermes Kanban and worker activity,
+  with a live web dashboard tab and an optional native Desktop page.
+  The Desktop page currently supports explicit local connections only;
+  registry and SSH remote connections fail closed until a public SDK
+  connection-lifecycle hook is available. Standalone demo data is synthetic.
 repo: https://github.com/ap08960695/hermes-quest
-sha: "653e48084be92139dd7da897f5f9d6dcd710bdc6"
+sha: "76e95ca9f95fc33603b889e55fac908ae70af7c7"
 tier: community
 category: desktop
 maintainer: ap08960695
@@ -10,7 +15,7 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
-version: "0.1.2"
+version: "0.1.4"
 docs_url: https://github.com/ap08960695/hermes-quest
 screenshots:
-  - "https://raw.githubusercontent.com/ap08960695/hermes-quest/v0.1.2/docs/screenshots/overview.png"
+  - "https://raw.githubusercontent.com/ap08960695/hermes-quest/76e95ca9f95fc33603b889e55fac908ae70af7c7/docs/screenshots/overview.png"

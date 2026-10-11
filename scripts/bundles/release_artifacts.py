@@ -200,7 +200,9 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
     by_name = {item["path"]: item for item in files}
     packages = []
     for row in rows:
-        stamp_matches(row, tag, commit)
+        # record() verified each package's own stamp; a row is metadata and carries no baseVersion.
+        if row.get("commit") != commit or row.get("tag") != tag:
+            raise ValueError("Built package provenance does not match the release")
         filename = universal_name if row["platform"] == "windows" else row["filename"]
         item = by_name[filename]
         packages.append({k: v for k, v in {**row, "artifact": {"url": item["url"], "sha256": item["sha256"]}}.items() if k != "filename"})

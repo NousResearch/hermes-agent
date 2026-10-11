@@ -126,7 +126,7 @@ _WORKTREE_SUBCOMMANDS = {
     **dict.fromkeys(("new", "add", "create"), "_worktree_new")}
 
 # Message fields copied verbatim onto a /branch row (plus role / tool_name / api_content).
-_BRANCH_COPY_KEYS = ("content", "tool_calls", "tool_call_id", "reasoning", "reasoning_details",
+_BRANCH_COPY_KEYS = ("content", "tool_calls", "tool_call_id", "reasoning", "reasoning_content", "reasoning_details",
                      "codex_reasoning_items", "codex_message_items", "timestamp")
 
 # /hatch progress event -> catalog key (``cli.commands.hatch.*``).
@@ -1203,7 +1203,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         try:
             result = subprocess.run(
                 ["git", "worktree", "list"], capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=10, cwd=repo_root)
+                errors="replace", timeout=10, cwd=repo_root, check=False)
             out = result.stdout.strip() if result.returncode == 0 else ""
         except Exception:
             out = ""
@@ -1412,7 +1412,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             _pr(f"  {_t('cron.id', job_id=job['job_id'])}", f"  {_t('cron.name', name=job['name'])}",
                 f"  {_t('cron.state', state=job.get('state', '?'))}",
                 f"  {_t('cron.schedule_repeat', schedule=job['schedule'], repeat=job.get('repeat', '?'))}",
-                "  %s: %s" % _next_run_row(job) if job.get("next_run_at") else f"  {_t('cron.next_run_na')}")
+                "  {}: {}".format(*_next_run_row(job)) if job.get("next_run_at") else f"  {_t('cron.next_run_na')}")
             if job.get("skills"):
                 print(f"  {_t('cron.skills', skills=', '.join(job['skills']))}")
             print(f"  {_t('cron.prompt', prompt=job.get('prompt_preview', ''))}")

@@ -33,7 +33,7 @@ import hermes_bootstrap
 class RecordingAgent:
     """Minimal AIAgent stand-in: records close() and optional run failure."""
 
-    instances: list["RecordingAgent"] = []
+    instances: list[RecordingAgent] = []
 
     def __init__(self, *args, **kwargs):
         self.closed = False

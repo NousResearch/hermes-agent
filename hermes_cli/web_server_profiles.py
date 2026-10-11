@@ -106,7 +106,7 @@ def _broadcast_gateway_session_info() -> None:
 _MODEL_ENTRY_METADATA = ("canonical_model", "reasoning_effort")
 
 
-def _parse_model_entries(resp: "Any") -> list[dict[str, str]]:
+def _parse_model_entries(resp: Any) -> list[dict[str, str]]:
     """Model rows from an OpenAI-compatible ``/v1/models`` response as ``{"id": ..}`` dicts,
     keeping the alias metadata a gateway may advertise (``canonical_model``,
     ``reasoning_effort``). Flattening to bare ids lost that, so Desktop stored a reasoning
@@ -137,7 +137,7 @@ def _parse_model_entries(resp: "Any") -> list[dict[str, str]]:
     return entries
 
 
-def _parse_model_ids(resp: "Any") -> list[str]:
+def _parse_model_ids(resp: Any) -> list[str]:
     """Bare model ids from a ``/v1/models`` response (see :func:`_parse_model_entries`)."""
     return [entry["id"] for entry in _parse_model_entries(resp)]
 
@@ -199,7 +199,7 @@ def _resolve_profile_dir(name: str) -> Path:
     return profiles_mod.get_profile_dir(name)
 
 
-def _write_profile_mcp_servers(profile_dir: Path, servers: list["MCPServerCreate"]) -> int:
+def _write_profile_mcp_servers(profile_dir: Path, servers: list[MCPServerCreate]) -> int:
     """Write MCP server entries into ``profile_dir``'s config.yaml (HERMES_HOME-scoped).
 
     Mirrors the per-server shape ``POST /api/mcp/servers`` builds, batched so the whole

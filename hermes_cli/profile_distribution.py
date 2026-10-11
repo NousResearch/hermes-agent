@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -80,7 +80,7 @@ class EnvRequirement:
     default: Optional[str] = None
 
     @classmethod
-    def from_dict(cls, data: Any) -> "EnvRequirement":
+    def from_dict(cls, data: Any) -> EnvRequirement:
         if not isinstance(data, dict):
             raise DistributionError(f"env_requires entry must be a mapping, got {type(data).__name__}")
         name = _str(data, "name").strip()
@@ -116,7 +116,7 @@ class DistributionManifest:
     installed_at: str = ""
 
     @classmethod
-    def from_dict(cls, data: Any) -> "DistributionManifest":
+    def from_dict(cls, data: Any) -> DistributionManifest:
         if not isinstance(data, dict):
             raise DistributionError(f"{MANIFEST_FILENAME} must be a mapping, got {type(data).__name__}")
         name = _str(data, "name").strip()
@@ -332,7 +332,7 @@ def plan_install(source: str, workdir: Path, override_name: Optional[str] = None
     manifest.name = canon
     manifest.source = provenance
     # Stamped once here so both fresh install and update propagate a fresh timestamp.
-    manifest.installed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    manifest.installed_at = datetime.now(UTC).isoformat(timespec="seconds")
     target_dir = get_profile_dir(canon)
     existing = target_dir.is_dir()
     return InstallPlan(

@@ -246,5 +246,8 @@ async def test_admission_schedules_its_drain_in_the_admitting_callers_step(tmp_p
             await task
         while mutation_tasks(authority):
             await asyncio.sleep(0.01)
-        await asyncio.sleep(0)
-        assert order == ['schedule', 'drain']
+        # The commit's done-callback schedules the drain, and the drain task runs a step after
+        # that: wait for the observable, not for one particular tick.
+        async with asyncio.timeout(5):
+            while order != ['schedule', 'drain']:
+                await asyncio.sleep(0)

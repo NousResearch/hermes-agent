@@ -338,7 +338,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             if provenance is None:
                 raise RuntimeStoreError('permission_denied')
             # The routing reservation writes too: off the owner loop like the admission below.
-            ref = await asyncio.to_thread(authority.register, event.source)
+            ref = authority._publish_route(event.source, *await asyncio.to_thread(authority._reserve_route, event.source))
             route = authority.sessions[ref.session_id].route
             source = event.source.to_dict()
             source['is_bot'] = event.source.is_bot

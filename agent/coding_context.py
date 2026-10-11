@@ -353,10 +353,10 @@ class RuntimeMode:
         return [*prefix, *workspace, *trailing]
 
     def compact_skill_categories(self) -> frozenset[str]:
-        """Skill categories to demote to names-only in the skill index. Gated on ``focus``
-        like the toolset collapse (index changes under ``auto`` proved too surprising).
+        """Skill categories to demote to names-only in the skill index. Gated on explicit
+        ``focus``/``on`` modes (index changes under ``auto`` proved too surprising).
         Demoted, never hidden: pruning caused silent capability loss."""
-        if not self.is_coding or self.config_mode != "focus":
+        if not self.is_coding or self.config_mode not in {"focus", "on"}:
             return frozenset()
         return frozenset(self.profile.compact_skill_categories)
 

@@ -900,3 +900,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config (see ``gateway.config_env``)."""
     from gateway.config_env import _apply_env_overrides as _impl
     _impl(config)
+
+
+def is_email_send_only(extra: dict | None) -> bool:
+    """Return whether Email config explicitly selects outbound-only mode."""
+    extra = extra or {}
+    mode = str(extra.get("mode") or extra.get("delivery_mode") or "").strip().lower()
+    return mode in {
+        "send_only", "send-only", "smtp_only", "smtp-only",
+        "outbound_only", "outbound-only",
+    } or bool(extra.get("send_only", False))

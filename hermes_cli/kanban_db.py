@@ -2075,12 +2075,24 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, block_kind "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if row["block_kind"] == "needs_input":
+                # A blocked row is authoritative even if its latest block event
+                # was pruned. A legacy todo row requires explicit release.
+                if cur_status == "blocked":
+                    continue
+                last = conn.execute(
+                    "SELECT kind FROM task_events WHERE task_id = ? "
+                    "AND kind IN ('blocked', 'unblocked') "
+                    "ORDER BY id DESC LIMIT 1", (task_id,),
+                ).fetchone()
+                if last is None or last["kind"] != "unblocked":
+                    continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
@@ -3586,9 +3598,16 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             if _task_status(conn, task_id) == "blocked"
             else "ready"
         )
+        row = conn.execute(
+            "SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        recover_todo = bool(
+            row and row["status"] == "todo" and row["block_kind"] == "needs_input"
+        )
         _reclaim_dangling_run(
-            conn, task_id, statuses=("blocked", "scheduled"), now=now,
-            note="invariant recovery on unblock",
+            conn, task_id,
+            statuses=("blocked", "scheduled", "todo") if recover_todo else ("blocked", "scheduled"),
+            now=now, note="invariant recovery on unblock",
         )
         # Re-gate on parent completion before restoring the source phase.
         landing_status = _landing_status_after_parents(conn, task_id)
@@ -3605,7 +3624,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
+            "WHERE id = ? AND (status IN ('blocked', 'scheduled') "
+              "OR (status = 'todo' AND block_kind = 'needs_input'))",
+              (new_status, task_id),
         )
         if cur.rowcount != 1:
             return False

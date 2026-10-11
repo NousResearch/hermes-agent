@@ -10,7 +10,6 @@ import logging
 import sqlite3
 import re
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -34,6 +33,7 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
+from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
@@ -46,14 +46,6 @@ from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
-
-
-def _safe_int(value: Any) -> int | None:
-    """Best-effort integer coercion for telemetry fields."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 # Summary-route pin lives in a ContextVar (not on the shared compressor) so the retry after a stalled
@@ -488,34 +480,19 @@ def drop_shadowed_checkpoints(
 
 
 def _prune_stale_reasoning_replay(messages: list[dict[str, Any]]) -> int:
-    """Strip stale ``codex_reasoning_items`` from assistant turns older than the active one.
-    Boundary is the last USER message (a turn spans several assistant rows): the Responses API replays a
-    turn's bridging reasoning items together, so cutting at the last ASSISTANT would strip mid-chain.
-    Only the NEWEST ``type: "compaction"`` checkpoint survives (``drop_shadowed_checkpoints``): a shadowed
-    one was still copied into the compacted transcript and every child session built from it (#102374).
-    Filter items, never pop the key on the carrier. In place; returns pruned message count."""
+    """Drop shadowed ``type: "compaction"`` checkpoints from assistant turns older than the active one; only the
+    NEWEST survives (``drop_shadowed_checkpoints``): a shadowed one was still copied into the compacted transcript
+    and every child session built from it (#102374). Per-turn ``codex_reasoning_items`` are never pruned: the
+    compacted list becomes canonical history, the wire builder already filters per issuer/model, and a later
+    switch to a route that reads earlier-turn reasoning needs them. In place; returns pruned message count."""
     # Active turn = everything after the last real user message; synthetic
     # continuation rows and tool results never mark a turn boundary.
     last_user_idx = _last_index_with_role(messages, "user")
     if last_user_idx < 0:
-        # No user boundary: prune nothing (fail open toward correctness).
         return 0
-
     pruned = set()
     for key in _STALE_REPLAY_PRUNE_KEYS:
         pruned.update(drop_shadowed_checkpoints(messages, key, before=last_user_idx))
-        for i in range(last_user_idx):
-            msg = messages[i]
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            items = msg.get(key)
-            if not isinstance(items, list) or not items:
-                continue
-            kept = [item for item in items if _is_checkpoint_item(item)]
-            if len(kept) == len(items):
-                continue  # nothing stale in this sidecar
-            _set_sidecar(msg, key, kept)
-            pruned.add(i)
     return len(pruned)
 
 
@@ -581,7 +558,8 @@ def _salvage_reduce_todo_snapshot(out: list[dict[str, Any]]) -> None:
 def salvage_grown_transcript(
     original: list[dict[str, Any]], candidate: list[dict[str, Any]], budget: Optional[int] = None,
 ) -> Optional[list[dict[str, Any]]]:
-    """Mechanically shrink a compression candidate (copies, cheapest loss first); ``None`` unless strictly smaller."""
+    """Mechanically shrink a compression candidate (copies, cheapest loss first); ``None`` unless strictly smaller.
+    Never strips reasoning (text or encrypted items): the result becomes canonical history replay reads."""
     if not candidate or not original:
         return None
     if budget is None:
@@ -591,15 +569,10 @@ def salvage_grown_transcript(
 
     out = [dict(msg) if isinstance(msg, dict) else msg for msg in candidate]
     tool_indices = [i for i, msg in enumerate(out) if isinstance(msg, dict) and msg.get("role") == "tool"]
-    last_assistant_idx = _last_index_with_role(out, "assistant")
-    salvage_reasoning_keys = _NEWEST_TURN_ONLY_BUDGET_KEYS + ("reasoning_details",)
     keep_tools = set(tool_indices[-_SALVAGE_KEEP_RECENT_TOOLS:])
     for index, msg in enumerate(out):
         if not isinstance(msg, dict):
             continue
-        if msg.get("role") == "assistant" and index != last_assistant_idx:
-            for key in salvage_reasoning_keys:
-                msg.pop(key, None)
         if msg.get("role") == "tool" and index not in keep_tools:
             content = msg.get("content")
             if isinstance(content, str) and len(content) > _PRUNE_MIN_CHARS:
@@ -1055,7 +1028,7 @@ Spend up to ~{_LEAN_SESSION_LOG_BUDGET_TOKENS} tokens here — this section is t
 # (SHAs, ids, error strings) cannot be paraphrased away; also a session_search map.
 _LEAN_ANCHOR_HEADING = "## Anchor Index (mechanically extracted, exact)"
 _LEAN_ANCHOR_BUDGET_CHARS = 7_000
-_ANCHOR_PATTERNS: "list[tuple[str, re.Pattern[str], int]]" = [
+_ANCHOR_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
     ("PRs/issues", re.compile(r"#\d{3,6}\b"), 120),
     ("commits", re.compile(r"\b[0-9a-f]{9,40}\b"), 40),
     ("branches", re.compile(r"\b(?:fix|feat|docs|refactor|chore|salvage|ent)/[A-Za-z0-9._/-]{3,60}"), 40),
@@ -1299,8 +1272,7 @@ _REPLAY_BUDGET_KEYS = "reasoning", "reasoning_content", "codex_reasoning_items",
 _ALWAYS_REPLAYED_BUDGET_KEYS = "codex_reasoning_items", "codex_message_items"
 _NEWEST_TURN_ONLY_BUDGET_KEYS = "reasoning", "reasoning_content"
 
-# Safe to strip from stale assistant turns: only the current turn's replay needs
-# them, and the compaction boundary already invalidated the prompt-cache prefix.
+# Sidecars whose shadowed compaction checkpoints are dropped from stale turns.
 _STALE_REPLAY_PRUNE_KEYS = "codex_reasoning_items",
 
 
@@ -1352,17 +1324,17 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     return tokens
 
 
-def _last_index_with_role(messages: "list[dict[str, Any]]", role: str) -> int:
+def _last_index_with_role(messages: list[dict[str, Any]], role: str) -> int:
     """Index of the newest dict message with ``role``, or -1."""
     return max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == role), default=-1)
 
 
-def _last_assistant_index(messages: "list[dict[str, Any]]") -> int:
+def _last_assistant_index(messages: list[dict[str, Any]]) -> int:
     """Newest assistant message index, or -1 (the one turn whose thinking may replay; see ``_NEWEST_TURN_ONLY_BUDGET_KEYS``)."""
     return _last_index_with_role(messages, "assistant")
 
 
-def _pending_tool_round(messages: "list[dict[str, Any]]") -> range:
+def _pending_tool_round(messages: list[dict[str, Any]]) -> range:
     """Indices of the tool results the transcript ends with — a round the model has not answered yet; empty when
     the transcript ends in any other row. /steer rows after the round do not answer it: a steer is delivered
     after the newest tool result before the next API call, and two can land in one iteration (one when the tool
@@ -2011,7 +1983,7 @@ def _json_dict(text: Any) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> "str | None":
+def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> str | None:
     """Summary for a call an approval or write guard refused (``BLOCKED: ...`` / ``status``
     ``blocked``/``pending_approval``), else None. The per-tool summarizers describe the call as done
     ("ran ...", "wrote to ..."), which would turn a user's denial into a record of the action and
@@ -2050,7 +2022,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _result_failure_suffix(content)
 
 
-def _model_threshold_key_rank(key: str, model: str, provider: str) -> "tuple[int, int] | None":
+def _model_threshold_key_rank(key: str, model: str, provider: str) -> tuple[int, int] | None:
     """Match rank for one ``model_thresholds`` key, or None when it does not apply.
     ``"<provider>:<substr>"`` keys apply only on that provider; bare keys apply on every route.
     The same slug means different windows on different routes (Codex caps Astra at 272K; OpenRouter
@@ -2174,7 +2146,9 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 }
 
 
-class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMixin, ContextEngine):
+class ContextCompressor(
+    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin, ContextEngine,
+):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
@@ -2195,75 +2169,6 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         self._micro_compact_rolling_summary = ""
         self._micro_compact_consecutive_failures = 0
         self._micro_compact_last_failure_cursor = -1
-
-    def _begin_compression_telemetry(
-        self, *, current_tokens: int | None, attempt_id: str | None = None, session_id: str | None = None,
-        trigger_source: str | None = None,
-    ) -> dict[str, Any]:
-        """Initialize content-free per-attempt compression telemetry."""
-        seed = getattr(self, "_compression_telemetry_seed", None)
-        seed = seed if isinstance(seed, dict) else {}
-        attempt_id = attempt_id or seed.get("attempt_id")
-        session_id = session_id or seed.get("session_id")
-        trigger_source = trigger_source or seed.get("trigger_source")
-        telemetry: dict[str, Any] = {
-            "event": "compression_attempt", "attempt_id": attempt_id or uuid.uuid4().hex,
-            "session_id": session_id or "", "trigger_source": trigger_source or "unknown",
-            "main_provider": self.provider or "", "main_model": self.model or "",
-            "main_context_limit": _safe_int(self.context_length),
-            "current_estimated_tokens": _safe_int(current_tokens),
-            "effective_threshold": _safe_int(self.threshold_tokens), "protected_head_tokens": None,
-            "protected_tail_tokens": None, "middle_window_tokens": None, "prellm_skip_count": 0,
-            "aux_prompt_tokens": None, "aux_output_reservation": None, "aux_provider": "", "aux_model": "",
-            "effective_aux_context": None, "fit_margin": None, "chunking": False, "chunk_count": 0,
-            "total_duration_ms": None, "aux_call_duration_ms": None, "queue_wait_ms": None, "prompt_build_ms": None,
-            "time_to_first_progress_ms": None, "summary_generation_ms": None, "commit_ms": None,
-            "fallback_used": False, "commit_status": "unknown", "split_status": "unknown", "failure_class": None,
-            # Lean-sampling coverage (filled by _record_summary_input_coverage; None on the legacy path).
-            "summary_input_chars": None, "summary_input_sampled_chars": None, "summary_input_omitted_chars": None,
-            "summary_input_record_count": None, "summary_input_sampled_record_count": None,
-            "summary_input_elided_record_count": None,
-        }
-        self._active_compression_telemetry = self._last_compression_telemetry = telemetry
-        return telemetry
-
-    def _record_compression_regions(
-        self, *, head_messages: list[dict[str, Any]], middle_messages: list[dict[str, Any]],
-        tail_messages: list[dict[str, Any]],
-    ) -> None:
-        telemetry = getattr(self, "_active_compression_telemetry", None)
-        if isinstance(telemetry, dict):
-            telemetry["protected_head_tokens"] = estimate_messages_tokens_rough(head_messages)
-            telemetry["middle_window_tokens"] = estimate_messages_tokens_rough(middle_messages)
-            telemetry["protected_tail_tokens"] = estimate_messages_tokens_rough(tail_messages)
-
-    def _record_aux_compression_call(
-        self, *, prompt_messages: list[dict[str, Any]], max_tokens: int | None, duration_ms: int,
-        aux_provider: str | None = None, aux_model: str | None = None,
-        effective_aux_context: int | None = None, phase_timings: dict[str, Any] | None = None,
-    ) -> None:
-        telemetry = getattr(self, "_active_compression_telemetry", None)
-        if not isinstance(telemetry, dict):
-            return
-        telemetry["aux_prompt_tokens"] = estimate_messages_tokens_rough(prompt_messages)
-        telemetry["aux_output_reservation"] = _safe_int(max_tokens)
-        if aux_provider:
-            telemetry["aux_provider"] = aux_provider
-        if aux_model:
-            telemetry["aux_model"] = aux_model
-        if effective_aux_context is not None:
-            telemetry["effective_aux_context"] = _safe_int(effective_aux_context)
-        if telemetry["effective_aux_context"] is not None and telemetry["aux_prompt_tokens"] is not None:
-            telemetry["fit_margin"] = (telemetry["effective_aux_context"] - telemetry["aux_prompt_tokens"]
-                                       - (telemetry["aux_output_reservation"] or 0))
-        telemetry["aux_call_duration_ms"] = (telemetry.get("aux_call_duration_ms") or 0) + max(0, int(duration_ms))
-        for key in ("queue_wait_ms", "prompt_build_ms", "time_to_first_progress_ms", "summary_generation_ms", "commit_ms"):
-            if not isinstance(phase_timings, dict) or key not in phase_timings:
-                continue
-            value = _safe_int(phase_timings[key])
-            # Wait and generation phases accumulate across retries; the rest are point readings.
-            accumulate = key in {"queue_wait_ms", "summary_generation_ms"} and value is not None
-            telemetry[key] = (telemetry.get(key) or 0) + value if accumulate else value
 
     def _emit_init_summary_once(self) -> None:
         """Emit the init log line once, on first context-length resolution (keeps __init__ non-blocking)."""
@@ -2934,7 +2839,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         # Dedup key for the over-threshold "reclamation no-oped" warning
         # (#101889) so a tool loop riding above the threshold warns once per
         # distinct reason + rearm snapshot instead of every iteration.
-        self._last_reclaim_block_warn: "tuple[str, int] | None" = None
+        self._last_reclaim_block_warn: tuple[str, int] | None = None
         self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
@@ -3090,7 +2995,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         """True when compression should run now (anti-thrash included; see :meth:`should_compress_info` for the reason)."""
         return self.should_compress_info(prompt_tokens)[0]
 
-    def should_compress_info(self, prompt_tokens: int | None = None) -> "tuple[bool, str | None]":
+    def should_compress_info(self, prompt_tokens: int | None = None) -> tuple[bool, str | None]:
         """Return ``(should_compress, reason)``.
         ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"`` or
         ``"ineffective"``. Callers should surface a warning when it is non-None."""
@@ -3101,11 +3006,11 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             return False, self._compression_block_reason() or "blocked"
         return True, None
 
-    def _compression_block_reason(self) -> "str | None":
-        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None."""
-        for label, until in (
-            ("cooldown", self._summary_failure_cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until),
-        ):
+    def _compression_block_reason(self, *, ignore_cooldown: bool = False) -> str | None:
+        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None (a cooldown the
+        gate's ``ignore_cooldown`` bypassed is never the reason)."""
+        cooldown_until = 0.0 if ignore_cooldown else self._summary_failure_cooldown_until
+        for label, until in (("cooldown", cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until)):
             remaining = until - time.monotonic()
             if remaining > 0:
                 return f"{label}:{remaining:.0f}"
@@ -3421,7 +3326,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         self._proactive_prune_rearm_tokens = 0
         self._last_reclaim_block_warn = None
 
-    def _billed_basis_over_threshold(self, current_tokens: "int | None") -> bool:
+    def _billed_basis_over_threshold(self, current_tokens: int | None) -> bool:
         """Whether a provider-billed reading says the session is over threshold.
 
         ``current_tokens`` is the provider's ``prompt_tokens`` (or the
@@ -3440,8 +3345,8 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
     def _warn_reclamation_no_op(
         self,
         reason: str,
-        current_tokens: "int | None",
-        before: "int | None" = None,
+        current_tokens: int | None,
+        before: int | None = None,
     ) -> None:
         """Warn when an over-threshold session's reclamation path no-ops.
 
@@ -5298,7 +5203,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _scan_window_handoffs(
         self, messages: list[dict[str, Any]], compress_start: int, compress_end: int,
         turns_to_summarize: list[dict[str, Any]],
-    ) -> "_HandoffScan":
+    ) -> _HandoffScan:
         """Rehydrate ``_previous_summary`` / user-turn provenance from in-transcript handoffs.
         Handoff rows are removed from the summarizer window (merged handoffs unwrap to their prior-tail
         content) and ``tail_start`` advances past a handoff beyond the window. The pre-scan state is
@@ -5570,7 +5475,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _finalize_compressed(
         self, compressed: list[dict[str, Any]], messages: list[dict[str, Any]], n_messages: int,
-        spare_pending_images: bool,
+        spare_pending_images: bool, pruned_count: int = 0,
     ) -> list[dict[str, Any]]:
         """Post-assembly cleanup: orphan pairs, media, savings, markers, replay prune, mem trim."""
         # Single-prompt cron shape: the only live instruction sits in the protected head, BEFORE the
@@ -5602,11 +5507,10 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         # Invariant (#57491): no compacted message leaves compress() with a persistence marker.
         _strip_persistence_markers(compressed)
-        # Prior-turn codex_reasoning_items are re-billed dead weight (#71058); the cache prefix is
-        # already broken here.
         _pruned_replay = _prune_stale_reasoning_replay(compressed)
         if _pruned_replay and not self.quiet_mode:
             logger.info("Pruned stale replay items from %d assistant message(s) during compaction", _pruned_replay)
+        self._record_compression_effect(n_messages, compressed, pre_estimate, pruned_count, _pruned_replay)
         self._last_compression_made_progress = True
 
         # Compaction frees the biggest allocation: hand pages back to the OS (glibc/config-gated,
@@ -5652,6 +5556,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         _raise_if_stale_attempt(self)
         telemetry = self._begin_compress_attempt(current_tokens, force)
+        telemetry["has_focus_topic"] = bool(focus_topic)
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
@@ -5733,10 +5638,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
-        return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images)
+        return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images, pruned_count)
 
     def _assemble_compressed(
-        self, messages: list[dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,
+        self, messages: list[dict[str, Any]], compress_start: int, compress_end: int, scan: _HandoffScan, summary: str,
     ) -> list[dict[str, Any]]:
         """Head + summary + tail from the pruned copy: its tool-result demotions are what let an oversized
         head/tail compress at all (#61932); tool-call arguments are never rewritten by pruning."""

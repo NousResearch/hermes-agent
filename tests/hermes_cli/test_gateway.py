@@ -91,8 +91,7 @@ def _run_native_windows_gateway_start_diag(
     completed = subprocess.run(
         [sys.executable, "-c", script],
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         creationflags=windows_detach_flags_without_breakaway(),
         text=True,
         encoding="utf-8",
@@ -203,8 +202,7 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
         completed = subprocess.run(
             [sys.executable, "-c", script],
             stdin=stdin,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             env=env,
             timeout=30,

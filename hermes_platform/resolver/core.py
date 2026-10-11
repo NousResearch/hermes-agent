@@ -43,7 +43,7 @@ class Observation(Generic[T]):
     detail: str = ""
 
     @classmethod
-    def not_checked(cls) -> "Observation[T]":
+    def not_checked(cls) -> Observation[T]:
         return cls(CheckState.NOT_CHECKED)
 
 

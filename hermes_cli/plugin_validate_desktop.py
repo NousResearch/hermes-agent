@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 # (rule, regex) applied to comment-stripped source; every hit fails the "desktop surface" check.
-_FORBIDDEN: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+_FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("prototype patching",
      re.compile(r"\b[A-Za-z_$][\w$]*\.prototype\.[\w$]+\s*=[^=]")),
     ("prototype patching",

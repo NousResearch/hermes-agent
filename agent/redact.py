@@ -363,7 +363,7 @@ def _is_word_end(s: str, j: int, *, allow_plural: bool = True) -> bool:
     return allow_plural and cur in "sS" and _is_word_end(s, j + 1, allow_plural=False)
 
 
-def _has_word_bounded_keyword(key: str, keyword_re: "re.Pattern[str]") -> bool:
+def _has_word_bounded_keyword(key: str, keyword_re: re.Pattern[str]) -> bool:
     """True if ``keyword_re`` matches ``key`` at a word boundary (see _KEY_KEYWORD_RE)."""
     return any(_is_word_start(key, m.start()) and _is_word_end(key, m.end()) for m in keyword_re.finditer(key))
 
@@ -580,7 +580,7 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202f\u2060\
 _TOKEN_BODY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.")
 
 
-def _compile_prefix_matcher(patterns: list) -> "re.Pattern[str]":
+def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
     return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
 
 

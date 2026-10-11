@@ -319,13 +319,17 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
         monkeypatch.delenv("XDG_STATE_HOME", raising=False)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
-    # Relay 0.9 normally discovers the user's XDG plugins.toml. Select an empty
-    # per-test user file instead so tests cannot activate a developer's plugins,
+    # Relay normally discovers the user's XDG plugins.toml and merges the machine
+    # policy above it. Select a per-test user file with a deny-by-default dynamic
+    # plugin policy so ordinary tests do not activate ambient worker/native plugins,
     # without changing XDG_CONFIG_HOME for unrelated Hermes code under test.
     # Outside tmp_path: tests that list or git-status their tmp dir must not see it.
     relay_plugins = tmp_path_factory.getbasetemp() / "relay-plugins.toml"
     if not relay_plugins.exists():
-        relay_plugins.write_text("version = 1\n", encoding="utf-8")
+        relay_plugins.write_text(
+            "version = 1\n\n[plugins.policy.defaults]\nallowed = false\n",
+            encoding="utf-8",
+        )
     monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(relay_plugins))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so

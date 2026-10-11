@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Scan a pinned plugin tree for unscannable executable payloads (catalog rule 17).
+
+A reviewer and the install scanner must be able to read everything shipped at the
+pinned commit as source. This refuses:
+
+  * compiled binaries, by magic header (ELF, Mach-O incl. universal, PE/``MZ``,
+    WebAssembly) — never by extension, which a rename defeats;
+  * committed Python bytecode (``.pyc``/``.pyo`` and sourceless caches), which the
+    interpreter runs in place of the ``.py`` a reviewer read;
+  * archives (zip/jar/whl, tar, gzip/xz/bzip2/zstd) whose members are not all
+    themselves reviewable source — a tarball of ``.py``/``.md`` is fine, one hiding
+    a binary is not.
+
+stdlib only, so the no-install catalog validator and third-party CI can run it.
+A native component is allowed only with a GitHub build attestation; that check
+needs a token and lives in the workflow, not here.
+
+Usage:
+    scan_plugin_payloads.py <plugin-dir>
+Exit 0 = clean, 1 = a payload was found (lines on stdout), 2 = bad usage.
+"""
+from __future__ import annotations
+
+import io
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+# Source extensions whose archives stay reviewable. Anything else inside an
+# archive (a nested archive, a binary, an unknown blob) fails the whole archive.
+_ARCHIVE_SOURCE_SUFFIXES = {
+    ".py", ".pyi", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".jsx", ".json", ".jsonc", ".jsonl",
+    ".md", ".txt", ".rst", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".csv", ".tsv",
+    ".html", ".htm", ".css", ".scss", ".svg", ".sh", ".ps1", ".bat", ".sql", ".proto",
+    ".c", ".h", ".cpp", ".hpp", ".cc", ".rs", ".go", ".java", ".kt", ".rb", ".lua",
+    ".patch", ".diff", ".lock", ".gitignore", ".gitattributes", ".env", ".service",
+    ".xml", ".properties", ".gradle", ".cmake", ".mk", ".conf", ".d.ts", ".map",
+}
+# Inert, non-executable asset types that may ride along inside a source bundle:
+# fonts and images carry no code the scanner needs to read. An unknown binary
+# blob is NOT inert and still fails the archive.
+_ARCHIVE_ASSET_SUFFIXES = {
+    ".ttf", ".otf", ".woff", ".woff2", ".eot",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".avif",
+}
+# Extensionless filenames that are conventionally plain-text source/config.
+_SOURCE_BASENAMES = {
+    "dockerfile", "makefile", "license", "licence", "notice", "readme", "copying",
+    "authors", "contributors", "changelog", "codeowners", "procfile", ".gitignore",
+    ".gitattributes", ".dockerignore", ".npmignore", ".editorconfig",
+}
+_ARCHIVE_SUFFIXES = {".zip", ".jar", ".whl", ".egg", ".apk", ".war",
+                     ".tar", ".tgz", ".gz", ".bz2", ".xz", ".zst", ".7z", ".rar"}
+_BYTECODE_SUFFIXES = {".pyc", ".pyo"}
+
+
+def _magic_kind(head: bytes) -> str | None:
+    """Name the compiled-binary format a byte header indicates, else None."""
+    if head.startswith(b"\x7fELF"):
+        return "ELF executable/library"
+    if head.startswith((b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
+                        b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf")):
+        return "Mach-O binary"
+    if head.startswith(b"MZ"):
+        return "PE (Windows) executable/DLL"
+    if head.startswith(b"\x00asm"):
+        return "WebAssembly module"
+    return None
+
+
+def _is_source_member(name: str) -> bool:
+    low = name.lower().rstrip("/")
+    if not low or low.endswith("/"):
+        return True  # a directory entry
+    base = low.rsplit("/", 1)[-1]
+    if base in _SOURCE_BASENAMES:
+        return True
+    suffix = "." + base.rsplit(".", 1)[1] if "." in base else ""
+    return suffix in _ARCHIVE_SOURCE_SUFFIXES or suffix in _ARCHIVE_ASSET_SUFFIXES
+
+
+def _archive_problem(path: Path, data: bytes) -> str | None:
+    """Return a reason the archive is unreviewable, or None if every member is source."""
+    try:
+        if zipfile.is_zipfile(io.BytesIO(data)):
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                bad = [n for n in zf.namelist() if not _is_source_member(n)]
+                return f"archive member not reviewable source: {bad[0]}" if bad else None
+        bio = io.BytesIO(data)
+        with tarfile.open(fileobj=bio) as tf:  # autodetects gzip/bz2/xz
+            for member in tf.getmembers():
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    return f"archive has a non-regular member: {member.name}"
+                if not _is_source_member(member.name):
+                    return f"archive member not reviewable source: {member.name}"
+                # A member named like source/asset must not actually be a compiled
+                # binary (an .exe renamed .png rides in otherwise).
+                fobj = tf.extractfile(member)
+                if fobj is not None and _magic_kind(fobj.read(8)):
+                    return f"archive member is a compiled binary: {member.name}"
+            return None
+    except (tarfile.TarError, zipfile.BadZipFile, OSError, EOFError):
+        # Not a parseable archive we recognise. A file carrying an archive
+        # suffix we cannot open is itself unreviewable.
+        return "archive could not be opened for review"
+    return "archive could not be opened for review"
+
+
+def _file_problem(path: Path, rel: str) -> str | None:
+    """Return a rule-17 reason this single file is unreviewable, or None."""
+    if path.suffix.lower() in _BYTECODE_SUFFIXES:
+        return f"{rel}: committed Python bytecode (ships instead of readable source)"
+    try:
+        head = path.read_bytes()[:8] if path.stat().st_size else b""
+    except OSError:
+        return None
+    kind = _magic_kind(head)
+    if kind:
+        return f"{rel}: compiled binary — {kind} (not reviewable source)"
+    if path.suffix.lower() in _ARCHIVE_SUFFIXES:
+        try:
+            reason = _archive_problem(path, path.read_bytes())
+        except OSError:
+            reason = "archive could not be read"
+        if reason:
+            return f"{rel}: {reason}"
+    return None
+
+
+def scan(plugin_dir: Path) -> list[str]:
+    findings: list[str] = []
+    for path in sorted(plugin_dir.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if "/.git/" in "/" + path.as_posix():
+            continue
+        problem = _file_problem(path, path.relative_to(plugin_dir).as_posix())
+        if problem:
+            findings.append(problem)
+    return findings
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print("usage: scan_plugin_payloads.py <plugin-dir>", file=sys.stderr)
+        return 2
+    root = Path(argv[1])
+    if not root.is_dir():
+        print(f"not a directory: {root}", file=sys.stderr)
+        return 2
+    findings = scan(root)
+    for f in findings:
+        print(f)
+    return 1 if findings else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

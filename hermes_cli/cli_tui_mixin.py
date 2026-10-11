@@ -1122,13 +1122,13 @@ class CLITuiMixin:
             event.app.invalidate()
 
     def _tui_handle_ctrl_z(self, event):
-        """Ctrl+Z suspends the process (Unix only)."""
+        """Ctrl+Z suspends this process only (Unix); background jobs keep running."""
         from cli import _DIM, _RST, _cprint
         if sys.platform == 'win32':
             _cprint(f"\n{_DIM}{t('cli.tui.suspend_unsupported')}{_RST}")
             event.app.invalidate()
             return
-        import signal as _sig
+        from hermes_cli.cli_suspend import _suspend_cli_process
         from prompt_toolkit.application import run_in_terminal
         from hermes_cli.skin_engine import get_active_skin
         agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
@@ -1136,7 +1136,7 @@ class CLITuiMixin:
 
         def _suspend():
             os.write(1, msg.encode())
-            os.kill(0, _sig.SIGTSTP)
+            _suspend_cli_process()
         run_in_terminal(_suspend)
 
     def _tui_handle_ctrl_d(self, event):

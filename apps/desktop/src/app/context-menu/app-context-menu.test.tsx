@@ -609,3 +609,24 @@ describe('ContextMenuTrigger asChild', () => {
     expect(footer.hasAttribute(HERMES_CONTEXT_MENU_TRIGGER_ATTR)).toBe(true)
   })
 })
+
+describe('selected chat text menu', () => {
+  it('offers guarded speech and translation only for a single readonly message', async () => {
+    installBridge()
+    mountMenu()
+
+    const host = attach(
+      '<div data-selection-session-id="source-chat"><div data-slot="aui_assistant-message-root">selected text</div></div>'
+    )
+
+    const message = host.querySelector('[data-slot]')!
+    const range = document.createRange()
+    range.selectNodeContents(message)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    fireEvent.contextMenu(message)
+    expect(await screen.findByText('Read Aloud')).toBeTruthy()
+    expect(screen.getByText('Translate…')).toBeTruthy()
+    expect($contextMenu.get()?.kind).toBe('dom')
+  })
+})

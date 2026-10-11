@@ -34,16 +34,20 @@ export interface OneShotRequest {
  * Send a one-off request to Hermes and return the generated text.
  * Throws when the gateway is offline or the backend reports an error.
  */
-export async function requestOneShot(req: OneShotRequest): Promise<string> {
+export type OneShotDispatch = (method: string, params: Record<string, unknown>) => Promise<{ text?: string }>
+
+export async function requestOneShot(req: OneShotRequest, dispatch?: OneShotDispatch): Promise<string> {
   const gateway = $gateway.get()
 
-  if (!gateway) {
+  if (!gateway && !dispatch) {
     throw new Error('Gateway not connected')
   }
 
   const sessionId = req.sessionId === undefined ? $activeSessionId.get() : req.sessionId
 
-  const result = await gateway.request<{ text?: string }>('llm.oneshot', {
+  const request: OneShotDispatch = dispatch ?? ((method, params) => gateway!.request(method, params))
+
+  const result = await request('llm.oneshot', {
     input: req.input,
     instructions: req.instructions,
     max_tokens: req.maxTokens,

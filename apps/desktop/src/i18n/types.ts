@@ -1,11 +1,10 @@
+import type { ErrorCodeKey } from '@/lib/error-surface'
 // Desktop i18n type contract.
 //
 // `Translations` is the single source of truth for every translatable string
 // surface. Fully translated locale files may satisfy this interface directly;
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
-
-import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
 import type { AppTourTranslations, HandoffTourTranslations } from './types_app_tour'
@@ -17,6 +16,7 @@ import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { SidebarProjectsTranslations } from './types_projects'
+import type { ContextMenuCopy, SelectionActionCopy, SelectionTranslateCopy } from './types_selection'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
 import type { UpdateChannelCopy } from './types_update_channel'
@@ -3978,29 +3978,9 @@ export interface Translations extends NoticeTranslations {
     tabCount: (count: number) => string
   }
 
-  contextMenu: {
-    link: {
-      openInApp: string
-      openExternal: string
-      copyUrl: string
-      copyResolvedUrl: string
-    }
-    image: {
-      copyImage: string
-      copyImageAddress: string
-      saveImageAs: string
-    }
-    edit: {
-      cut: string
-      paste: string
-      selectAll: string
-      addToDictionary: string
-    }
-    page: {
-      copyPageUrl: string
-      inspectElement: string
-    }
-  }
+  selectionTranslate: SelectionTranslateCopy
+  selectionActions: SelectionActionCopy
+  contextMenu: ContextMenuCopy
 
   assistant: {
     thread: {

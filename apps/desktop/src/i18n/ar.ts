@@ -8,6 +8,7 @@ import { arCommandCenter } from './ar_command_center'
 import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
+import { arSelectionActions, arSelectionTranslate } from './ar_selection'
 import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
@@ -49,6 +50,8 @@ export const arOverrides = {
   preview: arArtifacts.preview,
   interfaceMode: arSettings.interfaceMode,
   zones: arChrome.zones,
+  selectionTranslate: arSelectionTranslate,
+  selectionActions: arSelectionActions,
   contextMenu: arChrome.contextMenu,
   assistant: arAssistant.assistant,
   prompts: arChat.prompts,

@@ -344,6 +344,7 @@ declare global {
       contextMenuEdit?: (command: 'copy' | 'cut' | 'paste' | 'selectAll') => Promise<void>
       /** Copy the image under the LAST context-menu gesture (Chromium tracks
        *  its coordinates on the main-process context-menu event). */
+      contextMenuLookUp?: (selection: { text: string; sessionId: string }) => Promise<boolean>
       contextMenuCopyImage?: () => Promise<void>
       /** Replace the misspelled word or add it to the dictionary. */
       contextMenuSpellcheck?: (action: { kind: 'add' | 'replace'; word: string }) => Promise<void>

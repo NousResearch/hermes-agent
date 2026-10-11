@@ -562,6 +562,7 @@ import {
 } from './secret-storage-policy'
 import { selectPathsDialogProperties } from './select-paths-dialog'
 import { selectRunnableBinary } from './select-runnable-binary'
+import { registerSelectionMenuIpc } from './selection-context-menu'
 import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
@@ -17931,19 +17932,7 @@ ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(Stri
 
 // The custom context menu's edit verbs. They act on the SENDER's focused
 // element, so the renderer restores focus to the editable before invoking.
-ipcMain.handle('hermes:context-menu:edit', (event, command) => {
-  const contents = event.sender
-
-  if (command === 'copy') {
-    contents.copy()
-  } else if (command === 'cut') {
-    contents.cut()
-  } else if (command === 'paste') {
-    contents.paste()
-  } else if (command === 'selectAll') {
-    contents.selectAll()
-  }
-})
+registerSelectionMenuIpc(ipcMain, contents => BrowserWindow.fromWebContents(contents), IS_MAC)
 
 // Copy the image under the sender's LAST context-menu gesture. Chromium only
 // exposes image bytes through copyImageAt, and only main saw the coordinates.

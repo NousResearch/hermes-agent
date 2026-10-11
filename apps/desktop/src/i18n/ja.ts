@@ -9,6 +9,7 @@ import { jaNotices } from './ja_notices'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
+import { jaContextMenu, jaSelectionActions, jaSelectionTranslate } from './ja_selection'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaUpdateChannel } from './ja_update_channel'
 
@@ -3408,29 +3409,9 @@ export const jaOverrides = {
     tabCount: count => `${count} 個のタブ`
   },
 
-  contextMenu: {
-    link: {
-      openInApp: 'アプリ内ブラウザーで開く',
-      openExternal: '外部ブラウザーで開く',
-      copyUrl: 'URL をコピー',
-      copyResolvedUrl: '解決後の URL をコピー'
-    },
-    image: {
-      copyImage: '画像をコピー',
-      copyImageAddress: '画像アドレスをコピー',
-      saveImageAs: '画像を名前を付けて保存…'
-    },
-    edit: {
-      cut: '切り取り',
-      paste: '貼り付け',
-      selectAll: 'すべて選択',
-      addToDictionary: '辞書に追加'
-    },
-    page: {
-      copyPageUrl: 'ページの URL をコピー',
-      inspectElement: '要素を調査'
-    }
-  },
+  selectionTranslate: jaSelectionTranslate,
+  selectionActions: jaSelectionActions,
+  contextMenu: jaContextMenu,
 
   assistant: {
     catalogInstall: {

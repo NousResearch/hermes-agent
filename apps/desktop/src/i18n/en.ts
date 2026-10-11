@@ -10,6 +10,7 @@ import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
+import { enContextMenu, enSelectionActions, enSelectionTranslate } from './en_selection'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
@@ -4552,29 +4553,9 @@ export const en: Translations = {
     tabCount: count => `${count} tabs`
   },
 
-  contextMenu: {
-    link: {
-      openInApp: 'Open in in-app browser',
-      openExternal: 'Open in external browser',
-      copyUrl: 'Copy URL',
-      copyResolvedUrl: 'Copy resolved URL'
-    },
-    image: {
-      copyImage: 'Copy image',
-      copyImageAddress: 'Copy image address',
-      saveImageAs: 'Save image as…'
-    },
-    edit: {
-      cut: 'Cut',
-      paste: 'Paste',
-      selectAll: 'Select all',
-      addToDictionary: 'Add to dictionary'
-    },
-    page: {
-      copyPageUrl: 'Copy page URL',
-      inspectElement: 'Inspect element'
-    }
-  },
+  selectionTranslate: enSelectionTranslate,
+  selectionActions: enSelectionActions,
+  contextMenu: enContextMenu,
 
   assistant: {
     thread: {

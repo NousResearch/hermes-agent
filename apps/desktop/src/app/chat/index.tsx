@@ -469,6 +469,14 @@ export function ChatRuntimeBoundary({
 // Memoized: the tile caller (session-tile.tsx) and the contrib surface re-render
 // on idle ticks unrelated to the chat; with stable callback props (hoisted to
 // useCallback at the call sites) memo() lets the whole chat shell skip those.
+// Drag/drop uses the durable pane anchor; selected-text actions use the live session owner.
+function chatSurfaceAttributes(primary: boolean, storedId: string | null, runtimeId: string | null) {
+  return {
+    'data-session-anchor': primary ? 'workspace' : `session-tile:${storedId ?? ''}`,
+    'data-selection-session-id': runtimeId
+  }
+}
+
 export const ChatView = memo(function ChatView(props: ChatViewProps) {
   const composerSurfaceId = useId()
 
@@ -541,9 +549,6 @@ const ChatViewContent = memo(function ChatViewContent({
   const surfaceFocused = useStoreSelector($focusedStoredSessionId, focused => focused === storedId)
   const groupId = usePaneGroup()
   const surfaceHovered = useStoreSelector($hoveredTreeGroup, hovered => hovered === groupId)
-  // Dock anchor for a session drop onto this surface: the workspace pane for the
-  // primary, this tile's pane id for a tile. Read by the session-drop bridge.
-  const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
   const activeGatewayProfile = useStore($activeGatewayProfile)
@@ -756,8 +761,8 @@ const ChatViewContent = memo(function ChatViewContent({
       data-composer-surface-id={composerSurfaceId}
       data-composer-target={composerScope.target}
       data-guide-arrived={isPrimary && guideStarted ? '' : undefined}
-      data-session-anchor={sessionAnchor}
       data-setup-chat={setupChat ? '' : undefined}
+      {...chatSurfaceAttributes(isPrimary, storedId, activeSessionId)}
     >
       <Backdrop />
       {/* Tiles get their chrome from the layout zone (chip strip); the modal

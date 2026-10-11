@@ -11,6 +11,7 @@ import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
 import { zhHantSettings } from './zh-hant_settings'
+import { zh_hantSelectionActions, zh_hantSelectionTranslate } from './zh_hant_selection'
 
 export const zhHantOverrides = {
   skillDeepLink: {
@@ -116,6 +117,8 @@ export const zhHantOverrides = {
     }
   },
   zones: zhHantChrome.zones,
+  selectionTranslate: zh_hantSelectionTranslate,
+  selectionActions: zh_hantSelectionActions,
   contextMenu: zhHantChrome.contextMenu,
   assistant: zhHantAssistant.assistant,
   prompts: zhHantChat.prompts,

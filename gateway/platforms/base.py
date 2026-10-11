@@ -3890,27 +3890,33 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             self._start_session_processing(pending_event, session_key)
 
     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
-        """Dispatch a reset-like bypass command (/stop, /new, /reset): keep a guard installed while
-        the runner handles it (follow-ups stay queued), cancel the old task AFTER the response,
-        drain once."""
+        """/stop, /new, /reset under a command guard, debounced text held. Cancel (after the reply) and drain only if
+        the runner's stop/reset handler ran — past admission AND slash access — setting ``event._interrupt_accepted``;
+        else restore guard and text. No authorization check registered (no runner verdict): cancel as before."""
         logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", self.name, cmd, session_key)
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
+        if (held := self._text_debounce_store().pop(session_key, None)) is not None:
+            held.cancel_timer()
+        cancelled = False
         try:
-            # Send BEFORE cancelling so cancellation side effects can't drop the "/new"
-            # confirmation.
             await self._dispatch_inline_reply(event, log_cmd=cmd)
-            await self.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
-        except Exception:
-            # On failure restore the original guard so the session isn't left half-reset.
-            if self._active_sessions.get(session_key) is command_guard:
-                if session_key in self._session_tasks and current_guard is not None:
-                    self._active_sessions[session_key] = current_guard
-                else:
-                    self._release_session_guard(session_key, guard=command_guard)
-            raise
-        await self._drain_pending_after_session_command(session_key, command_guard)
+            if self._authorization_check is None or getattr(event, "_interrupt_accepted", False) is True:
+                await self.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
+                cancelled = True
+        finally:
+            if not cancelled:
+                if self._active_sessions.get(session_key) is command_guard:
+                    if session_key in self._session_tasks and current_guard is not None:
+                        self._active_sessions[session_key] = current_guard
+                    else:
+                        self._release_session_guard(session_key, guard=command_guard)
+                if held is not None:
+                    self._text_debounce_store()[session_key] = held
+                    await self._flush_text_debounce_now(session_key)
+        if cancelled:
+            await self._drain_pending_after_session_command(session_key, command_guard)
 
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
@@ -3993,11 +3999,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
         if should_bypass_active_session(cmd):
             try:
-                # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel. The cancel
-                # belongs to the session's authorized users (thread keys carry no user part, so they're shared).
-                if cmd and is_interrupt_then_dispatch(cmd) and self._is_sender_authorized(
-                        src.user_id, src.chat_type, src.chat_id, is_bot=src.is_bot, thread_id=src.thread_id) is not False:
-                    self._discard_text_debounce(session_key)
+                # /stop, /new, /reset: response, then cancel + drain only if the runner accepted it.
+                if cmd and is_interrupt_then_dispatch(cmd):
                     await self._dispatch_active_session_command(event, session_key, cmd)
                 else:
                     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s",

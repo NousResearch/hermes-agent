@@ -184,6 +184,38 @@ class TestBrowserSnapshotRedaction:
         assert "Dashboard" in content
         assert "ref=e5" in content
 
+    def test_snapshot_line_password_without_vendor_shape_masked(self):
+        """A page-prefilled password with no vendor prefix and no keyed assignment —
+        the value rides an accessibility-snapshot line, whose rich ``role "label" [ref]``
+        shape the assignment passes never recognize (#134715)."""
+        from tools.browser_tool_snapshot import _redact_browser_output
+
+        snapshot = (
+            '- heading "Sign in" [ref=e1]\n'
+            '  - textbox "Email" [ref=e2]: user@example.com\n'
+            '  - textbox "Password" [ref=e3]: hunter2\n'
+            '  - textbox "Пароль" [ref=e4]: hunter2-ru\n'
+        )
+        out = _redact_browser_output({"snapshot": snapshot})["snapshot"]
+        assert "hunter2" not in out
+        assert 'Password" [ref=e3]: ***' in out
+        assert 'Пароль" [ref=e4]: ***' in out
+        # Non-credential fields stay readable so the agent can still navigate the page.
+        assert "user@example.com" in out
+
+    def test_stored_snapshot_redacts_label_borne_passwords(self):
+        """The stored full-text file must mask label-borne passwords too — the same
+        rich-shape blind spot on the disk boundary (#134715)."""
+        from pathlib import Path
+        from tools.browser_tool_snapshot import _store_full_snapshot
+
+        snapshot = '- textbox "Password" [ref=e4]: autofilled-pw-98765\n'
+        stored = _store_full_snapshot(snapshot)
+        assert stored is not None
+        content = Path(stored).read_text(encoding="utf-8")
+        assert "autofilled-pw-98765" not in content
+        assert 'Password" [ref=e4]: ***' in content
+
 
 
 

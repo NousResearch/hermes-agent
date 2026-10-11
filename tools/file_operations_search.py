@@ -471,6 +471,19 @@ class SearchMixin:
                 "folder directly when access is intentional.")
 
     @staticmethod
+    def _macos_glob_exclusion_search_warning(paths: list[str]) -> str:
+        """Honest wording for the rg transport: ``--glob '!<dir>/**'`` keeps a
+        protected folder's CONTENTS out of the results but never matches the
+        folder entry itself, so the traversal still opens it and the TCC prompt
+        can still fire (#129733, #134775)."""
+        skipped = ", ".join(os.path.basename(item) for item in paths)
+        return ("Excluded the contents of macOS protected folders from this "
+                f"search ({skipped}), but the broad traversal still opens those "
+                "folders themselves and can still trigger the macOS privacy "
+                "prompt (including a timeout while waiting on it). Search a "
+                "protected folder directly when access is intentional.")
+
+    @staticmethod
     def _hidden_prune_expr(q_roots: list[str]) -> str:
         """find clause pruning hidden dirs while keeping an explicitly selected dot-named root
         (dir or single file) — find echoes each start point as given, so ``! -path`` matches it."""
@@ -556,11 +569,12 @@ class SearchMixin:
                 sub = self._search_content(pattern, root, file_glob, limit, offset, output_mode, context)
                 if sub.error:
                     return sub
-                merged.matches.extend(sub.matches)
-                merged.files.extend(sub.files)
-                merged.counts.update(sub.counts)
-                merged.total_count += sub.total_count
-                merged.truncated = merged.truncated or sub.truncated
+                # Weakest transport wins: one glob-mode root is enough to make
+                # the merged "Skipped" claim untrustworthy.
+                if sub._macos_exclusion_mode == "glob":
+                    merged._macos_exclusion_mode = "glob"
+                elif sub._macos_exclusion_mode == "prune" and merged._macos_exclusion_mode is None:
+                    merged._macos_exclusion_mode = "prune"
             merged.matches = merged.matches[:limit]
             merged.files = merged.files[:limit]
         note = f"path contained {len(parts)} entries; searched {len(existing)} that exist"
@@ -572,7 +586,10 @@ class SearchMixin:
         if not merged.error:
             protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(existing)]
             if protected_paths:
-                warning_parts.append(self._macos_protected_search_warning(protected_paths))
+                if merged._macos_exclusion_mode == "prune":
+                    warning_parts.append(self._macos_protected_search_warning(protected_paths))
+                else:
+                    warning_parts.append(self._macos_glob_exclusion_search_warning(protected_paths))
         merged.warning = " ".join(warning_parts)
         return merged
 
@@ -972,7 +989,8 @@ class SearchMixin:
                 limit_reason = limit_reason or directory_limit_reason
         return SearchResult(
             files=all_files[offset:offset + limit], total_count=len(all_files),
-            truncated=len(all_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
+            truncated=len(all_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason,
+            _macos_exclusion_mode="glob" if effective_exclusions else None)
 
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
@@ -1043,7 +1061,8 @@ class SearchMixin:
             cmd_parts.append("--multiline")
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
-        cmd_parts.extend(self._rg_exclusion_globs(path))
+        exclusion_globs = self._rg_exclusion_globs(path)
+        cmd_parts.extend(exclusion_globs)
         if file_glob:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
@@ -1055,7 +1074,10 @@ class SearchMixin:
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
         ) if multiline else None
-        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
+        result = self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
+        if exclusion_globs:
+            result._macos_exclusion_mode = "glob"
+        return result
 
     def _grep_cmd(self, head: list[str], pattern: str, output_mode: str, context: int,
                   file_glob: Optional[str] = None) -> list[str]:
@@ -1117,4 +1139,9 @@ class SearchMixin:
         if file_glob:
             find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
         find_parts.extend(["-exec", *grep_parts, "{}", "+", "2>/dev/null"])
-        return self._run_search_pipeline(find_parts, output_mode, limit, offset, context, line_cap=True)
+        result = self._run_search_pipeline(find_parts, output_mode, limit, offset, context, line_cap=True)
+        if protected_paths:
+            # find -prune never descends into the protected dirs, so the
+            # "Skipped …" claim is true on this transport.
+            result._macos_exclusion_mode = "prune"
+        return result

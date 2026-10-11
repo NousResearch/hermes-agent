@@ -3459,6 +3459,10 @@ export const jaOverrides = {
     thread: {
       loadingSession: 'セッションを読み込み中',
       showEarlier: '以前のメッセージを表示',
+      showLater: '次のメッセージを表示',
+      jumpToLatest: '最新のメッセージへ',
+      historyLoadFailed: '履歴を読み込めませんでした。もう一度お試しください。',
+      historyPagingUnavailable: '履歴のページを移動するにはバックエンドを更新してください。',
       loadingResponse: 'Hermes が応答を読み込み中',
       resumeWhenBackgroundDone: count =>
         count === 1

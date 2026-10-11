@@ -28,6 +28,10 @@ export const zhHantAssistant = {
     thread: {
       loadingSession: '正在載入工作階段',
       showEarlier: '顯示較早的訊息',
+      showLater: '顯示後續訊息',
+      jumpToLatest: '跳至最新訊息',
+      historyLoadFailed: '無法載入歷史記錄，請重試。',
+      historyPagingUnavailable: '請更新後端以瀏覽相鄰的歷史頁面。',
       loadingResponse: 'Hermes 正在載入回覆',
       resumeWhenBackgroundDone: count =>
         count === 1 ? '背景工作完成後將自動繼續' : `${count} 個背景工作完成後將自動繼續`,

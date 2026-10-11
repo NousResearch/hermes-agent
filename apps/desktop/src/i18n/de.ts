@@ -5014,6 +5014,10 @@ export const deOverrides = {
     thread: {
       loadingSession: 'Session wird geladen',
       showEarlier: 'Frühere Nachrichten anzeigen',
+      showLater: 'Spätere Nachrichten anzeigen',
+      jumpToLatest: 'Zu den neuesten Nachrichten',
+      historyLoadFailed: 'Verlauf konnte nicht geladen werden. Erneut versuchen.',
+      historyPagingUnavailable: 'Aktualisiere das Backend, um weitere Verlaufsseiten zu laden.',
       loadingResponse: 'Hermes lädt eine Antwort',
       loadingLocalModel: model => `${model} wird in den Speicher geladen`,
       processingPrompt: 'Verarbeite Prompt',

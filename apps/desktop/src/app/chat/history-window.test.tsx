@@ -7,6 +7,7 @@ import { stubThreadEnvironment } from '@/components/assistant-ui/test-utils'
 import { type TranscriptWindowValue, useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $transcriptTailBySessionId } from '@/store/transcript-tail'
+import type { SessionMessage } from '@/types/hermes'
 
 import { PRIMARY_SESSION_VIEW, SessionViewProvider } from './session-view'
 
@@ -23,7 +24,16 @@ const message = (rowId: number): ChatMessage => ({
 
 const page = (rowId: number) => ({
   session_id: 'stored',
-  pagination: { has_older: true, has_newer: true, limit: 120, offset: 40, returned: 120, order: 'oldest' },
+  pagination: {
+    has_older: true,
+    has_newer: true,
+    limit: 120,
+    offset: 40,
+    returned: 120,
+    order: 'oldest',
+    first_cursor: rowId,
+    last_cursor: rowId + 119
+  },
   messages: Array.from({ length: 120 }, (_, index) => ({
     id: rowId + index,
     role: 'user' as const,
@@ -97,6 +107,9 @@ describe('bounded direct history runtime', () => {
     expect(url.searchParams.get('limit')).toBe('120')
     expect(mounted.view.$messages.get()).toBe(live)
     expect(mounted.runtime.thread.getState().messages).toHaveLength(120)
+    expect(mounted.window.expectedRuntimeIds).toBe(
+      mounted.runtime.thread.getState().messages.map(message => message.id).join('\n')
+    )
     expect(mounted.runtime.thread.getState().messages.some(message => message.id === id)).toBe(true)
     expect(mounted.window.currentMessages?.find(message => message.rowId === 40)?.id).toBe(id)
     expect(mounted.window.isHistorical).toBe(true)
@@ -127,7 +140,9 @@ describe('bounded direct history runtime', () => {
     })
     expect(mounted.runtime.thread.getState().messages).toBe(historical)
     expect(mounted.window).toBe(snapshot)
-    expect(await mounted.window.expandWindow()).toBe(false)
+    await act(async () => {
+      expect(await mounted.window.expandWindow()).toBe(false)
+    })
     act(() => {
       mounted.window.returnToLatest()
     })
@@ -268,100 +283,191 @@ describe('bounded direct history runtime', () => {
   })
 })
 
-/** A complete metadata page: prompt marks are all the range a reader can walk. */
-const index = (rowIds: number[]) => ({
-  entries: rowIds.map(rowId => ({ row_id: rowId, preview: `prompt ${rowId}` })),
-  pagination: { next_cursor: null, has_more: false }
-})
+describe('adjacent history windows', () => {
+  it('walks a tool turn longer than 120 rows in both directions, retains a bounded window and rejoins split calls', async () => {
+    const rows: SessionMessage[] = [{ id: 1, role: 'user', content: 'one long turn', timestamp: 1 }]
 
-describe('paging earlier from an open history window', () => {
-  it('keeps earlier messages reachable after a jump to an older mark', async () => {
-    const api = vi
-      .spyOn(window.hermesDesktop, 'api')
-      .mockResolvedValueOnce(page(4000))
-      .mockResolvedValueOnce(index([3880, 4000]))
-      .mockResolvedValueOnce({ ...page(3880), pagination: { ...page(3880).pagination, has_older: false } })
+    for (let i = 0; i < 300; i += 1) {
+      rows.push(
+        {
+          id: 2 + i * 2,
+          role: 'assistant',
+          content: '',
+          timestamp: 1,
+          tool_calls: [{ id: `call-${i}`, type: 'function', function: { name: 'terminal', arguments: '{}' } }]
+        },
+        {
+          id: 3 + i * 2,
+          role: 'tool',
+          tool_call_id: `call-${i}`,
+          tool_name: 'terminal',
+          content: `result-${i}`,
+          timestamp: 1
+        }
+      )
+    }
+
+    rows.push({ id: 602, role: 'user', content: 'next turn', timestamp: 1 })
+
+    const api = vi.spyOn(window.hermesDesktop, 'api').mockImplementation(async request => {
+      const params = new URL(request.path, 'http://test').searchParams
+
+      const start = params.has('before_cursor')
+        ? Math.max(0, Number(params.get('before_cursor')) - 121)
+        : params.has('after_cursor')
+          ? Number(params.get('after_cursor'))
+          : Number(params.get('row_id')) - 1
+
+      const selected = rows.slice(start, start + 120)
+
+      return {
+        session_id: 'stored',
+        messages: selected,
+        pagination: {
+          limit: 120,
+          returned: selected.length,
+          offset: start,
+          order: 'oldest',
+          has_older: start > 0,
+          has_newer: start + selected.length < rows.length,
+          first_cursor: selected[0]?.id,
+          last_cursor: selected.at(-1)?.id,
+          leading_prompt_row_id: start > 0 ? 1 : null
+        }
+      }
+    })
 
     const mounted = mount()
     const live = mounted.view.$messages.get()
-
     await act(async () => {
-      await mounted.window.revealRow(4000, new AbortController().signal)
+      await mounted.window.revealRow(1, new AbortController().signal)
     })
-    // The row was reached from the rail, but everything before it is still
-    // back there: the transcript's own entry point must not retire.
-    expect(mounted.window.olderAvailable).toBe(true)
+    const promptId = mounted.window.currentMessages[0].id
+    const results = new Set<string>()
 
-    let grew = false
-    await act(async () => {
-      grew = (await mounted.window.expandWindow()) === true
-    })
-    expect(grew).toBe(true)
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => {
+        expect(await mounted.window.revealNewer()).toBe(true)
+      })
 
-    const rows = mounted.window.currentMessages?.map(message => message.rowId) ?? []
+      const calls = mounted.window.currentMessages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call')
 
-    expect(rows[0]).toBe(3880)
-    expect(rows).toHaveLength(240)
-    expect(new Set(rows).size).toBe(240)
-    // The prepended page started at the session's first prompt: now retire.
+      expect(mounted.window.expectedRuntimeIds).toBe(
+        mounted.runtime.thread.getState().messages.map(message => message.id).join('\n')
+      )
+
+      // Raw retention is three pages even though hundreds of rows hydrate into
+      // one bubble; no cumulative full-transcript hydration.
+      expect(calls.length).toBeLessThanOrEqual(181)
+
+      for (const part of calls) {
+        if (part.result !== undefined && part.toolCallId) {
+          results.add(part.toolCallId)
+        }
+      }
+
+      if (i === 0) {
+        const seam = calls.find(part => part.toolCallId === 'call-59')!
+        expect(seam.result).toBeDefined()
+        expect(calls.filter(part => part.toolCallId === 'call-59')).toHaveLength(1)
+        expect(mounted.window.currentMessages[0].id).toBe(promptId)
+      }
+    }
+
+    expect(results.size).toBe(300)
+    expect(mounted.window.newerAvailable).toBe(false)
+    expect(mounted.window.leadingRowId).toBe(1)
+    expect(mounted.window.currentMessages.at(-1)?.rowId).toBe(602)
+
+    for (let i = 0; i < 3; i += 1) {
+      await act(async () => {
+        expect(await mounted.window.expandWindow()).toBe(true)
+      })
+    }
+
+    expect(mounted.window.currentMessages[0].id).toBe(promptId)
     expect(mounted.window.olderAvailable).toBe(false)
-    expect(await mounted.window.expandWindow()).toBe(false)
+    expect(mounted.window.newerAvailable).toBe(true)
     expect(mounted.view.$messages.get()).toBe(live)
-    expect(api.mock.calls.map(call => call[0].path)).toEqual([
-      expect.stringContaining('around?row_id=4000'),
-      expect.stringContaining('/timeline?limit=500'),
-      expect.stringContaining('around?row_id=3880')
-    ])
+    expect(api.mock.calls.every(([request]) => request.path.includes('/messages/around?'))).toBe(true)
+    act(() => mounted.window.returnToLatest())
+    expect(mounted.runtime.thread.getState().messages.at(-1)?.id).toBe('live-10119')
   })
 
-  it('shows the older page on its own when a turn longer than the page limit separates it from the anchor', async () => {
-    vi.spyOn(window.hermesDesktop, 'api')
-      // 300 display rows precede the anchor; the previous prompt's forward
-      // page (offset 40, 120 rows) ends 140 rows short of it.
-      .mockResolvedValueOnce({ ...page(4000), pagination: { ...page(4000).pagination, offset: 300 } })
-      .mockResolvedValueOnce(index([3700, 4000]))
-      .mockResolvedValueOnce(page(3700))
-    const mounted = mount('stored-gap')
+  it.each(['older', 'newer'] as const)(
+    'captures %s changes only on commit and ignores a response superseded by a rail jump',
+    async direction => {
+      const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValueOnce(page(4000))
+      const mounted = mount()
+      await act(async () => {
+        await mounted.window.revealRow(4000, new AbortController().signal)
+      })
+      let finish!: (value: ReturnType<typeof page>) => void
+      api.mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            finish = resolve
+          })
+      )
+      const before = vi.fn()
+      let pending!: Promise<boolean | void>
+      act(() => {
+        pending = Promise.resolve(
+          direction === 'older' ? mounted.window.expandWindow(before) : mounted.window.revealNewer(before)
+        )
+      })
+      expect(before).not.toHaveBeenCalled()
+      api.mockResolvedValueOnce(page(8000))
+      await act(async () => {
+        await mounted.window.revealRow(8000, new AbortController().signal)
+      })
+      expect(await pending).toBe(false)
+      await act(async () => {
+        finish(page(direction === 'older' ? 3880 : 4120))
+        await Promise.resolve()
+      })
+      expect(before).not.toHaveBeenCalled()
+      expect(mounted.window.currentMessages[0].rowId).toBe(8000)
+    }
+  )
 
+  it('preserves the selected content on empty, invalid or failed continuations and reports older backend capability', async () => {
+    const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
+    const mounted = mount()
     await act(async () => {
-      await mounted.window.revealRow(4000, new AbortController().signal)
+      await mounted.window.revealRow(40, new AbortController().signal)
     })
-    const beforePrepend = vi.fn()
-    let grew = false
+    const selected = mounted.window.currentMessages
+    const before = vi.fn()
     await act(async () => {
-      grew = (await mounted.window.expandWindow(beforePrepend)) === true
+      expect(await mounted.window.revealNewer(before)).toBe(false)
     })
-
-    expect(grew).toBe(true)
-    const rows = mounted.window.currentMessages?.map(message => message.rowId) ?? []
-    // Never one continuous transcript with a silent hole before 4000.
-    expect(rows).toEqual(Array.from({ length: 120 }, (_, index) => 3700 + index))
-    expect(beforePrepend).not.toHaveBeenCalled()
-  })
-
-  it('retires the entry point when the complete index lists no prompt before the window', async () => {
-    const api = vi
-      .spyOn(window.hermesDesktop, 'api')
-      // The backend counts rows before this page, but none of them is a prompt mark.
-      .mockResolvedValueOnce(page(4000))
-      .mockResolvedValueOnce(index([4000]))
-
-    const mounted = mount('stored-unlisted')
-
+    expect(mounted.window.historyError).toBe('failed')
+    expect(mounted.window.currentMessages).toBe(selected)
+    api.mockResolvedValueOnce({
+      ...page(160),
+      messages: [],
+      pagination: { ...page(160).pagination, returned: 0, has_newer: false }
+    })
     await act(async () => {
-      await mounted.window.revealRow(4000, new AbortController().signal)
+      expect(await mounted.window.revealNewer(before)).toBe(false)
     })
-    expect(mounted.window.olderAvailable).toBe(true)
-
-    let grew = true
+    expect(mounted.window.currentMessages).toBe(selected)
+    expect(mounted.window.newerAvailable).toBe(false)
+    expect(before).not.toHaveBeenCalled()
+    api.mockResolvedValueOnce({
+      ...page(400),
+      pagination: { ...page(400).pagination, first_cursor: undefined, last_cursor: undefined }
+    })
     await act(async () => {
-      grew = (await mounted.window.expandWindow()) === true
+      await mounted.window.revealRow(400, new AbortController().signal)
     })
-    expect(grew).toBe(false)
-    // No page can ever arrive: stop offering one instead of failing forever.
-    expect(mounted.window.olderAvailable).toBe(false)
-    expect(mounted.window.currentMessages?.[0]?.rowId).toBe(4000)
-    expect(await mounted.window.expandWindow()).toBe(false)
-    expect(api).toHaveBeenCalledTimes(2)
+    await act(async () => {
+      expect(await mounted.window.revealNewer()).toBe(false)
+    })
+    expect(mounted.window.historyError).toBe('unavailable')
+    expect(mounted.window.currentMessages[0].rowId).toBe(400)
   })
 })

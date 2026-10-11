@@ -806,17 +806,27 @@ async def get_session_timeline(
 
 @manage_router.get("/api/sessions/{session_id}/messages/around")
 async def get_session_messages_around(
-    session_id: str, row_id: int = Query(..., ge=1), profile: Optional[str] = None,
+    session_id: str, row_id: Optional[int] = Query(None, ge=1), profile: Optional[str] = None,
     limit: int = Query(120, ge=1, le=120),
+    before_cursor: Optional[int] = Query(None, ge=1), after_cursor: Optional[int] = Query(None, ge=1),
 ):
-    """Bounded display page starting at a timeline prompt; no intervening payloads."""
+    """Bounded prompt jump or adjacent display page, including inside a long turn."""
+    # Direct (non-HTTP) calls — tests and internal reuse — receive the `Query`
+    # default instances instead of resolved values; normalize them to None so
+    # the exactly-one check sees the same picture an HTTP request would.
+    row_id = row_id if isinstance(row_id, int) else None
+    before_cursor = before_cursor if isinstance(before_cursor, int) else None
+    after_cursor = after_cursor if isinstance(after_cursor, int) else None
+    if sum(value is not None for value in (row_id, before_cursor, after_cursor)) != 1:
+        raise HTTPException(status_code=422, detail="Provide exactly one of row_id, before_cursor, after_cursor")
     from hermes_state_timeline import get_session_messages_around as read_around
 
     owner = _serving_profile(profile)
 
     def _read(db):
         sid = _timeline_session_id(db, session_id, owner)
-        page = read_around(db, sid, row_id, limit=limit)
+        page = read_around(db, sid, row_id, limit=limit,
+                           before_cursor=before_cursor, after_cursor=after_cursor)
         if page is None:
             raise HTTPException(status_code=404, detail="Prompt not found")
         return {"session_id": sid, "profile": owner, **page}

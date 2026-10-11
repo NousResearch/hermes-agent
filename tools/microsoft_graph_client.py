@@ -10,10 +10,8 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from agent.retry_utils import parse_retry_after_seconds
-from tools.microsoft_graph_auth import MicrosoftGraphTokenProvider, format_graph_error
+from tools.microsoft_graph_auth import DEFAULT_GRAPH_BASE_URL, MicrosoftGraphTokenProvider, format_graph_error
 
-
-DEFAULT_GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
 Headers = dict[str, str] | None
 Params = dict[str, Any] | None
@@ -36,13 +34,17 @@ class MicrosoftGraphAPIError(MicrosoftGraphClientError):
 class MicrosoftGraphClient:
     """Minimal async Graph client. Retry policy (JSON requests and streaming downloads
     alike): transport errors back off exponentially; 401 clears the token cache and
-    refetches; 429/5xx honor ``Retry-After``. Each attempt uses a fresh ``AsyncClient``."""
+    refetches; 429/5xx honor ``Retry-After``. Each attempt uses a fresh ``AsyncClient``.
+    Without ``base_url`` requests go to the Graph host the provider's scope targets (national clouds)."""
 
     def __init__(self, token_provider: MicrosoftGraphTokenProvider, *,
-                 base_url: str = DEFAULT_GRAPH_BASE_URL, timeout: float = 60.0, max_retries: int = 3,
+                 base_url: str | None = None, timeout: float = 60.0, max_retries: int = 3,
                  transport: httpx.AsyncBaseTransport | None = None,
                  sleep: Callable[[float], Awaitable[None]] | None = None,
                  user_agent: str = "Hermes-Agent/graph-client") -> None:
+        # Static-token shims (Teams summary writer) carry no credentials: global endpoint.
+        credentials = getattr(token_provider, "credentials", None)
+        base_url = base_url or (credentials.graph_base_url if credentials else DEFAULT_GRAPH_BASE_URL)
         self.token_provider, self.base_url, self.timeout = token_provider, base_url.rstrip("/"), timeout
         self.max_retries, self.user_agent = max(0, int(max_retries)), user_agent
         self._transport, self._sleep = transport, sleep or asyncio.sleep

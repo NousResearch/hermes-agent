@@ -2639,6 +2639,12 @@ def github_model_reasoning_efforts(
 _probe_neg_cache: dict[str, float] = {}
 _PROBE_NEG_TTL = 60.0  # seconds
 
+# Full-budget ceiling for custom-endpoint /models discovery: gateways that build the authed
+# catalog server-side (per-key entitlement lists) answer in ~8s TTFB, so the historical 5s
+# starved them out of the picker and the add-model validation deterministically (#134735).
+# Only the full path uses it — the picker's fast first paint stays at 1.5s.
+CUSTOM_ENDPOINT_PROBE_TIMEOUT: float = 15.0
+
 
 def _probe_neg_key(base_url: str) -> Optional[str]:
     """``host:port`` for *base_url* (both URL candidates share one entry), or None without a host."""

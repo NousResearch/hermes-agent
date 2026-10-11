@@ -612,11 +612,14 @@ def _discover_endpoint_models(
     declare a catalog), never the cache read — applying it to the read re-pins the endpoint to
     its declared subset. Returns ``(None, False)`` when nothing usable was found.
 
-    ``fast_custom_probe`` picks the discovery budget (1.5s fast / 5s full) independently of the
-    caller's exhausted-pool visibility flag: a picker that keeps cooldown providers visible
-    still deserves the full budget when it is the one surface that live-probes the current
-    custom endpoint."""
-    timeout = 1.5 if fast_custom_probe else 5.0
+    ``fast_custom_probe`` picks the discovery budget (1.5s fast / full = CUSTOM_ENDPOINT_PROBE_TIMEOUT)
+    independently of the caller's exhausted-pool visibility flag: a picker that keeps cooldown
+    providers visible still deserves the full budget when it is the one surface that live-probes
+    the current custom endpoint. The full budget must cover slow-but-working catalogs (entitlement
+    gateways answering in ~8s TTFB) or the cache row is never written and the provider stays
+    invisible on every later cache-only read (#134735)."""
+    from hermes_cli.models import CUSTOM_ENDPOINT_PROBE_TIMEOUT
+    timeout = 1.5 if fast_custom_probe else CUSTOM_ENDPOINT_PROBE_TIMEOUT
     if probe_live:
         try:
             live_models = _fetch_picker_live_models(
@@ -710,7 +713,8 @@ class _PickerBuild:
     refresh: bool
     excluded: set
     curated: dict
-    # Discovery budget override for custom endpoints (1.5s fast / 5s full). None keeps the
+    # Discovery budget override for custom endpoints (1.5s fast / CUSTOM_ENDPOINT_PROBE_TIMEOUT
+    # full). None keeps the
     # historical coupling to for_picker; callers that only want exhausted-pool visibility set
     # for_picker=True, fast_custom_probe=False so their probe budget is unchanged (#103843).
     fast_custom_probe: bool | None = None
@@ -1240,8 +1244,8 @@ def list_authenticated_providers(
     ``non_blocking_catalogs`` is the GUI read path (``model.options``): provider catalogs come from
     the disk cache only and stale/missing ones warm in the background, so a degraded provider
     never stalls the picker (#114215). ``fast_custom_probe`` overrides the custom-endpoint
-    discovery budget ``for_picker`` otherwise implies (1.5s vs 5s) — ``None`` keeps the
-    historical coupling, ``False`` retains the full 5s budget for callers that only want
+    discovery budget ``for_picker`` otherwise implies (1.5s vs 15s) — ``None`` keeps the
+    historical coupling, ``False`` retains the full budget for callers that only want
     exhausted-pool visibility (#103843)."""
 
     from agent.models_dev import fetch_models_dev

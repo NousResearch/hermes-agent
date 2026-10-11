@@ -5,6 +5,12 @@ read/write of per-board display metadata, board creation/discovery/archival, and
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
 late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 ``kanban_db.<name>`` keeps working.
+
+Dispatch admission (card t_17c9c847) lives here too: ``board_dispatch_enabled`` is the
+one chokepoint that decides whether the dispatcher may serve a board, and
+``list_dispatch_boards`` is the dispatcher's OWN enumeration — ``list_boards`` stays the
+full inventory for the CLI and the dashboard, so an estate board is still VISIBLE on the
+board list, it is simply never spawned from.
 """
 
 from __future__ import annotations
@@ -35,9 +41,103 @@ def _default_board_display_name(slug: str) -> str:
     return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part) or slug
 
 
+# --------------------------------------------------------------------------- #
+# Dispatch admission (card t_17c9c847)
+# --------------------------------------------------------------------------- #
+
+
+def _board_dispatch_flag(value: Any = True) -> bool:
+    """Coerce a ``board.json`` ``dispatch`` value to the admission bool.
+
+    Absent, ``None`` or an unrecognised value means ADMITTED (``True``), so every
+    board that predates the key keeps dispatching. Only an explicit false-y value
+    (``false``, ``0``, ``"off"`` ...) takes a board out of the dispatch set.
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no", "off")
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return True
+
+
+def board_is_archived_stub(slug: str) -> bool:
+    """A directory that is NOT a live board, but whose slug already has an ``_archived`` copy.
+
+    The measured resurrection (card t_17c9c847): a live worker's env pins its board's
+    store path, so the moment that board is archived the worker's next ``connect()`` (its
+    own auto-heartbeat, a tool call) mints an EMPTY store back at the archived slug's
+    directory. Two shapes are that mint, never a board somebody created:
+
+    * a directory with no ``board.json`` at all (``create_board`` always writes one), and
+    * the retired board's own tombstone — ``remove_board(archive=True)`` leaves an
+      ``archived`` ``board.json`` behind — once a stale read path has minted a store
+      beside it. A tombstone with no store is still the board's own record and stays
+      listed; the tombstone PLUS a freshly minted ``kanban.db`` is the stub.
+
+    An explicit ``create_board`` writes ``archived=False``, so a sanctioned re-create is
+    never a stub.
+    """
+    try:
+        meta_path = board_metadata_path(slug)
+        if meta_path.exists():
+            try:
+                raw = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                return False
+            if not (isinstance(raw, dict) and raw.get("archived")):
+                return False  # a live board
+            if not (_kb.board_dir(slug) / "kanban.db").exists():
+                return False  # the ordinary tombstone: still this board's record
+    except Exception:
+        return False
+    root = _kb.boards_root() / "_archived"
+    if not root.is_dir():
+        return False
+    prefix = f"{slug}-"
+    try:
+        for child in root.iterdir():
+            if not child.name.startswith(prefix):
+                continue
+            # ``<slug>-<epoch>`` (and ``<slug>-<epoch>-<n>`` on a rapid re-archive).
+            if child.name[len(prefix):].split("-")[0].isdigit():
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def board_dispatch_enabled(board: Optional[str] = None) -> bool:
+    """May the dispatcher serve ``board``? ``False`` for an estate/scratch board.
+
+    The one chokepoint read by the dispatcher's board enumeration
+    (:func:`list_dispatch_boards`) AND by its per-tick spawn guard
+    (``kanban_db_dispatch.dispatch_once``), so an estate board is safe by construction —
+    including from a CLI ``hermes kanban --board <estate> dispatch`` that bypasses
+    enumeration entirely (card t_17c9c847).
+
+    The ``dispatch`` key defaults to ``True`` AT READ TIME and is never materialized into
+    ``board.json`` by an unrelated write, so every board that predates the key keeps
+    dispatching. Fails CLOSED for a resurrected archived stub: a minted directory is not a
+    board, so re-opening an archived slug's path cannot re-admit it.
+    """
+    slug = _kb._slug_or_default(board)
+    if board_is_archived_stub(slug):
+        return False
+    try:
+        return _board_dispatch_flag(read_board_metadata(slug).get("dispatch", True))
+    except Exception:
+        return True
+
+
 def read_board_metadata(board: Optional[str] = None) -> dict:
     """``board.json`` merged over defaults, plus ``slug`` and ``db_path``. Never
-    raises — a missing/malformed file yields the synthesized entry."""
+    raises — a missing/malformed file yields the synthesized entry. The ``dispatch``
+    default is applied at read time by :func:`board_dispatch_enabled`, not here: an
+    unrelated write must leave a ``board.json`` that never touched the key alone."""
     slug = _kb._slug_or_default(board)
     meta: dict[str, Any] = {
         "slug": slug,
@@ -70,10 +170,15 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    dispatch: Optional[bool] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    "" = clear (``project_id`` is not validated here). ``dispatch``: ``None`` =
+    unchanged — the synthesized ``True`` default is applied at READ time by
+    :func:`board_dispatch_enabled`, so a board that never touched the key keeps its
+    ``board.json`` byte-identical; ``False`` marks an estate/scratch board the dispatcher
+    must not serve."""
     _kb._assert_not_delegated_child_mutation()
     slug = _kb._slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -86,6 +191,8 @@ def write_board_metadata(
             meta[key] = str(value)
     if archived is not None:
         meta["archived"] = bool(archived)
+    if dispatch is not None:
+        meta["dispatch"] = bool(dispatch)
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
@@ -103,9 +210,14 @@ def write_board_metadata(
 def create_board(
     slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
-    project_id: Optional[str] = None,
+    project_id: Optional[str] = None, dispatch: Optional[bool] = None,
 ) -> dict:
-    """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
+    """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata).
+
+    ``dispatch=False`` births an ESTATE/scratch board the dispatcher never serves (card
+    t_17c9c847): the flag is written into ``board.json`` at creation, so the board is
+    undispatchable by construction rather than by a teardown somebody has to remember.
+    """
     normed = _kb._require_slug(slug)
     # Explicit creation clears any archived tombstone at this slug (left by
     # remove_board(archive=True)) — otherwise _kb.init_db() below would rightly
@@ -113,6 +225,7 @@ def create_board(
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
         default_workdir=default_workdir, project_id=project_id, archived=False,
+        dispatch=dispatch,
     )
     # Touch the DB so list_boards() sees it immediately.
     _kb.init_db(board=normed)
@@ -121,7 +234,12 @@ def create_board(
 
 def list_boards(*, include_archived: bool = True) -> list[dict]:
     """Metadata for every board: ``default`` first (always present), then
-    ``boards/<slug>/`` dirs holding a ``kanban.db`` or ``board.json``, sorted."""
+    ``boards/<slug>/`` dirs holding a ``kanban.db`` or ``board.json``, sorted.
+
+    A resurrected archived STUB — a minted directory whose slug already has an
+    ``_archived`` copy — is NOT a board and is skipped here, so the phantom a pinned
+    worker re-creates cannot re-enter any enumeration
+    (:func:`board_is_archived_stub`, card t_17c9c847)."""
     entries = [read_board_metadata(_kb.DEFAULT_BOARD)]
     seen = {_kb.DEFAULT_BOARD}
     root = _kb.boards_root()
@@ -135,12 +253,30 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
                 continue
             if not normed or normed in seen or not _dir_holds_board(child):
                 continue
+            if board_is_archived_stub(normed):
+                continue
             meta = read_board_metadata(normed)
             if meta.get("archived") and not include_archived:
                 continue
             entries.append(meta)
             seen.add(normed)
     return entries
+
+
+def list_dispatch_boards() -> list[dict]:
+    """Live boards the DISPATCHER may serve: non-archived AND dispatch-enabled.
+
+    The dispatcher's own board enumeration (card t_17c9c847). :func:`list_boards` stays
+    the full inventory for the CLI and the dashboard, so an estate board is still VISIBLE
+    on the board list — it is simply never spawned from. Both halves are load-bearing: the
+    ``dispatch`` flag closes the gap the archived-only filter left (``"each board has its
+    own ... dispatcher loop"``), and :func:`board_dispatch_enabled` fails closed for a
+    resurrected archived stub.
+    """
+    return [
+        meta for meta in list_boards(include_archived=False)
+        if board_dispatch_enabled(meta.get("slug") or _kb.DEFAULT_BOARD)
+    ]
 
 
 def remove_board(slug: str, *, archive: bool = True) -> dict:

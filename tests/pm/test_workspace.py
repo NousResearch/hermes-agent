@@ -144,3 +144,24 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+def test_virtual_member_without_project_table_gets_a_version(tmp_path):
+    """A plugin pyproject carrying only tool tables is metadata-only (no build backend).
+
+    uv requires ``[project].version`` on every workspace member, so the synthesized
+    table must carry one — otherwise ``uv lock`` fails to parse the member
+    ("the required `project.version` field is neither set nor present in the
+    `project.dynamic` list") and any enable of a zero-dependency plugin bricks.
+    """
+    import tomllib
+
+    plugin = tmp_path / "tooling-only"
+    plugin.mkdir()
+    (plugin / "pyproject.toml").write_text(
+        "# tooling only, no [project] table on purpose\n[tool.ruff]\nline-length = 110\n",
+        encoding="utf-8")
+    member = ws._workspace_member(plugin, tmp_path / "workspace", identity=plugin)
+    project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert project["name"] == f"hermes-plugin-{ws._member_key(plugin)}"
+    assert project["version"] == "0.0.0"

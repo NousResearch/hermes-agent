@@ -1713,9 +1713,9 @@ class SendResult:
     # Extra ids (send order) when a payload was split; ``message_id`` is then the LAST id so
     # later edits target the newest chunk.
     continuation_message_ids: tuple = ()
-    # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
-    # branch without substring-matching ``error``.
+    # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers branch without substring-matching ``error``.
     error_kind: Optional[str] = None
+    delivered: Optional[bool] = None  # False = adapter discarded the send (commentary suppression): not user-visible, never dedup a final.
 
 
 # Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the

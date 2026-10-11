@@ -79,7 +79,21 @@ The mode is a **driver** that composes with your configured browser backend: it 
 
 **Local browsing uses the packaged Chromium, not your own Chrome.** With no cloud provider or `/browser connect` endpoint configured, Hermes launches the same Chromium that the built-in tools use (installed via `hermes tools` → Browser Automation, driven through agent-browser) and points the Browser Use CLI at it. Your installed Chrome is never touched, so there is no `chrome://inspect` remote-debugging toggle to enable and no "Allow remote debugging?" popup — and it works on headless hosts with no Chrome at all. The browser is shared with the built-in stack's lifecycle: it is closed after `browser.inactivity_timeout`, at exit, and by the orphan sweep. To drive a browser you're signed in to, use `/browser connect` or the [real-profile toggle](#real-profile-browsing-use-your-own-logins).
 
-**Concurrent sessions:** `browser_exec` accepts a `session=<name>` argument that isolates browser work per name on every backend. Each name gets its own harness daemon (its own IPC socket, log, and state) and its own browser (a separate packaged Chromium locally, a separate cloud browser on cloud backends) — so parallel subagents or simultaneous chats no longer clobber a single shared connection. Omitting `session` uses the shared default daemon, which is fine for one-at-a-time browsing.
+**Lazy-launch a configured local CDP browser.** When `browser.cdp_url` is an unreachable HTTP loopback endpoint with an explicit port, Browser Use mode normally remains attach-only. Set `browser.auto_launch: true` to let Hermes start a dedicated Chrome and wait up to 40 seconds for `/json/version`; it is off by default. WebSocket, TLS, remote, or malformed overrides remain attach-only. The spawned browser has a separate profile per `browser_exec` session, receives no gateway stdin, and binds DevTools only to the configured loopback family. `BH_CHROME_PATH` or `CHROME_PATH` can select a binary temporarily; the YAML alternative and optional headful/proxy/profile settings are:
+
+```yaml
+browser:
+  cdp_url: "http://127.0.0.1:9222"
+  auto_launch: true
+  auto_launch_chrome_path: ""       # optional persistent binary override
+  auto_launch_headful: false         # false adds --headless=new for non-Windows binaries; .exe stays headed
+  auto_launch_proxy: ""              # optional --proxy-server value
+  auto_launch_user_data_dir: ""      # optional root for isolated session profiles
+```
+
+If Chrome cannot be found, exits, or never exposes CDP, Hermes preserves the original endpoint and Browser Use reports its normal connection error.
+
+**Concurrent sessions:** `browser_exec` accepts a `session=<name>` argument that gives each name its own harness daemon (its own IPC socket, log, and state). Backends that provision browsers per session, such as packaged Chromium and cloud browsers, also give each name a separate browser. A fixed `browser.cdp_url` remains a shared connection even when sessions differ; session names only select separate profiles when Hermes is launching a new browser. Omitting `session` uses the shared default daemon, which is fine for one-at-a-time browsing.
 
 To opt out and force the built-in browser tools, use `/browser use off`, or:
 

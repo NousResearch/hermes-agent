@@ -3645,8 +3645,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath, select_worker_interpreter
+    repo_root = Path(__file__).resolve().parent.parent
     command = [
-        sys.executable,
+        str(select_worker_interpreter(repo_root)),
         "-m",
         "cron.scheduler",
         "--external-worker-file",
@@ -3736,8 +3738,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # (PYTHONSAFEPATH / stale editable mapping, #112729), hand the child the committed
     # dependency generation (#122222), and mark it so its own entry runs the PM dependency
     # boot. See cron/scheduler_worker_env.py and cron/worker_bootstrap.py.
-    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    repo_root = Path(__file__).resolve().parent.parent
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     worker_env[WORKER_MARKER] = "1"
     try:

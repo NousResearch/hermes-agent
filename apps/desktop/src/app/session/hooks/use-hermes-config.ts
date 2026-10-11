@@ -29,6 +29,7 @@ import {
   applyVoiceStopPhraseFromConfig
 } from '@/store/voice-prefs'
 import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
+import { setComposerEditorFromConfig } from '@/app/chat/composer/composer-editor'
 
 const DEFAULT_VOICE_SECONDS = 120
 
@@ -148,6 +149,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)
+        setComposerEditorFromConfig(config.desktop?.editor)
 
         if (!canPublish()) {
           return

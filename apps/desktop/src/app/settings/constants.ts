@@ -717,7 +717,14 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
-    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+    keys: [
+      'display.personality',
+      'timezone',
+      'display.show_reasoning',
+      'agent.image_input_mode',
+      'desktop.editor.spellcheck',
+      'desktop.editor.language'
+    ]
   },
   {
     id: 'appearance',

@@ -2652,6 +2652,18 @@ DEFAULT_CONFIG = {
         # that insert text via the accessibility APIs can reach the composer (#118271, #92607).
         # False bridges to HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0 and skips the tree (perf opt-out).
         "renderer_accessibility": True,
+        # Composer spellcheck (#48375). Off by default: spellcheck flags code, file paths, and slash
+        # commands, which is exactly what #44415 disabled it to avoid. Opt in to get red underlines
+        # and right-click suggestions in the chat composer (and the message-edit composer). autoCorrect
+        # and autoCapitalize stay OFF regardless, so nothing is silently altered — only flagged.
+        "editor": {
+            "spellcheck": False,
+            # BCP-47 language tag for the composer's spellchecker (e.g. "en-US", "de-DE"). Empty =
+            # the system locale, bridged to Electron's session dictionary so the right-click menu
+            # returns suggestions in that language (the renderer lang attribute alone is not enough
+            # on Windows/Linux — Chromium needs the session dictionary seeded).
+            "language": "",
+        },
         # Linux: False preserves an existing custom XDG launcher entry; missing entries
         # are still created. True keeps the generated entry current on each launch.
         "manage_launcher_entry": True,

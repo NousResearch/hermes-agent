@@ -1,6 +1,10 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import {
+  $composerSpellcheck,
+  $composerSpellcheckLanguage
+} from '@/app/chat/composer/composer-editor'
+import {
   type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
@@ -166,6 +170,11 @@ export function ChatBar({
   )
 
   const autoSpeak = useStore($autoSpeakReplies)
+  // Composer spellcheck (#48375): off by default so code/paths/slash commands
+  // aren't flagged (the #44415 behavior). autoCorrect/autoCapitalize stay off
+  // regardless — only flagged, never silently altered.
+  const spellcheck = useStore($composerSpellcheck)
+  const spellcheckLanguage = useStore($composerSpellcheckLanguage)
   const textDirection = useForcedTextDirection()
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
@@ -1207,7 +1216,12 @@ export function ChatBar({
         onPaste={handlePaste}
         ref={editorRef}
         role="textbox"
-        spellCheck={false}
+        // Opt-in spellcheck (#48375); off by default so code/paths/slash
+        // commands aren't flagged (#44415). autoCorrect/autoCapitalize stay
+        // off — only flagged, never silently altered. lang pins the dictionary
+        // (empty = inherit); the session-side language is bridged in main.ts.
+        lang={spellcheckLanguage || undefined}
+        spellCheck={spellcheck}
         suppressContentEditableWarning
       />
       <ComposerDirectiveActions editorRef={editorRef} />

@@ -744,7 +744,8 @@ def _reconcile(destination: sqlite3.Connection, table: str, where: str, mutation
 
 _DEPENDENT_TABLES = ("messages", "session_model_usage", "compression_locks", "telegram_dm_topic_bindings")
 _DANGLING_TOOL_PIN = (
-    "length(tool_names) = 64 AND NOT EXISTS (SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.tool_names)")
+    "length(tool_names) = 64 AND tool_names NOT GLOB '*[^0-9a-f]*' "
+    "AND NOT EXISTS (SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.tool_names)")
 _RELINK_COUNTERS = ("session_prompt_refs_cleared", "sessions_parent_cleared")
 
 

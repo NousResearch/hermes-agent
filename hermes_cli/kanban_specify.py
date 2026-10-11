@@ -1,7 +1,9 @@
 """Kanban triage specifier — flesh out a one-liner into a real spec.
 
 ``hermes kanban specify [task_id | --all]`` asks the auxiliary LLM for a
-tightened title + concrete body for a Triage task, then flips it
+tightened title and body for a Triage task. By default it fills only a blank
+body and preserves nonblank text; ``--rewrite-body`` explicitly permits a
+replacement. It then flips the task
 ``triage -> todo`` via ``kanban_db.specify_triage_task``.
 
 Mirrors ``hermes_cli/goals.py``: same aux-client pattern, same "empty config
@@ -54,7 +56,7 @@ Rules:
   - Keep the tightened title close in meaning to the original idea — do
     NOT invent a different project.
   - If the original idea is already detailed, preserve its substance and
-    just reformat into the sections above.
+    just reformat into the sections above when body rewriting is requested.
   - Never add invented requirements the user didn't hint at.
   - No preamble, no closing remarks, no code fences around the JSON.
   - Output only the JSON object and nothing else.
@@ -192,10 +194,16 @@ def specify_task(
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
+    rewrite_body: bool = False,
 ) -> SpecifyOutcome:
-    """Specify one triage task and promote it to ``todo``. Expected failures
-    (not in triage, no aux client, API error, malformed reply) surface as
-    ``ok=False`` so an ``--all`` sweep continues."""
+    """Specify one triage task and promote it to ``todo``.
+
+    By default, the auxiliary body fills a blank card only; nonblank text is
+    preserved at the database write boundary. Callers must set ``rewrite_body``
+    explicitly to replace an existing body.
+    Expected failures (not in triage, no aux client, API error, malformed
+    reply) surface as ``ok=False`` so an ``--all`` sweep continues.
+    """
     task, reason = _load_triage_task(task_id)
     if task is None:
         return SpecifyOutcome(task_id, False, reason)
@@ -208,17 +216,26 @@ def specify_task(
     if raw is None:
         return SpecifyOutcome(task_id, False, reason)
     raw = raw.strip()
+    has_existing_body = bool((task.body or "").strip())
 
     parsed = _extract_json_blob(raw)
     if parsed is None:
-        # Whole reply becomes the body; the user can edit afterward.
         if not raw:
             return SpecifyOutcome(task_id, False, "LLM returned an empty response")
-        new_title, new_body = None, raw
+        # A malformed response has no trustworthy title. Preserve an existing
+        # card body, but do not promote an empty card on unstructured output.
+        if not has_existing_body and not rewrite_body:
+            return SpecifyOutcome(task_id, False, "LLM returned an unusable response for an empty body")
+        # Callers that deliberately opted in may still accept raw output.
+        new_title, new_body = None, raw if rewrite_body else None
     else:
         new_title, new_body = _title_body(parsed)
         if new_body is None and new_title is None:
             return SpecifyOutcome(task_id, False, "LLM response missing title and body")
+        if not rewrite_body and has_existing_body:
+            new_body = None
+        if not rewrite_body and not has_existing_body and not (new_body and new_body.strip()):
+            return SpecifyOutcome(task_id, False, "LLM response missing a usable body for an empty card")
 
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
@@ -227,6 +244,7 @@ def specify_task(
             title=new_title,
             body=new_body,
             author=author or _profile_author(),
+            only_fill_blank_body=not rewrite_body,
         )
     if not ok:
         # Race: promoted/archived between our read and the write.

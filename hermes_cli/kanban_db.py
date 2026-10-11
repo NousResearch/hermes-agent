@@ -3754,10 +3754,15 @@ def invalidate_descendants_for_parent_reopen(
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
+    only_fill_blank_body: bool = False,
 ) -> bool:
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
     gating still applies; the audit comment is written only when a field changed.
+
+    ``only_fill_blank_body`` preserves a nonblank body observed at the write
+    boundary while allowing callers to fill a blank one. It defaults to False
+    so existing callers retain their replacement semantics.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
@@ -3776,7 +3781,8 @@ def specify_triage_task(
             sets.append("title = ?")
             params.append(title.strip())
             changed_fields.append("title")
-        if body is not None and (body or "") != (existing["body"] or ""):
+        can_write_body = not only_fill_blank_body or not (existing["body"] or "").strip()
+        if body is not None and can_write_body and (body or "") != (existing["body"] or ""):
             sets.append("body = ?")
             params.append(body)
             changed_fields.append("body")

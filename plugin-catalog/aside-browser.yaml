@@ -1,13 +1,13 @@
 name: aside-browser
 repo: https://github.com/leonphull/hermes-aside-browser
-sha: 91377a1ec733b54044e75b3622c4fb5254d3c538
+sha: b0855ffb6c19098e51ffeddc58b3d5553646e096
 description: Use the signed-in Aside browser as Hermes's browser when the Aside CLI is installed.
 maintainer: leonphull
 tier: community
 category: tools
 requires_hermes: ">=0.21.0"
 docs_url: https://github.com/leonphull/hermes-aside-browser#readme
-version: "0.1.0"
+version: "0.2.0"
 platforms: []
 known_issues:
   - Drives the signed-in Aside browser on this machine. Does not install Aside.

@@ -1851,3 +1851,113 @@ def test_gui_zero_exit_pack_without_artifact_keeps_previous_app(tmp_path, monkey
     assert exc.value.code == 1
     assert live_exe.read_text(encoding="utf-8") == "good build"
     assert not list(desktop_dir.glob(".staging-*"))
+    assert "produced no launchable app" in capsys.readouterr().out
+
+
+def test_linux_wayland_needs_vulkan_disabled_matches_ozone_backend():
+    wayland = {
+        "XDG_SESSION_TYPE": "wayland",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "DISPLAY": ":0",
+    }
+    assert main_desktop._linux_wayland_needs_vulkan_disabled(wayland, platform="linux") is True
+    assert main_desktop._linux_wayland_needs_vulkan_disabled(wayland, platform="darwin") is False
+    assert (
+        main_desktop._linux_wayland_needs_vulkan_disabled(
+            {**wayland, "ELECTRON_OZONE_PLATFORM_HINT": "x11"},
+            platform="linux",
+        )
+        is False
+    )
+    assert (
+        main_desktop._linux_wayland_needs_vulkan_disabled(
+            {"DISPLAY": ":0"},
+            platform="linux",
+            argv=["--ozone-platform=wayland"],
+        )
+        is True
+    )
+    assert main_desktop._linux_wayland_needs_vulkan_disabled({"DISPLAY": ":0"}, platform="linux") is False
+
+
+def test_linux_wayland_empty_or_blank_hint_falls_through_to_session_detection():
+    """ELECTRON_OZONE_PLATFORM_HINT="" must behave as unset, on par with the TS resolver."""
+    wayland = {
+        "XDG_SESSION_TYPE": "wayland",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "DISPLAY": ":0",
+    }
+    for hint in ("", "   "):
+        assert (
+            main_desktop._linux_wayland_needs_vulkan_disabled(
+                {**wayland, "ELECTRON_OZONE_PLATFORM_HINT": hint}, platform="linux"
+            )
+            is True
+        ), "an empty hint is unset, so session detection must decide"
+    assert (
+        main_desktop._linux_wayland_needs_vulkan_disabled(
+            {**wayland, "ELECTRON_OZONE_PLATFORM_HINT": " Wayland "}, platform="linux"
+        )
+        is True
+    )
+    assert (
+        main_desktop._linux_wayland_needs_vulkan_disabled(
+            {"DISPLAY": ":0", "ELECTRON_OZONE_PLATFORM_HINT": ""}, platform="linux"
+        )
+        is False
+    )
+
+
+def test_desktop_electron_argv_adds_vulkan_on_linux_wayland(monkeypatch):
+    wayland = {
+        "XDG_SESSION_TYPE": "wayland",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "DISPLAY": ":0",
+    }
+    monkeypatch.setattr(main_desktop.sys, "platform", "linux")
+    assert main_desktop._desktop_electron_argv([], wayland) == ["--disable-features=Vulkan"]
+    assert main_desktop._desktop_electron_argv(["--disable-features=Foo"], wayland) == [
+        "--disable-features=Foo,Vulkan"
+    ]
+    assert main_desktop._desktop_electron_argv(["--ozone-platform=x11"], wayland) == [
+        "--ozone-platform=x11"
+    ]
+    monkeypatch.setattr(main_desktop.sys, "platform", "darwin")
+    assert main_desktop._desktop_electron_argv([], wayland) == []
+
+
+def test_merge_electron_disable_features_appends_or_extends():
+    assert main_desktop._merge_electron_disable_features([], "Vulkan") == ["--disable-features=Vulkan"]
+    assert main_desktop._merge_electron_disable_features(
+        ["--ozone-platform-hint=auto", "--disable-features=Foo"],
+        "Vulkan",
+    ) == ["--ozone-platform-hint=auto", "--disable-features=Foo,Vulkan"]
+    assert main_desktop._merge_electron_disable_features(
+        ["--disable-features=Vulkan"],
+        "Vulkan",
+    ) == ["--disable-features=Vulkan"]
+
+
+def test_merge_electron_disable_features_dedupes_case_insensitively():
+    # Matches the TS resolver: a user's lowercase `vulkan` must not yield `vulkan,Vulkan`.
+    assert main_desktop._merge_electron_disable_features(
+        ["--disable-features=vulkan"],
+        "Vulkan",
+    ) == ["--disable-features=vulkan"]
+    assert main_desktop._merge_electron_disable_features(
+        ["--disable-features=VULKAN,foo"],
+        "Vulkan",
+    ) == ["--disable-features=VULKAN,foo"]
+
+
+def test_merge_electron_disable_features_folds_the_space_separated_form():
+    # Chromium also accepts `--disable-features X`; fold it so the value never ends up
+    # as a second switch.
+    assert main_desktop._merge_electron_disable_features(
+        ["--disable-features", "Foo"],
+        "Vulkan",
+    ) == ["--disable-features=Foo,Vulkan"]
+    assert main_desktop._merge_electron_disable_features(
+        ["--ozone-platform-hint=auto", "--disable-features", "Foo,Bar", "--enable-features=X"],
+        "Vulkan",
+    ) == ["--ozone-platform-hint=auto", "--disable-features=Foo,Bar,Vulkan", "--enable-features=X"]

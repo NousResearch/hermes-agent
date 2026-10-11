@@ -106,6 +106,7 @@ import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,
+  linuxWaylandVulkanDisableFeatures,
   resolveLinuxPasswordStore
 } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
@@ -828,6 +829,29 @@ if (IS_WINDOWS) {
       `[hermes] Windows GPU stack-cookie fallback enabled (${gpuStackCookieDecision.reason}); disabling GPU hardware acceleration (0xC0000409 / #108047)`
     )
   }
+}
+
+// Linux + Wayland ozone: Chromium's Vulkan backend is unsupported
+// (`--ozone-platform=wayland is not compatible with Vulkan`). The GPU
+// process then dies ~30s later even after disableHardwareAcceleration()
+// — HERMES_DESKTOP_DISABLE_GPU is not enough. Disable Vulkan only; GL
+// acceleration stays on. Must run before app `ready`.
+//
+// Intentional overlap with the Python launcher (main_desktop.py puts the same
+// switch on argv): Chromium may pick its ozone backend from argv before this
+// appendSwitch runs, and a launch that bypasses the CLI wrapper (raw `electron .`)
+// never sees the argv copy. Both guards append the same value; Chromium takes the
+// last occurrence, so the duplication is harmless — do not remove either side.
+const WAYLAND_VULKAN_FEATURES = linuxWaylandVulkanDisableFeatures({
+  argv: process.argv,
+  existingDisableFeatures: app.commandLine.getSwitchValue('disable-features')
+})
+
+if (WAYLAND_VULKAN_FEATURES) {
+  app.commandLine.appendSwitch('disable-features', WAYLAND_VULKAN_FEATURES)
+  console.log(
+    `[hermes] Linux Wayland ozone: appending --disable-features=${WAYLAND_VULKAN_FEATURES} (Vulkan is incompatible with --ozone-platform=wayland)`
+  )
 }
 
 // Renderer debugging port. On for dev-server runs (`hgui` / `npm run dev`) so

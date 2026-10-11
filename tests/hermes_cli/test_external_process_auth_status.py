@@ -326,6 +326,48 @@ def test_cli_command_default_when_no_override(monkeypatch, _clean_copilot_env):
     assert _external_process_cli_command("copilot-acp", "copilot login") == "copilot login"
 
 
+def _fake_external_process_plugin(monkeypatch, provider_id="fake-agy"):
+    """Register a plugin external-process provider (command ``agy``) in the auth registry."""
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setitem(
+        auth_mod.PROVIDER_REGISTRY, provider_id,
+        auth_mod.ProviderConfig(provider_id, "Fake AGY", "external_process"))
+    monkeypatch.setattr(
+        auth_mod, "get_external_process_provider_status",
+        lambda pid: {"configured": True, "provider": pid, "command": "agy",
+                     "resolved_command": "/usr/local/bin/agy"})
+    return provider_id
+
+
+def test_cli_command_never_swaps_cli_into_hermes_template(monkeypatch, _clean_copilot_env):
+    """A handler-less external-process plugin never renders ``agy auth add <slug>``: that is a
+    Hermes command template with another CLI's executable pasted on top — neither side can run
+    it. The dialog must point at the provider CLI instead (#136071)."""
+    from hermes_cli.web_server_oauth import _external_process_cli_command
+
+    provider_id = _fake_external_process_plugin(monkeypatch)
+
+    rendered = _external_process_cli_command(provider_id, f"hermes auth add {provider_id}")
+
+    assert rendered != f"agy auth add {provider_id}"
+    assert "agy" in rendered and provider_id in rendered
+    assert "auth add" not in rendered
+
+
+def test_cli_command_keeps_hermes_template_when_plugin_owns_auth(monkeypatch, _clean_copilot_env):
+    """With an ``auth_handler`` the plugin really answers ``hermes auth add``; the executable
+    must NOT be swapped into Hermes' own command."""
+    from hermes_cli import auth_plugin_providers as ap
+    from hermes_cli.web_server_oauth import _external_process_cli_command
+
+    provider_id = _fake_external_process_plugin(monkeypatch)
+    monkeypatch.setattr(ap, "plugin_auth_handler", lambda provider: lambda action, args: True)
+
+    assert _external_process_cli_command(provider_id, f"hermes auth add {provider_id}") == \
+        f"hermes auth add {provider_id}"
+
+
 # --- live catalog key from the Copilot CLI store -----------------------------
 
 

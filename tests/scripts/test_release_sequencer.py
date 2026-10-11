@@ -298,6 +298,44 @@ def test_a_marker_ref_clears_the_attempt():
     assert records[0]["state"] == "burned"
 
 
+def test_abandoned_attempts_before_a_later_winner_are_burned_not_compared_to_the_final_tag():
+    """v0.21.6's shape: rc.1-3 abandoned, rc.4 won and became v0.21.6. The final tag names
+    rc.4; the abandoned predecessors sit at other commits and must reconcile as burned
+    instead of crashing every later pass with "v0.21.6 points at a different commit"."""
+    from scripts.releases.sequencer import discover
+
+    commits = {n: str(n) * 40 for n in (1, 2, 3, 4)}
+    tags = {}
+    for n, commit in commits.items():
+        tags[f"rc.{n}-v0.21.6"] = (f"{n}a".ljust(40, "0"), commit,
+                                   _claim_message("0.21.6", n, commit, epoch=1_790_000_000 + n))
+        if n < 4:
+            tags[f"abandoned-rc.{n}-v0.21.6"] = (f"{n}b".ljust(40, "0"), commit, {})
+    final = _final_message("0.21.6", 4, commits[4], release_id=9, epoch=1_790_000_004)
+    final["claimTagObject"] = tags["rc.4-v0.21.6"][0]  # the final tag binds the winning claim's object
+    tags["v0.21.6"] = ("f" * 40, commits[4], final)
+    releases = [{"id": 9, "tag_name": "v0.21.6", "draft": False, "prerelease": False,
+                 "published_at": "2026-10-08T11:51:57Z"}]
+    records = {r["claim_tag"]: r for r in discover("example/project", _discover_run(tags, releases=releases))}
+    assert {tag: r["state"] for tag, r in records.items()} == {
+        "rc.1-v0.21.6": "burned", "rc.2-v0.21.6": "burned", "rc.3-v0.21.6": "burned",
+        "rc.4-v0.21.6": "published",
+    }
+
+
+def test_a_final_tag_at_another_commit_than_a_live_attempt_is_still_refused():
+    """Only an abandoned attempt is exempt: a NON-abandoned attempt whose version's final tag
+    points elsewhere is a real inconsistency and keeps failing loudly."""
+    from scripts.releases.sequencer import discover
+
+    tags = {
+        "rc.1-v0.21.6": ("1a".ljust(40, "0"), "1" * 40, _claim_message("0.21.6", 1, "1" * 40)),
+        "v0.21.6": ("f" * 40, "2" * 40, _final_message("0.21.6", 2, "2" * 40, release_id=9)),
+    }
+    with pytest.raises(ValueError, match="points at a different commit than rc.1-v0.21.6"):
+        discover("example/project", _discover_run(tags))
+
+
 def test_two_outstanding_attempts_are_refused_across_versions():
     from scripts.releases.sequencer import discover
 

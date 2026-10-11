@@ -23,8 +23,8 @@ let stream: MessageStreamHarness
 let queryClient: QueryClient
 let wiringCache: Map<string, ClientSessionState>
 
-function mountStream() {
-  stream = renderMessageStream(ACTIVE_SID, { activeGatewayProfile: ACTIVE_PROFILE, queryClient })
+function mountStream(sessionId: string = ACTIVE_SID) {
+  stream = renderMessageStream(sessionId, { activeGatewayProfile: ACTIVE_PROFILE, queryClient })
   wiringCache = stream.states
 }
 
@@ -60,13 +60,13 @@ afterEach(() => {
 
 describe('session.reclaimed', () => {
   it('leaves every other live session alone', () => {
-    mountStream()
+    mountStream('observer')
     publishSessionState('live-gone', createClientSessionState())
     publishSessionState('live-kept', createClientSessionState())
 
     reclaim('live-gone')
 
-    // Both halves matter: the target went, the bystander stayed. Asserting
+    // Both halves matter: the target was dropped, the bystander stayed. Asserting
     // only the survivor would pass with no handler at all.
     expect($sessionStates.get()['live-gone']).toBeUndefined()
     expect($sessionStates.get()['live-kept']).toBeDefined()
@@ -133,14 +133,54 @@ describe('session.reclaimed', () => {
     expect(wiringCache.has('live-kept')).toBe(true)
   })
 
-  it('requests a durable resume when the reclaimed runtime is the active chat', () => {
-    mountStream()
-    $activeSessionId.set('live-gone')
-    publishSessionState('live-gone', createClientSessionState('stored-1'))
+  // The authority probe: the primary view resolves `$sessionStates[$activeSessionId]`
+  // (session-view.tsx), so the handler must read that atom. The routing ref is a
+  // write-routing hint that resume pins imperatively, and a subscriber firing
+  // between a ref pin and its atom write can observe the two disagreeing — this
+  // mounts them deliberately apart to prove the atom is what decides.
+  it('keeps the rendered transcript when the routing ref names another runtime', () => {
+    mountStream('stale-ref')
+    $activeSessionId.set('live-visible')
+    publishSessionState('live-visible', {
+      ...createClientSessionState('stored-1'),
+      awaitingResponse: true,
+      busy: true,
+      messages: [{ id: 'user-1', parts: [{ text: 'visible turn', type: 'text' }], role: 'user' }],
+      needsInput: true,
+      streamId: 'stream-1',
+      turnLive: true
+    })
 
-    reclaim('live-gone')
+    // The event names the atom-visible runtime explicitly; the hook's ref still
+    // points at a different runtime on purpose.
+    act(() =>
+      stream.handleEvent({
+        payload: { reason: 'ws_orphan_reap', session_id: 'live-visible', stored_session_id: 'stored-1' },
+        session_id: 'live-visible',
+        type: 'session.reclaimed'
+      } as GatewayEvent)
+    )
+
+    // Preserve the slice that actually remains on screen.
+    expect($sessionStates.get()['live-visible']).toMatchObject({
+      awaitingResponse: false,
+      busy: false,
+      messages: [{ id: 'user-1' }],
+      needsInput: false,
+      streamId: null,
+      turnLive: false
+    })
+    expect($sessionResumeRequest.get()?.sessionId).toBe('stored-1')
+  })
+
+  it('resumes the atom-visible durable session when it has no local state slice', () => {
+    mountStream('stale-ref')
+    $activeSessionId.set(ACTIVE_SID)
+
+    reclaim(ACTIVE_SID)
 
     expect($sessionResumeRequest.get()?.sessionId).toBe('stored-1')
+    expect($sessionStates.get()[ACTIVE_SID]).toBeUndefined()
   })
 
   it('does not navigate the primary chat when a background runtime is reclaimed', () => {

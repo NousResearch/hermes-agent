@@ -969,6 +969,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
             result = {}
+        # A steer can land after the finalizer's last drain. This runs on the loop, like the steer
+        # handler, so nothing lands between this drain and the terminal status below (#132359).
+        late_steer = agent._drain_pending_steer()
+        if isinstance(late_steer, str) and late_steer.strip():
+            result = {**result, "pending_steer": "\n".join(filter(None, (result.get("pending_steer"), late_steer)))}
         status, fields = terminal_run_status(result)
         if status == "cancelled":
             _finish("cancelled", fields)

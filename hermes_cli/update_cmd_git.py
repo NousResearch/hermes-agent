@@ -530,11 +530,15 @@ def _classify_fetch_failure(stderr: str) -> str:
 
 
 def _print_fetch_failure(stderr: str) -> None:
-    """Print the classified diagnosis plus the first raw stderr line."""
+    """Print the classified diagnosis plus bounded raw stderr for diagnosis."""
     stderr = (stderr or "").strip()
     print(_classify_fetch_failure(stderr))
     if stderr:
-        print(f"  {stderr.splitlines()[0]}")
+        lines = stderr.splitlines()
+        for line in lines[:15]:
+            print(f"  {line}")
+        if len(lines) > 15:
+            print(f"  ... ({len(lines) - 15} more lines omitted)")
 
 
 def _probe_fork_bomb(argv: list) -> Optional[bool]:

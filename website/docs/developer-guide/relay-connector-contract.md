@@ -268,6 +268,15 @@ terminal revocation: it stops reconnecting and reports the relay platform as
 **disabled** (not a retryable error). A 4401 *before* any successful handshake
 stays retryable (a cold-start / not-yet-provisioned race, not a revocation).
 
+**Reconnect cadence.** Every other unexpected close re-dials on a jittered
+exponential backoff (1 s base doubling to a 30 s cap, each wait drawn from the
+upper half of its step). The ladder position survives across connections: a
+connector that accepts the upgrade and drops the socket right after the
+handshake (crash loop, overload shedding) is treated like a failed dial, so a
+fleet of gateways slows down instead of hammering it at the base delay forever.
+Only a connection that stays up for 60 s resets the ladder; the next unrelated
+drop then starts again at the base delay.
+
 ### 3.2 Going-idle / buffered-flip primitive (§5.3)
 
 A scale-to-zero PRIMITIVE (not the behaviour — nothing here decides to sleep or

@@ -16,6 +16,8 @@ import contextlib
 import json
 import logging
 import os
+import random
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -304,6 +306,23 @@ async def _await_bounded(aw: Awaitable[Any]) -> None:
 # reconnects while the stop is still in flight.
 REDIAL_HOLD_MAX_S = 60.0
 
+# A connection that lives at least this long resets the reconnect backoff ladder;
+# anything shorter counts as one more failed attempt (connector crash loop).
+_STABLE_CONNECTION_S = 60.0
+
+
+def _reconnect_delay(attempt: int, base_s: float, max_s: float) -> float:
+    """``min(base * 2^(attempt-1), max)`` with full-range jitter in ``[delay/2, delay]``
+    (``attempt`` is 1-based). Jitter decorrelates a fleet of gateways re-dialing the
+    same connector after it restarts, so they do not all land in one burst; the
+    lower bound keeps the delay a real wait. A zero/negative ``base_s`` means "no
+    delay" (tests) and returns 0."""
+    if base_s <= 0 or max_s <= 0:
+        return 0.0
+    exponent = max(0, attempt - 1)
+    delay = max_s if exponent >= 63 else min(base_s * (2 ** exponent), max_s)
+    return random.uniform(delay / 2, delay)
+
 
 class WebSocketRelayTransport:
     """RelayTransport over a WebSocket connection the gateway dials to the connector."""
@@ -348,6 +367,14 @@ class WebSocketRelayTransport:
         self._reconnect_backoff_s = reconnect_backoff_s
         self._reconnect_max_backoff_s = reconnect_max_backoff_s
         self._supervisor: Optional[asyncio.Task[None]] = None
+        # Backoff ladder position, kept ACROSS supervisor runs: a connector that
+        # accepts the upgrade and drops the socket right after the handshake
+        # (crash loop, overload shedding) would otherwise be re-dialed at the base
+        # delay forever, since each drop starts a fresh supervisor. Advanced on
+        # every failed dial AND on every short-lived connection; cleared only once
+        # a connection has stayed up for ``_STABLE_CONNECTION_S``.
+        self._reconnect_attempt = 0
+        self._connected_at: Optional[float] = None
         # Dormant close (go_dormant) is distinct from disconnect() (terminal) and
         # an unexpected close (fast re-dial): the socket closes WITHOUT _closing,
         # so the reader still arms the supervisor, but it polls on the dormant
@@ -422,6 +449,8 @@ class WebSocketRelayTransport:
         self._descriptors_by_platform = {}
         # A successful (re-)dial ends any dormant state.
         self._dormant = False
+        # Fresh connection, fresh stable-connection clock (set at the handshake).
+        self._connected_at = None
         # WAN-friendly keepalive: the library default (20s pong deadline) produces
         # spurious `1011 keepalive ping timeout` closes under transient latency /
         # event-loop stalls; 60s tolerates them while detecting a dead link ~90s.
@@ -752,6 +781,8 @@ class WebSocketRelayTransport:
             # dialer live takes the immediate fresh-token re-dial (no backoff);
             # any other close arms the backoff supervisor unless this was a
             # deliberate disconnect() or a terminal revocation.
+            if ws is self._ws:
+                self._note_connection_ended()
             if self._closing or self._dialer_running():
                 pass
             elif auth_retry_scheduled:
@@ -859,12 +890,20 @@ class WebSocketRelayTransport:
         return True
 
     async def _reconnect_loop(self) -> None:
-        """Re-dial with capped exponential backoff until a dial succeeds (its reader
-        takes over) or disconnect(). Never raises out. After go_dormant() start from
-        the dormant cadence; a successful dial clears _dormant so any LATER
-        unexpected drop uses the fast backoff."""
-        backoff = self._dormant_redial_s if self._dormant else self._reconnect_backoff_s
+        """Re-dial with capped, jittered exponential backoff until a dial succeeds (its
+        reader takes over) or disconnect(). Never raises out. After go_dormant() the
+        first re-dial uses the dormant cadence (a deliberate close, not a failure);
+        every later wait climbs ``_reconnect_attempt``, which the reader only resets
+        after a connection that stayed up ``_STABLE_CONNECTION_S``."""
+        dormant_first = self._dormant
         while not self._closing:
+            if dormant_first:
+                dormant_first = False
+                backoff = self._dormant_redial_s
+            else:
+                self._reconnect_attempt += 1
+                backoff = _reconnect_delay(
+                    self._reconnect_attempt, self._reconnect_backoff_s, self._reconnect_max_backoff_s)
             await asyncio.sleep(backoff)
             if self._closing:
                 return
@@ -873,13 +912,21 @@ class WebSocketRelayTransport:
                 return
             try:
                 await self._dial_and_start()
-                logger.info("relay ws reconnected")
+                logger.info("relay ws reconnected (attempt %d)", self._reconnect_attempt)
                 return
             except Exception as exc:
                 if self._latch_if_fresh_token_refused(exc):
                     return
-                logger.warning("relay ws reconnect failed: %s", exc)
-                backoff = min(backoff * 2, self._reconnect_max_backoff_s)
+                logger.warning("relay ws reconnect failed (attempt %d): %s", self._reconnect_attempt, exc)
+
+    def _note_connection_ended(self) -> None:
+        """Reader-side bookkeeping on an unexpected close: a connection that lasted
+        ``_STABLE_CONNECTION_S`` resets the backoff ladder; a shorter one leaves it
+        where it is so the next supervisor run keeps climbing (connector crash loop)."""
+        started = self._connected_at
+        self._connected_at = None
+        if started is not None and time.monotonic() - started >= _STABLE_CONNECTION_S:
+            self._reconnect_attempt = 0
 
     def hold_redial(self) -> None:
         """Park the reconnect supervisor until release_redial() or the hold cap."""
@@ -929,6 +976,8 @@ class WebSocketRelayTransport:
             self._descriptor = descriptor
         # Upgrade auth passed at least once: a LATER 4401 is a revocation.
         self._handshake_succeeded = True
+        if self._connected_at is None:
+            self._connected_at = time.monotonic()  # stable-connection clock starts at the handshake
         if self._descriptor_ready is not None and not self._descriptor_ready.done():
             self._descriptor_ready.set_result(descriptor)
 

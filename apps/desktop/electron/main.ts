@@ -6970,6 +6970,7 @@ function installPreviewShortcut(window) {
 import {
   applyZoomLevel,
   DEFAULT_ZOOM_LEVEL,
+  installZoomReassertOnDisplayMetrics,
   installZoomReassertOnNavigation,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
@@ -13494,6 +13495,42 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   return connectionPromise
 }
 
+// Zoom-enabled windows currently open, plus the lazily-installed display-metrics
+// subscription that re-applies persisted zoom across ALL of them. An RDP
+// reconnect (or dock/undock, or a monitor scale change under a stationary
+// window) makes Chromium reset webContents zoom but fires no per-window event
+// when geometry is unchanged (#84274), so the per-window reassert above never
+// runs. The screen-level subscription is installed on the first zoom-enabled
+// window and torn down when the last one closes, so it never outlives its
+// windows.
+const zoomEnabledWindows = new Set<Electron.BrowserWindow>()
+let disposeDisplayMetricsZoomReassert: (() => void) | null = null
+
+function reassertZoomForAllWindows() {
+  for (const win of zoomEnabledWindows) {
+    if (!win.isDestroyed()) {
+      restorePersistedZoomLevel(win)
+    }
+  }
+}
+
+function trackZoomEnabledWindow(win) {
+  zoomEnabledWindows.add(win)
+
+  if (!disposeDisplayMetricsZoomReassert) {
+    disposeDisplayMetricsZoomReassert = installZoomReassertOnDisplayMetrics(screen, reassertZoomForAllWindows)
+  }
+
+  win.once('closed', () => {
+    zoomEnabledWindows.delete(win)
+
+    if (zoomEnabledWindows.size === 0 && disposeDisplayMetricsZoomReassert) {
+      disposeDisplayMetricsZoomReassert()
+      disposeDisplayMetricsZoomReassert = null
+    }
+  })
+}
+
 // Shared navigation guards + window chrome wiring applied to every window
 // (the primary plus any secondary session windows). Factored out of
 // createWindow() so secondary windows can't drift from the main window's
@@ -13532,6 +13569,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 
     installZoomReassertOnWindowEvents(win, reassertZoom)
     installZoomReassertOnNavigation(win.webContents, reassertZoom)
+    trackZoomEnabledWindow(win)
   }
 
   installContextMenuBridge(win)

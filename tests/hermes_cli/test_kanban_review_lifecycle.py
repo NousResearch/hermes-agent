@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +34,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_ops
+from hermes_cli import kanban_pr_acceptance as kpa
 
 
 @pytest.fixture
@@ -603,6 +606,420 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (done_id,))
         assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
+
+
+# ---------------------------------------------------------------------------
+# active_pr: a dependency's PR is not this card's PR
+# ---------------------------------------------------------------------------
+#
+# A coordinator (or anyone) may announce a dependency's merged PR on a child
+# card. That URL is foreign: the direct parent published it. Ownership is
+# decided by evidence (exact ``completion_contract`` / ``published_pr`` run
+# metadata), never by who wrote the comment. A comment with no ownership
+# evidence stays guarded, and "own PR is closed" is a fresh profile-bound
+# native read that fails closed.
+
+_PR = "https://github.com/example/repo/pull/{}"
+PARENT_PR, OWN_PR, GRAND_PR, LEGACY_PR = (_PR.format(n) for n in (901, 902, 903, 777))
+_NO_READ = object()
+
+
+def _pull(url, state="open", merged=False):
+    return {
+        "html_url": url, "number": int(url.rsplit("/", 1)[1]),
+        "state": state, "merged": merged,
+    }
+
+
+def _mock_github(monkeypatch, pulls=None, *, default=_NO_READ, error=None, home_error=None):
+    """Stand in for ``kanban_pr_acceptance._api`` / ``_assignee_profile_home``.
+
+    ``pulls`` maps PR URL -> REST ``repos/{repo}/pulls/{n}`` payload; ``default``
+    answers every other PR; ``error`` / ``home_error`` make the read / profile
+    resolution raise. ``seen`` records each read and each profile resolution.
+    """
+    seen = SimpleNamespace(reads=[], homes=[])
+
+    def fake_home(assignee):
+        seen.homes.append(assignee)
+        if home_error is not None:
+            raise home_error
+        return f"/profiles/{assignee}"
+
+    def fake_api(endpoint, *, query=None, paginate=False, profile_home=None):
+        seen.reads.append((endpoint, profile_home))
+        if error is not None:
+            raise error
+        match = re.fullmatch(r"repos/([^/]+/[^/]+)/pulls/([0-9]+)", endpoint)
+        assert match, f"unexpected native read {endpoint!r}"
+        url = f"https://github.com/{match[1]}/pull/{match[2]}"
+        payload = (pulls or {}).get(url, default)
+        assert payload is not _NO_READ, f"unexpected native read of {url}"
+        return payload
+
+    monkeypatch.setattr(kpa, "_assignee_profile_home", fake_home)
+    monkeypatch.setattr(kpa, "_api", fake_api)
+    return seen
+
+
+def _complete_local(conn, tid, published_pr=None):
+    """Real lifecycle: claim -> complete under a local-only contract, with the
+    PR the worker published recorded on the closing run's metadata."""
+    claimed = kb.claim_task(conn, tid)
+    assert claimed is not None
+    metadata = {"published_pr": published_pr} if published_pr else None
+    assert kb.complete_task(
+        conn, tid, result="local work done", metadata=metadata,
+        expected_run_id=claimed.current_run_id,
+    )
+    if published_pr:
+        run = conn.execute(
+            "SELECT metadata FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert json.loads(run["metadata"])["published_pr"] == published_pr
+
+
+def _ready_child(conn, parent_id, *, contract=None, assignee="dev"):
+    child_id = kb.create_task(
+        conn, title="child", assignee=assignee, parents=[parent_id],
+        completion_contract=contract,
+    )
+    assert kb.get_task(conn, child_id).status == "ready"
+    return child_id
+
+
+def _requeue_completed(conn, tid, *, aged, native_event=False):
+    """done -> ready; ``aged`` pushes the completion out of the recent_success window.
+
+    ``native_event`` models a legitimate explicit requeue: the native ``status``
+    event lands in the same write txn as the status change, which is what the
+    ``recent_success`` guard recognizes as a deliberate re-run.
+    """
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+        if native_event:
+            kb._append_event(conn, tid, "status", {"status": "ready"})
+        if aged:
+            conn.execute(
+                "UPDATE task_runs SET ended_at = ended_at - 7200 WHERE task_id = ?", (tid,),
+            )
+
+
+@pytest.mark.parametrize("author", ["coordinator", "worker"])
+@pytest.mark.parametrize("evidence", ["published_pr", "completion_contract"])
+def test_active_pr_guard_ignores_direct_parent_publication_in_any_comment(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch, evidence: str, author: str,
+) -> None:
+    """The parent's authoritative PR (run metadata ``published_pr`` or exact
+    ``completion_contract``) announced on the child is a dependency note, not
+    duplicate-work: the child is not guarded, whoever wrote the comment. A read
+    that would say OPEN must not matter — a foreign PR never guards."""
+    _mock_github(monkeypatch, default=_pull(PARENT_PR, "open"))
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent", assignee="builder")
+        _complete_local(conn, parent_id, PARENT_PR if evidence == "published_pr" else None)
+        if evidence == "completion_contract":
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET completion_contract = ? WHERE id = ?",
+                    (PARENT_PR, parent_id),
+                )
+        child_id = _ready_child(conn, parent_id)
+        kb.add_comment(conn, child_id, author=author, body=f"Dependency merged: {PARENT_PR}")
+
+        assert kbd.check_respawn_guard(conn, child_id) is None
+
+
+def test_active_pr_guard_holds_for_non_direct_ancestor_publication(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a DIRECT parent's publication marks a URL foreign. A grandparent's PR
+    on the child is unproven here, so the conservative guard holds even though a
+    read would say MERGED."""
+    _mock_github(monkeypatch, default=_pull(GRAND_PR, "closed", True))
+    with kbc.connect() as conn:
+        grand_id = kb.create_task(conn, title="grandparent", assignee="builder")
+        _complete_local(conn, grand_id, GRAND_PR)
+        parent_id = kb.create_task(conn, title="parent", assignee="builder", parents=[grand_id])
+        _complete_local(conn, parent_id)
+        child_id = _ready_child(conn, parent_id)
+        kb.add_comment(conn, child_id, author="coordinator", body=f"Upstream merged: {GRAND_PR}")
+
+        assert kbd.check_respawn_guard(conn, child_id) == "active_pr"
+
+
+@pytest.mark.parametrize("author", ["coordinator", "worker"])
+def test_active_pr_guard_holds_for_unknown_legacy_pr_comment_beside_parent(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch, author: str,
+) -> None:
+    """A PR URL with no ownership evidence (not the card's contract/published_pr,
+    not a direct parent's) is a legacy comment: it stays guarded conservatively,
+    and a MERGED read cannot lift it because the PR is not provably the card's."""
+    _mock_github(monkeypatch, default=_pull(LEGACY_PR, "closed", True))
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent", assignee="builder")
+        _complete_local(conn, parent_id, PARENT_PR)
+        child_id = _ready_child(conn, parent_id)
+        kb.add_comment(conn, child_id, author=author, body=f"Opened {LEGACY_PR} for review.")
+        kb.add_comment(conn, child_id, author="coordinator", body=f"Dependency merged: {PARENT_PR}")
+
+        assert kbd.check_respawn_guard(conn, child_id) == "active_pr"
+
+
+def test_active_pr_guard_holds_for_own_open_contract_despite_coordinator_noise(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The card's own exact ``completion_contract`` PR, OPEN per a fresh read as
+    the assignee's profile, keeps ``active_pr`` — even when a coordinator is the
+    one who announced it and a newer coordinator comment names the parent's PR."""
+    seen = _mock_github(monkeypatch, {
+        OWN_PR: _pull(OWN_PR, "open"),
+        PARENT_PR: _pull(PARENT_PR, "closed", True),
+    })
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent", assignee="builder")
+        _complete_local(conn, parent_id, PARENT_PR)
+        child_id = _ready_child(conn, parent_id, contract=OWN_PR)
+        kb.add_comment(conn, child_id, author="coordinator", body=f"Child PR is up: {OWN_PR}")
+        _backdate_comments(conn, child_id)
+        kb.add_comment(conn, child_id, author="coordinator", body=f"Dependency merged: {PARENT_PR}")
+
+        assert kbd.check_respawn_guard(conn, child_id) == "active_pr"
+    assert ("repos/example/repo/pulls/902", "/profiles/dev") in seen.reads
+    assert set(seen.homes) == {"dev"}
+
+
+def test_active_pr_guard_lifts_when_own_contract_pr_is_merged_but_not_recent_success(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A MERGED own PR (fresh profile-bound read) lifts ``active_pr``;
+    ``recent_success`` is a separate guard and still applies on its own."""
+    seen = _mock_github(monkeypatch, {
+        OWN_PR: _pull(OWN_PR, "closed", True),
+        PARENT_PR: _pull(PARENT_PR, "open"),
+    })
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent", assignee="builder")
+        _complete_local(conn, parent_id, PARENT_PR)
+        child_id = _ready_child(conn, parent_id, contract=OWN_PR)
+        kb.add_comment(conn, child_id, author="dev", body=f"Opened {OWN_PR} for review.")
+        _backdate_comments(conn, child_id)
+        kb.add_comment(conn, child_id, author="coordinator", body=f"Dependency merged: {PARENT_PR}")
+
+        assert kbd.check_respawn_guard(conn, child_id) is None
+        assert ("repos/example/repo/pulls/902", "/profiles/dev") in seen.reads
+
+        # Separate guard: a fresh completion of a card whose own PR merged.
+        done_id = kb.create_task(conn, title="done recently", assignee="dev")
+        _complete_local(conn, done_id, _PR.format(905))
+        kb.add_comment(conn, done_id, author="dev", body=f"Opened {_PR.format(905)}")
+        _requeue_completed(conn, done_id, aged=False)
+        _mock_github(monkeypatch, default=_pull(_PR.format(905), "closed", True))
+        assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "auth_refused", "gh_failed", "timeout", "bad_json", "not_a_dict", "empty",
+        "other_pr", "missing_state", "unknown_state", "profile_unresolved",
+    ],
+)
+def test_active_pr_guard_fails_closed_when_own_published_pr_read_is_unresolved(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    """The card's own PR comes from its run's ``metadata.published_pr``. If the
+    fresh read cannot prove that exact URL closed/merged — auth refused, gh or
+    JSON failure, malformed or mismatched evidence, unresolvable profile — the
+    card stays guarded."""
+    kwargs = {
+        "auth_refused": {"error": kpa._GateAuthError("HTTP 403 on repos/example/repo/pulls/902")},
+        "gh_failed": {"error": subprocess.CalledProcessError(1, ["gh", "api"])},
+        "timeout": {"error": subprocess.TimeoutExpired(["gh", "api"], 30)},
+        "bad_json": {"error": ValueError("not json")},
+        "not_a_dict": {"default": []},
+        "empty": {"default": {}},
+        "other_pr": {"default": _pull(_PR.format(999), "closed", True)},
+        "missing_state": {"default": {"html_url": OWN_PR, "merged": True}},
+        "unknown_state": {"default": _pull(OWN_PR, "weird", True)},
+        "profile_unresolved": {"home_error": kpa._GateAuthError("assignee profile 'dev'")},
+    }[mode]
+    seen = _mock_github(monkeypatch, **kwargs)
+    with kbc.connect() as conn:
+        own_id = kb.create_task(conn, title="published own pr", assignee="dev")
+        _complete_local(conn, own_id, OWN_PR)
+        kb.add_comment(conn, own_id, author="dev", body=f"Opened {OWN_PR} for review.")
+        _requeue_completed(conn, own_id, aged=True)
+
+        assert kbd.check_respawn_guard(conn, own_id) == "active_pr"
+    if mode == "profile_unresolved":
+        assert seen.reads == []
+    else:
+        assert seen.reads and all(home == "/profiles/dev" for _ep, home in seen.reads)
+
+
+def test_active_pr_guard_holds_for_metadata_only_own_published_pr_without_comment(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run metadata ``published_pr`` alone is ownership evidence: an aged
+    completion with an OPEN own PR and no comment at all stays ``active_pr``."""
+    seen = _mock_github(monkeypatch, {OWN_PR: _pull(OWN_PR, "open")})
+    with kbc.connect() as conn:
+        own_id = kb.create_task(conn, title="published own pr", assignee="dev")
+        _complete_local(conn, own_id, OWN_PR)
+        _requeue_completed(conn, own_id, aged=True)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_comments WHERE task_id = ?", (own_id,),
+        ).fetchone()[0] == 0
+
+        assert kbd.check_respawn_guard(conn, own_id) == "active_pr"
+    assert ("repos/example/repo/pulls/902", "/profiles/dev") in seen.reads
+
+
+def test_active_pr_guard_ignores_never_run_contract_without_comment(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared exact ``completion_contract`` on a never-run card is an INPUT
+    (an existing PR to work), not proof the worker published it: with no comment
+    and no run, the card stays dispatchable even if the PR is OPEN."""
+    _mock_github(monkeypatch, {OWN_PR: _pull(OWN_PR, "open")})
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="contract only", assignee="dev", completion_contract=OWN_PR,
+        )
+
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def _age_runs(conn, tid, seconds):
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET started_at = started_at - ?, ended_at = ended_at - ? "
+            "WHERE task_id = ?", (seconds, seconds, tid),
+        )
+
+
+def test_active_pr_guard_expires_metadata_only_publication_after_24h(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Historical ``published_pr`` metadata must not guard forever: with no
+    comment, an OPEN own PR published by a run older than 24h no longer guards."""
+    _mock_github(monkeypatch, {OWN_PR: _pull(OWN_PR, "open")})
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="old publication", assignee="dev")
+        _complete_local(conn, tid, OWN_PR)
+        _requeue_completed(conn, tid, aged=False, native_event=True)
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        _age_runs(conn, tid, 25 * 3600)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_metadata_publication_handoff_requires_strictly_later_new_owner(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """For a metadata-only publication (no comment) a handoff lifts ``active_pr``
+    only if it changes the profile AND lands after the publishing run: a no-op
+    ``dev -> dev`` and a same-second handoff keep the guard."""
+    _mock_github(monkeypatch, {OWN_PR: _pull(OWN_PR, "open")})
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="published", assignee="dev")
+        _complete_local(conn, tid, OWN_PR)
+        _requeue_completed(conn, tid, aged=False, native_event=True)
+        _age_runs(conn, tid, 60)
+
+        assert kb.assign_task(conn, tid, "dev") is True  # no-op: owner unchanged
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        assert kb.assign_task(conn, tid, "closer") is True
+        with kb.write_txn(conn):  # publishing run ends in the handoff's own second
+            handoff_at = conn.execute(
+                "SELECT MAX(created_at) FROM task_events WHERE task_id = ? AND kind = 'assigned'",
+                (tid,),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE task_runs SET ended_at = ? WHERE task_id = ?", (handoff_at, tid),
+            )
+            # Deterministic time: the requeue stays >= the completion even if the
+            # wall clock ticked between the requeue and the handoff.
+            conn.execute(
+                "UPDATE task_events SET created_at = ? "
+                "WHERE task_id = ? AND kind = 'status'", (handoff_at, tid),
+            )
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        _age_runs(conn, tid, 60)  # run strictly before the handoff
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_guard_holds_when_own_pr_overlaps_direct_parent_evidence(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A URL that is BOTH the direct parent's ``published_pr`` and the card's own
+    exact contract is still the card's PR: parent evidence must not make it
+    foreign once a comment names it (a never-run contract alone dispatches)."""
+    _mock_github(monkeypatch, {OWN_PR: _pull(OWN_PR, "open")})
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent", assignee="builder")
+        _complete_local(conn, parent_id, OWN_PR)
+        child_id = _ready_child(conn, parent_id, contract=OWN_PR)
+        assert kbd.check_respawn_guard(conn, child_id) is None
+
+        kb.add_comment(conn, child_id, author="coordinator", body=f"Dependency: {OWN_PR}")
+        assert kbd.check_respawn_guard(conn, child_id) == "active_pr"
+
+
+def test_active_pr_guard_rereads_fresh_state_open_closed_open(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No stale cache: successive checks follow the live PR state
+    open -> closed(merged) -> open, each doing a fresh native read."""
+    pulls = {OWN_PR: _pull(OWN_PR, "open")}
+    seen = _mock_github(monkeypatch, pulls)
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="flip", assignee="dev", completion_contract=OWN_PR,
+        )
+        kb.add_comment(conn, tid, author="dev", body=f"Opened {OWN_PR} for review.")
+
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        reads = len(seen.reads)
+
+        pulls[OWN_PR] = _pull(OWN_PR, "closed", True)
+        assert kbd.check_respawn_guard(conn, tid) is None
+        assert len(seen.reads) > reads
+        reads = len(seen.reads)
+
+        pulls[OWN_PR] = _pull(OWN_PR, "open")
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        assert len(seen.reads) > reads
+
+
+def test_active_pr_handoff_still_lifts_own_pr_guard_and_ignores_foreign_noise(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Handoff semantics are unchanged: a different profile assigned after the
+    card's own (OPEN) PR comment lifts ``active_pr``, a foreign comment newer
+    than the handoff does not re-guard, and a newer own-PR comment does."""
+    _mock_github(monkeypatch, {
+        OWN_PR: _pull(OWN_PR, "open"),
+        PARENT_PR: _pull(PARENT_PR, "open"),
+    })
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent", assignee="builder")
+        _complete_local(conn, parent_id, PARENT_PR)
+        child_id = _ready_child(conn, parent_id, contract=OWN_PR)
+        kb.add_comment(conn, child_id, author="dev", body=f"Opened {OWN_PR} for review.")
+        _backdate_comments(conn, child_id, seconds=120)
+        assert kbd.check_respawn_guard(conn, child_id) == "active_pr"
+
+        assert kb.assign_task(conn, child_id, "closer") is True
+        kb.add_comment(conn, child_id, author="coordinator", body=f"Dependency merged: {PARENT_PR}")
+        assert kbd.check_respawn_guard(conn, child_id) is None
+
+        kb.add_comment(conn, child_id, author="closer", body=f"Pushed to {OWN_PR}")
+        assert kbd.check_respawn_guard(conn, child_id) == "active_pr"
 
 
 def test_dispatch_json_exposes_suppression_reasons(

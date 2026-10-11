@@ -1537,9 +1537,11 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
+    (PR URL in a recent comment, or with no comment a ``published_pr`` run
+    within 24h per URL; re-spawning risks a duplicate PR — unless a handoff
+    event followed it: the named profile must work on that PR. A direct
+    parent's PR is ignored; a never-run contract alone does not guard; see
+    :func:`_active_pr_reason`). The review lane skips the last two: they are the *inputs* to a review
     handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
     passes own those.
     """
@@ -1625,27 +1627,130 @@ def check_respawn_guard(
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
+    #    Ownership is evidence-based, never author-based: the card's own exact
+    #    contract / ``published_pr`` is "own", a direct parent's is "foreign"
+    #    (ignored); any other URL is unknown legacy evidence and stays guarded.
+    return _active_pr_reason(conn, task_id, now)
+
+
+def _active_pr_reason(conn: sqlite3.Connection, task_id: str, now: int) -> Optional[str]:
+    """``"active_pr"`` when the card has a live PR of its own, else None.
+
+    Comment evidence: a PR URL in a comment from the last 24h guards unless a
+    handoff followed the comment. A direct parent's publication is foreign and
+    ignored; a URL with no ownership evidence stays guarded; a URL the card
+    owns (its contract or a run's ``published_pr``) guards until a fresh read
+    proves it closed. With no comment, only an actual ``published_pr`` run
+    ended within 24h guards, timed per URL; a contract alone (never run) is an
+    input, not a publication, and does not. The card's own PR is read at most
+    once per call; a second unresolved own PR fails closed.
+    """
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    own_prs = _published_pr_urls(conn, [task_id])
+    foreign_prs = _published_pr_urls(
+        conn,
+        [r[0] for r in conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ?", (task_id,),
+        ).fetchall()],
+    ) - own_prs
+    reads: dict[str, bool] = {}  # url -> own PR proven closed
+
+    def closed(url: str) -> bool:
+        if url not in reads:
+            if reads:  # the one lookup is spent: fail closed
+                return False
+            reads[url] = _own_pr_is_closed(conn, task_id, url)
+        return reads[url]
+
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         body = _kb._lossy_text(c["body"])
-        if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
+        urls = sorted(set(_RESPAWN_GUARD_PR_URL_RE.findall(body)) - foreign_prs) if body else []
+        if not urls:
             continue
-        events = conn.execute(
-            # Strictly after: a same-second tie stays guarded (fail closed).
+        if _handoff_after(conn, task_id, int(c["created_at"] or 0)):
+            return None
+        for url in urls:
+            if url not in own_prs or not closed(url):
+                return "active_pr"
+
+    published = _own_publication_times(conn, task_id)
+    for url in sorted(published):
+        if url in reads or published[url] < pr_cutoff:
+            continue
+        if _handoff_after(conn, task_id, published[url]):
+            continue
+        if not closed(url):
+            return "active_pr"
+    return None
+
+
+def _own_publication_times(conn: sqlite3.Connection, task_id: str) -> dict[str, int]:
+    """PR URL -> newest ``ended_at`` of a run of this card that published it."""
+    times: dict[str, int] = {}
+    for r in conn.execute(
+        "SELECT metadata, ended_at FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL",
+        (task_id,),
+    ).fetchall():
+        url = _kb._json_dict(r["metadata"]).get("published_pr")
+        if isinstance(url, str) and _RESPAWN_GUARD_PR_URL_RE.fullmatch(url):
+            times[url] = max(times.get(url, 0), int(r["ended_at"]))
+    return times
+
+
+def _handoff_after(conn: sqlite3.Connection, task_id: str, since: int) -> bool:
+    """True when a handoff event landed strictly after ``since`` (a same-second
+    tie stays guarded: fail closed)."""
+    return any(
+        _is_handoff_event(e["kind"], e["payload"])
+        for e in conn.execute(
             "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? AND created_at > ? "
             "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, int(c["created_at"] or 0)),
+            (task_id, since),
         ).fetchall()
-        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
-            return None
-        return "active_pr"
+    )
 
-    return None
+
+def _published_pr_urls(conn: sqlite3.Connection, task_ids: list) -> set[str]:
+    """Exact PR URLs the given tasks published: ``completion_contract`` or a
+    run's ``metadata.published_pr``."""
+    found: set[str] = set()
+    for tid in task_ids:
+        values = [r[0] for r in conn.execute(
+            "SELECT completion_contract FROM tasks WHERE id = ?", (tid,),
+        ).fetchall()]
+        for r in conn.execute("SELECT metadata FROM task_runs WHERE task_id = ?", (tid,)).fetchall():
+            values.append(_kb._json_dict(r[0]).get("published_pr"))
+        found.update(
+            v for v in values
+            if isinstance(v, str) and _RESPAWN_GUARD_PR_URL_RE.fullmatch(v)
+        )
+    return found
+
+
+def _own_pr_is_closed(conn: sqlite3.Connection, task_id: str, url: str) -> bool:
+    """Fresh read of the card's own PR as its assignee profile; True only when
+    the exact PR reports ``closed`` (merged or not). An expected read failure or
+    malformed answer is False."""
+    from hermes_cli import kanban_pr_acceptance as kpa
+    try:
+        row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        home = kpa._assignee_profile_home(row["assignee"] if row else None)
+        repo, number = url.split("/pull/")
+        repo = repo.split("github.com/", 1)[1]
+        pr = kpa._api(f"repos/{repo}/pulls/{int(number)}", profile_home=home)
+        return (
+            isinstance(pr, dict)
+            and pr.get("html_url") == url
+            and pr.get("number") == int(number)
+            and pr.get("state") == "closed"
+        )
+    except (kpa._GateAuthError, OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
+        return False
 
 
 def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:

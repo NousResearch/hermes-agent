@@ -756,7 +756,7 @@ platforms the gateway would start, and scheduled jobs. No key values are printed
 ## `hermes cron`
 
 ```bash
-hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doctor|tick>
+hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|notepad|doctor|tick>
 ```
 
 | Subcommand | Description |
@@ -769,6 +769,9 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doct
 | `run` | Trigger a job on the next scheduler tick. |
 | `remove` | Delete a scheduled job. |
 | `status` | Check whether the cron scheduler is running. |
+| `runs` (alias `history`) | Show a job's durable execution attempts, newest first — the record behind a "did it actually run?" question. Args: optional `job_id`; `--limit N` (1–500, default 20). |
+| `incidents` | List or acknowledge durable cron failure incidents. Flags: `--state <detected\|alerted\|resolved\|closed>`; the `ack <incident_id>` action acknowledges one. |
+| `notepad` | Read or write a job's durable notepad — a persistent key/value store whose entries are injected into the job's prompt on every run. Actions: `list` (default), `get`, `set`, `delete`. |
 | `doctor` | Read-only fleet health check: failed runs, failed deliveries, overdue/missing `next_run_at`, missing scripts or workdirs. Exits non-zero when issues are found. |
 | `tick` | Run due jobs once and exit. |
 

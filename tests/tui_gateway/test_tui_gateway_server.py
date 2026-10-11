@@ -267,7 +267,7 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
     monkeypatch.setattr(
         server,
         "_ensure_session_db_row",
-        lambda _session: parent_writes.__setitem__(
+        lambda *_a, **_kw: parent_writes.__setitem__(
             "ensure_session", parent_writes["ensure_session"] + 1
         ),
     )
@@ -387,7 +387,7 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     inline_calls = []
     monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _BrokenSupervisor())
-    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
     monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
     monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: None)
     monkeypatch.setattr(server, "_wait_agent", lambda _session, _rid: None)
@@ -670,7 +670,7 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     fixed_info = {"model": "gold-model", "provider": "gold-provider", "usage": {"total": 15}}
     usage = server._get_usage(_Agent())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
-    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
     monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: dict(fixed_info))
     monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
@@ -14479,7 +14479,7 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
         monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
-        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
         monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
@@ -14549,7 +14549,7 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
         monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
-        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
         monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
@@ -14621,7 +14621,7 @@ def test_session_not_running_before_agent_ready_emits_error_event(monkeypatch):
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
         monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
-        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
         monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
@@ -14707,7 +14707,7 @@ def test_slow_agent_build_delivers_prompt_instead_of_timing_out(monkeypatch):
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
         monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
-        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
         monkeypatch.setattr(
@@ -14782,7 +14782,7 @@ def test_slow_agent_build_emits_keyed_progress_notice(monkeypatch):
         # Every wait slice lands past the slow threshold.
         monkeypatch.setattr(server, "_AGENT_BUILD_SLOW_NOTICE_AFTER", 0.0)
         monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
-        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
         monkeypatch.setattr(
@@ -14854,7 +14854,7 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
         monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
-        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", _failing_build)
         monkeypatch.setattr(
@@ -16138,7 +16138,7 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
         yield ProfileDB()
 
     monkeypatch.setattr("gateway.config.load_gateway_config", load_config)
-    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
     monkeypatch.setattr(server, "_session_db", profile_db)
     server._sessions["handoff-profile"] = {
         "running": False,

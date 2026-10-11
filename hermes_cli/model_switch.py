@@ -393,7 +393,11 @@ def resolve_startup_model_route(
     # the model name and the whole prompt goes to its endpoint before it 404s (#73943). The
     # configured ids come from the caller's config, the same source the ``/`` branch below uses.
     from hermes_cli.models import parse_model_input
-    from hermes_cli.providers import custom_provider_slug
+    from hermes_cli.providers import custom_provider_slug, resolve_custom_provider, resolve_user_provider
+    configured = {str(name).strip().lower() for name in (user_providers or {}) if str(name).strip()}
+    # Settings-only blocks still route built-ins, but only URL-bearing rows define custom identities.
+    user_providers = {key: entry for key, entry in (user_providers or {}).items()
+                      if resolve_user_provider(key, user_providers or {}) is not None}
     custom_ids = {custom_provider_slug(str(entry.get("name") or key), str(key))
                   for key, entry in (user_providers or {}).items() if isinstance(entry, dict)}
     custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
@@ -407,7 +411,29 @@ def resolve_startup_model_route(
     if not prefix or not model:
         return None
 
-    if current_provider:
+    # A selected named endpoint may require its own vendor/model spelling. Do not
+    # reinterpret that vendor as a registry route and lose both the custom identity
+    # and the model prefix (#123997). Explicit aliases/colon routes above still win.
+    current = _clean(current_provider).lower()
+    selected_aliases = set()
+    for key, entry in (user_providers or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        display = str(entry.get("name") or key)
+        if current == custom_provider_slug(display, str(key)):
+            selected_aliases.update(custom_provider_aliases(display, str(key)))
+    legacy = resolve_custom_provider(current, custom_providers)
+    if (not selected_aliases and current.startswith("custom:") and legacy is not None
+            and prefix.lower() in custom_provider_aliases(legacy.name, legacy.id)):
+        return StartupModelRoute(model=raw, provider=_clean(current_provider))
+    exact = resolve_user_provider(prefix.lower(), user_providers or {})
+    if (prefix.lower() in selected_aliases
+            and (exact is None or current == custom_provider_slug(prefix))):
+        return StartupModelRoute(model=raw, provider=_clean(current_provider))
+
+    # A removed custom endpoint and the exact OpenAI id are not routing aggregators.
+    if (current_provider and current != "openai"
+            and (not current.startswith("custom:") or selected_aliases or legacy is not None)):
         try:
             from hermes_cli.providers import is_routing_aggregator, normalize_provider as _norm_prov
             if is_routing_aggregator(_norm_prov(current_provider)):
@@ -417,7 +443,6 @@ def resolve_startup_model_route(
         except Exception:
             pass
 
-    configured = {str(name).strip().lower() for name in (user_providers or {}) if str(name).strip()}
     configured.update(
         f"custom:{entry.get('name', '').strip().lower()}"
         for entry in (custom_providers or [])
@@ -434,7 +459,8 @@ def resolve_startup_model_route(
         provider = canonical
     else:
         return None
-    return None if is_aggregator(canonical) else StartupModelRoute(model=model, provider=provider)
+    # The CLI's exact OpenAI id must not take providers.py's legacy openai -> openrouter alias.
+    return None if canonical != "openai" and is_aggregator(canonical) else StartupModelRoute(model=model, provider=provider)
 
 
 # --- Result dataclasses

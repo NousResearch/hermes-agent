@@ -702,9 +702,11 @@ import {
   buildNoSandboxRelaunchArgs,
   decideWindowsSandboxLaunch,
   fallbackMarker,
+  launchStillOwesReprobe,
   grantAllApplicationPackagesAcl,
   markerAfterSuccessfulBoot,
   readSandboxMarker,
+  recordDirectCleanExit,
   type SandboxFallbackReason,
   shouldAttemptAclRepair,
   shouldRelaunchForGpuSandboxCrash,
@@ -1053,6 +1055,12 @@ let windowsSandboxFallbackActive = false
 let windowsSandboxFallbackSticky = false
 let windowsSandboxFallbackReason: SandboxFallbackReason = 'boot-loop'
 let windowsNoSandboxRelaunchAttempted = false
+// #112961: the prior run reached a usable window and then died without
+// before-quit (main-process abort, kill, power loss). Logged at reveal, once
+// desktop.log is writable — console output alone is discarded on Start Menu
+// launches.
+let priorSteadyAbortDetected = false
+let sandboxReprobeOwed = false
 
 // #121954: the two-strike boot-abort ladder now also covers Linux. On Linux
 // hosts where the sandboxed GPU child cannot start (dies pre-main on an
@@ -1091,6 +1099,11 @@ if (IS_WINDOWS || process.platform === 'linux') {
 
   windowsSandboxFallbackActive = sandboxDecision.enable
   windowsSandboxFallbackSticky = sandboxDecision.nextMarker.state === 'fallback'
+  priorSteadyAbortDetected = sandboxDecision.priorSteadyAbort === true
+  // Whether this launch still owes the sandbox its post-update retry. The rule
+  // lives in the sandbox module so the suite can pin it - main.ts boots
+  // Electron at import and cannot be imported by a test.
+  sandboxReprobeOwed = launchStillOwesReprobe(sandboxDecision)
 
   if (sandboxDecision.nextMarker.state === 'fallback' && sandboxDecision.nextMarker.reason) {
     windowsSandboxFallbackReason = sandboxDecision.nextMarker.reason
@@ -12552,6 +12565,18 @@ async function exitAfterBackendShutdown(code) {
 
   // app.exit() skips will-quit, and every in-app relaunch lands here.
   killTimedGitChildren()
+
+  // app.exit() emits no before-quit, so record the clean exit here instead.
+  try {
+    recordDirectCleanExit(app.getPath('userData'), {
+      stickyFallback: windowsSandboxFallbackSticky
+    })
+  } catch (error) {
+    // A failed write leaves the prior marker behind, which the next launch
+    // reads as an abort. Say so instead of failing silently (#112961).
+    rememberLog(`[sandbox] clean-exit marker write failed: ${error?.message || error}`)
+  }
+
   app.exit(code)
 }
 
@@ -15124,6 +15149,8 @@ function createWindow() {
       // --no-sandbox so the next launcher click does not re-enter the GPU
       // FATAL crash loop. The marker records the app version so the next
       // update re-probes the sandbox.
+      // `steady` records `running`: a later main-process abort then leaves a
+      // leftover the next launch can tell apart from a clean quit (#112961).
       if (IS_WINDOWS || process.platform === 'linux') {
         try {
           writeSandboxMarker(
@@ -15131,7 +15158,12 @@ function createWindow() {
             markerAfterSuccessfulBoot({
               fallbackActive: windowsSandboxFallbackSticky,
               reason: windowsSandboxFallbackReason,
-              appVersion: app.getVersion()
+              appVersion: app.getVersion(),
+              steady: true,
+              // This launch owes a post-update retry (see sandboxReprobeOwed), so reaching
+              // a usable window on a sandbox-off relaunch proves nothing and the
+              // retry stays owed to the next sandboxed launch.
+              pendingReprobe: sandboxReprobeOwed
             })
           )
         } catch (error) {
@@ -15148,6 +15180,13 @@ function createWindow() {
           )
         } catch (error) {
           rememberLog(`[gpu] stack-cookie marker update after main-window reveal failed: ${error?.message || error}`)
+        }
+
+        if (priorSteadyAbortDetected) {
+          priorSteadyAbortDetected = false
+          rememberLog(
+            '[main] previous run reached a usable window but never quit cleanly (main-process abort, kill, or power loss)'
+          )
         }
       }
 
@@ -19703,10 +19742,17 @@ app.on('before-quit', event => {
   // Keyed on sticky (not active): a manual --no-sandbox run still records a
   // clean quit, while an engaged fallback keeps its sticky marker.
   if ((IS_WINDOWS || process.platform === 'linux') && !windowsSandboxFallbackSticky) {
+    // Routed through recordDirectCleanExit() rather than writing `ok` here: both
+    // clean-exit handlers must agree that a clean exit spends no evidence, and
+    // a second inline copy is how they drift apart.
     try {
-      writeSandboxMarker(app.getPath('userData'), markerAfterSuccessfulBoot({ fallbackActive: false }))
-    } catch {
-      void 0
+      recordDirectCleanExit(app.getPath('userData'), {
+        stickyFallback: windowsSandboxFallbackSticky
+      })
+    } catch (error) {
+      // Same reasoning as the exitAfterBackendShutdown twin: a failed write
+      // leaves the prior marker behind, which the next launch reads as an abort.
+      rememberLog(`[sandbox] clean-exit marker write failed: ${error?.message || error}`)
     }
   }
 

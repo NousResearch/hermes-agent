@@ -6,7 +6,12 @@ import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
 import { syncTuiLocale } from '../i18n/loader.js'
 import { t } from '../i18n/runtime.js'
-import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
+import {
+  DEFAULT_VOICE_RECORD_KEY,
+  isLegacyWindowsConsole,
+  type ParsedVoiceRecordKey,
+  parseVoiceRecordKey
+} from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
 import { applyConfiguredTuiTheme } from './createGatewayEventHandler.js'
@@ -67,14 +72,24 @@ export const normalizeBusyInputMode = (raw: unknown): BusyInputMode => {
 
 const INDICATOR_STYLE_SET: ReadonlySet<IndicatorStyle> = new Set(INDICATOR_STYLES)
 
-export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
-  if (typeof raw !== 'string') {
-    return DEFAULT_INDICATOR_STYLE
+export const normalizeIndicatorStyle = (
+  raw: unknown,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env
+): IndicatorStyle => {
+  if (typeof raw === 'string') {
+    const v = raw.trim().toLowerCase() as IndicatorStyle
+
+    if (INDICATOR_STYLE_SET.has(v)) {
+      return v
+    }
   }
 
-  const v = raw.trim().toLowerCase() as IndicatorStyle
-
-  return INDICATOR_STYLE_SET.has(v) ? v : DEFAULT_INDICATOR_STYLE
+  // Unset (or unrecognised): the kaomoji faces lean on katakana, stars and
+  // combining marks that stock Windows 10 conhost fonts cannot render —
+  // they come out as tofu (#67151). ASCII under a legacy Windows console,
+  // kaomoji everywhere else; an explicit /indicator choice always wins above.
+  return isLegacyWindowsConsole(platform, env) ? 'ascii' : DEFAULT_INDICATOR_STYLE
 }
 
 const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])

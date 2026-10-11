@@ -264,6 +264,50 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return (*super()._allow_all_env_names(), "WHATSAPP_CLOUD_ALLOW_ALL_USERS")
 
     # ------------------------------------------------------------------ lifecycle
+    async def _try_reuse_running_webhook(self) -> bool:
+        """Reuse a live, matching webhook and Graph client without rebinding."""
+        if self._http_client is None or self._http_client.is_closed:
+            return False
+        from gateway.platforms.shared_ingress import (
+            listener_base_url, shared_ingress_profile, shared_listener_base,
+        )
+        if self._runner is not None:
+            # Actual bound addresses cover ephemeral ports and IPv6-only
+            # listeners; a configured port is not proof that our runner lives.
+            urls = [
+                listener_base_url("::1" if address[0] == "::" else address[0], address[1]) + self._health_path
+                for address in self._runner.addresses
+            ]
+        else:
+            profile = shared_ingress_profile(self)
+            base = shared_listener_base(getattr(self, "gateway_runner", None))
+            if not profile or not base or getattr(self, "_shared_ingress_app", None) is None:
+                return False
+            urls = [f"{base}/p/{profile}{self._health_path}"]
+        if not urls:
+            return False
+        import aiohttp
+        # Local health must not travel through the Graph client's HTTP proxy.
+        async with aiohttp.ClientSession(trust_env=False) as session:
+            for url in urls:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=2), allow_redirects=False) as response:
+                        if response.status != 200:
+                            continue
+                        data = await response.json()
+                except (aiohttp.ClientError, TimeoutError, ValueError):
+                    continue
+                if not isinstance(data, dict) or any(data.get(key) != value for key, value in (
+                    ("status", "ok"), ("platform", self.platform.value),
+                    ("phone_number_id", self._phone_number_id), ("webhook_path", self._webhook_path),
+                )):
+                    continue
+                self._mark_connected()
+                self._wire_plugin_handlers(None)
+                logger.info("[whatsapp_cloud] Reusing existing webhook server on %s", url)
+                return True
+        return False
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         for ok, code, message in (
             (check_whatsapp_cloud_requirements(), "whatsapp_cloud_deps_missing",
@@ -274,6 +318,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not ok:
                 self._set_fatal_error(code, message, retryable=False)
                 return False
+        if is_reconnect:
+            if await self._try_reuse_running_webhook():
+                return True
+            # A stale runner/client would otherwise leak the old HTTP client
+            # and make the subsequent TCPSite bind fail with EADDRINUSE.
+            if self._runner is not None or self._http_client is not None:
+                await self.disconnect()
         # Tighter keepalive so idle CLOSE_WAIT drains promptly.
         # Outbound HTTP client. See #18451.
         from gateway.platforms._http_client_limits import platform_httpx_limits

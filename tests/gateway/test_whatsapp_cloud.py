@@ -5,9 +5,8 @@ handshake. The webhook POST path is currently a stub (Phase 3 will add
 signature verification + dispatch); we just confirm it accepts a body
 and returns 200 here.
 
-All tests are fixture-driven — no live network. httpx is patched so the
-adapter never reaches graph.facebook.com, and the aiohttp server is
-exercised with synthetic ``Request`` objects.
+Outbound Graph calls use transport fixtures. Reconnect tests exercise a real
+local HTTP listener; the remaining handlers use synthetic request objects.
 """
 
 from __future__ import annotations
@@ -125,6 +124,121 @@ def _mock_httpx_response(status_code: int, json_body: dict):
     resp.json = MagicMock(return_value=json_body)
     resp.text = json.dumps(json_body)
     return resp
+
+
+class TestReconnectFastPath:
+    """Cloud reconnects reuse a healthy in-process webhook server."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("host, stale", [
+        ("127.0.0.1", None), ("::1", None), ("::", None), (None, None),
+        ("127.0.0.1", "runner"), ("127.0.0.1", "client"),
+        ("127.0.0.1", "http"), ("127.0.0.1", "identity"),
+    ])
+    async def test_reconnect_reuses_healthy_webhook(self, tmp_path, monkeypatch, host, stale):
+        from aiohttp import web
+        from gateway.config import PlatformConfig
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:1")
+        adapter = WhatsAppCloudAdapter(PlatformConfig(extra={
+            "phone_number_id": "1234567890", "access_token": "test-token",
+            "verify_token": "verify-secret", "app_secret": "signing-secret",
+            "webhook_host": host, "webhook_port": 0,
+        }))
+        handle_health = adapter._handle_health
+        requests = []
+        async def health(request):
+            requests.append(request.path)
+            if stale == "http" and len(requests) == 1:
+                return web.Response(status=503)
+            if stale == "identity" and len(requests) == 1:
+                return web.json_response({"status": "ok", "phone_number_id": "other"})
+            return await handle_health(request)
+        monkeypatch.setattr(adapter, "_handle_health", health)
+        try:
+            assert await adapter.connect() is True
+            runner, client = adapter._runner, adapter._http_client
+            assert runner is not None and client is not None
+            if stale == "runner":
+                await runner.cleanup()
+            elif stale == "client":
+                await client.aclose()
+            adapter._mark_disconnected()
+            assert await adapter.connect(is_reconnect=True) is True
+            assert adapter._running is True
+            if stale is None:
+                assert adapter._runner is runner
+                assert adapter._http_client is client
+                assert len(requests) == 1
+            else:
+                assert adapter._runner is not runner
+                assert adapter._http_client is not client
+                assert client.is_closed
+                assert runner.addresses == []
+            # The reused/rebuilt listener still serves Meta's verify handshake.
+            from gateway.platforms.shared_ingress import listener_base_url
+            current_runner = adapter._runner
+            assert current_runner is not None
+            address = current_runner.addresses[0]
+            base = listener_base_url("::1" if address[0] == "::" else address[0], address[1])
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(base + adapter._webhook_path, params={
+                    "hub.mode": "subscribe", "hub.verify_token": "verify-secret", "hub.challenge": "reconnected",
+                }) as response:
+                    assert response.status == 200
+                    assert await response.text() == "reconnected"
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_reuses_shared_listener(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        import aiohttp
+        from aiohttp import web
+        from gateway.config import PlatformConfig
+        from gateway.platforms.shared_ingress import dispatch_profile_ingress
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        adapter = WhatsAppCloudAdapter(PlatformConfig(extra={
+            "phone_number_id": "1234567890", "access_token": "test-token",
+            "verify_token": "verify-secret", "app_secret": "signing-secret",
+        }))
+        gateway = SimpleNamespace(adapters={}, _profile_adapters={"second": {Platform.WHATSAPP_CLOUD: adapter}})
+        adapter.gateway_runner = gateway
+        adapter._shared_listener_profile = "second"
+        app = web.Application()
+        async def dispatch(request):
+            return await dispatch_profile_ingress(gateway, "second", request.match_info["tail"], request, scoped=True)
+        app.router.add_route("*", "/p/second/{tail:.*}", dispatch)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            await web.TCPSite(runner, "127.0.0.1", 0).start()
+            port = runner.addresses[0][1]
+            gateway.adapters[Platform.API_SERVER] = SimpleNamespace(_host="127.0.0.1", _port=port)
+            assert await adapter.connect() is True
+            client, ingress = adapter._http_client, getattr(adapter, "_shared_ingress_app", None)
+            assert client is not None and ingress is not None
+            adapter._mark_disconnected()
+            assert await adapter.connect(is_reconnect=True) is True
+            assert adapter._runner is None
+            assert adapter._http_client is client
+            assert getattr(adapter, "_shared_ingress_app", None) is ingress
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://127.0.0.1:{port}/p/second/health") as response:
+                    assert response.status == 200
+                    assert (await response.json())["phone_number_id"] == "1234567890"
+            # Losing the shared listener cannot make the published app count as live.
+            await runner.cleanup()
+            assert await adapter._try_reuse_running_webhook() is False
+        finally:
+            await adapter.disconnect()
+            await runner.cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -1502,4 +1616,3 @@ class TestReplyContextResolution:
         assert event.reply_to_is_own_message is True
         assert event.media_urls == [str(image)]
         assert event.media_types == ["image/png"]
-

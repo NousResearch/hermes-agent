@@ -603,7 +603,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+        """Start (or adopt) the Node.js bridge and wait for it to be ready.
+
+        On a reconnect, first try a matching live bridge before cold startup.
+        """
         if find_node_executable("node") is None:
             import pm
 
@@ -636,12 +639,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
         try:
+            # Acquire session ownership before adopting the bridge, but avoid
+            # npm, pidfile and port cleanup when a reconnect can reuse it.
+            if is_reconnect and lock_acquired and (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
+                return True
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
             # A secondary adopts or reaps only a bridge its own pidfile identifies (crash restart);
             # the default keeps its historical adopt-or-clear-the-port path.
-            if (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
+            if not is_reconnect and (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
                 return True
             if self._foreign_bridge_session:
                 # The port is served by another profile's bridge. Never adopt

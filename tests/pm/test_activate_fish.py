@@ -26,6 +26,7 @@ def _fish(root: Path, env: dict, script: str, tmp_path: Path) -> subprocess.Comp
     return subprocess.run(
         ["fish", "--no-config", "-c", script.replace("@ACTIVATE@", posix(root / "activate.fish"))],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
+        check=False,
     )
 
 

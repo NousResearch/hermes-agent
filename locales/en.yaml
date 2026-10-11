@@ -2380,6 +2380,7 @@ cli:
     failed: "Connection failed"
     authorized_no_tools: "Authorized. Tools unavailable."
     connected: "Connected"
+    named_account: "Hermes named this {name} account {alias}. Rename it anytime."
     waiting: "Waiting…"
   editor:
     only_interactive: "External editor is only available inside the interactive CLI."

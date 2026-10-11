@@ -11,7 +11,7 @@ import errno
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Optional, Tuple
 
 from hermes_time import safe_strftime
@@ -107,7 +107,7 @@ def format_message_timestamp(ts_value: Any, tz=None) -> str:
     try:
         # An early positive epoch can fall in 1969 locally. Starting from aware
         # UTC avoids Windows' negative-time fold probe in naive astimezone().
-        dt = datetime.fromtimestamp(epoch, tz=tz) if tz is not None else datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone()
+        dt = datetime.fromtimestamp(epoch, tz=tz) if tz is not None else datetime.fromtimestamp(epoch, tz=UTC).astimezone()
     except (OSError, OverflowError, ValueError):
         return ""
     return f"[{safe_strftime(dt, '%a %Y-%m-%d %H:%M:%S %Z')}]"

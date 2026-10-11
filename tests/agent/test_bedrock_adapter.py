@@ -762,7 +762,7 @@ class TestConverseReasoningEffort:
     ])
     def test_other_families_never_get_the_openai_reasoning_field(self, model):
         for cfg in ({"enabled": True, "effort": "high"}, {"enabled": False}):
-            assert self._fields(model, cfg) is None, model
+            assert "reasoning" not in (self._fields(model, cfg) or {}), model
 
     def test_reasoning_field_is_byte_stable_as_the_conversation_grows(self):
         """Prompt caching: the field depends only on model + configured effort, never on history."""

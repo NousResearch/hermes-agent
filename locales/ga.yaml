@@ -2279,6 +2279,7 @@ cli:
     failed: "Theip ar an gceangal"
     authorized_no_tools: "Údaraithe. Níl uirlisí ar fáil."
     connected: "Ceangailte"
+    named_account: "Thug Hermes {alias} ar an gcuntas {name} seo. Is féidir é a athainmniú am ar bith."
     waiting: "Ag fanacht…"
   editor:
     only_interactive: "Níl an t-eagarthóir seachtrach ar fáil ach laistigh den CLI idirghníomhach."

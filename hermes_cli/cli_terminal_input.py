@@ -142,7 +142,7 @@ def _file_drop_result(path: Path, remainder: str) -> dict:
     return {"path": path, "is_image": path.suffix.lower() in _IMAGE_EXTENSIONS, "remainder": remainder}
 
 
-def _detect_file_drop(user_input: str) -> "dict | None":
+def _detect_file_drop(user_input: str) -> dict | None:
     """Detect a dragged/pasted file path at the start of *user_input* -> ``{path, is_image, remainder}`` or None."""
     from cli import _file_drop_result, _resolve_attachment_path, _split_path_input
     if not isinstance(user_input, str):

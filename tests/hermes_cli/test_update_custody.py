@@ -203,7 +203,7 @@ def _assert_fetch_dies_with_killed_owner(repo, tmp_path, prelude: str) -> None:
             owner.kill()
         blocker_pid = Path(f"{started}.self")
         if blocker_pid.exists():
-            subprocess.run(["kill", "-9", blocker_pid.read_text(encoding="utf-8-sig").strip()], capture_output=True)
+            subprocess.run(["kill", "-9", blocker_pid.read_text(encoding="utf-8-sig").strip()], capture_output=True, check=False)
 
 
 def _state(pid: int) -> str:

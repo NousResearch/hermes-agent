@@ -11,6 +11,7 @@ const buildOverlayState = (): OverlayState => ({
   clarify: null,
   confirm: null,
   connection: null,
+  connectors: false,
   ambient: [],
   widget: null,
   journey: false,
@@ -30,53 +31,32 @@ const buildOverlayState = (): OverlayState => ({
 
 export const $overlayState = atom<OverlayState>(buildOverlayState())
 
-export const $isBlocked = computed(
-  $overlayState,
-  ({
-    agents,
-    approval,
-    billing,
-    clarify,
-    confirm,
-    connection,
-    journey,
-    modelPicker,
-    pager,
-    petPicker,
-    pluginsHub,
-    secret,
-    sessions,
-    skillsHub,
-    subscription,
-    sudo,
-    vaultCode,
-    vaultSaveLogin,
-    vaultUnlock,
-    widget
-  }) =>
-    Boolean(
-      agents ||
-      approval ||
-      billing ||
-      clarify ||
-      confirm ||
-      connection ||
-      journey ||
-      modelPicker ||
-      pager ||
-      petPicker ||
-      pluginsHub ||
-      secret ||
-      sessions ||
-      skillsHub ||
-      subscription ||
-      sudo ||
-      vaultCode ||
-      vaultSaveLogin ||
-      vaultUnlock ||
-      widget
-    )
-)
+// Every overlay that suspends text input. `ambient` is the one non-blocking key.
+const BLOCKING_KEYS = [
+  'agents',
+  'approval',
+  'billing',
+  'clarify',
+  'confirm',
+  'connection',
+  'connectors',
+  'journey',
+  'modelPicker',
+  'pager',
+  'petPicker',
+  'pluginsHub',
+  'secret',
+  'sessions',
+  'skillsHub',
+  'subscription',
+  'sudo',
+  'vaultCode',
+  'vaultSaveLogin',
+  'vaultUnlock',
+  'widget'
+] as const satisfies readonly (keyof OverlayState)[]
+
+export const $isBlocked = computed($overlayState, overlay => BLOCKING_KEYS.some(key => Boolean(overlay[key])))
 
 /**
  * Does an open overlay actually PAINT OVER the status rule?
@@ -94,7 +74,7 @@ export const $isBlocked = computed(
  *   subtree) so it can anchor the full-screen absolute `Overlay`
  *   (`components/overlay.tsx`) against the whole terminal.
  * - The FloatingOverlays set — `modelPicker`, `pager`, `petPicker`,
- *   `sessions`, `skillsHub`, `pluginsHub` — but ONLY when the rule sits at
+ *   `sessions`, `skillsHub`, `pluginsHub`, `connectors` — but ONLY when the rule sits at
  *   the top.  That panel is `position="absolute" bottom="100%"` inside
  *   ComposerPane's relative Box (`appOverlays.tsx:387`), so it grows UPWARD
  *   over the `at="top"` rule and never reaches the `at="bottom"` one.
@@ -131,6 +111,7 @@ export const $isBlocked = computed(
  */
 export const hasFloatingPanel = (overlay: OverlayState): boolean =>
   Boolean(
+    overlay.connectors ||
     overlay.modelPicker ||
     overlay.pager ||
     overlay.petPicker ||
@@ -152,6 +133,11 @@ export const SENSITIVE_PROMPTS = ['sudo', 'secret', 'vaultUnlock', 'vaultSaveLog
 
 export const hasSensitivePrompt = (overlay: Pick<OverlayState, (typeof SENSITIVE_PROMPTS)[number]>): boolean =>
   SENSITIVE_PROMPTS.some(key => Boolean(overlay[key]))
+
+/** The agent's questions and confirms, which take the keyboard from any open panel. */
+export const PROMPT_KEYS = ['approval', 'clarify', 'confirm', 'connection', ...SENSITIVE_PROMPTS] as const
+
+export const hasPromptOpen = (overlay: OverlayState): boolean => PROMPT_KEYS.some(key => Boolean(overlay[key]))
 
 export const getOverlayState = () => $overlayState.get()
 
@@ -179,6 +165,7 @@ export const resetFlowOverlays = () =>
     agentsInitialHistoryIndex: $overlayState.get().agentsInitialHistoryIndex,
     ambient: $overlayState.get().ambient,
     connection: $overlayState.get().connection,
+    connectors: $overlayState.get().connectors,
     widget: $overlayState.get().widget,
     journey: $overlayState.get().journey,
     modelPicker: $overlayState.get().modelPicker,

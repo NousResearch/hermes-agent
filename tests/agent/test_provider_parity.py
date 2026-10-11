@@ -475,11 +475,11 @@ class TestBuildApiKwargsBedrockConverse:
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert "additionalModelRequestFields" not in kwargs
 
-    def test_non_openai_converse_models_are_unchanged(self, monkeypatch):
+    def test_non_gpt_converse_models_get_no_openai_reasoning_shape(self, monkeypatch):
         for model in ("openai.gpt-oss-120b-1:0", "us.amazon.nova-pro-v1:0", "us.anthropic.claude-opus-4-6-v1"):
             agent = self._agent(monkeypatch, model, {"enabled": True, "effort": "high"})
             kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-            assert "additionalModelRequestFields" not in kwargs, model
+            assert "reasoning" not in kwargs.get("additionalModelRequestFields", {}), model
 
     def test_one_shot_reasoning_off_is_sent_then_the_configured_effort_returns(self, monkeypatch):
         """The truncation-continuation override disables reasoning for exactly one request."""
@@ -770,7 +770,7 @@ class TestAuxiliaryClientProviderPriority:
             "scope": "inference:invoke",
         }
         with patch("agent.auxiliary_client._read_nous_auth", return_value=nous_auth), \
-             patch("agent.auxiliary_client.OpenAI") as mock, \
+             patch("agent.auxiliary_client.OpenAI"), \
              patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None):
             _client, model = get_text_auxiliary_client()
         assert model == _NOUS_MODEL

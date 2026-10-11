@@ -53,7 +53,7 @@ def test_bash_cold_sync_changed_input_and_warm_noop(tmp_path, canary):
         ! declare -F deactivate >/dev/null
     '''
     run = subprocess.run([bash(), "-c", script], cwd=tmp_path, env=env,
-                         capture_output=True, text=True, timeout=40)
+                         capture_output=True, text=True, timeout=40, check=False)
     assert run.returncode == 0, run.stdout + run.stderr
     first, second, warm = run.stdout.splitlines()
     assert first.startswith(str(root) + os.pathsep) and "/first/venv/" in first
@@ -86,7 +86,7 @@ def test_bash_setup_failure_preserves_caller(tmp_path, already_active):
         printf preserved
     '''
     run = subprocess.run([bash(), "-c", script], cwd=tmp_path, env=env,
-                         capture_output=True, text=True, timeout=40)
+                         capture_output=True, text=True, timeout=40, check=False)
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout == "preserved"
     calls = (root / "calls.jsonl").read_text(encoding="utf-8").splitlines()
@@ -130,7 +130,7 @@ def test_powershell_cold_sync_changed_input_warm_and_failure(tmp_path):
             $env:PYTHONHOME -ne 'caller-home' -or $env:VIRTUAL_ENV -ne 'caller-venv') {{ throw 'restore failed' }}
     ''', encoding="utf-8")
     run = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90)
+                         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90, check=False)
     assert run.returncode == 0, run.stdout + run.stderr
     selected = [line.removeprefix("selection=") for line in run.stdout.splitlines() if line.startswith("selection=")]
     assert len(selected) == 3

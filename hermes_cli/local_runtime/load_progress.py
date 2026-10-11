@@ -46,7 +46,7 @@ def _composite_percent(stages: list[str], current: str, value: float) -> int:
     return _pct(value)
 
 
-def _endpoint() -> "tuple[str, str] | None":
+def _endpoint() -> tuple[str, str] | None:
     """(base_root, api_key) of the managed router via the ownership-guarded reader, or None."""
     from hermes_cli.local_runtime.endpoint import managed_root
 
@@ -130,7 +130,7 @@ def get_loading_progress() -> dict[str, dict]:
                 for m, e in _snapshot.items() if now - e["ts"] < _STALE_ENTRY_TTL_S}
 
 
-def get_prefill_progress(model: str) -> "dict | None":
+def get_prefill_progress(model: str) -> dict | None:
     """{"processed": tokens} while the managed server is prompt-processing for ``model``, or None
     (idle, decoding, unreachable, or foreign server).
 

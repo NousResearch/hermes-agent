@@ -548,6 +548,12 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
     """
     if str(db_path) == ":memory:" or str(db_path).startswith("file:"):
         return
+    # A symlinked DB is written where the target lives: SQLite follows the link and keeps its
+    # WAL sidecars next to the TARGET, so a read-only parent of the link must not veto a
+    # writable target (#135113). Judge the link's directory only when it is the real one.
+    with contextlib.suppress(OSError):
+        if db_path.is_symlink():
+            db_path = db_path.resolve()
     home: Optional[Path] = None
     with contextlib.suppress(Exception):  # pragma: no cover - defensive
         home = Path(get_hermes_home()).resolve()

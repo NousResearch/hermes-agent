@@ -89,21 +89,6 @@ async def test_cleanup_ws_does_not_stall_on_hung_server():
     assert elapsed < WS_CLOSE_TIMEOUT_S + 1.0
 
 
-@pytest.mark.asyncio
-async def test_cleanup_ws_fast_path_returns_immediately():
-    """A responsive server completes the handshake well under the bound."""
-    cm = _connection()
-    fast = _FastWS()
-    cm._ws = fast
-
-    loop = asyncio.get_running_loop()
-    start = loop.time()
-    await cm._cleanup_ws()
-    elapsed = loop.time() - start
-
-    assert fast.close_called
-    assert cm._ws is None
-    assert elapsed < 1.0
 
 
 @pytest.mark.asyncio

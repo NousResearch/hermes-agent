@@ -1,6 +1,8 @@
 /**
- * Board switcher projected through `WORKSPACE_PAGE_HEADER_AREA` into the
- * workspace panel's tab-header space while the board page is mounted.
+ * Board switcher. On the full page it is projected through
+ * `WORKSPACE_PAGE_HEADER_AREA` into the workspace panel's tab-header space; in
+ * a split route tile it renders in the board's own header row. Placed by
+ * `WorkspacePageHeaderControl` (board.tsx).
  */
 
 import {
@@ -36,14 +38,15 @@ import { type ReactNode, useEffect, useState } from 'react'
 
 import {
   $boardSlug,
-  BOARDS_KEY,
+  boardsKey,
   createBoard,
   deleteBoard,
   fetchBoards,
   fetchProjects,
   pluginOs,
-  PROJECTS_KEY,
-  updateBoard
+  projectsKey,
+  updateBoard,
+  useKanbanScope
 } from './api'
 import { runExportBoardFlow, runImportBoardFlow } from './transfer'
 import type { BoardMeta } from './types'
@@ -58,7 +61,8 @@ const DEFAULT_BOARD = 'default'
  *  deterministic branch. "No project" falls back to scratch sandboxes. */
 function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; value: string }) {
   const k = useKanban()
-  const { data } = useQuery({ queryKey: PROJECTS_KEY, queryFn: fetchProjects, staleTime: 30_000 })
+  const scope = useKanbanScope()
+  const { data } = useQuery({ queryKey: projectsKey(scope), queryFn: fetchProjects, staleTime: 30_000 })
   const projects = data?.projects ?? []
 
   return (
@@ -89,12 +93,13 @@ function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; va
  *  the caller finish, or surface the error and leave the dialog open. */
 function useBoardWrite<T>(mutationFn: () => Promise<T>, onDone: (result: T) => void) {
   const qc = useQueryClient()
+  const scope = useKanbanScope()
 
   return useMutation({
     mutationFn,
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
     onSuccess: result => {
-      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      void qc.invalidateQueries({ queryKey: boardsKey(scope) })
       onDone(result)
     }
   })
@@ -283,8 +288,9 @@ export function BoardSwitcher() {
   // Delete reuses the app-wide label, the way sessions and profiles do.
   const { t } = useI18n()
   const qc = useQueryClient()
+  const scope = useKanbanScope()
   const slug = useValue($boardSlug)
-  const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: BOARDS_KEY, staleTime: 30_000 })
+  const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: boardsKey(scope), staleTime: 30_000 })
   const [adding, setAdding] = useState(false)
   const [settingsFor, setSettingsFor] = useState<BoardMeta | null>(null)
   const [renameFor, setRenameFor] = useState<BoardMeta | null>(null)
@@ -296,7 +302,7 @@ export function BoardSwitcher() {
     const { result } = await deleteBoard(target.slug)
 
     $boardSlug.set('')
-    void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+    void qc.invalidateQueries({ queryKey: boardsKey(scope) })
     host.notify({ kind: 'success', message: k.boardArchived(result.new_path) })
   }
 
@@ -321,7 +327,7 @@ export function BoardSwitcher() {
 
     if (imported) {
       $boardSlug.set(imported)
-      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      void qc.invalidateQueries({ queryKey: boardsKey(scope) })
     }
   }
 

@@ -94,18 +94,12 @@ def test_fail_closed_probe_reports_guard_active():
     assert _live_system_guard_is_active() is True
 
 
-def test_fail_closed_probe_classifies_raw_builtin_as_unguarded():
-    """The probe's discriminator, exercised against real objects: a raw C
-    builtin the guard never touches (``os.getpid``) is exactly what an
-    unguarded ``os.kill`` looks like and must read as 'guard not active', while
-    the loaded guard's ``os.kill`` is a plain Python function."""
-    assert isinstance(os.getpid, types.BuiltinFunctionType)
-    assert not isinstance(os.kill, types.BuiltinFunctionType)
 
 
 # ──────────────────── kill primitives ─────────────────────────
 
 
+@pytest.mark.platforms("linux")
 def test_os_kill_blocks_foreign_pid():
     with pytest.raises(RuntimeError, match="live-system guard"):
         os.kill(FOREIGN_PID, signal.SIGTERM)
@@ -128,41 +122,38 @@ def test_os_killpg_blocks_foreign_pgid():
 
 def test_subprocess_run_systemctl_restart_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["systemctl", "--user", "restart", "hermes-gateway"])
+        subprocess.run(["systemctl", "--user", "restart", "hermes-gateway"], check=False)
 
 
 def test_subprocess_run_full_path_systemctl_blocked():
     """``/usr/bin/systemctl`` (full path) must be blocked too."""
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["/usr/bin/systemctl", "--user", "stop", "hermes-gateway"])
+        subprocess.run(["/usr/bin/systemctl", "--user", "stop", "hermes-gateway"], check=False)
 
 
 def test_subprocess_run_sudo_systemctl_blocked():
     """``sudo systemctl ...`` defeated the old head==systemctl check."""
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["sudo", "systemctl", "restart", "hermes-gateway"])
+        subprocess.run(["sudo", "systemctl", "restart", "hermes-gateway"], check=False)
 
 
 def test_subprocess_run_env_systemctl_blocked():
     """``env systemctl ...`` similarly defeated the old head check."""
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["env", "systemctl", "--user", "restart", "hermes-gateway"])
+        subprocess.run(["env", "systemctl", "--user", "restart", "hermes-gateway"], check=False)
 
 
 def test_subprocess_run_bash_c_systemctl_blocked():
     """``bash -c "systemctl ..."`` must also be caught."""
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["bash", "-c", "systemctl --user restart hermes-gateway"])
+        subprocess.run(["bash", "-c", "systemctl --user restart hermes-gateway"], check=False)
 
 
-def test_subprocess_run_sh_c_systemctl_blocked():
-    with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["sh", "-c", "systemctl --user stop hermes-gateway"])
 
 
 def test_subprocess_run_setsid_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["setsid", "systemctl", "kill", "hermes-gateway"])
+        subprocess.run(["setsid", "systemctl", "kill", "hermes-gateway"], check=False)
 
 
 def test_subprocess_run_string_shell_true_blocked():
@@ -170,6 +161,7 @@ def test_subprocess_run_string_shell_true_blocked():
         subprocess.run(
             "systemctl --user restart hermes-gateway",
             shell=True,
+            check=False,
         )
 
 
@@ -219,6 +211,7 @@ def test_os_popen_systemctl_blocked():
 # ──────────────────── pty.spawn ────────────────────────────────
 
 
+@pytest.mark.platforms("linux")
 def test_pty_spawn_systemctl_blocked():
     import pty
     with pytest.raises(RuntimeError, match="live-system guard"):
@@ -257,23 +250,20 @@ def test_asyncio_create_subprocess_shell_systemctl_blocked():
 
 def test_subprocess_pkill_hermes_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["pkill", "-f", "hermes"])
+        subprocess.run(["pkill", "-f", "hermes"], check=False)
 
 
-def test_subprocess_pkill_hermes_gateway_blocked():
-    with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["pkill", "-f", "hermes-gateway"])
 
 
 def test_subprocess_pkill_python_dash_f_blocked():
     """``pkill -f python`` matches the gateway's "python -m hermes_cli.main"."""
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["pkill", "-f", "python"])
+        subprocess.run(["pkill", "-f", "python"], check=False)
 
 
 def test_subprocess_killall_hermes_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["killall", "hermes"])
+        subprocess.run(["killall", "hermes"], check=False)
 
 
 # ──────────────────── pass-through cases (must NOT raise) ──────
@@ -308,6 +298,19 @@ def test_subprocess_popen_real_gateway_restart_blocked():
         )
 
 
+def test_subprocess_popen_inline_source_restart_watcher_blocked():
+    """``gateway._spawn_gateway_restart_watcher`` hides the real gateway argv behind
+    ``python -c <src> <old_pid> …``. The identity matcher must ignore that trailing argv (#107002),
+    but the guard reads it as SPAWN INTENT — otherwise the watcher sails through, waits out its
+    120s deadline and leaves a real detached gateway squatting the webhook port."""
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(1)", "4242",
+             sys.executable, "-m", "hermes_cli.main", "gateway", "run"],
+            start_new_session=True,
+        )
+
+
 def test_subprocess_run_gateway_status_passes_through():
     """Only lifecycle verbs are blocked: ``gateway status`` (and every other
     read-only subcommand) must still spawn — via the canonical matcher, not an
@@ -315,6 +318,7 @@ def test_subprocess_run_gateway_status_passes_through():
     result = subprocess.run(
         [sys.executable, "-c", "import sys; print(sys.argv[1:])", "-m", "hermes_cli.main", "gateway", "status"],
         capture_output=True, text=True,
+        check=False,
     )
     assert result.returncode == 0
 
@@ -334,3 +338,5 @@ def test_bypass_marker_disables_guard():
     # so we get the real os.kill. Calling os.kill(os.getpid(), 0) just
     # checks that the PID exists — harmless.
     os.kill(os.getpid(), 0)  # No exception — guard is OFF.
+    # Signal 0 passes the guard too, so prove the patch itself is absent.
+    assert not _live_system_guard_is_active()

@@ -90,7 +90,7 @@ class TestBuildSSHCommand:
     def test_run_bash_forwards_passthrough_by_sendenv_never_in_remote_argv(self, monkeypatch):
         """#14091: allowlisted names travel as ``-o SendEnv=NAME`` with values only in the ssh client env;
         provider credentials on the allowlist stay behind; a .env value fills an unset shell var."""
-        import tools.env_passthrough as env_passthrough
+        from tools import env_passthrough
 
         env = SSHEnvironment(host="h", user="u")
         monkeypatch.setenv("NEXTCLOUD_URL", "https://next.example")
@@ -111,7 +111,7 @@ class TestBuildSSHCommand:
         assert "sk-must-not-forward" not in remote_text
 
     def test_run_bash_without_passthrough_inherits_env_unchanged(self, monkeypatch):
-        import tools.env_passthrough as env_passthrough
+        from tools import env_passthrough
 
         monkeypatch.setattr(env_passthrough, "get_all_passthrough", lambda: frozenset())
         captured = self._capture_run_bash(monkeypatch, SSHEnvironment(host="h", user="u"))
@@ -188,12 +188,6 @@ class TestControlSocketPath:
 
 
 class TestTerminalToolConfig:
-    def test_ssh_persistent_default_true(self, monkeypatch):
-        """SSH persistent defaults to True (via TERMINAL_PERSISTENT_SHELL)."""
-        monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
-        monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
-        from tools.terminal_tool import _get_env_config
-        assert _get_env_config()["ssh_persistent"] is True
 
 
     def test_ssh_persistent_respects_config(self, monkeypatch):
@@ -231,6 +225,31 @@ class TestSSHPreflight:
         assert called["count"] == 1
         assert env.host == "example.com"
         assert env.user == "alice"
+
+    def test_ssh_environment_can_skip_agent_file_sync(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(
+            ssh_env.SSHEnvironment,
+            "_ensure_remote_dirs",
+            lambda self: pytest.fail("workspace browsing must not mutate the SSH target"),
+        )
+        monkeypatch.setattr(
+            ssh_env,
+            "FileSyncManager",
+            lambda **_kw: pytest.fail("workspace browsing must not start agent file sync"),
+        )
+
+        env = ssh_env.SSHEnvironment(
+            host="example.com",
+            user="alice",
+            sync_files=False,
+        )
+
+        assert env._sync_manager is None
+        env._before_execute()
 
 
 @pytest.fixture

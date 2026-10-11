@@ -60,14 +60,22 @@ const planner: RosterRow = { name: 'planner' }
 const reviewer: RosterRow = { name: 'reviewer' }
 
 const seatedNames = (room: Room) =>
-  room.membership.groupChatMemberBots('Core', room.data.$lastRoster.get(), room.data.$botMeta.get()).map(bot => bot.name).sort()
+  room.membership
+    .groupChatMemberBots('Core', room.data.$lastRoster.get(), room.data.$botMeta.get())
+    .map(bot => bot.name)
+    .sort()
 
 function seedCore(room: Room, extra: Partial<groupChat.GroupChatRoom> = {}) {
   room.data.$lastRoster.set([programmer, planner, reviewer])
   room.data.$botMeta.set({ programmer: { groups: ['Core'] }, reviewer: { groups: ['Core'] } })
   room.chat.updateGroupChat(
     'Core',
-    r => ({ ...r, members: room.membership.durableGroupChatMembers([programmer, reviewer]), syncRevision: 7, ...extra }),
+    r => ({
+      ...r,
+      members: room.membership.durableGroupChatMembers([programmer, reviewer]),
+      syncRevision: 7,
+      ...extra
+    }),
     { sync: false }
   )
 }
@@ -77,7 +85,7 @@ beforeEach(() => {
 })
 
 describe('setGroupChatMembers', () => {
-  it('outranks a tie-revision mirror poll and clears the removed member\'s room state', async () => {
+  it("outranks a tie-revision mirror poll and clears the removed member's room state", async () => {
     const room = await loadRoom()
     seedCore(room, {
       holds: { reviewer: { at: 1 } },
@@ -92,10 +100,15 @@ describe('setGroupChatMembers', () => {
     // revision the room had before Save (the poll that raced the publish).
     const mirror = {
       version: 3,
-      rooms: { 'name:Core': { name: 'Core', log: [], members: [{ name: 'programmer' }, { name: 'reviewer' }], revision: 7 } },
+      rooms: {
+        'name:Core': { name: 'Core', log: [], members: [{ name: 'programmer' }, { name: 'reviewer' }], revision: 7 }
+      },
       deleted: {}
     }
-    room.chat.$groupChats.set(room.chat.mergeRemoteGroupChatSnapshotIntoRooms(mirror as never, room.chat.$groupChats.get()))
+
+    room.chat.$groupChats.set(
+      room.chat.mergeRemoteGroupChatSnapshotIntoRooms(mirror as never, room.chat.$groupChats.get())
+    )
 
     expect(seatedNames(room)).toEqual(['planner', 'programmer'])
     const saved = room.chat.$groupChats.get().Core as groupChat.GroupChatRoom
@@ -109,6 +122,7 @@ describe('setGroupChatMembers', () => {
   it('keeps a same-named local Bot out when selecting only its Connection counterpart', async () => {
     const room = await loadRoom()
     const local: RosterRow = { name: 'planner', title: 'Local Planner' }
+
     const remote: RosterRow = {
       connectionId: 'remote-1',
       connectionKind: 'remote',
@@ -125,13 +139,15 @@ describe('setGroupChatMembers', () => {
     await room.members.setGroupChatMembers('Core', [remote, reviewer])
 
     expect(room.data.$botMeta.get().planner.groups).toEqual([])
-    expect(room.chat.$groupChats.get().Core.members).toEqual(expect.arrayContaining([
-      expect.objectContaining({ connectionId: 'remote-1', name: 'planner', sourceScoped: true }),
-      expect.objectContaining({ name: 'reviewer' })
-    ]))
+    expect(room.chat.$groupChats.get().Core.members).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ connectionId: 'remote-1', name: 'planner', sourceScoped: true }),
+        expect.objectContaining({ name: 'reviewer' })
+      ])
+    )
   })
 
-  it('does not replay a removed member\'s held messages after re-adding it', async () => {
+  it("does not replay a removed member's held messages as fresh delta after re-adding it", async () => {
     const room = await loadRoom()
     seedCore(room, {
       heldMessages: { reviewer: ['held-before-removal'] },
@@ -151,9 +167,13 @@ describe('setGroupChatMembers', () => {
     room.rounds.sendToGroupChat('Core', [reviewer], '@reviewer fresh task')
     await drain(() => Boolean(room.chat.$groupChats.get().Core.running))
 
+    const prompt = room.gateway.calls[0].prompt
+    const delta = prompt.split('New messages in the room since your last turn (oldest first):')[1] || ''
+
     expect(room.chat.$groupChats.get().Core.heldMessages?.reviewer).toBeUndefined()
-    expect(room.gateway.calls[0].prompt).not.toContain('STALE_PRE_REMOVAL_TEXT')
-    expect(room.gateway.calls[0].prompt).toContain('fresh task')
+    expect(prompt).toContain('Historical room context from other threads')
+    expect(delta).not.toContain('STALE_PRE_REMOVAL_TEXT')
+    expect(delta).toContain('fresh task')
   })
 })
 

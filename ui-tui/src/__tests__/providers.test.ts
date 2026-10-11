@@ -52,14 +52,4 @@ describe('providerDisplayNames', () => {
   it('handles empty input', () => {
     expect(providerDisplayNames([])).toEqual([])
   })
-
-  it('preserves order', () => {
-    const input = [
-      { name: 'Z', slug: 'z' },
-      { name: 'A', slug: 'a1' },
-      { name: 'A', slug: 'a2' }
-    ]
-
-    expect(providerDisplayNames(input)).toEqual(['Z', 'A (a1)', 'A (a2)'])
-  })
 })

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from tests.gateway.test_kanban_notifier_served_apiserver_wake import (
-    RecordingApiServerAdapter, _FakeHttpSession, _own_session, served,  # noqa: F401 (fixture)
+    RecordingApiServerAdapter, _FakeHttpSession, _own_session, served,
 )
 
 SESSION = "20260918_090000_aa11bb"  # a served profile's api_server session (raw id)

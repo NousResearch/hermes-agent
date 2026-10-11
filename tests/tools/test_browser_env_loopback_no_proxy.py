@@ -17,7 +17,7 @@ from agent.proxy_bypass import add_loopback_no_proxy, loopback_connect_kwargs, l
 def stub_sanitized_env(monkeypatch):
     """Replace the credential-scrub layer with a fixed dict so the test sees exactly what
     ``_build_browser_env`` adds on top."""
-    import tools.environments.local as local
+    from tools.environments import local
     holder = {}
     monkeypatch.setattr(local, "hermes_subprocess_env", lambda inherit_credentials=False: dict(holder))
     return holder

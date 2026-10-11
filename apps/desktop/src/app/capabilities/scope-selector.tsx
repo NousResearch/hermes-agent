@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useLocation } from 'react-router'
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { DesktopRosterAgent } from '@/global'
@@ -11,6 +12,8 @@ import { activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
+
+import { linkedScope } from './connectors/data/deep-link'
 
 interface ScopeOption {
   key: string
@@ -52,7 +55,22 @@ export function useCapabilityScope({
   fixedProfile?: string
 }): CapabilityScope {
   const activeProfile = useStore($activeGatewayProfile)
-  const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(null)
+  const { key: locationKey, search } = useLocation()
+
+  // A link from a chat names the chat's own profile (and connection), so the page opens on that scope.
+  const linked = useMemo(() => linkedScope(new URLSearchParams(search)), [search])
+
+  const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(
+    () => linked
+  )
+
+  // A page that stays mounted (docked) takes each new link's scope before any tab acts on the link.
+  useEffect(() => {
+    if (linked !== null) {
+      setScopeOverride(linked)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationKey])
 
   const scopeProfile: ProfileScope = useMemo(
     () =>
@@ -197,15 +215,32 @@ export function CapabilityScopeSelector({
   }
 
   return (
-    <div className={cn('flex min-w-0 items-center gap-2', compact ? 'flex-1' : 'border-b border-(--ui-stroke-secondary) px-3 py-2')}>
-      {!compact && <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>}
+    <div
+      className={cn(
+        'flex min-w-0 items-center gap-2',
+        compact ? 'flex-1' : 'border-b border-(--ui-stroke-secondary) px-3 py-2'
+      )}
+    >
+      {!compact && (
+        <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
+      )}
       <Select onValueChange={scope.onChange} value={scope.value}>
-        <SelectTrigger className={cn('text-xs', compact ? 'h-6 w-full max-w-64 px-2' : 'h-7 w-56')}>
-          <SelectValue />
+        <SelectTrigger className={cn('text-xs', compact ? 'h-6 min-w-0 w-full px-2 truncate' : 'h-7 w-56')}>
+          {compact ? (
+            <span className="min-w-0 truncate" data-slot="compact-select-value">
+              <SelectValue />
+            </span>
+          ) : (
+            <SelectValue />
+          )}
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent className={compact ? 'max-w-(--radix-select-content-available-width)' : undefined}>
           {scope.options.map(option => (
-            <SelectItem key={option.key} value={option.value}>
+            <SelectItem
+              className={compact ? '[&>span:last-child]:min-w-0 [&>span:last-child]:truncate' : undefined}
+              key={option.key}
+              value={option.value}
+            >
               {option.label}
             </SelectItem>
           ))}

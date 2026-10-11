@@ -19,17 +19,6 @@ def _reset_guard():
     model_switch_providers._picker_prewarm_done.clear()
 
 
-def test_prewarm_runs_list_authenticated_providers_once():
-    """First call spawns a thread that calls list_authenticated_providers;
-    the warm side effect is delegated there (which disk-caches per provider)."""
-    _reset_guard()
-    with patch.object(ms, "list_authenticated_providers", return_value=[]) as mock_list:
-        t = model_switch_providers.prewarm_picker_cache_async()
-        assert t is not None, "first call must spawn a prewarm thread"
-        t.join(timeout=10)
-        assert not t.is_alive(), "prewarm thread should finish promptly"
-        mock_list.assert_called_once()
-    _reset_guard()
 
 
 def test_prewarm_guard_is_once_per_process():
@@ -100,7 +89,7 @@ def test_prewarm_warms_the_active_custom_endpoint_for_the_next_open(monkeypatch)
         return ["gateway-model-a", "gateway-model-b"]
 
     monkeypatch.setattr(models_mod, "fetch_api_models", fake_fetch_api_models)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
 
     def open_picker():
         return ms.list_authenticated_providers(

@@ -157,7 +157,7 @@ class TestDeduplication:
 class TestTextCleanup:
 
     def test_path_removed_from_text(self):
-        paths, cleaned = _extract("Before /tmp/x.png after")
+        _paths, cleaned = _extract("Before /tmp/x.png after")
         assert "Before" in cleaned
         assert "after" in cleaned
         assert "/tmp/x.png" not in cleaned

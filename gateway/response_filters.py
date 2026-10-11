@@ -7,7 +7,7 @@ not what should be persisted in conversation history.
 from __future__ import annotations
 
 import unicodedata
-from typing import Any
+from typing import Any, Optional
 
 # Exact whole-response markers meaning "the agent intentionally chose not to
 # reply". Keep small and explicit; arbitrary empty output remains an
@@ -123,6 +123,17 @@ def is_machinery_display_kind(display_kind: Any) -> bool:
     return display_kind in MACHINERY_DISPLAY_KINDS
 
 
+def silence_allowed(display_kind: Any, reply_expected: Optional[bool] = None) -> bool:
+    """Whether a successful bare silence marker may remain silent for this turn."""
+    return is_machinery_display_kind(display_kind) or reply_expected is False
+
+
+def reply_expected_metadata(reply_expected: Optional[bool]) -> dict:
+    """The persisted user row's ``reply_expected`` key, only when the adapter knew; crash recovery
+    reads it back to judge a silence marker as the live turn did."""
+    return {} if reply_expected is None else {"reply_expected": reply_expected}
+
+
 def is_partial_silence_marker(text: Any) -> bool:
     """True while streamed ``text`` could still resolve to a silence marker.
 
@@ -135,12 +146,3 @@ def is_partial_silence_marker(text: Any) -> bool:
         c and any(marker.startswith(c) for marker in LIVE_GATEWAY_SILENT_MARKERS)
         for c in _canonical_silence_candidates(text)
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-SILENT_REPLY_TOKEN = "NO_REPLY"
-# ---- END PLUGIN-COMPAT ----

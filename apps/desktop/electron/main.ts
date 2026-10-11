@@ -6951,11 +6951,33 @@ function installPreviewShortcut(window) {
       return
     }
 
+    // ⇧⌘R is the native macOS menu role. Elsewhere the application menu is
+    // absent, so claim it here and force-reload the whole window. Keeping the
+    // macOS event unclaimed prevents this listener and the menu role from
+    // starting two reloads for one key press.
+    if (action === 'force-reload') {
+      if (IS_MAC) {
+        return
+      }
+
+      event.preventDefault()
+
+      try {
+        if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+          window.webContents.reloadIgnoringCache()
+        }
+      } catch {
+        // The window can be destroyed between the checks and reload call.
+      }
+
+      return
+    }
+
     // ⌘R rides here rather than on the View menu item for the same reason:
     // the application menu only exists on macOS (it is set to null elsewhere,
     // see #77845), so a menu accelerator would leave Windows and Linux with no
-    // way to reload a page at all. ⇧⌘R is left alone — that is `forceReload`,
-    // the unconditional whole-window escape hatch.
+    // way to reload a page at all. ⇧⌘R is the unconditional whole-window
+    // escape hatch handled above.
     if (action === 'reload') {
       event.preventDefault()
       sendPreviewNavCommand('reload')

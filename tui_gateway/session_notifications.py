@@ -524,7 +524,8 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     complete_event_delivery(evt, claim)
 
 
-def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None, *, owned=False) -> bool:
+def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None, *, owned=False,
+                        delegations=None) -> bool:
     """Route one dequeued event: foreign (another live session owns it) → requeued, or onto ``deferred`` during the
     shutdown drain; unowned (addressed but unprovable — never adopt an orphan) → dropped, except delegation payloads
     deferred for a resume; ours (or ownerless legacy, kept process-global) → status.update once, then an agent turn if
@@ -580,6 +581,10 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
         return True
+    from agent.notification_presentation import diagnostic_process_event
+    if is_delegation and delegations is not None and not diagnostic_process_event(evt):
+        delegations.append((evt, text))
+        return True
     if not _notif_claim_turn(session):
         queue.put(evt)
         if deferred is not None:
@@ -630,18 +635,75 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         complete_event_delivery(event, claim)
 
 
+def _notif_dispatch_delegations(sid, session, delegations, registry, deferred):
+    """Subagent results that are ready together run as ONE turn. Units that finish while the session is
+    busy pile up; one turn each meant N back-to-back turns replaying the whole context for a one-line
+    ack apiece (45 units of a fan-out = 45 turns). A lone result keeps the single-event path."""
+    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+
+    if not delegations:
+        return
+    if not _notif_claim_turn(session):
+        for event, _text in delegations:
+            (deferred.append if deferred is not None else registry.completion_queue.put)(event)
+        if deferred is None:
+            time.sleep(0.25)
+        return
+    if len(delegations) == 1:
+        _notif_dispatch_event(sid, session, *delegations[0])
+        return
+    claimed: list = []
+    try:
+        for event, event_text in delegations:
+            if (claim := claim_event_delivery(event, "tui-poller")) is not None:
+                claimed.append((event, event_text, claim))
+    except Exception as exc:  # shared ledger busy/unreadable: unclaimed rows stay pending and replay
+        _notif_log_failure("delegation batch claim failed", exc)
+        _notif_release_turn(session)
+        for event, _text, claim in claimed:
+            release_event_delivery(event, claim)
+        return
+    if not claimed:  # another consumer holds every row (see _notif_dispatch_event)
+        _notif_release_turn(session)
+        return
+    if len(claimed) == 1:
+        event, event_text, claim = claimed[0]
+        kwargs = {"display_metadata": _async_delegation_display_metadata(event)}
+    else:
+        kwargs = {"display_metadata": _async_delegation_batch_display_metadata([event for event, _t, _c in claimed])}
+        event_text = "\n\n".join(text for _e, text, _c in claimed)
+    try:
+        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, event_text,
+                      "delegation batch dispatch failed", display_kind="async_delegation_complete", **kwargs)
+    except Exception:
+        for event, _text, claim in claimed:
+            release_event_delivery(event, claim)
+        return
+    for event, _text, claim in claimed:
+        complete_event_delivery(event, claim)
+
+
 def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, *, owned=False):
-    """One ready snapshot: ownership and UI emission per event, one turn per completion run."""
-    completions = []
+    """One ready snapshot: ownership and UI emission per event, one turn per run of completions and one per
+    run of subagent results."""
+    from agent.notification_presentation import diagnostic_process_event
+    completions, delegations = [], []
     for index, event in enumerate(events):
-        if event.get("type", "completion") != "completion":
+        event_type = event.get("type", "completion")
+        if event_type != "completion":
             _notif_dispatch_completions(sid, session, completions, registry, deferred)
             completions = []
-        if not _notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions, owned=owned):
+        # Early failure notices keep their own turn; flush first so they never overtake earlier results.
+        if event_type != "async_delegation" or diagnostic_process_event(event):
+            _notif_dispatch_delegations(sid, session, delegations, registry, deferred)
+            delegations = []
+        if not _notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions, owned=owned,
+                                   delegations=delegations):
             for remaining in events[index + 1:]:
                 (deferred.append if deferred is not None else registry.completion_queue.put)(remaining)
             break
     _notif_dispatch_completions(sid, session, completions, registry, deferred)
+    _notif_dispatch_delegations(sid, session, delegations, registry, deferred)
 
 
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
@@ -814,6 +876,20 @@ def _async_delegation_display_metadata(evt: dict) -> dict:
             "delegation_id": str(evt.get("delegation_id") or ""), "task_count": task_count,
             "completed_count": completed_count or task_count - failed_count, "failed_count": failed_count,
             **({"duration_seconds": duration} if isinstance(duration, (int, float)) else {})}
+
+
+def _async_delegation_batch_display_metadata(events: list[dict]) -> dict:
+    """One timeline row for several subagent results delivered in the same turn."""
+    parts = [_async_delegation_display_metadata(evt) for evt in events]
+    titles = [part["display_text"] for part in parts]
+    shown = "; ".join(titles[:3]) + (f"; +{len(titles) - 3} more" if len(titles) > 3 else "")
+    durations = [part["duration_seconds"] for part in parts if "duration_seconds" in part]
+    return {"display_text": f"{len(parts)} Subagent Results: {shown}",
+            "delegation_id": ", ".join(dict.fromkeys(part["delegation_id"] for part in parts if part["delegation_id"])),
+            "task_count": sum(part["task_count"] for part in parts),
+            "completed_count": sum(part["completed_count"] for part in parts),
+            "failed_count": sum(part["failed_count"] for part in parts),
+            **({"duration_seconds": max(durations)} if durations else {})}
 
 
 _desktop_ui_wired = False

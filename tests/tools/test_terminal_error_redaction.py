@@ -3,8 +3,8 @@
 import json
 from types import SimpleNamespace
 
-import agent.redact as redact
-import tools.terminal_tool as terminal_tool
+from agent import redact
+from tools import terminal_tool
 
 
 SECRET = "OPENAI_API_KEY=sk-testterminalerrorredaction1234567890"
@@ -107,7 +107,7 @@ def test_environment_creation_import_error_redacts_exception_text(monkeypatch):
     def fail_create_environment(**kwargs):
         raise ImportError(f"backend import failed with {SECRET}")
 
-    monkeypatch.setattr(terminal_tool, "_create_environment", fail_create_environment)
+    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fail_create_environment)
 
     result = json.loads(terminal_tool.terminal_tool(command="echo ok"))
 

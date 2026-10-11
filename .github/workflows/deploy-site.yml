@@ -9,6 +9,9 @@ on:
       - 'website/**'
       - 'skills/**'
       - 'optional-skills/**'
+      # Catalog entry/removal merges must republish /docs/api/plugin-catalog.json —
+      # installed clients fetch it for live catalog refresh.
+      - 'plugin-catalog/**'
       - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
     inputs:
@@ -54,7 +57,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          fetch-depth: 0  # extract-plugins.py derives each catalog entry's added/updated dates from git log
 
       - name: Get GitHub App token
         id: app-token
@@ -63,24 +68,18 @@ jobs:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+      - name: Set up the locked site toolchain
+        id: pm
+        uses: ./.github/actions/setup-pm
         with:
-          node-version: 26
-          cache: npm
-          cache-dependency-path: website/package-lock.json
+          toolchain: all
+          extras: '[]'
+          node-cache-dependency-path: website/package-lock.json
 
-      - name: grab npm 12
-        run: |
-          npm i -g npm@12
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: '3.11'
-
-      - name: Install PyYAML for skill extraction
+      - name: Install ruamel.yaml for skill extraction
         uses: ./.github/actions/retry
         with:
-          command: pip install pyyaml==6.0.2 httpx==0.28.1
+          command: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 httpx==0.28.1
 
       - name: Prepare skills index (unified multi-source catalog)
         env:
@@ -136,6 +135,8 @@ jobs:
             echo "Downloading skills-index artifact from run $SKILLS_INDEX_RUN_ID"
             if gh run download "$SKILLS_INDEX_RUN_ID" --name skills-index --dir "$tmpdir"; then
               candidate="$(find "$tmpdir" -name skills-index.json -type f | head -n 1 || true)"
+              stars="$(find "$tmpdir" -name plugin-stars.json -type f | head -n 1 || true)"
+              [ -n "$stars" ] && cp "$stars" website/static/api/plugin-stars.json
               if [ -n "$candidate" ]; then
                 cp "$candidate" "$INDEX_PATH"
                 if validate_index; then
@@ -161,6 +162,16 @@ jobs:
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
 
+      # Star counts drive the catalog ranking. Same rule as the skills index: GitHub is only
+      # probed by the scheduled skills-index run; deploys reuse its artifact (downloaded above
+      # into website/static/api/ when SKILLS_INDEX_RUN_ID is set) or the live site's copy.
+      # Never calls the GitHub API.
+      - name: Reuse plugin GitHub stars (no API calls)
+        run: python3 website/scripts/fetch-plugin-stars.py
+
+      - name: Extract plugin catalog for the Plugins page
+        run: python3 website/scripts/extract-plugins.py
+
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
 
@@ -173,6 +184,10 @@ jobs:
       - name: Build Docusaurus
         run: npm run build
         working-directory: website
+        env:
+          # prebuild renders icons on a Hermes runtime interpreter; the ci-tools
+          # step above re-exports HERMES_PYTHON to a tools-only environment.
+          HERMES_PYTHON: ${{ steps.pm.outputs.python-path }}
 
       - name: Stage deployment
         run: |
@@ -201,7 +216,7 @@ jobs:
       # collision is by definition the identical file — the merge never
       # overwrites current-build output (cp --update=none).
       - name: Restore asset retention pool
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: _asset_retention
           key: docs-asset-retention-${{ github.run_id }}
@@ -239,16 +254,16 @@ jobs:
       - name: Save asset retention pool
         # Always save under a fresh key (caches are immutable); restore-keys
         # prefix matching picks the newest on the next run.
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: _asset_retention
           key: docs-asset-retention-${{ github.run_id }}
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
         with:
           path: _site
 
       - name: Deploy to GitHub Pages
         id: deploy
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

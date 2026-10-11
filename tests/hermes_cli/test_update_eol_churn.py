@@ -150,7 +150,7 @@ def test_pin_alone_is_written_when_there_is_no_churn(tmp_path: Path) -> None:
     assert _autocrlf(repo) == "false"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="shim needs a POSIX shell")
+@pytest.mark.platforms("posix")  # shim needs a POSIX shell
 def test_pin_is_withheld_when_the_churn_cannot_be_cleared(tmp_path: Path) -> None:
     """If normalization can't finish, the checkout is left as found — pinning
     anyway would surface churn we failed to clear."""

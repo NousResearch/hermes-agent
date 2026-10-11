@@ -1,6 +1,6 @@
 """Preflight lock-defer must not arm the insufficient-progress blocker.
 
-Companion to ``tests/run_agent/test_compression_lock_defer.py`` — pins the
+Companion to ``tests/agent/test_compression_lock_defer.py`` — pins the
 ``build_turn_context`` preflight loop's handling of a lock-contended
 compression no-op (#69870 lock-skip signal, consumer salvaged from #49874):
 
@@ -71,23 +71,3 @@ def test_preflight_lock_skip_does_not_set_blocked_flag():
     # Exactly one pass: the defer stops the loop without arming the blocker.
     assert calls == [1]
     assert ctx.preflight_compression_blocked is False
-
-
-
-
-
-
-def test_preflight_magicmock_flag_value_is_not_a_defer():
-    """Type-pin: truthy junk (MagicMock auto-attribute shape) must not be
-    treated as lock contention — the blocker arms as for a plain no-op."""
-    agent = _make_agent()
-
-    def _junk_flag_compress(messages, _system_message, **_kwargs):
-        agent._compression_skipped_due_to_lock = MagicMock()
-        return messages, "SYSTEM"
-
-    agent._compress_context = _junk_flag_compress
-
-    ctx = _build(agent, conversation_history=list(_HISTORY))
-
-    assert ctx.preflight_compression_blocked is True

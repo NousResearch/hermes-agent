@@ -10,7 +10,8 @@
  * bubble, and a six-hour cooldown persisted across launches, so quitting and
  * reopening isn't a way to farm them. In practice that lands around one tip per
  * day of use and takes weeks to walk the catalog, which is the point — ten tips
- * in an afternoon is how a nicety turns into a thing people switch off.
+ * in an afternoon is how a nicety turns into a thing people switch off. And the
+ * walk is one lap: a tip shown once is never offered again (`nextTip`).
  *
  * Then "quiet" does the rest. A tip is still the app interrupting, so it waits
  * for a moment that is genuinely idle — nothing streaming, no dialog, menu or
@@ -20,15 +21,23 @@
  */
 
 import { useEffect } from 'react'
+import { useNavigate } from 'react-router'
 
+import { SETTINGS_ROUTE } from '@/app/routes'
 import type { Translations } from '@/i18n/types'
 import { resolveTipAnchor } from '@/lib/tips/anchor'
 import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { nextTip } from '@/lib/tips/rotation'
+import { $localModelsEnabled } from '@/store/local-models-flag'
+import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import { $awaitingResponse, $busy } from '@/store/session'
-import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipsEnabled, showTip } from '@/store/tips'
+import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipsEnabled, $tipShownAt, showTip } from '@/store/tips'
+import { checkTutorialLifetime } from '@/store/tutorial-lifetime'
+
+import { offerLocalRuntimeUpdateTip } from './local-runtime-update-offer'
 
 const TICK_MS = 30_000
+const UPDATE_TICK_MS = 1_000
 /** Nothing in the first stretch of a launch, however long the cooldown says
  *  it's been: you opened the app to do a thing, and the tip can wait until
  *  you've done it. Jittered so it isn't the same beat every time. */
@@ -47,7 +56,8 @@ function appIsQuiet(lastTypedAt: number): boolean {
     return false
   }
 
-  if ($busy.get() || $awaitingResponse.get()) {
+  // The first-run intro is never a quiet moment.
+  if ($busy.get() || $awaitingResponse.get() || onboardingSurfaceActive()) {
     return false
   }
 
@@ -60,7 +70,11 @@ function appIsQuiet(lastTypedAt: number): boolean {
 
 /** Drive the ambient rotation for as long as the host is mounted. */
 export function useTipRotation(copy: Translations['tips']) {
+  const navigate = useNavigate()
+
   useEffect(() => {
+    checkTutorialLifetime()
+
     let lastTypedAt = 0
     let settledAt = Date.now() + SETTLE_MIN_MS + Math.random() * SETTLE_SPREAD_MS
 
@@ -74,12 +88,40 @@ export function useTipRotation(copy: Translations['tips']) {
       return Date.now() >= settledAt && (nextAt === null || Date.now() >= nextAt)
     }
 
+    const openLocalModels = () => {
+      navigate(`${SETTINGS_ROUTE}?tab=providers&pview=local`)
+    }
+
+    // Engine updates use the first quiet chat moment, independently of the tutorial clock.
+    const offerUpdate = () => {
+      if (
+        !$localModelsEnabled.get() ||
+        !$tipsEnabled.get() ||
+        $activeTip.get() ||
+        !appIsQuiet(lastTypedAt) ||
+        !resolveTipAnchor(document, ['[data-tour="model-pill"]'])
+      ) {
+        return false
+      }
+
+      return offerLocalRuntimeUpdateTip(copy, openLocalModels)
+    }
+
     const offer = () => {
+      checkTutorialLifetime()
+
       if (!$tipsEnabled.get() || $activeTip.get()) {
         return
       }
 
       if (!isDue() || !appIsQuiet(lastTypedAt)) {
+        return
+      }
+
+      // The engine-update campaign outranks the walk: it says something about
+      // THIS machine. It shares the cooldown, so taking the moment still costs
+      // it the usual hours.
+      if (offerUpdate()) {
         return
       }
 
@@ -90,7 +132,9 @@ export function useTipRotation(copy: Translations['tips']) {
       const chosen = nextTip(
         TIP_CATALOG.map(tip => tip.id),
         onScreen.map(tip => tip.id),
-        { lastShownId: $lastTipId.get(), retired: $retiredTips.get() }
+        // `$tipShownAt` is the seen ledger: every tip that reached the screen
+        // is in it, so a tip the timer closed is as done as one the ✕ closed.
+        { lastShownId: $lastTipId.get(), retired: $retiredTips.get(), seen: Object.keys($tipShownAt.get()) }
       )
 
       const tip = onScreen.find(candidate => candidate.id === chosen)
@@ -115,18 +159,26 @@ export function useTipRotation(copy: Translations['tips']) {
     const unbindSwitch = $tipsEnabled.listen(enabled => {
       if (enabled) {
         settledAt = Date.now()
+        offerUpdate()
         offer()
       }
     })
 
     const timer = window.setInterval(offer, TICK_MS)
+    const updateTimer = $localModelsEnabled.get() ? window.setInterval(offerUpdate, UPDATE_TICK_MS) : undefined
+    offerUpdate()
 
     window.addEventListener('keydown', noteTyping, true)
 
     return () => {
       unbindSwitch()
       window.clearInterval(timer)
+
+      if (updateTimer !== undefined) {
+        window.clearInterval(updateTimer)
+      }
+
       window.removeEventListener('keydown', noteTyping, true)
     }
-  }, [copy])
+  }, [copy, navigate])
 }

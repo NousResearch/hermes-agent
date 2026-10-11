@@ -24,6 +24,10 @@ export interface PluginRecord {
   error?: string
   /** Absolute plugin.js path (disk plugins) — powers "Reveal in Finder". */
   file?: string
+  /** Agent package this is the desktop half of (unified agent+desktop packages). */
+  packageName?: string
+  /** Where that package came from (catalog sidecar or git remote), when known. */
+  packageOrigin?: { catalogName?: string; repo?: string; sha?: string }
 }
 
 // Explicit user enable/disable choices, id -> boolean. ABSENCE means "no
@@ -105,6 +109,25 @@ export function dropPlugin(id: string): void {
   const { [id]: _dropped, ...rest } = $pluginRecords.get()
   $pluginRecords.set(rest)
   handles.delete(id)
+}
+
+/** Turn on the desktop half of unified package *packageName*. A half ships
+ *  opt-in to match its inert agent half, so turning the package on (the
+ *  install dialog's "Enable after install", the hub's Agent switch) turns the
+ *  half on too instead of leaving a second switch to find. *keepUserChoice*
+ *  leaves a half the user explicitly switched off alone. */
+export async function enablePackageDesktopHalf(packageName: string, { keepUserChoice = false } = {}): Promise<void> {
+  const decisions = $pluginDecisions.get()
+
+  for (const record of Object.values($pluginRecords.get())) {
+    if (record.packageName !== packageName || record.status !== 'disabled') {
+      continue
+    }
+
+    if (!keepUserChoice || !(record.id in decisions)) {
+      await setPluginEnabled(record.id, true)
+    }
+  }
 }
 
 /** Live toggle: deactivate + remember, or forget + reactivate. */

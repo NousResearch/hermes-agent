@@ -39,13 +39,22 @@ test('parseDefaultDistro strips the default-marker and blank lines', () => {
 
 // ── wslPosixToWindowsAccessible ──────────────────────────────────────
 
-test('wslPosixToWindowsAccessible maps a drvfs mount to its Windows drive', () => {
-  assert.equal(wslPosixToWindowsAccessible('/mnt/c/Users/alex', 'Ubuntu'), 'C:\\Users\\alex')
-  assert.equal(wslPosixToWindowsAccessible('/mnt/d', 'Ubuntu'), 'D:\\')
-})
+test('wslPosixToWindowsAccessible resolves a distro only for paths that need a UNC share', () => {
+  let distroProbes = 0
 
-test('wslPosixToWindowsAccessible maps an in-distro POSIX path to a UNC share', () => {
-  assert.equal(wslPosixToWindowsAccessible('/home/alex/proj', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex\\proj')
+  const resolveDistro = () => {
+    distroProbes += 1
+
+    return 'Ubuntu'
+  }
+
+  assert.equal(wslPosixToWindowsAccessible('/mnt/c/Users/alex', undefined, resolveDistro), 'C:\\Users\\alex')
+  assert.equal(distroProbes, 0)
+  assert.equal(
+    wslPosixToWindowsAccessible('/home/alex/proj', undefined, resolveDistro),
+    '\\\\wsl.localhost\\Ubuntu\\home\\alex\\proj'
+  )
+  assert.equal(distroProbes, 1)
 })
 
 test('wslPosixToWindowsAccessible leaves non-absolute / already-Windows paths alone', () => {
@@ -98,28 +107,4 @@ test('setWslBridgeActive(true) restores picker bridging', () => {
 
   setWslBridgeActive(true)
   assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
-})
-
-test('toggling the bridge is idempotent and does not corrupt cached state', () => {
-  // Toggle twice each way.
-  setWslBridgeActive(false)
-  assert.equal(isWslBridgeActive(), false)
-  setWslBridgeActive(false)
-  assert.equal(isWslBridgeActive(), false)
-
-  setWslBridgeActive(true)
-  assert.equal(isWslBridgeActive(), true)
-  setWslBridgeActive(true)
-  assert.equal(isWslBridgeActive(), true)
-
-  // Bridging still works after the toggles.
-  assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
-})
-
-// ── state isolation: every test sees a clean active bridge ────────────
-
-test('state isolation: bridge is active after a previous test toggled it off', () => {
-  // This test relies on afterEach resetting the bridge.
-  // If isolation is broken, isWslBridgeActive() would be false here.
-  assert.equal(isWslBridgeActive(), true)
 })

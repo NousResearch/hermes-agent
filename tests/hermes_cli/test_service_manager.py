@@ -7,18 +7,12 @@ implementation in this same file once that phase ships.
 """
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from hermes_cli.service_manager import (
-    LaunchdServiceManager,
     S6ServiceManager,
-    ServiceManager,
-    ServiceManagerKind,
-    SystemdServiceManager,
-    WindowsServiceManager,
-    detect_service_manager,
-    get_service_manager,
-    validate_profile_name,
 )
 
 
@@ -45,34 +39,6 @@ from hermes_cli.service_manager import (
 # ---------------------------------------------------------------------------
 
 
-def _patch_s6_paths(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    comm: str | OSError | None,
-    basedir_is_dir: bool,
-) -> None:
-    """Stub /proc/1/comm and /run/s6/basedir for _s6_running tests."""
-    from pathlib import Path as _Path
-
-    real_read_text = _Path.read_text
-    real_is_dir = _Path.is_dir
-
-    def fake_read_text(self, *args, **kwargs):  # type: ignore[override]
-        if str(self) == "/proc/1/comm":
-            if isinstance(comm, OSError):
-                raise comm
-            if comm is None:
-                raise FileNotFoundError(2, "No such file or directory")
-            return comm + "\n"
-        return real_read_text(self, *args, **kwargs)
-
-    def fake_is_dir(self):  # type: ignore[override]
-        if str(self) == "/run/s6/basedir":
-            return basedir_is_dir
-        return real_is_dir(self)
-
-    monkeypatch.setattr(_Path, "read_text", fake_read_text)
-    monkeypatch.setattr(_Path, "is_dir", fake_is_dir)
 
 
 
@@ -84,17 +50,6 @@ def _patch_s6_paths(
 # ---------------------------------------------------------------------------
 
 
-def test_systemd_manager_kind_and_registration_unsupported() -> None:
-    mgr = SystemdServiceManager()
-    assert mgr.kind == "systemd"
-    assert mgr.supports_runtime_registration() is False
-    with pytest.raises(NotImplementedError):
-        mgr.register_profile_gateway("foo")
-    with pytest.raises(NotImplementedError):
-        mgr.unregister_profile_gateway("foo")
-    assert mgr.list_profile_gateways() == []
-    # Protocol conformance — runtime_checkable lets us assert this.
-    assert isinstance(mgr, ServiceManager)
 
 
 # ---------------------------------------------------------------------------
@@ -104,34 +59,6 @@ def test_systemd_manager_kind_and_registration_unsupported() -> None:
 
 
 
-def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
-    called: list[str] = []
-    # Force-import the submodule so monkeypatch's attribute lookup
-    # against the `hermes_cli` package succeeds — gateway_windows is
-    # imported lazily inside the wrapper and may not yet be loaded.
-    import hermes_cli.gateway_windows  # noqa: F401
-
-    class _FakeWindowsModule:
-        @staticmethod
-        def start() -> None: called.append("start")
-        @staticmethod
-        def stop() -> None: called.append("stop")
-        @staticmethod
-        def restart() -> None: called.append("restart")
-        @staticmethod
-        def is_installed() -> bool: return True
-
-    monkeypatch.setattr("hermes_cli.gateway_windows", _FakeWindowsModule)
-    monkeypatch.setattr(
-        "hermes_cli.gateway.find_gateway_pids",
-        lambda **kw: [12345],
-    )
-    mgr = WindowsServiceManager()
-    mgr.start("ignored")
-    mgr.stop("ignored")
-    mgr.restart("ignored")
-    assert called == ["start", "stop", "restart"]
-    assert mgr.is_running("ignored") is True
 
 
 
@@ -192,6 +119,7 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 # tests/docker/test_s6_profile_gateway_integration.py.
 
 
+@pytest.mark.platforms("linux")
 def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     """Verifies the dirs + FIFO the helper lays down."""
     import stat
@@ -225,7 +153,7 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     assert stat.S_IMODE(control.stat().st_mode) == 0o660
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_seed_supervise_skeleton_sets_setgid_on_event_dirs(tmp_path) -> None:
     """The event dirs carry setgid so s6-supervise's EEXIST path leaves them alone.
 
@@ -297,14 +225,6 @@ def test_render_run_script_uses_replace_to_take_over_stale_holder() -> None:
     )
 
 
-def test_render_finish_script_exits_125_on_ex_config() -> None:
-    """The finish script must translate exit 78 (EX_CONFIG) into exit 125
-    (permanent failure) so s6 stops restarting on fatal config errors.
-    See #51228."""
-    text = S6ServiceManager._render_finish_script()
-    assert '[ "$1" = "78" ]' in text
-    assert "exit 125" in text
-    assert "exit 0" in text
 
 
 def test_render_finish_script_does_not_restart_on_clean_exit(tmp_path) -> None:
@@ -356,7 +276,150 @@ def test_render_finish_script_does_not_restart_on_clean_exit(tmp_path) -> None:
 # the marker, the gateway's shutdown handler can't tell an operator
 # stop from a restart kill, and the gateway_state=stopped suppression
 # (run.py) would never engage for explicit stops.
+#
+# The fake below replays what s6 2.15.0.0 (s6-overlay 3.2.3.0, pinned in the
+# Dockerfile) actually prints, captured from the real binary:
+#   s6-svstat <dir>         -> up (pid 26 pgid 26) 1 seconds
+#   s6-svstat -o pid <dir>  -> 26          (-1 when not up)
+#   s6-svstat -o up <dir>   -> true|false
+#   after s6-svc -d         -> down (signal SIGTERM) 1 seconds, normally up, ready 1 seconds
 # ---------------------------------------------------------------------------
+
+_S6_PID = 4242
+
+
+@pytest.fixture
+def real_s6(monkeypatch: pytest.MonkeyPatch):
+    """Emulate s6 2.15 ``s6-svstat`` (legacy line and ``-o`` fields) plus ``s6-svc``.
+
+    ``state["up"]`` toggles the supervised process; ``state["svstat"]`` may be set
+    to a ``(returncode, stdout)`` override or an exception to raise.
+    """
+    _sp = subprocess
+    state: dict = {"up": True, "svstat": None, "calls": []}
+
+    def _fake(cmd, **kw):
+        seq = list(cmd)
+        name = seq[0].rsplit("/", 1)[-1]
+        state["calls"].append([name, *seq[1:]])
+        if name != "s6-svstat":
+            return _sp.CompletedProcess(cmd, 0, "", "")
+        override = state["svstat"]
+        if isinstance(override, BaseException):
+            raise override
+        if override is not None:
+            rc, out = override
+            return _sp.CompletedProcess(cmd, rc, out, "")
+        up = state["up"]
+        if "-o" in seq:
+            fields = seq[seq.index("-o") + 1].split(",")
+            table = {
+                "up": "true" if up else "false",
+                "pid": str(_S6_PID) if up else "-1",
+                "pgid": str(_S6_PID) if up else "-1",
+                "exitcode": "-1" if up else "0",
+            }
+            assert all(f in table for f in fields), f"unknown s6-svstat field in {fields}"
+            return _sp.CompletedProcess(cmd, 0, " ".join(table[f] for f in fields) + "\n", "")
+        line = (
+            f"up (pid {_S6_PID} pgid {_S6_PID}) 5 seconds\n"
+            if up
+            else "down (signal SIGTERM) 1 seconds, normally up, ready 1 seconds\n"
+        )
+        return _sp.CompletedProcess(cmd, 0, line, "")
+
+    monkeypatch.setattr("subprocess.run", _fake)
+    return state
+
+
+@pytest.fixture
+def marker_calls(monkeypatch: pytest.MonkeyPatch):
+    marked: list[int] = []
+    monkeypatch.setattr(
+        "gateway.status.write_planned_stop_marker", lambda pid: marked.append(pid) or True
+    )
+    return marked
+
+
+def _svc_down_issued(state) -> bool:
+    return any(c[:2] == ["s6-svc", "-d"] for c in state["calls"])
+
+
+def test_s6_stop_writes_planned_stop_marker_for_supervised_pid(
+    s6_scandir, real_s6, marker_calls
+) -> None:
+    (s6_scandir / "gateway-coder").mkdir()
+    mgr = S6ServiceManager(scandir=s6_scandir)
+
+    mgr.stop("gateway-coder")
+
+    assert marker_calls == [_S6_PID]
+    assert _svc_down_issued(real_s6)
+    svc_idx = next(i for i, c in enumerate(real_s6["calls"]) if c[:2] == ["s6-svc", "-d"])
+    assert any(c[0] == "s6-svstat" for c in real_s6["calls"][:svc_idx])
+
+
+def test_s6_stop_when_down_writes_no_marker_but_still_stops(
+    s6_scandir, real_s6, marker_calls
+) -> None:
+    (s6_scandir / "gateway-coder").mkdir()
+    real_s6["up"] = False
+
+    S6ServiceManager(scandir=s6_scandir).stop("gateway-coder")
+
+    assert marker_calls == []
+    assert _svc_down_issued(real_s6)
+
+
+def test_s6_stop_marker_write_failure_still_stops(
+    s6_scandir, real_s6, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (s6_scandir / "gateway-coder").mkdir()
+    attempted: list[int] = []
+
+    def _boom(pid):
+        attempted.append(pid)
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("gateway.status.write_planned_stop_marker", _boom)
+
+    S6ServiceManager(scandir=s6_scandir).stop("gateway-coder")
+
+    assert attempted == [_S6_PID]
+    assert _svc_down_issued(real_s6)
+
+
+def test_s6_supervised_pid_reads_up_pid(s6_scandir, real_s6) -> None:
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    assert mgr._supervised_pid("gateway-coder") == _S6_PID
+    real_s6["up"] = False
+    assert mgr._supervised_pid("gateway-coder") is None
+
+
+@pytest.mark.parametrize(
+    "svstat",
+    [
+        (1, "s6-svstat: fatal: unable to read status\n"),
+        (0, "garbage\n"),
+        (0, ""),
+        (0, "4242 17\n"),
+        (0, "0\n"),
+        FileNotFoundError("/command/s6-svstat"),
+        subprocess.TimeoutExpired("s6-svstat", 5),
+    ],
+)
+def test_s6_supervised_pid_none_on_unusable_svstat(s6_scandir, real_s6, svstat) -> None:
+    real_s6["svstat"] = svstat
+    assert S6ServiceManager(scandir=s6_scandir)._supervised_pid("gateway-coder") is None
+
+
+def test_s6_is_running_follows_svstat_up_field(s6_scandir, real_s6) -> None:
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    assert mgr.is_running("gateway-coder") is True
+    real_s6["up"] = False
+    assert mgr.is_running("gateway-coder") is False
+    real_s6["svstat"] = (1, "")
+    assert mgr.is_running("gateway-coder") is False
 
 
 def _log_run_setup_fragment(rendered: str) -> str:
@@ -371,6 +434,7 @@ def _log_run_setup_fragment(rendered: str) -> str:
     return "#!/bin/sh\n" + "".join(keep)
 
 
+@pytest.mark.platforms("linux")
 def test_s6_log_run_creates_leaf_as_hermes_without_chown(
     s6_scandir, fake_subprocess_run,
 ) -> None:

@@ -173,14 +173,3 @@ export function hasAnsiCodes(input: string): boolean {
   // eslint-disable-next-line no-control-regex
   return /\x1b\[/.test(input)
 }
-
-/** Remove all ANSI escape sequences, returning plain text. Use when output is
- *  rendered as text (e.g. chat system messages) rather than styled segments —
- *  otherwise the ESC byte is invisible and the `[1;31m…` payload leaks through. */
-export function stripAnsi(input: string): string {
-  if (!input) {
-    return input
-  }
-
-  return input.replace(OTHER_ESCAPE_RE, '').replace(CSI_RE, '')
-}

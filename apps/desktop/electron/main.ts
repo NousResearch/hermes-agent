@@ -282,7 +282,6 @@ import {
 } from './gateway-file-download'
 import { downloadViaOauthSessionToFile, downloadViaTokenToFile } from './gateway-file-download-transport'
 import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
-import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
@@ -335,6 +334,7 @@ import { buildHudWindowUrl } from './hud-url'
 import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
+import { resolveLocalRuntimeVersion } from './local-runtime-version'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -18669,8 +18669,14 @@ ipcMain.handle('hermes:updates:channel:set', async (_event, name: unknown): Prom
   return resolveCheckoutUpdateStrategy().check({ force: true, setChannel: sourceChannelName(name) })
 })
 
-function resolveHermesVersion(scope: { connectionId?: string; profile?: string } = {}): Promise<string> {
-  return resolveGatewayVersion(path => handleHermesApiRequest({ ...scope, path, timeoutMs: 5000 }))
+async function resolveDesktopClientVersion(): Promise<string> {
+  // Fixed channel/bundled artifacts already carry their client identity in
+  // the install stamp; only source/bootstrap installs need a local probe.
+  if (INSTALL_STAMP?.payload && INSTALL_STAMP.payload !== 'bootstrap') {
+    return ''
+  }
+
+  return resolveLocalRuntimeVersion(resolveUpdateRoot(), HERMES_HOME)
 }
 
 // Renderer-bundle skew: `hermes update` moves the SOURCE TREE, but the UI
@@ -18699,7 +18705,7 @@ async function detectRendererSkew() {
 // an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
 // other platforms don't use this menu item.
 function showAboutPanelFresh(): void {
-  void Promise.all([detectRendererSkew(), resolveHermesVersion()]).then(([skew, version]) => {
+  void Promise.all([detectRendererSkew(), resolveDesktopClientVersion()]).then(([skew, version]) => {
     const info: AppVersionInfo = appVersionInfo(INSTALL_STAMP, version, app.getVersion())
     // The product name already identifies canary and commit builds. Never pass
     // through empty/placeholder: the panel would render the bundle's 0.0.0 (#124581).
@@ -18713,8 +18719,8 @@ function showAboutPanelFresh(): void {
   })
 }
 
-ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string; profile?: string }) => {
-  const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersion(scope)])
+ipcMain.handle('hermes:version', async (_event, _scope?: { connectionId?: string; profile?: string }) => {
+  const [skew, version] = await Promise.all([detectRendererSkew(), resolveDesktopClientVersion()])
 
   return {
     ...appVersionInfo(INSTALL_STAMP, version, app.getVersion()),

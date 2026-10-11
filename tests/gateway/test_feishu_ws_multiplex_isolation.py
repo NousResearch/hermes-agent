@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from plugins.platforms.feishu import adapter as feishu_adapter
+from plugins.platforms.feishu import adapter_ws_isolation as feishu_ws_isolation
 
 
 def _inject_fake_lark_module(monkeypatch, connect=None):
@@ -39,7 +40,7 @@ def _inject_fake_lark_module(monkeypatch, connect=None):
     monkeypatch.setitem(sys.modules, "lark_oapi", lark)
     monkeypatch.setitem(sys.modules, "lark_oapi.ws", lark_ws)
     monkeypatch.setitem(sys.modules, "lark_oapi.ws.client", client_mod)
-    monkeypatch.setattr(feishu_adapter, "_WS_ISOLATION_INSTALLED", False)
+    monkeypatch.setattr(feishu_ws_isolation, "_WS_ISOLATION_INSTALLED", False)
     return client_mod
 
 
@@ -99,8 +100,9 @@ def test_two_concurrent_clients_each_use_their_own_loop_and_overrides(monkeypatc
     calls = {c.args[0]: c.kwargs for c in real_connect.call_args_list}
     assert calls == {"wss://p0": {"ping_interval": 10}, "wss://p1": {"ping_interval": 20}}
     # Thread-local registrations are cleared for the pooled executor thread.
-    assert getattr(feishu_adapter._ws_isolation_state, "loop", None) is None
-    assert getattr(feishu_adapter._ws_isolation_state, "connect_kwargs", None) is None
+    ws_state = feishu_adapter._lark_ws_state(client_mod)
+    assert getattr(ws_state, "loop", None) is None
+    assert getattr(ws_state, "connect_kwargs", None) is None
 
 
 def test_dead_receive_loop_unparks_start_and_exits_the_thread(monkeypatch, caplog):

@@ -727,11 +727,13 @@ class OpenAICompatRoutesMixin:
             model_alias=model_name)
         if selection_error is not None:
             return selection_error
+        from gateway.platforms.api_server import _request_cwd
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, **agent_overrides, route=route,
             relay_metadata=relay_metadata,
+            cwd=_request_cwd(body),
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
             # and the client can resume the session by sending it again). A fingerprint-derived
@@ -1131,11 +1133,13 @@ class OpenAICompatRoutesMixin:
             model_alias=body.get("model"))
         if selection_error is not None:
             return selection_error
+        from gateway.platforms.api_server import _request_cwd
         run_kwargs = dict(
             user_message=user_message, conversation_history=conversation_history,
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
-            **agent_overrides, route=route, relay_metadata=relay_metadata)
+            **agent_overrides, route=route, relay_metadata=relay_metadata,
+            cwd=_request_cwd(body))
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 

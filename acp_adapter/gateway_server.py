@@ -346,6 +346,7 @@ class GatewayACPAgent(acp.Agent):
         if (mcp_servers or _normalize_cwd_for_compare(info.get('cwd', '')) !=
                 _normalize_cwd_for_compare(_translate_acp_cwd(cwd))):
             raise GatewayClientError('cwd_policy_conflict')
+        self._unacked.pop(session_id, None)
         result = await self._mutations.apply(client, session_id, 'branch', {})
         child = result['branched_session_id']
         self._snapshots[child] = await client.rpc('session.resume', session_id=child)
@@ -357,6 +358,7 @@ class GatewayACPAgent(acp.Agent):
         session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
         payload = {'model': model_id}
+        self._unacked.pop(session_id, None)  # a control between a lost submit and its repeat retires it
         result = await self._mutations.apply(client, session_id, 'model', payload,
                                              confirm=self._model_confirmer(session_id))
         if result.get('status') == 'cancelled':
@@ -420,6 +422,7 @@ class GatewayACPAgent(acp.Agent):
         # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
         # prompt (slash work included) retires the retained identity, so a later repeat is new work.
         retained = self._unacked.pop(session_id, None)
+        self._mutations.retire(session_id)  # ... and every prepared control's (a slash re-keeps its own)
         command = _slash_command(text) if not attachments else None
         if command is not None:
             from hermes_cli.gateway_mutations import slash_mutation

@@ -24,6 +24,7 @@ class PreparedMutations:
         retry re-presents the original target instead of re-deriving one from an already-rewound
         transcript. Metadata edits (``rename``) carry no generation fence, as on Ink/Desktop."""
         key = _key(session_id, operation, payload)
+        self.retire(session_id, keep=key)
         if key not in self.pending:
             snapshot = await client.rpc('session.resume', session_id=session_id)
             body = payload(snapshot) if callable(payload) else json.loads(key[2])
@@ -70,6 +71,13 @@ class PreparedMutations:
 
     def acknowledge(self, session_id, operation, payload):
         self.pending.pop(_key(session_id, operation, payload), None)
+
+    def retire(self, session_id, *, keep=None):
+        """Only a session's very next control may be the retry of an ambiguous one: any other verb
+        on the session (a different control, a prompt) retires its retained identities, so a later
+        deliberate repeat is new work instead of replaying a stale receipt."""
+        for key in [key for key in self.pending if key[0] == session_id and key != keep]:
+            del self.pending[key]
 
 
 _METADATA = frozenset({'rename'})

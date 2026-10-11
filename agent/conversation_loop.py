@@ -1494,6 +1494,18 @@ def _run_phase(fn, agent, state: _LoopState, **extra):
     return verdict
 
 
+def _reset_ephemeral_overrides(agent) -> None:
+    """Drop the per-call one-shot request overrides at the start of a turn.
+
+    They are *read* (not consumed) by every attempt of a call, so a retry of the same call
+    carries them — clearing on read applied the override to one attempt instead of one call
+    and a retry went out at full effort or with the pre-clamp ``max_tokens`` (#120030). The
+    turn boundary is where they must not survive: an override set late in one turn would
+    otherwise silently apply to the first call of the next.
+    """
+    agent._ephemeral_reasoning_off = False
+    agent._ephemeral_max_output_tokens = None
+
 def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     """One API call with its retry/recovery loop (guard → build → call → check, error handlers).
 
@@ -1628,7 +1640,7 @@ def _run_conversation_turn(
     agent._incremental_persistence_failed = False
     agent._last_persistence_error_cause = None
     agent._compression_adoption_failed = False
-    agent._ephemeral_reasoning_off = False
+    _reset_ephemeral_overrides(agent)
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
 

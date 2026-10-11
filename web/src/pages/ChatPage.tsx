@@ -86,10 +86,10 @@ import {
   PTY_RECONNECTING_BANNER,
   PTY_SESSION_ENDED_MESSAGE,
   PTY_SESSION_ENDED_TERMINAL_LINE,
-  PTY_START_FAILED_MESSAGE,
   PTY_TOKEN_MISSING_BANNER,
   ptyReconnectExhausted,
   ptyRejectionBanner,
+  ptyStartFailedMessage,
   type PtyBannerAction,
 } from "@/lib/pty-close-copy";
 import { ptyAttachToken } from "@/lib/pty-attach-token";
@@ -182,9 +182,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   useEffect(() => {
     reconnectGaveUpRef.current = reconnectGaveUp;
   }, [reconnectGaveUp]);
-  // Why ptyState is "ended": the agent process exited (/exit or crash), or the
-  // server could not start it at all (close 1011; the reason is in the terminal).
-  const [endedReason, setEndedReason] = useState<"exited" | "start-failed">("exited");
+  // Why ptyState is "ended": the agent exited, or the server could not start
+  // the chat (close 1011); detail is the server's close-frame reason.
+  const [ended, setEnded] = useState<{ why: "exited" } | { why: "start-failed"; detail: string }>({ why: "exited" });
   const navigate = useNavigate();
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1422,10 +1422,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       if (ev.code === 1011) {
-        // The server could not start the chat (node missing, bad profile,
-        // too many terminals open) and already printed why in red inside the
-        // terminal. Render the restart affordance instead of a dead pane.
-        setEndedReason("start-failed");
+        // The server could not start the chat and printed why in red inside
+        // the terminal; its close-frame reason carries the same sentence for
+        // the restart overlay.
+        setEnded({ why: "start-failed", detail: ev.reason ?? "" });
         setPtyState("ended");
         return;
       }
@@ -1434,7 +1434,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       //   4409 = superseded by a newer tab attaching the same token → stay quiet.
       if (ev.code === 4410) {
         term.write(`\r\n\x1b[90m${PTY_SESSION_ENDED_TERMINAL_LINE}\x1b[0m\r\n`);
-        setEndedReason("exited");
+        setEnded({ why: "exited" });
         setPtyState("ended");
         return;
       }
@@ -1461,7 +1461,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // restart affordance instead of leaving a dead terminal that only a
       // full page refresh could recover.
       term.write(`\r\n\x1b[90m${PTY_SESSION_ENDED_TERMINAL_LINE}\x1b[0m\r\n`);
-      setEndedReason("exited");
+      setEnded({ why: "exited" });
       setPtyState("ended");
     };
 
@@ -1959,8 +1959,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           {ptyState === "ended" && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="max-w-[min(32rem,calc(100vw-3rem))] text-center text-sm tracking-wide text-white/80">
-                {endedReason === "start-failed"
-                  ? PTY_START_FAILED_MESSAGE
+                {ended.why === "start-failed"
+                  ? ptyStartFailedMessage(ended.detail)
                   : PTY_SESSION_ENDED_MESSAGE}
               </div>
               <div className="flex flex-wrap justify-center gap-2">
@@ -1971,7 +1971,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 >
                   Start new session
                 </Button>
-                {endedReason === "exited" && (
+                {ended.why === "exited" && (
                   <Button
                     outlined
                     onClick={() => navigate("/logs")}

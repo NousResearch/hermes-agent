@@ -23,6 +23,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from tui_gateway import server
 from tui_gateway.server import _session_info
 
@@ -67,6 +69,90 @@ class TestSessionInfoReasoningEffort:
         app_server = _agent({"enabled": True, "effort": "ultra"}, provider="openai-codex",
                             model="gpt-5.6-sol", api_mode="codex_app_server")
         assert _session_info(app_server)["reasoning_effort_wire"] == "ultra"
+
+    def test_remote_agent_reports_session_overrides(self) -> None:
+        info = _session_info(
+            None,
+            {
+                "create_reasoning_override": {"enabled": True, "effort": "high"},
+                "create_service_tier_override": "priority",
+                "_compute_host_active": True,
+                "_metadata_mirror": {"model": "gpt-5", "provider": "openai"},
+            },
+        )
+        assert info["reasoning_effort"] == "high"
+        assert info["service_tier"] == "priority"
+        assert info["fast"] is True
+
+    def test_remote_agent_preserves_override_precedence_and_sentinels(self) -> None:
+        mirrored = _session_info(
+            None,
+            {
+                "_metadata_mirror": {
+                    "reasoning_effort": "medium",
+                    "service_tier": "flex",
+                },
+                "create_reasoning_override": {"enabled": True, "effort": "high"},
+                "create_service_tier_override": "priority",
+            },
+        )
+        assert mirrored["reasoning_effort"] == "medium"
+        assert mirrored["service_tier"] == "flex"
+        assert mirrored["fast"] is False
+
+        disabled = _session_info(
+            None,
+            {
+                "create_reasoning_override": {"enabled": False},
+                "create_service_tier_override": "",
+            },
+        )
+        assert disabled["reasoning_effort"] == "none"
+        assert disabled["service_tier"] == ""
+        assert disabled["fast"] is False
+
+        inherited = _session_info(None, {})
+        assert inherited["reasoning_effort"] == ""
+        assert inherited["service_tier"] == ""
+        assert inherited["fast"] is False
+
+        live_agent = _agent(None)
+        live_agent.service_tier = ""
+        normal = _session_info(live_agent, {"_metadata_mirror": {"service_tier": "priority"}})
+        assert normal["service_tier"] == ""
+        assert normal["fast"] is False
+
+
+    @pytest.mark.parametrize("mirrored_tier,persisted_tier,expected", [
+        ("", "priority", ""),
+        (None, "priority", "priority"),
+        (None, "", ""),
+        (None, None, ""),
+        ("flex", "priority", "flex"),
+    ])
+    def test_remote_tier_only_inherits_when_mirror_is_unset(self, mirrored_tier, persisted_tier, expected):
+        info = _session_info(None, {
+            "_metadata_mirror": {"model": "gpt-5", "provider": "openai", "service_tier": mirrored_tier},
+            "create_service_tier_override": persisted_tier,
+        })
+        assert info["service_tier"] == expected
+        assert info["fast"] is (expected == "priority")
+
+
+class TestSessionInfoDeferredRoute:
+    @pytest.mark.parametrize("session,expected", [
+        ({}, ("profile-default", "nous")),
+        ({"model_override": {"model": "composer-model", "provider": "openrouter"}},
+         ("composer-model", "openrouter")),
+        ({"_metadata_mirror": {"model": "remote-model", "provider": "openai"}},
+         ("remote-model", "openai")),
+        ({"pending_model_switch": {"display_model": "next-model", "display_provider": "zai"}},
+         ("next-model", "zai")),
+    ])
+    def test_agentless_info_preserves_current_main_route(self, monkeypatch, session, expected):
+        monkeypatch.setattr(server, "_session_default_route", lambda _session: ("profile-default", "nous"))
+        info = server._session_info(None, session)
+        assert (info["model"], info["provider"]) == expected
 
 
 class TestConfigSetReasoningSessionScope:

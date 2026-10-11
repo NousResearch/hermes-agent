@@ -21689,7 +21689,7 @@ def test_fallback_session_info_always_emits_branch(monkeypatch):
     monkeypatch.setattr(server, "_default_session_cwd", lambda: "/gateway/launch/dir")
     monkeypatch.setattr(server.git_probe, "branch", lambda cwd: "")
     monkeypatch.setattr(server, "_project_info_for_cwd", lambda cwd: None)
-    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_resolve_model", lambda: "gpt-5")
 
     info = server._fallback_session_info({"cwd": "/plain/folder"})
 

@@ -1977,7 +1977,7 @@ def _try_get_session(db, key: str) -> dict:
 
 @_session_method("session.status")
 def _(rid, params: dict, session: dict) -> dict:
-    from hermes_cli.status_report import build_status_fields, status_lines
+    from hermes_cli.status_report import build_status_fields
     key = session.get("session_key") or params.get("session_id") or ""
     mirror = _metadata_mirror(session)
     # Under turn isolation the compute host owns the live route: a stale in-process agent object
@@ -1992,11 +1992,9 @@ def _(rid, params: dict, session: dict) -> dict:
         tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
         home=session.get("profile_home"),
     )
-    project = _project_info_for_cwd(_display_session_cwd(session))
-    lines = [
-        "Hermes TUI Status", "", *status_lines(fields, "session_id", "path"),
-        *([f"Project: {project['name']}"] if project else []),
-        *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
+    from tui_gateway.methods_session_status import session_status_lines
+    lines = session_status_lines(fields, _session_info(agent, session),
+                                 _project_info_for_cwd(_display_session_cwd(session)))
     return _ok(rid, {"output": "\n".join(lines)})
 
 

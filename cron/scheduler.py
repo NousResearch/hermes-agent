@@ -1329,6 +1329,59 @@ def _is_lock_contention_errno(err: OSError) -> bool:
     return False
 
 
+# Age past which a contended tick lock is reported at WARNING: well past the 60s ticker
+# cadence, so a healthy holder should never trip it (it refreshes the holder line every tick).
+_TICK_LOCK_STALE_WARN_SECONDS = 300.0
+
+
+def _log_tick_lock_contention(lock_file) -> None:
+    """Log a lock-contention skip at a severity matching holder staleness.
+
+    #129990: a tick lock stranded by a dead (or wedged) holder previously skipped ticks with a
+    DEBUG line only — the heartbeat silently froze for as long as the lock stayed lost, and on
+    handle-bound locks (msvcrt) deleting the path does not release the waiter. The winner now
+    stamps ``pid held_since`` into the lock file each tick, so contention can name the holder,
+    prove it dead, or flag an over-aged live holder. Auto-reclaim stays out of scope: neither
+    flock nor msvcrt can safely force-release another process's lock, and unlinking the path on
+    POSIX mints a fresh inode (double-tick window) instead of breaking the real one.
+    """
+    pid: Optional[int] = None
+    held_since: Optional[float] = None
+    try:
+        with open(lock_file, "r", encoding="utf-8") as holder_fh:
+            parts = (holder_fh.read() or "").split()
+        if len(parts) >= 2:
+            pid, held_since = int(parts[0]), float(parts[1])
+    except Exception:
+        pass
+    if held_since is None:
+        # Pre-fix lock file or mid-acquire race: the file mtime is a lower bound on hold age.
+        with contextlib.suppress(OSError):
+            held_since = os.stat(lock_file).st_mtime
+    age = max(0.0, time.time() - held_since) if held_since is not None else None
+    holder_live: Optional[bool] = None
+    if pid is not None:
+        try:
+            from gateway.status import _pid_exists
+
+            holder_live = _pid_exists(pid)
+        except Exception:
+            holder_live = None  # cannot prove death — never name a live holder as dead
+    if holder_live is False:
+        logger.error(
+            "Tick skipped — tick lock held by pid %s, which is NOT running, since %.0fs "
+            "(lock file %s). The lock outlived its holder; on handle-bound locks (msvcrt) "
+            "deleting the path does not release it — restart the process tree that holds it.",
+            pid, age if age is not None else -1, lock_file)
+    elif age is not None and age >= _TICK_LOCK_STALE_WARN_SECONDS:
+        logger.warning(
+            "Tick skipped — tick lock held by pid %s (live) for %.0fs (lock file %s); "
+            "ticks are being skipped while it holds.",
+            pid if pid is not None else "unknown", age, lock_file)
+    else:
+        logger.debug("Tick skipped — another instance holds the lock")
+
+
 def _is_fd_exhaustion_text(text: str) -> bool:
     """Text half of _is_fd_exhaustion (shared with the CLI hint)."""
     lowered = text.lower()
@@ -4115,29 +4168,38 @@ def _maybe_run_worktree_maintenance() -> None:
 
 
 def _acquire_tick_lock(lock_file):
-    """Open + non-blocking lock the tick file (fcntl / msvcrt). Returns the fd, or None on genuine
-    contention. A real OSError (esp. EMFILE/ENFILE) must NOT pass as contention — the scheduler
-    would look healthy while no job runs — so it is re-raised for the ticker to record a FAILED
-    tick."""
+    """Open + non-blocking lock the tick file (fcntl / msvcrt), stamping the holder's pid and
+    acquisition time for stale-holder diagnosis (#129990). Returns the fd, or None on genuine
+    contention (logged at a staleness-matched severity by ``_log_tick_lock_contention``). A real
+    OSError (esp. EMFILE/ENFILE) must NOT pass as contention — the scheduler would look healthy
+    while no job runs — so it is re-raised for the ticker to record a FAILED tick."""
     lock_fd = None
     try:
         # Cross-platform file locking: fcntl on Unix, msvcrt on Windows. Only genuine lock contention
-        # (another ticker holds the lock) skips the tick silently. A real OSError — most importantly
-        # EMFILE/ENFILE from fd exhaustion — must NOT be swallowed as "another instance holds the lock":
-        # that previously made the scheduler appear healthy (tick returned 0, heartbeat recorded success)
-        # while no job ever ran again (#87644).
-        lock_fd = open(lock_file, "w", encoding="utf-8")
+        # (another ticker holds the lock) skips the tick, logged with holder staleness in mind. A real
+        # OSError — most importantly EMFILE/ENFILE from fd exhaustion — must NOT be swallowed as
+        # "another instance holds the lock": that previously made the scheduler appear healthy (tick
+        # returned 0, heartbeat recorded success) while no job ever ran again (#87644).
+        lock_fd = open(lock_file, "a+", encoding="utf-8")
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:
             msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+        # Stamp the holder so a later contending tick can diagnose staleness (#129990). "a+"
+        # (not "w"): truncating on open would erase the previous holder's stamp on every
+        # losing acquisition. Best-effort — the lock itself does the excluding, not the bytes.
+        with contextlib.suppress(OSError):
+            lock_fd.seek(0)
+            lock_fd.truncate()
+            lock_fd.write("%d %f\n" % (os.getpid(), time.time()))
+            lock_fd.flush()
         return lock_fd
     except OSError as exc:
         if lock_fd is not None:
             with contextlib.suppress(OSError):
                 lock_fd.close()
             if _is_lock_contention_errno(exc):
-                logger.info("Tick skipped — another instance holds the lock")
+                _log_tick_lock_contention(lock_file)
                 return None
         if _is_fd_exhaustion(exc):
             # fd reclamation is the ticker loop's job (scheduler_provider.py); here would double it.

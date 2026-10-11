@@ -19,11 +19,11 @@ import {
   setActiveSessionId,
   setCurrentBranch,
   setCurrentCwdTransient,
-  setCurrentFastMode,
+  setCurrentFastModeTransient,
   setCurrentPersonality,
-  setCurrentReasoningEffort,
+  setCurrentReasoningEffortTransient,
   setCurrentReasoningEffortWire,
-  setCurrentServiceTier,
+  setCurrentServiceTierTransient,
   setCurrentUsage,
   setTerminalBackend,
   setWorkspaceCwdOwner,
@@ -249,7 +249,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       }
 
       if (typeof payload?.reasoning_effort === 'string') {
-        setCurrentReasoningEffort(payload.reasoning_effort)
+        setCurrentReasoningEffortTransient(payload.reasoning_effort)
       }
 
       if (typeof payload?.reasoning_effort_wire === 'string') {
@@ -257,11 +257,11 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       }
 
       if (typeof payload?.service_tier === 'string') {
-        setCurrentServiceTier(payload.service_tier)
+        setCurrentServiceTierTransient(payload.service_tier)
       }
 
       if (typeof payload?.fast === 'boolean') {
-        setCurrentFastMode(payload.fast)
+        setCurrentFastModeTransient(payload.fast)
       }
 
       if (typeof payload?.yolo === 'boolean') {

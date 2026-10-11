@@ -892,7 +892,7 @@ def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
         return _v(_R.format_error, retryable=False)
     # Persisted MoA preset name that was renamed/deleted — deterministic config error.
     from agent.errors import MoAPresetNotFoundError
-    return _v(_R.model_not_found, retryable=False) if isinstance(c.error, MoAPresetNotFoundError) else None
+    return _v(_R.model_not_found, retryable=False, should_fallback=False) if isinstance(c.error, MoAPresetNotFoundError) else None
 
 
 def _by_error_code(c: _Ctx) -> Optional[Verdict]:

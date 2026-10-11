@@ -1520,15 +1520,13 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
     resolved_preset = preset_name
     if resolved_preset is None and getattr(agent, "provider", None) == "moa":
         resolved_preset = getattr(agent, "model", None)
-    resolved_preset = str(resolved_preset or "default")
-    try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
-        moa_cfg = normalize_moa_config(load_config().get("moa") or {})
-        if resolved_preset not in (moa_cfg.get("presets") or {}):
-            resolved_preset = moa_cfg.get("default_preset") or "default"
-    except Exception:
-        resolved_preset = "default"
+    from hermes_cli.config import load_config
+    from hermes_cli.moa_config import normalize_moa_config, resolve_moa_preset
+    moa_cfg = normalize_moa_config(load_config().get("moa") or {})
+    resolved_preset = str(resolved_preset or moa_cfg["default_preset"]).strip()
+    # The same validator owns explicit selection and facade rebuilds. A deleted
+    # preset must fail before a different route can handle this conversation.
+    resolve_moa_preset(moa_cfg, resolved_preset)
     # ``agent`` lets the fan-out wait be aborted on a user interrupt.
     return MoAClient(resolved_preset, reference_callback=_moa_reference_relay, agent=agent)
 

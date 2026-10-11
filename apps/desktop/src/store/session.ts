@@ -1755,6 +1755,16 @@ export const setCurrentFastMode = (next: Updater<boolean>) => {
   persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
 }
 
+// Runtime metadata paints the active conversation; it must not replace the
+// user's saved effort or speed selection for the next conversation.
+export const setCurrentReasoningEffortTransient = (next: Updater<string>) => {
+  updateAtom($currentReasoningEffort, next)
+  $currentReasoningEffortWire.set('')
+}
+
+export const setCurrentServiceTierTransient = (next: Updater<string>) => updateAtom($currentServiceTier, next)
+export const setCurrentFastModeTransient = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
+
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 
 /** Move the live workspace AND remember it as this backend's workspace.

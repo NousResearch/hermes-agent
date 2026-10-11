@@ -689,6 +689,19 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes,
     return str(filepath)
 
 
+_CACHED_NAME_STEM_RE = re.compile(r"^([A-Za-z]+_[0-9a-f]{12})_.+$")
+
+
+def media_path_for_log(path: str) -> str:
+    """Return ``path`` with the sender-chosen filename stem removed (``img_<uuid>.<ext>``).
+
+    The stem kept on disk can carry a person's name or a project codename, so it stays out of logs.
+    """
+    p = Path(path)
+    m = _CACHED_NAME_STEM_RE.match(p.stem)
+    return str(p.with_name(f"{m.group(1)}{p.suffix}")) if m else str(path)
+
+
 def cache_image_from_bytes(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Save raw image bytes to the cache and return the absolute path; raises
     ValueError when *data* isn't an image (e.g. an upstream HTML error page)."""
@@ -1609,7 +1622,7 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
             continue
         kind_ext = ext if ext in table else default_ext
         try:
-            path = cache_fn(data, ext=kind_ext)
+            path = cache_fn(data, ext=kind_ext, filename=filename) if kind == "image" else cache_fn(data, ext=kind_ext)
         except ValueError:
             if kind != "image":
                 raise

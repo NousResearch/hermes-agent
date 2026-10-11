@@ -88,7 +88,7 @@ from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
-    cache_audio_from_bytes_async, cache_image_from_bytes_async,
+    cache_audio_from_bytes_async, cache_image_from_bytes_async, media_path_for_log,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
@@ -3167,7 +3167,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         filename = f"{filename}{_DOCUMENT_MIME_TO_EXT[media_type]}"
                     kind, cached_path = "document", await cache_document_from_bytes_async(raw_bytes, filename)
                     media_type = media_type or self._guess_document_media_type(filename)
-                logger.info("[Feishu] Cached message %s resource at %s", kind, cached_path)
+                logger.info("[Feishu] Cached message %s resource at %s", kind, media_path_for_log(cached_path))
                 return cached_path, media_type
             except Exception:
                 logger.warning("[Feishu] Failed to cache message resource %s/%s", message_id, file_key, exc_info=True)

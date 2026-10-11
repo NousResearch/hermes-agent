@@ -230,4 +230,3 @@ async def test_c2c_withdrawal_notice_replays_into_the_original_dm_session(tmp_pa
         assert contents == [notice_text]
     finally:
         store.close_all_db_handles()
-

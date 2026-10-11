@@ -400,7 +400,8 @@ def _proactive_tool_result_prune(agent: Any, compressor: Any, messages: list, cu
             _record_checkpoint_gate_suppression(agent, "the proactive tool-result prune")
         return messages
     prune = getattr(compressor, "prune_tool_results_only", None)
-    if not callable(prune):
+    # No session store keeps the originals: a committed prune would drop them for good.
+    if not callable(prune) or getattr(compressor, "_session_db", None) is None:
         return messages
     try:
         pruned_msgs, pruned_n = prune(messages, current_tokens=current_tokens)

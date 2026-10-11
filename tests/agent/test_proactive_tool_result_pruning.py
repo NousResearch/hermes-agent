@@ -208,12 +208,26 @@ def test_no_orphans_both_directions():
     assert call_ids <= result_ids, "orphan tool calls without a matching result"
 
 
-def test_shipped_defaults_are_on_and_episodic():
-    """Unset config ships the measured defaults: prune on at 64K, 1000-char floor, 64K reclaim gate."""
-    c = ContextCompressor(model="test", quiet_mode=True)
+def test_shipped_defaults_commit_one_large_prune_then_wait_for_regrowth():
+    """Shipped defaults (64K trigger, 1000-char floor, 64K reclaim) commit once a large batch of old output is
+    reclaimable, then refuse the next rewrite until the prompt regrows; a smaller batch never commits."""
+    with patch("agent.context_compressor.get_model_context_length", return_value=LARGE_WINDOW):
+        c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=4)
     assert (c.proactive_prune_tokens, c.proactive_prune_min_result_chars, c.proactive_prune_min_reclaim_tokens) == (
         64_000, 1_000, 64_000,
     )
+    under = c.threshold_tokens - 1
+    _small, n0 = c.prune_tool_results_only(_build(14, big_indices=set(range(10)), big_chars=20_000), current_tokens=under)
+    assert n0 == 0  # ~50K tokens reclaimable: below the 64K gate, no cache break
+
+    msgs = _build(20, big_indices=set(range(16)), big_chars=20_000)  # ~80K tokens of distinct old output
+    first, n1 = c.prune_tool_results_only(msgs, current_tokens=under)
+    assert n1 >= 14 and first is not msgs
+    assert all(len(_tool_by_id(first, f"call_{i}")["content"]) < 1_000 for i in range(14))
+
+    grown = first + [_assistant_call("call_20"), _tool_msg("call_20", "y" * 20_000)]
+    blocked, n2 = c.prune_tool_results_only(grown, current_tokens=under)
+    assert n2 == 0 and blocked is grown  # rearm needs a full 64K regrowth
 
 
 def test_disabled_prune_is_a_no_op():

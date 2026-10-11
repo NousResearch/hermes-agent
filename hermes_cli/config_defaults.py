@@ -2461,6 +2461,10 @@ DEFAULT_CONFIG = {
         "bitwarden": {
             "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
+            # Env var (in the profile's .env) holding the master password for a headless, prompt-free
+            # unlock — for a dedicated agent account whose vault holds only that agent's logins.
+            # Unset = masked prompt per session (default).
+            "master_password_env": "BW_MASTER_PASSWORD",
         },
     },
     "secrets": {

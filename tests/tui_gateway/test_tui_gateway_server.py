@@ -3067,7 +3067,7 @@ def test_expand_skill_invocation_for_replay_round_trips_the_projection(
     skill_commands.scan_skill_commands()
 
     expanded = server._expand_skill_invocation_for_replay(
-        "/worktree-kickoff fix it", "task-1"
+        "/worktree-kickoff fix it", {"session_key": "task-1"}
     )
 
     assert "SPIN UP A WORKTREE" in expanded
@@ -3081,9 +3081,9 @@ def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypat
     monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda *a, **k: [])
     monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
 
-    assert server._expand_skill_invocation_for_replay("just words", "t") == "just words"
+    assert server._expand_skill_invocation_for_replay("just words", {}) == "just words"
     # A core slash command is not a skill — nothing to expand.
-    assert server._expand_skill_invocation_for_replay("/status", "t") == "/status"
+    assert server._expand_skill_invocation_for_replay("/status", {}) == "/status"
 
 
 def _two_repo_project_skill_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]:

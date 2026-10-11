@@ -1,13 +1,14 @@
 import type {
   ActionResponse,
   ComputerUseStatus,
+  ComputerUseTarget,
   TerminalBackendsResponse,
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModelsResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
+import { capabilityScoped, type ProfileScope } from './client'
 
 // The optional trailing `profile` on every capability fetcher below is the
 // Capabilities view's profile-scope override: it lets the Skills/Tools/MCP
@@ -128,16 +129,22 @@ export function selectTerminalBackend(
   })
 }
 
-export function getComputerUseStatus(): Promise<ComputerUseStatus> {
-  return hermesApi<ComputerUseStatus>({
-    ...profileScoped(),
+export function getComputerUseStatus(
+  target: ComputerUseTarget = 'guest',
+  profile?: ProfileScope
+): Promise<ComputerUseStatus> {
+  return window.hermesDesktop.api<ComputerUseStatus>({
+    ...(target === 'windows-host' ? capabilityScoped({ connectionId: 'local' }) : capabilityScoped(profile)),
     path: '/api/tools/computer-use/status'
   })
 }
 
-export function grantComputerUsePermissions(): Promise<ActionResponse> {
-  return hermesApi<ActionResponse>({
-    ...profileScoped(),
+export function grantComputerUsePermissions(
+  target: ComputerUseTarget = 'guest',
+  profile?: ProfileScope
+): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    ...(target === 'windows-host' ? capabilityScoped({ connectionId: 'local' }) : capabilityScoped(profile)),
     path: '/api/tools/computer-use/permissions/grant',
     method: 'POST'
   })

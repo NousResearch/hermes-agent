@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { getActionStatus, getComputerUseStatus, grantComputerUsePermissions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Check, ExternalLink, Loader2, RefreshCw, X } from '@/lib/icons'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { notify, notifyError } from '@/store/notifications'
-import type { ComputerUseStatus } from '@/types/hermes'
+import type { ComputerUseStatus, ComputerUseTarget, ComputerUseTargetMetadata } from '@/types/hermes'
 
 import { Pill } from './primitives'
 
@@ -14,6 +15,25 @@ interface ComputerUsePanelProps {
   /** Re-read the parent toolset list after a permission/install change so the
    *  "Configured / Needs keys" pill stays in sync. */
   onConfiguredChange?: () => void
+  profile?: ProfileScope
+  target: ComputerUseTarget
+  onTargetChange: (target: ComputerUseTarget) => void
+}
+
+const GUEST_TARGET: ComputerUseTargetMetadata = {
+  id: 'guest',
+  label: 'Linux guest',
+  description: 'Configure the remote Hermes gateway running inside WSL.'
+}
+
+const WINDOWS_HOST_TARGET: ComputerUseTargetMetadata = {
+  id: 'windows-host',
+  label: 'Windows host',
+  description: 'Configure the Windows desktop on this device through Desktop local routing.'
+}
+
+function targetOwner(target: ComputerUseTarget, profile?: ProfileScope): ProfileScope | undefined {
+  return target === 'windows-host' ? { connectionId: 'local' } : profile
 }
 
 // Per-OS one-liner shown when there's no TCC grant flow (Windows/Linux). macOS
@@ -61,22 +81,64 @@ function PermissionRow({ granted, label, hint }: { granted: boolean | null; labe
  * Binary install/upgrade stays in the cua-driver provider's post-setup runner
  * below this card (the generic ToolsetConfigPanel).
  */
-export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) {
+export function ComputerUsePanel({ onConfiguredChange, profile, target, onTargetChange }: ComputerUsePanelProps) {
   const { t } = useI18n()
   const [status, setStatus] = useState<ComputerUseStatus | null>(null)
+  const [windowsHostAvailable, setWindowsHostAvailable] = useState(false)
   const [loading, setLoading] = useState(true)
   const [granting, setGranting] = useState(false)
   const activeRef = useRef(false)
+  const refreshGenerationRef = useRef(0)
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGenerationRef.current
+    const selectedTarget = target
+
     try {
-      setStatus(await getComputerUseStatus())
+      const guest = await getComputerUseStatus('guest', profile)
+
+      if (!activeRef.current || refreshGenerationRef.current !== generation) {
+        return
+      }
+
+      let host: ComputerUseStatus | null = null
+
+      // A WSL guest cannot inspect the Windows desktop. Probe the forced-local
+      // Desktop route only for Linux guests, then expose it only when it is a
+      // Windows runtime; ordinary Linux remotes retain their existing UI.
+      if (guest.platform === 'linux') {
+        try {
+          host = await getComputerUseStatus('windows-host')
+        } catch {
+          // The local bridge is an optional second target. Its absence must
+          // not hide the already-successful remote Linux guest status.
+          host = null
+        }
+      }
+
+      if (!activeRef.current || refreshGenerationRef.current !== generation) {
+        return
+      }
+
+      const hasWindowsHost = host?.platform === 'win32'
+
+      setWindowsHostAvailable(hasWindowsHost)
+
+      if (!hasWindowsHost && selectedTarget === 'windows-host') {
+        onTargetChange('guest')
+      }
+
+      setStatus(selectedTarget === 'windows-host' && hasWindowsHost ? host : guest)
     } catch (err) {
-      notifyError(err, 'Could not read Computer Use status')
+      if (activeRef.current && refreshGenerationRef.current === generation) {
+        notifyError(err, 'Could not read Computer Use status')
+      }
     } finally {
-      setLoading(false)
+      if (activeRef.current && refreshGenerationRef.current === generation) {
+        setLoading(false)
+      }
     }
-  }, [])
+  }, [onTargetChange, profile, target])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -88,9 +150,10 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
 
   const grant = useCallback(async () => {
     setGranting(true)
+    const refreshGeneration = refreshGenerationRef.current
 
     try {
-      const started = await grantComputerUsePermissions()
+      const started = await grantComputerUsePermissions(target, profile)
 
       if (!started.ok) {
         notifyError(new Error('spawn failed'), 'Could not request permissions')
@@ -112,7 +175,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
           break
         }
 
-        const polled = await getActionStatus(started.name, 200)
+        const polled = await getActionStatus(started.name, 200, targetOwner(target, profile))
         upsertDesktopActionTask(polled)
 
         if (!polled.running) {
@@ -120,7 +183,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
         }
       }
 
-      if (activeRef.current) {
+      if (activeRef.current && refreshGenerationRef.current === refreshGeneration) {
         await refresh()
         onConfiguredChange?.()
       }
@@ -133,7 +196,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
         setGranting(false)
       }
     }
-  }, [onConfiguredChange, refresh])
+  }, [onConfiguredChange, profile, refresh, target])
 
   if (loading) {
     return (
@@ -169,6 +232,26 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
 
   return (
     <div className="grid gap-2">
+      {windowsHostAvailable && (
+        <div className="grid gap-1 rounded-lg bg-background/55 p-2.5">
+          <span className="text-sm font-medium">Computer Use target</span>
+          <div className="flex flex-wrap gap-1">
+            {[GUEST_TARGET, WINDOWS_HOST_TARGET].map(option => (
+              <Button
+                key={option.id}
+                onClick={() => onTargetChange(option.id)}
+                size="sm"
+                variant={target === option.id ? 'secondary' : 'text'}
+              >
+                {option.label}
+              </Button>
+            ))}
+          </div>
+          <p className="text-[0.7rem] text-muted-foreground">
+            {target === 'windows-host' ? WINDOWS_HOST_TARGET.description : GUEST_TARGET.description}
+          </p>
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2 px-1">
         <div className="min-w-0">
           {status.can_grant ? (
@@ -177,7 +260,10 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
               attributed to the process that drives your Mac.
             </p>
           ) : (
-            <p className="text-[0.72rem] text-muted-foreground">{PLATFORM_NOTE[status.platform] ?? ''}</p>
+            <p className="text-[0.72rem] text-muted-foreground">
+              {target === 'windows-host' ? 'Windows desktop (this device). ' : ''}
+              {PLATFORM_NOTE[status.platform] ?? ''}
+            </p>
           )}
           {status.version && <p className="text-[0.68rem] text-muted-foreground/80">{status.version}</p>}
         </div>

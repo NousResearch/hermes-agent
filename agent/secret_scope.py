@@ -177,6 +177,10 @@ _GLOBAL_ENV_EXACT = frozenset({
     "HERMES_MAX_ITERATIONS", "HERMES_API_TIMEOUT",
     "HERMES_REDACT_SECRETS", "HERMES_NOUS_TIMEOUT_SECONDS",
     "_HERMES_GATEWAY",
+    # Managed-scope bootstrap: launch-only (see hermes_constants.LAUNCH_ONLY_ENV_KEYS) —
+    # every process must resolve the SAME directory or a routed child silently loses
+    # administrator policy, so it is never residue and never profile-scoped (#135200).
+    "HERMES_MANAGED_DIR",
     # OS / interpreter
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "PWD", "SHELL", "TMPDIR",
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
@@ -392,6 +396,13 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
     from ``os.environ`` — so the scope holds only profile secrets."""
     secrets = load_env_file(Path(hermes_home) / ".env")
+    # Launch-only keys are never profile secrets (#135200): get_secret consults
+    # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
+    # under multiplexing) do not — a planted .env entry would otherwise survive
+    # into the mapping as a readable value. The external/managed paths below
+    # already drop them via _is_global_env; this is the one entry that doesn't.
+    from hermes_constants import LAUNCH_ONLY_ENV_KEYS
+    secrets = {k: v for k, v in secrets.items() if k not in LAUNCH_ONLY_ENV_KEYS}
     try:
         from hermes_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(Path(hermes_home))

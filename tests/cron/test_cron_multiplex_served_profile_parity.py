@@ -102,3 +102,22 @@ def test_child_env_for_served_profile_drops_launch_profile_settings(two_homes):
         reset_hermes_home_override(home_token)
     assert env["TERMINAL_ENV"] == "docker"
     assert env["HERMES_MODEL"] == "default-model"
+
+
+def test_child_env_keeps_launch_managed_dir(two_homes, monkeypatch):
+    """``HERMES_MANAGED_DIR`` is deployment bootstrap, not launch-profile residue: a served
+    profile's children keep the launch value even when the launch ``.env`` names the key
+    (pre-fix the leftover file entry would strip it and silently drop managed scope, #135200)."""
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+
+    root, alpha = two_homes
+    (root / ".env").write_text(
+        (root / ".env").read_text() + "HERMES_MANAGED_DIR=/user/controlled\n")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", "/launch/admin-dir")
+
+    token = set_secret_scope(build_profile_secret_scope(alpha))
+    try:
+        env = strip_launch_profile_env(build_subprocess_env(scrub_secrets=True, inherit_profile_home=True))
+    finally:
+        reset_secret_scope(token)
+    assert env.get("HERMES_MANAGED_DIR") == "/launch/admin-dir"

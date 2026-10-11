@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
@@ -793,6 +793,7 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
 def _collect_pre_llm_call_context(
     agent: Any, *, effective_task_id: str, turn_id: str, original_user_message: Any,
     messages: list[Any], conversation_history: Optional[list[Any]],
+    source_origins: tuple = (), source_origins_complete: bool = False,
 ) -> str:
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
     (never the system prompt). Oversized per-hook context is spilled to disk so a
@@ -801,6 +802,7 @@ def _collect_pre_llm_call_context(
         return ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        from hermes_cli.plugins_dispatch import PerCallbackCopy
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -813,6 +815,9 @@ def _collect_pre_llm_call_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            # A new list of new dicts per callback: no plugin can change the turn's or another's copy.
+            source_origins=PerCallbackCopy(lambda: [asdict(origin) for origin in source_origins]),
+            source_origins_complete=source_origins_complete,
         )
         try:
             # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent
@@ -1036,6 +1041,7 @@ def build_turn_context(
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
     set_current_write_origin, ra, moa_active: bool=False,
     title_user_message: Optional[str]=None,
+    source_origins: tuple=(), source_origins_complete: bool=False,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -1173,6 +1179,7 @@ def build_turn_context(
         agent, effective_task_id=effective_task_id, turn_id=turn_id,
         original_user_message=original_user_message, messages=messages,
         conversation_history=conversation_history,
+        source_origins=source_origins, source_origins_complete=source_origins_complete,
     )
     # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
     # prompt in memory for the whole conversation and would never re-check its skills index.

@@ -54,6 +54,9 @@ class TurnContext:
     event_message_id: Optional[str] = None
     # Raw inbound platform id (not the event_message_id reply anchor); stamped on the user turn.
     inbound_message_id: Optional[str] = None
+    # Platform messages this turn was built from, captured at turn start (``pre_llm_call``).
+    source_origins: tuple = ()
+    source_origins_complete: bool = False
     moa_config: Optional[dict] = None
     title_user_message: Optional[str] = None
     persist_user_message: Optional[Any] = None
@@ -100,3 +103,10 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    def origin_kwargs(self) -> dict[str, Any]:
+        """``run_conversation`` keywords for this turn's origins; none when it has none, so such a
+        turn keeps today's call shape."""
+        if not self.source_origins:
+            return {}
+        return {"source_origins": self.source_origins, "source_origins_complete": self.source_origins_complete}

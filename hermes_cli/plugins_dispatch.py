@@ -180,20 +180,35 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     return hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
 
 
+class PerCallbackCopy:
+    """A hook payload value every callback receives as its own fresh copy: ``make()`` runs once per
+    callback, so what one callback does to its copy reaches neither the caller nor another callback."""
+
+    __slots__ = ("make",)
+
+    def __init__(self, make: Callable[[], Any]) -> None:
+        self.make = make
+
+
+def _fresh(value: Any) -> Any:
+    return value.make() if isinstance(value, PerCallbackCopy) else value
+
+
 class PluginDispatchMixin:
     @staticmethod
     def _hook_callback_kwargs(callback: Callable, payload: dict[str, Any]) -> dict[str, Any]:
         """The slice of *payload* a callback accepts: everything for ``**kwargs`` (or
-        un-introspectable) callbacks, only declared names for narrow legacy signatures."""
+        un-introspectable) callbacks, only declared names for narrow legacy signatures; each
+        ``PerCallbackCopy`` value is made fresh for this callback."""
         try:
             parameters = inspect.signature(callback).parameters
         except (TypeError, ValueError):
-            return dict(payload)  # no introspectable signature
+            return {name: _fresh(value) for name, value in payload.items()}  # no introspectable signature
         if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-            return dict(payload)
+            return {name: _fresh(value) for name, value in payload.items()}
         keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
         return {
-            name: value for name, value in payload.items()
+            name: _fresh(value) for name, value in payload.items()
             if name in parameters and parameters[name].kind in keyword_kinds
         }
 

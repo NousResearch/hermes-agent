@@ -41,6 +41,15 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+@dataclass(frozen=True, slots=True)
+class MessageOrigin:
+    """One inbound platform message revision a turn was built from: identities only, never content."""
+    chat_id: str
+    message_id: str
+    update_id: int
+    edit_date: Optional[int] = None  # Unix seconds; None for a message that was never edited
+
+
 @dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""
@@ -101,16 +110,27 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # The platform messages this event was built from, in arrival order; complete only when the
+    # adapter identified every one of them (merges: ``absorb_origins``).
+    source_origins: tuple[MessageOrigin, ...] = ()
+    source_origins_complete: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
-    def absorb_reply_expected(self, other: "MessageEvent") -> None:
-        """One turn now answers *other* too: an addressed message wins, then an unknown one."""
+    def absorb(self, other: "MessageEvent") -> None:
+        """One turn now answers *other* too: an addressed message wins, then an unknown one; its
+        origins join ours."""
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
+        self.absorb_origins(other)
+
+    def absorb_origins(self, other: "MessageEvent") -> None:
+        """*other*'s messages join ours; the result is complete only if both sides were."""
+        self.source_origins += other.source_origins
+        self.source_origins_complete = self.source_origins_complete and other.source_origins_complete
 
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.

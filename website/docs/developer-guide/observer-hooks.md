@@ -118,7 +118,9 @@ These hooks frame the user turn, not individual provider API attempts:
 
 Common `pre_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`,
-and `sender_id`.
+`sender_id`, and the platform messages the turn was built from:
+`source_origins` and `source_origins_complete`
+([turn origins](../user-guide/features/hooks.md#pre_llm_call)).
 
 Common `post_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `assistant_response`, `conversation_history`, `model`, and

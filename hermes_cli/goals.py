@@ -1671,6 +1671,7 @@ def run_kanban_goal_loop(
             status = task_status_fn()
         except Exception as exc:
             _log(f"kanban goal loop: status check failed ({exc}); stopping")
+            _block(f"Goal-mode worker: task status check failed — {type(exc).__name__}: {exc}")
             return _result("stopped", "status check failed")
 
         terminal = _KANBAN_TERMINAL_STATUSES.get(status)
@@ -1681,6 +1682,7 @@ def run_kanban_goal_loop(
         if status not in ("running", "ready"):
             # Reclaimed / archived / unexpected — let the dispatcher own it.
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
+            _block(f"Goal-mode worker: task moved to unexpected status {status!r}; blocking for human review")
             return _result("stopped", f"status={status}")
 
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
@@ -1742,6 +1744,7 @@ def run_kanban_goal_loop(
                 failure_reason = None
         except Exception as exc:
             _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
+            _block(f"Goal-mode worker: turn execution failed — {type(exc).__name__}: {exc}")
             return _result("stopped", f"run_turn error: {type(exc).__name__}")
         if failed:
             _log(f"kanban goal loop: worker failed on turn {turns_used} (reason={failure_reason}); stopping")

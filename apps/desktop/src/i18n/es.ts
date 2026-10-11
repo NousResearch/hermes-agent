@@ -4002,6 +4002,7 @@ export const esOverrides = {
     queueDelete: 'Borrar',
     queueResume: 'Reanudar',
     queueResumeTip: 'La cola se pausó al detener; reanuda el envío de los turnos en cola',
+    mergeQueued: 'Fusionar todos los turnos en cola en uno',
     queueStuckTitle: 'Mensaje en cola no enviado',
     queueStuckBody: 'Un turno en cola no llegó a enviarse. Sigue en la cola; vuelve a intentarlo.',
     queueDroppedTitle: 'Entrada en cola descartada',

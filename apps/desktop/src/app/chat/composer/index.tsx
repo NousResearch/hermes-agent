@@ -29,7 +29,7 @@ import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
-import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
+import { mergeQueuedPrompts, parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
@@ -1322,6 +1322,15 @@ export function ChatBar({
                       }
                     }}
                     onEdit={beginQueuedEdit}
+                    onMergeAll={() => {
+                      // Cancel an in-place edit first: the entry being edited
+                      // must not be folded away underneath the composer.
+                      if (queueEdit) {
+                        exitQueuedEdit('cancel')
+                      }
+
+                      mergeQueuedPrompts(activeQueueSessionKey)
+                    }}
                     onResume={() => {
                       unparkQueuedPrompts(activeQueueSessionKey)
 

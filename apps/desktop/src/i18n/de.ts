@@ -4007,6 +4007,7 @@ export const deOverrides = {
     queueDelete: 'Löschen',
     queueResume: 'Fortsetzen',
     queueResumeTip: 'Durch Stopp pausiert — fortsetzen, um die eingereihten Turns zu senden',
+    mergeQueued: 'Alle eingereihten Turns zu einem zusammenführen',
     queueStuckTitle: 'Eingereihte Nachricht nicht gesendet',
     queueStuckBody:
       'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuchen Sie, ihn erneut zu senden.',

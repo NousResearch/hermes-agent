@@ -3567,6 +3567,7 @@ export const en: Translations = {
     queueDelete: 'Delete',
     queueResume: 'Resume',
     queueResumeTip: 'Paused by Stop — resume sending the queued turns',
+    mergeQueued: 'Merge all queued turns into one',
     queueStuckTitle: 'Queued message not sent',
     queueStuckBody: 'A queued turn kept failing to send. It is still in the queue — try sending it again.',
     queueDroppedTitle: 'Queued prompt dropped',

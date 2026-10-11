@@ -3479,6 +3479,7 @@ export const zhOverrides = {
     queueDelete: '删除',
     queueResume: '继续',
     queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
+    mergeQueued: '将所有排队回合合并为一个',
     queueStuckTitle: '排队消息未发送',
     queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
     queueDroppedTitle: '已丢弃排队内容',

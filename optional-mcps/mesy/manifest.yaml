@@ -1,0 +1,42 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: mesy
+description: 'CRM: contacts, deals, pipeline, and approval-gated changes in Mesy.'
+source: https://mesy.ai/docs/ai/connect-mesy-to-claude/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint, PKCE S256; no CIMD); Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://app.mesy.ai/mcp
+
+auth:
+  type: oauth
+
+# Excluded (26-tool surface): reads are readOnlyHint, and propose_changes /
+# propose_email write nothing until a person approves the card in Mesy (the
+# server has no approve path). reject_proposal discards a pending card
+# without that review, so it is off by default. Re-enable with
+# `hermes mcp configure mesy`.
+tools:
+  default_excluded:
+    - reject_proposal
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - mesy
+  hosts:
+    - mesy.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Mesy (or run `hermes mcp login mesy`). Sign in with your Mesy
+  email and password, click Allow, then restart the session so
+  tools load.

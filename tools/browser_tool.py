@@ -1313,10 +1313,30 @@ from tools.browser_extension_router import extension_controller_available, route
 
 _BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
 
+# Last cloud-probe warning already emitted by check_browser_routed_requirements; the gate runs
+# per routed tool, so an unchanged failure is logged once instead of once per tool per probe.
+_last_cloud_probe_warning: Optional[str] = None
+
 
 def check_browser_routed_requirements(action: str = "browser_snapshot") -> bool:
     """Availability gate for tools that can use either browser backend."""
-    return _install.check_browser_requirements() or extension_controller_available(action)
+    global _last_cloud_probe_warning
+    try:
+        if _install.check_browser_requirements():
+            return True
+    except Exception as exc:
+        # A raising cloud probe (e.g. browser.cloud_provider naming a disabled plugin, which
+        # _instantiate_explicit_cloud_provider rejects by design) must only take down the cloud
+        # path; the extension controller stays reachable (#134153).
+        message = str(exc)
+        if message != _last_cloud_probe_warning:
+            _last_cloud_probe_warning = message
+            logger.warning(
+                "browser cloud-provider probe raised; routed browser tools are limited to "
+                "the extension controller this turn: %s",
+                exc,
+            )
+    return extension_controller_available(action)
 
 
 def _fallback_call(fn_name: str, arg_defaults: dict[str, Any], extra_kw: tuple = ()):

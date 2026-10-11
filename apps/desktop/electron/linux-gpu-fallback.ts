@@ -28,6 +28,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import type { ElectronChildGoneReason } from './linux-nvidia-egl-fallback'
 import { alreadyHasDisableGpu, isHermesDesktopGpuOverrideOff } from './windows-stack-cookie-fallback'
 
 export const LINUX_GPU_FALLBACK_MARKER_FILENAME = 'linux-gpu-fallback.json'
@@ -43,7 +44,7 @@ export const BOOT_ABORTS_BEFORE_LINUX_GPU_FALLBACK = 2
 export const LINUX_GPU_SILENT_RETRY_GRACE_S = 30
 
 /** `child-process-gone` reasons that witness a broken GPU child. */
-const GPU_FAILURE_REASONS = new Set(['crashed', 'launch-failure'])
+const GPU_FAILURE_REASONS: ReadonlySet<string> = new Set<ElectronChildGoneReason>(['crashed', 'launch-failed'])
 
 export type LinuxGpuMarkerState = 'booting' | 'fallback' | 'ok'
 
@@ -269,14 +270,14 @@ export function decideLinuxGpuLaunch(
 }
 
 /**
- * True when a Linux GPU child died with launch-failure/crash evidence and we
+ * True when a Linux GPU child died with launch-failed/crashed evidence and we
  * should one-shot relaunch with `--disable-gpu` before Chromium's retry loop
  * burns the machine (#124843). Bounded: once per process (caller tracks
  * `relaunchAttempted`), sticky across boots via the marker the caller writes.
  */
 export function shouldRelaunchForLinuxGpuCrash(options: {
   platform?: NodeJS.Platform | string
-  details?: { type?: string; reason?: string } | null
+  details?: { type?: string; reason?: ElectronChildGoneReason } | null
   alreadySoftware?: boolean
   relaunchAttempted?: boolean
 }): boolean {
@@ -316,7 +317,7 @@ export type LinuxGpuDeathPath = 'no-sandbox' | 'disable-gpu' | null
  *   matrix shows `--disable-gpu` still crashes, so software fallback would
  *   waste the one shot. `alreadyNoSandbox` covers a sticky/relaunched
  *   `--no-sandbox` boot, `sandboxRelaunchAttempted` the one-shot guard.
- * - Any other GPU failure reason (crashed / launch-failure, #124843) falls to
+ * - Any other GPU failure reason (crashed / launch-failed, #124843) falls to
  *   the software ladder — including the RELAPSE after a `--no-sandbox`
  *   relaunch died again: that second death proves the sandbox was not the
  *   (only) problem, so the next bounded step is `--disable-gpu`.
@@ -326,7 +327,7 @@ export type LinuxGpuDeathPath = 'no-sandbox' | 'disable-gpu' | null
  */
 export function linuxGpuChildDeathPath(options: {
   platform?: NodeJS.Platform | string
-  details?: { type?: string; reason?: string; exitCode?: number | null; signalName?: string | null } | null
+  details?: { type?: string; reason?: ElectronChildGoneReason; exitCode?: number | null; signalName?: string | null } | null
   alreadyNoSandbox?: boolean
   alreadySoftware?: boolean
   sandboxRelaunchAttempted?: boolean

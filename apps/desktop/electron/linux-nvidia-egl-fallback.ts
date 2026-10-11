@@ -49,11 +49,31 @@ const OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 export const NVIDIA_EGL_FALLBACK_MARKER_FILENAME = 'nvidia-egl-fallback.json'
 
 /**
+ * Electron `child-process-gone` reason values — the `Details['reason']` union
+ * from electron.d.ts. Kept local so this dependency-free module does not
+ * import electron; a wrong literal here fails to compile against the sets
+ * below.
+ */
+export type ElectronChildGoneReason =
+  | 'clean-exit'
+  | 'abnormal-exit'
+  | 'killed'
+  | 'crashed'
+  | 'oom'
+  | 'launch-failed'
+  | 'integrity-failure'
+  | 'memory-eviction'
+
+/**
  * `child-process-gone` reasons that witness a broken GPU child. `killed` is
  * included on purpose: in #40077 the GPU process exited with exit_code=15 —
  * Chromium's own GPU health check SIGTERM — not a crash reason.
  */
-export const NVIDIA_GPU_DEATH_REASONS: ReadonlySet<string> = new Set(['crashed', 'launch-failure', 'killed'])
+export const NVIDIA_GPU_DEATH_REASONS: ReadonlySet<string> = new Set<ElectronChildGoneReason>([
+  'crashed',
+  'launch-failed',
+  'killed'
+])
 
 export type NvidiaEglMarkerState = 'booting' | 'fallback' | 'ok'
 
@@ -270,7 +290,7 @@ export function decideNvidiaEglFallback(options: {
 
 export interface NvidiaGpuDeathOptions {
   platform?: NodeJS.Platform | string
-  details: { type?: string; reason?: string } | null
+  details: { type?: string; reason?: ElectronChildGoneReason } | null
   /** The fallback is already active this launch (sticky marker or override). */
   fallbackActive: boolean
   /** This process already attempted the one-shot relaunch. */

@@ -645,6 +645,10 @@ class Npm(BinaryPackage):
             raise InstallError(self.name, "node's entry is missing its bundled npm-cli.js")
 
         staged.mkdir(parents=True, exist_ok=True)
+        # npm >= 11.19 lstats the global root before a --global install and exits
+        # ENOENT on a bare prefix tree (fixes #125215): pre-create the root it
+        # installs into (lib/ on posix, node_modules/ on win32).
+        (staged / ("node_modules" if win else "lib")).mkdir(parents=True, exist_ok=True)
         # npm caches the tarball it installs. The archive's directory is the
         # store's download entry, which must hold only the archive: a cache
         # there turns its removal into a tree delete that fails on Windows

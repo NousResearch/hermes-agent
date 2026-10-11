@@ -24,10 +24,14 @@ gateway:
 a2a_agents:
   researcher:
     url: "http://localhost:9999"
-    auth: { type: bearer, token: "sk-..." }
+    # Prefer token_env so a secret is not written to config.yaml.
+    auth: { type: bearer, token_env: A2A_TOKEN_RESEARCHER }
     timeout: 120
     capabilities: [web_search, research]
 ```
+
+`token` remains supported for existing peers. A non-empty `token` takes
+precedence; an unset or empty `token_env` sends no auth header.
 
 ## Outbound — call other agents
 

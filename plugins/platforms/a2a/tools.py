@@ -1,10 +1,11 @@
 """A2A client tools (``a2a`` toolset): a2a_discover/call/list/history/orchestrate talk to *other*
-agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token}, timeout,
+agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token|token_env}, timeout,
 capabilities}}``. Stdlib urllib; wire format is A2A v1.0 ``SendMessage`` (v0.3 replies still parse)."""
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import urllib.error
@@ -46,7 +47,14 @@ def _resolve_peer(agent: str) -> Optional[dict]:
 
 
 def _auth_header(auth: dict) -> dict:
-    return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
+    if not auth or auth.get("type") != "bearer":
+        return {}
+    token = auth.get("token")
+    if not token:
+        token_env = auth.get("token_env")
+        token = _get_scoped_secret(token_env, "") if isinstance(token_env, str) and token_env else ""
+    token = token.strip() if isinstance(token, str) else ""
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:
@@ -267,7 +275,10 @@ def a2a_orchestrate(args: dict, **_: Any) -> str:
         return f"Error: no configured peers advertise capability '{capability}'."
     results: list[tuple[str, str]] = []
     with ThreadPoolExecutor(max_workers=min(len(matches), _ORCHESTRATE_MAX_WORKERS)) as pool:
-        futures = {pool.submit(_call_peer_sync, name, entry, message, context_id): name for name, entry in matches}
+        futures = {
+            pool.submit(contextvars.copy_context().run, _call_peer_sync, name, entry, message, context_id): name
+            for name, entry in matches
+        }
         for fut in as_completed(futures):
             name = futures[fut]
             try:

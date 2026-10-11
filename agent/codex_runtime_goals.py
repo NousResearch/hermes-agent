@@ -5,7 +5,8 @@ from __future__ import annotations
 def run_app_server_work(agent, user_message, *, messages, **wire_options):
     from hermes_cli.config import load_config
     from hermes_cli.goals import load_goal
-    from agent.codex_runtime import _persist_projected_messages, _record_codex_app_server_usage, _store_codex_thread_id
+    from agent.codex_runtime import (_persist_projected_messages, _record_codex_app_server_usage,
+                                    _record_codex_app_server_compaction, _store_codex_thread_id)
     cfg = load_config() or {}
     options = cfg.get("agent") or {}
     total = options.get("codex_turn_timeout", 600)
@@ -49,6 +50,10 @@ def run_app_server_work(agent, user_message, *, messages, **wire_options):
         _store_codex_thread_id(agent, turn.thread_id)
         turn.projected_messages = []  # Already appended/flushed; aggregate must not insert them twice.
         if continuing:
+            # Native Goal turns bypass the ordinary finalizer. Consume their real compaction
+            # boundary before anchoring usage, rather than retaining a stale mirror estimate.
+            _record_codex_app_server_compaction(agent, turn)
+            turn.compacted = False  # Recorded here; the aggregate finalizer must not record it again.
             turn.usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
             turn.usage_recorded = True
 

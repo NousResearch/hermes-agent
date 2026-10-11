@@ -669,10 +669,10 @@ DEFAULT_CONFIG = {
         "codex_gpt55_autoraise": True,
         # Show the one-time autoraise banner; False keeps the autoraise, hides the notice.
         "codex_gpt55_autoraise_notice": True,
-        # Codex app-server thread compaction mode. The codex agent owns the thread context, so
-        # Hermes' summarizer cannot shrink it. native = codex decides; hermes = Hermes' threshold
-        # triggers thread/compact/start; off = never auto-trigger.
+        # Codex owns its context: native = Codex decides; hermes = Hermes invokes thread/compact/start;
+        # off = Hermes never auto-triggers. Local summarization cannot shrink the native thread.
         "codex_app_server_auto": "native",
+        "codex_auto_compact_token_limit": None,  # null = model default; positive = earlier compaction
         # Opt in to OpenAI server-side compaction on the Responses API. Only gpt-5.6-family on
         # api.openai.com or the Codex backend; local compression stays as fallback.
         "codex_responses_native": False,

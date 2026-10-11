@@ -465,7 +465,7 @@ export function appendMidTurnUserMessage<
 
   const messages = [
     ...(sealedLiveKept ? sealed.map(row => (row.id === liveId ? { ...row, interim: true } : row)) : sealed),
-    message
+    { ...message, steering: true }
   ]
 
   return {

@@ -1,7 +1,7 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
+import { spliceOlderPreservedRows } from '@/lib/chat-messages'
 import {
   assistantTextPart,
   type ChatMessage,
@@ -13,24 +13,18 @@ import {
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
-import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
-import { $projectTree } from '@/store/projects'
 import {
-  $cronSessions,
   $currentCwd,
-  $messagingSessions,
-  $sessions,
   commitWorkspaceCwdForSelectedSession,
   getSessionOwnerHint,
   knownSessionOwner,
   ownerLookupSessionRows,
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
-  setCronSessions,
   setCurrentBranch,
   setCurrentCwdTransient,
   setCurrentFastMode,
@@ -43,7 +37,6 @@ import {
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
-  setMessagingSessions,
   setSessionOwnerHint,
   setSessions,
   setUnlistedSessionOwnerRows,
@@ -51,10 +44,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import {
-  $removedSessionIds,
-  captureSessionTombstoneGenerations,
-  type SessionTombstoneGenerationSnapshot,
-  tombstoneLifecycleChanged
+  captureSessionTombstoneGenerations
 } from '@/store/session-removal'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { runtimeSessionOwner, sessionTileOwnerRoute } from '@/store/session-states'
@@ -68,12 +58,14 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 
 import type { ClientSessionState } from '../../../types'
 
+import { cachedSessionRow, upsertResolvedSession } from './listed-sessions'
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
   persistedTurnsEquivalent,
   transcriptRowIds
 } from './pending-turn-identity'
+import { acknowledgedByServer, acknowledgedSteeringMessages, authoritativeTwinCarriesText } from './steering-reconciliation'
 
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
@@ -253,7 +245,8 @@ const COMPARED_FIELDS = [
   'completedAt',
   // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
   // must re-render (set once at completion; stable afterwards).
-  'durationS'
+  'durationS',
+  'steering'
 ] as const
 
 const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
@@ -354,30 +347,45 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
   )
 }
 
-export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
-  if (
-    a.id !== b.id ||
-    a.rowId !== b.rowId ||
-    !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
-    a.role !== b.role ||
-    a.durableComplete !== b.durableComplete ||
-    a.recovered !== b.recovered ||
-    a.pending !== b.pending ||
-    a.error !== b.error ||
-    // Structural compare — the descriptor arrives as a fresh object per
-    // resume/replay, so identity comparison would repaint forever.
-    (a.errorSurface?.layer ?? null) !== (b.errorSurface?.layer ?? null) ||
-    (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
-    (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||
-    a.hidden !== b.hidden ||
-    a.branchGroupId !== b.branchGroupId ||
-    a.timestamp !== b.timestamp ||
-    a.completedAt !== b.completedAt ||
+/** The message-level (non-parts) compare of `chatMessagesEquivalent`, extracted so the
+ * ratcheted function's complexity stays at its main value. Same fields, same semantics. */
+/** Structural error-surface compare — the descriptor arrives as a fresh object per
+ * resume/replay, so identity comparison would repaint forever. */
+function errorSurfaceEquivalent(a: ChatMessage, b: ChatMessage): boolean {
+  return (
+    (a.errorSurface?.layer ?? null) === (b.errorSurface?.layer ?? null) &&
+    (a.errorSurface?.code ?? null) === (b.errorSurface?.code ?? null) &&
+    (a.errorSurface?.retryable ?? null) === (b.errorSurface?.retryable ?? null)
+  )
+}
+
+/** The message-level (non-parts) compare of `chatMessagesEquivalent`, extracted so the
+ * ratcheted function's complexity stays at its main value. Same fields, same semantics. */
+function chatMessageHeaderEquivalent(a: ChatMessage, b: ChatMessage): boolean {
+  return (
+    a.id === b.id &&
+    a.rowId === b.rowId &&
+    persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) &&
+    a.role === b.role &&
+    (a.steering ?? false) === (b.steering ?? false) &&
+    a.durableComplete === b.durableComplete &&
+    a.recovered === b.recovered &&
+    a.pending === b.pending &&
+    a.error === b.error &&
+    errorSurfaceEquivalent(a, b) &&
+    a.hidden === b.hidden &&
+    a.branchGroupId === b.branchGroupId &&
+    a.timestamp === b.timestamp &&
+    a.completedAt === b.completedAt &&
     // Interim gates the action footer, so flipping it must repaint (e.g. a
     // previewed final settling onto a sealed interim bubble restores the bar).
-    (a.interim ?? false) !== (b.interim ?? false) ||
-    !chatReactionsEquivalent(a.reactions, b.reactions)
-  ) {
+    (a.interim ?? false) === (b.interim ?? false) &&
+    chatReactionsEquivalent(a.reactions, b.reactions)
+  )
+}
+
+export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
+  if (!chatMessageHeaderEquivalent(a, b)) {
     return false
   }
 
@@ -911,6 +919,11 @@ export function preserveLocalPendingTurnMessages(
       (message.rowId !== undefined || message === newestAuthoritativeUser)
   )
 
+  const acknowledgedSteers = acknowledgedSteeringMessages(
+    acknowledgedUserCandidates,
+    previousMessages.slice(acknowledged.localIndex + 1)
+  )
+
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
@@ -1021,18 +1034,7 @@ export function preserveLocalPendingTurnMessages(
 
     if (
       isOptimisticUser &&
-      acknowledgedUserCandidates.some(
-        candidate =>
-          // #122079: the tolerant arm widens the TEXT compare only — it stays
-          // inside the identity gate, so a rowId-bearing optimistic row is
-          // never swallowed by a committed row it provably is not (a genuine
-          // repeat of the same captioned paste). The rowId-less paste from
-          // #120978 carries no identity and keeps matching tolerantly.
-          !conflictingTranscriptIdentity(message, candidate) &&
-          (textWithoutReferenceLines(chatMessageText(candidate)) ===
-            textWithoutReferenceLines(chatMessageText(message)) ||
-            sameAttachmentTurn(candidate, message))
-      )
+      acknowledgedByServer(message, acknowledgedSteers, acknowledgedUserCandidates)
     ) {
       continue
     }
@@ -1075,10 +1077,7 @@ export function preserveLocalPendingTurnMessages(
         continue
       }
 
-      if (
-        textWithoutReferenceLines(chatMessageText(authoritative)) ===
-        textWithoutReferenceLines(chatMessageText(message))
-      ) {
+      if (authoritativeTwinCarriesText(message, authoritative)) {
         continue
       }
     }
@@ -1957,182 +1956,6 @@ export function patchSessionWorkspace(sessionId: string, cwd: string | undefined
 
 export function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
   return (session?.message_count ?? 0) > 0
-}
-
-export type ListedSessionSlice = 'cron' | 'messaging' | 'sessions'
-
-export function findListedSession(
-  storedSessionId: string
-): { session: SessionInfo; slice: ListedSessionSlice } | undefined {
-  const match = (session: SessionInfo) => sessionMatchesStoredId(session, storedSessionId)
-  const fromMessaging = $messagingSessions.get().find(match)
-
-  if (fromMessaging) {
-    return { session: fromMessaging, slice: 'messaging' }
-  }
-
-  const fromCron = $cronSessions.get().find(match)
-
-  if (fromCron) {
-    return { session: fromCron, slice: 'cron' }
-  }
-
-  const fromSessions = $sessions.get().find(match)
-
-  if (fromSessions) {
-    return { session: fromSessions, slice: 'sessions' }
-  }
-
-  return undefined
-}
-
-export function dropListedSession(storedSessionId: string): void {
-  const keep = (session: SessionInfo) => !sessionMatchesStoredId(session, storedSessionId)
-
-  setSessions(prev => prev.filter(keep))
-  setMessagingSessions(prev => prev.filter(keep))
-  setCronSessions(prev => prev.filter(keep))
-  setUnlistedSessionOwnerRows(prev => prev.filter(keep))
-}
-
-export function listedSliceTarget(session: SessionInfo): ListedSessionSlice {
-  return isMessagingSource(session.source)
-    ? 'messaging'
-    : normalizeSessionSource(session.source) === 'cron'
-      ? 'cron'
-      : 'sessions'
-}
-
-export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
-  const target: ListedSessionSlice = slice ?? listedSliceTarget(session)
-
-  const prepend = (prev: SessionInfo[]) => [
-    session,
-    ...prev.filter(existing => !sessionMatchesStoredId(existing, session.id))
-  ]
-
-  if (target === 'messaging') {
-    setMessagingSessions(prepend)
-
-    return
-  }
-
-  if (target === 'cron') {
-    setCronSessions(prepend)
-
-    return
-  }
-
-  setSessions(prepend)
-}
-
-function upsertResolvedSession(
-  session: SessionInfo,
-  storedSessionId: string,
-  tombstoneGenerationsAtRequestStart: SessionTombstoneGenerationSnapshot
-) {
-  // Exact-id lookup intentionally resolves internal delegate children so a
-  // watch tile can open them. They are not ordinary user conversations,
-  // though, and the authoritative list endpoints omit them; caching one here
-  // would bypass that boundary and leak it into the Sessions sidebar.
-  if (session.is_internal_child) {
-    return
-  }
-
-  const removed = $removedSessionIds.get()
-  const identities = [storedSessionId, session.id, session._lineage_root_id]
-
-  // A direct by-id resolve may have started just before an archive/delete
-  // (#85163: the archive row click's bubbled resume raced the tombstone).
-  // A stale response must not undo the optimistic eviction while the mutation's
-  // tombstone is active, after the tombstone was already present at request
-  // start, or after an add → remove ABA cycle made membership look unchanged.
-  // Check every identity lineage-aware lookups use. This suppresses only the
-  // sidebar-cache upsert: the resolved row is still returned so an explicit
-  // resume-by-id can open archived history, and a later request after a
-  // settled rollback can publish normally.
-  if (
-    session.archived ||
-    identities.some(id => (id ? removed.has(id) : false)) ||
-    tombstoneLifecycleChanged(tombstoneGenerationsAtRequestStart, identities)
-  ) {
-    return
-  }
-
-  const lineage = session._lineage_root_id ?? session.id
-
-  // A hidden row (canonical Bot Chat, room plumbing) is unlisted by design:
-  // inserting it into $sessions paints a sidebar row until the next refresh,
-  // and the keep-list then holds it there (#113273). Park it on the off-list
-  // owner atom the draft stubs ride — owner resolution still finds it via
-  // ownerLookupSessionRows, the sidebar never does.
-  if (session.hidden) {
-    setUnlistedSessionOwnerRows(prev => [
-      session,
-      ...prev.filter(existing => (existing._lineage_root_id ?? existing.id) !== lineage)
-    ])
-
-    return
-  }
-
-  const prepend = (prev: SessionInfo[]) => [
-    session,
-    ...prev.filter(existing => {
-      if (sessionMatchesStoredId(existing, storedSessionId)) {
-        return false
-      }
-
-      return (existing._lineage_root_id ?? existing.id) !== lineage
-    })
-  ]
-
-  // A resolve can observe a source move (cross-room /resume rewrites the row to
-  // source='matrix', #113827): the row belongs to its current slice, and the
-  // stale copy in every other slice must go or the session shows twice.
-  // Identity-stable when nothing matched — every sidebar memo keys on these
-  // arrays, and a resolve runs on each row open.
-  const evict = (prev: SessionInfo[]) =>
-    prev.some(existing => sessionMatchesStoredId(existing, storedSessionId))
-      ? prev.filter(existing => !sessionMatchesStoredId(existing, storedSessionId))
-      : prev
-
-  const target = listedSliceTarget(session)
-
-  setSessions(target === 'sessions' ? prepend : evict)
-  setMessagingSessions(target === 'messaging' ? prepend : evict)
-  setCronSessions(target === 'cron' ? prepend : evict)
-}
-
-// Every session row reachable through the profile-scoped project tree —
-// preview rows on a collapsed project plus the drill-in lane rows. These are
-// the only rows guaranteed to name their owning profile (the gateway stamps
-// the request scope onto them), so owner resolution has to see them.
-function projectTreeSessions(): SessionInfo[] {
-  return $projectTree
-    .get()
-    .flatMap(project => [
-      ...(project.previewSessions ?? []),
-      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
-    ])
-}
-
-// The best cached row for a stored id, across every list that can hold one.
-// "Best" means self-describing: the same conversation can appear both as an
-// ownerless legacy Recents copy and as a profile-stamped project-tree row, and
-// picking the ownerless one throws away the only routing information we have.
-export function cachedSessionRow(storedSessionId: string): SessionInfo | undefined {
-  const candidates = [
-    ...$sessions.get(),
-    ...$cronSessions.get(),
-    ...$messagingSessions.get(),
-    ...projectTreeSessions()
-  ].filter(session => sessionMatchesStoredId(session, storedSessionId))
-
-  return (
-    candidates.find(session => session.connection_id?.trim()) ??
-    candidates.find(session => session.profile?.trim()) ??
-    candidates[0]
-  )
 }
 
 export type StoredSessionProbe = { status: 'found'; session: SessionInfo } | { status: 'gone' | 'inconclusive' }

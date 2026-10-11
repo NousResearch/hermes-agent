@@ -43,7 +43,7 @@ import {
 } from '@/store/session-states'
 
 import { useSessionActions } from './use-session-actions'
-import { cachedSessionRow } from './use-session-actions/utils'
+import { cachedSessionRow } from './use-session-actions/listed-sessions'
 import { useSessionStateCache } from './use-session-state-cache'
 
 type Cache = ReturnType<typeof useSessionStateCache>

@@ -171,6 +171,7 @@ import { branchCreateKey } from './branch-create-key'
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
+import { cachedSessionRow, dropListedSession, findListedSession, restoreListedSession } from './listed-sessions'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
@@ -188,11 +189,8 @@ import {
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
-  cachedSessionRow,
   chatMessageArraysEquivalent,
   dedupeInflightUserAgainstTranscript,
-  dropListedSession,
-  findListedSession,
   goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
@@ -204,7 +202,6 @@ import {
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,
-  restoreListedSession,
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,

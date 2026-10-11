@@ -237,6 +237,21 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
 
 // Only parse producer-owned boundaries, never render the model's task preamble.
 // Older backends can persist an unwrapped result rather than an envelope.
+/** The display-kind-driven boolean/enum flags of a hydrated row: async-result body and
+ *  kind for background completions, the steering marker for durable steer rows. */
+function displayKindFlags(
+  message: SessionMessage,
+  content: unknown
+): Pick<ChatMessage, 'asyncResult' | 'asyncResultKind' | 'steering'> {
+  return {
+    ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
+      ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
+      : {}),
+    ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+    ...(message.display_kind === 'steer' ? { steering: true } : {})
+  }
+}
+
 function asyncResultBody(content: string): string | undefined {
   let bodies = [content]
 
@@ -600,10 +615,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       role: displayRole,
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
-      ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
-        ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
-        : {}),
-      ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...displayKindFlags(message, content),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),

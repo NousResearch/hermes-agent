@@ -16,9 +16,12 @@ export const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
 export const CATALOG_PICKER_URL = `${CATALOG_ORIGIN}/docs/plugins?embed=picker`
 // CATALOG_ORIGIN serves this JSON path as a 301 to the GitHub Pages build without an
 // Access-Control-Allow-Origin header, so a renderer fetch() rejects before following
-// the redirect. The picker page itself still serves 200 there, so only the JSON URL
-// points at the CORS-enabled final host (issue #136483).
+// the redirect. The picker page itself still serves 200 there, so only the JSON feed
+// starts at the CORS-enabled final host, with the docs origin kept as the fallback —
+// the same primary/fallback split the skills hub picker uses — so a fixed redirect or
+// a moved feed needs no desktop release (issue #136483).
 export const PLUGIN_CATALOG_URL = 'https://nousresearch.github.io/hermes-agent/docs/api/plugins.json'
+const FALLBACK_PLUGIN_CATALOG_URL = `${CATALOG_ORIGIN}/docs/api/plugins.json`
 
 /** Catalog names are directory names under `plugin-catalog/`; anything else is not a lookup key. */
 export const PLUGIN_CATALOG_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -60,6 +63,31 @@ function asEntry(raw: unknown): null | PluginCatalogEntry {
 }
 
 /**
+ * Fetch the catalog feed from whichever host serves it. The primary is the
+ * GitHub Pages build (CORS-enabled today); the docs origin is the fallback for
+ * when its redirect is fixed or hosting moves back (#136483). A host that
+ * rejects the fetch (network, CORS) or answers non-2xx is skipped, not fatal.
+ */
+async function fetchCatalogFeed(fetchImpl: typeof fetch): Promise<Response | null> {
+  for (const url of [PLUGIN_CATALOG_URL, FALLBACK_PLUGIN_CATALOG_URL]) {
+    try {
+      const response = await fetchImpl(url, {
+        cache: 'no-cache',
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      })
+
+      if (response.ok) {
+        return response
+      }
+    } catch {
+      // Unreachable or CORS-blocked — try the other host.
+    }
+  }
+
+  return null
+}
+
+/**
  * Look one name up in the live catalog. Unknown names are a hard `unknown`,
  * never a guess: the deep link must not turn an arbitrary string into a git
  * identifier the dialog would then clone.
@@ -77,12 +105,9 @@ export async function lookupPluginCatalogEntry(
   let rows: unknown
 
   try {
-    const response = await fetchImpl(PLUGIN_CATALOG_URL, {
-      cache: 'no-cache',
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
-    })
+    const response = await fetchCatalogFeed(fetchImpl)
 
-    if (!response.ok) {
+    if (!response) {
       return { ok: false, error: 'unavailable' }
     }
 

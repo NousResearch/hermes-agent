@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { PLUGIN_CATALOG_URL, type PluginCatalogLookup } from '@/lib/plugin-catalog'
+import { CATALOG_ORIGIN, lookupPluginCatalogEntry, PLUGIN_CATALOG_URL, type PluginCatalogLookup } from '@/lib/plugin-catalog'
 
 import { $agentPlugins } from './agent-plugins'
 import { $notifications } from './notifications'
@@ -58,11 +58,37 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
     expect(toasts[0]?.message).toContain(fragment)
   })
 
-  it('fetches the catalog feed from the CORS-enabled final host, not the redirecting origin', () => {
-    // Regression for #136483: CATALOG_ORIGIN answers /docs/api/plugins.json with a 301
-    // that carries no Access-Control-Allow-Origin, so a renderer fetch() rejects with
-    // "Failed to fetch" before following it and every catalog deep link fails.
-    expect(PLUGIN_CATALOG_URL).toBe('https://nousresearch.github.io/hermes-agent/docs/api/plugins.json')
+  it('falls back to the docs origin when the primary feed host rejects the fetch (#136483)', async () => {
+    // CATALOG_ORIGIN answers /docs/api/plugins.json with a 301 that carries no
+    // Access-Control-Allow-Origin, so a renderer fetch() rejects with
+    // "Failed to fetch" before following it. The lookup must still resolve the
+    // entry via the other host instead of failing every catalog deep link — and
+    // keep working if the hosting moves back once the redirect is fixed.
+    const feed = JSON.stringify([
+      { name: 'weather', repo: 'https://github.com/x/weather', sha: 'a'.repeat(40), subdir: '' }
+    ])
+
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(async () => {
+        throw new TypeError('Failed to fetch')
+      })
+      .mockImplementationOnce(async () => new Response(feed, { status: 200 }))
+
+    const result = await lookupPluginCatalogEntry('weather', fetchImpl)
+
+    expect(result).toMatchObject({ ok: true, entry: { name: 'weather', repo: 'https://github.com/x/weather' } })
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, PLUGIN_CATALOG_URL, expect.anything())
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, `${CATALOG_ORIGIN}/docs/api/plugins.json`, expect.anything())
+  })
+
+  it('reports the catalog unavailable only after both hosts reject the fetch', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+
+    await expect(lookupPluginCatalogEntry('weather', fetchImpl)).resolves.toEqual({ ok: false, error: 'unavailable' })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
   it('resolves against the live catalog feed by default and rejects unknown names', async () => {

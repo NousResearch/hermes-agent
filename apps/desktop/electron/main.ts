@@ -7210,12 +7210,17 @@ function focusedFrameOrigin(
   return null
 }
 
-/** The picker embed URL the hub iframe starts on (both deployments). */
+/** The picker embed URLs the hub iframes start on (both deployments, skills and plugins catalogs). */
 function isHermesHubPickerUrl(url: string): boolean {
   try {
     const parsed = new URL(url)
     const isHubOrigin = parsed.origin === HERMES_HUB_ORIGIN || parsed.origin === HERMES_HUB_FALLBACK_ORIGIN
-    const isPickerPath = parsed.pathname === '/hermes-agent/docs/skills' || parsed.pathname === '/docs/skills'
+
+    const isPickerPath =
+      parsed.pathname === '/hermes-agent/docs/skills' ||
+      parsed.pathname === '/docs/skills' ||
+      parsed.pathname === '/hermes-agent/docs/plugins' ||
+      parsed.pathname === '/docs/plugins'
 
     return isHubOrigin && isPickerPath
   } catch {

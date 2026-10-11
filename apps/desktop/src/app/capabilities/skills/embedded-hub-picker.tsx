@@ -231,7 +231,14 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
             }}
           >
             <iframe
-              sandbox="allow-scripts allow-same-origin"
+              // Same posture as the Bot Mode Skills Hub (#91612): popups
+              // so the hub's external links (docs, GitHub, Discord) reach
+              // the OS browser via the main-process window-open
+              // delegation, never a popup window, and clipboard-write for
+              // the Copy controls, granted only to the hub origins by the
+              // session permission handlers (#135315).
+              allow="clipboard-write"
+              sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
               src={HUB_PICKER_URL}
               style={{
                 background: 'transparent',

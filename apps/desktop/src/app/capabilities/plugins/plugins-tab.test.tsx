@@ -815,4 +815,26 @@ describe('PluginsTab catalog UX', () => {
       dropPlugin('weather')
     }
   })
+
+  // #135315: without allow-popups, every window.open / target=_blank on the
+  // catalog page is killed inside the sandboxed frame — repo, docs, stars and
+  // card links silently do nothing. The main-process window-open delegation
+  // added for #91612 would already accept these URLs; the frame just never
+  // gets that far.
+  it('pins the catalog frame to the required sandbox and clipboard posture (#135315)', () => {
+    const { container } = render(<PluginsTab profile={null} />)
+
+    const frame = container.querySelector('iframe')
+    expect(frame).toBeTruthy()
+    expect(frame?.getAttribute('src')).toBe('https://hermes-agent.nousresearch.com/docs/plugins?embed=picker')
+    // Same-origin (the catalog's own routing), scripts, and popups — external
+    // links then reach the OS browser via the main-process window-open
+    // delegation, never a popup window.
+    expect(frame?.getAttribute('sandbox')).toBe(
+      'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox'
+    )
+    // The Copy controls write to the clipboard; the session permission
+    // handlers grant clipboard-sanitized-write only to the hub origins.
+    expect(frame?.getAttribute('allow')).toBe('clipboard-write')
+  })
 })

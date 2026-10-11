@@ -144,3 +144,41 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+def test_plugin_generation_resolves_host_without_unrelated_foreign_platform_conflict(layout):
+    """A runtime generation preserves selections even when a foreign fork cannot lock."""
+    import tomllib
+
+    tmp, core, plugin, _ = layout
+    # The local index has no compatible release for this foreign-only extra.
+    foreign_platform = "android" if sys.platform != "android" else "darwin"
+    manifest = core / "pyproject.toml"
+    manifest.write_text(manifest.read_text().replace(
+        'other=["other-dep==1.0"]',
+        f'other=["unavailable-on-foreign-platform==1.0; sys_platform == {foreign_platform!r}"]'))
+    environment = managed_environment(tmp / "env")
+    from pm.workspace import ResolutionConflict
+    with pytest.raises(ResolutionConflict, match="unavailable-on-foreign-platform"):
+        environment.lock(core, timeout=30)
+
+    root = tmp / "workspace"
+    ws.lock_and_sync([plugin], ["chosen"], root=root, source=core,
+                     seed_lock=core / "uv.lock", environment=environment)
+    locked = {p["name"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
+    assert {"base-dep", "chosen-dep", "member-dep"} <= locked
+    assert "other-dep" not in locked
+    # The original cross-platform declaration remains available to other hosts.
+    assert f"sys_platform == {foreign_platform!r}" in manifest.read_text()
+
+
+@pytest.mark.parametrize("host", ["android", "linux", "darwin", "win32"])
+def test_runtime_environments_intersect_core_without_excluding_supported_hosts(host):
+    from packaging.markers import Marker
+    markers = [Marker(marker) for marker in
+               ws._runtime_environments(["python_version >= '3.14'"], host)]
+    env = {"sys_platform": host, "platform_machine": "aarch64", "python_version": "3.14"}
+    assert any(marker.evaluate(env) for marker in markers)
+    assert not any(marker.evaluate({**env, "python_version": "3.13"}) for marker in markers)
+    assert not any(marker.evaluate({**env, "sys_platform": "other-host"}) for marker in markers)
+    assert Marker(ws._runtime_environments(None, host)[0]).evaluate(env)

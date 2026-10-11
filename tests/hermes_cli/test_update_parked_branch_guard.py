@@ -546,6 +546,77 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
     assert "feature work" in _git(repo_pair, "log", "--oneline").stdout
 
 
+def test_dirty_maintained_branch_uses_native_merge(repo_pair, monkeypatch):
+    from hermes_cli import config
+    monkeypatch.setattr(config, "load_config", lambda: {"updates": {"parked_branch_strategy": "update_in_place"}})
+    (repo_pair / "feature.txt").write_text("committed\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "overlay")
+    overlay = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    (repo_pair / "feature.txt").write_text("dirty\n")
+    (repo_pair / "scratch.txt").write_text("untracked\n")
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo_pair)
+    plan = update_cmd._prepare_checkout_for_update(
+        GIT, "main", "old-feature", is_fork=False, assume_yes=True, gateway_mode=False,
+        gw_input_fn=None, switch_branch=False, _windows_gateway_resume=None)
+    assert plan.in_place_update and plan.auto_stash_ref
+    update_cmd._pull_updates(GIT, "main", plan.auto_stash_ref, prompt_for_restore=False,
+                            gw_input_fn=None, discard_local_changes=False, keep_stash=False,
+                            in_place_update=True)
+    assert _git(repo_pair, "branch", "--show-current").stdout.strip() == "old-feature"
+    assert _git(repo_pair, "merge-base", "--is-ancestor", overlay, "HEAD").returncode == 0
+    assert (repo_pair / "b.txt").exists()
+    assert (repo_pair / "feature.txt").read_text() == "dirty\n"
+    assert (repo_pair / "scratch.txt").read_text() == "untracked\n"
+    assert not _git(repo_pair, "stash", "list").stdout.strip()
+
+
+@pytest.mark.parametrize("state", ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"])
+def test_dirty_maintained_branch_refuses_operation(repo_pair, monkeypatch, state):
+    from hermes_cli import config
+    monkeypatch.setattr(config, "load_config", lambda: {"updates": {"parked_branch_strategy": "update_in_place"}})
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo_pair)
+    path = repo_pair / ".git" / state
+    if state.startswith("rebase"):
+        path.mkdir()
+    else:
+        path.write_text("deadbeef\n")
+    (repo_pair / "a.txt").write_text("dirty\n")
+    before = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    with pytest.raises(SystemExit):
+        update_cmd._prepare_checkout_for_update(
+            GIT, "main", "old-feature", is_fork=False, assume_yes=True, gateway_mode=False,
+            gw_input_fn=None, switch_branch=False, _windows_gateway_resume=None)
+    assert path.exists()
+    assert (repo_pair / "a.txt").read_text() == "dirty\n"
+    assert _git(repo_pair, "rev-parse", "HEAD").stdout.strip() == before
+    assert not _git(repo_pair, "stash", "list").stdout.strip()
+
+
+@pytest.mark.parametrize("unique", [False, True])
+def test_dirty_maintained_branch_guard_failure_restores_stash(repo_pair, monkeypatch, unique):
+    from hermes_cli import config
+    monkeypatch.setattr(config, "load_config", lambda: {"updates": {
+        "parked_branch_strategy": "update_in_place", "auto_switch_parked_branch": not unique}})
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo_pair)
+    if unique:
+        (repo_pair / "feature.txt").write_text("overlay\n")
+        _git(repo_pair, "add", "feature.txt")
+        _git(repo_pair, "commit", "-qm", "overlay")
+    before = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+    (repo_pair / "a.txt").write_text("dirty\n")
+    (repo_pair / "scratch.txt").write_text("untracked\n")
+    with pytest.raises(SystemExit):
+        update_cmd._prepare_checkout_for_update(
+            GIT, "main", "old-feature", is_fork=False, assume_yes=True, gateway_mode=False,
+            gw_input_fn=None, switch_branch=False, _windows_gateway_resume=None)
+    assert _git(repo_pair, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo_pair, "branch", "--show-current").stdout.strip() == "old-feature"
+    assert (repo_pair / "a.txt").read_text() == "dirty\n"
+    assert (repo_pair / "scratch.txt").read_text() == "untracked\n"
+    assert not _git(repo_pair, "stash", "list").stdout.strip()
+
+
 def test_switch_branch_flag_overrides_in_place_strategy(
     repo_pair, monkeypatch, capsys
 ):

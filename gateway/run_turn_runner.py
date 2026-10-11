@@ -65,6 +65,21 @@ def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
 
 
+
+def _turn_surface_key(ctx: Any) -> str:
+    """The platform config key of the surface this turn arrived on (``""`` when unknown).
+
+    The display settings are resolved per surface, so the notice's visibility needs the key of the
+    surface the turn came from. Minimal fakes and oneshot turns carry no source: an unknown surface
+    resolves no per-platform override and the profile-wide value applies.
+    """
+    platform = getattr(getattr(ctx, "source", None), "platform", None)
+    if platform is None:
+        return ""
+    from gateway.run import _platform_config_key
+
+    return _platform_config_key(platform)
+
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
 
@@ -1287,12 +1302,15 @@ class TurnRunner:
                 if pdc is not None:
                     pdc[ctx.session_key] = bg_release
         # display.memory_notifications: off | on (generic "💾 Memory updated", default) | verbose.
-        # `display:` present-but-null yields None, not the {} default (same `or {}` guard as
-        # display_config.py / runtime_footer.py).
-        mem_notif = (ctx.user_config.get("display") or {}).get("memory_notifications")
-        if isinstance(mem_notif, bool):
-            mem_notif = "on" if mem_notif else "off"
-        agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
+        # Resolved for THIS session's surface (display.platforms.<platform>.memory_notifications wins
+        # over the profile-wide value, which wins over the platform default — "off" on Discord, a
+        # shared channel-audience-first surface, and "on" elsewhere), so a profile that serves both
+        # the operator and a client can silence the notice on the client's surface while its sibling
+        # surfaces keep reporting; "off" suppresses the publication only — the review keeps running.
+        from gateway.display_config import resolve_memory_notifications
+        agent.memory_notifications = resolve_memory_notifications(
+            ctx.user_config, _turn_surface_key(ctx)
+        )
         agent.clarify_callback = self._clarify_callback_sync
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).

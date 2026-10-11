@@ -361,7 +361,7 @@ display:
 | Value | Behaviour |
 |-------|-----------|
 | `off` | No chat notification. The review still runs and still writes — you just don't see a line for it. |
-| `on` (default) | Generic line, e.g. `💾 Memory updated`, `💾 Skill 'foo' patched`. |
+| `on` (default; Discord defaults to `off`) | Generic line, e.g. `💾 Memory updated`, `💾 Skill 'foo' patched`. |
 | `verbose` | Includes a compact preview of what changed, e.g. `💾 Memory ➕ User prefers terse replies` or a `"old" → "new"` skill diff snippet. |
 
 > This only governs the **gateway** chat notification. The review itself, and

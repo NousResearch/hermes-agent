@@ -3404,6 +3404,25 @@ def _build_cli_parser():
     from hermes_cli.send_cmd import register_send_subparser
     register_send_subparser(subparsers)
 
+    # Away-mode Telegram bridge broker CLI (§8; away_bridge_cmd owns its
+    # subcommand registration and dispatch).
+    from hermes_cli.away_bridge_cmd import register_away_bridge_subparser
+    ab_parser = subparsers.add_parser(
+        "away-bridge",
+        help="Away-mode Telegram bridge broker CLI",
+        add_help=False,
+    )
+    away_bridge_subparsers = ab_parser.add_subparsers(dest="away_bridge_command")
+    register_away_bridge_subparser(away_bridge_subparsers)
+
+    def _dispatch_away_bridge(args):  # noqa: ANN001
+        if getattr(args, "away_bridge_command", None) and hasattr(args, "func"):
+            return args.func(args)
+        ab_parser.print_help()
+        return 0
+
+    ab_parser.set_defaults(func=_dispatch_away_bridge)
+
     build_login_parser(subparsers, cmd_login=cmd_login)
     build_logout_parser(subparsers, cmd_logout=cmd_logout)
     build_auth_parser(subparsers, cmd_auth=cmd_auth)

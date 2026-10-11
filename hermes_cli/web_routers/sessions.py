@@ -172,6 +172,19 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
             raise
 
 
+def _is_in_memory_draft(session_id: str) -> bool:
+    """True when *session_id* is a live lazy draft (in-memory session, no DB row yet).
+
+    The renderer fetches /messages + /timeline right after ``session.create``; an empty
+    draft has no row by design (anti "Untitled" litter), so answer 200-empty instead of
+    a 404 that fail-latches the transcript bind on the client."""
+    try:
+        from tui_gateway.server import in_memory_draft_session_keys
+        return session_id in in_memory_draft_session_keys()
+    except Exception:
+        return False
+
+
 # ``le=100`` on limit: an unbounded limit lets one request drag every session
 # row (plus correlated-subquery preview work) out of SQLite in a single hit.
 @list_router.get("/api/sessions")
@@ -728,6 +741,12 @@ async def get_session_messages(
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
 
+    if _is_in_memory_draft(session_id):
+        return {"session_id": session_id, "profile": _serving_profile(profile),
+                "messages": [],
+                "pagination": {"limit": min(limit, 500) if limit is not None else 500,
+                               "offset": 0, "order": order or "latest", "returned": 0}}
+
     def _read(db):
         sid = _resolve_session_id(db, session_id)
         if not sid:
@@ -795,6 +814,12 @@ async def get_session_timeline(
     from hermes_state_timeline import get_session_timeline as read_timeline
 
     owner = _serving_profile(profile)
+    if _is_in_memory_draft(session_id):
+        return {"session_id": session_id, "profile": owner,
+                "entries": [],
+                "pagination": {"limit": limit, "after_row_id": after_row_id,
+                               "returned": 0, "total": 0, "has_more": False,
+                               "next_cursor": None}}
 
     def _read(db):
         sid = _timeline_session_id(db, session_id, owner)

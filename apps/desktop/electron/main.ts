@@ -11054,7 +11054,11 @@ async function ensureRegistryBackend(
   connectionId,
   profile,
   managedUpdateCorrelation = '',
-  opts: { passive?: boolean; spawnPriority?: LocalBackendSpawnPriority } = {}
+  opts: {
+    passive?: boolean
+    spawnPriority?: LocalBackendSpawnPriority
+    request?: { method?: string; path?: string }
+  } = {}
 ) {
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
   const passive = Boolean(opts.passive)
@@ -11114,7 +11118,7 @@ async function ensureRegistryBackend(
   const primary = await reuseMatchingPrimarySshBackend({
     connectionId: id,
     effectiveFingerprint: resolveRegistryEffectiveFingerprint,
-    ensurePrimary: () => ensureBackend(profile, { passive, spawnPriority }),
+    ensurePrimary: () => ensureBackend(profile, { passive, spawnPriority, request: opts.request }),
     profile,
     registry,
     source
@@ -11131,7 +11135,8 @@ async function ensureRegistryBackend(
   const sharedPrimary: (ResolvedConnectionDescriptor & SharedRegistryProfileScope) | null =
     await reuseMatchingPrimaryRemoteBackend({
       connectionId: id,
-      ensurePrimary: ensureBackend,
+      ensurePrimary: profileToEnsure =>
+        ensureBackend(profileToEnsure, { passive, spawnPriority, request: opts.request }),
       profile,
       registry,
       source
@@ -11172,7 +11177,7 @@ async function ensureRegistryBackend(
     }
 
     if (localRoute.delegate) {
-      return ensureBackend(profile, { passive, spawnPriority })
+      return ensureBackend(profile, { passive, spawnPriority, request: opts.request })
     }
 
     const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
@@ -11219,7 +11224,11 @@ async function ensureRegistryBackend(
 
     localEntry.connectionPromise = spawnPoolBackend(profileKey, localEntry, {
       forceLocal: true,
-      poolKey: localRoute.poolKey
+      poolKey: localRoute.poolKey,
+      unscopableRequest: unscopableMutatingRequest({
+        requestPath: opts.request?.path,
+        requestMethod: opts.request?.method
+      })
     }).catch(async error => {
       // Same trace rule as the v1 pool path: a forced-local child whose spawn
       // rejects before the child exists must still land in desktop.log.
@@ -17486,9 +17495,15 @@ async function dispatchRegistryApiRequest(
   const spawnPriority = spawnPriorityFrom(request?.priority)
 
   const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
+    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', {
+        passive: true,
+        request: { method: request?.method, path: request?.path }
+      })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
+        ensureRegistryBackend(registryConnectionId, routeProfile, '', {
+          spawnPriority,
+          request: { method: request?.method, path: request?.path }
+        })
       )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)

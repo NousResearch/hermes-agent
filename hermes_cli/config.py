@@ -1533,14 +1533,40 @@ def _env_ref_lookup(name: str) -> Optional[str]:
     multiplexing a miss is a miss, never another profile's ``os.environ`` value (#84079 — every profile
     "had" the default profile's ``${MATRIX_ACCESS_TOKEN}`` and fanned out). Same policy as
     ``gateway.config._getenv`` and ``get_env_value``.
+
+    With NO scope on a multi-profile host, an unscoped read for a served profile (multiplexing active,
+    HERMES_HOME override naming another home) returns None so the ref stays unexpanded instead of
+    picking up the launch profile's ``os.environ`` value — the same fail-closed stance ``get_secret``
+    takes, without breaking the load: an expanded value has no ref left for the connect path to
+    re-render under the owner's scope (#133044). Global names still pass through, and the launch
+    profile's own unscoped reads keep ``os.environ``.
     """
     try:
-        from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+        from agent.secret_scope import (
+            _is_global_env, current_secret_scope, get_secret as _get_secret, is_multiplex_active,
+        )
     except Exception:
         return os.environ.get(name)
     if current_secret_scope() is None:
+        if not _is_global_env(name) and is_multiplex_active() and _read_is_for_served_profile():
+            return None
         return os.environ.get(name)
     return _get_secret(name)
+
+
+def _read_is_for_served_profile() -> bool:
+    """True when the HERMES_HOME override names a home other than the routing process home,
+    i.e. this read runs for a *served* profile on a multi-profile host (``hermes serve``)."""
+    try:
+        from hermes_constants import (
+            get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key,
+        )
+    except Exception:
+        return False
+    override = get_hermes_home_override()
+    if override is None:
+        return False
+    return hermes_home_key(override) != hermes_home_key(get_routing_process_hermes_home())
 
 
 def _env_expand_match(m: re.Match) -> str:

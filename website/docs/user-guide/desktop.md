@@ -129,6 +129,8 @@ The app is built for working on several things at once:
 - **Multiple windows** — **Cmd/Ctrl+Shift+N** opens a new window, and any session can be popped out via its context menu (**New window**) or from the command palette. A popped-out window renders that single chat without the global sidebar — handy for parking a long-running session on another monitor. Live agent output streams into every window showing the session.
 - **Panes** — **Cmd/Ctrl+B** toggles the left sidebar, **Cmd/Ctrl+J** the right one, and **Cmd/Ctrl+\\** swaps which side the sidebars sit on.
 
+When a narrow window collapses the sidebars, hovering at a window edge reveals them by default. For explicit-only opening, turn off **Settings → Appearance → Window & layout → Reveal Sidebars on Edge Hover**. This applies to both edges and persists in this Desktop installation's local storage across restarts. Keyboard shortcuts and sidebar controls still work. Turning it off dismisses a hover-opened sidebar, but keeps one you opened explicitly.
+
 #### Interface mode
 
 The layout editor (titlebar button, or **Cmd/Ctrl+Shift+\\**) opens with an **Interface mode** choice — also under **Settings → Appearance → Window & layout** and as *Simple mode* in the command palette. It changes what is shown, not what Hermes can do.

@@ -2610,6 +2610,8 @@
     "settings.appearance.sessionDensityDesc",
     "settings.appearance.sessionDensityDetailed",
     "settings.appearance.sessionDensityTitle",
+    "settings.appearance.sidebarHoverRevealDesc",
+    "settings.appearance.sidebarHoverRevealTitle",
     "settings.appearance.tabStripAlways",
     "settings.appearance.tabStripAuto",
     "settings.appearance.tabStripDesc",

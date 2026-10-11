@@ -1054,6 +1054,9 @@ export const esOverrides = {
       sessionDensityCompact: 'Compacta',
       sessionDensityComfortable: 'Cómoda',
       sessionDensityDetailed: 'Detallada',
+      sidebarHoverRevealTitle: 'Mostrar barras laterales al pasar el puntero por el borde',
+      sidebarHoverRevealDesc:
+        'Muestra las barras laterales ocultas cuando el puntero llega a un borde de la ventana. Desactívalo para abrirlas solo con atajos de teclado o sus controles.',
       tabStripTitle: 'Barra de pestañas',
       tabStripDesc:
         'Muestra pestañas encima de una zona. Auto las oculta si hay un solo panel, salvo que haya otra zona de chat o de mosaico abierta.',

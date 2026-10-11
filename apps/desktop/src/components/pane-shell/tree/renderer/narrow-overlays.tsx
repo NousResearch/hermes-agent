@@ -17,6 +17,7 @@ import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape
 import { cn } from '@/lib/utils'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $paneStates } from '@/store/panes'
+import { $sidebarHoverReveal } from '@/store/sidebar-hover-reveal'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -53,7 +54,15 @@ export function NarrowOverlays() {
   const paneStates = useStore($paneStates)
   const stableHosts = useStablePaneHosts()
   const hiddenPanes = useStore($hiddenTreePanes)
+  const sidebarHoverReveal = useStore($sidebarHoverReveal)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
+
+  // Opting out dismisses a mouse-opened overlay, never an explicit pinned one.
+  useEffect(() => {
+    if (!sidebarHoverReveal) {
+      setReveal(current => (current?.pinned ? current : null))
+    }
+  }, [sidebarHoverReveal])
 
   // The revealed overlay spans the full viewport height (inset-y-0 below), so
   // its tab strip starts at the top edge — under the native window controls
@@ -188,19 +197,21 @@ export function NarrowOverlays() {
   return (
     <>
       {/* Hover-intent strips on each edge that has a collapsed pane. */}
-      {sides.map(side => (
-        <div
-          className={cn('absolute inset-y-0 z-30 w-1.5', side === 'left' ? 'left-0' : 'right-0')}
-          key={side}
-          onMouseEnter={() => {
-            const first = collapsibles.find(p => sideOf(p) === side)
+      {sidebarHoverReveal &&
+        sides.map(side => (
+          <div
+            className={cn('absolute inset-y-0 z-30 w-1.5', side === 'left' ? 'left-0' : 'right-0')}
+            data-sidebar-hover-edge={side}
+            key={side}
+            onMouseEnter={() => {
+              const first = collapsibles.find(p => sideOf(p) === side)
 
-            if (first) {
-              setReveal(current => (current?.pinned ? current : { id: first.id, pinned: false }))
-            }
-          }}
-        />
-      ))}
+              if (first) {
+                setReveal(current => (current?.pinned ? current : { id: first.id, pinned: false }))
+              }
+            }}
+          />
+        ))}
 
       {revealed && (
         <div

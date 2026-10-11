@@ -599,6 +599,9 @@ export const ruOverrides = {
       sessionDensityCompact: 'Компактно',
       sessionDensityComfortable: 'Комфортно',
       sessionDensityDetailed: 'Подробно',
+      sidebarHoverRevealTitle: 'Показывать боковые панели при наведении на край',
+      sidebarHoverRevealDesc:
+        'Показывать скрытые боковые панели, когда указатель достигает края окна. Отключите, чтобы открывать их только сочетаниями клавиш или кнопками боковых панелей.',
       tabStripTitle: 'Панель вкладок',
       tabStripDesc:
         'Показывать вкладки над зоной. Автоматически скрываются для одной панели, если не открыта другая зона чата или плитки.',

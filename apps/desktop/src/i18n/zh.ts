@@ -786,6 +786,8 @@ export const zhOverrides = {
       sessionDensityCompact: '紧凑',
       sessionDensityComfortable: '舒适',
       sessionDensityDetailed: '详细',
+      sidebarHoverRevealTitle: '鼠标悬停边缘时显示侧边栏',
+      sidebarHoverRevealDesc: '指针移到窗口边缘时显示隐藏的侧边栏。关闭后，仅通过键盘快捷键或侧边栏控件打开。',
       tabStripTitle: '标签栏',
       tabStripDesc: '在分区上方显示标签。自动模式会在分区只有一个面板时隐藏标签，除非还开着其他聊天或磁贴分区。',
       tabStripAuto: '自动',

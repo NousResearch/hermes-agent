@@ -608,6 +608,9 @@ export const jaOverrides = {
       sessionDensityCompact: 'コンパクト',
       sessionDensityComfortable: '標準',
       sessionDensityDetailed: '詳細',
+      sidebarHoverRevealTitle: 'ウィンドウ端のホバーでサイドバーを表示',
+      sidebarHoverRevealDesc:
+        'ポインターがウィンドウの端に来ると、非表示のサイドバーを表示します。オフにすると、キーボードショートカットまたはサイドバーの操作でのみ開きます。',
       tabStripTitle: 'タブバー',
       tabStripDesc:
         'ゾーンの上にタブを表示します。自動では、他にチャットやタイルのゾーンがない限り、ペインが1つのときに隠します。',

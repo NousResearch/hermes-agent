@@ -86,6 +86,11 @@ export const SETTINGS_MANIFEST = {
       ['sidebar', 'sessions', 'compact', 'comfortable', 'density'],
       'sessionDensity'
     ),
+    sidebarHoverReveal: appearanceSetting(
+      'window-layout',
+      ['sidebar', 'hover', 'edge', 'mouse', 'pointer', 'reveal', 'auto hide'],
+      'sidebarHoverReveal'
+    ),
     tabStrip: appearanceSetting('window-layout', ['tabs', 'tab bar', 'strip'], 'tabStrip'),
     appActions: appearanceSetting(
       'window-layout',

@@ -1,10 +1,11 @@
 import asyncio
+import io
 import json
 import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch, create_autospec
 
 import pytest
 
@@ -18,7 +19,40 @@ def _ensure_discord_mock():
     discord_mod = MagicMock()
     discord_mod.Intents.default.return_value = MagicMock()
     discord_mod.Client = MagicMock
-    discord_mod.File = MagicMock
+
+    class _FakeFile:
+        """Mimics discord.py File close enough for upload tests: stores the source handle
+        (path-based -> BufferedReader via ``open()``, BytesIO stays a BytesIO) and exposes
+        ``fp``/``filename`` the way discord.File does."""
+        def __init__(self, fp, *, filename=None):
+            if isinstance(fp, (str, Path)):
+                fp = open(fp, "rb")
+            self.fp = fp
+            self.filename = filename or os.path.basename(getattr(fp, "name", "") or "file")
+            self._closed = False
+
+        def read(self, *a):
+            return self.fp.read(*a) if not self._closed else b""
+
+        def close(self):
+            if not self._closed:
+                self.fp.close()
+                self._closed = True
+
+        def seekable(self):
+            return True
+
+        def seek(self, *a):
+            self.fp.seek(*a)
+            return 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            self.close()
+
+    discord_mod.File = _FakeFile
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
@@ -508,9 +542,12 @@ async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeyp
     small = tmp_path / "small.png"
     small.write_bytes(b"ok")
     big = tmp_path / "big.png"
-    big.write_bytes(b"x")
-    _fake_getsize(monkeypatch, big, _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1)
-    send = AsyncMock(return_value=SimpleNamespace(id=7))
+    big.write_bytes(b"x" * (_DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1))
+
+    def _sent(*, content=None, files=None, **kw):
+        return SimpleNamespace(id=7, attachments=[SimpleNamespace(filename=f.filename) for f in files or []])
+
+    send = AsyncMock(side_effect=_sent)
     adapter = _preflight_adapter(SimpleNamespace(id=9, guild=None, send=send))
 
     mixed = await adapter.send_multiple_images("9", [(f"file://{small}", ""), (f"file://{big}", "")])
@@ -525,3 +562,185 @@ async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeyp
     assert send.await_count == 1
     kwargs = send.await_args.kwargs
     assert not kwargs.get("files") and "big.png" in kwargs["content"]
+
+
+# ---------------------------------------------------------------------------
+# Post-send attachment verification (#66797 follow-up: verify, retry, top up,
+# notify instead of trusting the POST)
+# ---------------------------------------------------------------------------
+
+
+def _chunk_channel(send_side_effect, warn: bool = True):
+    channel = SimpleNamespace(id=9, guild=None, send=AsyncMock(side_effect=send_side_effect))
+    adapter = _preflight_adapter(channel)
+    adapter.warning_notifications_enabled = lambda *a, **k: warn  # type: ignore[method-assign]
+    return adapter, channel
+
+
+def _image(tmp_path, name: str) -> Path:
+    p = tmp_path / name
+    p.write_bytes(b"fakepng")
+    return p
+
+
+@pytest.mark.asyncio
+async def test_image_chunk_full_drop_retried(tmp_path, monkeypatch):
+    """A zero-attachment response is the #66797 silent drop: retry once, succeed, no notice."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    img = _image(tmp_path, "cat.png")
+
+    calls = {"n": 0}
+
+    def _flaky(*, content=None, files=None, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:  # first attempt: the silent drop
+            return SimpleNamespace(id=1, attachments=[])
+        return SimpleNamespace(id=2, attachments=[SimpleNamespace(filename=f.filename) for f in files or []])
+
+    adapter, channel = _chunk_channel(_flaky)
+    result = await adapter.send_multiple_images("9", [(f"file://{img}", "cute cat")])
+
+    assert result.success is True
+    assert channel.send.await_count == 2
+    assert channel.send.await_args_list[0].kwargs.get("content") == "cute cat"
+    assert channel.send.await_args_list[1].kwargs.get("content") is None  # caption not duplicated
+
+
+@pytest.mark.asyncio
+async def test_image_chunk_partial_delivery_topped_up(tmp_path, monkeypatch):
+    """Partial attachments: top up only the missing file in a follow-up message."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    cat, dog = _image(tmp_path, "cat.png"), _image(tmp_path, "dog.png")
+
+    calls = {"n": 0}
+
+    def _partial(*, content=None, files=None, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:  # only cat lands
+            return SimpleNamespace(id=1, attachments=[SimpleNamespace(filename="cat.png")])
+        return SimpleNamespace(id=2, attachments=[SimpleNamespace(filename=f.filename) for f in files or []])
+
+    adapter, channel = _chunk_channel(_partial)
+    result = await adapter.send_multiple_images("9", [(f"file://{cat}", ""), (f"file://{dog}", "")])
+
+    assert result.success is True
+    assert channel.send.await_count == 2
+    first_files = channel.send.await_args_list[0].kwargs["files"]
+    second_files = channel.send.await_args_list[1].kwargs["files"]
+    assert len(first_files) == 2 and len(second_files) == 1
+    assert second_files[0].filename == "dog.png"
+    assert channel.send.await_args_list[1].kwargs.get("content") is None
+
+
+@pytest.mark.asyncio
+async def test_image_chunk_persistent_drop_fails_loud(tmp_path, monkeypatch):
+    """Two zero-attachment responses: the batch fails and notifies (no silent drop)."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    img = _image(tmp_path, "cat.png")
+
+    def _dead(*, content=None, files=None, **kw):
+        return SimpleNamespace(id=1, attachments=[])
+
+    adapter, channel = _chunk_channel(_dead)
+    result = await adapter.send_multiple_images("9", [(f"file://{img}", "cap")])
+
+    assert result.success is False
+    assert channel.send.await_count == 3  # attempt 1, retry, failure notice
+    notice = channel.send.await_args_list[2].kwargs.get("content")
+    assert notice and "attachment" in notice.lower() and "cat.png" in notice
+
+
+@pytest.mark.asyncio
+async def test_image_chunk_persistent_drop_quiet_mode(tmp_path, monkeypatch):
+    """warning_notifications off: the batch still fails but stays quiet (text already landed)."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    img = _image(tmp_path, "cat.png")
+
+    def _dead(*, content=None, files=None, **kw):
+        return SimpleNamespace(id=1, attachments=[])
+
+    adapter, channel = _chunk_channel(_dead, warn=False)
+    result = await adapter.send_multiple_images("9", [(f"file://{img}", "cap")])
+
+    assert result.success is False
+    assert channel.send.await_count == 2  # attempt + retry, no failure notice
+
+
+@pytest.mark.asyncio
+async def test_url_images_staged_as_temp_files(tmp_path, monkeypatch):
+    """URL images must ride as path-based Files (open-handle BytesIOs can race the encoder)."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    captured_files = []
+
+    def _sent(*, content=None, files=None, **kw):
+        captured_files.extend(files or [])
+        return SimpleNamespace(id=1, attachments=[SimpleNamespace(filename=f.filename) for f in files or []])
+
+    adapter, _channel = _chunk_channel(_sent)
+
+    async def _fake_download(session, url, **kwargs):
+        return 200, b"fakejpeg", {"content-type": "image/jpeg"}
+
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._read_url_image_with_redirect_guard", _fake_download,
+    )
+
+    result = await adapter.send_multiple_images("9", [("https://example.com/cat.jpg", "")])
+    assert result.success is True
+    assert len(captured_files) == 1
+    staged = captured_files[0]
+    # Path-based staging (an open BytesIO handle can race the multipart encoder):
+    # with the real discord.File, fp is a file object whose .name is a temp path;
+    # with a MagicMock-backed File, the first positional arg was the path string.
+    assert getattr(staged, "filename", None) == "image_0.jpg"
+    fp = getattr(staged, "fp", None)
+    assert not isinstance(fp, io.BytesIO)
+    if isinstance(fp, (str, Path)):
+        assert "hermes_discord_images_" in str(fp)
+    elif isinstance(fp, io.IOBase):
+        assert isinstance(fp, io.BufferedReader) and "hermes_discord_images_" in fp.name
+
+
+# ---------------------------------------------------------------------------
+# _send_single_file_verified: the single URL-media path (send_image / send_video /
+# send_animation) also verifies its attachment instead of trusting the POST
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_single_file_verified_retries_drop_then_succeeds(tmp_path, monkeypatch):
+    """A zero-attachment single-file send is retried once; the next landing succeeds. No user
+    notice is sent (the caller decides the fallback)."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    img = _image(tmp_path, "cat.png")
+
+    calls = {"n": 0}
+
+    def _flaky(*, content=None, file=None, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return SimpleNamespace(id=1, attachments=[])
+        return SimpleNamespace(id=2, attachments=[SimpleNamespace(filename="cat.png")])
+
+    channel = SimpleNamespace(id=9, guild=None, send=AsyncMock(side_effect=_flaky))
+    adapter = _preflight_adapter(channel)
+    ok = await adapter._send_single_file_verified(channel, content="cap", path=str(img), filename="cat.png")
+    assert ok is True
+    assert channel.send.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_single_file_verified_persistent_drop_falls_through(tmp_path, monkeypatch):
+    """Two zero-attachment single-file sends: returns False so the caller can fall back to the URL."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    img = _image(tmp_path, "cat.png")
+
+    def _dead(*, content=None, file=None, **kw):
+        return SimpleNamespace(id=1, attachments=[])
+
+    channel = SimpleNamespace(id=9, guild=None, send=AsyncMock(side_effect=_dead))
+    adapter = _preflight_adapter(channel)
+    ok = await adapter._send_single_file_verified(channel, content="cap", path=str(img), filename="cat.png")
+    assert ok is False
+    assert channel.send.await_count == 2  # attempt + retry, no extra user-notice send

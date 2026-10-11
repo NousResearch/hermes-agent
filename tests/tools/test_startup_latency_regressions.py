@@ -115,6 +115,7 @@ class TestLazyMcpSdk:
         proc = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True, text=True, timeout=120,
+            check=False,
         )
         assert proc.returncode == 0, proc.stderr
         assert "ok" in proc.stdout

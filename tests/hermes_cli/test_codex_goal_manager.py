@@ -19,7 +19,7 @@ def test_old_goals_keep_hermes_ownership():
 
 
 def test_native_goal_does_not_run_aux_judge(monkeypatch):
-    import hermes_cli.goals as goals
+    from hermes_cli import goals
     state = GoalState.from_json('{"goal":"work", "runtime":"codex", "turns_used":25}')
     monkeypatch.setattr(goals, 'load_goal', lambda _: state)
     monkeypatch.setattr(goals, 'judge_goal', lambda *a,**k: (_ for _ in ()).throw(AssertionError('second scheduler called judge')))

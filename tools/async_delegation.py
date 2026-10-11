@@ -352,9 +352,21 @@ def _replay_pending(conn, rows, target_queue, now: float) -> int:
         evt = json.loads(payload)
         if isinstance(evt, dict):
             evt["restored"] = True
-        target_queue.put(evt)
+        key = (home, delegation_id)
         with _orphan_lock:
-            _offered.add((home, delegation_id))
+            already_offered = key in _offered
+            _offered.add(key)
+        # A consumer can return the offer as soon as put publishes it. Register first,
+        # without holding its lock across put, so that return cannot be overwritten.
+        try:
+            target_queue.put(evt)
+        except Exception:
+            # Both replay callers hold _DB_LOCK, serializing producers. Undo only this
+            # publication's reservation; another already-queued copy must stay offered.
+            if not already_offered:
+                with _orphan_lock:
+                    _offered.discard(key)
+            raise
         restored += 1
     return restored
 

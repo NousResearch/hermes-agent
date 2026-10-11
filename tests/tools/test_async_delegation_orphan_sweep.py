@@ -314,3 +314,79 @@ def test_throttle_runs_at_most_one_sweep_per_home_per_interval(tmp_path, monkeyp
             ad.maybe_sweep_orphaned_completions(q, now=101.0)
         ad.maybe_sweep_orphaned_completions(q, now=100.0 + ad.ORPHAN_SWEEP_INTERVAL_S + 1)
     assert calls == [str(tmp_path / "a"), str(tmp_path / "b"), str(tmp_path / "a")]
+
+
+@pytest.mark.parametrize("initial_offer", ["startup", "sweep"])
+def test_offer_returned_before_queue_put_finishes_is_reoffered(tmp_path, monkeypatch, initial_offer):
+    """A second poller can dequeue and return an offer before its producer resumes."""
+    from tools.process_registry_notifications import format_process_notification
+    from tui_gateway import server
+
+    home = tmp_path / "home"
+    delegation_id = _orphan(home)
+    later = _row(home, delegation_id)["updated_at"] + ad._ORPHAN_STALE_S + 1
+    consumed = threading.Event()
+    errors = []
+
+    class PausedQueue(queue.Queue):
+        def put(self, item, *args, **kwargs):
+            super().put(item, *args, **kwargs)
+            assert consumed.wait(10), "consumer did not return the published offer"
+
+    q = PausedQueue()
+    registry = type("Registry", (), {"completion_queue": q, "is_completion_consumed": lambda self, sid: False})()
+    other = _tui_session("other-chat", home)
+    monkeypatch.setitem(server._sessions, "sid-other", other)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+
+    def consume():
+        try:
+            evt = q.get(timeout=10)
+            server._notif_handle_ready("sid-other", other, [evt], other["_notification_emitted"], registry,
+                                       format_process_notification, None)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            consumed.set()
+
+    thread = threading.Thread(target=consume)
+    thread.start()
+    try:
+        with _Home(home):
+            offered = (ad.restore_undelivered_completions(q) if initial_offer == "startup"
+                       else ad.sweep_orphaned_completions(q, now=later))
+            assert offered == 1
+            thread.join(timeout=10)
+            assert not thread.is_alive() and not errors
+            assert q.empty() and _row(home, delegation_id)["delivery_state"] == "pending"
+            retry = queue.Queue()
+            assert ad.sweep_orphaned_completions(retry, now=later + 60) == 1
+            assert retry.get_nowait()["delegation_id"] == delegation_id
+    finally:
+        thread.join(timeout=10)
+
+
+@pytest.mark.parametrize("already_offered", [False, True])
+def test_failed_queue_publication_preserves_existing_offer_only(tmp_path, already_offered):
+    """Rollback must permit retries without forgetting a previously published live copy."""
+    home = tmp_path / "home"
+    delegation_id = _orphan(home)
+    later = _row(home, delegation_id)["updated_at"] + ad._ORPHAN_STALE_S + 1
+    live = queue.Queue()
+
+    class RejectingQueue(queue.Queue):
+        def put(self, item, *args, **kwargs):
+            raise RuntimeError("queue publication failed")
+
+    with _Home(home):
+        if already_offered:
+            assert ad.restore_undelivered_completions(live) == 1
+        with pytest.raises(RuntimeError, match="queue publication failed"):
+            ad.restore_undelivered_completions(RejectingQueue())
+        assert _row(home, delegation_id)["delivery_state"] == "pending"
+        retry = queue.Queue()
+        assert ad.sweep_orphaned_completions(retry, now=later) == (0 if already_offered else 1)
+        if already_offered:
+            ad.return_completion_offer(live.get_nowait())
+            assert ad.sweep_orphaned_completions(retry, now=later + 60) == 1
+        assert retry.get_nowait()["delegation_id"] == delegation_id

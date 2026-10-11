@@ -176,6 +176,10 @@ interface SidebarSessionsSectionProps {
   // lists (Pinned / search results) in the All-profiles view, where no group
   // header communicates ownership (#66003).
   showProfileTags?: boolean
+  // Name the owning profile in each row's metadata line, beside the model.
+  // Set where rows from several profiles share one list and no group header
+  // says whose they are (#89888).
+  showProfileNames?: boolean
   // Which dividers to fold into the flat list: `date` gives the chronological
   // "Yesterday" / "Last week" separators (flat recents + entered-project lanes),
   // `status` splits into WORKING / DONE under the same separators. `none` for
@@ -237,6 +241,7 @@ export function SidebarSessionsSection({
   projectBackRow,
   dndSensors,
   showProfileTags = false,
+  showProfileNames = false,
   grouping = 'none',
   preserveOrder = pinned,
   card = false
@@ -291,6 +296,7 @@ export function SidebarSessionsSection({
         reorderable: draggable && !branchStem,
         session,
         showProfile: showProfileTags,
+        showProfileName: showProfileNames,
         unread: session.unread === true
       }
 
@@ -313,7 +319,8 @@ export function SidebarSessionsSection({
       onTogglePin,
       onToggleUnread,
       pinned,
-      showProfileTags
+      showProfileTags,
+      showProfileNames
     ]
   )
 
@@ -595,6 +602,7 @@ export function SidebarSessionsSection({
         onToggleUnread={onToggleUnread}
         pinned={pinned}
         rows={visibleRows}
+        showProfileNames={showProfileNames}
         showProfileTags={showProfileTags}
         sortable={sessionsDraggable}
       />

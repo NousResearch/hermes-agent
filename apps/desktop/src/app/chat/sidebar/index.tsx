@@ -517,6 +517,12 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
+  // #89888: name the owning profile on every row of a list that merges
+  // profiles — the point of Show all is knowing whose chat a row is, and a
+  // title plus a model does not say it. Skipped where the list already answers
+  // it: profile-grouped lanes carry the name in the group header, and a view
+  // narrowed to exactly one profile would repeat the same name on every row.
+  const showProfileNames = showAllProfiles && grouping !== 'profile' && profileFilter.length !== 1
   const messagingProfile = sidebarProfileForScope(profileScope)
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
@@ -1755,6 +1761,7 @@ export function ChatSidebar({
                 preserveOrder
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
+                showProfileNames={showProfileNames}
                 showProfileTags={showAllProfiles}
               />
             )}
@@ -1782,6 +1789,7 @@ export function ChatSidebar({
                 pinned
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
+                showProfileNames={showProfileNames}
                 showProfileTags={showAllProfiles}
                 sortable={pinnedSessions.length > 1}
               />
@@ -1981,6 +1989,7 @@ export function ChatSidebar({
                   !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'
                 )}
                 sessions={displayAgentSessions}
+                showProfileNames={showProfileNames}
                 sortable={!showAllProfiles && agentSessions.length > 1}
               />
             )}

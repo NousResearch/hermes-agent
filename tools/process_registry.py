@@ -117,14 +117,31 @@ _SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
 _SYSTEMD_RUN_NO_EXPAND = True
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
-_WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+_KANBAN_WORKER_CONCURRENCY_ENV = "HERMES_KANBAN_MAX_IN_PROGRESS"
+
+
+def _kanban_worker_concurrency() -> int:
+    """Return the host-wide Kanban worker budget supplied by the dispatcher.
+
+    Each worker gets its own cgroup, so a half-RAM limit must be divided by the
+    maximum number of workers that may run together. The dispatcher exports its
+    effective global cap to workers; an absent or invalid value preserves the
+    legacy single-worker bound for non-Kanban callers.
+    """
+    raw = os.getenv(_KANBAN_WORKER_CONCURRENCY_ENV, "").strip()
+    try:
+        concurrency = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, concurrency)
 
 
 def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
     ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
     bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    capped at 4 GiB), so an oversized override cannot exceed the enclosing slice.
+    divided across the configured Kanban worker concurrency), so an oversized
+    override cannot exceed the enclosing slice.
 
     The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
     isolation composes with PR #57121 instead of inventing a second knob.
@@ -163,9 +180,10 @@ def _worker_memory_max_bytes() -> int:
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
             os.sysconf("SC_PAGE_SIZE")
         )
-        physical_bound = min(
-            _WORKER_MEMORY_MAX_CAP_BYTES,
-            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
+        concurrency = _kanban_worker_concurrency()
+        physical_bound = max(
+            _MIN_WORKER_MEMORY_MAX_BYTES,
+            physical_bytes // (2 * concurrency),
         )
         candidates.append(physical_bound)
     except (OSError, ValueError, TypeError):

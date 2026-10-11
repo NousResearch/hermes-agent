@@ -2545,12 +2545,34 @@ class TestSystemdCgroupIsolation:
 
         assert f"MemoryMax={123 * 1024 * 1024}" in argv
 
+    def test_worker_memory_limit_uses_half_physical_memory_without_arbitrary_cap(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        monkeypatch.delenv("TERMINAL_LOCAL_MEMORY_MAX_MB", raising=False)
+        monkeypatch.setattr(
+            pr.Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
+        )
+        page_size = 4096
+        physical_pages = (16 * 1024**3) // page_size
+        monkeypatch.setattr(
+            pr.os,
+            "sysconf",
+            lambda name: page_size if name == "SC_PAGE_SIZE" else physical_pages,
+        )
+
+        assert pr._worker_memory_max_bytes() == 8 * 1024**3
+
     def test_worker_memory_limit_caps_oversized_local_guard_override(
         self, monkeypatch
     ):
         import tools.process_registry as pr
 
         monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "999999")
+        monkeypatch.delenv("HERMES_KANBAN_MAX_IN_PROGRESS", raising=False)
         monkeypatch.setattr(
             pr.Path,
             "read_text",
@@ -2563,6 +2585,31 @@ class TestSystemdCgroupIsolation:
         )
 
         assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
+
+    def test_worker_memory_limit_accounts_for_concurrent_kanban_workers(
+        self, monkeypatch
+    ):
+        """Four workers must not each receive half of a high-memory host."""
+        import tools.process_registry as pr
+
+        monkeypatch.delenv("TERMINAL_LOCAL_MEMORY_MAX_MB", raising=False)
+        monkeypatch.setenv("HERMES_KANBAN_MAX_IN_PROGRESS", "4")
+        monkeypatch.setattr(
+            pr.Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
+        )
+        page_size = 4096
+        physical_pages = (128 * 1024**3) // page_size
+        monkeypatch.setattr(
+            pr.os,
+            "sysconf",
+            lambda name: page_size if name == "SC_PAGE_SIZE" else physical_pages,
+        )
+
+        # 128 GiB / 2 host share / 4 concurrent workers = 16 GiB each;
+        # aggregate worker allowance remains at most half of physical RAM.
+        assert pr._worker_memory_max_bytes() == 16 * 1024**3
 
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch

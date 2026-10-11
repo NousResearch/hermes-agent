@@ -232,6 +232,7 @@ def test_sequential_timeout_before_dispatch_prevents_late_callback(tmp_path, mon
     preflight_started = threading.Event()
     release = threading.Event()
     callback_calls: list[str] = []
+    callback_invoked = threading.Event()
     receipts: list[dict] = []
 
     def _preflight(*_args, **_kwargs):
@@ -241,6 +242,7 @@ def test_sequential_timeout_before_dispatch_prevents_late_callback(tmp_path, mon
 
     def _dispatch(*_args, **_kwargs):
         callback_calls.append("called")
+        callback_invoked.set()
         return "must not run"
 
     agent._tool_guardrails.before_call = _preflight
@@ -263,7 +265,7 @@ def test_sequential_timeout_before_dispatch_prevents_late_callback(tmp_path, mon
         release.set()
 
     assert preflight_started.is_set()
-    time.sleep(0.1)
+    assert not callback_invoked.wait(timeout=0.1)
     assert callback_calls == []
     assert receipts == []
 

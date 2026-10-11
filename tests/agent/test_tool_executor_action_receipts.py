@@ -2,7 +2,6 @@
 
 import json
 import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -164,6 +163,7 @@ class TestToolExecutorActionReceipts:
         preflight_started = threading.Event()
         release = threading.Event()
         callback_calls = []
+        callback_invoked = threading.Event()
         receipts = []
 
         def _preflight(*_args, **_kwargs):
@@ -180,7 +180,9 @@ class TestToolExecutorActionReceipts:
             with (
                 patch(
                     "model_tools.handle_function_call",
-                    side_effect=lambda *_args, **_kwargs: callback_calls.append("called"),
+                    side_effect=lambda *_args, **_kwargs: (
+                        callback_calls.append("called"), callback_invoked.set()
+                    )[0],
                 ),
                 patch(
                     "agent.tool_executor._maybe_record_action_receipt",
@@ -194,7 +196,7 @@ class TestToolExecutorActionReceipts:
             release.set()
 
         assert preflight_started.is_set()
-        time.sleep(0.1)
+        assert not callback_invoked.wait(timeout=0.1)
         assert callback_calls == []
         assert receipts == []
 

@@ -18,7 +18,7 @@ from typing import Any, Iterator, Optional
 
 from agent.interrupt_compat import request_hard_interrupt
 
-_ACTIVE_SCOPE: ContextVar[Optional["InterruptScope"]] = ContextVar("hermes_interrupt_scope", default=None)
+_ACTIVE_SCOPE: ContextVar[Optional[InterruptScope]] = ContextVar("hermes_interrupt_scope", default=None)
 
 
 _TOOL_REASON_HOST_CANCELLED = "host cancelled the command"

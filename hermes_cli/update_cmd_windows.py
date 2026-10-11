@@ -12,7 +12,7 @@ import shlex
 import subprocess
 import sys
 import time as _time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 from hermes_cli.update_cmd_common import _best_effort
@@ -62,7 +62,7 @@ def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
         atomic_json_write(
             _planned_stop_marker_path(profile_path),
             {"target_pid": pid, "target_start_time": _get_process_start_time(pid), "stopper_pid": os.getpid(),
-             "written_at": datetime.now(timezone.utc).isoformat()},
+             "written_at": datetime.now(UTC).isoformat()},
             indent=None, separators=(",", ":"),
         )
         return True

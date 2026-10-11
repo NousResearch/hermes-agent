@@ -16,7 +16,7 @@ Two sub-scenarios are tested:
      The same dedup pre-seed must still protect against the duplicate.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -102,7 +102,7 @@ def _make_message(
         attachments=list(attachments or []),
         reference=reference,
         message_snapshots=message_snapshots,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         channel=channel,
         author=author,
         type=(

@@ -50,6 +50,12 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 
+# Replay carriers the preflight estimate prices at 0, exactly as the compaction tail walk does (opaque signatures,
+# duplicate reasoning copies, ordered sidecars); a mismatch between the two estimates loops compaction.
+UNPRICED_REPLAY_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
+                                    "reasoning_opaque", "reasoning_text", "bedrock_content_blocks"})
+
+
 def without_persistence_fields(msg: Mapping[str, Any]) -> Mapping[str, Any]:
     """*msg* itself when it carries no persistence-only field, else a shallow copy without them."""
     if PERSISTENCE_ONLY_MESSAGE_FIELDS.isdisjoint(msg):

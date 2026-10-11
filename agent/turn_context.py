@@ -899,12 +899,32 @@ def _memory_query_text(original_user_message: Any) -> str:
     return ""
 
 
+def _previous_user_message_text(conversation_history: Optional[list[Any]]) -> str:
+    """Semantic text of the last real user message in the history a turn starts from (``""`` on a first turn).
+
+    Read before the turn appends its own message or turn-start compaction rebinds the history: in-place
+    compaction hands back a list that already ends in this turn's message, and rotation hands back none.
+    Runtime scaffolding in the user role (continue nudges, task-list snapshots, compaction summaries) is
+    skipped, so the value is what the person last asked."""
+    from agent.conversation_compression import _is_real_user_message
+
+    for message in reversed(conversation_history or []):
+        if _is_real_user_message(message):
+            return _memory_query_text(message.get("content"))
+    return ""
+
+
 def _memory_turn_start_and_prefetch(
     agent: Any, original_user_message: Any, turn_author: Optional[dict[str, Any]] = None,
+    previous_message: str = "",
 ) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
-    Returns the prefetch text (``""`` when nothing was injected)."""
+    Returns the prefetch text (``""`` when nothing was injected).
+
+    ``previous_message`` reaches providers because a process that resumes a session
+    starts mid-conversation: whatever a live process queued at the end of the last
+    turn, keyed on that turn's message, was never queued."""
     if not agent._memory_manager:
         return ""
     _query = _memory_query_text(original_user_message)
@@ -915,6 +935,7 @@ def _memory_turn_start_and_prefetch(
             agent._user_turn_count, _query,
             author_id=_author.get("id") or None, author_name=_author.get("name") or None,
             author_is_bot=bool(_author.get("is_bot")),
+            previous_message=previous_message,
         )
     ext_prefetch_cache = ""
     with suppress(Exception):
@@ -1101,6 +1122,9 @@ def build_turn_context(
         _turn_args.append(_turn_origin)
     logger.info(_turn_fmt, *_turn_args)
 
+    # Before this turn's message is appended and compaction rebinds the history.
+    previous_user_message = _previous_user_message_text(conversation_history)
+
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
     user_msg, pending_cli_message = _stage_turn_user_message(
@@ -1182,7 +1206,9 @@ def build_turn_context(
     )
 
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+    ext_prefetch_cache = _memory_turn_start_and_prefetch(
+        agent, original_user_message, turn_author, previous_user_message
+    )
 
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,

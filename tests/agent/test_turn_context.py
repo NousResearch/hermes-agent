@@ -278,6 +278,52 @@ def test_turn_author_is_normalized_then_reaches_on_turn_start_and_the_agent_stas
     assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
 
 
+_PREVIOUS = "Add the ShapeIndex encoder."
+_PRIOR_TURN = [{"role": "user", "content": _PREVIOUS}, {"role": "assistant", "content": "Done."}]
+
+
+def _compaction_returning_history(history_for):
+    """A turn-start compaction that hands back what ``conversation_history_after_compression`` does."""
+    from agent.turn_context_compaction import CompactionOutcome
+
+    def run(agent, *, messages, active_system_prompt, current_turn_user_idx, **_):
+        return CompactionOutcome(
+            messages=messages, active_system_prompt=active_system_prompt,
+            conversation_history=history_for(messages), current_turn_user_idx=current_turn_user_idx,
+        )
+    return run
+
+
+@pytest.mark.parametrize(
+    "history, compaction, expected",
+    [
+        (_PRIOR_TURN, None, _PREVIOUS),
+        # In place, the flush baseline already ends in this turn's own message.
+        (_PRIOR_TURN, _compaction_returning_history(list), _PREVIOUS),
+        # Rotation hands back no baseline at all.
+        (_PRIOR_TURN, _compaction_returning_history(lambda _messages: None), _PREVIOUS),
+        (None, None, ""),
+        ([{"role": "user", "content": [{"type": "text", "text": _PREVIOUS},
+                                       {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+          {"role": "assistant", "content": "Done."}], None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": "[System: Your previous response was truncated. Continue."}],
+         None, _PREVIOUS),
+    ],
+    ids=["no-compaction", "in-place-compaction", "rotation", "first-turn", "multimodal", "skips-scaffolding"],
+)
+def test_providers_get_what_the_person_last_asked(history, compaction, expected, monkeypatch):
+    """A resumed process must tell providers what the last turn asked: a live process may have keyed
+    end-of-turn recall on it, and a provider may save no transcript of its own. Turn-start compaction
+    rebinds the history after this turn's message is appended, so the value has to be read before it."""
+    if compaction is not None:
+        monkeypatch.setattr("agent.turn_context_compaction.run_turn_start_compaction", compaction)
+    agent, mm = _agent_with_memory_manager()
+
+    _build(agent, user_message="Now decode it back.", conversation_history=history)
+
+    assert mm.on_turn_start.call_args.kwargs["previous_message"] == expected
+
+
 def test_turn_without_author_clears_previous_bot_author():
     agent, mm = _agent_with_memory_manager()
     _build(agent, user_message="first turn", turn_author={"id": "bot:alpha", "name": "Alpha", "is_bot": True})

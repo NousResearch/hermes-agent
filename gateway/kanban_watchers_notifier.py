@@ -428,6 +428,14 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_blocked(ev, n) -> tuple:
+    # The wake synth gets the redacted reason: non-push (api_server) wakes deliver ONLY the synth, so
+    # without it the woken session never learns why the task stopped. The push ping keeps main's
+    # localized ``gateway.kanban.ping.blocked`` text (unredacted 160-char clip), byte-identical.
+    n.wake_block_detail = _safe_review_reason(_payload(ev, "reason")) or n.wake_block_detail
+    return t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)), None, None
+
+
 def _fmt_block_loop_detected(ev, n) -> tuple:
     """Re-blocked for the same cause past the limit and routed to `triage`.
 
@@ -446,6 +454,7 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
         recurrences=_clip(ev, "recurrences", "gateway.kanban.ping.triage_recurrences", 200),
         reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160),
     )
+    n.wake_block_detail = _safe_review_reason(_payload(ev, "reason")) or n.wake_block_detail
     return msg, None, None
 
 
@@ -456,6 +465,12 @@ def _fmt_gave_up(ev, n) -> tuple:
     count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
              else t("gateway.kanban.ping.kept_failing"))
     last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
+    # The breaker emits exactly ONE event: `gave_up` (carrying `error` +
+    # `failures`). No `blocked` event follows, so non-push (api_server) wakes
+    # would otherwise report "gave up (retries exhausted)" with no cause —
+    # carry the error into the wake synth's block-detail slot. The push ping
+    # text stays byte-identical.
+    n.wake_block_detail = _safe_review_reason(_payload(ev, "error")) or n.wake_block_detail
     return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 
@@ -471,10 +486,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "completed": _fmt_completed,
-    "blocked": lambda ev, n: (
-        t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)),
-        None, None,
-    ),
+    "blocked": _fmt_blocked,
     "gave_up": _fmt_gave_up,
     "crashed": lambda ev, n: (t("gateway.kanban.ping.crashed", head=n.head), None, None),
     "timed_out": _fmt_timed_out,
@@ -519,7 +531,7 @@ class _KanbanNotification:
         self.send_passive = mode != "wake"
         # Worker handoff carried into the synthetic wake turn so the woken
         # creator doesn't re-decompose work already on the board.
-        self.wake_handoff = self.wake_review_detail = self.session_key = self.synth = ""
+        self.wake_handoff = self.wake_review_detail = self.wake_block_detail = self.session_key = self.synth = ""
         self.plat: Any = None
         self.adapter: Any = None
         self.is_push_adapter = True
@@ -599,6 +611,8 @@ class _KanbanNotification:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
+        if self.wake_block_detail and self.wake_kinds & {"blocked", "block_loop_detected", "gave_up"}:
+            synth += "\n" + t("gateway.kanban.wake.block_detail", reason=self.wake_block_detail)
         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
 
     def _log_woke(self) -> None:
@@ -783,7 +797,7 @@ class _KanbanNotification:
                 if not events:
                     continue
                 self.d = {**self.d, "events": events}
-                self.wake_handoff = self.wake_review_detail = ""
+                self.wake_handoff = self.wake_review_detail = self.wake_block_detail = ""
                 for ev in events:
                     self.format_event(ev)
                 self.build_wake_text()

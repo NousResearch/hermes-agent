@@ -133,6 +133,11 @@ class ProviderProfile:
 
     # ── Client-level quirks (set once at client construction) ─
     default_headers: dict[str, str] = field(default_factory=dict)
+    # True when create_client() is this provider's own transport rather than an optional plugin
+    # client: the core consults it only when the runtime's provider name resolves to this profile
+    # (never through the base_url-prefix fallback), and its errors reach the caller instead of
+    # falling back to the standard client.
+    strict_client: bool = False
 
     # ── Request-level quirks ─────────────────────────────────
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
@@ -334,9 +339,16 @@ class ProviderProfile:
 
         ``client_kwargs`` is the same mapping the core would have passed to
         ``openai.OpenAI`` (``api_key``, ``base_url``, ``command``, ``args``,
-        timeouts, headers…). Unknown keys must be tolerated: the core adds to
-        this mapping over time, so an override should accept ``**kwargs`` and
-        pick what it needs rather than enumerate.
+        timeouts, headers…), plus ``httpx_verify`` (the resolved TLS decision)
+        on the main agent path only. Unknown keys must be tolerated: the core
+        adds to this mapping over time, so an override should accept
+        ``**kwargs`` and pick what it needs rather than enumerate — never
+        forward the whole mapping to a constructor.
+
+        A raise is logged and the standard client is used instead, unless
+        ``strict_client`` is set (this client is the provider's only correct
+        transport): then the profile is consulted only when the runtime's
+        provider name resolves to it, and its errors propagate.
 
         Returning ``None`` (the default) is always safe — the caller falls
         through to its existing construction path.

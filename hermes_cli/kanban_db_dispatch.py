@@ -2507,12 +2507,28 @@ def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
     root is version-safe to propagate; ``hermes_cli.main``'s own bootstrap
     then owns dependency activation as usual. A resolved shim path owns its
     imports and is left alone. Same pin cron's external worker uses (#112729).
+
+    ``PYTHONPATH`` alone is not enough: for a ``-m`` launch, Python always
+    inserts the *current directory* at ``sys.path[0]``, ahead of every
+    ``PYTHONPATH`` entry. When the task workspace is itself a checkout that
+    contains same-named top-level packages — a ``worktree`` workspace of this
+    very repo being the concrete case (#122299 et al.) — the child silently
+    imports the WORKSPACE's own ``hermes_cli``/``pm`` instead of the running
+    install's, so PM's dependency-activation check resolves ``project_root``
+    to the task workspace and fails with "no dependency environment is
+    committed for this install" even though the real install is fully
+    repaired: the child was never looking at it. ``PYTHONSAFEPATH=1``
+    (``-P``) disables that implicit cwd-prepend, so the pinned ``PYTHONPATH``
+    entry actually wins, matching the resolved-shim path's explicit
+    ``sys.path.insert(0, ...)`` behavior. Env form (not a ``-P`` argv flag)
+    survives any wrapping the spawn chain applies downstream.
     """
     if cmd[1:3] != ["-m", "hermes_cli.main"]:
         return
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
 
     pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
+    env["PYTHONSAFEPATH"] = "1"
 
 
 def _absolute_hermes_path(path: str) -> str:

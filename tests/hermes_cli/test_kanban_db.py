@@ -1671,6 +1671,86 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
     assert root not in captured["env"].get("PYTHONPATH", "").split(os.pathsep)
 
 
+def test_propagate_module_import_root_sets_safe_path():
+    """A module-form worker spawn must disable Python's implicit cwd-prepend.
+
+    For ``python -m hermes_cli.main`` the task workspace cwd lands at
+    ``sys.path[0]`` ahead of every ``PYTHONPATH`` entry. A ``worktree``
+    workspace is itself a checkout of this repo, so its own ``hermes_cli``/
+    ``pm`` shadow the pinned install and PM resolves ``project_root`` to the
+    workspace — which has no committed generation — crashing the worker with
+    "no dependency environment is committed for this install" even on a fully
+    repaired install (#122299, #122487, #122500). ``PYTHONSAFEPATH=1`` drops
+    the implicit cwd entry so the pinned ``PYTHONPATH`` actually wins. A
+    resolved shim path owns its own imports and must be left untouched.
+    """
+    root = str(Path(kbd.__file__).resolve().parents[1])
+
+    env = {}
+    kbd._propagate_module_import_root([sys.executable, "-m", "hermes_cli.main"], env)
+    assert env.get("PYTHONSAFEPATH") == "1"
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == root
+
+    shim_env = {}
+    kbd._propagate_module_import_root(["/opt/hermes/bin/hermes"], shim_env)
+    assert "PYTHONSAFEPATH" not in shim_env
+    assert "PYTHONPATH" not in shim_env
+
+
+def test_worktree_workspace_cannot_shadow_install_on_module_worker(tmp_path):
+    """End-to-end contract: a decoy ``hermes_cli`` in the worker's cwd must not
+    be imported in place of the pinned install.
+
+    Reproduces the kanban-worker failure mode (#122299) with a real spawn: the
+    worker's workspace carries a top-level ``hermes_cli`` package, and the
+    module-form child runs from that cwd. Without the fix the decoy shadows the
+    install; with the env ``_propagate_module_import_root`` builds, the pinned
+    install wins. Uses the resolved production argv + env builder so the test
+    breaks if either the pin or the safe-path flag regresses.
+    """
+    decoy = tmp_path / "ws"
+    (decoy / "hermes_cli").mkdir(parents=True)
+    (decoy / "hermes_cli" / "__init__.py").write_text("")
+    # A decoy main that announces itself instead of the real --version output.
+    (decoy / "hermes_cli" / "main.py").write_text(
+        "import sys\nprint('DECOY-SHADOW-MAIN')\nsys.exit(0)\n"
+    )
+
+    argv = [sys.executable, "-m", "hermes_cli.main", "--version"]
+
+    # Control: the PYTHONPATH pin alone (no safe-path) is NOT enough — the cwd
+    # decoy is imported first, exactly the pre-fix behaviour.
+    root = str(Path(kbd.__file__).resolve().parents[1])
+    shadow_env = os.environ.copy()
+    shadow_env.pop("PYTHONSAFEPATH", None)
+    shadow_env["PYTHONPATH"] = os.pathsep.join(
+        [root, *[e for e in shadow_env.get("PYTHONPATH", "").split(os.pathsep) if e]]
+    )
+    shadowed = subprocess.run(
+        argv, cwd=str(decoy), env=shadow_env, capture_output=True, text=True, timeout=60
+    )
+    assert "DECOY-SHADOW-MAIN" in shadowed.stdout, (
+        "expected the cwd decoy to shadow the install without PYTHONSAFEPATH; "
+        f"stdout={shadowed.stdout[:200]!r} stderr={shadowed.stderr[:200]!r}"
+    )
+
+    # Fix: the env the dispatcher builds disables the cwd-prepend, so the real
+    # install runs and the decoy is never imported.
+    fixed_env = os.environ.copy()
+    fixed_env.pop("PYTHONSAFEPATH", None)
+    fixed_env.pop("PYTHONPATH", None)
+    kbd._propagate_module_import_root([sys.executable, "-m", "hermes_cli.main"], fixed_env)
+    fixed = subprocess.run(
+        argv, cwd=str(decoy), env=fixed_env, capture_output=True, text=True, timeout=60
+    )
+    assert fixed.returncode == 0, (
+        f"real `-m hermes_cli.main --version` failed (rc={fixed.returncode}); "
+        f"stderr={fixed.stderr[:200]!r}"
+    )
+    assert "DECOY-SHADOW-MAIN" not in fixed.stdout
+    assert "Hermes Agent" in fixed.stdout
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #

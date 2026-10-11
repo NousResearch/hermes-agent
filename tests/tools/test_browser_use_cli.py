@@ -928,6 +928,42 @@ class TestSkillTextDescription:
         assert overrides["description"].startswith(bu_cli._HEADER_BASE)
         assert overrides["description"].endswith(bu_cli._HELPERS_DIGEST)
 
+    def test_workspace_names_in_description_resolve_in_exec_namespace(self, tmp_path):
+        """Every backticked workspace name the description offers to code must resolve where
+        browser-harness runs that code (``exec(code, globals())`` in ``browser_harness.run``).
+        "(also `workspace` in every result)" read as a pre-imported variable, and code using it
+        died with ``NameError: name 'workspace' is not defined``."""
+        import importlib.util
+        import re
+
+        if importlib.util.find_spec("browser_harness") is None:
+            pytest.skip("browser-harness not installed")
+        advertised = [m for m in re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", bu_cli._HEADER_BASE)
+                      if "workspace" in m.lower()]
+        assert advertised, "description should tell code how to reach the workspace"
+
+        probe = (
+            "import json, sys\n"
+            "import browser_harness.run as run\n"
+            "resolved = {}\n"
+            "for name in sys.argv[1:]:\n"
+            "    try:\n"
+            "        exec(name, dict(vars(run)))\n"
+            "        resolved[name] = True\n"
+            "    except NameError:\n"
+            "        resolved[name] = False\n"
+            "print(json.dumps(resolved))\n"
+        )
+        env = {**os.environ, "HOME": str(tmp_path), "BH_HOME": str(tmp_path / "bh"),
+               "BH_AGENT_WORKSPACE": str(tmp_path / "workspace")}
+        proc = subprocess.run([sys.executable, "-c", probe, *advertised, "workspace"],
+                              env=env, capture_output=True, text=True, timeout=60)
+        assert proc.returncode == 0, proc.stderr
+        resolved = json.loads(proc.stdout.strip().splitlines()[-1])
+
+        assert {name: resolved[name] for name in advertised} == dict.fromkeys(advertised, True)
+        assert resolved["workspace"] is False
+
 
 
 

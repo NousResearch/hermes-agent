@@ -180,6 +180,40 @@
       },
       "quality": 85,
       "decode_fraction": 0.1
+    },
+    {
+      "id": "bonsai-2-27b",
+      "display_name": "Bonsai 2 27B",
+      "description": "Qwen3.8 27B compressed to ternary weights: 98% of the quality in 5.9 GB",
+      "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+      "variants": [
+        {
+          "quant": "PTQ1_0",
+          "files": [
+            {
+              "path": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+              "size_bytes": 5946648928
+            }
+          ]
+        }
+      ],
+      "n_ctx_train": 262144,
+      "full_layers": 16,
+      "recurrent_layers": 48,
+      "per_layer_f16": 4096,
+      "n_vocab": 248320,
+      "mmproj": {
+        "path": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+        "size_bytes": 629246976,
+        "local": "mmproj-Ternary-Bonsai-2-27B-Q8_0.gguf"
+      },
+      "sampling": {
+        "chat-template-kwargs": "{\"reasoning_effort\":\"medium\"}",
+        "min-p": "0.05"
+      },
+      "quality": 88,
+      "decode_fraction": 1.0,
+      "blocked_reason": "No shipped llama.cpp build can load its PTQ1_0 weights yet — runs only on a ternary-capable build (PrismML-Eng/llama.cpp)"
     }
   ]
 }

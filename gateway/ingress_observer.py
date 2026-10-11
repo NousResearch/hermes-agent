@@ -2,11 +2,13 @@
 
 Fire sites number each event of a connection (an *epoch*) gap-free and hand it to one
 process-wide queue without waiting; one daemon thread delivers it to the plugin callbacks in the
-profile scope captured when the epoch opened, each callback getting its own read-only copy. The
-gateway never waits for, retries or changes behaviour because of an observer; only its shutdown
-gives the queue up to ``SHUTDOWN_DRAIN_SECONDS`` to be delivered. Every structure this path owns
-is bounded: the queue (events and accounted bytes), each connection's fetch association map, the
-per-epoch seal state (open epochs plus a few closed ones) and the constant-size fault records.
+profile scope captured when the epoch opened, each callback getting its own read-only copy. Fire
+sites and adapter disconnects never wait for, retry or change behaviour because of an observer.
+The one exception is gateway shutdown: after its adapter teardown attempts it waits, bounded by
+``SHUTDOWN_DRAIN_SECONDS`` and the shutdown budget left, for delivery to finish (``drain``). Every
+structure this path owns is bounded: the queue (events and accounted bytes), each connection's
+fetch association map, the per-epoch seal state (open epochs plus a few closed ones) and the
+constant-size fault records.
 
 Each delivery carries ``prev``, the outcome of the previous *delivered* event of its epoch
 (an event's own outcome is only ever published by its successor), and the epoch's sticky
@@ -36,7 +38,7 @@ _MAX_CLOSED_EPOCHS = 16
 _COUNTER_CAP = 2**31 - 1  # counters saturate here instead of wrapping
 _LATE_AFTER_SECONDS = 0.25
 _IDLE_EXIT_SECONDS = 60.0  # an idle delivery thread exits; the next event starts it again
-SHUTDOWN_DRAIN_SECONDS = 2.0  # how long gateway shutdown waits for queued events, each epoch's end included
+SHUTDOWN_DRAIN_SECONDS = 2.0  # the most gateway shutdown waits for delivery to finish
 
 Build = Callable[..., tuple[dict[str, Any], int]]
 
@@ -273,7 +275,7 @@ class _Dispatcher:
 
     def drain(self) -> Optional[threading.Thread]:
         """Have the delivery thread exit once the queue is empty instead of idling, and return it
-        (None when there is none) for the caller to await with a bound. Never blocks."""
+        (None when there is none) for the caller to await. Never blocks."""
         with self._ready:
             if self._thread is not None:
                 self._draining = True
@@ -328,6 +330,14 @@ class _Dispatcher:
 _dispatcher = _Dispatcher()
 
 
-def drain() -> Optional[threading.Thread]:
-    """For gateway shutdown once every adapter has disconnected: see ``_Dispatcher.drain``."""
-    return _dispatcher.drain()
+async def drain(remaining: float) -> None:
+    """Gateway shutdown, after its adapter teardown attempts: await the delivery thread finishing what is
+    queued, without blocking the event loop, for at most ``SHUTDOWN_DRAIN_SECONDS`` and never past
+    ``remaining``, the shutdown budget left (no wait once it is spent). Running out cancels nothing:
+    delivery goes on, and the process exit may cut it off."""
+    from gateway.run import _await_thread_exit
+
+    wait = max(0.0, min(SHUTDOWN_DRAIN_SECONDS, remaining))
+    if not await _await_thread_exit(_dispatcher.drain(), wait):
+        logger.warning("%s delivery unfinished after a %.2fs shutdown wait; queued events may be lost at process "
+                       "exit", HOOK, wait)

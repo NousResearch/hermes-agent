@@ -25,7 +25,7 @@ from agent.i18n import t
 from gateway import ingress_observer
 from gateway.config import Platform
 from gateway.restart import (
-    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, LAUNCHD_STOP_CLEANUP_RESERVE_S,
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
@@ -1984,11 +1984,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             await cancel_completion_batches()
         await self._teardown_all_adapters()
         logger.info("Shutdown phase: all adapters disconnected at +%.2fs", ctx.elapsed())
-        # Each epoch's end is now queued on a daemon thread the process exit would kill.
-        from gateway.run import _await_thread_exit
-        if not await _await_thread_exit(ingress_observer.drain(), ingress_observer.SHUTDOWN_DRAIN_SECONDS):
-            logger.warning("%s delivery still running %.1fs after the adapters disconnected; its queued events "
-                           "are lost", ingress_observer.HOOK, ingress_observer.SHUTDOWN_DRAIN_SECONDS)
+        # A disconnect that finished queued its epoch's end on a daemon thread the process exit kills. Wait
+        # only within the watchdog leash (launchd-clamped) left after the reserve for the cleanup to come.
+        await ingress_observer.drain(_effective_watchdog_leash(self) - ctx.elapsed() - LAUNCHD_STOP_CLEANUP_RESERVE_S)
 
     async def _stop_release_runtime_state(self, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Cancel background tasks, flush pending messages, clear per-session state, final tool kill."""

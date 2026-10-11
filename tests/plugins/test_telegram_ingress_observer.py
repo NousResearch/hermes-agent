@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from unittest.mock import AsyncMock, patch
@@ -525,15 +526,28 @@ async def test_end_follows_the_stop_steps_and_only_a_normal_finish_is_clean(monk
     assert recorder.events[-1]["steps_clean"] is (failure is None)
 
 
-async def _stop(gateway):
+async def _stop(gateway, **runner_state):
     """SIGTERM's shutdown, ``GatewayRunner.stop()``, over the connected adapter; the process exits
     right after it returns, taking the daemon delivery thread with it."""
     from tests.gateway.restart_test_helpers import make_restart_runner
 
     runner, _ = make_restart_runner(gateway.adapter)
+    for name, value in runner_state.items():
+        setattr(runner, name, value)
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"), \
             patch("cron.scheduler.mark_job_run"):
         await runner.stop()
+
+
+def _stalling_end(recorder, entered):
+    """An observer whose ``end`` callback holds the delivery thread until ``recorder.release``."""
+    def observe(**event):
+        if event["kind"] == "end":
+            entered.append(time.monotonic())
+            recorder.release.wait()
+        recorder(**event)
+
+    return observe
 
 
 @pytest.mark.asyncio
@@ -556,17 +570,11 @@ async def test_gateway_stop_returns_once_the_end_is_delivered(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_a_stalled_observer_holds_gateway_stop_only_for_the_drain_limit(monkeypatch, tmp_path, caplog):
-    """The drain is bounded and never blocks the event loop; an end it gives up on stays undelivered."""
+    """The drain is bounded and never blocks the event loop; delivery it stops waiting for goes on."""
     from gateway import ingress_observer
 
     monkeypatch.setattr(ingress_observer, "SHUTDOWN_DRAIN_SECONDS", 0.3)
     recorder, stalled = _Recorder(), []
-
-    def stalled_end(**event):
-        if event["kind"] == "end":
-            stalled.append(time.monotonic())
-            recorder.release.wait()
-        recorder(**event)
 
     ticks = []
 
@@ -576,11 +584,11 @@ async def test_a_stalled_observer_holds_gateway_stop_only_for_the_drain_limit(mo
             await asyncio.sleep(0.01)
 
     with _home(tmp_path):
-        gateway = _Gateway(monkeypatch, tmp_path, [], stalled_end)
+        gateway = _Gateway(monkeypatch, tmp_path, [], _stalling_end(recorder, stalled))
         await gateway.connect()
         serving = asyncio.ensure_future(serve())
         try:
-            with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            with caplog.at_level(logging.WARNING):
                 await asyncio.wait_for(_stop(gateway), WAIT)
             returned, kinds = time.monotonic(), [event["kind"] for event in recorder.events]
         finally:
@@ -591,4 +599,33 @@ async def test_a_stalled_observer_holds_gateway_stop_only_for_the_drain_limit(mo
     assert "end" not in kinds and 0.3 <= returned - stalled[0] < 1.5
     draining = [tick for tick in ticks if tick >= stalled[0]]
     assert max(later - earlier for earlier, later in zip(draining, draining[1:])) < 0.2
-    assert "gateway_ingress_observer delivery still running 0.3s" in caplog.text
+    assert "gateway_ingress_observer delivery unfinished after a 0.30s shutdown wait" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_timeout,spare", [(12.5, 0.0), (15.5, 2.5)])
+async def test_the_drain_waits_only_for_what_the_shutdown_deadline_spares(
+        monkeypatch, tmp_path, caplog, exit_timeout, spare):
+    """A signal stop under launchd: the watchdog leash is its ExitTimeOut less 2 s, the cleanup after the
+    drain keeps 10 s of it, and a disconnect step here spends over 1 s first. 12.5 s leaves no wait at
+    all, 15.5 s at most 2.5 s; both short of the raised allowance, and the cleanup still runs."""
+    from gateway import ingress_observer
+
+    monkeypatch.setattr(ingress_observer, "SHUTDOWN_DRAIN_SECONDS", 5.0)
+    recorder, stalled = _Recorder(), []
+    with _home(tmp_path):
+        gateway = _Gateway(monkeypatch, tmp_path, [], _stalling_end(recorder, stalled))
+        await gateway.connect()
+        monkeypatch.setattr(gateway.adapter, "_set_status_indicator", lambda online: asyncio.sleep(1.0))
+        try:
+            with caplog.at_level(logging.INFO):
+                await asyncio.wait_for(
+                    _stop(gateway, _stop_requested_by_signal=True, _launchd_exit_timeout_s=exit_timeout), WAIT)
+            returned = time.monotonic()
+        finally:
+            recorder.release.set()
+
+    (waited,) = (float(found) for found in re.findall(r"unfinished after a ([\d.]+)s shutdown wait", caplog.text))
+    assert (waited > 0) is (spare > 0) and waited <= spare
+    assert waited <= returned - stalled[0] < waited + 1.0
+    assert "Gateway stopped (total teardown" in caplog.text

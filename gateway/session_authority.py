@@ -680,9 +680,9 @@ class SessionAuthority:
                     from gateway.session_operator import check_local_input
                     check_local_input(self, ref, first)
                 # The first real turn reopens a finalized row (#85303): mounts are reads, and
-                # SessionStore would route a stamped row as stale onto a FRESH session.
+                # SessionStore would route a stamped row as stale onto a FRESH session. A write: off-loop.
                 from gateway.session_local_recovery import reopen_local_session
-                reopen_local_session(self, ref)
+                await asyncio.to_thread(reopen_local_session, self, ref)
             if first is not None and 'native_text_v1' in first['payload']:
                 from gateway.session_envelope import check_native_route
                 await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,

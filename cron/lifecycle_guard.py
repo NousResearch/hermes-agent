@@ -879,8 +879,10 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
-def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
-    """Yield the scripts the token at *index* executes, if any."""
+def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, via_shell)`` for the scripts the token at *index* executes, if any.
+    *via_shell* is False only for a script executed directly, where its own shebang picks the
+    interpreter."""
     if index >= len(segment):
         return
     executable = segment[index]
@@ -888,7 +890,7 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     if executable_name in {".", "source"}:
         if len(segment) > index + 1:
-            yield from _resolved_or_nothing(segment[index + 1], cwd)
+            yield from ((path, True) for path in _resolved_or_nothing(segment[index + 1], cwd))
         return
 
     if executable_name in _SHELL_EXECUTABLES:
@@ -909,17 +911,17 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
                 continue
             break
         if arg_index < len(arguments) and arguments[arg_index] not in _SHELL_COMMAND_FLAGS:
-            yield from _resolved_or_nothing(arguments[arg_index], cwd)
+            yield from ((path, True) for path in _resolved_or_nothing(arguments[arg_index], cwd))
         return
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.
     if executable.strip("/") and ("/" in executable or executable.endswith((".sh", ".bash", ".zsh"))):
-        yield from _resolved_or_nothing(executable, cwd)
+        yield from ((path, False) for path in _resolved_or_nothing(executable, cwd))
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
-    """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
+def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, via_shell)`` for scripts executed directly or through a POSIX shell. Each segment is read at the
     original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
     a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
     for segment in _iter_command_segments(command):
@@ -962,6 +964,19 @@ def _has_binary_magic(data: bytes) -> bool:
     if data.startswith(b"#!"):
         return False
     return data.startswith(_BINARY_MAGICS)
+
+
+def _runs_outside_posix_shell(text: str) -> bool:
+    """True when *text* opens with a shebang naming a non-shell interpreter (``python3``, ``node``,
+    ``env python3``). Such a script's source is not shell code, so its string literals are data a
+    shell never executes. No shebang, a shell, or an unparseable line all read as shell."""
+    if not text.startswith("#!"):
+        return False
+    words = text[2:].split("\n", 1)[0].split()
+    if words and _executable_name(words[0]) == "env":
+        # `env -S python3 -u`, `env PYTHONPATH=x python3`: skip options and assignments.
+        words = [word for word in words[1:] if not word.startswith("-") and "=" not in word]
+    return bool(words) and _executable_name(words[0]) not in _SHELL_EXECUTABLES
 
 
 def _read_referenced_script(
@@ -1091,7 +1106,7 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 # --- recursive walk ---------------------------------------------------------------------------
 
 def _contains_unsafe_gateway_action(
-    command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
+    command: str, *, cwd: Optional[str], depth: int, visited: set[tuple[Path, bool]], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
@@ -1126,11 +1141,13 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    candidates = [(path, executed, via_shell)
+                  for path, via_shell in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
     if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+        candidates += [(path, False, via_shell)
+                       for path, via_shell in _iter_referenced_shell_scripts(command, cwd=cwd)]
 
-    for script_path, candidate_executed in candidates:
+    for script_path, candidate_executed, via_shell in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:
@@ -1141,19 +1158,22 @@ def _contains_unsafe_gateway_action(
                 )
             continue
         resolved = _resolve_lenient(script_path)
-        if resolved in visited:
+        # Keyed by (path, strict): a strict (executed-as-shell) walk covers every later reference; a
+        # lenient one (mention, or a direct interpreter run) never stands in for a strict one, so
+        # `./tool; bash ./tool` still walks tool as shell code.
+        if (resolved, True) in visited or (not candidate_executed and (resolved, False) in visited):
             continue
         if not budget.charge_path():
             if candidate_executed:
                 return _budget_exhausted(budget, "paths", depth)
             break  # remaining candidates are all mentions
-        visited.add(resolved)
         # Never read more than the walk can still afford to tokenize; a file larger than the
         # remainder fails closed exactly like an oversized one.
         script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
         if unsafe:
             if candidate_executed:
                 return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
+            visited.add((resolved, False))
             continue
         if script_text is None and read_remote_script is not None:
             # Local path missing; the remote backend's output crosses the same trust boundary as a
@@ -1172,11 +1192,19 @@ def _contains_unsafe_gateway_action(
                         f"`{script_path}` read from the backend exceeds the scan cap "
                         f"({_MAX_REFERENCED_SCRIPT_BYTES} bytes) or the remaining walk budget",
                     )
+                visited.add((resolved, False))
                 continue
+        # A directly executed python/node/... script is not shell code: its text is still scanned and
+        # the paths it names are still read, but, as for an interpreter heredoc body (#113944), a path
+        # that cannot be scanned is a string literal, not a block (`print("/dev/null" in argv)`).
+        strict = candidate_executed and (via_shell or not _runs_outside_posix_shell(script_text or ""))
+        if not strict and (resolved, False) in visited:
+            continue
+        visited.add((resolved, strict))
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
-        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed):
+        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, strict):
             return True
     return False
 
@@ -1238,6 +1266,10 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
     refusal: Optional[str] = None
     if script:
         resolved_script = _resolve_script_path(script)
+        if resolved_script is not None:
+            # Match cron/scheduler_script.py: suffix decisions use the resolved
+            # target, so symlinks and relative paths select the same interpreter.
+            resolved_script = resolved_script.resolve()
         # Attribute the refusal correctly: not a lifecycle command, but a cloud path never opened.
         if resolved_script is not None and _on_cloud_path(resolved_script):
             raise GatewayLifecycleBlocked(
@@ -1253,10 +1285,25 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
                 "being read. Move the script to a local, non-cloud path "
                 "(e.g. ~/.hermes/scripts/) and recreate the job."
             )
-        python_script = resolved_script is not None and resolved_script.suffix == ".py"
         script_text, refusal = _read_script_for_scanning(script)
         if script_text:
             combined = f"{combined}\n{script_text}"
+        # Content over suffix AND over shebang (#125378): cron executes the script exactly
+        # the way cron/scheduler_script.py::_script_argv picks the interpreter — .sh/.bash
+        # under bash, everything else under Python, the shebang deliberately NOT honoured.
+        # Mirror that here: only a script cron really feeds to a shell gets the shell
+        # reference walk (a .sh file with a python shebang must still be walked as shell);
+        # Python-destined sources get the .py treatment — the walk's shlex tokenization is
+        # a false-positive generator on Python sources (string literals tokenize into bogus
+        # executed-script candidates). The direct regex below still scans the full text
+        # either way. If the path cannot be resolved, keep the conservative shell
+        # walk: the script text is unavailable, so no interpreter-specific exemption
+        # can be justified.
+        runs_as_shell = (
+            resolved_script is not None
+            and resolved_script.suffix.lower() in {".sh", ".bash"}
+        )
+        python_script = not runs_as_shell if resolved_script is not None else False
 
     if refusal:
         unsafe = True

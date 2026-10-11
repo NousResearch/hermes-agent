@@ -1582,6 +1582,17 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
         da = DIRECT_ALIASES.get(st.resolved_alias)
         if da is not None and da.base_url:
             _apply_direct_alias_endpoint(st, da)
+        elif da is not None and (da.api_key or da.key_env):
+            # No base_url: the alias stays on its provider's own endpoint but still owns its
+            # credential (e.g. a second Anthropic account on ``key_env``). Keeping the default
+            # provider's key here bills the wrong account silently; an unset key fails closed.
+            alias_key = direct_alias_api_key(da)
+            if not alias_key:
+                return st.fail_on_target(
+                    f"Model alias '{st.resolved_alias}' declares its own credential "
+                    f"({da.key_env or 'api_key'}) but it is not set. Refusing to fall back "
+                    "to the default provider's credential.")
+            st.api_key = alias_key
 
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com

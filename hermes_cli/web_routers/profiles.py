@@ -264,14 +264,18 @@ def _read_profile_db(name: str, home, errors: Optional[list[dict[str, str]]],
     Read-only on the healthy path: this runs on every sidebar refresh, so it must not
     routinely DDL/write-lock another profile's live DB. The open helper's stale-schema probe
     performs a ONE-TIME writable open when the store predates a schema addition — read-only
-    opens skip column reconciliation and would otherwise fail here on every refresh."""
+    opens skip column reconciliation and would otherwise fail here on every refresh.
+
+    Only the OPEN is attributed to state.db: it dies on state.db or not at all. ``fn`` also
+    reads sibling stores under the home scope (projects.db, repo scans), so its failures are
+    not state.db's — a damaged projects.db must not quarantine healthy session storage
+    (#134865). Structural state.db corruption raised inside ``fn`` is still latched, by
+    SessionDB's own read chokepoint (_read_ctx)."""
     db_path = Path(home) / "state.db"
     if not db_path.exists():
         return None
-    db = None
     try:
         db = _open_session_db_at_path(db_path, read_only=True)
-        return fn(db)
     except Exception as exc:
         # An open that dies on a damaged file never reaches SessionDB's read helpers.
         note_storage_error(db_path, exc)
@@ -279,9 +283,15 @@ def _read_profile_db(name: str, home, errors: Optional[list[dict[str, str]]],
         if errors is not None:
             errors.append({"profile": name, "error": str(exc)})
         return None
+    try:
+        return fn(db)
+    except Exception as exc:  # health: allow BLE001 -- fn reads sibling stores under the home scope; any failure becomes this profile's errors row, never a latch and never fatal to the fan-out
+        _warn_profile_read_error(name, exc)
+        if errors is not None:
+            errors.append({"profile": name, "error": str(exc)})
+        return None
     finally:
-        if db is not None:
-            db.close()
+        db.close()
 
 
 def _corrupt_profile_stores(targets) -> dict[str, str]:

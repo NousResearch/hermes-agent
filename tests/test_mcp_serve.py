@@ -15,6 +15,7 @@ import os
 import sqlite3
 import time
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -886,6 +887,54 @@ class TestToolRegistration:
         server, _ = mcp_server_e2e
         for tool in server._tool_manager.list_tools():
             assert tool.description, f"Tool {tool.name} has no description"
+
+# ---------------------------------------------------------------------------
+# 4b. MEMORY & CREDENTIAL HELPERS
+# ---------------------------------------------------------------------------
+
+class TestMemoryHelpers:
+
+    def test_get_memory_roots_returns_existing(self, tmp_path, monkeypatch):
+        import mcp_serve
+        memories = tmp_path / "memories"
+        memories.mkdir()
+        (memories / "MEMORY.md").write_text("test")
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        roots = mcp_serve._get_memory_roots()
+        assert "memories" in roots
+        assert "skills" in roots
+
+    def test_memory_read_missing_file_returns_error(self, tmp_path, monkeypatch):
+        import mcp_serve
+        server = mcp_serve.create_mcp_server()
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        result = server.memory_read("nope.md")
+        assert "not found" in result.lower() or "error" in result.lower()
+
+    def test_memory_write_creates_file(self, tmp_path, monkeypatch):
+        import mcp_serve
+        server = mcp_serve.create_mcp_server()
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        result = server.memory_write("test.md", "hello")
+        assert "written" in result.lower() or "ok" in result.lower()
+        assert (tmp_path / "memories" / "test.md").exists()
+
+    def test_credentials_lookup_missing_label_returns_error(self, tmp_path, monkeypatch):
+        import mcp_serve
+        server = mcp_serve.create_mcp_server()
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        result = server.credentials_lookup("definitely-not-a-real-label")
+        assert "not found" in result.lower() or "error" in result.lower()
+
+    def test_skills_list_returns_results(self, tmp_path, monkeypatch):
+        import mcp_serve
+        server = mcp_serve.create_mcp_server()
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        result = server.skills_list()
+        assert isinstance(result, str) and len(result) > 0
+
 
 # ---------------------------------------------------------------------------
 # 5. SERVER LIFECYCLE / CLI INTEGRATION

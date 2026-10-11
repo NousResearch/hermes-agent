@@ -232,6 +232,7 @@ try:
     _pt_extras.install_shift_enter_alias()
     _pt_extras.install_ctrl_enter_alias()
     _pt_extras.install_cmd_backspace_alias()
+    _pt_extras.install_macos_editing_aliases()
     _pt_extras.install_modify_other_keys_aliases()
     _pt_extras.install_keypress_data_normalization()
     _pt_extras.install_ignored_terminal_sequences()

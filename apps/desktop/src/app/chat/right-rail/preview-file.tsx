@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { cjk as streamdownCjk } from '@streamdown/cjk'
 import type * as React from 'react'
 import type {
   ComponentProps,
@@ -507,7 +508,7 @@ export function MarkdownPreview({ filePath, text }: { filePath?: string; text: s
           controls={false}
           mode="static"
           parseIncompleteMarkdown={false}
-          plugins={{ math: previewMathPlugin }}
+          plugins={{ math: previewMathPlugin, cjk: streamdownCjk }}
           rehypePlugins={PREVIEW_REHYPE_PLUGINS}
           remarkPlugins={PREVIEW_REMARK_PLUGINS}
         >

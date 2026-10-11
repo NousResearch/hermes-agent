@@ -1,5 +1,6 @@
+import { cjk as streamdownCjk } from '@streamdown/cjk'
 import type { ComponentProps, ElementType, FC } from 'react'
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 import { Streamdown } from 'streamdown'
 
 import { ExternalLink } from '@/lib/external-link'
@@ -105,9 +106,20 @@ export const CompactMarkdown = memo(function CompactMarkdown({
   className?: string
   text: string
 }) {
+  // CJK-friendly emphasis on tool bodies too (#92814): a partial plugin map is
+  // additive in streamdown 2.5 (each key is consumed separately), so passing
+  // only `cjk` keeps the rest of its defaults.
+  const plugins = useMemo(() => ({ cjk: streamdownCjk }), [])
+
   return (
     <div className={cn('max-w-full text-xs leading-relaxed text-muted-foreground/90 wrap-anywhere', className)}>
-      <Streamdown components={COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
+      <Streamdown
+        components={COMPONENTS}
+        controls={false}
+        mode="static"
+        parseIncompleteMarkdown={false}
+        plugins={plugins}
+      >
         {text}
       </Streamdown>
     </div>

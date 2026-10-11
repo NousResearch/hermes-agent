@@ -178,6 +178,24 @@ _SERVER_SIDE_TOOL_CALL_TYPES = {
     "image_generation_call", "computer_call", "local_shell_call", "mcp_call",
 }
 
+# The subset the provider loops on itself (computer/local_shell calls are run by the client).
+SERVER_LOOPED_TOOL_CALL_TYPES = frozenset(
+    (_SERVER_SIDE_TOOL_CALL_TYPES - {"computer_call", "local_shell_call"}) | {"x_search_call"}
+)
+
+
+def response_ran_server_looped_tools(response: Any) -> bool:
+    """True when the provider ran built-in tools in its own inference loop for this response.
+
+    Each server-side pass re-reads the whole prompt, and providers (xAI, OpenAI) report the
+    SUM of those passes as ``input_tokens``. That figure is billing, not the size of the
+    request Hermes sent, so it must not stand in for context pressure.
+    """
+    return any(
+        (item.get("type") if isinstance(item, dict) else getattr(item, "type", None)) in SERVER_LOOPED_TOOL_CALL_TYPES
+        for item in getattr(response, "output", None) or ()
+    )
+
 
 def _nonblank(value: Any) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())

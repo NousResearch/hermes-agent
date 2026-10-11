@@ -75,5 +75,6 @@ export const zhProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   reorder: label => `重新排序 ${label}`,
   toggle: (label, open) => `${open ? '展开' : '收起'} ${label} 会话`,
   showAllCount: count => `显示全部 ${count} 个会话`,
+  showFewer: '显示更少',
   back: '全部项目'
 }

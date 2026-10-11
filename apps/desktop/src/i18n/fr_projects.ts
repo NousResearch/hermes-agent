@@ -81,5 +81,6 @@ export const frProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   reorder: label => `Réorganiser ${label}`,
   toggle: (label, open) => `${open ? 'Afficher' : 'Masquer'} les sessions de ${label}`,
   showAllCount: count => `Afficher les ${count} sessions`,
+  showFewer: 'Afficher moins',
   back: 'Tous les projets'
 }

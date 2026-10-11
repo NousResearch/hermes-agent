@@ -79,5 +79,6 @@ export const ruProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   reorder: label => `Изменить порядок ${label}`,
   toggle: (label, open) => `${open ? 'Показать' : 'Скрыть'} сеансы ${label}`,
   showAllCount: count => `Показать все сессии (${count})`,
+  showFewer: 'Показать меньше',
   back: 'Все проекты'
 }

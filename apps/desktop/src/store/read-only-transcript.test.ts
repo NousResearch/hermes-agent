@@ -3,12 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $connectionsRegistry } from './connections'
 import { $profiles } from './profile'
 import {
+  $cronRunReadOnlyVerdicts,
   $readOnlyStoredTranscripts,
   clearStoredTranscriptReadOnly,
+  isCronRunReadOnly,
   isReadOnlyRuntimeId,
   isStoredTranscriptReadOnly,
   markStoredTranscriptReadOnly,
   readOnlyRuntimeIdFor,
+  recordCronRunVerdict,
   resumeWithStoredTranscriptFallback
 } from './read-only-transcript'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
@@ -25,6 +28,7 @@ beforeEach(() => {
   $connectionsRegistry.set(null)
   $profiles.set([])
   $readOnlyStoredTranscripts.set(new Set())
+  $cronRunReadOnlyVerdicts.set(new Map())
 })
 
 afterEach(() => {
@@ -137,5 +141,44 @@ describe('read-only stored-transcript resume (#94724 no-owner recovery)', () => 
     expect(isStoredTranscriptReadOnly('stored-9')).toBe(true)
     clearStoredTranscriptReadOnly('stored-9')
     expect(isStoredTranscriptReadOnly('stored-9')).toBe(false)
+  })
+})
+
+describe('read-only cron runs (#88443 zombie cron session)', () => {
+  it('blocks writes on a cron run whose verdict is read-only', () => {
+    recordCronRunVerdict('cron_job-1_20260929_120000', true)
+
+    expect(isCronRunReadOnly('cron_job-1_20260929_120000')).toBe(true)
+    // The submit path's gate: one answer for every write surface.
+    expect(isStoredTranscriptReadOnly('cron_job-1_20260929_120000')).toBe(true)
+    // Unrelated ids stay writable.
+    expect(isStoredTranscriptReadOnly('cron_job-1_20260929_130000')).toBe(false)
+    expect(isStoredTranscriptReadOnly(null)).toBe(false)
+  })
+
+  it('a fresh verdict reopens the run — nothing latches', () => {
+    recordCronRunVerdict('cron-flip', true)
+    recordCronRunVerdict('cron-flip', false)
+
+    expect(isStoredTranscriptReadOnly('cron-flip')).toBe(false)
+  })
+
+  it('survives a live resume clearing the owner-recovery flag', () => {
+    recordCronRunVerdict('cron-keep', true)
+    markStoredTranscriptReadOnly('cron-keep')
+
+    // Exactly what a successful resume does to the #94724 flag — the cron
+    // verdict must NOT be collateral damage, or the guard evaporates the
+    // moment the transcript paints.
+    clearStoredTranscriptReadOnly('cron-keep')
+
+    expect(isStoredTranscriptReadOnly('cron-keep')).toBe(true)
+  })
+
+  it('ignores blank ids', () => {
+    recordCronRunVerdict('   ', true)
+
+    expect(isCronRunReadOnly('')).toBe(false)
+    expect($cronRunReadOnlyVerdicts.get().size).toBe(0)
   })
 })

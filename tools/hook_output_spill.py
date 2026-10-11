@@ -27,9 +27,9 @@ DEFAULT_PREVIEW_TAIL = 500
 DEFAULT_ENABLED = True
 
 
-def get_spill_config() -> Dict[str, Any]:
+def get_spill_config() -> dict[str, Any]:
     """Return resolved hook output-spill config. Never raises."""
-    section: Dict[str, Any] = {}
+    section: dict[str, Any] = {}
     try:
         from hermes_cli.config import load_config
         cfg = load_config() or {}
@@ -62,7 +62,7 @@ def _resolve_spill_dir(directory_override: Optional[str], session_id: Optional[s
 
 
 def spill_if_oversized(
-    text: str, *, session_id: Optional[str] = None, source: str = "hook", config: Optional[Dict[str, Any]] = None,
+    text: str, *, session_id: Optional[str] = None, source: str = "hook", config: Optional[dict[str, Any]] = None,
 ) -> str:
     """Spill ``text`` to disk if it exceeds the configured cap.
 
@@ -113,5 +113,11 @@ def spill_if_oversized(
     return "\n".join(parts)
 
 
-__all__ = ["DEFAULT_MAX_CHARS", "DEFAULT_PREVIEW_HEAD", "DEFAULT_PREVIEW_TAIL", "DEFAULT_ENABLED",
-           "get_spill_config", "spill_if_oversized"]
+__all__ = [
+    "DEFAULT_ENABLED",
+    "DEFAULT_MAX_CHARS",
+    "DEFAULT_PREVIEW_HEAD",
+    "DEFAULT_PREVIEW_TAIL",
+    "get_spill_config",
+    "spill_if_oversized",
+]

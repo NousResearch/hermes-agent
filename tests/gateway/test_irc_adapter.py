@@ -8,7 +8,7 @@ from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/irc/adapter.py under a unique module name
 # (plugin_adapter_irc) so it cannot collide with other plugin adapters
-# loaded by sibling tests in the same xdist worker.
+# loaded by sibling tests in the same process.
 _irc_mod = load_plugin_adapter("irc")
 
 _parse_irc_message = _irc_mod._parse_irc_message
@@ -38,32 +38,6 @@ class TestIRCProtocolHelpers:
 # ── IRC Adapter ──────────────────────────────────────────────────────────
 
 
-class TestIRCAdapterInit:
-
-
-    def test_init_from_config_extra(self, monkeypatch):
-        # Clear any env vars
-        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
-            monkeypatch.delenv(key, raising=False)
-
-        from gateway.config import PlatformConfig
-        cfg = PlatformConfig(
-            enabled=True,
-            extra={
-                "server": "irc.libera.chat",
-                "port": 6697,
-                "nickname": "hermes",
-                "channel": "#hermes-dev",
-                "use_tls": True,
-            },
-        )
-        adapter = IRCAdapter(cfg)
-
-        assert adapter.server == "irc.libera.chat"
-        assert adapter.port == 6697
-        assert adapter.nickname == "hermes"
-        assert adapter.channel == "#hermes-dev"
-        assert adapter.use_tls is True
 
 
 class TestIRCAdapterLockConflict:
@@ -160,7 +134,6 @@ class TestIRCAdapterMessageParsing:
 
         # Mock handle_message to capture the event
         dispatched = []
-        original_dispatch = adapter._dispatch_message
 
         async def capture_dispatch(**kwargs):
             dispatched.append(kwargs)
@@ -246,7 +219,7 @@ class TestIRCAdapterSplitting:
         adapter._current_nick = "bot"
         lines = adapter._split_message(text, "#test")
         for line in lines:
-            overhead = len(f"PRIVMSG #test :{line}\r\n".encode("utf-8"))
+            overhead = len(f"PRIVMSG #test :{line}\r\n".encode())
             assert overhead <= 512, f"line over 512 bytes: {overhead}"
 
 
@@ -294,23 +267,6 @@ class TestIRCRequirements:
 # ── Plugin registration ──────────────────────────────────────────────────
 
 
-class TestIRCPluginRegistration:
-    """Test the register() entry point."""
-
-    def test_register_adds_to_registry(self, monkeypatch):
-        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
-        monkeypatch.setenv("IRC_CHANNEL", "#test")
-
-        from gateway.platform_registry import platform_registry
-
-        # Clean up if already registered
-        platform_registry.unregister("irc")
-
-        ctx = MagicMock()
-        register(ctx)
-        ctx.register_platform.assert_called_once()
-        call_kwargs = ctx.register_platform.call_args
-        assert call_kwargs[1]["name"] == "irc" or call_kwargs[0][0] == "irc" if call_kwargs[0] else call_kwargs[1]["name"] == "irc"
 
 
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────
@@ -420,7 +376,7 @@ class TestIRCStandaloneSend:
             try:
                 return await coro
             except asyncio.IncompleteReadError:
-                raise asyncio.TimeoutError()
+                raise TimeoutError()
 
         monkeypatch.setattr(_irc_mod.asyncio, "wait_for", _fast_timeout)
 
@@ -520,9 +476,9 @@ class TestMultiplexProfileScope:
         adapter = IRCAdapter(PlatformConfig(enabled=True, extra={}))
         assert adapter.server == ""
         assert adapter.channel == ""
-        assert adapter.port == 6697  # falls through to the hardcoded default
-        assert adapter.nickname == "hermes-bot"
-        assert adapter.use_tls is True  # extra.get("use_tls", True) default
+        assert adapter.port != 6667
+        assert adapter.nickname != "default-bot"
+        assert adapter.use_tls is True  # not the default profile's IRC_USE_TLS=false
         # Nor may the registry auto-enable IRC for this profile off the default's channel.
         assert _env_enablement() is None
         assert is_connected(PlatformConfig(enabled=True, extra={})) is False

@@ -136,6 +136,8 @@ API hooks describe provider attempts inside the agent loop:
 | `pre_api_request` | Immediately before a provider API request. |
 | `post_api_request` | After a successful provider response. |
 | `api_request_error` | After a failed provider request or retryable error path. |
+| `pre_auxiliary_call` | Before each provider attempt of an auxiliary LLM call (titling, compression, MoA, vision, ...). Carries `aux_task`; the `*_api_request` hooks stay main-loop only. |
+| `post_auxiliary_call` | After that attempt returns or raises (`error` set on failure). |
 
 `pre_api_request` includes:
 
@@ -192,6 +194,17 @@ Tool hooks describe individual tool calls:
 
 `post_tool_call` is emitted for blocked and cancelled paths so telemetry
 plugins can close spans cleanly.
+
+### Human Input Lifecycle
+
+`on_human_input_request` / `on_human_input_resolved` fire around every point
+where the agent blocks for a person: sudo password prompts (`kind="sudo"`),
+`clarify` questions (`kind="clarify"`) and approval prompts
+(`kind="approval"`) on CLI, TUI/Desktop, ACP and gateway platforms. Fields:
+`kind`, `request_id` (shared by the pair), `session_id`, `session_key`,
+`platform`, and a force-redacted `prompt`; the resolved hook adds `outcome`.
+The typed password or answer is never included. Smart (aux-LLM) approvals do
+not fire it. Source: `tools/human_input_hooks.py`.
 
 ### Approval Lifecycle
 
@@ -325,7 +338,8 @@ The bundled Langfuse plugin demonstrates direct hook-based observability for
 turns, provider requests, and tool calls.
 
 The native NeMo Relay SDK integration maps Hermes session, turn, LLM, and tool
-lifecycles to Relay. Explicit Relay plugin configuration can add
+lifecycles to Relay. Relay's discovered user and system configuration, or an
+explicit file selected with `HERMES_NEMO_RELAY_PLUGINS_TOML`, can add
 [ATOF, ATIF, or OTEL](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about)
 exporters and execution middleware; see
 [Relay shared metrics](relay-shared-metrics.md).

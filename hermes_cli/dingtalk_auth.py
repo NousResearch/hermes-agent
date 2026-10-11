@@ -61,7 +61,7 @@ def poll_registration(device_code: str) -> dict:
 
 def wait_for_registration_success(
     device_code: str, interval: int = 3, expires_in: int = 7200, on_waiting: Optional[callable] = None,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """Block until the registration succeeds or times out.
 
     Transient errors and FAIL/EXPIRED/UNKNOWN statuses are retried for ``_RETRY_WINDOW`` seconds
@@ -100,16 +100,15 @@ def wait_for_registration_success(
 
 
 def _ensure_qrcode_installed() -> bool:
-    """Try to import qrcode; if missing, auto-install it via pip/uv."""
+    """Enable DingTalk dependencies; only render QR codes importable in this process."""
     with contextlib.suppress(ImportError):
-        import qrcode  # noqa: F401
+        import qrcode
         return True
-    import subprocess
-    from hermes_cli.tools_config import _pip_install
-    with contextlib.suppress(subprocess.SubprocessError, ImportError, OSError):
-        if _pip_install(["-q", "qrcode"], timeout=120).returncode == 0:
-            import qrcode  # noqa: F401,F811
-            return True
+    import pm
+    with contextlib.suppress(pm.InstallError, OSError, ValueError):
+        pm.sync_venv(["dingtalk"], explicit=True)
+    # PM selects a new generation for the next launch, never this process.
+    # The authorization link works without qrcode, so no restart is required here.
     return False
 
 
@@ -132,7 +131,7 @@ def render_qr_to_terminal(url: str) -> bool:
     return True
 
 
-def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
+def dingtalk_qr_auth() -> Optional[tuple[str, str]]:
     """Run the interactive QR-code device-flow authorization (setup wizard entry point)."""
     from hermes_cli.setup import print_info, print_success, print_warning, print_error
     print()
@@ -146,7 +145,7 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
         return None
     url = reg["verification_uri_complete"]
     if not _ensure_qrcode_installed():
-        print_warning("  qrcode library install failed, will show link only.")
+        print_warning("  QR rendering is unavailable in this process; using the authorization link.")
     print()
     print_info("  Please scan the QR code below with DingTalk to authorize:")
     print()
@@ -179,26 +178,3 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
     print_success(f"  Client ID:     {client_id}")
     print_success(f"  Client Secret: {client_secret[:8]}{'*' * (len(client_secret) - 8)}")
     return client_id, client_secret
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import logging  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'logger': ('hermes_cli.auth', 'logger'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

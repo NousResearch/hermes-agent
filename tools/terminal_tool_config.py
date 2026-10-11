@@ -9,9 +9,10 @@ so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before
 import logging
 import json
 import os
+import posixpath
 import re
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, overload
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
@@ -61,6 +62,61 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 def _is_host_cwd(path: str) -> bool:
     return path.startswith(_HOST_CWD_PREFIXES) or bool(_WINDOWS_DRIVE_RE.match(path))
 
+
+def _is_windows_drive_path(path: str) -> bool:
+    """True for any ``D:\\...`` / ``e:/...`` path. Not a username check."""
+    return bool(path) and bool(_WINDOWS_DRIVE_RE.match(path))
+
+
+def _host_path_key(path: str) -> str:
+    """Compare host paths without caring about slash style or drive-letter case.
+
+    A trailing slash is not significant, except we never collapse a drive root
+    (``C:/``) into a bare ``C:`` that would prefix-match every path on that drive.
+    """
+    text = (path or "").replace("\\", "/")
+    if len(text) >= 2 and text[1] == ":":
+        text = text[0].lower() + text[1:]
+    if len(text) > 3:
+        text = text.rstrip("/")
+    return text
+
+
+def translate_mounted_host_path(path: str, host_root: str, container_root: str) -> str | None:
+    """Map *path* onto *container_root* when it is *host_root* or a child of it.
+
+    Returns None when *path* is not under that host directory. Slash style and
+    drive-letter case do not matter; a sibling directory (``proj`` vs ``proj-other``)
+    is not a child.
+    """
+    if not isinstance(path, str) or not isinstance(host_root, str) or not isinstance(container_root, str):
+        return None
+    if not path or not host_root or not container_root:
+        return None
+    key = _host_path_key(path)
+    root = _host_path_key(host_root)
+    if not key or not root:
+        return None
+    mount = container_root.rstrip("/") or "/"
+    if key == root:
+        return mount
+    prefix = root if root.endswith("/") else root + "/"
+    if not key.startswith(prefix):
+        return None
+    return f"{mount}/{key[len(prefix):]}"
+
+
+def cwd_follows_host_mount(cwd: str, mount: str) -> bool:
+    """True when *cwd* was the host workspace (or the assumed ``/workspace`` view of it).
+
+    An explicit in-container path other than that assumption is left alone.
+    """
+    if not mount or not cwd or cwd == mount:
+        return False
+    if _is_unusable_container_cwd(cwd):
+        return True
+    return cwd == "/workspace" and mount != "/workspace"
+
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
 _BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
 
@@ -95,12 +151,69 @@ def _get_plugin_env_provider(env_type: str):
     return _plugin_registry_lookup(env_type, "get_provider", None)
 
 
-def _is_unusable_container_cwd(cwd: str) -> bool:
+@overload
+def coerce_ssh_remote_cwd(cwd: str, env_type: str | None) -> str: ...
+@overload
+def coerce_ssh_remote_cwd(cwd: None, env_type: str | None) -> None: ...
+def coerce_ssh_remote_cwd(cwd: str | None, env_type: str | None) -> str | None:
+    """Cwd to send to an SSH backend.
+
+    ``~``-prefixed paths stay literal so the remote shell expands them to the
+    SSH user's home. The Hermes process's subprocess home (``/opt/data/home``
+    in the official Docker image) is a directory on the machine running
+    Hermes: it and anything under it are rewritten onto the remote ``~``, since
+    ``cd`` into the host path exits 126 on the target. A subprocess home that is
+    the OS user's real home is left alone: a remote path may legitimately match
+    it. Other backends are unchanged.
+    """
+    if not isinstance(cwd, str) or (env_type or "").strip().lower() != "ssh":
+        return cwd
+    text = cwd.strip()
+    if not text or text.startswith("~"):
+        return text or "~"
+    from hermes_constants import get_real_home, get_subprocess_home
+
+    home = get_subprocess_home()
+    if not home or not posixpath.isabs(text) or posixpath.normpath(home) == posixpath.normpath(get_real_home()):
+        return text
+    rel = posixpath.relpath(posixpath.normpath(text), posixpath.normpath(home))
+    if rel == ".":
+        return "~"
+    return text if rel == ".." or rel.startswith("../") else f"~/{rel}"
+
+
+def _is_mounted_host_cwd(cwd: str, mounted_host: str | None) -> bool:
+    """True when *cwd* is the host directory mounted at ``/workspace``.
+
+    Checked before the ``/Users`` / ``/home`` / drive-letter heuristic: a WSL
+    checkout under ``/mnt/...`` or an absolute path under ``/srv/...`` is
+    ``os.path.isabs`` and would otherwise look like a valid container workdir.
+    """
+    if not cwd or not isinstance(mounted_host, str) or not mounted_host:
+        return False
+    try:
+        left = os.path.normpath(os.path.abspath(os.path.expanduser(cwd)))
+        right = os.path.normpath(os.path.abspath(os.path.expanduser(mounted_host)))
+    except (OSError, ValueError):
+        return False
+    return left == right
+
+
+def _is_unusable_container_cwd(cwd: str, *, mounted_host: str | None = None) -> bool:
     """True if *cwd* is a host or relative path that can't be a container
     workdir: ``docker run -w`` needs an absolute in-sandbox path, otherwise the
     container fails to start (exit 125). Windows drive paths aren't ``isabs``
-    on POSIX, so they're caught by the prefix check."""
-    return bool(cwd) and (_is_host_cwd(cwd) or not os.path.isabs(cwd))
+    on POSIX, so they're caught by the prefix check.
+
+    The directory mounted at ``/workspace`` is unusable inside the container
+    even when it matches none of those prefixes. That equality check runs
+    first so ``/mnt/...`` and ``/srv/...`` are not wrapped as ``cd`` targets.
+    """
+    if not cwd:
+        return False
+    if _is_mounted_host_cwd(cwd, mounted_host):
+        return True
+    return _is_host_cwd(cwd) or not os.path.isabs(cwd)
 
 
 def _tenv(name: str, default: str = "") -> str:

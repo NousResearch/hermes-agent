@@ -20,12 +20,14 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state)
-from hermes_cli import __version__, __release_date__
+    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
+    runtime_status_heartbeat_age_s, runtime_status_is_stale)
+from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
+from hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
-from hermes_cli.web_routers._common import scoped_to_thread
+from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -48,6 +50,7 @@ _ssh_runtime_intact = late("_ssh_runtime_intact")
 app = LateState("app")  # the FastAPI instance (app.state.*)
 check_config_version = late("check_config_version", "hermes_cli.config")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
+_profile_cli_args = late("_profile_cli_args", "hermes_cli.web_server_profiles")
 get_install_id = late("get_install_id")
 get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
@@ -92,7 +95,7 @@ async def _status_active_sessions() -> int:
         return await asyncio.wait_for(
             run_in_threadpool(_count_status_active_sessions),
             timeout=_STATUS_ACTIVE_SESSIONS_TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _log.debug("/api/status active session count exceeded %.2fs; returning 0",
                    _STATUS_ACTIVE_SESSIONS_TIMEOUT)
     except Exception as exc:
@@ -112,9 +115,35 @@ async def get_ssh_ownership(request: Request):
 
 @router.get("/api/health")
 async def get_health():
-    """Lightweight process liveness for desktop/backend readiness probes."""
-    return {"ok": True, "version": __version__,
+    """Lightweight process liveness for desktop/backend readiness probes.
+
+    ``commit`` is the code this process BOOTED from (``get_version_info`` is cached at
+    ``web_server`` import): Desktop refuses to attach to a backend whose commit differs from
+    its checkout, so a serve that outlived ``hermes update`` is never re-adopted.
+    """
+    info = get_version_info()
+    return {"ok": True, "version": info.base_version, "displayVersion": info.display_version,
+            "commit": info.commit,
             "auth_required": bool(getattr(app.state, "auth_required", False))}
+
+
+@router.get("/api/host/identity")
+async def get_host_identity(request: Request):
+    """Prove to an attaching `hermes serve`/`dashboard` WHO owns this port.
+
+    The host rendezvous record names a (pid, port) owner, but a record cannot say whether that
+    owner still holds the port: a graceful-shutdown window or an unrelated listener that
+    inherited the port both look identical on disk. The attaching side dials this endpoint with
+    the owner's 0600 token and attaches only when pid+role match. ``servesSpa`` is false for
+    headless ``serve``, so a `hermes dashboard` user is never routed to a backend with no UI.
+    """
+    _require_token(request)
+    # ``role`` is the host ROLE this process published (gateway/host_rendezvous.ROLE_SERVE, or
+    # ROLE_DESKTOP_SERVE for a Desktop-owned child), not the launch mode: `hermes serve` and
+    # `hermes dashboard` are one host role that differ in SPA.
+    return {"ok": True, "protocolVersion": 1, "pid": os.getpid(),
+            "role": getattr(app.state, "host_role", None) or "serve",
+            "servesSpa": bool(getattr(app.state, "serves_spa", False))}
 
 
 @router.get("/api/health/idle")
@@ -156,7 +185,7 @@ def _is_profile_platform_status_key(key: object) -> bool:
     return isinstance(key, str) and bool(_PROFILE_PLATFORM_STATUS_KEY_RE.fullmatch(key))
 
 
-def _status_platform_key_allowed(key: object, configured: "set[str] | None") -> bool:
+def _status_platform_key_allowed(key: object, configured: set[str] | None) -> bool:
     """Whether a runtime-status platform key may appear publicly: namespaced
     ``<profile>:<platform>`` keys are validated against the grammar *unconditionally* (a
     failed config-set load must not fail open into projecting arbitrary keys from a
@@ -232,7 +261,7 @@ def _bounded_health_probe():
             return False, None
 
 
-def _project_gateway_platforms(gateway_platforms: dict, configured: "set[str] | None",
+def _project_gateway_platforms(gateway_platforms: dict, configured: set[str] | None,
                                gateway_running: bool, gateway_state) -> dict:
     """Public projection of a runtime's platform map (see ``_status_platform_key_allowed``
     for the key rules). A cleanly stopped gateway's platform states are stale noise and are
@@ -250,7 +279,7 @@ def _project_gateway_platforms(gateway_platforms: dict, configured: "set[str] | 
     return {}
 
 
-async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Dict[str, Any]:
+async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> dict[str, Any]:
     """Liveness + runtime-state readout (running/pid/state/platforms/exit_reason/updated_at
     plus the raw ``runtime`` document).
 
@@ -285,7 +314,9 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         # Served by the multiplexer: its record is this profile's runtime, with the profile's own
         # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
         # profile is the process's own home (a pooled ``hermes --profile X serve``).
-        served_name = profile_dir.name if profile_dir is not None else profile_name_for_home(get_process_hermes_home())
+        # Fold on the profile NAME, never ``profile_dir.name``: ``?profile=default`` resolves the
+        # root itself, whose basename (``.hermes``) matched nothing and read as a named id (#123088).
+        served_name = profile_name_for_home(profile_dir or get_process_hermes_home())
         runtime = {**liveness.runtime,
                    "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}
 
@@ -293,16 +324,23 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     gateway_platforms: dict = {}
     gateway_exit_reason = None
     gateway_updated_at = None
+    gateway_heartbeat_stale_s = None
     if runtime:
         gateway_state = runtime.get("gateway_state")
         if not gateway_running:
             # Shared with /api/messaging/platforms: a durable operator stop outranks a retained
-            # ``startup_failed`` (kept on disk for diagnostics), so the overview does not alarm on it.
+            # ``startup_failed`` / watchdog ``degraded`` (kept on disk for diagnostics), so the
+            # overview does not alarm on it.
             gateway_state = retained_gateway_state(runtime)
         elif remote_health_body is not None and gateway_state in {None, "stopped"}:
             # The health probe confirmed the gateway is alive, but the local runtime status
             # file may be stale (cross-container): override so the badge is correct.
             gateway_state = "running"
+        elif gateway_state in {"running", "degraded", "starting"} and runtime_status_is_stale(runtime):
+            # Alive PID, but housekeeping stopped re-stamping the heartbeat: the loop or the
+            # housekeeping thread wedged while the file still says 'running' (#113372). Same arm
+            # as ``hermes gateway status`` so the sidebar strip and the CLI agree.
+            gateway_heartbeat_stale_s = runtime_status_heartbeat_age_s(runtime)
         gateway_platforms = _project_gateway_platforms(
             runtime.get("platforms") or {}, configured, gateway_running, gateway_state)
         gateway_exit_reason = None if gateway_state == "stopped" else runtime.get("exit_reason")
@@ -322,10 +360,11 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
+        "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
         "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
 
 
-def _auth_gate_status() -> Dict[str, Any]:
+def _auth_gate_status() -> dict[str, Any]:
     """Dashboard auth gate readout: gate engaged, registered providers, and the RFC 8252
     native-app capability advertisement ``auth_flows`` the desktop reads to pick the
     system-browser + loopback + PKCE flow over the embedded-webview cookie flow. "cookie" is
@@ -362,14 +401,14 @@ def _nous_session_validity() -> str:
         return "unknown"
 
 
-async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
+async def _component_health(gateway: dict[str, Any]) -> dict[str, Any]:
     """Component-level health rollup: counts and status enums only (public payload — no
     messages, paths or other detail that could carry secrets). The storage probe reuses the
     gateway readiness state_db check (read-only, 1s-bounded) off-loop."""
     from hermes_cli.web_server import DASHBOARD_HEALTH
     gateway_running, gateway_state = gateway["gateway_running"], gateway["gateway_state"]
     gateway_platforms = gateway["gateway_platforms"]
-    components: Dict[str, Any] = {
+    components: dict[str, Any] = {
         "gateway": {
             "status": "ok" if gateway_running and gateway_state in {"running", "draining"} else "degraded",
             "state": gateway_state or ("running" if gateway_running else "stopped")},
@@ -378,6 +417,9 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
         from gateway.readiness import _probe_state_db
         storage_check = await run_in_threadpool(_probe_state_db, get_hermes_home())
         components["storage"] = {"status": storage_check.get("status", "degraded")}
+        # The one reason enum consumers key off; same latch as readiness and the session lists.
+        if storage_check.get("detail") == "corrupt":
+            components["storage"]["reason"] = "corrupt"
     except Exception:
         components["storage"] = {"status": "degraded"}
     # ``disabled`` entries are platforms the multiplexer deliberately does not run for a served profile
@@ -391,7 +433,7 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
     return components
 
 
-async def _advisory_pressure(status: Dict[str, Any], home: Path) -> None:
+async def _advisory_pressure(status: dict[str, Any], home: Path) -> None:
     """Memory / disk pressure rollups + deferred FTS rebuild progress (coarse numbers/enums
     only; public payload). Deliberately NOT folded into components/overall: pressure is
     advisory, not a liveness verdict, and flipping ``overall`` on it would page NAS's
@@ -456,7 +498,7 @@ async def get_status(profile: Optional[str] = None):
 
         # Busy/drainable (NAS lifecycle-safety gate) derive from the persisted in-flight turn
         # count + liveness via gateway.status. Liveness keys off gateway_running, NEVER
-        # gateway_updated_at — a healthy idle gateway never advances that.
+        # gateway_updated_at — a stale heartbeat is reported separately, not treated as death.
         active_agents = parse_active_agents((gateway["runtime"] or {}).get("active_agents", 0))
         # Off-loop: on a cold Windows install the first import of hermes_cli.gateway blocks
         # 15-30s (.pyc compilation + Defender), exceeding the desktop handshake's 15s timeout.
@@ -464,13 +506,16 @@ async def get_status(profile: Optional[str] = None):
         auth = _auth_gate_status()
 
         status = {
-            "version": __version__, "release_date": __release_date__,
+            "version": get_version_info().base_version, "release_date": __release_date__,
             "config_version": current_ver, "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
             "gateway_running": gateway_running, "gateway_state": gateway_state,
             "gateway_platforms": gateway["gateway_platforms"],
             "gateway_exit_reason": gateway["gateway_exit_reason"],
             "gateway_updated_at": gateway["gateway_updated_at"],
+            # Seconds since housekeeping last stamped the heartbeat, only when the PID is alive but the
+            # stamp is past the freshness TTL (loop/housekeeping wedged, #113372); else null.
+            "gateway_heartbeat_stale_s": gateway["gateway_heartbeat_stale_s"],
             # Non-null only for a profile served by the shared multiplexer: every profile that process carries.
             "gateway_shared_with": gateway["gateway_shared_with"],
             "active_agents": active_agents,
@@ -488,6 +533,10 @@ async def get_status(profile: Optional[str] = None):
         if install_id:
             status["install_id"] = install_id
 
+        # Advisory only. Expose no paths or process identities on this public probe.
+        from hermes_cli.shared_profile_warning import shared_profile_warning
+        status["shared_profile_warning"] = bool(await run_in_threadpool(shared_profile_warning))
+
         components = await _component_health(gateway)
         status["components"] = components
         status["overall"] = ("ok" if all(item.get("status") == "ok" for item in components.values())
@@ -498,7 +547,9 @@ async def get_status(profile: Optional[str] = None):
         # renders the profile list over a gated bind) so they survive the auth gate; the
         # per-gateway ``gateways[]`` carries host ports and stays gated below.
         status["profiles"] = topology["profiles"]
+        status["parked_profiles"] = topology.get("parked_profiles", [])
         status["gateway_mode"] = topology["gateway_mode"]
+        status["multiplex_standalone_reason"] = topology.get("multiplex_standalone_reason")
 
         # Host paths, gateway PID, internal health URL and per-gateway ports are deployment
         # recon a liveness probe never needs, and on a gated bind *any* unauthenticated caller
@@ -521,14 +572,14 @@ async def get_system_stats():
     disk/uptime when available). Non-sensitive: no env values, no paths beyond hermes home."""
     import platform as _platform
 
-    info: Dict[str, Any] = {
+    info: dict[str, Any] = {
         **_display_system_platform(
             system=_platform.system(), release=_platform.release(), version=_platform.version(),
             platform_label=_platform.platform()),
         "arch": _platform.machine(), "hostname": _platform.node(),
         "python_version": _platform.python_version(),
         "python_impl": _platform.python_implementation(),
-        "hermes_version": __version__, "cpu_count": os.cpu_count()}
+        "hermes_version": get_version_info().base_version, "cpu_count": os.cpu_count()}
 
     def _disk():
         du = psutil.disk_usage(str(get_hermes_home()))
@@ -576,41 +627,51 @@ async def get_system_stats():
 
 
 @router.get("/api/curator")
-async def get_curator_status():
+async def get_curator_status(profile: Optional[str] = None):
     try:
         from agent import curator
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Curator unavailable: {exc}")
-    state = _safe_call(curator, "load_state", {})
-    return {
-        "enabled": _safe_call(curator, "is_enabled", True),
-        "paused": _safe_call(curator, "is_paused", False),
-        "interval_hours": _safe_call(curator, "get_interval_hours", None),
-        "last_run_at": state.get("last_run_at"),
-        **{key: _safe_call(curator, f"get_{key}", None)
-           for key in ("min_idle_hours", "stale_after_days", "archive_after_days")}}
+
+    def _run():
+        state = _safe_call(curator, "load_state", {})
+        return {
+            "enabled": _safe_call(curator, "is_enabled", True),
+            "paused": _safe_call(curator, "is_paused", False),
+            "interval_hours": _safe_call(curator, "get_interval_hours", None),
+            "last_run_at": state.get("last_run_at"),
+            **{key: _safe_call(curator, f"get_{key}", None)
+               for key in ("min_idle_hours", "stale_after_days", "archive_after_days")}}
+
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.put("/api/curator/paused")
-async def set_curator_paused(body: CuratorPause):
+async def set_curator_paused(body: CuratorPause, profile: Optional[str] = None):
     from agent import curator
-    curator.set_paused(bool(body.paused))
+    # ``_state_file()`` is ``get_hermes_home()/skills/.curator_state`` resolved at call
+    # time, so the request's home override is what decides which profile pauses.
+    await config_scoped_to_thread(profile, lambda: curator.set_paused(bool(body.paused)))
     return {"ok": True, "paused": bool(body.paused)}
 
 
-def _spawn_action(argv: list, name: str, prefix: str) -> dict:
-    """Spawn a background ``hermes <argv>`` action; a spawn failure is ``500 "<prefix>: <exc>"``."""
+def _spawn_action(argv: list, name: str, prefix: str, profile: Optional[str] = None) -> dict:
+    """Spawn a background ``hermes -p <profile> <argv>`` action; a spawn failure is
+    ``500 "<prefix>: <exc>"``."""
     try:
-        proc = _spawn_hermes_action(argv, name)
+        proc = _spawn_hermes_action(_profile_cli_args(profile) + argv, name)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{prefix}: {exc}")
     return {"ok": True, "pid": proc.pid, "name": name}
 
 
 @router.post("/api/curator/run")
-async def run_curator():
-    """Trigger a curator review now (backgrounded; tail via action status)."""
-    return _spawn_action(["curator", "run"], "curator-run", "Failed to run curator")
+async def run_curator(profile: Optional[str] = None):
+    """Trigger a curator review now (backgrounded; tail via action status). The curator
+    archives and rewrites skills, so an unnamed target is refused while this backend
+    serves several profiles."""
+    return _spawn_action(["curator", "run"], "curator-run", "Failed to run curator",
+                         destructive_profile(profile, "POST /api/curator/run"))
 
 
 @router.get("/api/learning/graph")
@@ -624,6 +685,8 @@ async def get_learning_graph(profile: Optional[str] = None):
         # _profile_scope takes _SKILLS_PROFILE_LOCK and the graph build reads skills/memories
         # from disk — keep it off the event loop.
         return await scoped_to_thread(profile, _run)
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a graph failure
     except Exception:
         _log.exception("GET /api/learning/graph failed")
         raise HTTPException(status_code=500, detail="Failed to build learning graph")
@@ -646,29 +709,32 @@ async def get_learning_node(id: str, profile: Optional[str] = None):
 
 
 @router.delete("/api/learning/node")
-async def delete_learning_node(body: LearningNodeRef):
-    """Delete a journey node — skills are archived (restorable), memories removed."""
+async def delete_learning_node(body: LearningNodeRef, profile: Optional[str] = None):
+    """Delete a journey node — skills are archived (restorable), memories removed.
+
+    ``?profile=`` is honoured too: a shared-backend Desktop scopes this call by query only, and
+    ignoring it archived the same-named skill of the launch profile instead."""
     from agent.learning_mutations import delete_node
     return await _learning_mutation(
-        body.profile, lambda: delete_node(body.id), 400, "delete failed")
+        body.profile or profile, lambda: delete_node(body.id), 400, "delete failed")
 
 
 @router.put("/api/learning/node")
-async def update_learning_node(body: LearningNodeEdit):
-    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
+async def update_learning_node(body: LearningNodeEdit, profile: Optional[str] = None):
+    """Rewrite a journey node's content (SKILL.md or memory chunk); profile as for DELETE."""
     from agent.learning_mutations import edit_node
     return await _learning_mutation(
-        body.profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
+        body.profile or profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
 
 
 # Portal — Nous Portal auth + Tool Gateway routing status (read-only).
 
 
 @router.get("/api/portal")
-async def get_portal_status():
+async def get_portal_status(profile: Optional[str] = None):
     # load_config() + auth/subscription snapshots are disk reads on a polled endpoint —
     # keep them off the event loop.
-    return await asyncio.to_thread(_get_portal_status_sync)
+    return await config_scoped_to_thread(profile, _get_portal_status_sync)
 
 
 def _feature_state(feat) -> str:
@@ -681,7 +747,7 @@ def _feature_state(feat) -> str:
 
 def _get_portal_status_sync():
     cfg = load_config() or {}
-    auth: Dict[str, Any] = {}
+    auth: dict[str, Any] = {}
     try:
         from hermes_cli.auth import get_nous_auth_status_local
         # Refresh-free snapshot so polling never performs an OAuth refresh.
@@ -715,36 +781,42 @@ def _get_portal_status_sync():
 
 
 @router.post("/api/ops/prompt-size")
-async def run_prompt_size():
-    return _spawn_action(["prompt-size"], "prompt-size", "Failed")
+async def run_prompt_size(profile: Optional[str] = None):
+    return _spawn_action(["prompt-size"], "prompt-size", "Failed", profile)
 
 
 @router.post("/api/ops/dump")
-async def run_dump():
-    return _spawn_action(["dump"], "dump", "Failed")
+async def run_dump(profile: Optional[str] = None):
+    return _spawn_action(["dump"], "dump", "Failed", profile)
 
 
 @router.post("/api/ops/config-migrate")
-async def run_config_migrate():
-    return _spawn_action(["config", "migrate"], "config-migrate", "Failed")
+async def run_config_migrate(profile: Optional[str] = None):
+    return _spawn_action(["config", "migrate"], "config-migrate", "Failed", profile)
 
 
 @router.post("/api/ops/debug-share")
-async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
+async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
+                                   profile: Optional[str] = None):
     """Upload a redacted debug report + full logs and return the paste URLs. Synchronous,
     unlike the other diagnostics actions: the point is the shareable URLs, returned as a
     structured payload the dashboard renders as copyable links."""
     from hermes_cli.debug import build_debug_share
+    from hermes_cli.debug_redaction import redact_debug_support_text
     req = body or DebugShareRequest()
     try:
-        result = await asyncio.to_thread(
-            build_debug_share, log_lines=max(1, min(int(req.lines), 5000)), redact=bool(req.redact))
+        result = await config_scoped_to_thread(profile, lambda: build_debug_share(
+            log_lines=max(1, min(int(req.lines), 5000)), redact=bool(req.redact)))
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a failed share
     except RuntimeError as exc:
         # Required summary-report upload failed (offline / paste service down).
-        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")
+        error = redact_debug_support_text(exc)
+        raise HTTPException(status_code=502, detail=f"Upload failed: {error}")
     except Exception as exc:
         _log.exception("debug share failed")
-        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
+        error = redact_debug_support_text(exc)
+        raise HTTPException(status_code=500, detail=f"Failed: {error}")
 
     return {"ok": True, "urls": result.urls, "failures": result.failures,
             "redacted": result.redacted, "auto_delete_seconds": result.auto_delete_seconds}
@@ -753,12 +825,14 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
 @logs_router.get("/api/logs")
 async def get_logs(
     file: str = "agent", lines: int = 100, level: Optional[str] = None,
-    component: Optional[str] = None, search: Optional[str] = None):
+    component: Optional[str] = None, search: Optional[str] = None,
+    profile: Optional[str] = None):
     from hermes_cli.logs import _read_tail, LOG_FILES
     log_name = LOG_FILES.get(file)
     if not log_name:
         raise HTTPException(status_code=400, detail=f"Unknown log file: {file}")
-    log_path = get_hermes_home() / "logs" / log_name
+    with _config_profile_scope(profile):
+        log_path = get_hermes_home() / "logs" / log_name
     if not log_path.exists():
         return {"file": file, "lines": []}
 
@@ -775,13 +849,17 @@ async def get_logs(
         if comp_prefixes is None:
             raise HTTPException(status_code=400, detail=f"Unknown component: {component}. "
                                 f"Available: {', '.join(sorted(COMPONENT_PREFIXES))}")
-    result = _read_tail(
-        log_path, min(lines, 500) if not search else 2000,
-        has_filters=bool(min_level or comp_prefixes or search),
-        min_level=min_level, component_prefixes=comp_prefixes)
-    # _read_tail doesn't support free-text search, so post-filter (case-insensitive
-    # substring) here and trim to the requested line count afterward.
-    if search:
-        needle = search.lower()
-        result = [l for l in result if needle in l.lower()][-min(lines, 500):]
+    def _load_logs():
+        result = _read_tail(
+            log_path, min(lines, 500) if not search else 2000,
+            has_filters=bool(min_level or comp_prefixes or search),
+            min_level=min_level, component_prefixes=comp_prefixes)
+        # _read_tail doesn't support free-text search, so post-filter (case-insensitive
+        # substring) here and trim to the requested line count afterward.
+        if search:
+            needle = search.lower()
+            result = [line for line in result if needle in line.lower()][-min(lines, 500):]
+        return result
+
+    result = await asyncio.to_thread(_load_logs)
     return {"file": file, "lines": result}

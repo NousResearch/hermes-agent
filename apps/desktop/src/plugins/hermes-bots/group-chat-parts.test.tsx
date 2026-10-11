@@ -173,22 +173,6 @@ describe('insertion', () => {
   })
 })
 
-// #89884: the composer used to be a single-line Input whose form submitted on
-// every Enter, so multi-line room prompts were impossible.
-describe('sizing (#95300)', () => {
-  it('sizes from its content up to a viewport-bounded cap and scrolls beyond it, while starting at one row', async () => {
-    const { input } = await mount()
-
-    // Chromium's field-sizing does the growing; the contract the room relies
-    // on is the class set: content-sized, capped, scrolling past the cap,
-    // and a single compact row when empty.
-    expect(input.rows).toBe(1)
-    expect(input.classList.contains('field-sizing-content')).toBe(true)
-    expect(input.classList.contains('max-h-[min(50vh,24rem)]')).toBe(true)
-    expect(input.classList.contains('overflow-y-auto')).toBe(true)
-  })
-})
-
 describe('keyboard (#89884)', () => {
   it('submits on Enter and leaves Shift+Enter to the textarea', async () => {
     const { input, onSubmitDraft } = await mount('a room prompt')

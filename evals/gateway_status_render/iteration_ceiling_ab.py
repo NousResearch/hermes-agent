@@ -75,7 +75,7 @@ async def _heartbeat(agent) -> str:
     mixin = GatewayTurnMixin()
     adapter = MagicMock()
     adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb1"))
-    mixin._adapter_for_source = MagicMock(return_value=adapter)
+    mixin._delivery_adapter_for = MagicMock(return_value=adapter)
     mixin._should_emit_long_running_notification = MagicMock(side_effect=[True, False])
     disp = MagicMock()
     disp._display_surface_mode.return_value = "on"

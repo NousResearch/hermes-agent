@@ -8,6 +8,7 @@ side-effect-free probe, so ``hermes update --plan`` is safe on a live fleet.
 from __future__ import annotations
 
 import logging
+import shlex
 import sys
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, asdict, fields as dataclass_fields
@@ -47,7 +48,7 @@ class UpdatePlan:
         return asdict(self)  # recursive: RuntimeRecord entries become dicts
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "UpdatePlan":
+    def from_dict(cls, data: dict[str, Any]) -> UpdatePlan:
         """Inverse of :meth:`to_dict` (the plan crosses the post-swap hand-off as JSON)."""
         fields_ = {f.name for f in dataclass_fields(cls)}
         plan = cls(**{k: v for k, v in data.items() if k in fields_ and k != "runtimes"})
@@ -84,6 +85,7 @@ def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids
 _RESTART_MECHANISMS = {
     "systemd": "systemd", "launchd": "launchd", "desktop": "desktop",
     "windows-service": "windows-service", "manual-serve": "respawn-argv",
+    "desktop-ssh": "desktop-ssh",
 }
 
 _MECHANISM_DESCRIPTIONS = {
@@ -92,9 +94,14 @@ _MECHANISM_DESCRIPTIONS = {
     "desktop": "Desktop app respawns its serve backend",
     "windows-service": "sc.exe stop before venv mutation, sc.exe start after update",
     "respawn-argv": "stop before code swap, relaunch with recorded launch args",
+    "desktop-ssh": "the remote Desktop that spawned it over SSH respawns it when it reconnects",
 }
 
 _SERVE_KINDS = ("serve", "dashboard")
+# Serve backends a Desktop client owns and recycles: this app's own pool child (``desktop``) or one
+# another machine's Desktop spawned here over SSH (``desktop-ssh``). The updater never restarts
+# either; stopping one out from under its client only makes the client respawn it.
+CLIENT_OWNED_SERVE_SUPERVISORS = frozenset({"desktop", "desktop-ssh"})
 
 
 def _restart_mechanism(supervisor: str, profile: str) -> str:
@@ -217,14 +224,61 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
 
 
+def _loaded_backend_launchd_jobs() -> list:
+    """Loaded launchd dashboard/serve jobs for supervisor classification.
+
+    The probe itself is darwin-gated (``[]`` on every other host); here any failure also degrades
+    to ``[]`` — classification falls back to the spawner probe and never aborts the inventory.
+    See #116503."""
+    with suppress(Exception):
+        from hermes_cli import main_dashboard as _dash
+
+        return _dash._loaded_launchd_backend_jobs()
+    return []
+
+
+def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> tuple[str, str, int | None] | None:
+    """``(domain, label, live_pid)`` of the loaded launchd job owning this ledger row, if any.
+
+    A KeepAlive LaunchAgent backend's recorded spawner (the bootstrap shell) is long dead, so the
+    spawner probe alone misreads the row as ``manual-serve`` — and a respawn-argv restart then
+    fights the job's own KeepAlive respawn. The loaded-job match (live PID, an ancestor, or the
+    normalized ``ProgramArguments``) is the authoritative classification. See #116503."""
+    with suppress(Exception):
+        from hermes_cli import main_dashboard as _dash
+        from hermes_cli.dashboard_procs import _process_ancestors
+
+        try:
+            cmdline = shlex.split(str(entry.get("argv") or "")) or None
+        except ValueError:
+            cmdline = None
+        return _dash._launchd_job_owning_backend(pid, cmdline, jobs, ancestors=_process_ancestors(pid))
+    return None
+
+
+def _is_desktop_ssh_ledger_entry(entry: dict) -> bool:
+    """Is this row the backend a (possibly remote) Desktop spawned over SSH? The canonical argv
+    predicate also classifies rows written before the ledger carried ``isolated``, which is exactly
+    the pre-update serve the first update after this change inventories."""
+    from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+
+    try:
+        return is_desktop_ssh_backend_argv(shlex.split(str(entry.get("argv") or "")))
+    except ValueError:
+        return False
+
+
 def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     """Serve/dashboard backends from the spawn ledger — runtimes the gateway collectors can never see
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
-    supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours."""
+    supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
+    A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
+    detached argv respawn) — the spawner probe cannot see that (#116503)."""
     with _probe("Serve/dashboard ledger inventory"):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
+        launchd_jobs = _loaded_backend_launchd_jobs()
         for entry in ledger_entries():
             purpose, pid = entry.get("purpose"), entry.get("pid")
             if purpose not in _SERVE_KINDS or not isinstance(pid, int) or pid in seen:
@@ -232,13 +286,21 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
             seen.add(pid)
             # detail.create_time: process incarnation, not just the numeric PID — a post-update
             # survivor probe comparing PIDs alone calls a NEW serve that reused the number a survivor.
+            detail = {
+                "argv": entry.get("argv") or "", "host": entry.get("host") or "",
+                "port": entry.get("port"), "create_time": entry.get("create_time"),
+            }
+            job = _launchd_owner_for_ledger_entry(entry, pid, launchd_jobs) if launchd_jobs else None
+            if job:
+                supervisor, detail["launchd_domain"], detail["launchd_label"] = "launchd", job[0], job[1]
+            elif _is_desktop_ssh_ledger_entry(entry):
+                # No local spawner, so the probe below would read manual-serve and file a reminder
+                # nobody here can discharge; its token file and owner nonce belong to the client.
+                supervisor = "desktop-ssh"
+            else:
+                supervisor = "desktop" if spawner_is_dead(entry) is False else "manual-serve"
             plan.runtimes.append(_runtime(
-                str(purpose), str(entry.get("profile") or "default"), pid,
-                "desktop" if spawner_is_dead(entry) is False else "manual-serve",
-                detail={
-                    "argv": entry.get("argv") or "", "host": entry.get("host") or "",
-                    "port": entry.get("port"), "create_time": entry.get("create_time"),
-                },
+                str(purpose), str(entry.get("profile") or "default"), pid, supervisor, detail=detail,
             ))
 
 
@@ -250,7 +312,7 @@ def collect_runtime_inventory() -> UpdatePlan:
     plan = UpdatePlan()
     _collect_install_shape(plan)
     with _probe("Code-identity probe"):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
         plan.expected_sha = identity.get("sha")
@@ -323,16 +385,18 @@ def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
 
 
 def match_runtime_outcomes(
-    plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
+    plan: UpdatePlan, *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
-    stale_serve_pids: "set | None" = None,
+    stale_serve_pids: set | None = None, failed_respawn_pids: set | None = None,
+    external_gateway_pids: set | None = None,
+    live_gateway_pids: dict[str, set[int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
     The platform restart branches each re-discover their own targets, so a runtime the plan saw can
     be missed with no signal. Returns one ``{kind, profile, pid, mechanism, outcome}`` row per
-    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred`` or
-    ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
+    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred``, ``external``
+    or ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
     Serve/dashboard runtimes are reconciled in their OWN vocabulary and never borrow the gateway's
     outcome: with ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as
     ``restarted``, one still alive is ``unaccounted``; without the probe an untouched serve stays
@@ -340,12 +404,42 @@ def match_runtime_outcomes(
     and still lists its pid: the restart phase is forbidden to restart it out from under the app (it
     hosts the live Desktop chats), so it is handed back to its supervisor and surfaced. Without a
     probe result it remains ``unaccounted``, rather than claiming the app owns an unknown
-    incarnation. The probe itself fails closed (unreadable ledger -> every planned serve is listed as
+    incarnation. ``failed_respawn_pids`` (serves the dashboard cleanup stopped and could not bring
+    back) read ``failed`` before the probe, whose "gone" is exactly what a failed respawn looks like
+    (#109290). The probe itself fails closed (unreadable ledger -> every planned serve is listed as
     surviving), so ``deferred`` means "not shown to be gone", not "observed alive". See #111494.
+
+    ``live_gateway_pids`` (profile -> gateway PIDs alive for that profile AFTER the restart phase:
+    control-socket identity, or a runtime-status record whose PID is still live) carries the same
+    incarnation evidence for gateways: the plan identifies a gateway by the
+    profile it SERVES, while the restart bookkeeping names the SERVICE it runs under, and those two
+    disagree whenever a service serves a profile its name does not encode — a root-home launchd
+    label running the sticky active profile, a hash-suffixed systemd unit for a custom
+    ``HERMES_HOME``. No name rule can bridge that, so a planned PID that is gone while a gateway
+    answers for the same profile counts as ``restarted``. A missing successor, or the planned PID
+    still answering, stays ``unaccounted`` — the tripwire keeps its teeth.
+
+    That credit needs an unambiguous baseline: a profile with SEVERAL planned gateway runtimes cannot
+    be attributed to one successor (the fleet probe publishes at most one row per profile), so one
+    replacement cannot have replaced two planned processes. Such a profile keeps the name-path
+    verdict instead of letting an untouched sibling vanish behind a successor that can only have
+    replaced one of them. That resolves conservatively on purpose: pairing a successor to the planned
+    process it replaced would need a start-time identity that neither the plan record nor the fleet
+    row carries, and a tripwire firing on an anomalous plan is the intended direction.
+
+    Credit is deliberately NOT gated on restart bookkeeping either: the failure this fallback exists
+    for already had bookkeeping (``restarted_services`` named the service label — only the
+    profile↔label name match failed), and a gateway launchd respawned by itself has no restart-phase
+    record at all while the fleet row still proves its successor runs the new code.
 
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
     different process that shares the profile, nothing more. See #100479.
+
+    ``external_gateway_pids``: gateway pids the post-restart fleet probe verified as serving a
+    DIFFERENT checkout than this updater (a ``profiles/<name>`` symlinked to a separate install).
+    An untouched gateway in that set is ``external`` — another install owns its restart — instead
+    of ``unaccounted``. No evidence keeps the tripwire armed. See #120240.
     """
     outcomes: list[dict[str, Any]] = []
     try:
@@ -354,22 +448,47 @@ def match_runtime_outcomes(
         relaunched = set(relaunched_profiles or []) | set(externally_supervised_profiles or [])
         killed = {int(p) for p in (killed_pids or set())}
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
+        failed_respawns = {int(p) for p in (failed_respawn_pids or set())}
+        external = {p for p in (external_gateway_pids or ()) if isinstance(p, int)}
+        successors = (
+            {str(profile): {p for p in pids if isinstance(p, int)} for profile, pids in live_gateway_pids.items()}
+            if live_gateway_pids is not None
+            else None
+        )
+        def _bookkeeping_resolves(r: RuntimeRecord) -> bool:
+            """Terminal verdict already available from the restart phase's bookkeeping."""
+            if r.pid is not None and r.pid in killed:
+                return True
+            if r.profile in relaunched:
+                return True
+            return _gateway_named_in(r, failed_set) or _gateway_named_in(r, restarted_set)
+
+        # Baseline identity: the fleet probe publishes at most one row per profile, so successor
+        # evidence is only attributable when ONE planned gateway for that profile still needs a
+        # verdict. Serve/dashboard rows are different processes, and rows bookkeeping already resolved
+        # (killed / relaunched / name-matched) are not candidates either — a stopped orphan must not
+        # make its surviving sibling's successor look ambiguous.
+        pending_gateways: dict[str, int] = {}
+        for _planned in plan.runtimes:
+            if (isinstance(_planned, RuntimeRecord) and _planned.kind == "gateway"
+                    and not _bookkeeping_resolves(_planned)):
+                pending_gateways[_planned.profile] = pending_gateways.get(_planned.profile, 0) + 1
 
         def _outcome(r: RuntimeRecord) -> str:
             killed_here = r.pid is not None and r.pid in killed
             if r.kind in _SERVE_KINDS:
                 if killed_here:
                     return "stopped"
-                if any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
+                if r.pid in failed_respawns or any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
                     return "failed"
                 if stale_serves is not None and r.pid not in stale_serves:
                     # Incarnation-verified: the pre-update process is gone (replaced by its unit / the
                     # dashboard cleanup respawn / the Desktop app).
                     return "restarted"
-                if r.supervisor == "desktop":
+                if r.supervisor in CLIENT_OWNED_SERVE_SUPERVISORS:
                     if stale_serves is not None:
-                        # Still alive on pre-update code, but the Desktop app owns it and the restart phase
-                        # must not kill it (_DESKTOP_SERVE_SKIP_REASON); only the app can pick up the new code.
+                        # Still alive on pre-update code, but a Desktop client owns it and the restart phase
+                        # must not kill it (_DESKTOP_SERVE_SKIP_REASON); only that client can pick up the new code.
                         return "deferred"
                     return "unaccounted"
                 if stale_serves is not None:
@@ -381,7 +500,33 @@ def match_runtime_outcomes(
                 return "stopped"
             if _gateway_named_in(r, failed_set):
                 return "failed"
-            return "restarted" if _gateway_named_in(r, restarted_set) else "unaccounted"
+            if _gateway_named_in(r, restarted_set):
+                return "restarted"
+            if successors is not None and r.pid is not None:
+                # Incarnation-verified last resort: the planned process is gone and a gateway answers
+                # for the same profile now. Name-independent on purpose — the supervising service's
+                # label/unit may encode the install root (or a hashed home) instead of the served
+                # profile, which the profile-scoped name matcher above can never credit.
+                live = successors.get(r.profile)
+                ambiguous = pending_gateways.get(r.profile, 0) > 1
+                if live and r.pid not in live and not ambiguous:
+                    return "restarted"
+                if ambiguous:
+                    logger.debug(
+                        "%s planned gateway runtimes for profile %r still need a verdict — successor "
+                        "evidence cannot attribute the restart, leaving pid %s on the name path",
+                        pending_gateways[r.profile], r.profile, r.pid,
+                    )
+                elif not live:
+                    # No row for this profile: the fallback has nothing to work with and reconciliation
+                    # stays on the service-name path. Logged because the tripwire below reads identically
+                    # whether the evidence was missing or the restart was actually missed.
+                    logger.debug(
+                        "No post-restart gateway evidence for profile %r (planned pid %s via %s) — "
+                        "reconciling on restart bookkeeping alone",
+                        r.profile, r.pid, r.restart_via,
+                    )
+            return "external" if r.pid in external else "unaccounted"
 
         for r in plan.runtimes:
             if isinstance(r, RuntimeRecord):
@@ -397,17 +542,32 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     """Print a loud warning for runtimes the restart phase never touched.
 
     Returns True when at least one planned runtime is unaccounted; the caller escalates like a
-    STALE/DOWN fleet row (exit 1) — a promised restart silently missed is the class this phase
+    STALE/DOWN fleet row (an owed ``gateway_restart`` follow-up) — a promised restart silently missed is the class this phase
     exists to kill.
     """
-    deferred = [o for o in outcomes if o.get("outcome") == "deferred"]
+    manual = [o for o in outcomes if o.get("outcome") == "deferred" and o.get("mechanism") == "respawn-argv"]
+    if manual:
+        print()
+        print("  ⚠ Manual serve restarts deferred to their owner (reminders retained until the old processes exit):")
+        for o in manual:
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']}: relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend")
+    deferred = [o for o in outcomes if o.get("outcome") == "deferred" and o.get("mechanism") != "respawn-argv"]
     if deferred:
         # Surfaced but not escalated: the updater has no authority over these, so holding
         # ``fleet_restart_pending`` for them would never be discharged. See #111494.
         print()
         print("  ℹ Left to the Desktop app (still on pre-update code until it is relaunched):")
         for o in deferred:
-            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']} — relaunch the Desktop app to pick up the update")
+            action = ("owned by a Desktop connected over SSH; it picks up the update when that Desktop reconnects"
+                      if o.get("mechanism") == "desktop-ssh" else "relaunch the Desktop app to pick up the update")
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']} — {action}")
+    external = [o for o in outcomes if o.get("outcome") == "external"]
+    if external:
+        # Surfaced but not escalated: another install's updater owns these restarts. See #120240.
+        print()
+        print("  ℹ Left to their own install (separate checkout, not restarted by this update):")
+        for o in external:
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']}")
     missed = [o for o in outcomes if o.get("outcome") == "unaccounted"]
     if not missed:
         return False
@@ -433,16 +593,8 @@ def record_plan_in_receipt(plan: UpdatePlan) -> None:
     try:
         import hermes_cli.update_receipt as ur
 
-        if ur._current is not None:
-            ur._current.data["plan"] = plan.to_dict()
+        current = ur._current.get()
+        if current is not None:
+            current.data["plan"] = plan.to_dict()
     except Exception as exc:
         logger.debug("Could not record plan in receipt: %s", exc)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

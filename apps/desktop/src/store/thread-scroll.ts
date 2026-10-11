@@ -55,8 +55,10 @@ function setSessionValue<T extends boolean | number>(
   target.set(next)
 }
 
-export const setThreadAtBottom = (isAtBottom: boolean, sessionId: string | null = null) => {
-  setSessionValue($threadScrolledUpBySession, sessionId, !isAtBottom, false)
+// `scrolledUp` dims the composer; it diverges from the jump pill once the reader
+// stalls (see list.tsx), so the composer comes back while the pill stays.
+export const setThreadAtBottom = (isAtBottom: boolean, sessionId: string | null = null, scrolledUp = !isAtBottom) => {
+  setSessionValue($threadScrolledUpBySession, sessionId, scrolledUp, false)
   setSessionValue($threadJumpButtonVisibleBySession, sessionId, !isAtBottom, false)
 }
 
@@ -67,13 +69,14 @@ export const resetThreadScroll = (sessionId: string | null = null) => {
 
 export const publishThreadAtBottom = (
   isAtBottom: boolean,
-  publisher: { paneVisible: boolean; sessionId?: string | null }
+  publisher: { paneVisible: boolean; sessionId?: string | null },
+  scrolledUp = !isAtBottom
 ): void => {
   if (!publisher.paneVisible) {
     return
   }
 
-  setThreadAtBottom(isAtBottom, publisher.sessionId)
+  setThreadAtBottom(isAtBottom, publisher.sessionId, scrolledUp)
 }
 
 export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean; sessionId?: string | null }): void => {
@@ -106,6 +109,35 @@ export const onScrollToBottomRequest = (handler: () => void, sessionId: string |
 
 export const requestScrollToBottom = (sessionId: string | null = null) => {
   handlers.get(sessionId)?.forEach(handler => handler())
+}
+
+export type ThreadPageDirection = -1 | 1
+
+// Bare PageUp/PageDown are global keybinds, while the scroll owner lives in
+// the focused thread. Route the intent by stable session key so kept-alive and
+// split transcripts cannot page together.
+const pageHandlers = new Map<string | null, Set<(direction: ThreadPageDirection) => void>>()
+
+export const onThreadPageScrollRequest = (
+  handler: (direction: ThreadPageDirection) => void,
+  sessionKey: string | null = null
+) => {
+  const scoped = pageHandlers.get(sessionKey) ?? new Set<(direction: ThreadPageDirection) => void>()
+
+  scoped.add(handler)
+  pageHandlers.set(sessionKey, scoped)
+
+  return () => {
+    scoped.delete(handler)
+
+    if (scoped.size === 0) {
+      pageHandlers.delete(sessionKey)
+    }
+  }
+}
+
+export const requestThreadPageScroll = (direction: ThreadPageDirection, sessionKey: string | null = null) => {
+  pageHandlers.get(sessionKey)?.forEach(handler => handler(direction))
 }
 
 // Inline edit grows a sticky human bubble. Fire on pointerdown so the viewport
@@ -192,6 +224,21 @@ export type ThreadScrollRestoreResizeMetrics = {
   scrollHeight: number
 }
 
+/** `data-slot` of the spacer that reserves room under the last row for the composer. */
+export const COMPOSER_CLEARANCE_SLOT = 'aui_composer-clearance'
+
+/** Viewport metrics with the composer clearance spacer measured separately. */
+export function readThreadScrollResizeMetrics(
+  viewport: HTMLElement,
+  clearance: HTMLElement | null
+): ThreadScrollRestoreResizeMetrics {
+  return {
+    clearanceHeight: clearance?.clientHeight ?? 0,
+    clientHeight: viewport.clientHeight,
+    scrollHeight: viewport.scrollHeight
+  }
+}
+
 export function threadScrollTranscriptHeight(
   metrics: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
 ): number {
@@ -199,9 +246,10 @@ export function threadScrollTranscriptHeight(
 }
 
 /**
- * Post-settle restore RO may re-pin a frozen offset only when transcript
- * rows actually changed height. Composer clearance / viewport-box resizes
- * and no-op RO deliveries must not rewrite scrollTop.
+ * Post-settle restore RO may re-pin the restored target only when transcript
+ * rows actually changed height. Composer clearance / viewport-box resizes and
+ * no-op RO deliveries must not rewrite scrollTop — for a bottom target either,
+ * or every keystroke yanks a view the user moved off the bottom back down.
  */
 export function shouldReapplyFrozenThreadScrollOffset(
   target: ThreadScrollState,
@@ -209,11 +257,15 @@ export function shouldReapplyFrozenThreadScrollOffset(
   previous: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>,
   next: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
 ): boolean {
-  if (target.kind !== 'offset' || !settled) {
+  if (!settled) {
     return false
   }
 
-  return Math.round(threadScrollTranscriptHeight(previous)) !== Math.round(threadScrollTranscriptHeight(next))
+  const before = Math.round(threadScrollTranscriptHeight(previous))
+  const after = Math.round(threadScrollTranscriptHeight(next))
+
+  // A bottom target follows growth only — a shrink is clamped by the browser.
+  return target.kind === 'bottom' ? after > before : after !== before
 }
 
 // Storage is scoped per profile with the same `.profile.<encoded>` suffix the

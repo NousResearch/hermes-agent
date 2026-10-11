@@ -344,6 +344,14 @@ export function rootChildSide(
  * The FIXED zone that owns `edge` of this subtree along `axis` — the zone a
  * sash on that boundary actually resizes (dragging the seam between main and
  * a nested right section resizes the section's edge sidebar, VS Code-style).
+ *
+ * A minimized group is a 28px rail: the sash gesture skips it in preview and
+ * commit, so owning a seam with it makes that seam dead — the drag writes an
+ * override to a width nothing renders. The seam falls to the next zone
+ * inward instead, so folding a section's edge zone never strips the
+ * sidebars behind it of their resize handle. When the whole edge run is
+ * rails the first one keeps the seam (the old behavior): the drag stays a
+ * no-op instead of breaking the flex-run preview/commit invariants.
  */
 export function edgeFixedZone(
   node: LayoutNode,
@@ -356,15 +364,21 @@ export function edgeFixedZone(
   }
 
   const visible = node.children.filter(child => !subtreeGone(child, ctx))
+  const isRail = (child: LayoutNode) => child.type === 'group' && Boolean(child.minimized)
 
   if (node.orientation === axis) {
-    const child = edge === 'start' ? visible[0] : visible[visible.length - 1]
+    const ordered = edge === 'start' ? visible : [...visible].reverse()
+    const child = ordered.find(c => !isRail(c)) ?? ordered[0]
 
     return child ? edgeFixedZone(child, edge, axis, ctx) : null
   }
 
   // Cross-axis: every child touches the edge — the first fixed one owns it.
   for (const child of visible) {
+    if (isRail(child)) {
+      continue
+    }
+
     const zone = edgeFixedZone(child, edge, axis, ctx)
 
     if (zone) {

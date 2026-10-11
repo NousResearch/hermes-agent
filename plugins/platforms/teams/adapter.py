@@ -330,6 +330,7 @@ _APPROVAL_LABEL_KEYS = {
     "once": "platform.teams.approval.resolved_once", "session": "platform.teams.approval.resolved_session",
     "always": "platform.teams.approval.resolved_always", "deny": "platform.teams.approval.resolved_deny",
 }
+_DEFAULT_PROCESSING_ACK = "👀 Processing your message…"
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -732,6 +733,38 @@ class TeamsAdapter(BasePlatformAdapter):
         if self._app:
             with suppress(Exception):
                 await self._app.send(chat_id, TypingActivityInput())
+
+    def _processing_ack_text(self) -> Optional[str]:
+        """Configured channel-thread acknowledgement, or ``None`` when explicitly disabled."""
+        configured = self._extra.get("processing_ack", True)
+        if configured is False or str(configured).strip().lower() in {"false", "0", "no", "off"}:
+            return None
+        return configured.strip() if isinstance(configured, str) and configured.strip() else _DEFAULT_PROCESSING_ACK
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Acknowledge channel-thread turns, where Teams does not render typing activities."""
+        source = getattr(event, "source", None)
+        if getattr(source, "chat_type", None) != "channel":
+            return
+        chat_id = getattr(source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        # Teams embeds the root in an existing channel-thread conversation ID.
+        # App.reply() replaces that suffix, so do not substitute a nested activity's ID.
+        if isinstance(chat_id, str) and ";messageid=" in chat_id:
+            message_id = chat_id.split(";messageid=", 1)[1].split(";", 1)[0]
+        text = self._processing_ack_text()
+        if not (self._app and chat_id and isinstance(message_id, str)
+                and message_id.isdigit() and message_id != "0" and text):
+            return
+        # The processing hook precedes the runner's ingress gate. Only an affirmative
+        # registered policy may authorize this credentialed side effect; unknown fails closed.
+        if self._authorization_check is not None and self._is_sender_authorized(
+                getattr(source, "user_id", None), source.chat_type, chat_id) is not True:
+            return
+        # Normal send() falls back to a flat send for group-chat reply failures. An
+        # acknowledgement must stay in its channel thread; the lifecycle hook contains errors.
+        for chunk in self.truncate_message(self.format_message(text)):
+            self._remember_sent(await self._app.reply(chat_id, message_id, chunk))
 
     async def _send_media_attachment(
         self, chat_id: str, source: str, default_mime: str, caption: Optional[str] = None, media_label: str = "media"

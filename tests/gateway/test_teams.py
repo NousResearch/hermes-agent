@@ -512,6 +512,203 @@ class TestTeamsMessageHandling:
         ]
 
 
+class TestTeamsProcessingAcknowledgement:
+    """Exercise the real processing hook and SDK transport, including thread failures."""
+
+    def _adapter(self, **extra):
+        adapter = TeamsAdapter(_make_config(**extra))
+        adapter._app = SimpleNamespace(
+            reply=AsyncMock(return_value=SimpleNamespace(id="ack-id")), send=AsyncMock(),
+        )
+        return adapter
+
+    def _event(self, adapter, *, chat_type="channel", message_id="12345"):
+        from gateway.platforms.event import MessageEvent
+
+        return MessageEvent(
+            text="Hello",
+            source=adapter.build_source(
+                chat_id="19:channel@thread.v2", chat_type=chat_type,
+                user_id="aad-456", message_id=message_id,
+            ), message_id=message_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_channel_thread_posts_default_processing_ack_before_handler(self):
+        adapter = self._adapter()
+        event = self._event(adapter)
+        async def handler(received):
+            assert received is event
+            adapter._app.reply.assert_awaited_once_with(
+                "19:channel@thread.v2", "12345", "👀 Processing your message…",
+            )
+            return None
+        adapter.set_message_handler(AsyncMock(side_effect=handler))
+        adapter._start_typing_refresh = MagicMock(return_value=None)
+        adapter.on_processing_complete = AsyncMock()
+
+        await adapter._process_message_background(event, "teams-ack-test")
+
+        adapter._message_handler.assert_awaited_once_with(event)
+        adapter._app.send.assert_not_awaited()
+        assert "ack-id" in adapter._sent_ids
+        assert adapter.on_processing_complete.await_args.args[1].value == "success"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("chat_type", ["dm", "group"])
+    async def test_processing_ack_skips_non_channel_chats(self, chat_type):
+        adapter = self._adapter()
+        await adapter.on_processing_start(self._event(adapter, chat_type=chat_type))
+        adapter._app.reply.assert_not_awaited()
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("setting", [False, 0, "false", "0", "no", "off"])
+    async def test_processing_ack_optout(self, setting):
+        adapter = self._adapter(processing_ack=setting)
+        await adapter.on_processing_start(self._event(adapter))
+        adapter._app.reply.assert_not_awaited()
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message_id", [None, "", "0", "not-a-thread", 12345])
+    async def test_invalid_thread_anchor_never_posts_to_channel(self, message_id):
+        adapter = self._adapter()
+        await adapter.on_processing_start(self._event(adapter, message_id=message_id))
+        adapter._app.reply.assert_not_awaited()
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_custom_text_uses_the_same_thread_and_formatting(self):
+        adapter = self._adapter(processing_ack="  正在处理。  ")
+        await adapter.on_processing_start(self._event(adapter))
+        adapter._app.reply.assert_awaited_once_with(
+            "19:channel@thread.v2", "12345", adapter.format_message("正在处理。"),
+        )
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reply_failure_is_best_effort_without_flat_fallback(self):
+        adapter = self._adapter()
+        adapter._app.reply.side_effect = RuntimeError("Teams unavailable")
+        event = self._event(adapter)
+        adapter.set_message_handler(AsyncMock(return_value=None))
+        adapter._start_typing_refresh = MagicMock(return_value=None)
+
+        await adapter._process_message_background(event, "teams-ack-failure")
+
+        adapter._app.reply.assert_awaited_once()
+        adapter._app.send.assert_not_awaited()
+        adapter._message_handler.assert_awaited_once_with(event)
+
+    @pytest.mark.asyncio
+    async def test_rejected_sender_does_not_receive_ack(self):
+        adapter = self._adapter()
+        check = MagicMock(return_value=False)
+        adapter.set_authorization_check(check)
+        await adapter.on_processing_start(self._event(adapter))
+        check.assert_called_once_with("aad-456", "channel", "19:channel@thread.v2")
+        adapter._app.reply.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verdict", [False, None, "yes", RuntimeError("policy unavailable")])
+    async def test_registered_policy_unknown_or_failure_never_acknowledges(self, verdict):
+        adapter = self._adapter()
+        check = MagicMock(side_effect=verdict) if isinstance(verdict, Exception) else MagicMock(return_value=verdict)
+        adapter.set_authorization_check(check)
+        await adapter._run_processing_hook("on_processing_start", self._event(adapter))
+        adapter._app.reply.assert_not_awaited()
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_profile_bound_authorized_callback_allows_ack(self):
+        adapter = self._adapter()
+        adapter.set_owner_profile("owner")
+        check = MagicMock(return_value=True)
+        adapter.set_authorization_check(check)
+        event = self._event(adapter)
+        assert event.source.profile == "owner"
+        await adapter.on_processing_start(event)
+        check.assert_called_once_with("aad-456", "channel", "19:channel@thread.v2")
+        adapter._app.reply.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_inbound_nested_channel_ack_stays_in_existing_root_thread(self):
+        adapter = self._adapter(require_mention=False)
+        adapter._app.id = "bot-id"
+        fixture = TestTeamsMessageHandling()
+        activity = fixture._make_activity(
+            conversation_id="19:channel@thread.v2;messageid=12345",
+            conversation_type="channel", activity_id="67890",
+        )
+        adapter.set_message_handler(AsyncMock(return_value=None))
+        adapter._start_typing_refresh = MagicMock(return_value=None)
+        async def process(event):
+            await adapter._process_message_background(event, "nested-ack")
+        adapter.handle_message = process
+
+        await adapter._on_message(fixture._make_ctx(activity))
+
+        adapter._app.reply.assert_awaited_once_with(
+            "19:channel@thread.v2;messageid=12345", "12345", "👀 Processing your message…",
+        )
+        adapter._message_handler.assert_awaited_once()
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("root", ["", "0", "invalid"])
+    async def test_invalid_existing_root_never_falls_back_to_child_or_flat_send(self, root):
+        adapter = self._adapter()
+        event = self._event(adapter, message_id="67890")
+        event.source.chat_id += ";messageid=" + root
+        await adapter.on_processing_start(event)
+        adapter._app.reply.assert_not_awaited()
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_secondary_real_policy_uses_owner_allowlist(self, tmp_path, monkeypatch):
+        from agent import secret_scope
+        from tests.gateway.test_multiplex_interactive_auth import _runner
+
+        home = tmp_path / "hh"
+        secondary = home / "profiles" / "secondary"
+        secondary.mkdir(parents=True)
+        (home / ".env").write_text("GATEWAY_ALLOWED_USERS=default-only\n")
+        (secondary / ".env").write_text("GATEWAY_ALLOWED_USERS=aad-456\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "default-only")
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        previous = secret_scope.is_multiplex_active()
+        secret_scope.set_multiplex_active(True)
+        try:
+            runner = _runner(home)
+            runner.config.profile_routes = []
+            adapter = self._adapter()
+            adapter.set_owner_profile("secondary")
+            adapter._hermes_profile_name = "secondary"
+            runner.config.platforms = {adapter.platform: adapter.config}
+            runner._profile_adapters = {"secondary": {adapter.platform: adapter}}
+            adapter.set_authorization_check(runner._make_adapter_auth_check(adapter.platform, "secondary"))
+            event = self._event(adapter)
+            assert event.source.profile == "secondary"
+            await adapter.on_processing_start(event)
+            adapter._app.reply.assert_awaited_once()
+            adapter._app.reply.reset_mock()
+            event.source.user_id = "default-only"
+            await adapter.on_processing_start(event)
+            adapter._app.reply.assert_not_awaited()
+        finally:
+            secret_scope.set_multiplex_active(previous)
+
+    @pytest.mark.asyncio
+    async def test_normal_reply_keeps_existing_group_fallback(self):
+        adapter = self._adapter()
+        adapter._app.reply.side_effect = RuntimeError("thread unsupported")
+        result = await adapter.send("19:group@thread.v2", "answer", reply_to="12345")
+        assert result.success
+        adapter._app.send.assert_awaited_once_with("19:group@thread.v2", "answer")
+
+
 class TestTeamsAttachmentClassification:
     """Document attachments must set MessageType.DOCUMENT so run.py's
     document-context injection surfaces the cached file to the agent

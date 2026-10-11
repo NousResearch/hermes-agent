@@ -596,7 +596,9 @@ def _manage_thinking_signatures(result: list[dict[str, Any]], base_url: str | No
     replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones.
     """
     route = anthropic_thinking_route(base_url, model)
-    loop_start = _current_tool_loop_start(result)
+    # The latest assistant turn always keeps its thinking, even once a new user message closes its loop.
+    loop_start = min(_current_tool_loop_start(result),
+                     next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), len(result)))
     preserve_prior = route_replays_prior_thinking(route, model)
     for idx, m in _assistant_block_lists(result):
         if route == "kimi":

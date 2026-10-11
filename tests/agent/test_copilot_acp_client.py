@@ -588,3 +588,48 @@ def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
         assert "exited early: fatal: agent segfaulted" in str(exc)
     else:
         raise AssertionError("session on a dead CLI must raise")
+
+
+def test_format_messages_preserves_assistant_tool_calls_and_tool_names():
+    from agent.copilot_acp_client import _format_messages_as_prompt
+
+    messages = [
+        {"role": "user", "content": "check repo"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": '{"command":"git status"}'},
+                }
+            ],
+        },
+        {"role": "tool", "name": "terminal", "tool_call_id": "c1", "content": "On branch main"},
+    ]
+    prompt = _format_messages_as_prompt(messages)
+    assert '<tool_call>{"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": "{\\"command\\":\\"git status\\"}"}}</tool_call>' in prompt
+    assert "Tool (terminal):\nOn branch main" in prompt
+    assert "Tool execution complete. Review the tool results above" in prompt
+
+
+def test_handle_server_message_ignores_cli_info_banners():
+    client = CopilotACPClient(acp_cwd="/tmp")
+    text_parts = []
+    fake_proc = _FakeProcess()
+    msg = {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "Info: Disabled tools: view, rg"},
+            }
+        },
+    }
+    handled = client._handle_server_message(
+        msg, process=fake_proc, cwd="/tmp", text_parts=text_parts, reasoning_parts=[]
+    )
+    assert handled is True
+    assert text_parts == []

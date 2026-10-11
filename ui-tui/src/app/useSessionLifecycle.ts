@@ -4,7 +4,7 @@ import { writeFileSync } from 'node:fs'
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
 import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
-import { type MutableRefObject, type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
+import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { localCreationOptions } from '../canonicalGateway.js'
 import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
@@ -138,8 +138,6 @@ export interface UseSessionLifecycleOptions {
   gw: GatewayClient
   onFreshSessionStarted?: (sessionId: string) => void
   panel: (title: string, sections: PanelSection[]) => void
-  /** The session gateway.ready resumes after a transport loss (owned by useMainApp). */
-  recoverSidRef?: MutableRefObject<null | string>
   rpc: GatewayRpc
   scrollRef: RefObject<null | ScrollBoxHandle>
   setHistoryItems: StateSetter<Msg[]>
@@ -158,7 +156,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     gw,
     onFreshSessionStarted,
     panel,
-    recoverSidRef,
     rpc,
     scrollRef,
     setHistoryItems,
@@ -176,9 +173,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const closeSession = useCallback(
     async (targetSid?: null | string, deferMessages = false) => {
       const closed =
-        targetSid && !gw.isCanonical
-          ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid })
-          : null
+        targetSid && !gw.isCanonical ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : null
 
       if (!deferMessages) {
         closed?.messages?.forEach(message => sys(message))
@@ -195,48 +190,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const canonicalSubscriptions = useRef(new Map<string, string>())
   const canonicalDetachFlights = useRef(new Map<string, Promise<void>>())
   const staleAttachments = useRef(new Map<string, { session_id: string; subscription_id: string }>())
-
-  // A user attach (/new, /resume <other>, picking a live session) supersedes the pending
-  // recovery resume: it holds the target so gateway.ready cannot snap the view back.
-  // If the newest attach ends unbound, the target is handed back and recovered now
-  // (gateway.ready has usually passed already); any bind settles it.
-  const heldRecovery = useRef<null | string>(null)
-  const resumeRef = useRef<(id: string) => Promise<void>>(async () => undefined)
-
-  const holdRecovery = useCallback(
-    (id?: string) => {
-      const target = recoverSidRef?.current
-
-      if (recoverSidRef && target && target !== id) {
-        heldRecovery.current ??= target
-        recoverSidRef.current = null
-      }
-
-      return Boolean(heldRecovery.current) && recoverSidRef?.current !== id
-    },
-    [recoverSidRef]
-  )
-
-  const settleRecovery = useCallback(
-    (flight: number, bound: boolean, holding: boolean) => {
-      const target = heldRecovery.current
-
-      if (flight !== attachmentFlight.current || !target || (!bound && !holding)) {
-        return
-      }
-
-      heldRecovery.current = null
-
-      if (bound && recoverSidRef?.current === target) {
-        // A second disconnect before this bind re-armed the old session; the bind supersedes it.
-        recoverSidRef.current = null
-      } else if (!bound && recoverSidRef) {
-        recoverSidRef.current = target
-        void resumeRef.current(target)
-      }
-    },
-    [recoverSidRef]
-  )
 
   const detachCanonical = useCallback(
     (sessionId?: null | string, subscriptionId?: null | string) => {
@@ -378,8 +331,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const flight = ++attachmentFlight.current
       const previousSid = getUiState().sid
       const previousSubscription = previousSid ? canonicalSubscriptions.current.get(previousSid) : undefined
-      const holding = holdRecovery()
-      let bound = false
       pendingAttachments.current.add(flight)
 
       try {
@@ -482,11 +433,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         signalFreshSessionBoundary(previousSid, r.session_id, onFreshSessionStarted)
         adoptAttachment(r, previousSid, previousSubscription)
-        bound = true
 
         return r.session_id
       } finally {
-        settleRecovery(flight, bound, holding)
         finishAttachment(flight)
       }
     },
@@ -497,14 +446,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       discardStaleAttachment,
       finishAttachment,
       gw,
-      holdRecovery,
       onFreshSessionStarted,
       panel,
       resetSession,
       rpc,
       setHistoryItems,
       setSessionStartedAt,
-      settleRecovery,
       sys
     ]
   )
@@ -529,8 +476,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       pendingAttachments.current.add(flight)
       const previousSid = getUiState().sid
       const previousSubscription = previousSid ? canonicalSubscriptions.current.get(previousSid) : undefined
-      const holding = holdRecovery(id)
-      let bound = false
       patchOverlayState({ sessions: false })
       patchUiState({ status: t('session.status.switchingSession') })
       // The card belongs to the session being left; the activated one answers with its own.
@@ -595,7 +540,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
           adoptAttachment(r, previousSid, previousSubscription)
-          bound = true
         })
         .catch((e: Error) => {
           if (flight !== attachmentFlight.current) {
@@ -605,22 +549,17 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           sys(`error: ${e.message}`)
           patchUiState({ status: 'ready' })
         })
-        .finally(() => {
-          settleRecovery(flight, bound, holding)
-          finishAttachment(flight)
-        })
+        .finally(() => finishAttachment(flight))
     },
     [
       adoptAttachment,
       discardStaleAttachment,
       finishAttachment,
       gw,
-      holdRecovery,
       resetSession,
       scrollRef,
       setHistoryItems,
       setSessionStartedAt,
-      settleRecovery,
       sys
     ]
   )
@@ -632,8 +571,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const current = captureDestination()
       const previousSid = current.sid
       const previousSubscription = previousSid ? canonicalSubscriptions.current.get(previousSid) : undefined
-      const holding = holdRecovery(id)
-      let bound = false
 
       const destination =
         current.sid === id || current.storedSid === id ? current : { ...current, sid: id, storedSid: id }
@@ -721,11 +658,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               }
 
               adoptAttachment(r, previousSid, previousSubscription)
-              bound = true
-
-              if (recoverSidRef?.current === id) {
-                recoverSidRef.current = null
-              }
             })
             .catch((e: Error) => {
               if (flight !== attachmentFlight.current) {
@@ -736,10 +668,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               patchUiState({ status: 'ready' })
             })
         })
-        .finally(() => {
-          settleRecovery(flight, bound, holding)
-          finishAttachment(flight)
-        })
+        .finally(() => finishAttachment(flight))
     },
     [
       adoptAttachment,
@@ -748,20 +677,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       discardStaleAttachment,
       finishAttachment,
       gw,
-      holdRecovery,
       panel,
-      recoverSidRef,
       resetSession,
       rpc,
       scrollRef,
       setHistoryItems,
       setSessionStartedAt,
-      settleRecovery,
       sys
     ]
   )
-
-  resumeRef.current = resumeById
 
   const guardBusySessionSwitch = useCallback(
     (what = t('session.lifecycle.switchSessions')) => {

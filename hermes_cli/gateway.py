@@ -4338,6 +4338,48 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
 
+def _owner_pid_still_live(owner) -> bool:
+    """Re-prove the ``decide()`` snapshot's PID the way the host probe does.
+
+    ``gateway.host_attach._probe_host_gateway`` refuses a record it cannot prove live
+    (``host_rendezvous.liveness_is_proven``) before it dials. ``owner.supervisor`` is only
+    what identify said when ``decide()`` ran; a peer that exits before the exit code is
+    chosen must not stay durable.
+    """
+    from gateway import host_rendezvous as hr
+
+    pid = getattr(owner, "pid", None)
+    record = hr.read_record(hr.ROLE_GATEWAY)
+    if record is None or record.pid != pid:
+        return False
+    return hr.liveness_is_proven(record)
+
+
+def _durable_systemd_scope_conflict(decision) -> bool:
+    """Already-serves ATTACH where the other owner is the other Restart=always scope.
+
+    The host rendezvous record does not say this. Both of the following have to be true, and
+    neither alone is enough: the owner's live identify says ``supervisor == systemd`` (a manual
+    foreground owner can still exit), and both user and system unit files are installed (a single
+    scope must keep retrying, including across a planned restart). ``external`` is not systemd and
+    stays 75. Any other transient verdict, including an unknown served set, stays on the 75 path.
+
+    That supervisor string is a snapshot. Before the conflict is durable, the owner PID is
+    re-proved with the same liveness helper the host probe uses. A peer that exited after
+    ``decide()`` is not live, so this returns false and the caller stays on 75.
+    """
+    from gateway.host_attach import ATTACH
+
+    if getattr(decision, "outcome", None) != ATTACH:
+        return False
+    owner = getattr(decision, "owner", None)
+    if getattr(owner, "supervisor", "") != "systemd":
+        return False
+    if not has_conflicting_systemd_units():
+        return False
+    return _owner_pid_still_live(owner)
+
+
 def _host_decision_exit_code(decision) -> int:
     """Exit code for a host-attach verdict a supervisor may be watching.
 
@@ -4350,8 +4392,20 @@ def _host_decision_exit_code(decision) -> int:
     already retries: systemd has ``RestartForceExitStatus=75`` with ``RestartSec=5``, the s6 finish
     script passes it through, and launchd relaunches a non-78 failure. Exit 0 would NOT do: s6
     parks a clean exit too.
+
+    The one exception is :func:`_durable_systemd_scope_conflict`: the other process is itself a
+    systemd unit and the other scope is installed, so it will not go away. Retrying 75 forever is
+    the duplicate-scope loop. That verdict exits 78. A peer that can still disappear stays 75,
+    including one whose systemd snapshot is stale because it exited after ``decide()``.
     """
-    if getattr(decision, "transient", False):
+    durable = _durable_systemd_scope_conflict(decision)
+    if durable:
+        logger.warning(
+            "both user and system gateway units are installed and this unit is parked (exit %d); "
+            "removing the extra scope is required because the park does not clear itself",
+            GATEWAY_FATAL_CONFIG_EXIT_CODE,
+        )
+    if getattr(decision, "transient", False) and not durable:
         return GATEWAY_SERVICE_RESTART_EXIT_CODE
     return GATEWAY_FATAL_CONFIG_EXIT_CODE
 
@@ -4361,7 +4415,8 @@ def _attach_to_host_gateway_or_guard(force: bool = False, replace: bool = False)
 
     A profile the host process already serves has nothing to run: print who serves it and exit 0
     without spawning anything. Under a service supervisor the SAME situation exits 75 instead, so
-    the unit is RETRIED rather than parked (see :func:`_host_decision_exit_code`).
+    the unit is RETRIED rather than parked, unless the owner is the other durable systemd scope,
+    which exits 78 (see :func:`_host_decision_exit_code`).
 
     ``--replace`` and ``--force`` are the two escape hatches this guard must not eat: both return
     here so ``start_gateway`` can act on them (it owns the signalling and the PID claim).

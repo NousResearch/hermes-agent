@@ -54,6 +54,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
 | `hermes egress` | Outbound credential-injection firewall for remote terminal sandboxes (iron-proxy). Disabled by default. See [Egress proxy](../user-guide/egress/iron-proxy.md). |
 | `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
+| `hermes browser` | Real-profile browsing helpers — close the browser locking your default profile before Hermes copies it. See [Real profile browsing](../user-guide/features/browser.md#real-profile-browsing-use-your-own-logins). |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
 | `hermes whatsapp-cloud` | Configure the official Meta WhatsApp Business Cloud API adapter (Business account + public webhook required). Distinct from `hermes whatsapp` (Baileys personal-account bridge). |
@@ -63,17 +64,21 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
 | `hermes peer` | Register peer Hermes gateways on other machines and DM their agents' canonical Bot Chats (`hermes peer dm <peer>[/<agent>] "…"`). The transport behind cross-machine bot-to-bot messaging. |
 | `hermes secrets` | Manage external secret sources (currently Bitwarden Secrets Manager) for pulling API keys at process startup instead of from `~/.hermes/.env`. |
+| `hermes vault` | Manage the local encrypted autofill vault (`add`/`list`/`rm`) and the detected password-manager sources. See [Passwords & Logins](../user-guide/features/credential-vault.md). |
 | `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `hermes codex-runtime` | Noninteractive counterpart of `/codex-runtime`: `migrate [--dry-run] [--json]` regenerates the Hermes-managed block in `~/.codex/config.toml` for the selected profile. See [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md#running-the-migration-from-a-script). |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes usage` | Show the configured account's rate-limit windows (the `/usage` block) without a session; `--json` for scripts. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
-| `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up), kanban dispatch or gateway turns start until resumed; in-flight work is never killed. |
+| `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up) and neither kanban dispatch nor new gateway turns start until resumed; in-flight work is never killed. `hermes pause --reason <text>` records why. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
 | `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
+| `hermes worktree` | Audit and reclaim the worktrees `hermes -w` sessions accumulate under `<repo>/.worktrees/` (`list`, `prune`). See [Worktree cleanup](../user-guide/cli.md#worktree-cleanup). |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
+| `hermes verify` | Detect a project's run recipe and smoke-test it (bootstrap → build → test → start → readiness). |
+| `hermes monitoring` | Inspect gateway monitoring — service health plus redacted diagnostics exported over OTLP. See [Gateway Monitoring](../developer-guide/gateway-monitoring.md). |
 | `hermes security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
 | `hermes approvals` | Approval-prompt tools — mine approval history into allowlist proposals. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
@@ -970,6 +975,47 @@ hermes webhook subscribe <name> [options]
 | `--route-profile` | Bind the route to a multiplexed profile: it is then reachable only at `/p/<profile>/webhooks/<name>` and the agent runs as that profile. Validated against existing profiles; kept on update when omitted. Not the same as the global `-p/--profile`, which selects the gateway whose subscriptions file is written. See [Multi-profile gateways](../user-guide/multi-profile-gateways.md). |
 
 Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart. Re-running `subscribe` for an existing name keeps its secret and profile binding unless you pass `--secret` / `--route-profile`.
+
+## `hermes verify`
+
+```bash
+hermes verify [path] [options]
+```
+
+Detect how a project is built, tested, and started — then run a verification
+pass: **bootstrap → build → test → start in background → readiness poll →
+teardown**. Detection covers the common frameworks (Node/npm, Python, Rust, Go,
+…) and their own scripts; a saved manifest at `<project>/.hermes/environment.json`
+wins over fresh detection when it is present and valid, and `--save` writes the
+detected recipe there for you to edit.
+
+Phase commands run through the project's own shell recipe (the same trust level
+as the `terminal` tool). A completed run is recorded in the verification-evidence
+ledger, and a partial run (`--phase` or `--skip-start`) is recorded as
+`targeted`, never as a full green.
+
+| Option | Description |
+|--------|-------------|
+| `path` | Project root to verify (default: the current directory). |
+| `--detect-only` | Print the detected recipe as JSON and run nothing. |
+| `--save` | Save the recipe to `.hermes/environment.json` in the project. |
+| `--skip-start` | Run the command phases but skip starting the app and the readiness poll. |
+| `--phase <name>` | Run only the given phase (`bootstrap`, `build`, `test`, `start`); repeatable. |
+| `--port <n>` | Override the port used for the readiness poll. |
+| `--timeout <s>` | Per-phase timeout in seconds (default: 600). |
+| `--ready-timeout <s>` | Readiness-poll timeout in seconds (default: 60). |
+| `--json` | Emit a machine-readable JSON result instead of the human report. |
+
+Exit status: `0` when every selected phase and the readiness poll passed; `1`
+when a phase failed or timed out, the readiness poll never came up, or no recipe
+could be detected; `2` for a path that is not a directory.
+
+```bash
+hermes verify                              # detect, then run the full pass in the cwd
+hermes verify ~/src/api --detect-only      # show what it would run, run nothing
+hermes verify --save                       # persist the recipe for repeatable checks
+hermes verify --phase build --phase test   # only the build and test phases
+```
 
 ## `hermes doctor`
 

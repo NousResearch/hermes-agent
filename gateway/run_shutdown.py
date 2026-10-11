@@ -28,6 +28,8 @@ from gateway.restart import (
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
+from gateway.run_shutdown_helpers import (
+    _delivery_target_key, _log_suppressed, _notice_target_key)
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
@@ -116,23 +118,6 @@ subprocess.Popen(
 """.strip()
 
 
-@contextmanager
-def _log_suppressed(level: int, msg: str, *args, exc_info: bool = False):
-    """``suppress(Exception)`` that logs the swallowed exception on ``gateway.run``.
-
-    Without ``exc_info`` the exception is appended as the last ``%s`` argument (``msg % (*args, exc)``);
-    with it the traceback is attached instead. Best-effort seams use this everywhere a failure must be
-    visible in the log but must never propagate.
-    """
-    try:
-        yield
-    except Exception as exc:
-        if exc_info:
-            logger.log(level, msg, *args, exc_info=(type(exc), exc, exc.__traceback__))
-        else:
-            logger.log(level, msg, *args, exc)
-
-
 def _send_failed(result: Any) -> bool:
     """True when an adapter ``send()`` result explicitly reports failure."""
     return result is not None and getattr(result, "success", True) is False
@@ -141,25 +126,6 @@ def _send_failed(result: Any) -> bool:
 def _send_error(result: Any) -> str:
     """Error text of a failed ``send()`` result (adapters may omit it)."""
     return getattr(result, "error", "send returned success=False")
-
-
-def _notice_target_key(platform_value: str, chat_id, thread_id) -> tuple:
-    """Dedup key for one notice destination: thread/topic platforms share a chat but route apart."""
-    return (platform_value, str(chat_id), str(thread_id) if thread_id else None)
-
-
-def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Optional[str] = None) -> tuple:
-    """Dedupe key for one DELIVERED chat: profile-independent, except Telegram private chats.
-
-    Two served profiles can share one home chat (one Telegram group for the whole host) and owe it
-    ONE notice per host restart. A positive Telegram chat id names the USER, though: the same id
-    under two bot tokens is two conversations, so those stay keyed per served profile (#118233).
-    """
-    from gateway.delivery import looks_like_telegram_private_chat_id
-    if (profile and profile != "default" and platform_value == "telegram"
-            and looks_like_telegram_private_chat_id(chat_id)):
-        platform_value = f"{profile}:{platform_value}"
-    return _notice_target_key(platform_value, chat_id, thread_id)
 
 
 def _effective_watchdog_leash(runner: object) -> float:
@@ -1375,11 +1341,16 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     def _restart_watcher_env() -> dict:
         """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down).
 
+        Delegate-child markers go too: the respawn boundary must not inherit the fencing — a
+        gateway (or the CLI restarting it) is never a delegate child (see ``run_gateway``'s
+        startup scrub in ``hermes_cli.gateway``).
+
         The host multiplexer is respawned with ``host_gateway_child_env`` (default-root
         secrets via ``served_profile_child_env``, not ``os.environ.copy()``). A standalone
         named-profile gateway keeps that profile's home — only a multiplexer, or a process
         already on the default root, is the host.
         """
+        from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
         from gateway.config_loader import drop_bridged_env
         from hermes_constants import get_default_hermes_root, get_hermes_home
         from tools.environments.local import host_gateway_child_env, served_profile_child_env
@@ -1421,6 +1392,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             )
         watcher_env = drop_bridged_env(watcher_env)
         watcher_env.pop("_HERMES_GATEWAY", None)
+        # A gateway is never a delegate child and owns no kanban task: without the pop, a
+        # marker inherited from the fenced shell that restarted the gateway fences the new
+        # gateway's embedded dispatcher (every board write fails with PermissionError).
+        watcher_env.pop(DELEGATED_CHILD_ENV_MARKER, None)
+        watcher_env.pop("HERMES_KANBAN_TASK", None)
         return watcher_env
 
     @staticmethod

@@ -634,7 +634,13 @@ def _unattended_contexts() -> list[_Unattended]:
 
 def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow."""
-    if ctx.mode() != "deny":
+    mode = ctx.mode()
+    if mode == "smart":
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
+        if not is_dangerous or is_approved(get_current_session_key(), pattern_key):
+            return None
+        return _unattended_smart(_COMMAND_GATE, command, description, pattern_key, [pattern_key])
+    if mode != "deny":
         return None
 
     def block(subject: str) -> dict:
@@ -942,6 +948,35 @@ def _presence(approval_callback=None) -> tuple:
     return approval_callback, is_cli, is_gateway, is_ask
 
 
+def _unattended_smart(spec: _GateSpec, command: str, description: str,
+                      pattern_key: str, pattern_keys: list[str]) -> dict:
+    """Review one action, never grant a pattern or wait on an absent owner.
+
+    An explicit plugin human-decision gate stays a human decision. Only the
+    built-in risk guard can automatically clear an ordinary false positive.
+    """
+    if pattern_key.startswith("plugin_rule:"):
+        return _blocked(
+            f"BLOCKED: {description}. A plugin requires an explicit owner decision.",
+            pattern_key=pattern_key, description=description,
+        )
+    result, _ = _smart_gate(
+        spec, command, description, pattern_key, pattern_keys,
+        get_current_session_key(), human_present=False,
+    )
+    if result is not None:
+        return result
+    return {
+        "approved": False, "status": "blocked", "smart_escalated": True,
+        "pattern_key": pattern_key, "description": description,
+        "message": (
+            f"BLOCKED: smart review did not authorize this action ({description}). "
+            "Keep the task and its exact review requirement; do not rephrase the "
+            "command to evade review or claim completion. No owner prompt is pending."
+        ),
+    }
+
+
 def _run_approval_gate(
     *, pattern_key: str, description: str, display_target: str, approval_callback=None,
     subject: str = "", noun: str = "flagged actions",
@@ -979,6 +1014,10 @@ def _run_approval_gate(
             "unattended": unattended_deny_message,
         }
         for ctx in _unattended_contexts():
+            if ctx.mode() == "smart":
+                return _unattended_smart(
+                    _ACTION_GATE, display_target, description, pattern_key, [pattern_key],
+                )
             if ctx.mode() == "deny":
                 message = deny_messages[ctx.name]
                 if not message and ctx.name == "unattended":
@@ -1209,6 +1248,11 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # No user is present to approve arbitrary code in -q / cron / unattended
     # sessions: the first active context resolves instantly from its mode.
     for ctx in _unattended_contexts():
+        if ctx.mode() == "smart":
+            return _unattended_smart(
+                _EXECUTE_CODE_GATE, f"execute_code <<'PY'\n{code}\nPY",
+                description, pattern_key, [pattern_key],
+            )
         if ctx.mode() == "deny":
             return _denied(
                 "BLOCKED: execute_code runs arbitrary local Python (including "

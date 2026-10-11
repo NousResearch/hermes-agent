@@ -295,11 +295,13 @@ def approval_timeout_notice_kwargs() -> dict:
     return {"waited": format_approval_window(seconds), "suggested": seconds * 3}
 
 
-def _binary_approval_mode(key: str) -> str:
-    """Read ``approvals.<key>`` as 'approve' or 'deny' (default deny)."""
+def _binary_approval_mode(key: str, *, allow_smart: bool = False) -> str:
+    """Read unattended policy, retaining deny unless explicitly configured."""
     try:
         from hermes_cli.config import load_config_readonly
         mode = str(cfg_get(load_config_readonly(), "approvals", key, default="deny")).lower().strip()
+        if allow_smart and mode == "smart":
+            return "smart"
         return "approve" if mode in {"approve", "off", "allow", "yes"} else "deny"
     except Exception:
         return "deny"
@@ -311,8 +313,8 @@ def _get_cron_approval_mode() -> str:
 
 
 def _get_single_query_approval_mode() -> str:
-    """Read the single-query (-q) approval mode from config. Returns 'deny' or 'approve'."""
-    return _binary_approval_mode("single_query_mode")
+    """Read -q policy: deny (default), approve, or one-shot smart review."""
+    return _binary_approval_mode("single_query_mode", allow_smart=True)
 
 
 def _get_unattended_approval_mode() -> str:

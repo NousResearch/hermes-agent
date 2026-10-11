@@ -3,8 +3,9 @@ Unix socket, viewed and driven from Hermes Desktop.
 
 Layout under ``<HERMES_HOME>/bot-desktop/``: ``display`` (allocated X display number), ``rfb.sock``
 (Xvnc RFB Unix socket, 0600), ``Xauthority``, ``env`` (DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
-published by the launcher once Xfce's bus exists), ``launcher.pid``, ``launcher.log``, ``xdg/``
-(per-profile XDG_CONFIG_HOME so two profiles never share xfconf). Everything is profile-scoped via
+published by the launcher once Xfce's bus exists), ``launcher.pid``, ``launcher.log``, ``xdg/`` (per-profile XDG_CONFIG_HOME so two profiles never
+share xfconf), ``runtime-dir/`` (private XDG_RUNTIME_DIR for screen spawns so a host Wayland
+compositor is never reachable). Everything is profile-scoped via
 ``get_hermes_home()`` so N profiles in one gateway get N desktops: one screen per bot on the shared
 machine.
 
@@ -26,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import SOCKET_TMPDIR_MAX_LEN, get_hermes_home, socket_safe_tmpdir
 from tools.bot_desktop import placement
 
 logger = logging.getLogger(__name__)
@@ -341,6 +342,30 @@ def _allocate_display() -> int:
         return _pick_display()
 
 
+def _isolate_host_runtime(env: dict[str, str]) -> None:
+    """Point a screen spawn at screen-owned runtime state instead of the gateway session's.
+
+    Three host variables steer a spawn away from the screen even once ``DISPLAY``/``XAUTHORITY``
+    are published. ``wl_display_connect(NULL)`` falls back to ``$XDG_RUNTIME_DIR/wayland-0``
+    when ``WAYLAND_DISPLAY`` is unset, so on a host whose login session is Wayland a GTK/Qt app
+    spawned for the screen opens on the human's desktop; a private, empty runtime dir fails that
+    lookup closed and the app falls back to the published X11 display. Chromium selects its
+    windowing backend from ``XDG_SESSION_TYPE`` as well (the pin ``launcher.sh`` already exports
+    for the dock's session; #129535), and it always binds its singleton socket at
+    ``$TMPDIR/org.chromium.Chromium.XXXXXX/SingletonSocket`` with ``sun_path`` holding 107
+    bytes, so the deep session scratch TMPDIR FATALs the browser before it maps anything --
+    ``socket_safe_tmpdir()`` is the guard the Electron launcher already applies there.
+    """
+    runtime_dir = state_dir() / "runtime-dir"
+    runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+    env["XDG_SESSION_TYPE"] = "x11"  # X11 screen; a leaked host type flips the ozone backend
+
+    tmpdir = env.get("TMPDIR", "")
+    if tmpdir and len(os.fsencode(tmpdir)) > SOCKET_TMPDIR_MAX_LEN:
+        env["TMPDIR"] = socket_safe_tmpdir()
+
+
 def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """``base_env`` (default ``os.environ``) with this profile's DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
     merged in when its desktop is running. Unchanged otherwise, so hosts with a real seat keep it.
@@ -351,6 +376,7 @@ def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+        _isolate_host_runtime(env)
         from tools.bot_desktop.browser import env_for_agent
         env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env

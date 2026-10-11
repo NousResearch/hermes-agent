@@ -561,6 +561,8 @@ terminal:
 #   approval:
 #     transport: builtin        # Or an explicitly enabled plugin transport name
 #     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
+#     desktop_first: false      # Session surface (CLI panel / gateway card) first;
+#                               # escalate to the selected transport only after its timeout
 #   # Agent writes to instruction files that steer the agent itself
 #   # (AGENTS.md, CLAUDE.md, SOUL.md, ...) always ask for human approval,
 #   # even under --yolo, and are refused when nobody can answer. Set false to

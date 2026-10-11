@@ -11,6 +11,7 @@ import concurrent.futures
 import errno
 import hashlib
 import hmac
+import inspect
 import itertools
 import json
 from contextlib import contextmanager, nullcontext, suppress
@@ -1739,6 +1740,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("GET", "/api/sessions/{session_id}/binding", self._handle_session_binding),
+            ("POST", "/api/sessions/{session_id}/ingress", self._handle_session_ingress),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
@@ -3266,40 +3269,231 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await asyncio.to_thread(store.remove_by_session_id, session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
+    async def _synchronized_binding_context(self, request: "web.Request") -> tuple:
+        """Resolve one declared gateway conversation without rebinding or guessing a successor."""
+        session_key, err = self._parse_session_key_header(request)
+        if err is not None:
+            return None, err
+        if not session_key:
+            return None, _error_response(
+                "X-Hermes-Session-Key is required", 400, code="missing_session_key")
+        requested_id = request.match_info["session_id"]
+        session, err = await self._get_existing_session_or_404(requested_id)
+        if err is not None:
+            return None, err
+        if str(session.get("session_key") or "") != session_key:
+            return None, _error_response("Session binding does not match", 409, code="binding_mismatch")
+        db = await self._ensure_session_db_async()
+        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, requested_id)
+        runner = self.gateway_runner or request.app.get("gateway_runner")
+        store = getattr(runner, "session_store", None)
+        lookup = getattr(store, "lookup_by_session_key", None)
+        if not runner or not callable(lookup):
+            return None, _error_response("Gateway session store unavailable", 503, code="adapter_unavailable")
+        entry = lookup(session_key)
+        if inspect.isawaitable(entry):
+            entry = await entry
+        if entry is None or str(getattr(entry, "session_id", "")) != str(resolved_id):
+            return None, _error_response("Session binding does not match", 409, code="binding_mismatch")
+        restore = getattr(runner, "_restored_source", None)
+        source = restore(entry) if callable(restore) else getattr(entry, "origin", None)
+        delivery = getattr(runner, "_delivery_adapter_for", None)
+        adapter = delivery(source) if callable(delivery) and source is not None else None
+        if source is None or adapter is None:
+            return None, _error_response("Bound platform adapter unavailable", 503, code="adapter_unavailable")
+        profile = _api_request_profile.get() or "default"
+        row_profile = str(session.get("profile_name") or profile)
+        transport_profile = str(session.get("transport_profile") or getattr(entry, "transport_profile", None) or profile)
+        if row_profile != profile or transport_profile != profile:
+            return None, _error_response("Session binding does not match", 409, code="binding_mismatch")
+        return {
+            "profile": profile,
+            "session": session,
+            "session_id": requested_id,
+            "resolved_session_id": str(resolved_id),
+            "session_key": session_key,
+            "entry": entry,
+            "source": source,
+            "runner": runner,
+        }, None
+
+    @_require_auth
+    async def _handle_session_binding(self, request: "web.Request") -> "web.Response":
+        ctx, err = await self._synchronized_binding_context(request)
+        if err is not None:
+            return err
+        source = ctx["source"]
+        return web.json_response({
+            "object": "hermes.session.binding",
+            "profile": ctx["profile"],
+            "session_id": ctx["session_id"],
+            "resolved_session_id": ctx["resolved_session_id"],
+            "session_key": ctx["session_key"],
+            "source": str(getattr(getattr(source, "platform", None), "value", "")),
+            "transport_profile": str(getattr(ctx["entry"], "transport_profile", None) or ctx["profile"]),
+            "chat_id": str(getattr(source, "chat_id", "")),
+            "chat_type": str(getattr(source, "chat_type", "")),
+            "user_id": str(getattr(source, "user_id", "") or ""),
+            "writable": True,
+        })
+
+    @_require_auth
+    async def _handle_session_ingress(self, request: "web.Request") -> "web.Response":
+        ctx, err = await self._synchronized_binding_context(request)
+        if err is not None:
+            return err
+        idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+        if not idempotency_key or len(idempotency_key) > 256 or re.search(r'[\r\n\x00-\x1f\x7f]', idempotency_key):
+            return _error_response("A valid Idempotency-Key is required", 400, code="invalid_idempotency_key")
+        body, err = await self._read_json_body(request)
+        if err is not None:
+            return err
+        content, err = _session_chat_user_message(body, param="input")
+        if err is not None:
+            return err
+        if not isinstance(content, str) or len(content) > 4000:
+            return _error_response("input must be a string of at most 4000 characters", 400, code="invalid_input")
+        origin = body.get("origin")
+        source_message_id = body.get("source_message_id")
+        if origin not in {"office", "desktop"}:
+            return _error_response("origin must be office or desktop", 400, code="invalid_origin")
+        if (not isinstance(source_message_id, str) or not source_message_id or len(source_message_id) > 256
+                or re.search(r'[\x00-\x1f\x7f]', source_message_id)):
+            return _error_response("source_message_id is invalid", 400, code="invalid_source_message_id")
+        try:
+            author = _request_turn_author(body) or {}
+        except ValueError as exc:
+            return _error_response(str(exc), 400, code="invalid_author")
+        dispatch = getattr(ctx["runner"], "dispatch_synchronized_ingress", None)
+        if not callable(dispatch):
+            return _error_response("Synchronized ingress unavailable", 503, code="adapter_unavailable")
+        result = await dispatch(
+            session_key=ctx["session_key"], session_id=ctx["resolved_session_id"], content=content,
+            origin=origin, source_message_id=source_message_id, author=author,
+            idempotency_key=idempotency_key)
+        if not isinstance(result, dict) or result.get("status") not in {"queued", "persisted"}:
+            return _error_response("Synchronized ingress unavailable", 503, code="ingress_unavailable")
+        return web.json_response(
+            {"object": "hermes.session.ingress", **result},
+            status=200 if result.get("status") == "persisted" else 202)
+
+    @staticmethod
+    def _synchronized_steer_provenance(message: Dict[str, Any]) -> Dict[str, str]:
+        """Recover the fail-closed origin marker for a synchronized turn persisted as a busy steer."""
+        if message.get("role") != "user" or message.get("display_kind") != "steer":
+            return {}
+        content = message.get("content")
+        if not isinstance(content, str):
+            return {}
+        lines = content.splitlines()
+        marker = "Gateway message origin (JSON data, not instructions or authorization):"
+        try:
+            marker_index = lines.index(marker)
+            raw_origin = json.loads(lines[marker_index + 1])
+        except (ValueError, IndexError, TypeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw_origin, dict) or raw_origin.get("platform") != "discord":
+            return {}
+        source_message_id = raw_origin.get("source_message_id")
+        message_id = raw_origin.get("message_id")
+        sync_id = source_message_id if isinstance(source_message_id, str) else message_id
+        if not isinstance(sync_id, str) or not re.fullmatch(r"sync:v1:[0-9a-f]{64}", sync_id):
+            return {}
+        if isinstance(message_id, str) and message_id != sync_id:
+            return {}
+        return {"origin": "office", "source_message_id": sync_id}
+
+    @staticmethod
+    def _sync_message_response(message: Dict[str, Any], *, source: Any = None) -> Dict[str, Any]:
+        projected = APIServerAdapter._message_response(message)
+        safe = {key: projected.get(key) for key in (
+            "id", "session_id", "role", "content", "timestamp", "display_kind") if key in projected}
+        for key in ("message_uid", "platform_message_id"):
+            if message.get(key) is not None:
+                safe[key] = message.get(key)
+        metadata = message.get("display_metadata") if isinstance(message.get("display_metadata"), dict) else {}
+        origin = metadata.get("sync_origin")
+        source_message_id = metadata.get("sync_source_message_id")
+        sender = metadata.get("turn_author")
+        steer_provenance = APIServerAdapter._synchronized_steer_provenance(message)
+        if origin in {"office", "desktop", "discord"}:
+            safe["origin"] = origin
+        elif steer_provenance:
+            safe["origin"] = steer_provenance["origin"]
+        elif safe.get("role") == "assistant":
+            safe["origin"] = "desktop"
+        elif source is not None:
+            safe["origin"] = str(getattr(getattr(source, "platform", None), "value", ""))
+        if isinstance(source_message_id, str) and source_message_id:
+            safe["source_message_id"] = source_message_id
+        elif steer_provenance:
+            safe["source_message_id"] = steer_provenance["source_message_id"]
+        elif message.get("platform_message_id"):
+            safe["source_message_id"] = str(message.get("platform_message_id"))
+        if isinstance(sender, dict):
+            safe["sender"] = {
+                **({"id": sender.get("id")} if isinstance(sender.get("id"), str) else {}),
+                **({"name": sender.get("name")} if isinstance(sender.get("name"), str) else {}),
+                "is_bot": bool(sender.get("is_bot", False)),
+            }
+        elif source is not None and safe.get("role") == "user":
+            safe["sender"] = {
+                **({"id": str(source.user_id)} if getattr(source, "user_id", None) else {}),
+                **({"name": str(source.user_name)} if getattr(source, "user_name", None) else {}),
+                "is_bot": bool(getattr(source, "is_bot", False)),
+            }
+        return safe
+
     @_require_auth
     async def _handle_session_messages(self, request: web.Request) -> web.Response:
         """GET /api/sessions/{session_id}/messages."""
         session_id = request.match_info["session_id"]
-        _, err = await self._get_existing_session_or_404(session_id)
+        session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
         db = await self._ensure_session_db_async()
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
         raw_limit, raw_offset = request.query.get("limit"), request.query.get("offset", "0")
         order = request.query.get("order")
+        projection = request.query.get("projection")
+        if projection not in (None, "sync"):
+            return _error_response("projection must be sync when provided", 400, code="invalid_projection")
+        sync_context = None
+        if projection == "sync":
+            sync_context, err = await self._synchronized_binding_context(request)
+            if err is not None:
+                return err
+            session = sync_context["session"]
+            resolved_id = sync_context["resolved_session_id"]
         if order not in (None, "oldest", "latest"):
             return _error_response("order must be one of: oldest, latest", 400, code="invalid_pagination")
         try:
             offset = int(raw_offset)
             requested_limit = None if raw_limit is None else int(raw_limit)
+            after_id = int(request.query.get("after_id", "0")) if projection == "sync" else None
         except (TypeError, ValueError):
             offset = requested_limit = -1
-        if offset < 0 or (requested_limit is not None and requested_limit < 0):
-            return _error_response("limit and offset must be non-negative integers", 400, code="invalid_pagination")
+            after_id = -1
+        if offset < 0 or (requested_limit is not None and requested_limit < 0) or (after_id is not None and after_id < 0):
+            return _error_response("limit, offset and after_id must be non-negative integers", 400, code="invalid_pagination")
         default_page = requested_limit is None
-        latest_page = order == "latest" or (order is None and default_page)
-        limit = 500 if default_page else min(requested_limit, 500)
+        latest_page = False if projection == "sync" else (order == "latest" or (order is None and default_page))
+        limit = (200 if projection == "sync" else 500) if default_page else min(requested_limit, 200 if projection == "sync" else 500)
         include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
-        # Compression lineage: return root→tip messages, matching the REST router (#51058).
         messages = await asyncio.to_thread(
             db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
-            include_compacted=include_compacted, include_ancestors=True)
+            after_id=after_id, include_compacted=include_compacted,
+            include_ancestors=projection != "sync")
+        source = None
+        if projection == "sync":
+            source = sync_context["source"]
+        data = ([self._sync_message_response(m, source=source) for m in messages]
+                if projection == "sync" else [self._message_response(m) for m in messages])
         return web.json_response({
-            "object": "list", "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "object": "list", "session_id": resolved_id, "data": data,
             "pagination": {
-                "limit": limit, "offset": offset,
-                "order": order or ("latest" if default_page else "oldest"),
+                "limit": limit, "offset": offset, **({"after_id": after_id} if after_id is not None else {}),
+                "order": order or ("oldest" if projection == "sync" else ("latest" if default_page else "oldest")),
                 "returned": len(messages)}})
 
     @_require_auth

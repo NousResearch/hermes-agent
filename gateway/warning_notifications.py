@@ -26,14 +26,26 @@ def is_diagnostic_notice(notice) -> bool:
 
 
 def diagnostic_metadata(event) -> dict:
-    """``{"notification_category": "diagnostic"}`` for a trusted diagnostic-only wake, else ``{}``.
-
-    Only internal wakes may classify a turn; human content never does.
-    """
-    if getattr(event, "internal", False) and (getattr(event, "metadata", None) or {}).get(
-            "notification_category") == "diagnostic":
-        return {"notification_category": "diagnostic"}
-    return {}
+    """Allowlisted persistence metadata for trusted internal and synchronized turns."""
+    metadata = getattr(event, "metadata", None) or {}
+    result = {}
+    if getattr(event, "internal", False) and metadata.get("notification_category") == "diagnostic":
+        result["notification_category"] = "diagnostic"
+    if metadata.get("conversation_sync") is True:
+        origin = metadata.get("sync_origin")
+        source_message_id = metadata.get("sync_source_message_id")
+        author = metadata.get("turn_author")
+        if origin in {"office", "desktop", "discord"}:
+            result["sync_origin"] = origin
+        if isinstance(source_message_id, str) and source_message_id:
+            result["sync_source_message_id"] = source_message_id[:256]
+        if isinstance(author, dict):
+            result["turn_author"] = {
+                **({"id": author.get("id")[:256]} if isinstance(author.get("id"), str) else {}),
+                **({"name": author.get("name")[:256]} if isinstance(author.get("name"), str) else {}),
+                "is_bot": bool(author.get("is_bot", False)),
+            }
+    return result
 
 
 def effective_user_config() -> dict:

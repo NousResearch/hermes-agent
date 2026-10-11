@@ -3,7 +3,9 @@
 This is the personal/org *password* vault (``bw``), distinct from the
 Bitwarden Secrets Manager (``bws``) source that hydrates API keys at startup.
 Unlock: ``bw unlock --raw --passwordenv VAR`` (the CLI rejects a piped password) mints a
-``BW_SESSION`` token. List: ``bw list items`` filtered to type=1 (login) with
+``BW_SESSION`` token. When the surface has a human, a bare ``bw unlock --raw`` is tried first, so the
+Bitwarden desktop app can approve with Touch ID / Windows Hello; the master-password prompt stays the
+fallback. List: ``bw list items`` filtered to type=1 (login) with
 a URI. Resolve: ``bw get password <id>``.
 """
 
@@ -19,14 +21,20 @@ from typing import Dict, List, Optional
 
 from agent.secret_sources.base import run_cli, scrub_ansi
 from agent.vault_backends import unlock as _unlock
-from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env
+from agent.vault_backends.base import (LoginBackend, UnlockRequired, run_for_secretless_unlock,
+                                       run_with_secret_env)
 from agent.vault_store import VaultItemMeta, normalize_origin
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
+# A desktop approval (Touch ID / Windows Hello) answered in time, or the CLI is already falling back
+# to its own password prompt, which we cannot answer. Bounds the extra latency of the attempt.
+_DESKTOP_TIMEOUT = 10.0
 _ENV_KEEP = ("PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
-             "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "BITWARDENCLI_APPDATA_DIR")
+             "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "BITWARDENCLI_APPDATA_DIR",
+             # Documented override for a desktop app installed outside the standard location.
+             "BITWARDEN_DESKTOP_PROXY_PATH")
 
 
 class BitwardenLoginBackend(LoginBackend):
@@ -54,6 +62,31 @@ class BitwardenLoginBackend(LoginBackend):
 
     def is_unlocked(self) -> bool:
         return _unlock.is_unlocked(self.name)
+
+    def try_secretless_unlock(self) -> bool:
+        """Let the running Bitwarden desktop app approve the unlock instead of typing the master
+        password: a bare ``bw unlock --raw`` (no password, no ``--nointeraction``) makes the CLI try
+        its desktop biometric path first, which is Touch ID / Windows Hello (Desktop 2026.9.0+, with
+        biometric unlock enabled for this account, and the server flag ``biometrics-sdk-ipc`` on).
+
+        Returns False whenever the CLI cannot approve it — an older CLI answering "Master password is
+        required", a denied or timed-out prompt, no desktop app — and the caller then prompts for the
+        master password exactly as before. Nothing is written unless a session key comes back."""
+        if self.cfg.get("desktop_biometric") is False or not _unlock.can_prompt_here():
+            # The interactive gate is enforced here as well as in the callers: this method is public on
+            # a backend, and a direct call must never raise a desktop approval prompt where nobody can
+            # answer it (cron, webhooks, api_server, single-query).
+            return False
+        generation = _unlock.begin_unlock(self.name)
+        proc = run_for_secretless_unlock([str(self._bw()), "unlock", "--raw"], env=self._env(None),
+                                         timeout=_DESKTOP_TIMEOUT, label="bw")
+        token = (proc.stdout or "").strip() if proc is not None and proc.returncode == 0 else ""
+        if not token:
+            return False
+        if not _unlock.store_session_token(self.name, token, generation):
+            return False
+        logger.info("Bitwarden unlocked with the desktop app's approval (no master password typed)")
+        return True
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is

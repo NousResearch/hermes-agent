@@ -15,9 +15,12 @@ approvals take where nobody can answer.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Callable, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 _IDLE_TTL_S = 30 * 60
 
@@ -165,3 +168,20 @@ def can_prompt_here() -> bool:
     if _no_user_can_answer():
         return False
     return get_unlock_prompt_callback() is not None
+
+
+def secretless_unlock(backend) -> bool:
+    """Let a backend mint its session without a typed secret (Bitwarden's desktop biometrics), but
+    only where a human is present to approve the prompt: headless contexts keep today's behavior.
+    Best-effort by design — any failure leaves the master-password prompt as the fallback."""
+    if not can_prompt_here():
+        return False
+    attempt = getattr(backend, "try_secretless_unlock", None)
+    if not callable(attempt):
+        return False
+    try:
+        return bool(attempt())
+    except Exception:
+        logger.debug("secretless unlock failed for %s; falling back to the master-password prompt",
+                     getattr(backend, "name", "?"), exc_info=True)
+        return False

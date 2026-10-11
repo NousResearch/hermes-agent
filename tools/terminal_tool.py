@@ -1503,6 +1503,8 @@ def check_terminal_requirements() -> bool:
 
 from tools.registry import registry
 
+TERMINAL_PROVIDER_RESULT_CAP_CHARS = 8_000
+
 TERMINAL_SCHEMA = {
     "name": "terminal",
     "description": TERMINAL_TOOL_DESCRIPTION,
@@ -1643,5 +1645,8 @@ registry.register(
     handler=_handle_terminal,
     check_fn=check_terminal_requirements,
     emoji="💻",
-    max_result_size_chars=100_000,
+    # terminal_tool keeps a 50K raw stdout/stderr cap for local usefulness, but
+    # provider-bound tool messages should spill to the sandbox much sooner.
+    # Otherwise a single verbose command is resent on every follow-up request.
+    max_result_size_chars=TERMINAL_PROVIDER_RESULT_CAP_CHARS,
 )

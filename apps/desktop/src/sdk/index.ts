@@ -1685,6 +1685,12 @@ export {
   type ComposerModelPillContext,
   type ComposerModelPillProvider
 } from '@/app/chat/composer/contrib'
+/** `composer.session`: register a `data: { render(context) }` contribution to
+ *  paint a strip above the composer's status stack for THAT composer's
+ *  conversation. The context is core's answer to "which conversation, whose
+ *  profile, which connection, reachable by plugin REST?" — see
+ *  `SessionRouteContext`. */
+export type { ComposerSessionContribution } from '@/app/chat/composer/session-slot'
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest
@@ -1984,8 +1990,14 @@ export { reasoningEffortLabel } from '@/lib/reasoning-effort'
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 /** Row-decoration slots: register a `data` contribution with a `render` for
  *  `SESSION_ROW_AREAS.leading` / `.trailing` to decorate sidebar session rows
- *  (the props carry the row's stored session id). */
-export { SESSION_ROW_AREAS, type SessionRowSlotContribution, type SessionRowSlotProps } from '@/lib/session-row-slots'
+ *  (the props are the row's `SessionRouteContext`: stored id, lineage ids,
+ *  owner profile + connection, and whether plugin REST reaches that owner). */
+export {
+  SESSION_ROW_AREAS,
+  type SessionRouteContext,
+  type SessionRowSlotContribution,
+  type SessionRowSlotProps
+} from '@/lib/session-row-slots'
 /** A sibling WebSocket beside the route's `/api/ws` (voice PCM, Bot Screen RFB):
  *  same origin, same auth resolution as chat. */
 export { resolveSiblingWsUrl, type SiblingWsRoute } from '@/lib/sibling-ws-url'

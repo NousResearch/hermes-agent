@@ -933,6 +933,16 @@ def list_active_workers(board: Optional[str] = _BOARD_Q):
         return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
 
 
+@router.get("/origin-tasks")
+def get_origin_tasks(session_ids: str = Query("", description="Comma-separated conversation ids to resolve")):
+    """Tasks the named conversations ordered, in the REQUEST's profile scope. Reads only the boards the
+    origin index names (read-only, no init); see ``hermes_cli.kanban_origin``."""
+    from hermes_cli import kanban_origin
+
+    with _errors_to_500("failed to read origin tasks"):
+        return kanban_origin.origin_tasks(session_ids.split(","))
+
+
 @router.get("/runs/{run_id}")
 def get_run_endpoint(run_id: int, board: Optional[str] = _BOARD_Q):
     """``{run: {...}}`` with the same serialisation as ``GET /tasks/{id}``; 404 if unknown."""

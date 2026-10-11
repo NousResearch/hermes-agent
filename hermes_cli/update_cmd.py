@@ -907,7 +907,16 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
             print(
                 f"{head}attempted to back up current HEAD to {rescue_ref} before resetting, "
                 f"but the backup write failed (pre-reset SHA was {pre_pull_sha}).")
+        # No durable recovery ref means no destructive reset, including orphan history.
+        if _git_run(git_cmd, ["show-ref", "--verify", "--hash", rescue_ref]).stdout.strip() != pre_pull_sha:
+            print("✗ Recovery ref could not be verified; update stopped with local history untouched.")
+            _record_stop("checkout_move_failed")
+            sys.exit(1)
         _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch)
+    else:
+        print("✗ Missing pre-update HEAD; refusing to reset local history.")
+        _record_stop("checkout_move_failed")
+        sys.exit(1)
     print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
     reset_result = _git_run(git_cmd, ["reset", "--hard", merge_ref])
     if reset_result.returncode != 0:

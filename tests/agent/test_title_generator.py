@@ -1,6 +1,7 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -898,3 +899,128 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestProcessAndDelegationNoticesNotTitleable:
+    """Regression (#136716): background-process and async-delegation notices are persisted as
+    role="user" and start follow-up turns, but they are machine-authored. A session must never
+    be named after one, and one must not count as a real user turn (which shifts the upgrade
+    thresholds). Every notice below is built with the real formatters so the guarded openers
+    cannot drift from what actually reaches the conversation."""
+
+    @staticmethod
+    def _completion_event(sid: str) -> dict:
+        return {"type": "completion", "session_id": sid, "command": "make test",
+                "exit_code": 7, "output": "2 tests failed"}
+
+    @classmethod
+    def _notices(cls) -> list[str]:
+        from tools.process_registry_notifications import (
+            ProcessNotificationBatch, format_process_notification,
+        )
+
+        notices = [
+            # notify_on_complete completion, and its watch-pattern sibling
+            format_process_notification(cls._completion_event("proc_a1b2")),
+            format_process_notification({**cls._completion_event("proc_a1b2"),
+                                         "type": "watch_match", "pattern": "ERROR"}),
+            # heartbeat wake
+            format_process_notification({"type": "heartbeat", "session_id": "proc_a1b2",
+                                         "command": "make test", "seq": 2, "elapsed": 300,
+                                         "interval": 60, "output": "still building"}),
+            # async delegation: single completion, consolidated batch, early task failure
+            format_process_notification({"type": "async_delegation", "delegation_id": "deleg_9f",
+                                         "status": "completed", "summary": "done", "goal": "g"}),
+            format_process_notification({"type": "async_delegation", "delegation_id": "deleg_9f",
+                                         "is_batch": True, "goals": ["g1", "g2"],
+                                         "results": [{"task_index": 0, "status": "completed", "summary": "s1"},
+                                                     {"task_index": 1, "status": "completed", "summary": "s2"}]}),
+            format_process_notification({"type": "async_delegation", "delegation_id": "deleg_9f",
+                                         "task_failure_notice": True, "goals": ["g"],
+                                         "n_tasks": 1,
+                                         "results": [{"task_index": 0, "status": "failed", "error": "boom"}]}),
+        ]
+        # Batched completions: the counted header (variable N, hence a pattern, not a prefix)
+        # followed by the per-process blocks.
+        batch = ProcessNotificationBatch(tuple(
+            (cls._completion_event(sid), format_process_notification(cls._completion_event(sid)))
+            for sid in ("proc_a1b2", "proc_c3d4")))
+        batched = batch.render(registry=SimpleNamespace(is_completion_consumed=lambda _sid: False))
+        assert batched and "2 background processes completed" in batched
+        notices.append(batched)
+        # watch breaker summaries, built by the registry paths that emit them.
+        notices.append(cls._watch_event_notice("watch_disabled"))
+        notices.append(cls._watch_event_notice("watch_overflow_tripped"))
+        notices.append(cls._watch_event_notice("watch_overflow_released"))
+        return [n for n in notices if n]
+
+    @staticmethod
+    def _watch_event_notice(evt_type: str) -> str:
+        from tools.process_registry import ProcessRegistry
+        from tools.process_registry_notifications import format_process_notification
+
+        if evt_type == "watch_disabled":
+            registry = ProcessRegistry()
+            session = SimpleNamespace(
+                id="proc_a1b2", session_key="", task_id="", owner_task_id="",
+                command="make test",
+                **{f"watcher_{key}": "" for key in
+                   ("platform", "chat_id", "user_id", "user_name", "thread_id", "message_id")})
+            registry._emit_watch_disabled(session, 3, "reached the strike limit. ")
+            evt = registry.completion_queue.get_nowait()
+        else:
+            message = ("Watch-pattern notifications resumed. 12 match event(s) were suppressed "
+                       "during the flood." if evt_type == "watch_overflow_released" else
+                       "Watch-pattern overflow: >30 notifications in 60s across all processes. "
+                       "Suppressing further watch_match events for 300s.")
+            evt = ProcessRegistry._global_watch_event(evt_type, message)
+        return format_process_notification(evt)
+
+    def test_every_notice_shape_is_not_titleable(self):
+        from agent.title_generator import is_titleable_user_message
+
+        for notice in self._notices():
+            assert notice.lstrip().startswith("["), notice[:60]  # really an opener, not prose
+            assert is_titleable_user_message(notice) is False, notice[:80]
+
+    def test_notice_never_becomes_the_session_title(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            for notice in self._notices():
+                maybe_auto_title(db, "sess-1", notice, [])
+        assert db.get_session_title("sess-1") is None
+        mock_auto.assert_not_called()
+
+    def test_notice_does_not_count_as_a_real_user_turn(self):
+        from agent.title_generator import _is_real_user_turn
+
+        for notice in self._notices():
+            assert _is_real_user_turn({"role": "user", "content": notice}) is False, notice[:80]
+
+    def test_real_question_after_a_notice_still_titles(self, tmp_path):
+        """The notice must not consume the session's one titling opportunity."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        notice = self._notices()[0]
+        history = [{"role": "user", "content": notice}]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            import threading
+
+            called = threading.Event()
+            mock_auto.side_effect = lambda *a, **k: called.set()
+            maybe_auto_title(db, "sess-1", "南京市秦淮区 小时级天气预报", history)
+            assert called.wait(timeout=10), "auto_title never ran after the notice"
+
+    def test_skill_invocation_turn_is_still_titleable(self):
+        """The guard is deliberately not a bare "[IMPORTANT: ": a skill invocation opens with it
+        but carries the user's real request, and the scaffolding summarizer recovers a title."""
+        from agent.skill_commands import _scaffold_header
+        from agent.title_generator import is_titleable_user_message
+
+        invocation = _scaffold_header(
+            "code-review skill", ["code-review"],
+            lead_lines=[""], user_instruction="review the auth module login flow")
+        assert invocation.startswith("[IMPORTANT: The user has invoked the ")
+        assert is_titleable_user_message(invocation) is True

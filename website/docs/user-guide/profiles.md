@@ -348,8 +348,8 @@ hermes profile show coder     # detailed info for one profile
 hermes profile rename coder dev-bot   # rename (updates alias; removes the old name's gateway service)
 hermes profile migrate-identity coder dev-bot   # retry a rename's identity migration
 hermes profile purge-identity dev-bot   # retry a delete's identity purge
-hermes profile export coder   # pack into coder.tar.gz (shareable; keys stripped)
-hermes profile import coder.tar.gz   # install an archive as a new profile
+hermes profile export coder   # prints the saved archive path (keys stripped)
+hermes profile import /path/to/export.tar.gz --name coder-copy   # use the printed path and a new name
 ```
 
 In chat, the same two live as `/export` and `/import` — and in the desktop app as **⌘K → Export/Import profile…**. See [Sharing a profile](#sharing-a-profile).
@@ -447,10 +447,14 @@ remain user data and are preserved. Install dependencies on the destination
 through [PM](../reference/package-management.md), rather than copying environments.
 
 ```bash
-# In chat, run /export, hand over the file, and they run /import on it
+# On the source machine: note the archive path printed by the command
 hermes profile export coder
-hermes profile import ./coder.tar.gz --name coder
+
+# Copy that archive to the recipient, then use its path on that machine
+hermes profile import /path/to/export.tar.gz --name coder
 ```
+
+Without `-o`, CLI exports normally go to `profile-exports/` under the default Hermes home, with a timestamp in the filename. Use the printed path rather than assuming `./coder.tar.gz`; see [export destinations](./profile-distributions.md#export-and-import-a-profile-file) for custom-home fallbacks. If `coder` already exists on the recipient, choose a different `--name`.
 
 **Publish a distribution.** Package the profile as a **git repository** so recipients install it with one command and pull versioned updates later. Carries the SOUL, config, skills, cron jobs, and MCP connections; credentials, memories, and sessions stay per-machine.
 

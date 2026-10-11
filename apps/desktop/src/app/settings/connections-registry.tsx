@@ -651,26 +651,28 @@ export function ConnectionsRegistrySection() {
                       {s.makePrimary}
                     </Button>
                   )}
+                  {/* Every entry is editable — for the managed local entry that
+                      means its label only (normalizeConnectionInput keeps the
+                      rest app-owned), which is exactly what the editor renders
+                      for kind 'local'. */}
+                  <Button
+                    aria-label={s.editConnection}
+                    onClick={() => openEditor(editorFromConnection(conn), conn)}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <Pencil className="size-3.5" />
+                  </Button>
                   {conn.kind !== 'local' && (
-                    <>
-                      <Button
-                        aria-label={s.editConnection}
-                        onClick={() => openEditor(editorFromConnection(conn), conn)}
-                        size="icon-sm"
-                        variant="ghost"
-                      >
-                        <Pencil className="size-3.5" />
-                      </Button>
-                      <Button
-                        aria-label={s.removeConnection}
-                        disabled={busy}
-                        onClick={() => setRemoveTarget(conn)}
-                        size="icon-sm"
-                        variant="ghost"
-                      >
-                        {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
-                      </Button>
-                    </>
+                    <Button
+                      aria-label={s.removeConnection}
+                      disabled={busy}
+                      onClick={() => setRemoveTarget(conn)}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                    </Button>
                   )}
                 </div>
               }

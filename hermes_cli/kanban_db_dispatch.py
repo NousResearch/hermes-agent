@@ -957,6 +957,75 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
+# A quota wall is deliberately NOT a failure, so ``consecutive_failures`` stays
+# 0 and the spawn breaker cannot see it — by design, for a *transient* throttle.
+# That invariant is what let an unbounded requeue loop form: nothing capped how
+# many times one card could be released to ``ready`` on EX_TEMPFAIL, so a
+# sustained (multi-day) provider wall respawned it forever while its failure
+# counter read 0. This budget bounds the *requeue streak* specifically; any
+# non-rate-limited run resets it, so a task that later makes real progress gets
+# a fresh budget. Per-task ``max_retries`` overrides it.
+_RATE_LIMIT_REQUEUE_FAILURE_LIMIT = 5
+
+# Closed runs to walk when counting the streak; it trips at a handful anyway.
+_RATE_LIMIT_REQUEUE_SCAN_LIMIT = 50
+
+
+def _resolve_rate_limit_requeue_limit() -> int:
+    """``HERMES_KANBAN_RATE_LIMIT_REQUEUE_LIMIT`` else the default budget.
+
+    ``0`` disables the bound and restores the pre-fix unbounded requeue (the
+    operational kill switch / rollback lever), matching how
+    ``_resolve_rate_limit_cooldown_seconds`` spells ``0`` as "off".
+    """
+    return _kb._env_int(
+        "HERMES_KANBAN_RATE_LIMIT_REQUEUE_LIMIT",
+        _RATE_LIMIT_REQUEUE_FAILURE_LIMIT,
+        minimum=0,
+    )
+
+
+def _rate_limit_streak(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count the task's trailing run of rate-limited requeues.
+
+    Walks closed runs newest-first (including the one ``_reclaim_dead_workers``
+    just closed). ONLY ``rate_limited`` runs extend the streak; any other closed
+    run breaks it, so the budget counts consecutive quota walls and nothing else.
+    That is the whole point: a card that survives a wall and then makes real
+    progress gets a fresh budget, while a card being respawned into an unchanged
+    wall runs out of it.
+    """
+    streak = 0
+    rows = conn.execute(
+        "SELECT outcome FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        (task_id, _RATE_LIMIT_REQUEUE_SCAN_LIMIT),
+    ).fetchall()
+    for row in rows:
+        if (row["outcome"] or "") == "rate_limited":
+            streak += 1
+            continue
+        break
+    return streak
+
+
+def _rate_limit_exhausted_error(streak: int, limit: int) -> str:
+    """The message stamped on ``last_failure_error`` when the requeue budget is spent.
+
+    Kept short for the same reason as ``_PROTOCOL_VIOLATION_ERROR``:
+    ``_record_task_failure`` caps the stored error at 500 chars and the board plus
+    the next worker read it as the actionable part. It says plainly that the
+    cause is the provider route, so a human does not go hunting for a task fault.
+    """
+    return (
+        f"rate-limited requeue budget exhausted ({streak} consecutive quota walls, "
+        f"limit {limit}) — the provider is still refusing this profile. This is a "
+        "provider/quota condition, not a task fault: fix the provider route or wait "
+        "for quota to reset, then unblock."
+    )
+
+
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
     # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
@@ -1138,6 +1207,10 @@ class _CrashSweep:
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
     # ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
+    # Same shape, for the rate-limited requeue budget: a rate-limited requeue
+    # must NOT count a failure, but an exhausted budget still has to block the
+    # card, and that write also needs its own txn.
+    rate_limited_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
@@ -1207,6 +1280,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
+                sweep.rate_limited_details.append((row["id"], pid, row["claim_lock"], dead))
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
@@ -1273,6 +1347,34 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True},
             )
+        elif dead.rate_limited:
+            # Trailing quota-wall streak is *not* a failure but still needs
+            # accounting so the thread can set ``last_failure_error``.
+            limit = _resolve_rate_limit_requeue_limit()
+            streak = _rate_limit_streak(conn, tid)
+            if limit > 0 and streak >= limit:
+                # Budget exhausted — block the card with a quota-wall message so
+                # an operator sees the cause and unblocks once the provider route
+                # recovers (0 = disabled, restore unbounded behavior for rollback).
+                tripped = _record_task_failure(
+                    conn, tid,
+                    error=_rate_limit_exhausted_error(streak, limit),
+                    outcome="crashed",
+                    force_trip=True,
+                    release_claim=False,
+                    end_run=False,
+                    event_payload_extra={
+                        "pid": pid,
+                        "claimer": claimer,
+                        "rate_limit_streak": streak,
+                        "rate_limit_limit": limit,
+                    },
+                )
+            else:
+                # Below budget (or disabled): already back at ``ready`` with the
+                # original quota-wall error stamped on the run. Must NOT consume
+                # the unified failure budget.
+                continue
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3
             extra = {"pid": pid, "claimer": claimer}
@@ -1304,8 +1406,12 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
     sweep = _reclaim_dead_workers(conn, board=board)
-    # Outside the main txn: account each crash and maybe trip the breaker.
-    auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
+    # Outside the main txn: account each crash and rate-limited requeue
+    # against the breaker. Rate-limited walls are deliberately kept out
+    # of crash_details (they don't count a failure) but must still reach
+    # _account_crashes so the requeue-budget elif branch can trip.
+    all_crashes = sweep.crash_details + sweep.rate_limited_details
+    auto_blocked = _account_crashes(conn, all_crashes) if all_crashes else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
     # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
     # requeues did NOT count a failure and are NOT crashes.

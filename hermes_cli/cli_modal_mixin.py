@@ -1085,7 +1085,11 @@ class CLIModalMixin:
                     smart_denied=smart_denied),
                 "selected": 0,
                 "response_queue": response_queue}
-            self._approval_deadline = _time.monotonic() + timeout
+            # <=0 means unlimited (never auto-deny while the user is still deciding) —
+            # same convention already used by _clarify_deadline/resolve_clarify_timeout.
+            # _poll_modal_queue already treats a None deadline as unlimited; only this
+            # setter was missing the guard.
+            self._approval_deadline = None if timeout <= 0 else _time.monotonic() + timeout
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)
             self._paint_now()
 

@@ -561,3 +561,79 @@ class TestClearOverlaysForInterrupt:
         assert not t.is_alive(), "worker thread never unblocked"
         assert result["value"] == "deny"
 
+
+class TestApprovalZeroTimeoutUnlimited:
+    """Regression for approvals.timeout <= 0: must mean unlimited (never auto-deny),
+    matching the convention already used by agent.clarify_timeout / _clarify_deadline.
+    Before this fix, _approval_callback always computed a real monotonic deadline
+    regardless of the configured timeout, so a 0 (or negative) setting silently
+    auto-denied the prompt instead of waiting forever."""
+
+    def test_zero_timeout_means_unlimited_deadline(self):
+        cli = _make_cli_stub()
+        with patch.dict(cli_module.CLI_CONFIG, {"approvals": {"timeout": 0}}):
+            thread = threading.Thread(
+                target=lambda: cli._approval_callback("rm -rf /tmp/example", "recursive delete"),
+                daemon=True,
+            )
+            thread.start()
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            assert cli._approval_state is not None
+            # The deadline must be None (unlimited), not a real monotonic timestamp.
+            assert cli._approval_deadline is None
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+
+    def test_negative_timeout_also_means_unlimited(self):
+        cli = _make_cli_stub()
+        with patch.dict(cli_module.CLI_CONFIG, {"approvals": {"timeout": -5}}):
+            thread = threading.Thread(
+                target=lambda: cli._approval_callback("rm -rf /tmp/example", "recursive delete"),
+                daemon=True,
+            )
+            thread.start()
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            assert cli._approval_deadline is None
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+
+    def test_positive_timeout_still_computes_a_real_deadline(self):
+        cli = _make_cli_stub()
+        with patch.dict(cli_module.CLI_CONFIG, {"approvals": {"timeout": 300}}):
+            before = time.monotonic()
+            thread = threading.Thread(
+                target=lambda: cli._approval_callback("rm -rf /tmp/example", "recursive delete"),
+                daemon=True,
+            )
+            thread.start()
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            assert cli._approval_deadline is not None
+            assert cli._approval_deadline >= before + 299  # ~300s out, not unlimited
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+
+    def test_poll_modal_queue_never_times_out_on_none_deadline(self):
+        """The shared poller must treat a None deadline as unlimited (no auto-deny),
+        proving the setter's None actually reaches the wait loop, not just the field."""
+        cli = _make_cli_stub()
+        cli._approval_deadline = None
+        q = queue.Queue()
+        result = {}
+
+        def _poll():
+            result["value"] = cli._poll_modal_queue(q, "_approval_deadline", refresh=0.05)
+
+        t = threading.Thread(target=_poll, daemon=True)
+        t.start()
+        time.sleep(0.3)  # several refresh ticks; would have timed out already under the old bug
+        assert t.is_alive(), "poller returned _TIMED_OUT despite an unlimited (None) deadline"
+        q.put("once")
+        t.join(timeout=2)
+        assert result["value"] == "once"
+

@@ -1540,6 +1540,32 @@ def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypat
     assert len(issues) == 1 and "auxiliary.background_review" in issues[0] and "no-such-provider" in issues[0]
 
 
+def test_doctor_does_not_flag_the_auxiliary_main_sentinel(tmp_path):
+    """`main` is a documented `auxiliary.<task>.provider` value ("use the main model") that
+    agent.auxiliary_client._normalize_aux_provider maps to `model.provider`, so it is a directive,
+    not a name the main-agent resolver knows. Validating it reported a correctly configured block
+    and advised a fix that cannot be made (#132536); a genuinely unknown name is still a finding."""
+    import hermes_yaml as yaml
+    from hermes_cli import doctor_config
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"auxiliary": {
+        "compression": {"provider": "main"},
+        "vision": {"provider": " MAIN "},  # trimmed/lower-cased like `auto`
+    }}), encoding="utf-8")
+    issues = []
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+    assert issues == []
+
+    cfg_file.write_text(
+        yaml.safe_dump({"auxiliary": {"compression": {"provider": "no-such-provider"}}}),
+        encoding="utf-8",
+    )
+    issues = []
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+    assert len(issues) == 1 and "no-such-provider" in issues[0]
+
+
 @pytest.mark.platforms("macos")
 class TestMacOSTCCGrants:
     """macOS TCC grant persistence check (#86385): a cdhash-pinned DR (pre-#73681

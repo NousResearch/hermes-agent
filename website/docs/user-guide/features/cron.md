@@ -788,10 +788,13 @@ rolling conversation. That is inherent to "flat in a channel" and is the same
 tradeoff `reply_in_thread: false` users already accept; use the default
 `thread` surface when you want each delivery's follow-up isolated.
 
-This is a Slack capability today. Other platforms accept the key but fall back
-to the `thread` surface (their continuation primitives differ); the choice is
-per-platform, set under each platform's config. It's a gateway-side config flag
-— a `/restart` picks it up; no Slack app reinstall is needed.
+This is a Slack capability today; Matrix supports the same flat surface —
+there the pairing knob is `session_scope: room` (or `auto_thread: false`),
+which keys inbound room replies to the shared room session. Other platforms
+accept the key but fall back to the `thread` surface (their continuation
+primitives differ); the choice is per-platform, set under each platform's
+config. It's a gateway-side config flag — a `/restart` picks it up; no Slack
+app reinstall is needed.
 
 :::note 1:1 DMs
 `cron_continuable_surface` is a **channel** setting — a 1:1 DM has no

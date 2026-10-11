@@ -134,6 +134,7 @@ def owned_session(monkeypatch, tmp_path):
             "transport": owner.transport,
             "agent": None,
             "session_key": SID,
+            "profile_home": str(home),
             "history": [],
             "history_lock": threading.Lock(),
             "history_version": 0,

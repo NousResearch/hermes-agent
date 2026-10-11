@@ -4,6 +4,7 @@
 - ``connectors.accounts.rename`` answers ALIAS_TAKEN when another account holds the name
 """
 
+import os
 import threading
 
 import pytest
@@ -79,7 +80,7 @@ def test_a_session_retry_for_another_account_does_not_re_mint_the_open_one(monke
     transport = _Transport()
     session = dict(transport=transport, agent=None, session_key="alias-sid", history=[],
                    history_lock=threading.Lock(), history_version=0, running=False, attached_images=[],
-                   source="desktop")
+                   source="desktop", profile_home=os.environ["HERMES_HOME"])
     monkeypatch.setitem(server._sessions, "alias-sid", session)
     monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
     operation = ConnectionOperation([Target("gmail", "connector", "connect", alias="home")], session_key="alias-sid")
@@ -115,7 +116,7 @@ def test_a_session_retry_with_the_open_accounts_id_reissues_it(monkeypatch):
     transport = _Transport()
     session = dict(transport=transport, agent=None, session_key="retry-sid", history=[],
                    history_lock=threading.Lock(), history_version=0, running=False, attached_images=[],
-                   source="desktop")
+                   source="desktop", profile_home=os.environ["HERMES_HOME"])
     monkeypatch.setitem(server._sessions, "retry-sid", session)
     monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
     operation = ConnectionOperation([Target("gmail", "connector", "reconnect", alias="work")], session_key="retry-sid")

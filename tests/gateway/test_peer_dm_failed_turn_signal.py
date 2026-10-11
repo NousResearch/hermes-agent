@@ -26,14 +26,23 @@ DM = "disk status?"
 # Permanent (auth): the policy never re-runs it, so exactly one attempt reaches the payload below.
 AUTH_WALL = {
     "final_response": "Provider authentication failed: invalid api key",
-    "failed": True, "completed": False, "error": "Error code: 401 - invalid_api_key",
-    "failure_reason": "auth", "messages": [], "api_calls": 1,
+    "failed": True,
+    "completed": False,
+    "error": "Error code: 401 - invalid_api_key",
+    "failure_reason": "auth",
+    "messages": [],
+    "api_calls": 1,
 }
 
 
 def _ok(text: str) -> dict:
-    return {"final_response": text, "failed": False, "completed": True,
-            "messages": [], "api_calls": 1}
+    return {
+        "final_response": text,
+        "failed": False,
+        "completed": True,
+        "messages": [],
+        "api_calls": 1,
+    }
 
 
 def _app(adapter: APIServerAdapter) -> web.Application:
@@ -70,18 +79,23 @@ async def test_a_failed_turn_completes_200_but_carries_the_failure_verdict(tmp_p
     adapter, sid = _adapter(tmp_path)
     app = _app(adapter)
 
-    with patch.object(adapter, "_create_agent", side_effect=lambda **_kw: _fake_agent(AUTH_WALL)):
+    with patch.object(
+        adapter, "_create_agent", side_effect=lambda **_kw: _fake_agent(AUTH_WALL)
+    ):
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(f"/api/sessions/{sid}/chat", json={"message": DM})
             body = await resp.json()
 
-    assert resp.status == 200, "the request was served; a non-2xx would break other consumers"
+    assert resp.status == 200, (
+        "the request was served; a non-2xx would break other consumers"
+    )
     assert body["object"] == "hermes.session.chat.completion"
     assert body["failed"] is True
     assert body["error"] == AUTH_WALL["error"]
     assert body["failure_reason"] == AUTH_WALL["failure_reason"]
     assert body["message"]["content"] == AUTH_WALL["final_response"], (
-        "the failure text stays the reply body for consumers that only read message.content")
+        "the failure text stays the reply body for consumers that only read message.content"
+    )
 
 
 @pytest.mark.asyncio
@@ -89,12 +103,17 @@ async def test_an_answered_turn_carries_no_failure_keys(tmp_path):
     adapter, sid = _adapter(tmp_path)
     app = _app(adapter)
 
-    with patch.object(adapter, "_create_agent", side_effect=lambda **_kw: _fake_agent(_ok("fine"))):
+    with patch.object(
+        adapter, "_create_agent", side_effect=lambda **_kw: _fake_agent(_ok("fine"))
+    ):
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(f"/api/sessions/{sid}/chat", json={"message": DM})
             body = await resp.json()
 
     assert resp.status == 200
     assert body["message"]["content"] == "fine"
-    assert "failed" not in body and "error" not in body and "failure_reason" not in body, (
-        "the additive keys appear only for a failed turn, so their absence stays an answer")
+    assert (
+        "failed" not in body and "error" not in body and "failure_reason" not in body
+    ), (
+        "the additive keys appear only for a failed turn, so their absence stays an answer"
+    )

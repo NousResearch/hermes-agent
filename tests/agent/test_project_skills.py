@@ -10,7 +10,7 @@ import agent.skill_utils as su
 
 @pytest.fixture
 def project_env(tmp_path, monkeypatch):
-    """A temp HERMES_HOME + a git-marked project with skills in both subdirs."""
+    """A temp HERMES_HOME + a git-marked project with skills in every project subdir."""
     home = tmp_path / ".hermes"
     (home / "skills").mkdir(parents=True)
     config = home / "config.yaml"
@@ -27,6 +27,11 @@ def project_env(tmp_path, monkeypatch):
     ag.mkdir(parents=True)
     (ag / "SKILL.md").write_text(
         "---\nname: conv-skill\ndescription: convention\n---\nbody\n"
+    )
+    gh = repo / ".github" / "skills" / "gh-skill"
+    gh.mkdir(parents=True)
+    (gh / "SKILL.md").write_text(
+        "---\nname: gh-skill\ndescription: copilot convention\n---\nbody\n"
     )
 
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -77,13 +82,22 @@ class TestTrustGate:
         assert notice is not None
         root, count = notice
         assert root == project_env["repo"].resolve()
-        assert count == 2
+        assert count == 3
 
-    def test_trusted_returns_both_subdirs(self, project_env):
+    def test_trusted_returns_all_subdirs(self, project_env):
         _trust(project_env["config"], project_env["repo"])
         dirs = su.get_project_skills_dirs()
         assert (project_env["repo"] / ".hermes" / "skills").resolve() in dirs
         assert (project_env["repo"] / ".agents" / "skills").resolve() in dirs
+        assert (project_env["repo"] / ".github" / "skills").resolve() in dirs
+
+    def test_project_subdir_precedence_order(self, project_env):
+        # Same-named skill in several project subdirs: earlier dir wins downstream.
+        _trust(project_env["config"], project_env["repo"])
+        assert su.get_project_skills_dirs() == [
+            (project_env["repo"] / sub / "skills").resolve()
+            for sub in (".hermes", ".agents", ".github")
+        ]
 
     def test_trusted_no_notice(self, project_env):
         _trust(project_env["config"], project_env["repo"])
@@ -123,6 +137,7 @@ class TestPrecedence:
         assert dirs[0] == su.get_skills_dir()
         for d in dirs:
             assert ".agents" not in str(d)
+            assert ".github" not in str(d)
 
 
 class TestNonInteractiveInheritance:

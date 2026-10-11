@@ -1735,7 +1735,8 @@ def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
 
 def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     """AGENTS.md chain from git root down to cwd; per directory the first NON-EMPTY of ``AGENTS.override.md`` /
-    ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through)."""
+    ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through), followed by that
+    directory's ``.github/copilot-instructions.md``; GitHub Copilot's path-specific instruction files come last."""
     cwd_resolved = cwd_path.resolve()
     found: list[tuple[str, Path, str]] = []
     for directory in _agents_md_directory_chain(cwd_resolved):
@@ -1748,7 +1749,35 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
             found.append((label, candidate, content))
             if content:
                 break  # first name match wins per directory
+        # GitHub Copilot repository-wide instructions: Copilot combines them with AGENTS.md, so they ride
+        # the same chain (and the same project-context type) instead of being shadowed by it.
+        copilot = directory / ".github" / "copilot-instructions.md"
+        if _exists_or_denied(copilot):
+            found.append((Path(os.path.relpath(copilot, cwd_resolved)).as_posix(), copilot, _read_context_file(copilot)))
+    return found + _copilot_path_instructions(cwd_resolved)
+
+
+def _copilot_path_instructions(cwd_path: Path) -> list[tuple[str, Path, str]]:
+    """``.github/instructions/**/*.instructions.md`` in the git root and cwd (Copilot CLI skips intermediates)."""
+    root = _find_git_root(cwd_path)
+    found: list[tuple[str, Path, str]] = []
+    for directory in dict.fromkeys(d for d in (root, cwd_path) if d is not None):
+        instructions_dir = directory / ".github" / "instructions"
+        if _is_dir_or_denied(instructions_dir):
+            found += [(Path(os.path.relpath(f, cwd_path)).as_posix(), f, _read_context_file(f))
+                      for f in sorted(instructions_dir.rglob("*.instructions.md")) if _is_file_or_denied(f)]
     return found
+
+
+def _copilot_instructions_label(label: str, content: str) -> tuple[str, str]:
+    """Heading and body for a Copilot ``*.instructions.md`` file: frontmatter stripped, and a non-global
+    ``applyTo`` stated in the heading. Copilot applies such a file only to matching files; the prompt builder
+    has no per-file trigger, so the model is told the scope instead."""
+    frontmatter, body = parse_frontmatter(content)
+    apply_to = str(frontmatter.get("applyTo") or "").strip()
+    if apply_to and apply_to != "**":
+        label = f"{label} (applies only to files matching: {apply_to})"
+    return label, body.strip() or content
 
 
 def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
@@ -1826,7 +1855,10 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     for label, candidate, content in _agents_md_candidates(cwd_path):
         if content and content not in seen_content:  # else: empty, or an identical copy along the chain
             seen_content.add(content)
-            sections.append(_context_section(content, label, label, candidate, context_length))
+            warn_name = label
+            if candidate.name.endswith(".instructions.md"):
+                label, content = _copilot_instructions_label(label, content)
+            sections.append(_context_section(content, label, warn_name, candidate, context_length))
     if len(sections) <= 1:
         return sections[0] if sections else ""
     # Per-file budgets applied above; also cap the merged chain so a deep monorepo can't multiply the budget.
@@ -1861,7 +1893,7 @@ def build_context_files_prompt(
     """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
 
     Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
-    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
+    AGENTS.md chain + GitHub Copilot instructions (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()

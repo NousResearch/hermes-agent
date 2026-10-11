@@ -4160,6 +4160,23 @@ def _release_tick_lock(lock_fd) -> None:
     lock_fd.close()
 
 
+def _reconcile_queued_deliveries() -> None:
+    """Settle queued Bot Chat delivery markers against their receipts on every tick (#134092).
+
+    Only jobs that actually carry a ``last_delivery_queued`` marker pay a receipt read; the scan
+    itself never raises — a settle that cannot be observed now simply keeps its marker.
+    """
+    from cron.jobs import list_jobs
+    from cron.scheduler_delivery import reconcile_delivery_receipts
+
+    for job in list_jobs(include_disabled=True):
+        if isinstance(job.get("last_delivery_queued"), dict) and job["last_delivery_queued"]:
+            try:
+                reconcile_delivery_receipts(job)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Delivery receipt reconcile failed for job %s: %s", job.get("id"), exc)
+
+
 def _maybe_reap_dead_owners() -> None:
     """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Rows
     whose owner process is proved gone are released (_owner_is_live), as are rows whose live owner

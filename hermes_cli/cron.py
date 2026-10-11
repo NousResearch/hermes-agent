@@ -180,6 +180,14 @@ def cron_list(show_all: bool = False):
     _store_report, jobs = _probe_then_list_jobs(include_disabled=True, brief=True)
     if jobs is None:
         return
+    # A queued Bot Chat receipt may have settled long before this job's next run; reconcile
+    # against the receipt file so the listing never reports a finished delivery as in
+    # progress (#134092).
+    from cron.scheduler_delivery import reconcile_delivery_receipts
+
+    for job in jobs:
+        if isinstance(job.get("last_delivery_queued"), dict) and job["last_delivery_queued"]:
+            reconcile_delivery_receipts(job)
     if not show_all:
         jobs = [
             job for job in jobs

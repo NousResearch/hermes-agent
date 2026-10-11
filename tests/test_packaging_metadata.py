@@ -51,3 +51,47 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     assert len(pins) == 1 and pins[0].operator == "==" and Version(pins[0].version) >= floor
     versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "starlette"]
     assert versions and all(version >= floor for version in versions)
+
+
+def test_exact_pinned_deps_exempt_from_exclude_newer():
+    """The workspace quarantine exempts every declaration-layer exact pin (#135589).
+
+    pyproject.toml documents exact pins as zero-float ("Exempting exact pins is pure
+    brick-risk removal at no supply-chain cost") and references this test by name.
+    Cross-checks with packaging's own parser so the stdlib regex in pm.workspace
+    cannot silently drift from PEP 508.
+    """
+    import re
+
+    from pm.workspace import _core_release_quarantine
+
+    metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    cutoff = metadata["tool"]["uv"]["exclude-newer"]
+    _core_release_quarantine(metadata, REPO_ROOT / "uv.lock")
+    policy = metadata["tool"]["uv"]["exclude-newer-package"]
+
+    def normalized(name: str) -> str:
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+    declarations = list(metadata["project"]["dependencies"])
+    for requirements in metadata["project"]["optional-dependencies"].values():
+        declarations.extend(requirements)
+    for requirements in metadata["dependency-groups"].values():
+        declarations.extend(requirements)
+    declarations.extend(metadata["build-system"]["requires"])
+    declarations.extend(metadata["tool"]["uv"]["override-dependencies"])
+
+    pinned = set()
+    for requirement in map(Requirement, declarations):
+        specifiers = list(requirement.specifier)
+        if len(specifiers) == 1 and specifiers[0].operator in ("==", "==="):
+            pinned.add(normalized(requirement.name))
+
+    # The reporter's brick list plus packaging: none were on the hand-written list.
+    assert {"resvg-py", "tomli-w", "truststore", "ddgs", "distlib", "packaging"} <= pinned
+    for name in pinned:
+        # A hand-written dated entry still wins; the pin must never fall to the cutoff.
+        assert policy[normalized(name)] != cutoff, name
+
+    # A floating dependency keeps the cutoff: the quarantine only skips what cannot move.
+    assert "urllib3" not in pinned and policy[normalized("urllib3")] == cutoff

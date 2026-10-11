@@ -65,21 +65,24 @@ def test_core_quarantine_covers_core_packages_and_not_plugin_ones(layout, locked
 
     A global ``exclude-newer`` in the generated root made a catalog pin floored on a fresh
     release unresolvable. The cutoff now travels per package: every registry package in
-    core's lock keeps it (or core's explicit exemption), plugin-only packages follow the
-    plugin's policy, and the rewritten root still locks and syncs.
+    core's lock keeps it, plugin-only packages follow the plugin's policy, and exact-pinned
+    core deps are exempt (#135589 — a pin cannot float, so the cutoff only bricks a
+    resolver that cannot see its upload date). The rewritten root still locks and syncs.
     """
     import tomllib
 
     tmp, core, plug_a, _ = layout
     _, uv, env = locked_project
     manifest = core / "pyproject.toml"
-    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer="14 days"\n', 1)
+    manifest.write_text(manifest.read_text()
+                        .replace("[tool.uv]\n", '[tool.uv]\nexclude-newer="14 days"\n', 1)
+                        .replace('other=["other-dep==1.0"]', 'other=["other-dep>=1.0"]')
                         + '[tool.uv.exclude-newer-package]\nBase_Dep = false\n')
     subprocess.run([str(uv), "lock", "--python", sys.executable], cwd=core, env=env, check=True,
                    capture_output=True)
     core_packages = {p["name"] for p in tomllib.loads((core / "uv.lock").read_text())["package"]
                      if "registry" in p.get("source", {})}
-    assert {"base-dep", "chosen-dep"} <= core_packages and "member-dep" not in core_packages
+    assert {"base-dep", "chosen-dep", "other-dep"} <= core_packages and "member-dep" not in core_packages
 
     root = tmp / "workspace"
     ws.lock_and_sync([plug_a], [], root=root, source=core, seed_lock=core / "uv.lock",
@@ -88,7 +91,7 @@ def test_core_quarantine_covers_core_packages_and_not_plugin_ones(layout, locked
     policy = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]
     assert "exclude-newer" not in policy
     per_package = policy["exclude-newer-package"]
-    assert per_package == {name: False if name == "base-dep" else "14 days" for name in core_packages}
+    assert per_package == {"base-dep": False, "chosen-dep": False, "other-dep": "14 days"}
     locked = {p["name"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
     assert "member-dep" in locked and "member-dep" not in per_package
 

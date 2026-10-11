@@ -148,6 +148,11 @@ def _core_release_quarantine(document: dict, core_lock: Path) -> None:
     installs. A global cutoff would filter plugin-only packages too, so it moves onto
     every registry package core locks. A plugin still cannot drag one of those past
     the window, and core's own ``= false`` exemptions stay as written.
+
+    A declaration-layer exact pin cannot float without a reviewed bump, so the cutoff
+    only adds brick risk there: a resolver that cannot see the pin's upload date rejects
+    it outright ("has no publish time", #135589). Those pins are exempted instead of
+    relying on the hand-written list catching every one.
     """
     import re
     import tomllib
@@ -162,10 +167,44 @@ def _core_release_quarantine(document: dict, core_lock: Path) -> None:
 
     per_package = {normalized(name): value
                    for name, value in settings.get("exclude-newer-package", {}).items()}
+    pinned = {normalized(name) for name in _declared_exact_pins(document, settings)}
     for package in tomllib.loads(core_lock.read_text(encoding="utf-8-sig")).get("package", []):
         if "registry" in package.get("source", {}):
-            per_package.setdefault(normalized(package["name"]), cutoff)
+            name = normalized(package["name"])
+            per_package.setdefault(name, False if name in pinned else cutoff)
     settings["exclude-newer-package"] = per_package
+
+
+def _declared_exact_pins(document: dict, uv_settings: dict) -> set[str]:
+    """Names every requirement the declaration layer exact-pins (``==``/``===``).
+
+    Covers ``project.dependencies``, every extra, every dependency group,
+    ``build-system.requires`` and ``tool.uv.override-dependencies``. Transitive pins
+    stay on the hand-written exemption list: the lock records resolved versions, not
+    specifiers, so a parent's ``==`` edge cannot be recovered statically.
+
+    The regex (not ``packaging``) is deliberate: this module also loads on the
+    pre-3.11 bootstrap python, where third-party imports do not exist.
+    """
+    import re
+
+    project = document.get("project", {})
+    declarations = list(project.get("dependencies", []))
+    for requirements in project.get("optional-dependencies", {}).values():
+        declarations.extend(requirements)
+    for requirements in document.get("dependency-groups", {}).values():
+        declarations.extend(requirements)
+    declarations.extend(document.get("build-system", {}).get("requires", []))
+    declarations.extend(uv_settings.get("override-dependencies", []))
+
+    pinned = set()
+    for declaration in declarations:
+        body, _, _marker = declaration.partition(";")
+        match = re.match(r"\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
+                         r"\s*(?:\[[^\]]*\])?\s*(.*)", body)
+        if match and re.fullmatch(r"={2,3}\s*\S+", match.group(2).strip()):
+            pinned.add(match.group(1))
+    return pinned
 
 
 def _is_member_candidate(plugin_dir: Path) -> bool:

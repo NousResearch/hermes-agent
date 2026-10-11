@@ -1075,9 +1075,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: dict[Any, bool] = {}
         self._clarify_resolved: dict[Any, bool] = {}
-        # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
+        # clarify_id → (channel_id, message_ts, rendered_question, session_key) to bind replies and retire a
         # card whose clarify ended without a click (timeout, reset, superseding prose).
-        self._clarify_messages: dict[str, tuple[str, str, str]] = {}
+        self._clarify_messages: dict[str, tuple[str, str, str, str]] = {}
         # Model picker state keyed by workspace message marker (team_id, ts) →
         # picker context (providers, session_key, on_model_selected, stage).
         # Mirrors _approval_resolved / _clarify_resolved: bounded, and the
@@ -5451,7 +5451,7 @@ class SlackAdapter(BasePlatformAdapter):
         if result.success and result.message_id:
             question_text, _blocks = _build()
             response_channel = str((result.raw_response or {}).get("channel") or chat_id)
-            self._clarify_messages[clarify_id] = (response_channel, result.message_id, question_text)
+            self._clarify_messages[clarify_id] = (response_channel, result.message_id, question_text, session_key)
             self._trim_oldest_dict_entries(self._clarify_messages, self._CLARIFY_MESSAGE_MAX)
         return result
 
@@ -5665,7 +5665,7 @@ class SlackAdapter(BasePlatformAdapter):
         target = self._clarify_messages.pop(clarify_id, None)
         if target is None:
             return
-        channel_id, msg_ts, question_text = target
+        channel_id, msg_ts, question_text, _session_key = target
         # A late action handler must be a no-op while the best-effort chat.update is in flight.
         self._clarify_resolved[msg_ts] = True
         await self._update_clarify_message(channel_id, msg_ts, question_text, notice)
@@ -5680,6 +5680,11 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning("[Slack] Malformed clarify value: %s", value)
             return
         clarify_id, token = value.split("|", 1)
+        target = self._clarify_messages.get(clarify_id)
+        if target is None or target[:2] != (channel_id, msg_ts):
+            # A forged value must not claim another prompt or consume this card's guard.
+            return
+        session_key = target[3]
         # Double-click guard — atomic pop (mirrors approval).
         if self._clarify_resolved.pop(msg_ts, True):
             return
@@ -5718,7 +5723,7 @@ class SlackAdapter(BasePlatformAdapter):
         if resolved_text is None:
             resolved_text = f"choice {idx + 1}"  # model-facing fallback; stays English
             display_text = t("platform.slack.clarify.choice_n", n=str(idx + 1))
-        if _clarify_mod.resolve_gateway_clarify(clarify_id, resolved_text):
+        if _clarify_mod.resolve_gateway_clarify(clarify_id, resolved_text, session_key=session_key):
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text,
                 t("platform.slack.clarify.resolved", user=user_name, choice=display_text))

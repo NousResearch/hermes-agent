@@ -904,7 +904,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._clarify_state[clarify_id] = session_key  # a follow-up text can still resolve
             return False
         # Title is the numeric label; the agent has the prompt in context to interpret it.
-        if not clarify_gateway.resolve_gateway_clarify(clarify_id, str(inner.get("title") or str(idx + 1))):
+        if not clarify_gateway.resolve_gateway_clarify(
+            clarify_id, str(inner.get("title") or str(idx + 1)), session_key=session_key,
+        ):
             logger.info("[whatsapp_cloud] clarify resolver reported no waiter (clarify_id=%s) — falling back to text", clarify_id)
             return False
         return True

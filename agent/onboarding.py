@@ -25,24 +25,25 @@ PROFILE_BUILD_FLAG = "profile_build_offered"
 # applied so the message matches reality; "interrupt" is the default branch.
 _BUSY_INPUT_HINTS_GATEWAY = {
     "queue": (
-        "💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages "
-        "stop the current task immediately, or `/busy status` to check. This notice won't appear again."
+        "💡 First-time tip — I queued your message instead of interrupting. Send `{prefix}busy interrupt` to make "
+        "new messages stop the current task immediately, or `{prefix}busy status` to check. This notice won't "
+        "appear again."
     ),
     "steer": (
         "💡 First-time tip — I steered your message into the current run; it will arrive after the next tool "
-        "call instead of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy "
-        "status` to check. This notice won't appear again."
+        "call instead of interrupting. Send `{prefix}busy interrupt` or `{prefix}busy queue` to change this, or "
+        "`{prefix}busy status` to check. This notice won't appear again."
     ),
     "redirect": (
         "💡 First-time tip — I redirected the current run using your message. Completed work stays in "
-        "context, and `/stop` still cancels the task. Send `/busy queue` to wait for a separate turn, or "
-        "`/busy status` to check. This notice won't appear again."
+        "context, and `{prefix}stop` still cancels the task. Send `{prefix}busy queue` to wait for a separate "
+        "turn, or `{prefix}busy status` to check. This notice won't appear again."
     ),
 }
 _BUSY_INPUT_HINT_GATEWAY_DEFAULT = (
-    "💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue "
-    "follow-ups for after the current task instead, `/busy steer` to inject them mid-run without "
-    "interrupting, or `/busy status` to check. This notice won't appear again."
+    "💡 First-time tip — I just interrupted my current task to answer you. Send `{prefix}busy queue` to queue "
+    "follow-ups for after the current task instead, `{prefix}busy steer` to inject them mid-run without "
+    "interrupting, or `{prefix}busy status` to check. This notice won't appear again."
 )
 
 _BUSY_INPUT_HINTS_CLI = {
@@ -65,9 +66,10 @@ _BUSY_INPUT_HINT_CLI_DEFAULT = (
 )
 
 
-def busy_input_hint_gateway(mode: str) -> str:
-    """Hint shown the first time a user messages while the agent is busy (markdown)."""
-    return _BUSY_INPUT_HINTS_GATEWAY.get(mode, _BUSY_INPUT_HINT_GATEWAY_DEFAULT)
+def busy_input_hint_gateway(mode: str, prefix: str) -> str:
+    """Hint shown the first time a user messages while the agent is busy (markdown). ``prefix`` is the
+    platform's ``typed_command_prefix``."""
+    return _BUSY_INPUT_HINTS_GATEWAY.get(mode, _BUSY_INPUT_HINT_GATEWAY_DEFAULT).format(prefix=prefix)
 
 
 def busy_input_hint_cli(mode: str) -> str:

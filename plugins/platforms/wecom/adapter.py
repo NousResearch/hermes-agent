@@ -447,23 +447,24 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             text = re.sub(r"^@\S+\s*", "", text).strip()  # "@Bot /approve" -> "/approve"
         media_urls, media_types = await self._extract_media(body)
         message_type = self._derive_message_type(body, text, media_types)
-        has_reply_context = bool(reply_text and (text or media_urls))
-        if reply_text and not has_reply_context:  # quote-only message: the quote becomes the text
-            text = reply_text
-        if not text and not media_urls:
+        if not text and not media_urls and not reply_text:
             logger.info("[%s] Empty WeCom message skipped: is_group=%s chat=%s msgtype=%r", self.name, is_group, chat_id, body.get("msgtype"))
             return
         source = self.build_source(chat_id=chat_id, chat_type="group" if is_group else "dm", user_id=sender_id or None, user_name=sender_id or None,
                                    message_id=msg_id)
         event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=payload, message_id=msg_id, media_urls=media_urls, media_types=media_types,
-            reply_to_message_id=f"quote:{msg_id}" if has_reply_context else None, reply_to_text=reply_text if has_reply_context else None, timestamp=datetime.now(tz=UTC),
+            reply_to_message_id=f"quote:{msg_id}" if reply_text else None, reply_to_text=reply_text, timestamp=datetime.now(tz=UTC),
         )
         # Only plain text is batched, EXCEPT attachment-only messages, which are held so the
         # trailing text callback merges instead of "interrupting" a run the attachment spawned.
         has_pending_batch = self._text_batch_key(event) in self._pending_text_batches
         is_attachment_only = bool(media_urls) and not (text or "").strip()
         if (message_type == MessageType.TEXT and (self._text_batch_delay_seconds > 0 or has_pending_batch)) or (is_attachment_only and self._attachment_text_merge_delay_seconds > 0):
+            key = self._text_batch_key(event)
+            existing = self._pending_text_batches.get(key)
+            if existing is not None and existing.reply_context_conflicts(event):
+                await self._flush_text_batch_now(key)
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
@@ -485,14 +486,11 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         return allowed
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer + reset the flush timer; real text joining a buffered attachment promotes it to TEXT and inherits the quote context."""
+        """Promote the current attachment batch to TEXT when it receives a caption."""
+        super()._enqueue_text_event(event)
         existing = self._pending_text_batches.get(self._text_batch_key(event))
-        super()._enqueue_text_event(event)  # merge text/media + restart the flush timer
         if existing is not None and event.text and event.text.strip():
             existing.message_type = MessageType.TEXT
-            if event.reply_to_text and not existing.reply_to_text:
-                existing.reply_to_text = event.reply_to_text
-                existing.reply_to_message_id = event.reply_to_message_id
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         if pending is not None and pending.media_urls and not (pending.text or "").strip():

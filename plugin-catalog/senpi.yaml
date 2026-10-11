@@ -1,0 +1,17 @@
+name: senpi
+repo: https://github.com/Senpi-ai/senpi-plugin
+sha: 19b937826f92b2e0c15490adf23a914d3ec51c6c
+description: "Senpi, an AI quant for Hyperliquid, through the user's own Senpi agent: market read, ranked signals, smart-money positioning, trader research, Quant Desk wallet scoring and strategy design; everything except trading works without depositing funds. Portable Agent Plugins v1 package (mcp.json for Senpi's hosted MCP over Streamable HTTP with OAuth sign-in, plus the senpi-agent skill); no API key, no env vars. Disclosure — sends the messages you address to your Senpi agent to agents.senpi.ai over HTTPS and fetches its replies, pending approvals and session lists from the same host; nothing runs locally (no scripts, hooks or background processes), no files written, no telemetry. Through ask_agent the agent can open or close positions on your own Hyperliquid account: Senpi's server-side gate pauses each such action for your allow-once through resolve_approval, an unanswered approval is denied after ten minutes, and no tool can withdraw funds; Hermes's own approval prompt applies only if you set trust: untrusted for the server. MCP tool behaviour is served remotely and not covered by the pinned sha."
+maintainer: Senpi-ai
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/Senpi-ai/senpi-plugin#readme
+version: "0.3.0"
+title: "Senpi — AI Quant"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

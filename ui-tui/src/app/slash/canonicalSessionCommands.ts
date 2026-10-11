@@ -3,6 +3,7 @@
 // `session.mutate` rename / rewind (`gateway/session_mutations.py`), the committed admission
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
+import type { SlashExecResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import type { PanelSection } from '../../types.js'
@@ -120,21 +121,34 @@ interface CommittedResult {
   total_tokens?: number
 }
 
-/** `/usage`: the shared gateway keeps no session-wide ledger, but every settled turn commits its
- * own usage with the admission. Show the last one this view saw, and say what is missing. */
+/** `/usage`: session totals are the owner's own `/usage` report for this session (a reviewed read,
+ * as the classic CLI shows it); every settled turn also commits its own usage with the admission,
+ * so the last one this view saw follows. */
 export function canonicalUsage(ctx: SlashRunCtx) {
   const sid = ctx.sid!
   const admissionId = lastAdmission.get(sid)
-  const unavailable = () => ctx.transcript.sys(t('canonical.controls.usageTotalsUnavailable'))
+  const unavailable = () => !ctx.stale() && ctx.transcript.sys(t('canonical.controls.usageTotalsUnavailable'))
+
+  const totals = ctx.gateway.gw
+    .request<SlashExecResponse>('slash.exec', { command: 'usage', session_id: sid })
+    .then(r => {
+      if (!r?.output) {
+        return unavailable()
+      }
+
+      if (!ctx.stale()) {
+        ctx.transcript.page(r.output, t('slashCmd.session.usage.usageTitle'))
+      }
+    }, unavailable)
 
   if (!admissionId) {
-    ctx.transcript.sys(t('canonical.controls.usageNoTurn'))
-
-    return unavailable()
+    return void totals.then(() => !ctx.stale() && ctx.transcript.sys(t('canonical.controls.usageNoTurn')))
   }
 
-  void ctx.gateway.gw
-    .request('prompt.receipt', { admission_id: admissionId, include_result: true, session_id: sid })
+  void totals
+    .then(() =>
+      ctx.gateway.gw.request('prompt.receipt', { admission_id: admissionId, include_result: true, session_id: sid })
+    )
     .then(raw => {
       if (ctx.stale()) {
         return
@@ -143,9 +157,7 @@ export function canonicalUsage(ctx: SlashRunCtx) {
       const result = asRpcResult<{ result?: CommittedResult }>(raw)?.result
 
       if (!result) {
-        ctx.transcript.sys(t('canonical.controls.usageNoTurn'))
-
-        return unavailable()
+        return ctx.transcript.sys(t('canonical.controls.usageNoTurn'))
       }
 
       const f = (value: number | undefined) => (value ?? 0).toLocaleString()
@@ -164,7 +176,6 @@ export function canonicalUsage(ctx: SlashRunCtx) {
       const sections: PanelSection[] = [{ rows }]
 
       ctx.transcript.panel(t('canonical.controls.usageLastTurnTitle'), sections)
-      unavailable()
     })
     .catch(ctx.guardedErr)
 }

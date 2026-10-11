@@ -138,7 +138,12 @@ it('/usage renders the committed turn result and /tools says what the shared gat
   expect(sys).toHaveBeenCalledWith('toolsets fixed at session launch: terminal, web')
   expect(sys).toHaveBeenCalledWith('/tools is not available on the shared gateway yet')
   expect(sys.mock.calls.some(([line]) => /request_failed|unsupported_command|unknown_method/.test(line))).toBe(false)
-  expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
+  // Session totals are the owner's reviewed /usage read; no other legacy route.
+  expect(
+    request.mock.calls.some(
+      ([method, params]) => LEGACY.includes(method) && !(method === 'slash.exec' && params.command === 'usage')
+    )
+  ).toBe(false)
 })
 
 it('/status reads through the gateway; /save, /bg and /btw refuse instead of calling sidecar-only RPCs', async () => {

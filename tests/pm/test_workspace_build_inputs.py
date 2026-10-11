@@ -282,3 +282,101 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
 
     assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
+
+
+def _terminfo_case_pair_source(core):
+    """A package root carrying the bundled CPython's case-only terminfo pairs (see #135910).
+
+    ``X``/``x`` hold different entries (the directory-level pair a folding volume
+    cannot hold side by side), while ``Eterm``/``eterm`` fold onto the same name
+    once their directories are merged (the file-level pair).
+    """
+    terminfo = core / "tools" / "python-3" / "share" / "terminfo"
+    for entry, text in {
+        "X/X-hpterm": "hp entry\n",
+        "x/xterm-256color": "x11 entry\n",
+        "E/Eterm": "x11 entry\n",
+        "e/eterm": "gnu entry\n",
+    }.items():
+        path = terminfo / entry
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["tools"]\n',
+        encoding="utf-8",
+    )
+    return core
+
+
+def _skip_when_source_volume_folds_case(tmp_path):
+    """The X/x fixture needs a case-sensitive source volume to exist at all.
+
+    The real-world shape of #135910 is exactly that split: a case-sensitive
+    source (the Linux container's tool store) copied onto a case-folding
+    destination (a macOS bind mount), so on a case-folding host the fixture
+    itself cannot be built.
+    """
+    if workspace._destination_folds_case(tmp_path):
+        pytest.skip("this host folds filename case, so the X/x source pair cannot exist here")
+
+
+def test_copy_core_inputs_merges_casefold_directory_pairs_on_a_folding_volume(tmp_path, monkeypatch):
+    """A folding destination merges terminfo's x/ into X/: xterm-256color survives too."""
+    _skip_when_source_volume_folds_case(tmp_path)
+    core = _terminfo_case_pair_source(tmp_path / "core")
+    destination = tmp_path / "stage"
+    monkeypatch.setattr(workspace, "_destination_folds_case", lambda _: True)
+
+    workspace._copy_core_inputs(core, destination)
+
+    kept = destination / "tools/python-3/share/terminfo"
+    assert sorted(p.name for p in kept.iterdir()) == ["E", "X"], \
+        "each folded pair shares the sorted-first spelling"
+    assert (kept / "X" / "X-hpterm").read_text(encoding="utf-8") == "hp entry\n"
+    assert (kept / "X" / "xterm-256color").read_text(encoding="utf-8") == "x11 entry\n", \
+        "the merged lowercase tree is not lost"
+
+
+def test_copy_core_inputs_drops_a_file_that_folds_onto_a_copied_entry(tmp_path, monkeypatch, caplog):
+    """Eterm/eterm fold onto one name inside the merged directory: the sorted-first
+    spelling survives and the later one is dropped with a warning, never overwritten."""
+    _skip_when_source_volume_folds_case(tmp_path)
+    core = _terminfo_case_pair_source(tmp_path / "core")
+    destination = tmp_path / "stage"
+    monkeypatch.setattr(workspace, "_destination_folds_case", lambda _: True)
+
+    with caplog.at_level("WARNING", logger="pm.workspace"):
+        workspace._copy_core_inputs(core, destination)
+
+    merged = destination / "tools/python-3/share/terminfo/E"
+    assert sorted(p.name for p in merged.iterdir()) == ["Eterm"]
+    assert (merged / "Eterm").read_text(encoding="utf-8") == "x11 entry\n"
+    assert any("case-folded" in record.message for record in caplog.records)
+
+
+def test_copy_core_inputs_keeps_both_spellings_when_the_destination_folds_nothing(tmp_path, monkeypatch):
+    """A case-sensitive destination keeps both spellings: nothing is merged or dropped there."""
+    _skip_when_source_volume_folds_case(tmp_path)
+    core = _terminfo_case_pair_source(tmp_path / "core")
+    destination = tmp_path / "stage"
+    monkeypatch.setattr(workspace, "_destination_folds_case", lambda _: False)
+
+    workspace._copy_core_inputs(core, destination)
+
+    kept = destination / "tools/python-3/share/terminfo"
+    assert sorted(p.name for p in kept.iterdir()) == ["E", "X", "e", "x"]
+    assert (kept / "X" / "X-hpterm").read_text(encoding="utf-8") == "hp entry\n"
+    assert (kept / "x" / "xterm-256color").read_text(encoding="utf-8") == "x11 entry\n"
+    assert (kept / "E" / "Eterm").read_text(encoding="utf-8") == "x11 entry\n"
+    assert (kept / "e" / "eterm").read_text(encoding="utf-8") == "gnu entry\n"
+
+
+def test_destination_folds_case_answers_without_leaving_a_trace(tmp_path):
+    """The probe cleans up after itself and reports a boolean for any volume."""
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    result = workspace._destination_folds_case(tmp_path)
+
+    assert isinstance(result, bool)
+    assert sorted(p.name for p in tmp_path.iterdir()) == before

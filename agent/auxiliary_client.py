@@ -8206,7 +8206,8 @@ def _call_llm_impl(
             # Responses-shim clients consume the stream internally and return a completed
             # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
             return client.chat.completions.create(**kwargs)
-        return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
+        from agent.auxiliary_stream_recovery import create_stream_with_pool_recovery
+        return create_stream_with_pool_recovery(req, retry_kwargs)
 
     def _primary(**validate_kw: Any) -> Any:
         # Retry on the same provider for a transient transport blip (connection reset / streaming-close /

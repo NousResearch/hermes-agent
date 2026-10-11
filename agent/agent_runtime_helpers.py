@@ -3418,10 +3418,16 @@ def tool_results_this_turn(messages: list[dict[str, Any]]) -> int:
 
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
 # message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+# Includes German ("Ich werde jetzt ...", "Jetzt werde/mache ich ...") and Serbian
+# ("Sada ću ...", "Idem sada ...") intent phrasings so the stall guard also fires
+# for non-English sessions (issue #105163).
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
-    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
-    r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
+    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b"
+    r"|\bich werde (?:jetzt|nun|gleich)\b|\bjetzt werde ich\b"
+    r"|\b(?:nun|jetzt) mache ich\b|\bals n[äa]chstes werde ich\b"
+    r"|\bsada (?:[ćc]u|idem)\b|\bidem sada\b)"
+    r"[^.!?\n]{0,100}[:.\u2026]?\s*$", re.IGNORECASE,
 )
 
 # Content longer than this is a substantive reply, not a dangling ack.
@@ -3453,6 +3459,9 @@ _PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
     r"(?:^|[.!?:\u3002\uff01\uff1f\u2014\u2013\n]\s*|\u2026\s*)"
     r"(?:let(?:['\u2019]s| me)\b|i(?:['\u2019]ll| will| need to| should| am going to|['\u2019]m going to)\b"
     r"|next[,:]? i\b|now i(?:['\u2019]ll| will| need to)\b|first[,:]? i(?:['\u2019]ll| will| need to)\b"
+    r"|lass(?: uns)?\b|ich werde\b|jetzt werde ich\b|nun mache ich\b|jetzt mache ich\b"
+    r"|jetzt muss ich\b|nun muss ich\b|als n[äa]chstes (?:werde ich|mache ich)\b|ich muss\b|ich sollte\b"
+    r"|sada (?:[ćc]u|idem)\b|idem sada\b"
     r"|\u0e08\u0e30\u0e43\u0e2b\u0e49\u0e1c\u0e21|\u0e1c\u0e21\u0e08\u0e30"
     r"|\u0e15\u0e48\u0e2d\u0e44\u0e1b(?:\u0e08\u0e30|\u0e1c\u0e21\u0e08\u0e30)"
     r"|\u0e02\u0e2d(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39)"

@@ -149,6 +149,28 @@ def normalize_model_response(
     record_reply_content(agent, response, assistant_message)
 
     content = assistant_message.content
+    # Text-form tool-call salvage (IQ3 quantized-model artifact): the model files the
+    # whole tool-call block as plain <function=...> markup inside reasoning_content,
+    # leaves content empty and still reports finish_reason="stop". Without salvage the
+    # planning monologue gets promoted as the final answer and the turn ends mid-task
+    # ("Reasoning-only clean stop ... returning the reasoning as the final response").
+    # Re-attach the parsed calls so the normal tool round runs. Bounded per turn so a
+    # model that keeps emitting unparseable markup still ends after 2 salvage attempts.
+    if (
+        not assistant_message.tool_calls
+        and finish_reason == "stop"
+        and agent.valid_tool_names
+        and (content is None or (isinstance(content, str) and not content.strip()))
+        and getattr(agent, "_text_toolcall_salvage_retries", 0) < 2
+    ):
+        from agent.agent_runtime_helpers import extract_reasoning
+        from agent.tool_call_salvage import salvage_tool_calls_from_text
+        _salvaged = salvage_tool_calls_from_text(
+            extract_reasoning(agent, assistant_message) or "", agent.valid_tool_names,
+        )
+        if _salvaged:
+            assistant_message.tool_calls = _salvaged
+            agent._text_toolcall_salvage_retries = getattr(agent, "_text_toolcall_salvage_retries", 0) + 1
     if content and not agent.quiet_mode:
         if agent.verbose_logging:
             agent._vprint(f"{agent.log_prefix}🤖 Assistant: {content}")

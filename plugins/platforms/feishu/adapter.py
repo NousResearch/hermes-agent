@@ -4472,9 +4472,12 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
 
 def _is_connected(config) -> bool:
-    """Feishu counts as connected once app_id is configured."""
+    """Require the same credential pair as the adapter's connection path."""
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("app_id"))
+    return bool(
+        _shared_extra_or_secret(extra, "app_id", "FEISHU_APP_ID")
+        and _shared_extra_or_secret(extra, "app_secret", "FEISHU_APP_SECRET")
+    )
 
 
 

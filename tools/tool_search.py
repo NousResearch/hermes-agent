@@ -183,6 +183,23 @@ def _deferrable_in(tool_defs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return classify_tools(tool_defs, load_config_readonly().effective_defer_tools)[1]
 
 
+def _resolve_oauth_wire_alias(name: str, available_names: Optional[Iterable[str]] = None) -> str:
+    """Resolve a compatibility alias in generic tool-search bridges.
+
+    A real registered wire name wins; an alias resolves only if its target is
+    available in the bridge scope.
+    """
+    if _registry_entry(name) is not None:
+        return name
+    from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
+    target = _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(name)
+    if not target:
+        return name
+    if available_names is not None:
+        return target if target in available_names else name
+    return target if _registry_entry(target) is not None else name
+
+
 def estimate_tokens_from_schemas(tool_defs: Iterable[dict[str, Any]]) -> int:
     """Token cost via the chars/4 rule (order-of-magnitude precision suffices)."""
     def _chars(td: dict[str, Any]) -> int:
@@ -496,14 +513,15 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
         return err
     deferrable = _deferrable_in(current_tool_defs)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
+    resolved_names = [_resolve_oauth_wire_alias(name, by_name) for name in names]
     remote_schemas, hosted_failure = remote_schemas_for(names, current_tool_defs, connector_describe)
 
     tools: dict[str, dict[str, Any]] = {}
     not_found: list[str] = []
     undescribed: list[str] = []
     errors: dict[str, str] = {}
-    for name in names:
-        fn = by_name.get(name)
+    for name, resolved_name in zip(names, resolved_names):
+        fn = by_name.get(resolved_name)
         remote_fn = remote_schemas.get(name)
         if fn is not None:
             tools[name] = {"description": fn.get("description", ""),
@@ -579,7 +597,7 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
     if is_connector_name(entries[0]["name"]):
         return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None
 
-    name = entries[0]["name"]
+    name = _resolve_oauth_wire_alias(entries[0]["name"])
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
         return None, {}, not_deferrable_error(name)

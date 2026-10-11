@@ -506,7 +506,7 @@ export function useStatusbarItems({
         hidden: !sessionsShowing || profileRailVisible,
         id: 'profile-switcher',
         lockedVisible: true,
-        render: () => <ProfileSwitcher compact />
+        render: () => <ProfileSwitcher compact showFleetProfiles={botsShowing} />
       },
       {
         className: gatewayRestarting ? undefined : gatewayClassName,

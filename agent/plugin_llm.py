@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
 
@@ -59,7 +60,10 @@ class PluginLlmUsage:
 
 @dataclass
 class PluginLlmCompleteResult:
-    """Result of :meth:`PluginLlm.complete`."""
+    """Result of :meth:`PluginLlm.complete`.
+
+    ``finish_reason`` preserves the provider token, or is ``None`` when unknown.
+    """
 
     text: str
     provider: str
@@ -75,7 +79,9 @@ class PluginLlmStructuredResult:
     """Result of :meth:`PluginLlm.complete_structured`.
 
     ``parsed`` is set only when JSON output was requested AND the response was
-    valid JSON; ``content_type`` is then ``"json"``, otherwise ``"text"``."""
+    valid JSON; ``content_type`` is then ``"json"``, otherwise ``"text"``.
+    Parsing success does not imply natural completion: ``finish_reason`` retains
+    the provider token (including ``"length"``), or ``None`` when unknown."""
 
     text: str
     provider: str
@@ -385,19 +391,14 @@ def _extract_finish_reason(response: Any) -> Optional[str]:
     malformed and absent values are deliberately represented as ``None`` so a
     plugin can distinguish an interrupted stream from a natural stop.
     """
-    try:
-        choices = (response.get("choices") if isinstance(response, dict)
-                   else getattr(response, "choices", None))
-        if not isinstance(choices, (list, tuple)) or not choices:
-            return None
-        choice = choices[0]
-        raw = (choice.get("finish_reason") if isinstance(choice, dict)
-               else getattr(choice, "finish_reason", None))
-    except (AttributeError, IndexError, TypeError):
+    choices = (response.get("choices") if isinstance(response, Mapping)
+               else getattr(response, "choices", None))
+    if not isinstance(choices, (list, tuple)) or not choices:
         return None
-    if not isinstance(raw, str):
-        return None
-    return raw.strip() or None
+    choice = choices[0]
+    raw = (choice.get("finish_reason") if isinstance(choice, Mapping)
+           else getattr(choice, "finish_reason", None))
+    return raw if isinstance(raw, str) and raw.strip() else None
 
 
 def _main_config_value(reader: str, default: str) -> str:

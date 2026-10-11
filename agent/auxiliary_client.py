@@ -7329,8 +7329,6 @@ class _ChatStreamAccumulator:
             reasoning="".join(self.reasoning_parts) or None,
             reasoning_details=self.reasoning_details or None,
         )
-        # A stream can close before its provider emits a terminal reason. Preserve
-        # that uncertainty instead of fabricating a natural completion.
         choice = SimpleNamespace(index=0, message=message, finish_reason=self.finish_reason)
         return SimpleNamespace(id=self.resp_id, model=self.resp_model, object="chat.completion",
                                choices=[choice], usage=self.usage)

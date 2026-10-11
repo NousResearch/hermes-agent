@@ -1,0 +1,56 @@
+# Catalog candidate: requires normal Nous PR review before shipping.
+# Uses an existing, independently reviewed REA installation; never runs setup.
+manifest_version: 1
+name: rea
+description: Local reverse engineering, native analysis, and authorized process capture with REA.
+source: https://github.com/morluto/rea
+sampling:
+  enabled: false
+transport:
+  type: stdio
+  command: ${REA_NODE}
+  args: ["${REA_SCRIPT}", "mcp"]
+  version: "6.3.0"
+  env:
+    HOME: ${REA_WORKSPACE}
+    TMPDIR: ${REA_TMPDIR}
+    PATH: /usr/bin:/bin
+    LANG: C.UTF-8
+    GHIDRA_INSTALL_DIR: ${GHIDRA_INSTALL_DIR}
+    JAVA_HOME: ${JAVA_HOME}
+    REA_ANALYSIS_PROVIDER: ghidra
+    GHIDRA_HEADLESS_MAXMEM: 512M
+auth:
+  type: none
+  env:
+    - name: REA_NODE
+      prompt: Absolute path to Node.js compatible with REA 6.3.0 (22.19+, 24.11+, or 26+)
+      secret: false
+    - name: REA_SCRIPT
+      prompt: Absolute path to the reviewed rea-agents 6.3.0 scripts/rea.mjs
+      secret: false
+    - name: REA_WORKSPACE
+      prompt: Existing private REA workspace/home for this profile
+      secret: false
+    - name: REA_TMPDIR
+      prompt: Existing private temporary directory for REA
+      secret: false
+    - name: GHIDRA_INSTALL_DIR
+      prompt: Absolute path to the reviewed Ghidra installation
+      secret: false
+    - name: JAVA_HOME
+      prompt: Absolute path to the compatible reviewed JDK installation
+      secret: false
+# No tool pruning: exposure remains governed by the profile's MCP allowlist.
+post_install: |
+  This entry launches an existing REA 6.3.0 installation. Verify that version
+  and source integrity before supplying its paths; the catalog does not
+  download packages or enforce version metadata. Node, REA, Ghidra and JDK
+  prerequisites must already exist. Optional tools retain their dependency,
+  commercial-provider, device and OS limitations.
+  REA is not a sandbox. Installing its full tool surface does not authorize
+  arbitrary targets, process attachment, instrumentation or network capture.
+  Keep per-target permissions and the user's approved scope in force.
+  Install from each intended profile's own Hermes session. Do not install in
+  default or unrelated profiles. Existing toolsets including no_mcp are not
+  altered by the installer; explicitly enable only this MCP where approved.

@@ -523,6 +523,29 @@ stage_prerequisites() {
     log_success "prerequisites ok (git, curl)"
 }
 
+# The bootstrap keeps running against the CHECKED-OUT tree, so a pinned commit
+# must satisfy the interfaces the later stages invoke: pm/lock.json (the
+# bootstrap Python pin), pm.cli (dependency install) and the source-completion
+# tail. A pre-PM revision passes the branch check and would die mid-ladder on a
+# half-prepared tree instead (#134733). $1: the git checkout to probe, $2: a
+# staging dir removed before the refusal exits (the fresh clone's; empty on a
+# rerun, where the install itself must be left untouched).
+refuse_pre_bootstrap_pin() {
+    local _present _iface _missing=""
+    # ls-tree reads the commit's tree only (no blob fetch, safe on the
+    # --filter=blob:none clone), so probing BEFORE the pinning checkout never
+    # leaves a tree moved onto the refused pre-PM commit.
+    # Plain string accumulation: bash 3.2 unbound-empties arrays under set -u.
+    _present="$(git -C "$1" ls-tree -r --name-only "$INSTALL_COMMIT" -- \
+        pm/lock.json pm/cli.py hermes_cli/source_completion.py)"
+    for _iface in pm/lock.json pm/cli.py hermes_cli/source_completion.py; do
+        printf '%s\n' "$_present" | grep -qxF "$_iface" || _missing="$_missing $_iface"
+    done
+    [ -z "$_missing" ] && return 0
+    [ -z "$2" ] || rm -rf "$2"
+    fail "commit $INSTALL_COMMIT predates the PM bootstrap this installer runs (missing:${_missing}); install that revision with its own installer, or pin a newer commit" commit_incompatible_with_bootstrap
+}
+
 stage_repository() {
     local pinned=false
     # An interrupted clone from an older installer can leave a .git with no
@@ -687,6 +710,9 @@ stage_repository() {
             # and an unpublished tree never leaves an empty checkout behind.
             git -C "$staged/tree" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
                 || { rm -rf "$staged"; fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch; }
+            # Same pre-PM gate as a rerun pin: the staged tree is probed (and
+            # removed) before the pin checkout materializes it.
+            refuse_pre_bootstrap_pin "$staged/tree" "$staged"
         fi
         if [ -n "$INSTALL_COMMIT" ] || [ "$cloned" = deferred ]; then
             # The checkout step is where throttled downloads die: retry it alone.
@@ -731,6 +757,10 @@ stage_repository() {
         # make the next plain rerun "update" onto a different line.
         git -C "$INSTALL_DIR" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
             || fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch
+        # Probed BEFORE the pinning checkout, so a rerun over an existing install
+        # is never left moved onto the refused pre-PM tree with a venv/PM state
+        # built for a newer one (#134733).
+        refuse_pre_bootstrap_pin "$INSTALL_DIR" ""
         run_logged "Pinning $INSTALL_COMMIT" git -C "$INSTALL_DIR" checkout "$INSTALL_COMMIT" \
             || fail "could not pin commit $INSTALL_COMMIT" git_checkout_failed
     fi

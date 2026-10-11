@@ -2527,6 +2527,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
                 **_STATIC_FEATURE_FLAGS,
                 "cors": bool(self._cors_origins),
+                "platform_hint": {"mode": self._platform_hint_mode(), "config_key": "platform_hints.api_server"},
                 # Always advertised for feature-detection; enabled follows config.
                 "browser_extension_control": {
                     "enabled": self._browser_control_enabled(),
@@ -2713,6 +2714,29 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             tool_call_id = params.get("tool_call_id")
             if isinstance(tool_call_id, str) and tool_call_id:
                 self._browser_control_broker.cancel(scope, tool_call_id=tool_call_id)
+
+    def _platform_hint_mode(self) -> str:
+        """How ``platform_hints.api_server`` in config.yaml shapes this server's system-prompt hint.
+
+        ``default`` keeps the built-in plain-text hint, ``append`` adds text after it, ``replace``
+        substitutes it (mirrors ``agent.system_prompt._resolve_platform_hint``). A frontend that
+        renders Markdown can confirm the plain-text instruction is gone without reading hint text.
+        """
+        try:
+            from hermes_cli.config import load_config
+            hints = (load_config() or {}).get("platform_hints")
+        except Exception:
+            return "default"
+        spec = hints.get("api_server") if isinstance(hints, dict) else None
+        if isinstance(spec, str):
+            spec = {"append": spec}
+        if not isinstance(spec, dict):
+            return "default"
+        for mode in ("replace", "append"):
+            value = spec.get(mode)
+            if isinstance(value, str) and value.strip():
+                return mode
+        return "default"
 
     def _browser_control_enabled(self) -> bool:
         """``browser.extension_control.enabled`` (default False); tests monkeypatch this."""

@@ -266,10 +266,15 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_status": true,
     "run_events_sse": true,
     "run_stop": true,
-    "reasoning_streaming": true
+    "reasoning_streaming": true,
+    "platform_hint": {"mode": "default", "config_key": "platform_hints.api_server"}
   }
 }
 ```
+
+`features.platform_hint.mode` reports how `platform_hints.api_server` in `config.yaml` shapes the
+API server's system-prompt hint: `default` (the built-in plain-text hint), `append`, or `replace`.
+A frontend that renders Markdown can check for `replace` to confirm the plain-text instruction is gone.
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 

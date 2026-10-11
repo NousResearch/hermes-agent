@@ -963,6 +963,34 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("hints, expected", [
+        ({}, "default"),
+        ({"api_server": {"replace": "Markdown renders here."}}, "replace"),
+        ({"api_server": {"replace": "Markdown.", "append": "Also this."}}, "replace"),
+        ({"api_server": {"append": "Tables render."}}, "append"),
+        ({"api_server": "Tables render."}, "append"),
+        ({"api_server": {"replace": "   "}}, "default"),
+        ({"api_server": ["not", "a", "dict"]}, "default"),
+        ({"slack": {"replace": "Slack only."}}, "default"),
+        ("not-a-dict", "default"),
+    ])
+    async def test_capabilities_reports_platform_hint_mode(self, adapter, hints, expected):
+        with patch("hermes_cli.config.load_config", return_value={"platform_hints": hints}):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                data = await (await cli.get("/v1/capabilities")).json()
+        assert data["features"]["platform_hint"] == {
+            "mode": expected, "config_key": "platform_hints.api_server"}
+
+    @pytest.mark.asyncio
+    async def test_capabilities_platform_hint_survives_config_error(self, adapter):
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                data = await (await cli.get("/v1/capabilities")).json()
+        assert data["features"]["platform_hint"]["mode"] == "default"
+
+    @pytest.mark.asyncio
     async def test_capabilities_reports_in_memory_idempotency_fallback(self, adapter):
         adapter._run_idempotency_store._db_path = None
         app = _create_app(adapter)

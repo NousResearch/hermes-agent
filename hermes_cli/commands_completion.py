@@ -210,12 +210,17 @@ def _dir_completions(
         if count >= limit:
             break
         suffix = "/" if is_dir else ""
+        try:
+            text = text_for(full_path) + suffix
+        except ValueError:
+            continue  # Windows: relpath raises across mounts/drive letters/device paths
         yield _completion(
-            text_for(full_path) + suffix, word, entry + suffix,
+            text, word, entry + suffix,
             "dir" if is_dir else _file_size_label(full_path))
         count += 1
 
 
+@_quiet
 def _path_completions(word: str, limit: int = 30):
     """Path completions for *word*, keeping the user's style (~, absolute, relative)."""
     if word.startswith("~"):
@@ -347,6 +352,7 @@ class SlashCommandCompleter(Completer):
         word = text.rpartition(" ")[2]
         return word if word.startswith("@") else None
 
+    @_quiet
     def _context_completions(self, word: str, limit: int = 30):
         """@ completions: static refs, ``@file:``/``@folder:`` paths, else fuzzy project files."""
         lowered = word.lower()

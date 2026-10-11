@@ -1,4 +1,4 @@
-"""Desktop's /stop, per-process Stop and MCP reload are served by the shared owner (dokterdok N27)."""
+"""Desktop's /stop, per-process Stop, MCP reload and file attach are served by the shared owner (dokterdok N27)."""
 import json
 from pathlib import Path
 import subprocess
@@ -27,3 +27,6 @@ def test_desktop_process_kill_stop_and_mcp_reload_reach_only_this_session(tmp_pa
     assert receipt['stop'] == {'killed': 1}, receipt
     assert receipt['exited'] == [True, True, False], receipt
     assert receipt['reload_mcp'] == 'reloaded', receipt
+    # file.attach: the sidecar answered ``session not found`` for every authority session.
+    assert [ref.startswith('@file:') for ref in receipt['file_attach']] == [True, True], receipt
+    assert receipt['staged'] == ['hello', 'hi'], receipt

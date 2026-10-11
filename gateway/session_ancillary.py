@@ -2,7 +2,7 @@
 
 No legacy server, manager construction, process recovery, or execution on reads. ``process.stop``
 and ``process.kill`` stop only processes ``process.list`` projects for the session; ``reload.mcp``
-reconciles only the requesting profile's MCP servers.
+reconciles only the requesting profile's MCP servers; ``file.attach`` stages for one owned session.
 """
 import asyncio
 from functools import partial
@@ -26,7 +26,40 @@ def handlers(connection):
     }.items()}, 'approval.pending': partial(approvals, connection),
         'approval.received': partial(approvals, connection, ack=True),
         'process.stop': partial(stop_processes, connection),
-        'process.kill': partial(kill_process, connection), 'reload.mcp': partial(reload_mcp, connection)}
+        'process.kill': partial(kill_process, connection), 'reload.mcp': partial(reload_mcp, connection),
+        'file.attach': partial(attach_file, connection)}
+
+
+async def attach_file(connection, ref, params):
+    """Desktop's non-image attachment: stage the file for this session (its frozen launch cwd and
+    the owner profile's ``attachments/``) and hand back the ``@file:`` ref its next submit carries.
+    The sidecar handler looked the session up in its own table, which never holds an authority
+    session, so every file drop failed with ``session not found``."""
+    if (set(params) - {'session_id', 'profile', 'path', 'data_url', 'name'} or not ref.session_id
+            or any(not isinstance(value, str) for value in params.values())):
+        raise RuntimeStoreError('invalid_params')
+    if ref.session_id not in connection.subscriptions:
+        raise RuntimeStoreError('permission_denied')
+    authorize(connection, ref, params, 'session:submit')
+    from gateway.session_policy import policy_for_source
+    authority = connection.authority
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    if policy is None:
+        raise RuntimeStoreError('permission_denied')
+    # The staging helpers are bound onto the sidecar module's globals (method_ctx.bind_module).
+    from tui_gateway import server
+    session = {'cwd': policy.cwd, 'profile_home': authority.profile_id}
+    try:
+        stored, uploaded = await asyncio.to_thread(
+            server._stage_session_file_attachment, session, raw_path=params.get('path', ''),
+            data_url=params.get('data_url', ''), name=params.get('name', ''))
+    except ValueError as exc:
+        raise RuntimeStoreError('invalid_params') from exc
+    except OSError as exc:
+        raise RuntimeStoreError('storage_unavailable') from exc
+    ref_path = server._attachment_ref_path(session, stored)
+    return {'attached': True, 'name': stored.name, 'path': str(stored), 'ref_path': ref_path,
+            'ref_text': f'@file:{server._format_ref_value(ref_path)}', 'uploaded': uploaded}
 
 
 async def approvals(connection, ref, params, *, ack=False):

@@ -281,7 +281,8 @@ export const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
 export const SESSION_BUSY_RETRY_INTERVAL_MS = 150
 
 export function isSessionBusyError(error: unknown): boolean {
-  return /session busy/i.test(error instanceof Error ? error.message : String(error))
+  // The shared owner answers its typed reason (`session_busy`), the legacy sidecar prose.
+  return /session[ _]busy/i.test(error instanceof Error ? error.message : String(error))
 }
 
 // prompt.submit refused because another surface (TUI, messaging gateway)

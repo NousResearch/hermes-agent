@@ -48,6 +48,13 @@ async def probe():
             # use-mcp-servers.ts / mcp.ts / repair.ts.
             reload = await rpc(ws, 'reload.mcp', confirm=True, session_id=sid)
             receipt['reload_mcp'] = reload.get('result', {}).get('status', reload.get('error'))
+            # use-prompt-actions/index.ts: a non-image drop, by path and by bytes (remote backend).
+            (home / 'note.txt').write_text('hello')
+            by_path = await rpc(ws, 'file.attach', name='note.txt', path=str(home / 'note.txt'), session_id=sid)
+            by_bytes = await rpc(ws, 'file.attach', name='n.txt', path='C:/x/n.txt', data_url='data:text/plain;base64,aGk=',
+                                 session_id=sid)
+            receipt['file_attach'] = [r.get('result', {}).get('ref_text', r.get('error')) for r in (by_path, by_bytes)]
+            receipt['staged'] = sorted(p.read_text() for p in (home / 'attachments').iterdir())
     finally:
         for proc in processes:
             if not proc.exited:

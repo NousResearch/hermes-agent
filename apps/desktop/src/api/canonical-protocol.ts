@@ -110,10 +110,60 @@ function canonicalBotDelivery(params: Record<string, unknown>): Record<string, u
   return { ...rest, message, author }
 }
 
+// The legacy `prompt.submit` truncation keys (edit / regenerate / restore). The owner has no such
+// keys: the cut is a revision-fenced `rewind` mutation on the user row, then a plain submit.
+const TRUNCATE_KEYS = ['confirm_truncate', 'confirm_empty_truncate', 'truncate_before_row_id', 'truncate_before_message_id',
+  'truncate_before_user_ordinal', 'rebind_survivor_row_ids']
+
+export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Record<string, unknown> | null; submit: Record<string, unknown> } | null {
+  if (!TRUNCATE_KEYS.some(key => key in params)) { return null }
+  const row = params.truncate_before_row_id
+  const submit = Object.fromEntries(Object.entries(params).filter(([key]) => !TRUNCATE_KEYS.includes(key)))
+
+  if (typeof row === 'number' && Number.isInteger(row) && row > 0) {
+    return { rewind: { session_id: params.session_id, target_message_id: row, ...(params.profile !== undefined ? { profile: params.profile } : {}) }, submit }
+  }
+
+  // Only a durable row id names the owner's cut; a message id or ordinal would be a guess.
+  if (['truncate_before_row_id', 'truncate_before_message_id', 'truncate_before_user_ordinal'].some(key => key in params)) {
+    throw new Error('This message is not saved yet; wait for it to settle, then edit it again')
+  }
+
+  return { rewind: null, submit }
+}
+
+// Session verbs only the legacy sidecar implements: it looks the session up in its own table,
+// which never holds an owner session, and answers `session not found` (read by the renderer as a
+// reaped runtime). Refused by name until the owner serves them.
+const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail', 'preview.restart'])
+
+// `config.set` keys the owner serves (tui_gateway/contracts/canonical_projections.py::CanonicalConfigSetParams).
+const CANONICAL_CONFIG_KEYS = new Set(['busy', 'verbose', 'yolo', 'model'])
+
+// The one guard between a Desktop producer and the owner's closed contracts: translate a legacy
+// shape the owner has a canonical form for, refuse by name what it does not serve.
+function canonicalProducerFrame(method: string, params: Record<string, unknown>): Record<string, unknown> {
+  // No verb for other settings (reasoning, fast, approvals.mode, voice, display.*) nor a global
+  // scope: refuse before the wire, like Ink, instead of a bare invalid_params.
+  if (method === 'config.set' && (!CANONICAL_CONFIG_KEYS.has(String(params.key)) || 'scope' in params)) {
+    throw new Error(`Changing ${params.key}${'scope' in params ? ` (${params.scope})` : ''} is not available on the shared gateway yet`)
+  }
+
+  if (SIDECAR_SESSION_VERBS.has(method) || (method.startsWith('connect') && (params.owner as { type?: unknown } | undefined)?.type === 'session')) {
+    throw new Error(`${method} is not available on the shared gateway yet`)
+  }
+
+  // The owner admits identified input only. An identityless producer (session tile, quick entry,
+  // bot chats) is a fresh send on every call, which is what the legacy wire did with it.
+  if (method === 'prompt.submit' && !params.submission_id && !params.input_id) { return { ...params, submission_id: crypto.randomUUID() } }
+
+  return method === 'bot_relay.deliver' ? canonicalBotDelivery(params) : params
+}
+
 const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
 // Value-setting mutations: re-applying one is harmless, so a later acknowledged edit retires it.
 const VALUE_OPERATIONS = new Set(['rename', 'archive', 'model'])
-const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', ...BRANCH_METHODS])
+const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', 'session.rewind', ...BRANCH_METHODS])
 
 export class CanonicalDesktopProtocol {
   private creates = new Map<string, string>()
@@ -142,7 +192,8 @@ export class CanonicalDesktopProtocol {
     // failure carries no reason; its outcome is unknown and the token stays for the exact retry.
     if (typeof reason === 'string') { this.settleModelConfirmation(params) }
 
-    if (reason !== 'revision_conflict') { return }
+    // A typed busy refusal of a rewind wrote nothing either; the caller interrupts and retries at the new revision.
+    if (reason !== 'revision_conflict' && !(reason === 'session_busy' && params.operation === 'rewind')) { return }
 
     // A confirmed CAS refusal did not mutate. Ambiguous transport failures keep
     // the original revision/id so a retry cannot overwrite another user's edit.
@@ -221,11 +272,7 @@ export class CanonicalDesktopProtocol {
 
     if (method === 'approval.respond' || method === 'clarify.respond') { return this.preparePromptResponse(method, params) }
 
-    // The owner has no revision-fenced reasoning verb yet (`config.set` admits busy / verbose /
-    // yolo / model): refuse by name before the wire, like Ink, instead of a bare invalid_params.
-    if (method === 'config.set' && params.key === 'reasoning') { throw new Error('Changing reasoning is not available on the shared gateway yet') }
-
-    return method === 'bot_relay.deliver' ? canonicalBotDelivery(params) : params
+    return canonicalProducerFrame(method, params)
   }
 
   // Metadata, branch and typed slash directives that travel as canonical `session.mutate`; null otherwise.
@@ -237,7 +284,8 @@ export class CanonicalDesktopProtocol {
     // Branch and compress fence the execution generation like the slash directives.
     const fenced = ({
       'session.branch': () => ({ operation: 'branch', payload: branchBoundary(params) }),
-      'session.compress': () => ({ operation: 'compress', payload: params.focus_topic ? { focus: String(params.focus_topic) } : {} })
+      'session.compress': () => ({ operation: 'compress', payload: params.focus_topic ? { focus: String(params.focus_topic) } : {} }),
+      'session.rewind': () => ({ operation: 'rewind', payload: { target_message_id: params.target_message_id } })
     } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
 
     if (fenced) { return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true) }

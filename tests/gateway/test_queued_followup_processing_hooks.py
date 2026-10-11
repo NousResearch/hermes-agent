@@ -10,8 +10,10 @@ reaction from those hooks (Slack 👀, Discord, Telegram, Feishu, Matrix,
 Signal, ...) silently skips the acknowledgement for mid-turn messages.
 """
 
+import asyncio
 import importlib
 import sys
+import threading
 import types
 from types import SimpleNamespace
 
@@ -141,7 +143,9 @@ SESSION_KEY = "agent:main:telegram:dm:4242"
 async def test_queue_terminal_presentation_belongs_to_last_turn(monkeypatch, tmp_path, diagnostic_last):
     _TwoTurnAgent.calls = []
     _install_fake_agent(monkeypatch, tmp_path, _TwoTurnAgent)
-    (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
+    (tmp_path / "config.yaml").write_text(
+        "display: {suppress_warning_notifications: true}", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = HookRecordingAdapter()
     runner = _make_runner(adapter)
@@ -335,3 +339,127 @@ async def test_complete_only_adapter_is_left_alone(monkeypatch, tmp_path):
 
     assert result["final_response"] == "done-2"
     assert adapter.completed == []
+
+
+@pytest.mark.asyncio
+async def test_fifo_depth_limit_preserves_every_accepted_message(monkeypatch, tmp_path):
+    """The recursion cap hands the oldest event back to the adapter, not over its successor."""
+    first_started = threading.Event()
+    release_first = threading.Event()
+    model_calls = []
+
+    class BlockingFirstAgent(_TwoTurnAgent):
+        def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+            model_calls.append(message)
+            if message == "M1":
+                first_started.set()
+                if not release_first.wait(5):
+                    raise AssertionError("first turn was not released")
+            return {"final_response": f"done-{message}", "messages": [], "api_calls": 1}
+
+    _install_fake_agent(monkeypatch, tmp_path, BlockingFirstAgent)
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._queued_events = {}
+    turns = []
+    outer_ids = []
+    real_run_agent = runner._run_agent
+
+    async def record_turn(**kwargs):
+        turns.append((kwargs.get("inbound_message_id"), kwargs.get("_interrupt_depth", 0)))
+        return await real_run_agent(**kwargs)
+
+    monkeypatch.setattr(runner, "_run_agent", record_turn)
+
+    async def handler(event):
+        outer_ids.append(event.message_id)
+        await runner._run_agent(
+            message=event.text, context_prompt="", history=[], source=event.source,
+            session_id="fifo-depth", session_key=SESSION_KEY,
+            inbound_message_id=event.message_id, event_message_id=event.message_id,
+        )
+        return None
+
+    adapter.set_message_handler(handler)
+    events = [MessageEvent(text=f"M{i}", source=_source(), message_id=f"M{i}")
+              for i in range(1, 11)]
+    task = asyncio.create_task(adapter._process_message_background(events[0], SESSION_KEY))
+    try:
+        assert await asyncio.to_thread(first_started.wait, 5)
+        assert SESSION_KEY in adapter._active_sessions
+        for event in events[1:]:
+            runner._enqueue_fifo(SESSION_KEY, event, adapter)
+        accepted_ids = [events[0].message_id] + [
+            event.message_id for event in events[1:] if event._gateway_accepted]
+        assert runner._queue_depth(SESSION_KEY, adapter=adapter) == len(events) - 1
+    finally:
+        release_first.set()
+    try:
+        await asyncio.wait_for(task, 10)
+        # Exercise the real adapter's fresh-task handoff as well as the runner's recursion.
+        while adapter._background_tasks:
+            await asyncio.wait_for(asyncio.gather(*list(adapter._background_tasks)), 10)
+        remaining_depth = runner._queue_depth(SESSION_KEY, adapter=adapter)
+        guard_live = SESSION_KEY in adapter._active_sessions
+    finally:
+        await adapter.cancel_background_tasks()
+
+    assert [message_id for message_id, _ in turns] == accepted_ids
+    assert model_calls == accepted_ids
+    cap = runner._MAX_INTERRUPT_DEPTH
+    assert [depth for _, depth in turns] == [i % (cap + 1) for i in range(len(events))]
+    assert outer_ids == accepted_ids[::cap + 1]
+    assert adapter.started == accepted_ids
+    assert sorted(adapter.completed) == sorted(
+        (message_id, ProcessingOutcome.SUCCESS) for message_id in accepted_ids)
+    assert remaining_depth == 0
+    assert not guard_live
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message_type", [MessageType.TEXT, MessageType.PHOTO, MessageType.DOCUMENT])
+@pytest.mark.parametrize("overflow_tail", [False, True])
+async def test_depth_limit_restores_events_without_media_merging(
+    message_type, overflow_tail,
+):
+    """Put-back preserves event identity/payload, including when promotion emptied overflow."""
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._queued_events = {}
+    source = _source()
+    head = MessageEvent(
+        text="unrun head", source=source, message_id="head", message_type=message_type,
+        media_urls=[] if message_type == MessageType.TEXT else ["head-media"],
+        media_types=[] if message_type == MessageType.TEXT else ["application/octet-stream"],
+    )
+    successor = MessageEvent(
+        text="successor", source=source, message_id="successor", message_type=message_type,
+        media_urls=[] if message_type == MessageType.TEXT else ["successor-media"],
+        media_types=[] if message_type == MessageType.TEXT else ["application/octet-stream"],
+    )
+    tail = MessageEvent(text="tail", source=source, message_id="tail")
+    queued = [head, successor] + ([tail] if overflow_tail else [])
+    original_payloads = [(event.text, tuple(event.media_urls), tuple(event.media_types))
+                         for event in queued]
+    for event in queued:
+        runner._enqueue_fifo(SESSION_KEY, event, adapter)
+    result = {"final_response": "done", "messages": []}
+    pending_event, pending = await runner._run_agent_drain_pending(
+        result, adapter, source, SESSION_KEY)
+    assert pending_event is head
+    assert adapter._pending_messages[SESSION_KEY] is successor
+    # An arrival during an awaited media drain must remain behind the already-staged successor.
+    late = MessageEvent(text="late", source=source, message_id="late")
+    runner._enqueue_fifo(SESSION_KEY, late, adapter)
+    turn_ctx = SimpleNamespace(
+        source=source, session_id="depth-media", session_key=SESSION_KEY,
+        run_generation=None, _interrupt_depth=runner._MAX_INTERRUPT_DEPTH,
+        history=[], _status_thread_metadata=None, result_holder=[result],
+    )
+    returned = await runner._run_agent_queued_followup(
+        turn_ctx, adapter, pending, pending_event, result, result, None)
+    assert returned is result
+    assert adapter._pending_messages[SESSION_KEY] is head
+    assert runner._overflow_queue(SESSION_KEY) == queued[1:] + [late]
+    assert [(event.text, tuple(event.media_urls), tuple(event.media_types))
+            for event in queued] == original_payloads

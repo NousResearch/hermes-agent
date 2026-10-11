@@ -496,6 +496,12 @@ class PluginLoaderMixin:
             if module is None and manifest.source in {"user", "project", "bundled"}:
                 if self._is_manifest_only_language_pack(manifest):
                     return True  # pure pack: locales/ is the whole plugin, no register() to run
+                if self._is_desktop_only_directory_plugin(manifest):
+                    logger.debug(
+                        "Plugin '%s' has no Python half (no __init__.py, no .py files); "
+                        "loading from the manifest alone", plugin_key,
+                    )
+                    return True
                 module = self._load_directory_module(manifest, module_name=module_name)
             elif module is None:
                 module = self._load_entrypoint_module(manifest)
@@ -550,6 +556,22 @@ class PluginLoaderMixin:
         manifest-only desktop plugin, it loads from its declared files alone."""
         return bool(manifest.provides_locales and manifest.path
                     and not (Path(manifest.path) / "__init__.py").is_file())
+
+    @staticmethod
+    def _is_desktop_only_directory_plugin(manifest: PluginManifest) -> bool:
+        """A directory plugin with no ``__init__.py`` and no ``.py`` files at its root has no Python
+        half — its payload is e.g. ``desktop/plugin.js`` — so there is nothing to import and no
+        ``register()`` to call (#132741). A directory that *does* carry ``.py`` files still needs the
+        package marker, and keeps its ``No __init__.py`` failure."""
+        if not manifest.path:
+            return False
+        plugin_dir = Path(manifest.path)
+        if not plugin_dir.is_dir() or (plugin_dir / "__init__.py").is_file():
+            return False
+        try:
+            return not any(child.name.endswith(".py") for child in plugin_dir.iterdir())
+        except OSError:
+            return False
 
     def _register_declared_locales(self, manifest: PluginManifest, ctx) -> None:
         """``provides_locales`` -> ``ctx.register_locale_dir(<plugin>/locales)``; a declared id with no file

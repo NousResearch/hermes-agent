@@ -98,7 +98,7 @@ async def test_model_global_persists_when_config_has_flat_string_model(tmp_path,
     # The persist block must have rewritten config.yaml as a nested dict.
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert isinstance(written["model"], dict), (
-        "model: should be coerced to a dict, got %r" % (written["model"],)
+        "model: should be coerced to a dict, got {!r}".format(written["model"])
     )
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"

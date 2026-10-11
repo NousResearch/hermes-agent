@@ -109,7 +109,7 @@ class Drop:
     after_chars: int = 10
 
 
-Response = Union[Say, Call, Fail, Drop]
+Response = Say | Call | Fail | Drop
 Responder = Callable[[dict[str, Any]], Response]
 
 
@@ -128,7 +128,7 @@ def _write_pem(path: Path, data: bytes) -> Path:
 def make_tls_material(root: Path, hosts: list[str]) -> tuple[Path, Path, Path]:
     """A throwaway CA (PEM for ``SSL_CERT_FILE``) and a leaf for ``hosts`` signed by it."""
     root.mkdir(parents=True, exist_ok=True)
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = _dt.datetime.now(_dt.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_ski = x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key())
     ca_cert = (
@@ -389,7 +389,7 @@ class FakeVertex:
         self._tls: ssl.SSLContext | None = None
 
     # lifecycle
-    def __enter__(self) -> "FakeVertex":
+    def __enter__(self) -> FakeVertex:
         self.start()
         return self
 
@@ -703,7 +703,22 @@ def signatures_on_wire(body: dict[str, Any]) -> list[str]:
 
 
 __all__ = [
-    "MODEL", "PROJECT", "REGION", "SA_EMBEDDED_PROJECT", "hermes_setup",
-    "Call", "Drop", "Fail", "FakeVertex", "GRPC_STATUS", "Say", "ServiceAccount", "TokenPolicy",
-    "make_service_account", "make_tls_material", "signatures_on_wire", "validate_chat_body", "verify_jwt_assertion",
+    "GRPC_STATUS",
+    "MODEL",
+    "PROJECT",
+    "REGION",
+    "SA_EMBEDDED_PROJECT",
+    "Call",
+    "Drop",
+    "Fail",
+    "FakeVertex",
+    "Say",
+    "ServiceAccount",
+    "TokenPolicy",
+    "hermes_setup",
+    "make_service_account",
+    "make_tls_material",
+    "signatures_on_wire",
+    "validate_chat_body",
+    "verify_jwt_assertion",
 ]

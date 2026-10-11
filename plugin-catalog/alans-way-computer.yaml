@@ -1,22 +1,23 @@
 name: alans-way-computer
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: ce51733b66291e69f616db48ae8799c0de50db43
+sha: 78a7ddd781bbc7c1d9e13c0e24dc1a0847152553
 subdir: alans-way-computer
-version: "0.7.0"
-title: "Alan's Way Computer"
-description: "Computer-use provider for Hermes: the stock computer_use tool drives desktop apps on the user's computer through the Alan's Way app, and on the VM's own desktop when the computer is offline. Needs the alans-way plugin's workspace setup. Select it with computer_use.backend: alans-way-computer. Disclosure — starts the workspace router from the profile's mcp_servers.workspace_browser block (command and args from config.yaml, with a filtered environment plus HERMES_WORKSPACE_ALLOW_DESKTOP_ACTIONS=1, which lets this private router child serve desktop input) as a long-running node child per session. It talks to the router over stdio (app lists, element trees, screenshots and input actions). The router reaches the user's computer over SSH on the user's tailnet and falls back to the VM's desktop. The provider never takes the focused window, and every input action still goes through Hermes's computer_use approval gate (cua:*:background entries in command_allowlist, which alans-way's --allow-desktop-actions adds, skip the prompt). On Hermes 0.21.5, which has no provider API, it installs and does nothing."
+version: "0.21.0"
+title: "Alan's Way Plugin: Computer Use"
+description: "Computer-use provider for Hermes: the stock computer_use tool drives desktop apps on the user's computer through the Alan's Workspace app, and on the VM's own desktop when the computer is offline. Needs the Alan's Way Plugin's workspace setup. Select it with computer_use.backend: alans-way-computer (the Alan's Way Plugin's setup.sh sets this when it installs the provider; in the catalog flow it prints the command). Disclosure — starts the workspace router from the profile's mcp_servers.workspace_browser block (command and args from config.yaml, with a filtered environment plus HERMES_WORKSPACE_ALLOW_DESKTOP_ACTIONS=1, which lets this private router child serve desktop input) as a long-running node child per session. The filtered environment passes PATH, HOME, locale and OS basics, plus DISPLAY, XAUTHORITY and DBUS_SESSION_BUS_ADDRESS so the router's VM-desktop fallback finds the X display and session bus; no keys or tokens. It talks to the router over stdio (app lists, element trees, screenshots and input actions). The router reaches the user's computer over SSH on the user's tailnet and falls back to the VM's desktop, where it uses xdotool, a screenshot tool and the AT-SPI accessibility bus if they are installed (the provider installs none of them). The provider never takes the focused window on the user's computer, and every input action still goes through Hermes's computer_use approval gate (cua:*:background entries in command_allowlist, which the Alan's Way Plugin's --allow-desktop-actions adds, skip the prompt). The provider itself makes no network calls. On Hermes 0.21.5, which has no provider API, it installs and does nothing."
 maintainer: capthvnsen
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/capthvnsen/alans-way-agents/tree/ce51733b66291e69f616db48ae8799c0de50db43/alans-way-computer
+docs_url: https://github.com/capthvnsen/alans-way-agents/tree/78a7ddd781bbc7c1d9e13c0e24dc1a0847152553/alans-way-computer
 readme: true
 platforms: [linux, macos]
 known_issues:
   - "Needs a Hermes build with the pluggable computer-use API (merged to main after 0.21.5). On older Hermes the plugin installs and does nothing. Install alans-way first and run its workspace setup, which writes the workspace_browser block this provider reuses."
   - "Hermes asks for approval on every computer_use action type until it is granted. For an unattended Telegram bot, grant them once with Always in Telegram, or add cua:<action>:background entries to command_allowlist (see the README). Takes effect after a gateway restart."
   - "Runs only in the plugin host: it cannot load under plugins.isolation: host, because the provider hands Hermes a live router session."
-  - "Typing without a target field is not available because the app never takes focus: the agent uses set_value on a field instead."
+  - "Typing without a target field works only on the VM's own desktop, where it types at the focused window (still approval-gated). On the user's computer the app never takes focus, so the agent uses set_value on a field instead."
+  - "The VM desktop path needs xdotool, a screenshot tool (scrot, maim or ImageMagick import), the AT-SPI bus and python3-gi on the VM. Without them those calls fail and the agent reports it; setup.sh warns about what is missing."
 capabilities:
   provides_tools: []
   provides_hooks: []

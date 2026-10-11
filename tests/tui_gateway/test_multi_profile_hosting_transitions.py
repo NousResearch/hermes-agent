@@ -49,7 +49,7 @@ def test_send_keeps_external_source_value_over_raw_dotenv(two_homes, monkeypatch
     from hermes_cli import env_loader
     from hermes_cli.send_cmd import _load_hermes_env
 
-    root, b = two_homes
+    _root, b = two_homes
     # B's secret manager already hydrated for this process (a hydrated home is not re-pulled).
     monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME",
                         {str(b.resolve()): {"SHARED_TOKEN": "b-manager-fresh"}})
@@ -67,7 +67,7 @@ def test_launch_body_survives_first_secondary_activation(two_homes):
     resumes and still resolves its env-injected credential instead of raising."""
     from agent.secret_scope import get_secret, is_multiplex_active
 
-    root, b = two_homes
+    _root, b = two_homes
     entered, activated = threading.Event(), threading.Event()
     seen: dict = {}
 
@@ -94,7 +94,7 @@ def test_launch_body_survives_first_secondary_activation_on_the_dashboard(two_ho
     from agent.secret_scope import get_secret
     from hermes_cli import web_server_profiles as wsp
 
-    root, b = two_homes
+    _root, b = two_homes
     monkeypatch.setattr(wsp, "_resolve_profile_dir", lambda name: b)
     entered, activated = threading.Event(), threading.Event()
     seen: dict = {}

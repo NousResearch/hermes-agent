@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Callable, Dict, Any, List, Optional
 
@@ -431,6 +432,10 @@ def _synthesize_chunks(chunks: list[str], base_path: Path, generated_artifacts: 
         chunk_path = base_path
         if len(chunks) > 1:
             chunk_path = base_path.with_name(f"{base_path.stem}.chunk{index:03d}{base_path.suffix}")
+        if os.path.lexists(chunk_path):
+            # A file we didn't create: synthesize beside it so a failed attempt can neither truncate
+            # nor sweep it; on success the delivery step os.replace()s the audio over it (overwrite).
+            chunk_path = chunk_path.with_name(f".{chunk_path.stem}.{uuid.uuid4().hex}{chunk_path.suffix}")
         generated_artifacts.add(str(chunk_path))
         raw_result = _text_to_speech_single(chunk, str(chunk_path), **single_kwargs)
         try:

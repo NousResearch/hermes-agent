@@ -57,7 +57,7 @@ def _iter_process_table() -> list[tuple[int, str]]:
                 _append_row(rows, line[len("ProcessId=") :], current_cmd)
         return rows
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
-    result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)
+    result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS, check=False)
     if result.returncode == 0:
         for line in getattr(result, "stdout", "").split("\n"):
             parts = line.strip().split(None, 1)
@@ -438,9 +438,9 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
                 failed.append((pid, "not hermes-owned or process identity changed"))
             else:
                 result = subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/F"], stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
-                    errors="replace", timeout=10, creationflags=windows_hide_flags())
+                    ["taskkill", "/PID", str(pid), "/F"], capture_output=True,
+                    stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+                    errors="replace", timeout=10, creationflags=windows_hide_flags(), check=False)
                 if result.returncode == 0:
                     killed.append(pid)
                 else:
@@ -500,7 +500,7 @@ def _posix_descendants(roots: list[int]) -> dict[int, tuple[int, int | None]]:
     """
     from gateway.status import get_process_start_time
     try:
-        result = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,tty="], timeout=10, **_PS_RUN_KWARGS)
+        result = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,tty="], timeout=10, **_PS_RUN_KWARGS, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return {}
     children: dict[int, list[tuple[int, str]]] = {}
@@ -588,7 +588,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
-    restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
+    restart_managed: bool = False, already_restarted_units: set[str] | None = None,
     scope_home: str | None = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
@@ -814,7 +814,7 @@ def _process_ppid(pid: int) -> int | None:
     try:
         if sys.platform == "win32":
             return None
-        result = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5, **_PS_RUN_KWARGS)
+        result = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5, **_PS_RUN_KWARGS, check=False)
         if result.returncode != 0 or not result.stdout:
             return None
         return int(result.stdout.strip().split()[0])

@@ -236,8 +236,8 @@ _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singul
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
-                        ssh_config: dict = None, container_config: dict = None,
-                        local_config: dict = None, task_id: str = "default",
+                        ssh_config: dict | None = None, container_config: dict | None = None,
+                        local_config: dict | None = None, task_id: str = "default",
                         host_cwd: Optional[str] = None, probe_only: bool = False):
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
     for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
@@ -341,7 +341,7 @@ def _check_requirements(env_type: str, config: dict[str, Any]) -> bool:
         executable = finder()
         if not executable:
             return _reject(missing_msg or f"the {env_type!r} backend's executable was not found")
-        probe = subprocess.run([executable, arg], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+        probe = subprocess.run([executable, arg], capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
         if probe.returncode != 0:
             return _reject(f"{_PROBE_FAILED_REASONS[env_type]} (`{executable} {arg}` exited with code {probe.returncode})")
         return True

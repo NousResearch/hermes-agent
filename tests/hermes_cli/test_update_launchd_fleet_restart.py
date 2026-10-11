@@ -576,7 +576,7 @@ class TestRestartMacosLaunchdGateways:
         assert restarted == ["ai.hermes.gateway", "ai.hermes.gateway-after"]
 
     def test_sibling_that_never_comes_back_is_failed(self, monkeypatch, tmp_path):
-        rec = _fleet(
+        _fleet(
             monkeypatch,
             tmp_path,
             current="ai.hermes.gateway",

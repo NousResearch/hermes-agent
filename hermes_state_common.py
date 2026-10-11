@@ -329,7 +329,7 @@ _FTS_OLD_INDEXED_CONTENT_SQL = _fts_indexed_content_sql("old")
 MAX_FTS5_QUERY_CHARS = 2_048
 
 
-def stat_db_file_identity(path) -> "tuple[int, int] | None":
+def stat_db_file_identity(path) -> tuple[int, int] | None:
     """``(st_dev, st_ino)`` for *path*, or None.  st_ino=0 (Windows, some network FS) would false-positive
     every replaced-file check, so it counts as unknown."""
     try:

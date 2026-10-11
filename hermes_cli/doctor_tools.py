@@ -77,7 +77,7 @@ def _doctor_tool(name: str) -> tuple[str | None, str]:
 def _run_ok(cmd: list[str], timeout: int, **kw) -> bool:
     """True when *cmd* exits 0 within *timeout*; a timeout counts as failure."""
     try:
-        return subprocess.run(cmd, capture_output=True, timeout=timeout, **kw).returncode == 0
+        return subprocess.run(cmd, capture_output=True, timeout=timeout, **kw).returncode == 0  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     except subprocess.TimeoutExpired:
         return False
 
@@ -431,7 +431,7 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
         # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
         audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
                                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
-                                      env=with_hermes_node_path())
+                                      env=with_hermes_node_path(), check=False)
         audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
         counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
         critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))

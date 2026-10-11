@@ -1274,7 +1274,6 @@ class TestRenameProfile:
     def test_rename_delegates_identity_migration_to_live_gateway(self, profile_env):
         """Under a live multiplexer the CLI must NOT rewrite the routing DB directly (the gateway holds
         it in memory and would clobber the write); it delegates to the control verb instead."""
-        tmp_path = profile_env
         create_profile("oldname", no_alias=True)
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
@@ -1658,7 +1657,6 @@ class TestEdgeCases:
 
     def test_clone_from_named_profile(self, profile_env):
         """Clone config from a named (non-default) profile."""
-        tmp_path = profile_env
         # Create source profile with config
         source_dir = create_profile("source", no_alias=True)
         (source_dir / "config.yaml").write_text("model: cloned", encoding="utf-8")

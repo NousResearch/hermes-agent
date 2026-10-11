@@ -130,7 +130,7 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     return dm_policy if dm_policy.enabled and not group_policy.enabled else group_policy
 
 
-__all__ = ["SlashAccessPolicy", "policy_from_extra", "policy_for_source"]
+__all__ = ["SlashAccessPolicy", "policy_for_source", "policy_from_extra"]
 
 
 

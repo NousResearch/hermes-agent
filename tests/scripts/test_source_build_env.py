@@ -138,7 +138,7 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
     for sha in (old, new):
         git("checkout", "-q", "-B", "installed", sha)
         result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, stdin=subprocess.DEVNULL,
-                                text=True, encoding="utf-8", errors="replace", timeout=30)
+                                text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         assert Path(env["PROBE_OUT"]).is_file(), (
             f"the build child wrote no stamp (shell={command[0]} rc={result.returncode})\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}")

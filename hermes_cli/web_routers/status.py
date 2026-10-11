@@ -95,7 +95,7 @@ async def _status_active_sessions() -> int:
         return await asyncio.wait_for(
             run_in_threadpool(_count_status_active_sessions),
             timeout=_STATUS_ACTIVE_SESSIONS_TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _log.debug("/api/status active session count exceeded %.2fs; returning 0",
                    _STATUS_ACTIVE_SESSIONS_TIMEOUT)
     except Exception as exc:
@@ -185,7 +185,7 @@ def _is_profile_platform_status_key(key: object) -> bool:
     return isinstance(key, str) and bool(_PROFILE_PLATFORM_STATUS_KEY_RE.fullmatch(key))
 
 
-def _status_platform_key_allowed(key: object, configured: "set[str] | None") -> bool:
+def _status_platform_key_allowed(key: object, configured: set[str] | None) -> bool:
     """Whether a runtime-status platform key may appear publicly: namespaced
     ``<profile>:<platform>`` keys are validated against the grammar *unconditionally* (a
     failed config-set load must not fail open into projecting arbitrary keys from a
@@ -261,7 +261,7 @@ def _bounded_health_probe():
             return False, None
 
 
-def _project_gateway_platforms(gateway_platforms: dict, configured: "set[str] | None",
+def _project_gateway_platforms(gateway_platforms: dict, configured: set[str] | None,
                                gateway_running: bool, gateway_state) -> dict:
     """Public projection of a runtime's platform map (see ``_status_platform_key_allowed``
     for the key rules). A cleanly stopped gateway's platform states are stale noise and are

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -174,7 +174,7 @@ class FactRetriever:
                f"WHERE facts_fts MATCH ? {category_clause}AND f.trust_score >= ? ORDER BY facts_fts.rank LIMIT ?")
         try:
             results = [dict(row) for row in self.store._conn.execute(sql, params).fetchall()]
-        except Exception:
+        except Exception:  # health: allow BLE001 -- restored verbatim by the revert of #136424; this provider leaves core on Oct 15
             return []  # FTS5 MATCH can fail on malformed queries
         # FTS5 rank is negative (lower = better); normalize |rank| / max to [0, 1] (1e-6 floor avoids div by zero)
         max_rank = max([abs(f["fts_rank_raw"]) for f in results] + [1e-6])
@@ -208,8 +208,8 @@ class FactRetriever:
         if not self.half_life or not timestamp_str:
             return 1.0
         try:
-            ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")) if isinstance(timestamp_str, str) else timestamp_str
-            age_days = (datetime.now(timezone.utc) - (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds() / 86400
+            ts = datetime.fromisoformat(timestamp_str) if isinstance(timestamp_str, str) else timestamp_str
+            age_days = (datetime.now(UTC) - (ts if ts.tzinfo else ts.replace(tzinfo=UTC))).total_seconds() / 86400
             return 1.0 if age_days < 0 else math.pow(0.5, age_days / self.half_life)
         except (ValueError, TypeError):
             return 1.0

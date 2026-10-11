@@ -665,9 +665,9 @@ class ToolRegistry:
 
     def register(
         self, name: str, toolset: str, schema: dict, handler: Callable,
-        check_fn: Callable = None, requires_env: list = None, is_async: bool = False,
+        check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
-        dynamic_schema_overrides: Callable = None, override: bool = False,
+        dynamic_schema_overrides: Callable | None = None, override: bool = False,
         scope: Optional[str] = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome

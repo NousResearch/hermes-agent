@@ -128,7 +128,7 @@ def fetch(
             applicable_needles = [n for (k, n) in needles if k == node_type]
             if needles and not applicable_needles and not jur_norm:
                 continue
-            stream, fname = _open_csv(zf, csv_substring)
+            stream, _fname = _open_csv(zf, csv_substring)
             if not stream:
                 continue
             with stream:

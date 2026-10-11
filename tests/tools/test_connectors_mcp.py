@@ -461,9 +461,9 @@ def test_late_attempt_keyed_by_detached_path_uses_calling_profile(tmp_path):
     from hermes_constants import hermes_home_key
     with _as_home(home_a):
         assert list(mcp._LATE_ATTEMPTS) == [(hermes_home_key(), "s1")]
-    adopted, registered, _ = _adopt_as(home_b)
+    adopted, _registered, _ = _adopt_as(home_b)
     assert adopted == []
-    adopted, registered, _ = _adopt_as(home_a)
+    adopted, _registered, _ = _adopt_as(home_a)
     assert adopted == ["linear"]
 
 

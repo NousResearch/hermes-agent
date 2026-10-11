@@ -18,7 +18,7 @@ import time
 import weakref as _weakref
 from agent.async_utils import consume_detached_task_result
 from contextvars import Context
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from gateway.config import (
     ON_ALL_ADAPTERS_DOWN_POLICIES,
     SHARED_LISTENER_MIRROR_PLATFORMS,
@@ -71,7 +71,7 @@ class GatewayAdapterLifecycleMixin:
     """Adapter lifecycle: connect/teardown, fatal recovery, reconnect watcher, multiplex profiles."""
 
     @staticmethod
-    async def _wait_or_detach(task: "asyncio.Future", timeout: float) -> bool:
+    async def _wait_or_detach(task: asyncio.Future, timeout: float) -> bool:
         """Wait up to ``timeout`` for ``task``; on deadline (or our own cancellation) detach it. Not
         ``asyncio.wait_for``: that WAITS for the cancelled child, so a connect()/close() swallowing
         ``CancelledError`` blocks recovery forever. True if it finished in time."""
@@ -427,7 +427,7 @@ class GatewayAdapterLifecycleMixin:
                 "retry in background.", len(self._failed_platforms),
             )
 
-    def _retain_background_task(self, task: "asyncio.Task") -> "asyncio.Task":
+    def _retain_background_task(self, task: asyncio.Task) -> asyncio.Task:
         """Register ``task`` in ``_background_tasks`` (created lazily for bare test runners)."""
         tasks = getattr(self, "_background_tasks", None)
         if not isinstance(tasks, set):
@@ -437,7 +437,7 @@ class GatewayAdapterLifecycleMixin:
         return task
 
     @staticmethod
-    def _track_task_in(tasks: set, task: "asyncio.Task") -> "asyncio.Task":
+    def _track_task_in(tasks: set, task: asyncio.Task) -> asyncio.Task:
         """Register ``task`` in an arbitrary lifecycle set with self-removal on completion."""
         tasks.add(task)
         task.add_done_callback(tasks.discard)
@@ -541,7 +541,7 @@ class GatewayAdapterLifecycleMixin:
         except Exception:
             _process_takes_profile = False
         # In-flight dispatches by session id: a handoff is a FULL agent turn, so never process inline.
-        inflight: dict[str, "asyncio.Task"] = {}
+        inflight: dict[str, asyncio.Task] = {}
 
         async def _dispatch(row, session_id, session_db, profile_name) -> None:
             """Run one claimed handoff to a terminal state, off the poll path."""
@@ -753,7 +753,7 @@ class GatewayAdapterLifecycleMixin:
         )
         self._update_platform_runtime_status(
             status_key or platform.value, platform_state="retrying", needs_attention=True,
-            retrying_since=(datetime.now(timezone.utc) - timedelta(seconds=queued_for)).isoformat(),
+            retrying_since=(datetime.now(UTC) - timedelta(seconds=queued_for)).isoformat(),
         )
 
     def _mark_platform_fatal(self, status_key: str, adapter) -> None:
@@ -1061,7 +1061,7 @@ class GatewayAdapterLifecycleMixin:
                 from hermes_constants import get_hermes_home
                 publish_record(ROLE_GATEWAY, profiles=tuple(served), home=str(get_hermes_home()))
 
-    async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
+    async def _load_secondary_profile_config(self, profile_name: str, profile_home: Path):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises
         ``MultiplexConfigError`` (open dm/group policy). Port-binding platforms are NOT refused: the
         default profile owns the single shared listener and a secondary's port-binders are built in
@@ -1247,7 +1247,7 @@ class GatewayAdapterLifecycleMixin:
         return lines
 
     async def _start_one_profile_adapters(
-        self, profile_name: str, profile_home: "Path", claimed: dict[tuple, str]
+        self, profile_name: str, profile_home: Path, claimed: dict[tuple, str]
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope

@@ -909,5 +909,11 @@ def format_tools_for_system_message(agent: Any) -> str:
                        for t in agent.tools], ensure_ascii=False)
 
 
-__all__ = ["build_system_prompt_parts", "build_system_prompt", "invalidate_system_prompt",
-           "platform_hint", "restore_plugin_prompt_sections", "format_tools_for_system_message"]
+__all__ = [
+    "build_system_prompt",
+    "build_system_prompt_parts",
+    "format_tools_for_system_message",
+    "invalidate_system_prompt",
+    "platform_hint",
+    "restore_plugin_prompt_sections",
+]

@@ -28,7 +28,7 @@ from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _sh
 logger = logging.getLogger(__name__)
 
 
-def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
+def _consume_detached_handler_exception(task: asyncio.Task) -> None:
     """Done-callback for a detached fatal-error handler task (carrier cancelled in
     ``_notify_fatal_error``): retrieve its exception so asyncio never logs "never retrieved"."""
     if task.cancelled():
@@ -53,7 +53,7 @@ _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 
 
 def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k", timeout: int = 60,
-                          output_path: "str | None" = None) -> "str | None":
+                          output_path: str | None = None) -> str | None:
     """Best-effort ffmpeg transcode to Ogg/Opus (voip-tuned) for native voice bubbles: the written
     ``.ogg`` path (a NEW temp file unless ``output_path`` is given; caller cleans up), or None when
     ffmpeg is missing/fails. ``output_path`` may equal ``path`` (in-place container repair) — the
@@ -74,7 +74,7 @@ def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k", timeout: int = 60,
             [ffmpeg, "-v", "error", "-y", "-i", str(path),
              "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
              "-application", "voip", "-compression_level", "10", "-f", "ogg", work_path],
-            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
+            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
         if result.returncode == 0 and os.path.getsize(work_path) > 0:
             if in_place:
                 os.replace(work_path, ogg_path)
@@ -182,7 +182,7 @@ def _reply_anchor_for_event(event) -> str | None:
 _MEDIA_KIND_KEYS = frozenset({"audio", "video", "file", "image"})
 
 
-def _media_failure_text(kind: str, file_name: "str | None" = None) -> str:
+def _media_failure_text(kind: str, file_name: str | None = None) -> str:
     """User-facing "couldn't deliver" notice; ``file_name`` is the only name ever shown."""
     kind_label = t(f"gateway.notify.media_kind.{kind}") if kind in _MEDIA_KIND_KEYS else kind
     if file_name:
@@ -273,7 +273,7 @@ def is_network_accessible(host: str) -> bool:
 # goes out on a stale answer fails and is retried, which is the same outcome as any transient proxy error.
 # No lock: a race costs one extra fork and both answers are equally current.
 _MACOS_PROXY_TTL_SECONDS = 60.0
-_macos_proxy_cache: "tuple[float, str | None] | None" = None
+_macos_proxy_cache: tuple[float, str | None] | None = None
 
 
 def _detect_macos_system_proxy() -> str | None:
@@ -1362,7 +1362,7 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     re.IGNORECASE)
 
 
-def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[tuple[str, int]]:
+def _match_extensionless_path(scan_text: str, match: re.Match) -> Optional[tuple[str, int]]:
     """Extensionless MEDIA tag match -> validated on-disk ``(safe_path, end_offset)`` or None: the
     captured path first, then extended across single spaces (max 8 tokens, never past a newline
     or the next ``MEDIA:``).
@@ -1634,7 +1634,7 @@ class TextDebounceState:
     first_ts: float
     last_ts: float
 
-    def cancel_timer(self, *, unless: "asyncio.Task | None" = None) -> None:
+    def cancel_timer(self, *, unless: asyncio.Task | None = None) -> None:
         """Cancel the pending flush timer (if live and not ``unless``)."""
         if self.task is not None and self.task is not unless and not self.task.done():
             self.task.cancel()
@@ -1662,7 +1662,7 @@ _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE))
 
 
-def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
+def coerce_plaintext_gateway_command(event: MessageEvent) -> None:
     """Rewrite a tiny set of DM plaintext admin phrases (exact matches only) into slash commands so
     ``restart gateway`` never reaches the LLM/tool path (a self-restart from inside the running
     agent leaves the gateway stuck in ``draining`` waiting on that agent)."""
@@ -1976,7 +1976,7 @@ class BasePlatformAdapter(ABC):
         self._running, self._fatal_error_retryable = False, True
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
-        self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
+        self._fatal_error_handler: Optional[Callable[[BasePlatformAdapter], Awaitable[None] | None]] = None
         # Strong refs to shielded fatal-error handler tasks that outlive their carrier task
         # (asyncio keeps only weak refs); without them the loop can GC the detached handler
         # mid-flight — the "handler killed mid-flight" class (#81335).
@@ -2155,7 +2155,7 @@ class BasePlatformAdapter(ABC):
         return chat_id in self._auto_tts_enabled_chats or (
             chat_id not in self._auto_tts_disabled_chats and bool(self._auto_tts_default))
 
-    def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
+    def set_fatal_error_handler(self, handler: "Callable[[BasePlatformAdapter], Awaitable[None] | None]") -> None:
         self._fatal_error_handler = handler
 
     #: Published when an adapter is installed and running but its receive
@@ -2451,7 +2451,7 @@ class BasePlatformAdapter(ABC):
         owner = getattr(self, "_owner_profile", None)
         return owner if isinstance(owner, str) and owner.strip() else None
 
-    def _canonicalize(self, source: Optional["SessionSource"]):
+    def _canonicalize(self, source: Optional[SessionSource]):
         """Pin the source's :class:`RoutingIdentity` before anything derives a key from it. Every
         ingress path (fresh event, batch merge, busy path, control command, callback) calls this
         FIRST. Returns the identity, or ``None`` when it cannot be resolved (a rejected route under
@@ -2475,7 +2475,7 @@ class BasePlatformAdapter(ABC):
             logger.debug("[%s] identity resolution failed; using legacy key readers", self.name, exc_info=True)
             return None
 
-    def _drop_unresolved(self, event: "MessageEvent") -> bool:
+    def _drop_unresolved(self, event: MessageEvent) -> bool:
         """True when *event* must be dropped: its identity could not be resolved because the route
         targets an unserved profile. Same disposition as the runner's ingress gate — one WARNING,
         never a fall-through to ``agent:main``."""
@@ -2554,11 +2554,11 @@ class BasePlatformAdapter(ABC):
             "text_batch_split_delay_seconds", self._TEXT_BATCH_DEFAULT_SPLIT_DELAY_S,
             min_value=self._text_batch_delay_seconds, max_value=self._TEXT_BATCH_MAX_SPLIT_DELAY_S)
 
-    def _event_session_key(self, event: "MessageEvent") -> str:
+    def _event_session_key(self, event: MessageEvent) -> str:
         """Adapter-level session key for ``event``, profile-namespaced like the agent run."""
         return self._source_session_key(event.source)
 
-    def _source_session_key(self, source: "SessionSource") -> str:
+    def _source_session_key(self, source: SessionSource) -> str:
         self._canonicalize(source)  # identity FIRST; no key derivation before it
         extra = self.config.extra
         return build_session_key(
@@ -2566,11 +2566,11 @@ class BasePlatformAdapter(ABC):
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
             profile=self._session_key_profile(source))
 
-    def _text_batch_key(self, event: "MessageEvent") -> str:
+    def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text batching (subclasses may override)."""
         return self._event_session_key(event)
 
-    def _enqueue_text_event(self, event: "MessageEvent") -> None:
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event (merging into a pending one) and restart the flush timer."""
         if self._drop_unresolved(event):
             return
@@ -2591,16 +2591,16 @@ class BasePlatformAdapter(ABC):
             prior_task.cancel()
         self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
 
-    def _text_batch_delay_for(self, pending: Optional["MessageEvent"]) -> float:
+    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         """Quiet period before ``pending`` is dispatched; near-split chunks wait longer."""
         last_len = getattr(pending, "_last_chunk_len", 0) if pending is not None else 0
         return self._text_batch_split_delay_seconds if last_len >= self._SPLIT_THRESHOLD else self._text_batch_delay_seconds
 
-    def _pop_text_batch(self, key: str) -> Optional["MessageEvent"]:
+    def _pop_text_batch(self, key: str) -> Optional[MessageEvent]:
         """Remove and return the pending batch for ``key`` (adapters with side tables override)."""
         return self._pending_text_batches.pop(key, None)
 
-    async def _dispatch_text_batch(self, event: "MessageEvent") -> None:
+    async def _dispatch_text_batch(self, event: MessageEvent) -> None:
         """Hand a flushed batch to the pipeline (adapters with per-chat guards override)."""
         await self.handle_message(event)
 
@@ -2713,7 +2713,7 @@ class BasePlatformAdapter(ABC):
             return None
         try:
             return await asyncio.wait_for(result_future, timeout=_HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _fail_open("Timed out loading media-delivery history for")
             return None
         except Exception:
@@ -2909,12 +2909,12 @@ class BasePlatformAdapter(ABC):
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
         return await self._send_exec_approval_prompt(prompt)
 
-    async def _send_exec_approval_prompt(self, prompt: "ExecApprovalPrompt") -> SendResult:
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Render ``prompt`` with the platform's native buttons; the default has none."""
         return SendResult(success=False, error="Not supported")
 
     @staticmethod
-    def _format_choice_page(options: list, page: int, per_page: int) -> "tuple[list, dict[str, Any]]":
+    def _format_choice_page(options: list, page: int, per_page: int) -> tuple[list, dict[str, Any]]:
         """Shared picker pagination: clamp ``page``, slice ``options`` -> ``(page_options, meta)``
         with ``page``/``total_pages``/``start``/``end``/``total``/``page_info`` (`` (N–M of T)``,
         empty for one page)."""
@@ -3413,7 +3413,7 @@ class BasePlatformAdapter(ABC):
                     try:
                         await asyncio.wait_for(self.send_typing(chat_id, metadata=metadata),
                                                timeout=_send_typing_timeout)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass  # Slow network — abandon this tick, stay on schedule.
                     except Exception as typing_err:
                         logger.debug("[%s] send_typing error (non-fatal): %s", self.name, typing_err)
@@ -3647,13 +3647,13 @@ class BasePlatformAdapter(ABC):
     @records_delivery
     async def _send_with_retry(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Any = None,
-        max_retries: int = 2, base_delay: float = 2.0) -> "SendResult":
+        max_retries: int = 2, base_delay: float = 2.0) -> SendResult:
         """Send with exponential-backoff retry on transient network errors; permanent
         failures fall back to a plain-text send, exhausted retries notify the user."""
-        async def _send(text: str) -> "SendResult":
+        async def _send(text: str) -> SendResult:
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
-        async def _send_again(previous: "SendResult") -> "Optional[SendResult]":
+        async def _send_again(previous: SendResult) -> Optional[SendResult]:
             """Retry: the whole payload normally; only the undelivered remainder after a partial split
             delivery (``raw_response["partial_overflow"]``). ``None`` when the adapter cannot resume — the
             caller then keeps the partial failure rather than re-sending the already-visible head."""
@@ -3767,13 +3767,13 @@ class BasePlatformAdapter(ABC):
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
 
-    def _send_retry_is_final(self, result: "SendResult") -> bool:
+    def _send_retry_is_final(self, result: SendResult) -> bool:
         """True when a failed send must be returned as-is: neither a retry nor the plain-text
         fallback can fix it (a structured auth/target refusal). Default: never."""
         return False
 
     @staticmethod
-    def _is_partial_delivery(result: "SendResult") -> bool:
+    def _is_partial_delivery(result: SendResult) -> bool:
         """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
         contract Telegram's send/edit-overflow paths set and the stream consumer reads): the visible
         head must never be sent again."""
@@ -3781,14 +3781,14 @@ class BasePlatformAdapter(ABC):
         return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
 
     async def _resume_partial_send(
-        self, chat_id: str, result: "SendResult", *, reply_to: Optional[str], metadata: Any) -> "Optional[SendResult]":
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Any) -> Optional[SendResult]:
         """Deliver only the remainder of a partially delivered split payload. ``None`` (the default) means
         this adapter cannot resume; ``_send_with_retry`` then returns the partial failure instead of
         re-sending the whole payload. Override only where non-delivery of the remainder is CERTAIN."""
         return None
 
     async def _send_plain_fallback(
-            self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any) -> "SendResult":
+            self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any) -> SendResult:
         """Last-resort send after a non-transient failure; platforms whose markup is not the
         likely culprit override it (Photon drops rich links instead of adding the banner)."""
         return await self.send(
@@ -3989,7 +3989,7 @@ class BasePlatformAdapter(ABC):
                 await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
             except asyncio.CancelledError:
                 pass
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("[%s] Cancelled task for %s did not exit within 5s; "
                                "unblocking dispatch and letting the task unwind in the background",
                                self.name, session_key)
@@ -4440,7 +4440,7 @@ class BasePlatformAdapter(ABC):
                 "[%s] Failed to send error notification to user: %s", self.name, notify_err, exc_info=True)
         return _thread_metadata
 
-    async def _deliver_attachments(self, event: MessageEvent, extracted: "_ExtractedResponse",
+    async def _deliver_attachments(self, event: MessageEvent, extracted: _ExtractedResponse,
                                    metadata: dict[str, Any], *, anything_sent: bool,
                                    record_delivery: Callable) -> None:
         """Send extracted image URLs, MEDIA files and bare local files (human-paced),
@@ -4474,7 +4474,7 @@ class BasePlatformAdapter(ABC):
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
 
     async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,
-                                        *, is_ephemeral_response: bool) -> "_ExtractedResponse":
+                                        *, is_ephemeral_response: bool) -> _ExtractedResponse:
         """Split a handler response into deliverable text + attachments. Order matters: MEDIA tags →
         image URLs → residual directives → bare local paths (skipped for ephemeral notices so config
         paths stay text; unknown-extension MEDIA tags survive for the bare-path detector). History
@@ -4787,7 +4787,7 @@ class BasePlatformAdapter(ABC):
                 await asyncio.wait_for(
                     asyncio.gather(*(asyncio.shield(t) for t in tasks), return_exceptions=True),
                     timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("[%s] %d background task(s) did not exit within 5s; "
                                "releasing tracking and letting them unwind in the background",
                                self.name, sum(not t.done() for t in tasks))
@@ -4859,7 +4859,7 @@ class BasePlatformAdapter(ABC):
         """Get information about a chat/channel; dict with at least ``name``
         and ``type`` ("dm", "group", "channel")."""
 
-    def toolsets_for_source(self, source: "SessionSource") -> Optional[list[str]]:
+    def toolsets_for_source(self, source: SessionSource) -> Optional[list[str]]:
         """Per-source toolset override REPLACING ``platform_toolsets.<platform>``, or None
         (default); validated via ``_get_platform_tools`` (webhook adapter pins per-route)."""
         return None
@@ -4871,7 +4871,7 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def truncate_message(content: str, max_length: int = 4096,
-                         len_fn: Optional["Callable[[str], int]"] = None) -> list[str]:
+                         len_fn: Optional[Callable[[str], int]] = None) -> list[str]:
         """Split a long message into chunks preserving code blocks: a split inside a fence closes it
         at the chunk end and reopens it (same language tag) in the next; multi-chunk output gets
         ``(1/3)`` indicators. ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram)."""

@@ -23,7 +23,11 @@ def _adapter(*, thread_require_mention: bool = False) -> DiscordAdapter:
     adapter = object.__new__(DiscordAdapter)
     # self.name (used by the drop-path debug log) reads platform.value.title().
     adapter.platform = SimpleNamespace(value="discord")
-    adapter.config = SimpleNamespace(extra={})
+    # Thread gating now reads ``thread_require_mention`` through the per-channel
+    # auto/always/never mode helper, so express the knob as configuration instead of
+    # mocking the retired boolean method.
+    adapter.config = SimpleNamespace(
+        extra={"thread_require_mention": "true"} if thread_require_mention else {})
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=BOT_ID, bot=True))
     adapter._dedup = MessageDeduplicator()
     adapter._is_allowed_user = Mock(return_value=True)

@@ -335,10 +335,41 @@ def _kb_completed(task, payload: dict, title: str) -> str:
     return f" done — {title}{handoff}"
 
 
+def _kb_timed_out_cause(payload: dict) -> str:
+    """Name the cause a ``timed_out`` payload actually records - never one it does not.
+
+    ``limit_seconds`` is present only when the runtime cap stopped the worker
+    (``enforce_max_runtime``). An iteration-budget exhaustion records
+    ``budget_used``/``budget_max`` instead and carries no cap at all, so reading the
+    absent key as ``0`` printed a zero-second cap that never existed and sent the
+    reader hunting for a limit to raise.
+
+    WHICH of the two shapes counts is decided once, in
+    :func:`gateway.kanban_watchers_common.timed_out_cause`, and read here and by the
+    Telegram notice: the two surfaces kept their own guards before and drifted, so one
+    payload could name a cap on one surface and "cause not recorded" on the other. This
+    function only renders the decision.
+    """
+    # Imported inside the body on purpose: ``method_ctx.bind_module`` rebinds every
+    # function here onto server.py's globals and SKIPS plain imports (name ==
+    # ``__name__``), so a module-level import would not be visible to the rebound copy
+    # the gateway actually runs.
+    from gateway.kanban_watchers_common import (
+        TIMED_OUT_BUDGET,
+        TIMED_OUT_CAP,
+        timed_out_cause,
+    )
+
+    kind, first, second = timed_out_cause(payload)
+    if kind == TIMED_OUT_CAP:
+        return f"max_runtime={first}s"
+    if kind == TIMED_OUT_BUDGET:
+        return f"exhausted its turn budget ({first}/{second})"
+    return "cause not recorded"
+
+
 def _kb_timed_out(task, payload: dict, title: str) -> str:
-    with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+    return f" timed out ({_kb_timed_out_cause(payload)}); will retry"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.

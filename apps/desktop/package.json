@@ -118,7 +118,7 @@
     "d3-force": "3.0.0",
     "dbus-native": "0.15.2",
     "dnd-core": "14.0.1",
-    "dompurify": "3.4.13",
+    "dompurify": "3.4.16",
     "driver.js": "1.8.0",
     "electron-updater": "6.8.9",
     "emojibase-data": "16.0.3",

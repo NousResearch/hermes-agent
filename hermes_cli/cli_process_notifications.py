@@ -1,5 +1,9 @@
 """CLI notification ownership, structured queueing and last-moment consumption."""
 
+import queue
+
+from agent.i18n import t
+
 
 class CLIProcessNotificationsMixin:
     def _owns_process_notification(self, event: dict) -> bool:
@@ -72,6 +76,62 @@ class CLIProcessNotificationsMixin:
                 if diagnostic_process_event(event) and not isinstance(pending, TimelineNotification):
                     pending = TimelineNotification(text, text, "internal_notification", "diagnostic")
             self._pending_input.put(pending)
+
+    def _delegation_busy_result_mode(self) -> str:
+        """``delegation.busy_result_mode``: ``queue`` (default) holds a subagent result that finishes
+        mid-turn for the next turn; ``steer`` carries it into the running turn's next tool result."""
+        from cli import CLI_CONFIG, logger
+        mode = str((CLI_CONFIG.get("delegation") or {}).get("busy_result_mode") or "queue").strip().lower()
+        if mode not in ("queue", "steer"):
+            logger.warning("delegation.busy_result_mode=%r is not 'queue' or 'steer'; using 'queue'", mode)
+            return "queue"
+        return mode
+
+    def _offer_delegation_results_to_running_turn(self, agent) -> int:
+        """Move this session's finished subagent results from the completion queue onto the running
+        agent's tool-result carrier. Claims are acknowledged as the idle drain does when it enqueues;
+        ``_requeue_undelivered_delegation_results`` turns any offer no tool batch carried into the
+        ordinary next turn, so a result is never dropped."""
+        from agent.background_results import offer
+        from tools.async_delegation import claim_event_delivery, complete_event_delivery
+        from tools.process_registry import process_registry
+        from tools.process_registry_notifications import TimelineNotification, format_process_notification
+
+        process_registry.restore_completions()
+        queue_ = process_registry.completion_queue
+        mine, others = [], []
+        for _ in range(queue_.qsize()):
+            try:
+                event = queue_.get_nowait()
+            except queue.Empty:
+                break
+            owned = event.get("type") == "async_delegation" and self._owns_process_notification(event)
+            (mine if owned else others).append(event)
+        for event in others:
+            queue_.put(event)
+        offered = 0
+        for event in mine:
+            text = format_process_notification(event)
+            claim = claim_event_delivery(event, "cli-busy-steer") if text else None
+            if claim is None:
+                continue
+            offer(agent, TimelineNotification.for_delegation(text, event), text)
+            complete_event_delivery(event, claim)
+            offered += 1
+        return offered
+
+    def _requeue_undelivered_delegation_results(self, agent) -> None:
+        """After the run: results no tool batch carried (the turn ended without another tool call,
+        or was stopped) become the ordinary next turn, exactly as ``queue`` mode would deliver them."""
+        from agent.background_results import take_outcome
+        delivered, undelivered = take_outcome(agent)
+        if delivered:
+            from cli import _ACCENT, _RST, _cprint
+            for notification in delivered:
+                preview = notification.display_text[:80] + ("..." if len(notification.display_text) > 80 else "")
+                _cprint(f"  {_ACCENT}{t('cli.tui.steered', preview=preview)}{_RST}")
+        for notification, _text in undelivered:
+            self._pending_input.put(notification)
 
     def _tui_unwrap_input(self, user_input):
         """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""

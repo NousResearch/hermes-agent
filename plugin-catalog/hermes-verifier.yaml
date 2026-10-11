@@ -1,0 +1,28 @@
+name: hermes-verifier
+repo: https://github.com/am423/hermes-verifier
+sha: eb198f449394d5c42ab18a814f1866d720f0fdc0
+description: >-
+  Attach an independent verifier (advisor) model to your Hermes session: it reviews each
+  primary-agent turn delta, verifies claims with read-only tools (read_file, search_files),
+  raises findings (note / caution / blocker), and steers them back into the session before
+  the primary agent goes wrong. Supports a VERIFIER.yml roster of named specialists, each
+  with its own model and tool grant, plus VERIFIER.md review priorities. Ships disabled and
+  off by default. Disclosure — enabling the advisor sends session material (the rendered
+  transcript delta) to the advisor model's provider on that provider's terms and billing; a
+  tool-granted advisor can read any file the session can read, and those reads also go to
+  the advisor model's provider. No telemetry, no stored credentials, no shell commands.
+maintainer: am423
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/am423/hermes-verifier#readme
+version: "0.2.0"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_llm_call
+    - pre_llm_call
+    - pre_verify
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []

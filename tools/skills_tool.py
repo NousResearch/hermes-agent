@@ -390,6 +390,16 @@ _LINKED_FILE_SPECS = (
     ("scripts", ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"], False, False))
 
 
+def _model_facing_skill_dir(skill_dir: Optional[Path]) -> Optional[str]:
+    """skill_view's ``skill_dir`` field for the model: the dir where the active terminal
+    backend sees it (container/synced backends mount or sync skills under their own
+    base, #135899). Reads and the dedup fingerprint stay on host paths."""
+    if not skill_dir:
+        return None
+    from agent.skill_preprocessing import _agent_visible_skill_dir
+    return _agent_visible_skill_dir(skill_dir)
+
+
 def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     """references/templates/assets/scripts of a directory skill (empty groups dropped)."""
     files: dict = {}
@@ -635,7 +645,7 @@ def skill_view(
         result = {
             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
             "tags": tags, "related_skills": related_skills, "content": rendered_content,
-            "path": rel_path, "skill_dir": str(skill_dir) if skill_dir else None,
+            "path": rel_path, "skill_dir": _model_facing_skill_dir(skill_dir),
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
             **readiness,

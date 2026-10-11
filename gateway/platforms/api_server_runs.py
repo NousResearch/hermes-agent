@@ -1,6 +1,7 @@
 """Durable ``/v1/runs`` admission, status, events, and control handlers."""
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import logging
@@ -912,6 +913,41 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: dict[
         _retire_live_run(self, run_id)
 
 
+def _return_unstarted_agent(self, run: _RunLaunch, agent) -> None:
+    """Check a built-but-never-run agent's memory manager back in (``_create_agent`` checked it
+    out), as ``_run_agent_sync`` does after a turn, so the session's provider is not lost."""
+    try:
+        with self._profile_scope(run.request_profile):
+            self._memory_sessions.checkin(agent)
+    except Exception:
+        logger.warning("[api_server] run %s: returning an unstarted agent failed", run.run_id, exc_info=True)
+
+
+async def _build_run_agent(self, run: _RunLaunch, loop, **callbacks):
+    """Run ``_create_agent`` on an API worker thread: credential resolution, config/SessionDB
+    loading and ``AIAgent`` construction are blocking and would stall every request on the
+    loop. The worker runs in a copy of the task's context (the same contextvars it saw on the
+    loop) and holds the worker-lifetime count that gates the shutdown SessionDB close. A
+    cancelled caller cannot interrupt the build, so an agent that finishes afterwards is
+    returned instead of leaking its memory manager."""
+    context = contextvars.copy_context()
+
+    def _build():
+        with self._profile_scope(run.request_profile):
+            return self._create_agent(**callbacks, **run.agent_kwargs)
+
+    build = _submit_api_worker(loop, lambda: context.run(_build))
+    try:
+        # shield: cancelling this task must not cancel ``build``, whose result is still owed.
+        return await asyncio.shield(build)
+    except asyncio.CancelledError:
+        def _dispose(future: "asyncio.Future") -> None:
+            if not future.cancelled() and future.exception() is None:
+                _return_unstarted_agent(self, run, future.result())
+        build.add_done_callback(_dispose)
+        raise
+
+
 async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
     _redact_api_error_text = _api_server._redact_api_error_text
@@ -957,10 +993,16 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
             return
-        with self._profile_scope(run.request_profile):
-            agent = self._create_agent(
-                stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                interim_assistant_callback=_interim_cb, **run.agent_kwargs)
+        agent = await _build_run_agent(
+            self, run, loop, stream_delta_callback=_text_cb,
+            tool_progress_callback=self._make_run_event_callback(run_id, loop),
+            interim_assistant_callback=_interim_cb)
+        # A stop or shutdown that landed during the build found no agent to interrupt: honor it
+        # here, before the agent is published or run (``_finish`` maps shutdown to interrupted).
+        if run_id in self._stopping_run_ids or run_id in self._shutdown_interrupted_run_ids:
+            _return_unstarted_agent(self, run, agent)
+            _finish("cancelled")
+            return
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage, served_runtime = await _submit_api_worker(

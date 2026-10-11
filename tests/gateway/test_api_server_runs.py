@@ -29,6 +29,7 @@ from gateway.platforms.api_server import (
     security_headers_middleware,
 )
 from gateway.platforms.api_server_runs import _RunStream
+from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 from tools import approval as approval_mod
 from tools import approval_gateway_wait
 
@@ -1392,6 +1393,194 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+
+class TestRunAgentBuildOffLoop:
+    """``_create_agent`` resolves credentials, loads config, opens the SessionDB and constructs
+    ``AIAgent`` — blocking work that must not run on the event loop. A stop, a shutdown or a
+    task cancel that lands while the agent is being built must never let that agent run, and
+    the built agent's memory manager is checked back in rather than leaked."""
+
+    # Bounded so a regression (the build blocking the loop) fails instead of hanging the suite.
+    BUILD_WAIT = 2.0
+
+    @staticmethod
+    def _gated_create_agent(ran):
+        """``_create_agent`` stand-in that blocks until the test releases it (or BUILD_WAIT)."""
+        entered, release, seen = threading.Event(), threading.Event(), {}
+        agent = MagicMock()
+        agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+
+        def run_conversation(**_kw):
+            ran.append(True)
+            return {"final_response": "ran"}
+
+        agent.run_conversation.side_effect = run_conversation
+
+        def create_agent(**_kwargs):
+            seen["thread"] = threading.current_thread()
+            entered.set()
+            # True only if something else ran on the loop while this build was in progress.
+            seen["loop_progressed"] = release.wait(timeout=TestRunAgentBuildOffLoop.BUILD_WAIT)
+            return agent
+
+        return create_agent, agent, entered, release, seen
+
+    @staticmethod
+    async def _wait_status(cli, run_id, wanted):
+        for _ in range(200):
+            status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+            if status["status"] in wanted:
+                return status
+            await asyncio.sleep(0.01)
+        return status
+
+    @staticmethod
+    async def _events(cli, run_id):
+        body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+        return [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+
+    @pytest.mark.asyncio
+    async def test_agent_build_does_not_block_event_loop(self, adapter):
+        """While a slow agent build is in progress the loop keeps serving: the test coroutine
+        and a status request both run before the build is released."""
+        ran = []
+        create_agent, _agent, entered, release, seen = self._gated_create_agent(ran)
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent):
+                run_id = (await (await cli.post("/v1/runs", json={"input": "hi"})).json())["run_id"]
+                assert await asyncio.to_thread(entered.wait, 5)
+                during = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                release.set()
+                final = await self._wait_status(cli, run_id, TERMINAL_STATUSES)
+
+        assert seen["loop_progressed"] is True, "the agent build blocked the event loop"
+        assert seen["thread"] is not threading.main_thread()
+        assert during["status"] == "running"
+        assert final["status"] == "completed" and ran == [True]
+
+    @pytest.mark.asyncio
+    async def test_stop_during_agent_build_never_runs_the_agent(self, adapter):
+        ran = []
+        create_agent, agent, entered, release, _seen = self._gated_create_agent(ran)
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent), \
+                    patch.object(adapter._memory_sessions, "checkin") as checkin:
+                run_id = (await (await cli.post("/v1/runs", json={"input": "hi"})).json())["run_id"]
+                assert await asyncio.to_thread(entered.wait, 5)
+                stop = await cli.post(f"/v1/runs/{run_id}/stop")
+                stop_body = await stop.json()
+                release.set()
+                final = await self._wait_status(cli, run_id, TERMINAL_STATUSES)
+                events = await self._events(cli, run_id)
+
+        assert stop.status == 200 and stop_body["status"] == "stopping"
+        assert final["status"] == "cancelled"
+        assert [e["event"] for e in events] == ["run.cancelled"]
+        assert ran == [] and not agent.run_conversation.called
+        checkin.assert_called_once_with(agent)  # the unstarted agent's memory manager is returned
+        assert run_id not in adapter._active_run_agents
+
+    @pytest.mark.asyncio
+    async def test_shutdown_during_agent_build_never_runs_the_agent(self, adapter):
+        ran = []
+        create_agent, agent, entered, release, _seen = self._gated_create_agent(ran)
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent), \
+                    patch.object(adapter._memory_sessions, "checkin") as checkin:
+                run_id = (await (await cli.post("/v1/runs", json={"input": "hi"})).json())["run_id"]
+                assert await asyncio.to_thread(entered.wait, 5)
+                adapter.interrupt_active_runs("gateway shutdown")
+                release.set()
+                final = await self._wait_status(cli, run_id, {"interrupted", "completed", "failed", "cancelled"})
+                events = await self._events(cli, run_id)
+
+        assert final["status"] == "interrupted"
+        assert events[-1]["event"] == "run.interrupted"
+        assert ran == [] and not agent.run_conversation.called
+        checkin.assert_called_once_with(agent)
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_agent_build_disposes_the_late_agent(self, adapter):
+        """A cancelled run task (disconnect/shutdown drain timeout) cannot interrupt the build
+        thread; the agent it finishes building is checked in and never run."""
+        ran = []
+        create_agent, agent, entered, release, _seen = self._gated_create_agent(ran)
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent), \
+                    patch.object(adapter._memory_sessions, "checkin") as checkin:
+                run_id = (await (await cli.post("/v1/runs", json={"input": "hi"})).json())["run_id"]
+                assert await asyncio.to_thread(entered.wait, 5)
+                task = adapter._active_run_tasks[run_id]
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                status_after_cancel = adapter._run_statuses[run_id]["status"]
+                release.set()
+                for _ in range(200):
+                    if checkin.called:
+                        break
+                    await asyncio.sleep(0.01)
+
+        assert status_after_cancel == "cancelled"
+        checkin.assert_called_once_with(agent)
+        assert ran == [] and not agent.run_conversation.called
+        assert run_id not in adapter._active_run_agents
+
+    @pytest.mark.asyncio
+    async def test_agent_build_sees_the_request_context(self, adapter):
+        """The build thread runs in the run task's context, so request-scoped contextvars
+        (set by middleware, as the profile/browser-control ones are) still reach
+        ``_create_agent`` — ``run_in_executor`` alone would drop them."""
+        import contextvars
+
+        marker = contextvars.ContextVar("test_request_marker", default="unset")
+
+        @web.middleware
+        async def _mark(request, handler):
+            token = marker.set("from-request")
+            try:
+                return await handler(request)
+            finally:
+                marker.reset(token)
+
+        seen = {}
+
+        def create_agent(**_kwargs):
+            seen["marker"] = marker.get()
+            agent = MagicMock()
+            agent.run_conversation.return_value = {"final_response": "ok"}
+            agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+            return agent
+
+        app = web.Application(middlewares=[_mark])
+        app.router.add_post("/v1/runs", adapter._handle_runs)
+        app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent):
+                run_id = (await (await cli.post("/v1/runs", json={"input": "hi"})).json())["run_id"]
+                final = await self._wait_status(cli, run_id, TERMINAL_STATUSES)
+
+        assert final["status"] == "completed"
+        assert seen["marker"] == "from-request"
+
+    @pytest.mark.asyncio
+    async def test_agent_build_error_fails_the_run(self, adapter):
+        """Unchanged contract: an exception while building surfaces as ``run.failed``."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=RuntimeError("build exploded")):
+                run_id = (await (await cli.post("/v1/runs", json={"input": "hi"})).json())["run_id"]
+                final = await self._wait_status(cli, run_id, TERMINAL_STATUSES)
+                events = await self._events(cli, run_id)
+
+        assert final["status"] == "failed" and final["error"] == "build exploded"
+        assert [e["event"] for e in events] == ["run.failed"]
+        assert events[0]["error"] == "build exploded"
 
 
 class TestRunsProviderAuthFailure:

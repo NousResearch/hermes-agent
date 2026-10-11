@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,6 +34,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
+    merge_pending_message_event,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -46,6 +48,11 @@ def _make_event(
     user_id: str = "u1",
     user_name: str | None = None,
     thread_id: str | None = None,
+    reply_to_message_id: str | None = None,
+    reply_to_text: str | None = None,
+    reply_to_author_id: str | None = None,
+    reply_to_author_name: str | None = None,
+    reply_to_is_own_message: bool = False,
 ) -> MessageEvent:
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -60,6 +67,11 @@ def _make_event(
         message_type=MessageType.TEXT,
         source=source,
         message_id=f"msg-{text[:8]}",
+        reply_to_message_id=reply_to_message_id,
+        reply_to_text=reply_to_text,
+        reply_to_author_id=reply_to_author_id,
+        reply_to_author_name=reply_to_author_name,
+        reply_to_is_own_message=reply_to_is_own_message,
     )
 
 
@@ -108,10 +120,6 @@ def _make_adapter() -> BasePlatformAdapter:
     adapter._auto_tts_disabled_chats = set()
     adapter._typing_paused = set()
     return adapter
-
-
-def _debounced_event(adapter: BasePlatformAdapter, session_key: str) -> MessageEvent:
-    return adapter._text_debounce[session_key].event
 
 
 @pytest.mark.asyncio
@@ -246,3 +254,229 @@ async def test_control_and_clarify_messages_bypass_text_debounce():
     adapter._message_handler.assert_awaited_once_with(answer)
     assert session_key not in adapter._text_debounce
     assert session_key not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode,reply_ids,attachments,expected_turns",
+    [
+        pytest.param(
+            "pending",
+            (None, "a"),
+            (None, None),
+            (("one\ntwo", 1, 0, (0, 1)),),
+            id="pending-incoming-quote",
+        ),
+        pytest.param(
+            "pending",
+            ("a", None),
+            (None, None),
+            (("one\ntwo", 0, 0, (0, 1)),),
+            id="pending-keeps-quote",
+        ),
+        pytest.param(
+            "pending",
+            ("a", "b"),
+            (None, None),
+            (("one\ntwo", 0, 0, (0, 1)),),
+            id="pending-single-slot-fallback",
+        ),
+        pytest.param(
+            "pending",
+            (None, "a"),
+            (None, "image"),
+            (("one\n\ntwo", 1, 0, (0, 1)),),
+            id="pending-quoted-image",
+        ),
+        pytest.param(
+            "debounce",
+            (None, "a"),
+            (None, None),
+            (("one\ntwo", 1, 1, (0, 1)),),
+            id="debounce-incoming-quote",
+        ),
+        pytest.param(
+            "debounce",
+            ("a", "a"),
+            (None, None),
+            (("one\ntwo", 0, 1, (0, 1)),),
+            id="debounce-same-quote",
+        ),
+        pytest.param(
+            "debounce",
+            ("a", "b"),
+            (None, None),
+            (("one", 0, 0, (0,)), ("two", 1, 1, (1,))),
+            id="debounce-distinct-quotes",
+        ),
+        pytest.param(
+            "debounce",
+            ("a", "b", "a"),
+            (None, None, None),
+            (("one", 0, 0, (0,)), ("two", 1, 1, (1,)), ("three", 2, 2, (2,))),
+            id="debounce-same-sender-keeps-order",
+        ),
+        pytest.param(
+            "debounce",
+            ("a", "b", "c"),
+            (None, None, None),
+            (("one", 0, 0, (0,)), ("two", 1, 1, (1,)), ("three", 2, 2, (2,))),
+            id="debounce-runnerless-distinct-quotes",
+        ),
+        pytest.param(
+            "debounce",
+            (None, "a"),
+            (None, "image"),
+            (("one\ntwo", 1, 1, (0, 1)),),
+            id="debounce-quoted-image",
+        ),
+        pytest.param(
+            "debounce",
+            (None, "a"),
+            (None, "document"),
+            (("one\ntwo", 1, 1, (0, 1)),),
+            id="debounce-not-inlined-document",
+        ),
+        pytest.param(
+            "debounce",
+            (None, "a"),
+            ("legacy-image", "document"),
+            (("one\ntwo", 1, 1, (0, 1)),),
+            id="debounce-pads-legacy-inline-flags",
+        ),
+    ],
+)
+async def test_busy_merges_preserve_reply_context_and_attachments(
+    mode, reply_ids, attachments, expected_turns
+):
+    events = []
+    for word, reply_id, attachment in zip(
+        ("one", "two", "three"), reply_ids, attachments
+    ):
+        event = _make_event(
+            word,
+            reply_to_message_id=reply_id,
+            reply_to_text=f"quote {reply_id}" if reply_id else None,
+            reply_to_author_id=f"author-{reply_id}" if reply_id else None,
+            reply_to_author_name=f"Author {reply_id}" if reply_id else None,
+            reply_to_is_own_message=bool(reply_id),
+        )
+        if attachment:
+            is_document = attachment == "document"
+            event.media_urls = [
+                f"/tmp/{word}.txt" if is_document else f"/tmp/{word}.png"
+            ]
+            event.media_types = ["text/plain" if is_document else "image/png"]
+            event.media_text_inlined = [] if attachment == "legacy-image" else [False]
+        events.append(event)
+
+    expected = []
+    for text, quote_index, anchor_index, members in expected_turns:
+        quote = events[quote_index]
+        expected.append(
+            replace(
+                events[members[0]],
+                text=text,
+                merged_message_ids=[events[index].message_id for index in members if index != anchor_index],
+                message_id=events[anchor_index].message_id,
+                reply_to_message_id=quote.reply_to_message_id,
+                reply_to_text=quote.reply_to_text,
+                reply_to_author_id=quote.reply_to_author_id,
+                reply_to_author_name=quote.reply_to_author_name,
+                reply_to_is_own_message=quote.reply_to_is_own_message,
+                media_urls=[
+                    path for index in members for path in events[index].media_urls
+                ],
+                media_types=[
+                    kind for index in members for kind in events[index].media_types
+                ],
+                media_text_inlined=[
+                    flag
+                    for index in members
+                    for flag in (
+                        events[index].media_text_inlined
+                        or [None] * len(events[index].media_urls)
+                    )
+                ],
+            )
+        )
+
+    if mode == "pending":
+        pending = {"session": events[0]}
+        for event in events[1:]:
+            merge_pending_message_event(pending, "session", event, merge_text=True)
+        assert list(pending.values()) == expected
+        return
+
+    adapter = _make_adapter()
+    session_key = build_session_key(events[0].source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+    for event in events:
+        await adapter.handle_message(event)
+    await adapter._flush_text_debounce_now(session_key)
+    actual = [adapter._pending_messages[session_key]]
+    buffered = adapter._text_debounce.get(session_key)
+    if buffered is not None:
+        actual.extend([*buffered.earlier_events, buffered.event])
+    adapter._discard_text_debounce(session_key)
+    assert actual == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifecycle", ["drain", "discard", "shutdown", "cap"])
+async def test_third_sender_not_dropped_when_debounce_store_is_stuck(lifecycle, tmp_path, monkeypatch):
+    import time as _time
+
+    from gateway.platforms.base import TextDebounceState
+
+    adapter = _make_initialized_adapter()
+
+    event_a = _make_event("sender-a message", user_id="ua")
+    session_key = build_session_key(event_a.source)
+
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    adapter._pending_messages[session_key] = event_a
+    event_b = _make_event("sender-b message", user_id="ub")
+    _now = _time.monotonic()
+    adapter._text_debounce[session_key] = TextDebounceState(
+        event=event_b, task=None, first_ts=_now - 0.5, last_ts=_now - 0.2,
+    )
+
+    event_c = _make_event("sender-c message", user_id="uc")
+    await adapter._queue_text_debounce(session_key, event_c)
+
+    state = adapter._text_debounce[session_key]
+    assert [adapter._pending_messages[session_key], *state.earlier_events, state.event] == [
+        event_a, event_b, event_c,
+    ]
+    if lifecycle == "drain":
+        adapter._pending_messages.pop(session_key)
+        await adapter._flush_text_debounce_now(session_key)
+        assert [adapter._pending_messages[session_key], state.event] == [event_b, event_c]
+    elif lifecycle == "cap":
+        expected = [event_a, event_b, event_c]
+        for index in range(29):
+            event = _make_event(f"follow-up {index}", user_id=f"sender-{index}")
+            assert await adapter._queue_text_debounce(session_key, event)
+            expected.append(event)
+        rejected = _make_event("over cap", user_id="other")
+        assert await adapter._queue_text_debounce(session_key, rejected) is False
+        assert (rejected._gateway_accepted,
+                [adapter._pending_messages[session_key], *state.earlier_events, state.event]) == (
+            False, expected,
+        )
+    elif lifecycle == "shutdown":
+        import json
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        await adapter.cancel_background_tasks()
+        payloads = [json.loads(path.read_text(encoding="utf-8"))
+                    for path in (tmp_path / "pending_messages").glob("*.json")]
+        assert [(record["event"]["text"], record["event"]["source"]["user_id"])
+                for payload in payloads for record in payload["events"]] == [
+            (event.text, event.source.user_id) for event in (event_a, event_b, event_c)
+        ]
+        assert (adapter._pending_messages, adapter._text_debounce) == ({}, {})
+    adapter._discard_text_debounce(session_key)
+    assert adapter._text_debounce == {}

@@ -1480,6 +1480,28 @@ class _GatewayRestartOutcome:
             )
 
 
+def _gateway_launch_chain_pids(gateway_pid: int) -> set[int]:
+    """A supervised gateway's own wrappers (launchd's ``osascript``, the ``stderr_timestamp``
+    shim): the ancestors a mapped gateway runs under. Recorded here, the unmapped sweep can
+    stop a wrapper with its gateway without owing an unmapped-restart debt nothing can ever
+    settle — the supervisor relaunches the whole chain, and the mapped gateway's own row
+    already accounts for the successor (#135171)."""
+    import psutil
+
+    chain: set[int] = set()
+    try:
+        proc = psutil.Process(int(gateway_pid))
+        for _ in range(8):  # launch chains are shallow; the cap keeps a cycle from looping
+            parent = proc.parent()
+            if parent is None or parent.pid <= 1:
+                break
+            chain.add(parent.pid)
+            proc = parent
+    except psutil.Error:
+        pass  # the gateway died between discovery and the walk: nothing left to attribute
+    return chain
+
+
 def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None:
     """Drain/stop every manual (non-service) gateway and print the restart summary.
 
@@ -1503,6 +1525,11 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
     # ``all_profiles`` is host-wide: a sibling install's gateway matches too. Only this update's
     # homes are stopped; the profile-mapped PIDs come from this install's own PID files (#93349).
     manual_pids = _scoped_manual_gateway_pids(manual_pids, keep=profile_processes)
+    # Walked while every mapped gateway still lives: after the drain loop below its python
+    # process is gone, and the wrappers are all its launch chain has left to walk from.
+    launch_chain_pids: set[int] = set()
+    for pid in profile_processes:
+        launch_chain_pids |= _gateway_launch_chain_pids(pid)
     # Profile gateways we couldn't arm a relaunch for must NOT keep running stale:
     # the unmapped sweep below stops them and lists them under "Restart manually".
     # These must NOT be left running: their modules are the pre-update ones and every lazy import from here
@@ -1540,6 +1567,12 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
 
     for pid in manual_pids:
         if pid in profile_processes and pid not in unrestartable_pids:
+            continue
+        if pid in launch_chain_pids:
+            # A mapped gateway's wrapper: stopped so its supervisor relaunches the chain, but
+            # it owes no unmapped debt — that gateway's row already accounts for the successor.
+            with suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, _signal.SIGTERM)
             continue
         with suppress(ProcessLookupError, PermissionError):
             os.kill(pid, _signal.SIGTERM)

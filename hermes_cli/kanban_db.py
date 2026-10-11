@@ -908,6 +908,17 @@ CREATE TABLE IF NOT EXISTS task_links (
     PRIMARY KEY (parent_id, child_id)
 );
 
+CREATE TABLE IF NOT EXISTS packet_approval_gates (
+    task_id                      TEXT PRIMARY KEY,
+    packet_sha256                TEXT NOT NULL,
+    execution_identity           TEXT NOT NULL,
+    created_at                   INTEGER NOT NULL,
+    approved_packet_sha256       TEXT,
+    approved_execution_identity  TEXT,
+    approved_actor               TEXT,
+    approved_at                  INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS task_comments (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
@@ -1634,7 +1645,10 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
 
 
 def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+    from hermes_cli.kanban_packet_approval import reject_generic_mutation
+
     with write_txn(conn):
+        reject_generic_mutation(conn, parent_id, "unlink")
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?", (parent_id, child_id),
         )
@@ -2085,11 +2099,16 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
             parents = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.status, g.task_id AS approval_gate, g.approved_at FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
+                "LEFT JOIN packet_approval_gates g ON g.task_id = t.id "
                 "WHERE l.child_id = ?", (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(
+                p["status"] in ("done", "archived")
+                and (p["approval_gate"] is None or p["approved_at"] is not None)
+                for p in parents
+            ):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2123,12 +2142,14 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
 # --- Claim / complete / block ---
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
+    """Return whether every direct parent is terminal and any approval gate is approved."""
     return conn.execute(
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
+        "LEFT JOIN packet_approval_gates g ON g.task_id = p.id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
+        "AND (p.status NOT IN ('done', 'archived') "
+        "OR (g.task_id IS NOT NULL AND g.approved_at IS NULL)) LIMIT 1", (task_id,),
     ).fetchone() is None
 
 
@@ -2140,7 +2161,9 @@ def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[st
     rows = conn.execute(
         "SELECT p.id, p.status FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+        "LEFT JOIN packet_approval_gates g ON g.task_id = p.id "
+        "WHERE l.child_id = ? AND (p.status NOT IN ('done', 'archived') "
+        "OR (g.task_id IS NOT NULL AND g.approved_at IS NULL)) "
         "ORDER BY p.id", (task_id,),
     ).fetchall()
     return [(row["id"], row["status"]) for row in rows]
@@ -2655,11 +2678,49 @@ def _claim_is_live(trow) -> bool:
     )
 
 
+def _dependency_handoff_matches(conn, parent_id, child_id, run_id, event_id, assignee, parent_event_id):
+    """Read-only admission predicate; final call runs inside completion's write txn."""
+    parent = conn.execute(
+        "SELECT status,assignee,goal_mode,current_run_id,claim_lock,worker_pid,completion_contract, "
+        "(SELECT MAX(id) FROM task_events WHERE task_id=t.id), "
+        "(SELECT COUNT(*) FROM task_runs WHERE task_id=t.id AND ended_at IS NULL) "
+        "FROM tasks t WHERE id=?", (parent_id,),
+    ).fetchone()
+    if (parent is None or tuple(parent[:6]) != ("blocked", None, 0, None, None, None)
+            or parent[6] not in (None, "local-only") or parent[7] != parent_event_id or parent[8] != 0):
+        return False
+    if not conn.execute("SELECT 1 FROM task_links WHERE parent_id=? AND child_id=?",
+                        (parent_id, child_id)).fetchone():
+        return False
+    row = conn.execute(
+        "SELECT t.status,t.block_kind,t.assignee,t.current_run_id,t.claim_lock,t.worker_pid, "
+        "(SELECT COUNT(*) FROM task_runs WHERE task_id=t.id AND ended_at IS NULL), "
+        "r.id,r.ended_at,r.outcome,r.profile,e.id,e.run_id,e.kind,e.payload "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id=(SELECT MAX(id) FROM task_runs WHERE task_id=t.id) "
+        "LEFT JOIN task_events e ON e.id=(SELECT MAX(id) FROM task_events WHERE task_id=t.id) "
+        "WHERE t.id=?", (child_id,),
+    ).fetchone()
+    if (row is None or tuple(row[:8]) != ("todo", "dependency", assignee, None, None, None, 0, run_id)
+            or row[8] is None or tuple(row[9:14]) != ("blocked", assignee, event_id, run_id, "dependency_wait")):
+        return False
+    try:
+        payload = json.loads(row[14])
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("kind") == "dependency"
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    expected_dependency_child_id: Optional[str] = None,
+    expected_dependency_run_id: Optional[int] = None,
+    expected_dependency_event_id: Optional[int] = None,
+    expected_dependency_assignee: Optional[str] = None,
+    expected_dependency_parent_event_id: Optional[int] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2678,6 +2739,24 @@ def complete_task(
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
     """
+    from hermes_cli.kanban_packet_approval import reject_generic_mutation
+
+    dependency_guard = (
+        expected_dependency_child_id, expected_dependency_run_id, expected_dependency_event_id,
+        expected_dependency_assignee, expected_dependency_parent_event_id,
+    )
+    guarded_dependency = any(value is not None for value in dependency_guard)
+    if guarded_dependency:
+        if (not isinstance(expected_dependency_child_id, str) or not expected_dependency_child_id
+                or expected_dependency_child_id == task_id
+                or not isinstance(expected_dependency_assignee, str) or not expected_dependency_assignee
+                or any(type(value) is not int or value < 1 for value in
+                       (expected_dependency_run_id, expected_dependency_event_id, expected_dependency_parent_event_id))
+                or force or expected_run_id is not None or metadata is not None or created_cards is not None
+                or result is not None or not isinstance(summary, str) or not summary.strip()):
+            raise ValueError("Dependency admission requires a complete child/parent revision guard and plain completion summary")
+        if not _dependency_handoff_matches(conn, task_id, *dependency_guard):
+            return False
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
@@ -2693,6 +2772,11 @@ def complete_task(
     if acceptance is False:
         return False
     with write_txn(conn):
+        reject_generic_mutation(conn, task_id, "completion")
+        # The child revision and parent completion share this write lock.
+        # A competing child/parent edit fails before any completion side effect.
+        if guarded_dependency and not _dependency_handoff_matches(conn, task_id, *dependency_guard):
+            return False
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
@@ -3143,6 +3227,7 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    expected_handoff: Optional[dict] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3158,9 +3243,42 @@ def block_task(
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
     """
+    if expected_handoff is not None:
+        fields = {"parent", "parent_event", "child_event", "assignee", "worker_pid", "claim_lock"}
+        if (not isinstance(expected_handoff, dict) or set(expected_handoff) != fields
+                or kind != "dependency" or type(expected_run_id) is not int or expected_run_id < 1
+                or not isinstance(reason, str) or not reason.strip()
+                or any(type(expected_handoff[key]) is not int or expected_handoff[key] < 1
+                       for key in ("parent_event", "child_event", "worker_pid"))
+                or any(not isinstance(expected_handoff[key], str) or not expected_handoff[key]
+                       for key in ("parent", "assignee", "claim_lock"))):
+            raise ValueError("Checkpointed handoff requires the complete exact-run guard")
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
+        if expected_handoff is not None:
+            guard = expected_handoff
+            child = conn.execute(
+                "SELECT status,current_run_id,assignee,worker_pid,claim_lock, "
+                "(SELECT MAX(id) FROM task_events WHERE task_id=t.id), "
+                "(SELECT MAX(id) FROM task_runs WHERE task_id=t.id), "
+                "(SELECT COUNT(*) FROM task_runs WHERE task_id=t.id AND ended_at IS NULL) "
+                "FROM tasks t WHERE id=?", (task_id,),
+            ).fetchone()
+            if (child is None or tuple(child) != ("running", expected_run_id, guard["assignee"],
+                    guard["worker_pid"], guard["claim_lock"], guard["child_event"], expected_run_id, 1)):
+                return False
+            parent = conn.execute(
+                "SELECT status,assignee,goal_mode,current_run_id,claim_lock,worker_pid,completion_contract, "
+                "(SELECT MAX(id) FROM task_events WHERE task_id=t.id), "
+                "(SELECT COUNT(*) FROM task_runs WHERE task_id=t.id AND ended_at IS NULL) "
+                "FROM tasks t WHERE id=?", (guard["parent"],),
+            ).fetchone()
+            if (parent is None or tuple(parent) != ("blocked", None, 0, None, None, None,
+                                                   "local-only", guard["parent_event"], 0)
+                    or not conn.execute("SELECT 1 FROM task_links WHERE parent_id=? AND child_id=?",
+                                        (guard["parent"], task_id)).fetchone()):
+                return False
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
@@ -3579,8 +3697,11 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
     when that is where it left off), closing any leaked run first."""
+    from hermes_cli.kanban_packet_approval import reject_generic_mutation
+
     now = int(time.time())
     with write_txn(conn):
+        reject_generic_mutation(conn, task_id, "unblock")
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"
@@ -3822,7 +3943,10 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     termination outcome lands as its own ``archive_worker_termination`` event so
     the ``archived`` event stays atomic with the status flip.
     """
+    from hermes_cli.kanban_packet_approval import reject_generic_mutation
+
     with write_txn(conn):
+        reject_generic_mutation(conn, task_id, "archive")
         row = conn.execute(
             "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
             (task_id,),
@@ -3865,7 +3989,10 @@ def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Hard-delete an ARCHIVED task (+ related rows); anything else must be
     archived first so data loss takes two deliberate actions."""
+    from hermes_cli.kanban_packet_approval import reject_generic_mutation
+
     with write_txn(conn):
+        reject_generic_mutation(conn, task_id, "delete")
         if _task_status(conn, task_id) != "archived":
             return False
         _delete_task_relations(conn, task_id)
@@ -3875,7 +4002,10 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Hard-delete a task and its related rows in one txn; False when not found."""
+    from hermes_cli.kanban_packet_approval import reject_generic_mutation
+
     with write_txn(conn):
+        reject_generic_mutation(conn, task_id, "delete")
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False

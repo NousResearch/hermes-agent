@@ -76,7 +76,10 @@ intentional. The selected commit must descend from the newest published
 accepted. An abandoned attempt puts no constraint on the next cut; it was often
 abandoned because its commit is bad. `release` also refuses while any attempt,
 of any version, is outstanding. The refusal prints the attempt's workflow run
-URL, the `abandon` command, and the rerun command before it raises.
+URL, the `abandon` command, and the rerun command before it raises. In an
+interactive terminal it then asks `Abandon <ref> and cut a new attempt? [y/N]`;
+`y` abandons the attempt and cuts the next one, and the default is no. Anywhere
+stdin or stdout is not a terminal it raises without asking.
 
 The attempt ref is a public lock, not a SemVer prerelease. It reads
 `rc.1-v0.21.5`, not `v0.21.5-rc.1`. The package version stays plain `0.21.5`.

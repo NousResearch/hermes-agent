@@ -31,7 +31,7 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _state_endpoint() -> dict | None:
+def _owned_state() -> tuple | None:
     from hermes_cli.local_runtime.recovery import (
         is_modern,
         legacy_recorded_process,
@@ -43,13 +43,29 @@ def _state_endpoint() -> dict | None:
     base_url = state.get("base_url", "")
     if not isinstance(base_url, str) or not base_url:
         return None
-    if is_modern(state):
-        if recorded_process(state) is None:
-            return None
-    else:
-        if legacy_recorded_process(state) is None:
-            return None
-    return {"base_url": base_url, "api_key": state.get("api_key", "")}
+    proc = recorded_process(state) if is_modern(state) else legacy_recorded_process(state)
+    return (state, proc) if proc is not None else None
+
+
+def _state_endpoint() -> dict | None:
+    owned = _owned_state()
+    if owned is None:
+        return None
+    state, _proc = owned
+    return {"base_url": state["base_url"], "api_key": state.get("api_key", "")}
+
+
+def managed_model_admission() -> dict | None:
+    """Capacity of the owned live router; older receipts conservatively admit one request."""
+    owned = _owned_state()
+    if owned is None:
+        return None
+    state, proc = owned
+    capacity = state.get("models_max")
+    if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity < 1:
+        capacity = 1
+    return {"base_url": state["base_url"], "capacity": capacity,
+            "incarnation": (proc.pid, state.get("start_time") or proc.create_time())}
 
 
 def managed_root() -> tuple[str, str] | None:

@@ -229,6 +229,7 @@ class LlamaServerSupervisor:
         proc = psutil.Process(self.proc.pid)
         # create_time stays for runtimes that predate start_time.
         self._state = {"base_url": self.base_url, "api_key": self.api_key,
+                       "models_max": self.models_max,
                        "pid": proc.pid, "create_time": proc.create_time(),
                        "start_time": get_process_start_time(proc.pid),
                        "executable": proc.exe(), "owner_pid": os.getpid(),

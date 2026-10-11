@@ -13,6 +13,8 @@ own the session never gets a wake in anyone's store.
 """
 
 import asyncio
+import threading
+from collections import OrderedDict
 from types import SimpleNamespace
 
 from gateway.config import Platform
@@ -77,6 +79,43 @@ def test_served_profile_completion_wakes_in_process_only_for_the_session_it_owns
     assert adapter.turns == []
     assert [c["headers"]["X-Hermes-Session-Id"] for c in _FakeHttpSession.calls] == ["default-owned"]
     assert _FakeHttpSession.calls[0]["url"].endswith("/v1/chat/completions")
+
+
+def test_served_profile_raw_async_delegation_completion_runs_in_owner_scope(served, monkeypatch):
+    """A raw api_server async-delegation completion resolves ownership before delivery."""
+    _own_session(served.builder, SESSION, "builder")
+    adapter = RecordingApiServerAdapter()
+    adapter._ensure_session_db = lambda: object()
+    runner = _make_runner(adapter=adapter)
+    runner._completion_delivery_lock = threading.Lock()
+    runner._completion_deliveries_inflight = set()
+    runner._completion_deliveries_delivered = OrderedDict()
+    runner._completion_delivery_retention = 2048
+
+    import gateway.wake as wake_mod
+
+    persisted = []
+
+    async def fake_persist(_adapter, *, text, session_id, evt=None):
+        persisted.append({"home": str(__import__("hermes_constants").get_hermes_home()),
+                          "text": text, "session_id": session_id, "evt": evt})
+
+    monkeypatch.setattr(wake_mod, "persist_delegation_delivery", fake_persist)
+    import tools.async_delegation as delegation_mod
+    monkeypatch.setattr(delegation_mod, "claim_completion_delivery", lambda *_args: True)
+    monkeypatch.setattr(delegation_mod, "complete_completion_delivery", lambda *_args: True)
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_raw_api",
+        "session_key": SESSION,
+        "origin_session_id": SESSION,
+        "status": "completed",
+    }
+
+    assert asyncio.run(runner._deliver_completion_notification("[delegation done]", evt)) is True
+    assert persisted == [{"home": str(served.builder), "text": "[delegation done]",
+                          "session_id": SESSION, "evt": evt}]
+    assert adapter.turns == []
 
 
 def test_single_profile_gateway_keeps_the_http_self_post(served, monkeypatch):

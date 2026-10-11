@@ -273,10 +273,12 @@ CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER = "model is not supported when using code
 _MODEL_NOT_FOUND_PATTERNS = (
     "is not a valid model", "invalid model", "model not found", "model_not_found", "does not exist",
     "no such model", "unknown model", "unsupported model", "no endpoints found that support tool use",
-    # Nous 404 when the provider retires a :free route — the slug is dead for every
-    # credential, so fall back instead of burning retries (#123180). Unlike the free-tier
-    # billing wording, the account's balance/tier is not what rejected the call.
-    "is no longer free",
+    # MODEL-LEVEL RETIREMENT, not account credit depletion (the free-tier wordings live in
+    # _FREE_TIER_REFUSAL_PATTERNS → billing): the model id itself left the catalog, so a different
+    # model is the fix and the failure must reach the fallback chain instead of classifying unknown.
+    "no longer free", "is no longer free",
+    "has been retired", "model has been retired", "model is retired", "model retired",
+    "model has been discontinued", "model is no longer available", "model no longer available",
 )
 
 # Qwen/vLLM chat-template "No user query found". Shared by the invalid-body

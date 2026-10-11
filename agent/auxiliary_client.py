@@ -33,6 +33,14 @@ from agent.error_classifier import (
 )
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import remember_structured_output_rejection
+from agent.auxiliary_error_reasons import (
+    _contains_any,
+    _exc_http_status,
+    _is_invalid_aux_response_error,
+    _is_model_incompatible_error,
+    _is_model_not_found_error,
+    _is_statusless_structured_provider_error,
+)
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -3226,11 +3234,6 @@ def _reset_aux_unhealthy_cache() -> None:
     _aux_unhealthy_reason.clear()
 
 
-def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
-    """True when any needle is a substring of ``text``."""
-    return any(kw in text for kw in needles)
-
-
 # Billing-body markers (credit exhaustion wrapped in 402/403/404/429 bodies). The main classifier's
 # ``_BILLING_PATTERNS`` is the single source (#107166: the two lists had drifted, so OpenRouter's org
 # "Budget limit exceeded" / "Key limit exceeded" 403s were billing for the main loop but not for the aux
@@ -3325,11 +3328,6 @@ def _is_connection_error(exc: Exception) -> bool:
         "incomplete chunked read", "peer closed connection", "response ended prematurely",
         "unexpected eof", "remoteprotocolerror", "localprotocolerror",
     ))
-
-
-def _exc_http_status(exc: Exception) -> Any:
-    """HTTP status on the exception itself or on its ``response`` (None when neither carries one)."""
-    return getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
 
 
 def _is_transient_transport_error(exc: Exception) -> bool:
@@ -3467,77 +3465,6 @@ def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
                 retry_kwargs.pop("extra_body", None)
             changed = True
     return retry_kwargs if changed else None
-
-
-def _is_model_not_found_error(exc: Exception) -> bool:
-    """"Requested model doesn't exist" (404 / invalid model) — typically a long-lived process pinned a
-    since-dropped model. Excludes billing keywords, which :func:`_is_payment_error` owns."""
-    status = getattr(exc, "status_code", None)
-    err_lower = str(exc).lower()
-    if _contains_any(err_lower, (
-        "credits", "insufficient funds", "billing", "out of funds", "balance_depleted",
-        "no usable credits", "free tier", "free-tier", "not available on the free tier",
-    )):
-        return False
-    if status not in {404, 400, None}:
-        return False
-    return _contains_any(err_lower, (
-        "model does not exist", "does not exist in our configuration", "openrouter catalog",
-        "is not a valid model", "no such model", "model not found",
-        "the model `",            # OpenAI-style: "The model `X` does not exist"
-        "model_not_found", "unknown model",
-    ))
-
-
-def _is_model_incompatible_error(exc: Exception) -> bool:
-    """"This route cannot serve this model" 400 (capability mismatch, e.g. a Codex/ChatGPT-account
-    fallback asked to run a non-OpenAI model). Auth/payment predicates don't fire, so this keeps the
-    chain going instead of aborting. Excludes billing 400s and not-found 400s."""
-    status = getattr(exc, "status_code", None)
-    if status not in {400, None}:
-        return False
-    err_lower = str(exc).lower()
-    if _is_model_not_found_error(exc):
-        return False
-    # Billing keywords checked directly: _is_payment_error is status-gated and misses 400-coded billing bodies.
-    if _contains_any(err_lower, (
-        "credits", "insufficient funds", "billing", "out of funds", "balance_depleted",
-        "no usable credits", "payment required", "free tier", "free-tier",
-        "not available on the free tier", "model_not_supported_on_free_tier", "quota",
-    )):
-        return False
-    return _contains_any(err_lower, (
-        "is not supported when using",   # codex/ChatGPT-account model gating
-        "model is not supported", "not supported with this", "not supported for this account",
-        "model_not_supported", "does not support this model", "unsupported model",
-    ))
-
-
-def _is_invalid_aux_response_error(exc: Exception) -> bool:
-    """HTTP-200 empty/malformed ChatCompletions — a capability failure routed like model incompatibility."""
-    if not isinstance(exc, RuntimeError):
-        return False
-    msg = str(exc).lower()
-    return "auxiliary " in msg and "llm returned invalid response" in msg and "choices[0].message" in msg
-
-
-def _is_statusless_structured_provider_error(exc: Exception) -> bool:
-    """Detect a structured provider failure that has no HTTP status.
-
-    OpenAI-compatible relays may commit SSE with status 200, then send an
-    OpenAI-style ``error`` event. The SDK raises a status-less ``APIError`` with
-    ``body=data["error"]`` — the INNER error object or a bare string (an
-    ``{"error": ...}`` wrapper is accepted too). Any non-empty structured error in
-    that status-less shape is a route failure; ordinary HTTP errors keep their
-    existing status-based classifiers, and message text alone is insufficient.
-    """
-    if _exc_http_status(exc) is not None:
-        return False
-    body = getattr(exc, "body", None)
-    err = body.get("error") if isinstance(body, dict) and "error" in body else body
-    if isinstance(err, str):
-        return bool(err.strip())
-    return isinstance(err, dict) and any(err.get(k) for k in ("type", "code", "message"))
 
 
 # Tasks on a user-visible critical path (compression blocks resuming an oversized session; vision
@@ -7566,7 +7493,12 @@ class _LadderStep(NamedTuple):
 # wins, so a payment-flavoured 429 reads as "payment error", not "rate limit".
 _FALLBACK_REASONS: tuple[tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
-    (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
+    (_is_rate_limit_error, "rate limit"),
+    # A dead model id is a dead PIN, not a dead provider: the lane is still healthy, the request
+    # can be served elsewhere. Before this entry a retired/renamed model matched NO reason and
+    # the ladder returned before ever touching the configured chain.
+    (_is_model_not_found_error, "model not found"),
+    (_is_model_incompatible_error, "model incompatible with route"),
     (_is_invalid_aux_response_error, "invalid provider response"),
     # A status-less in-stream ``error`` event (SSE committed 200) is a route failure (#101538).
     (_is_statusless_structured_provider_error, "structured provider error"),
@@ -7860,8 +7792,8 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     chain, explicit: main-agent-model net). Returns the response or None.
     Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
     response) bypass the explicit-provider gate — the provider cannot serve this request
-    regardless of user intent. Auth errors from an explicit provider may only use the task's
-    own configured fallback_chain; they never imply an unconfigured provider hop."""
+    regardless of user intent. Auth and model-not-found errors from an explicit provider may only use
+    the task's own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
@@ -7871,14 +7803,20 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     # #52228. See #26803: daily token quota must fall back like a 402 credit error.
     is_auto = resolved_provider in {"auto", "", None}
     reason = next((label for predicate, label in _FALLBACK_REASONS if predicate(first_err)), None)
+    # ``model not found`` keeps the explicit-provider rule (like auth): a dead MODEL ID says
+    # nothing about the provider's other models, so a pinned task may only use its own configured
+    # chain — never an unasked hop to a different provider or to the main agent model (a retired
+    # free SKU must not silently re-route the task elsewhere, and ``payment error`` semantics would
+    # wrongly quarantine the whole provider for every aux task).
     is_capacity_error = any(
-        predicate(first_err) for predicate, label in _FALLBACK_REASONS if label != "auth error")
+        predicate(first_err) for predicate, label in _FALLBACK_REASONS
+        if label not in ("auth error", "model not found"))
     task_chain = _get_auxiliary_task_config(task).get("fallback_chain") if task else None
     has_task_fallback_chain = isinstance(task_chain, list) and bool(task_chain)
-    explicit_auth_with_task_chain = (
-        reason == "auth error" and not is_auto and has_task_fallback_chain
+    explicit_pin_with_task_chain = (
+        reason in ("auth error", "model not found") and not is_auto and has_task_fallback_chain
     )
-    if reason is None or not (is_auto or is_capacity_error or explicit_auth_with_task_chain):
+    if reason is None or not (is_auto or is_capacity_error or explicit_pin_with_task_chain):
         return None
     if reason == "payment error":
         # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
@@ -7918,7 +7856,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason, failed_base_url=route.base_info,
                 failure_scope=_chain_failure_scope, main_runtime=route.main_runtime)
-    elif fb_client is None and not explicit_auth_with_task_chain:
+    elif fb_client is None and not explicit_pin_with_task_chain:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
@@ -7939,7 +7877,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             return fb_resp
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
-            task_chain_only=explicit_auth_with_task_chain)
+            task_chain_only=explicit_pin_with_task_chain)
     # All fallback layers exhausted — one user-visible warning, then re-raise.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    # All fallback layers exhausted — emit a single user-visible warning so the operator

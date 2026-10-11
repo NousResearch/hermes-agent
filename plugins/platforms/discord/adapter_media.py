@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.i18n import t
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import SendResult, ToolPreview
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
 
@@ -457,3 +457,9 @@ class DiscordMediaMixin:
             metadata=metadata,
         )
 
+    def format_tool_preview(self, preview: ToolPreview) -> str:
+        """Keep a truncated URL preview clickable in Discord markdown."""
+        from plugins.platforms.discord.adapter import _format_discord_markdown_link
+        if not preview.url:
+            return preview.text
+        return _format_discord_markdown_link(preview.text, preview.url)

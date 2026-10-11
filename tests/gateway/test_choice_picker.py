@@ -180,7 +180,7 @@ class TestTelegramChoicePickerLayout:
         adapter.format_message = lambda text: text
         adapter._reply_to_message_id_for_send = lambda *_args, **_kwargs: None
         adapter._thread_kwargs_for_send = lambda *_args, **_kwargs: {}
-        adapter._link_preview_kwargs = lambda: {}
+        adapter._link_preview_kwargs = dict
         adapter._send_message_with_thread_fallback = AsyncMock(
             return_value=SimpleNamespace(message_id=42)
         )
@@ -228,7 +228,7 @@ class TestTelegramChoicePickerLayout:
         adapter._thread_kwargs_for_send = lambda *_args, **_kwargs: {
             "message_thread_id": 10
         }
-        adapter._link_preview_kwargs = lambda: {}
+        adapter._link_preview_kwargs = dict
         adapter._send_message_with_thread_fallback = AsyncMock(
             side_effect=[
                 SimpleNamespace(message_id=41, message_thread_id=10),
@@ -304,7 +304,7 @@ class TestTelegramChoicePickerLayout:
         adapter.format_message = lambda text: text
         adapter._reply_to_message_id_for_send = lambda *_args, **_kwargs: None
         adapter._thread_kwargs_for_send = lambda *_args, **_kwargs: {}
-        adapter._link_preview_kwargs = lambda: {}
+        adapter._link_preview_kwargs = dict
         adapter._send_message_with_thread_fallback = AsyncMock(
             return_value=SimpleNamespace(message_id=42)
         )
@@ -404,7 +404,7 @@ class TestTelegramChoicePickerLayout:
         adapter.format_message = lambda text: text
         adapter._reply_to_message_id_for_send = lambda *_args, **_kwargs: None
         adapter._thread_kwargs_for_send = lambda *_args, **_kwargs: {}
-        adapter._link_preview_kwargs = lambda: {}
+        adapter._link_preview_kwargs = dict
         adapter._send_message_with_thread_fallback = AsyncMock(
             return_value=SimpleNamespace(message_id=42)
         )
@@ -505,4 +505,3 @@ class TestDiscordChoicePickerOwnership:
         owner.response.edit_message.assert_awaited_once()
         assert view.resolved is True
         assert isinstance(owner.response.edit_message.await_args.kwargs["embed"], discord.Embed)
-

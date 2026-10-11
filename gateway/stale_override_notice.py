@@ -52,7 +52,7 @@ class StaleOverrideNoticeConfig:
     channels: tuple[str, ...] = ("home",)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "StaleOverrideNoticeConfig":
+    def from_dict(cls, data: Any) -> StaleOverrideNoticeConfig:
         raw = data if isinstance(data, Mapping) else {}
         return cls(
             mode=_choice(raw.get("mode"), NOTICE_MODES, "off"),

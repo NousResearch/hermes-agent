@@ -3902,24 +3902,6 @@ class GatewayRunner(
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
 
-    def _normalize_source_for_session_key(self, source: SessionSource) -> SessionSource:
-        """Apply Telegram DM topic recovery to a source for session-key purposes. Always derive override
-        storage keys from the result: ``_handle_message_with_agent`` rewrites ``thread_id`` before
-        deriving the session key, so keys from the raw ``event.source`` are never read next turn.
-
-        ``_handle_message_with_agent`` rewrites ``source.thread_id`` via
-        ``_recover_telegram_topic_thread_id`` *before* deriving the session key for a normal message turn (a
-        lobby/stripped reply gets pinned to the user's last-active topic). Session-scoped command handlers
-        like ``/model`` and ``/reasoning`` derive their override key from the raw inbound ``event.source``,
-        which skips that recovery — so the override is stored under a different key than the next message
-        turn reads, and the override is silently dropped on Telegram forum topics and after compression
-        session splits (#30479).
-        """
-        try:
-            recovered = self._recover_telegram_topic_thread_id(source)
-        except Exception:
-            return source
-        return source if recovered is None else dataclasses.replace(source, thread_id=recovered)
 
     def _resolve_session_key_or_none(self, source, session_key: Optional[str]) -> Optional[str]:
         """``session_key`` if given, else the key for ``source`` (None when it cannot be derived)."""

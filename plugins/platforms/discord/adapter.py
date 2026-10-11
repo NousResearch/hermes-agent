@@ -564,13 +564,6 @@ def _metadata_marks_nonconversational(metadata: Optional[dict[str, Any]]) -> boo
     return any(bool(metadata.get(key)) for key in _DISCORD_NONCONVERSATIONAL_METADATA_KEYS)
 
 
-def _prompt_target_id(chat_id: str, metadata: Optional[dict]) -> str:
-    """Interactive prompts post into ``metadata["thread_id"]`` when present, else ``chat_id``."""
-    if metadata and metadata.get("thread_id"):
-        return metadata["thread_id"]
-    return chat_id
-
-
 def _looks_like_nonconversational_history_message(content: str) -> bool:
     """Fallback recognizer for legacy status bumps missing persisted IDs."""
     text = content or ""
@@ -1283,11 +1276,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
     PLAYBACK_TIMEOUT = 120
     PLAYBACK_TIMEOUT_PADDING = 30
 
-    def format_tool_preview(self, preview: ToolPreview) -> str:
-        """Keep a truncated URL preview clickable in Discord markdown."""
-        if not preview.url:
-            return preview.text
-        return _format_discord_markdown_link(preview.text, preview.url)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -5701,6 +5689,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
         try:
+            from plugins.platforms.discord.adapter_component_auth import _prompt_target_id
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             send_kwargs, view = build(channel)
             if view is not None:

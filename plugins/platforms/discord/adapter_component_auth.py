@@ -68,3 +68,9 @@ def _component_check_auth(
         except Exception:
             pass
     return False
+
+def _prompt_target_id(chat_id: str, metadata: Optional[dict]) -> str:
+    """Interactive prompts post into ``metadata["thread_id"]`` when present, else ``chat_id``."""
+    if metadata and metadata.get("thread_id"):
+        return metadata["thread_id"]
+    return chat_id

@@ -1,6 +1,7 @@
 """Session override notices and held-message lifecycle."""
 from __future__ import annotations
 import asyncio
+import dataclasses
 from copy import copy
 import logging
 import time
@@ -48,6 +49,7 @@ class GatewayStaleOverrideMixin:
         try:
             home_channel = self.config.get_home_channel(source.platform)
         except Exception:
+            logger.debug("Failed to resolve stale-override completion home channel", exc_info=True)
             home_channel = None
         from gateway.stale_override_notice import source_matches_channels
 
@@ -224,17 +226,28 @@ class GatewayStaleOverrideMixin:
             run_generation = self._current_session_run_generation(session_key)
         if not self._is_session_run_current(session_key, run_generation):
             return True, None
+        handled, decision, idle_seconds = await self._stale_override_preflight(
+            event, session_key, config, run_generation,
+        )
+        if decision is None:
+            return handled, None
+        return await self._present_stale_override_notice(
+            event, session_key, config, run_generation, decision, idle_seconds,
+        )
+
+    async def _stale_override_preflight(self, event, session_key, config, run_generation):
+        """Read idle and reset policy before presenting an override decision."""
         from gateway.stale_override_notice import source_matches_channels
 
         home = None
         try:
             home = self.config.get_home_channel(event.source.platform)
         except Exception:
-            pass
+            logger.debug("Failed to resolve stale-override home channel", exc_info=True)
         if not source_matches_channels(
             event.source, config.channels, home_channel=home
         ):
-            return False, None
+            return False, None, None
 
         try:
             completed_at = await self.async_session_store.get_session_metadata(
@@ -242,14 +255,14 @@ class GatewayStaleOverrideMixin:
             )
             idle_seconds = max(0.0, time.time() - float(completed_at))
         except (TypeError, ValueError):
-            return False, None
+            return False, None, None
         except Exception:
             logger.debug("Failed to read stale-override completion clock", exc_info=True)
-            return False, None
+            return False, None, None
         if not self._is_session_run_current(session_key, run_generation):
-            return True, None
+            return True, None, None
         if idle_seconds < config.idle_minutes * 60:
-            return False, None
+            return False, None, None
 
         try:
             session_entry = await self.async_session_store.get_or_create_session(
@@ -258,16 +271,16 @@ class GatewayStaleOverrideMixin:
             )
         except Exception:
             logger.debug("Failed stale-override reset-policy preflight", exc_info=True)
-            return False, None
+            return False, None, None
         if not self._is_session_run_current(session_key, run_generation):
-            return True, None
+            return True, None, None
         if getattr(session_entry, "was_auto_reset", False):
             logger.info(
                 "Skipping stale-override prompt because session auto-reset is pending "
                 "(session=%s)",
                 session_key,
             )
-            return False, None
+            return False, None, None
 
         decision = self._stale_override_decision(
             source=event.source,
@@ -275,8 +288,14 @@ class GatewayStaleOverrideMixin:
             notice_config=config,
         )
         if not decision.triggered:
-            return False, None
+            return False, None, None
 
+        return False, decision, idle_seconds
+
+    async def _present_stale_override_notice(
+        self, event, session_key, config, run_generation, decision, idle_seconds,
+    ):
+        """Deliver the notice or hold its input behind the authorized picker."""
         adapter = self._delivery_adapter_for(event.source)
         if adapter is None:
             return False, None
@@ -327,31 +346,7 @@ class GatewayStaleOverrideMixin:
 
         token = object()
         pending_map[session_key] = {"token": token, "event": event}
-        send_metadata = dict(send_metadata or {})
-        send_metadata["choice_layout"] = "vertical"
-        send_metadata["choice_timeout_seconds"] = _STALE_OVERRIDE_PROMPT_TIMEOUT_SECONDS
-        source = event.source
-        is_thread = bool(source.thread_id or source.prospective_thread_id)
-        owner_required = (
-            source.chat_type == "dm"
-            or (
-                is_thread
-                and getattr(self.config, "thread_sessions_per_user", False)
-            )
-            or (
-                source.chat_type != "dm"
-                and not is_thread
-                and getattr(self.config, "group_sessions_per_user", True)
-            )
-        )
-        # New transports may separate a concrete actor from a shared route.
-        # Preserve existing per-user/alternate-ID policy when no actor is supplied.
-        if isinstance(requester, str) and requester:
-            send_metadata["requester_user_id"] = requester
-        elif owner_required:
-            send_metadata["requester_user_id"] = str(
-                source.user_id_alt or source.user_id or ""
-            )
+        send_metadata = self._stale_override_picker_metadata(event, requester, send_metadata)
 
         async def _on_choice_selected(_chat_id: str, value: str) -> str:
             async with self._async_profile_scope_for_source(policy_source):
@@ -443,3 +438,112 @@ class GatewayStaleOverrideMixin:
         )
         self._schedule_stale_override_prompt_expiry(session_key, token)
         return True, None
+
+    def _normalize_source_for_session_key(self, source: SessionSource) -> SessionSource:
+        """Apply Telegram DM topic recovery to a source for session-key purposes. Always derive override
+        storage keys from the result: ``_handle_message_with_agent`` rewrites ``thread_id`` before
+        deriving the session key, so keys from the raw ``event.source`` are never read next turn.
+
+        ``_handle_message_with_agent`` rewrites ``source.thread_id`` via
+        ``_recover_telegram_topic_thread_id`` *before* deriving the session key for a normal message turn (a
+        lobby/stripped reply gets pinned to the user's last-active topic). Session-scoped command handlers
+        like ``/model`` and ``/reasoning`` derive their override key from the raw inbound ``event.source``,
+        which skips that recovery — so the override is stored under a different key than the next message
+        turn reads, and the override is silently dropped on Telegram forum topics and after compression
+        session splits (#30479).
+        """
+        try:
+            recovered = self._recover_telegram_topic_thread_id(source)
+        except Exception:
+            return source
+        return source if recovered is None else dataclasses.replace(source, thread_id=recovered)
+
+    def _hm_rescue_orphaned_fifo(
+        self, event: MessageEvent, source: SessionSource, is_internal: bool, _quick_key: str
+    ) -> tuple[MessageEvent, SessionSource, bool]:
+        """FIFO orphan rescue: a session that went idle with a populated overflow (post-turn drain
+        never promoted, e.g. a compression-demoted follow-up) silently orphaned those events. The
+        oldest orphan runs as THIS turn and the incoming event is parked behind the chain. Skipped
+        for control commands and internal events."""
+        try:
+            # ── FIFO orphan rescue (#99882) ──────────────────────────────── If this session went idle with
+            # a populated overflow (queued during a busy window whose post-turn drain never promoted — e.g.
+            # a compression-demoted follow-up after the compression window ended through an exit that
+            # skipped the promotion site), those events were silently orphaned. We are starting the next
+            # turn for this session NOW: re-stage the orphans in FIFO order and enqueue the incoming event
+            # behind them, so arrival order (#28503) holds: oldest orphan runs as this turn, the rest drain
+            # in order, the new message last.
+            _orphan_adapter = self._delivery_adapter_for(source)
+            if _orphan_adapter is None or getattr(event, "internal", False) or event.get_command():
+                return event, source, is_internal
+            _rescued = self._rescue_orphaned_overflow(_quick_key, _orphan_adapter)
+            if _rescued is None:
+                return event, source, is_internal
+            # Into the slot when the chain was a single orphan (post-turn drain picks it up),
+            # otherwise into overflow behind the already-staged next orphan.
+            self._enqueue_fifo(_quick_key, event, _orphan_adapter)
+            # Same session key by construction; carry the orphan's own source so reply anchors /
+            # thread metadata point at the message actually being answered.
+            _rescued_source = getattr(_rescued, "source", None)
+            source = _rescued_source if _rescued_source is not None else source
+            return _rescued, source, bool(getattr(_rescued, "internal", False))
+        except Exception:
+            logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
+            return event, source, is_internal
+
+
+    async def _stale_override_before_agent(self, event, source, _quick_key, _run_generation):
+        """Notice I/O and supersession checks within the already claimed intake slot."""
+        notice_config = getattr(self.config, "stale_override_notice", None)
+        if notice_config is not None and notice_config.mode != "off":
+            async with self._async_profile_scope_for_source(source):
+                handled, response = await self._maybe_handle_stale_override_notice(
+                    event, _quick_key, run_generation=_run_generation,
+                )
+            if handled:
+                return True, response
+        if (
+            not self._is_session_run_current(_quick_key, _run_generation)
+            or not self._is_session_running(_quick_key)
+        ):
+            return True, None
+        return False, None
+
+    def _stale_override_picker_metadata(self, event, requester, send_metadata):
+        """Carry route metadata and the existing per-user picker ownership policy."""
+        send_metadata = dict(send_metadata or {})
+        send_metadata["choice_layout"] = "vertical"
+        send_metadata["choice_timeout_seconds"] = _STALE_OVERRIDE_PROMPT_TIMEOUT_SECONDS
+        source = event.source
+        is_thread = bool(source.thread_id or source.prospective_thread_id)
+        owner_required = (
+            source.chat_type == "dm"
+            or (
+                is_thread
+                and getattr(self.config, "thread_sessions_per_user", False)
+            )
+            or (
+                source.chat_type != "dm"
+                and not is_thread
+                and getattr(self.config, "group_sessions_per_user", True)
+            )
+        )
+        # New transports may separate a concrete actor from a shared route.
+        # Preserve existing per-user/alternate-ID policy when no actor is supplied.
+        if isinstance(requester, str) and requester:
+            send_metadata["requester_user_id"] = requester
+        elif owner_required:
+            send_metadata["requester_user_id"] = str(
+                source.user_id_alt or source.user_id or ""
+            )
+
+        return send_metadata
+
+    async def _stale_override_intake_source(self, event, source, is_internal):
+        """Recover ordinary Telegram topic routing before reading its override key."""
+        from gateway.config import Platform
+        if not is_internal and source.platform == Platform.TELEGRAM and not event.is_command():
+            source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
+            event.source = source
+        _quick_key = self._session_key_for_source(source)
+        return source, _quick_key

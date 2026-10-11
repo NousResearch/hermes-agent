@@ -41,7 +41,8 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (
-    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
+    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content,
+    _scan_operations)
 
 
 def load_on_disk_store() -> MemoryStore:
@@ -156,6 +157,12 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     if action == "replace" and not content:
         FAILURE_CLASS.set("missing_content")
         return tool_error("content is required for 'replace' action.", success=False)
+    # Threat scan belongs here, not in the store: the store runs AFTER the approval gate,
+    # so a poisoned entry was staged to pending/ and only refused at approve time -- where
+    # a failed apply is never discarded, leaving it stuck in the queue forever.
+    if action in ("add", "replace") and (scan_error := _scan_memory_content((content or "").strip())):
+        FAILURE_CLASS.set("scan_blocked")
+        return tool_error(scan_error, success=False)
     return None
 
 
@@ -253,6 +260,10 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     if operations:
         if not isinstance(operations, list):
             return _invalid("operations must be a list of {action, content?, old_text?} objects.")
+        # Refuse poisoned ops before the gate can stage them (see _validate_single_op).
+        if scan_error := _scan_operations(operations):
+            FAILURE_CLASS.set("scan_blocked")
+            return _invalid(scan_error)
         denied = _background_delete_gate(store, action, operations, target)
         if denied is not None:
             return "rejected", denied

@@ -705,6 +705,7 @@ gateway:
     drain_rejected: "⏳ Gateway is {action} en aanvaar nie nou nog 'n beurt nie."
     drain_rejected_new_work: "⏳ Gateway is {action} en aanvaar nie nou nuwe werk nie."
     demoted_tail: " — jou boodskap is in die tou vir wanneer dit klaar is (gebruik /stop om alles te kanselleer)."
+    queue_full: "⚠️ Die waglys is vol ({cap} boodskappe) — hierdie opvolg is nie in die tou gesit nie. Wag vir die huidige taak of gebruik /stop."
     elapsed_min: "{minutes} min verloop"
     running_tool: "loop: {tool}"
     ack_detail_wrap: " ({detail})"

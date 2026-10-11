@@ -705,6 +705,7 @@ gateway:
     drain_rejected: "⏳ Gateway {action} ve şu anda yeni bir tur kabul etmiyor."
     drain_rejected_new_work: "⏳ Gateway {action} ve şu anda yeni iş kabul etmiyor."
     demoted_tail: " — mesajınız, mevcut iş bitince işlenmek üzere sıraya alındı (her şeyi iptal etmek için /stop kullanın)."
+    queue_full: "⚠️ Sıra dolu ({cap} mesaj) — bu mesaj sıraya alınmadı. Mevcut işin bitmesini bekleyin veya /stop kullanın."
     elapsed_min: "{minutes} dk geçti"
     running_tool: "çalışıyor: {tool}"
     ack_detail_wrap: " ({detail})"

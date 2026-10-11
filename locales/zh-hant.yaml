@@ -705,6 +705,7 @@ gateway:
     drain_rejected: "⏳ 閘道正在{action}，目前不接受另一輪。"
     drain_rejected_new_work: "⏳ 閘道正在{action}，目前不接受新工作。"
     demoted_tail: " — 你的訊息已排入佇列，待其完成後處理（使用 /stop 可全部取消）。"
+    queue_full: "⚠️ 待處理佇列已滿（{cap} 則）——這則訊息未排入佇列。請等待目前任務完成或使用 /stop。"
     elapsed_min: "已耗時 {minutes} 分鐘"
     running_tool: "執行中：{tool}"
     ack_detail_wrap: " （{detail}）"

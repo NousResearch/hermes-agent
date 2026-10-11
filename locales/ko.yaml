@@ -705,6 +705,7 @@ gateway:
     drain_rejected: "⏳ 게이트웨이가 {action}이어서 지금은 다른 턴을 받을 수 없어요."
     drain_rejected_new_work: "⏳ 게이트웨이가 {action}이어서 지금은 새 작업을 받을 수 없어요."
     demoted_tail: " — 메시지는 작업이 끝나면 처리되도록 대기열에 넣었어요 (모두 취소하려면 /stop을 사용하세요)."
+    queue_full: "⚠️ 대기열이 가득 찼어요({cap}개) — 이 메시지는 대기열에 들어가지 않았어요. 현재 작업이 끝나길 기다리거나 /stop을 사용하세요."
     elapsed_min: "{minutes}분 경과"
     running_tool: "실행 중: {tool}"
     ack_detail_wrap: " ({detail})"

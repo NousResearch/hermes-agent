@@ -705,6 +705,7 @@ gateway:
     drain_rejected: "⏳ Il gateway è {action} e al momento non accetta un altro turno."
     drain_rejected_new_work: "⏳ Il gateway è {action} e al momento non accetta nuovo lavoro."
     demoted_tail: " — il tuo messaggio è in coda per quando avrà finito (usa /stop per annullare tutto)."
+    queue_full: "⚠️ La coda è piena ({cap} messaggi) — questo messaggio non è stato messo in coda. Attendi l'attività in corso o usa /stop."
     elapsed_min: "{minutes} min trascorsi"
     running_tool: "in esecuzione: {tool}"
     ack_detail_wrap: " ({detail})"

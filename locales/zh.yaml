@@ -705,6 +705,7 @@ gateway:
     drain_rejected: "⏳ 网关{action}，目前不接受新的回合。"
     drain_rejected_new_work: "⏳ 网关{action}，目前不接受新任务。"
     demoted_tail: " ——你的消息已排队，将在当前任务完成后处理（用 /stop 可取消全部）。"
+    queue_full: "⚠️ 待处理队列已满（{cap} 条）——这条消息未入队。请等待当前任务完成或使用 /stop。"
     elapsed_min: "已用时 {minutes} 分钟"
     running_tool: "正在运行：{tool}"
     ack_detail_wrap: " （{detail}）"

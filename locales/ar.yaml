@@ -705,6 +705,7 @@ gateway:
     drain_rejected: "⏳ البوّابة {action} ولا تقبل دورًا آخر الآن."
     drain_rejected_new_work: "⏳ البوّابة {action} ولا تقبل عملًا جديدًا الآن."
     demoted_tail: " — رسالتك في قائمة الانتظار حتى ينتهي (استخدم /stop لإلغاء كل شيء)."
+    queue_full: "⚠️ قائمة الانتظار ممتلئة ({cap} رسالة) — لم يتم إدراج هذه الرسالة في قائمة الانتظار. انتظر المهمة الحالية أو استخدم /stop."
     elapsed_min: "انقضت {minutes} دقيقة"
     running_tool: "قيد التشغيل: {tool}"
     ack_detail_wrap: " ({detail})"

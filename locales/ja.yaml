@@ -705,6 +705,7 @@ gateway:
     drain_rejected: "⏳ ゲートウェイは{action}のため、現在は次のターンを受け付けていません。"
     drain_rejected_new_work: "⏳ ゲートウェイは{action}のため、現在は新しい作業を受け付けていません。"
     demoted_tail: " — メッセージは完了後に処理されるようキューしました (/stop ですべてキャンセルできます)。"
+    queue_full: "⚠️ 待ちキューが満杯です（{cap}件）——このメッセージはキューされませんでした。現在のタスクの完了を待つか /stop を使ってください。"
     elapsed_min: "{minutes} 分経過"
     running_tool: "実行中: {tool}"
     ack_detail_wrap: " ({detail})"

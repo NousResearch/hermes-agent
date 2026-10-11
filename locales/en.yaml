@@ -714,6 +714,7 @@ gateway:
     drain_rejected: "⏳ Gateway is {action} and is not accepting another turn right now."
     drain_rejected_new_work: "⏳ Gateway is {action} and is not accepting new work right now."
     demoted_tail: " — your message is queued for when it finishes (use /stop to cancel everything)."
+    queue_full: "⚠️ The pending queue is full ({cap} messages) — this follow-up was not queued. Wait for the current run or /stop first."
     elapsed_min: "{minutes} min elapsed"
     running_tool: "running: {tool}"
     ack_detail_wrap: " ({detail})"

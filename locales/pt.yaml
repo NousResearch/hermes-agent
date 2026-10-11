@@ -705,6 +705,7 @@ gateway:
     drain_rejected: "⏳ O gateway está {action} e não está aceitando outro turno agora."
     drain_rejected_new_work: "⏳ O gateway está {action} e não está aceitando novo trabalho agora."
     demoted_tail: " — sua mensagem está na fila para quando ele terminar (use /stop para cancelar tudo)."
+    queue_full: "⚠️ A fila está cheia ({cap} mensagens) — esta mensagem não foi colocada na fila. Espere a tarefa atual ou use /stop."
     elapsed_min: "{minutes} min decorridos"
     running_tool: "executando: {tool}"
     ack_detail_wrap: " ({detail})"

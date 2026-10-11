@@ -122,7 +122,10 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
-class GatewayNotificationsMixin:
+from gateway.run_completion_consumption import GatewayCompletionConsumptionMixin
+
+
+class GatewayNotificationsMixin(GatewayCompletionConsumptionMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
@@ -1340,7 +1343,7 @@ class GatewayNotificationsMixin:
             if evt.get("type") == "completion":
                 # A merge can retain internal=True while appending human text/media.
                 # Bind permission to this exact injected input, outside public metadata.
-                setattr(synth_event, "_completion_silence_text", synth_text)
+                synth_event._completion_silence_text = synth_text
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,
@@ -1361,18 +1364,6 @@ class GatewayNotificationsMixin:
             logger.error("Watch notification injection error: %s", e)
             return False
 
-    @staticmethod
-    def _completion_silence_metadata(event: MessageEvent) -> dict:
-        """Authorize only an unmerged, gateway-injected completion at the turn boundary."""
-        injected_text = getattr(event, "_completion_silence_text", None)
-        if (
-            injected_text is not None and event.internal is True
-            and event.message_type == MessageType.TEXT and not event.media_urls
-            and event.text == injected_text
-            and not event.is_command()
-        ):
-            return {"completion_silence_allowed": True}
-        return {}
 
     @staticmethod
     def _completion_delivery_identity(evt: dict) -> Optional[tuple[str, str, object]]:
@@ -1640,83 +1631,6 @@ class GatewayNotificationsMixin:
     def _event_route_key(evt: dict, fields: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(str(evt.get(field) or "") for field in fields)
 
-    @staticmethod
-    def _process_completion_consumed(evt: dict) -> bool:
-        """An ID-only consumed marker is authoritative only for the known spawn incarnation."""
-        from tools.process_registry import process_registry
-        if evt.get("type") != "completion" or not evt.get("started_at") or not evt.get("session_id"):
-            return False
-        try:
-            session = process_registry.get(evt["session_id"])
-            return bool(
-                session is not None and session.id == evt["session_id"]
-                and session.started_at == evt["started_at"] and session.exited
-                and session.session_key == evt.get("session_key")
-                and process_registry.is_completion_consumed(session.id)
-            )
-        except Exception:
-            logger.warning("Could not verify process completion consumption; retaining notification", exc_info=True)
-            return False
-
-    def _refresh_process_completion_event(self, event: MessageEvent) -> bool:
-        """Revalidate admitted producers; retain unknown work and rebuild only changed batches."""
-        metadata = getattr(event, "metadata", None)
-        if not getattr(event, "internal", False) or not isinstance(metadata, dict):
-            return True
-        entries = metadata.get("process_completion_entries")
-        if not entries:
-            return True
-        if not isinstance(entries, (list, tuple)) or any(
-            not isinstance(entry, (list, tuple)) or len(entry) != 2
-            or not isinstance(entry[0], str) or not isinstance(entry[1], dict)
-            for entry in entries
-        ):
-            return True
-        remaining = [(text, evt) for text, evt in entries if not self._process_completion_consumed(evt)]
-        if len(remaining) == len(entries):
-            return True
-        if not remaining:
-            return False
-        silence_allowed = bool(self._completion_silence_metadata(event))
-        event.metadata["process_completion_entries"] = remaining
-        event.text = remaining[0][0] if len(remaining) == 1 else self._format_coalesced_process_completions(
-            [(text, evt, None) for text, evt in remaining]
-        )
-        event.text = _mark_internal_notification(event.text)
-        if silence_allowed:
-            setattr(event, "_completion_silence_text", event.text)
-        return True
-
-    @staticmethod
-    def _format_coalesced_process_completions(entries: Sequence[tuple[str, dict, asyncio.Future | None]]) -> str:
-        """Build one bounded synthetic event from several redacted completions."""
-        from gateway.run import _redact_gateway_user_facing_secrets
-        lines = [
-            f"[IMPORTANT: {len(entries)} background processes completed for this session.",
-            "Treat these results as one completion batch and send at most one "
-            "consolidated user-facing response.",
-        ]
-        shown = entries[:10]
-        for _text, evt, _future in shown:
-            session_id = str(evt.get("session_id") or "unknown")
-            exit_code = evt.get("exit_code")
-            reason = str(evt.get("completion_reason") or "exited")
-            # Unconditional gateway redaction floor (the producer-seam redactor is configurable). Redact
-            # BEFORE slicing: truncating first can leave a credential fragment the patterns miss.
-            output = _redact_gateway_user_facing_secrets(str(evt.get("output") or "")).strip()
-            if len(output) > 800:
-                output = f"[… truncated …]\n{output[-800:]}"
-            lines.append(f"\n- {session_id}: exit_code={exit_code}, reason={reason}")
-            if output:
-                lines.append(output)
-        omitted = len(entries) - len(shown)
-        if omitted:
-            lines.append(
-                f"\n- … and {omitted} more completion(s); inspect them with "
-                "the process tool if they affect the conclusion."
-            )
-        lines.append("If a result does not change the current conclusion, absorb it silently.]")
-        return "\n".join(lines)
 
     def _record_coalesced_completion_siblings(self, events: list[dict]) -> None:
         """Extend a successful primary delivery claim to its batched siblings."""

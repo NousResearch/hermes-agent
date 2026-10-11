@@ -79,15 +79,23 @@ async def producer(registry, key, tmp_path, exit_code):
     return session
 
 
+def _observe_wait(registry, session):
+    assert registry.wait(session.id, timeout=1)["exit_code"] == session.exit_code
+
+
+def _observe_log(registry, session):
+    assert "final-line" in registry.read_log(session.id)["output"]
+
+
 def observe(registry, session, action):
-    if action == "wait":
-        assert registry.wait(session.id, timeout=1)["exit_code"] == session.exit_code
-    elif action == "log":
-        assert "final-line" in registry.read_log(session.id)["output"]
-    elif action == "head":
-        registry.read_log(session.id, offset=0, limit=1)
-    elif action == "poll":
-        registry.poll(session.id)
+    observations = {
+        "wait": _observe_wait,
+        "log": _observe_log,
+        "head": lambda registry, session: registry.read_log(session.id, offset=0, limit=1),
+        "poll": lambda registry, session: registry.poll(session.id),
+        "unread": lambda registry, session: None,
+    }
+    observations[action](registry, session)
 
 
 @pytest.mark.asyncio
@@ -174,13 +182,14 @@ async def test_filter_preserves_unconsumed_siblings_and_unrelated_work(rig, tmp_
     removed = {"primary": [0], "last": [2], "single": [0, 1], "all": [0, 1, 2]}.get(case, [0])
     if case in {"user", "debounced_user", "watch", "watch_media", "async_delegation", "malformed_metadata"}:
         removed = [0, 1, 2]
-    if case == "missing_epoch":
-        events[0].pop("started_at")
-    elif case == "old_epoch":
-        events[0]["started_at"] -= 1
-    elif case == "unknown_id":
-        events[0]["session_id"] = "proc_unknown"
-    elif case == "other_session":
+    corruption = {
+        "missing_epoch": lambda: events[0].pop("started_at"),
+        "old_epoch": lambda: events[0].update(started_at=events[0]["started_at"] - 1),
+        "unknown_id": lambda: events[0].update(session_id="proc_unknown"),
+    }.get(case)
+    if corruption is not None:
+        corruption()
+    if case == "other_session":
         sessions[0].session_key = key + ":different-owner"
 
     extra_text = "independent follow-up"
@@ -213,24 +222,7 @@ async def test_filter_preserves_unconsumed_siblings_and_unrelated_work(rig, tmp_
                             "missing_epoch", "old_epoch", "unknown_id", "other_session",
                         } else [True] * 3)
 
-    # A later user/watch/delegation event must remain a separate queued unit.
-    extra = MessageEvent(text=extra_text, source=source, internal=case != "user")
-    if case == "user":
-        extra.metadata["process_completion_entries"] = [(format_process_notification(events[0]), events[0])]
-    elif case == "malformed_metadata":
-        extra.metadata["process_completion_entries"] = ["invalid"]
-    elif case == "watch_media":
-        # Photo type alone activates the album merge path; no vision I/O is needed.
-        extra.message_type = MessageType.PHOTO
-    if case == "debounced_user":
-        await adapter._flush_text_debounce_now(key)
-    elif case == "watch":
-        await runner._inject_watch_notification(extra_text, dict(events[0], type="watch_match"))
-    elif case == "async_delegation":
-        await runner._inject_watch_notification(extra_text, dict(events[0], type="async_delegation"))
-    else:
-        await adapter.handle_message(extra)
-        assert extra._gateway_accepted
+    await _admit_independent_followup(runner, adapter, source, key, events, case, extra_text)
 
     pending_event = pending_text = None
     result = {"final_response": "foreground done", "messages": []}
@@ -259,21 +251,47 @@ async def test_filter_preserves_unconsumed_siblings_and_unrelated_work(rig, tmp_
                     await runner._run_agent_queued_followup(
                         followup_context(source, key), adapter, text, event, result, result, None,
                     )
-        messages = [call.kwargs["message"] for call in runner._run_agent.call_args_list]
-        assert sum(extra_text in message for message in messages) == 1
-        unverifiable = case in {"missing_epoch", "old_epoch", "unknown_id", "other_session"}
-        retained = [i for i in range(3) if i not in removed or unverifiable]
-        completion_messages = [message for message in messages if any(evt["session_id"] in message for evt in events)]
-        assert len(completion_messages) == bool(retained)
-        if retained:
-            message = completion_messages[0]
-            for index, evt in enumerate(events):
-                assert (evt["session_id"] in message) == (index in retained)
-            if len(retained) > 1:
-                assert f"{len(retained)} background processes completed" in message
-            if 1 in retained:
-                assert "exit_code=7" in message
+        _assert_retained_completion_output(runner, extra_text, events, removed, case)
     finally:
         adapter._session_tasks.pop(key, None)
         adapter._active_sessions.pop(key, None)
         await runner._cancel_process_completion_batch_tasks()
+
+
+async def _admit_independent_followup(runner, adapter, source, key, events, case, extra_text):
+    from tools.process_registry_notifications import format_process_notification
+
+    # A later user/watch/delegation event must remain a separate queued unit.
+    extra = MessageEvent(text=extra_text, source=source, internal=case != "user")
+    if case == "user":
+        extra.metadata["process_completion_entries"] = [(format_process_notification(events[0]), events[0])]
+    if case == "malformed_metadata":
+        extra.metadata["process_completion_entries"] = ["invalid"]
+    if case == "watch_media":
+        # Photo type alone activates the album merge path; no vision I/O is needed.
+        extra.message_type = MessageType.PHOTO
+    if case == "debounced_user":
+        await adapter._flush_text_debounce_now(key)
+    elif case in {"watch", "async_delegation"}:
+        event_type = {"watch": "watch_match", "async_delegation": "async_delegation"}[case]
+        await runner._inject_watch_notification(extra_text, dict(events[0], type=event_type))
+    else:
+        await adapter.handle_message(extra)
+        assert extra._gateway_accepted
+
+
+def _assert_retained_completion_output(runner, extra_text, events, removed, case):
+    messages = [call.kwargs["message"] for call in runner._run_agent.call_args_list]
+    assert sum(extra_text in message for message in messages) == 1
+    unverifiable = case in {"missing_epoch", "old_epoch", "unknown_id", "other_session"}
+    retained = [i for i in range(3) if i not in removed or unverifiable]
+    completion_messages = [message for message in messages if any(evt["session_id"] in message for evt in events)]
+    assert len(completion_messages) == bool(retained)
+    if retained:
+        message = completion_messages[0]
+        for index, evt in enumerate(events):
+            assert (evt["session_id"] in message) == (index in retained)
+        if len(retained) > 1:
+            assert f"{len(retained)} background processes completed" in message
+        if 1 in retained:
+            assert "exit_code=7" in message

@@ -73,7 +73,7 @@ async def test_late_completion_recovery_and_delivery(monkeypatch, tmp_path, coun
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kwargs: [])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
     monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *a, **kw: 0.0)
     runner = GatewayRunner(GatewayConfig())
     adapter = RecordingTelegram()
@@ -306,7 +306,7 @@ def test_completion_permission_is_restored_after_exception(monkeypatch):
     import agent.conversation_loop as loop
 
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kwargs: [])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
     agent = AIAgent(model="gpt-5-codex", api_mode="codex_responses", provider="openai-codex",
         base_url="https://chatgpt.com/backend-api/codex", api_key="test-token",
         quiet_mode=True, skip_context_files=True, skip_memory=True)
@@ -337,7 +337,7 @@ async def test_gateway_completion_recovery_runs_full_turn(monkeypatch, tmp_path)
         "base_url": "https://chatgpt.com/backend-api/codex",
     })
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kwargs: [])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
     runner = GatewayRunner(GatewayConfig())
     adapter = RecordingTelegram()
     adapter.config.extra["allow_from"] = ["123"]

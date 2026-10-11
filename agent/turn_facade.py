@@ -170,11 +170,8 @@ class TurnFacadeMixin:
                     self._completion_silence_allowed = (
                         (persist_user_display_metadata or {}).get("completion_silence_allowed") is True
                     )
-                    if self._completion_silence_allowed:
-                        if isinstance(user_message, str):
-                            user_message = user_message + "\n\n" + _COMPLETION_SILENCE_GUIDANCE
-                        elif isinstance(user_message, list):
-                            user_message = [*user_message, {"type": "text", "text": _COMPLETION_SILENCE_GUIDANCE}]
+                    from agent.turn_empty_response import _completion_silence_input
+                    user_message = _completion_silence_input(user_message, self._completion_silence_allowed)
                     result = run_conversation(
                         self, user_message, system_message, conversation_history, effective_task_id,
                         stream_callback, persist_user_message,

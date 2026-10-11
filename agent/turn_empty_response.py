@@ -295,3 +295,13 @@ def recover_empty_response(
     _turn_exit_reason = "empty_response_exhausted"
     final_response = _terminal_empty(agent, assistant_message, finish_reason, messages)
     return _verdict("break")
+
+def _completion_silence_input(user_message, allowed):
+    """Attach guidance only to the verified completion input."""
+    from agent.turn_facade import _COMPLETION_SILENCE_GUIDANCE
+    if allowed:
+        if isinstance(user_message, str):
+            return user_message + "\n\n" + _COMPLETION_SILENCE_GUIDANCE
+        if isinstance(user_message, list):
+            return [*user_message, {"type": "text", "text": _COMPLETION_SILENCE_GUIDANCE}]
+    return user_message

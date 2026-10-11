@@ -85,9 +85,10 @@ class SessionAuthority:
         # Stop can land on the session's reusable cached agent after that turn's finalizer
         # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.
         self.delivered_stops = {}
-        # session -> generation whose turn adopted its agent. Until then the resident
-        # agent is the previous turn's cached one, which pre-turn compression or a changed agent
-        # config replaces, so a Stop that only reached it would let the rebuilt agent run the turn.
+        # session -> (generation, agent) its turn adopted. Until then the resident agent is the
+        # previous turn's cached one, which pre-turn compression or a changed agent config
+        # replaces, so a Stop that only reached it would let the rebuilt agent run the turn. After
+        # it, a Stop goes to this agent, never through a cache that may have evicted it.
         self.adopted = {}
         # Queued admissions whose cancellation may have committed before its observers settled.
         self.cancel_obligations = set()
@@ -572,11 +573,13 @@ class SessionAuthority:
         if handle.execution_generation != generation:
             raise RuntimeStoreError('stale_generation')
         if handle.execution_state == 'running':
-            agent = self.agent(ref)
+            adopted_generation, agent = self.adopted.get(ref.session_id, (None, None))
+            if adopted_generation != generation:
+                agent = self.agent(ref)
             if agent is not None:
                 agent.interrupt()
                 self.delivered_stops[ref.session_id] = generation
-            if self.adopted.get(ref.session_id) != generation and not self._runs_own_agent(ref):
+            if adopted_generation != generation and not self._runs_own_agent(ref):
                 # Accepted for this exact claim before its turn adopted an agent: whatever agent
                 # the turn adopts for this generation must not run the work as if no Stop arrived.
                 self.pending_stops[ref.session_id] = generation
@@ -596,7 +599,7 @@ class SessionAuthority:
         delivered to the cached agent for an earlier generation may have landed after that
         turn's finalizer cleared it, so it is dropped rather than cancelling this turn. A managed
         worker is a fresh process per turn and carries no earlier flag to drop."""
-        self.adopted[session_id] = generation
+        self.adopted[session_id] = (generation, agent)
         clear = getattr(agent, 'clear_interrupt', None)
         if self.delivered_stops.pop(session_id, generation) != generation and clear is not None:
             clear()

@@ -640,6 +640,19 @@ def normalize_usage(
     reasoning_tokens = _first_nonzero(
         u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens")
     )
+    # Canonical semantics: reasoning is a breakdown OF output_tokens (OpenAI documents the details field
+    # that way, and the Gemini adapter folds thoughts into completion_tokens to match). Some providers
+    # report it on top instead, so it would be neither counted nor priced (#68081). The raw total says
+    # which: it covers prompt + output + reasoning only when reasoning is additive. Without a total, a
+    # reasoning count larger than the output cannot be a subset of it.
+    if reasoning_tokens:
+        raw_total = _usage_field(u, "total_tokens")
+        additive = (
+            raw_total == prompt_total + output_tokens + reasoning_tokens if raw_total
+            else reasoning_tokens > output_tokens
+        )
+        if additive:
+            output_tokens += reasoning_tokens
 
     # On MiniMax-M3's Anthropic wire, cache_read_input_tokens carries a constant
     # +128 floor and cache_creation is always 0, so cache_read is not a reliable

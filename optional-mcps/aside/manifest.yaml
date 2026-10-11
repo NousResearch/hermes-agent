@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: aside
+description: Drive the signed-in Aside browser from Hermes (exec, repl, memory search).
+source: https://docs.aside.com/help/developers
+
+# The Aside app ships the CLI. This entry does not clone or download anything.
+transport:
+  type: stdio
+  command: aside
+  args:
+    - mcp
+
+auth:
+  type: none
+
+suggest:
+  keywords:
+    - aside
+    - aside browser
+  hosts:
+    - aside.com
+
+post_install: |
+  Aside must already be installed and running. This entry does not download Aside.
+  Install or reinstall the CLI from Aside Settings > Developers if `aside` is not
+  on PATH. If Hermes still cannot spawn it, set the command to the absolute path
+  (often ~/.local/bin/aside on macOS).
+
+  Restart the Hermes session so exec, repl, and memory_search load.
+  Prefer those tools over the built-in browser when the task needs the signed-in
+  Aside session. If the app is closed, fall back to the built-in browser.

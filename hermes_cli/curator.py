@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -15,7 +15,7 @@ def _parse_ts(ts) -> Optional[datetime]:
         dt = datetime.fromisoformat(ts)
     except (TypeError, ValueError):
         return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
 def _fmt_ts(ts: Optional[str]) -> str:
@@ -24,7 +24,7 @@ def _fmt_ts(ts: Optional[str]) -> str:
     dt = _parse_ts(ts)
     if dt is None:
         return str(ts)
-    secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+    secs = int((datetime.now(UTC) - dt).total_seconds())
     for unit, div, limit in (("s", 1, 60), ("m", 60, 3600), ("h", 3600, 86400)):
         if secs < limit:
             return f"{secs // div}{unit} ago"
@@ -327,7 +327,7 @@ def _idle_days(record: dict) -> Optional[int]:
     immortal; None only when both fields are missing or unparseable."""
     ts = record.get("last_activity_at") or record.get("created_at")
     dt = _parse_ts(str(ts)) if ts else None
-    return None if dt is None else max(0, (datetime.now(timezone.utc) - dt).days)
+    return None if dt is None else max(0, (datetime.now(UTC) - dt).days)
 
 
 def _cmd_prune(args) -> int:

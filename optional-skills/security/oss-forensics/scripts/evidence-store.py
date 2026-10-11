@@ -49,7 +49,7 @@ IOC_TYPES = [
 
 
 def _now_iso():
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds") + "Z"
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds") + "Z"
 
 
 def _sha256(content: str) -> str:

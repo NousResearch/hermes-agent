@@ -333,6 +333,5 @@ def test_heartbeat_write_does_not_block_the_loop_it_monitors():
     # Off-loop, the ticker gets roughly block_s / 0.02 ticks. Inline it gets at
     # most one, because the loop cannot run anything while fsync blocks it.
     assert ticks >= 5, (
-        "the loop made only %d tick(s) while the heartbeat was writing — "
-        "the write is blocking the loop again" % ticks
+        f'the loop made only {ticks:d} tick(s) while the heartbeat was writing — the write is blocking the loop again'
     )

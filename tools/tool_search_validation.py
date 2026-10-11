@@ -201,7 +201,7 @@ def local_batch_error(entries: list[dict[str, Any]]) -> str:
     args = json.dumps(first.get("arguments", {}), ensure_ascii=False, separators=(",", ":"))
     if len(args) > _ECHO_ARGS_MAX_CHARS:
         args = "{...}"  # keep the correction readable; the model still has its own arguments
-    retry = '{"calls":[{"name":%s,"arguments":%s}]}' % (json.dumps(first["name"], ensure_ascii=False), args)
+    retry = '{{"calls":[{{"name":{},"arguments":{}}}]}}'.format(json.dumps(first["name"], ensure_ascii=False), args)
     remaining = (f" then issue the remaining {len(entries) - 1} call(s) as separate tool_call invocations"
                  if len(entries) > 1 else "")
     return (

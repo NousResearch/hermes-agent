@@ -148,6 +148,9 @@ def admit_api_turn(adapter, **kwargs):
     if declared_key:
         from gateway.session_api import declared_api_session
         sid = declared_api_session(authority.db, declared_key) or sid
+    # Every API door (chat header, runs session_id, /api/sessions/{id}/chat, Responses chain) may
+    # name a compression continuation; the binding, FIFO and retry identity live on its root.
+    sid = authority.logical_owner(sid)
     authority._require_admission_open()
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
     # Route credentials remain in the server's configuration, never admission JSON.

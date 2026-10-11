@@ -713,6 +713,10 @@ def finalize_turn(
             else getattr(agent.context_compressor, "last_prompt_tokens", 0)
         ) or 0,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_COST_KEYS},
+        # Subscription-included gauge (agent.session_list_price_usd → list_price_equiv_usd):
+        # the subscription-allowance figure gateway/oneshot writers persist alongside the
+        # spend keys.
+        "list_price_equiv_usd": getattr(agent, "session_list_price_usd", 0.0) or 0.0,
         # Requested service tier, for billing audits (`hermes -z --usage-file`).
         "service_tier": (
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}

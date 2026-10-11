@@ -207,6 +207,7 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         ('28 2026-09-25T23:25Z 2941aadffa', (('+', 'compression_overload_streak', 'compression_recovery_deadline'),)),
         ('29 2026-09-27T00:29Z d75f29934b', (('+', 'created_source', 'source'),)),
         ('30 2026-09-28T00:00Z #117713', (('+', 'auto_archived', 'archived'),)),
+        ('31 2026-10-10T10:02Z 43df4b12a11', (('+', 'list_price_equiv_usd', 'actual_cost_usd'),)),
         ),
     ),
     "messages": _TableHistory(
@@ -263,6 +264,7 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'cost_source', 'cost_status'),
         )),
         ('02 2026-07-16T11:23Z eb6aa03609', (('+', 'task', 'billing_mode'),)),
+        ('03 2026-10-10T10:02Z 43df4b12a11', (('+', 'list_price_equiv_usd', 'actual_cost_usd'),)),
         ),
     ),
 }

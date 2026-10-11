@@ -2319,6 +2319,9 @@ _USAGE_STATE: dict[str, Any] = {
     "session_cache_write_tokens": 0,
     "session_reasoning_tokens": 0,
     "session_estimated_cost_usd": 0.0,
+    # Subscription-included gauge (Claude Max/DirectSDK): native list-price equivalent of
+    # $0-out-of-pocket usage; never added into session_estimated_cost_usd.
+    "session_list_price_usd": 0.0,
     "session_cost_status": "unknown",
     "session_cost_source": "none",
     # Status-bar latency/velocity history (last 10 calls), shared by loop + codex_runtime.

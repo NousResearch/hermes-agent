@@ -572,6 +572,20 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.error).toContain('never reached the page')
   })
 
+  it('does not report a locate that never answers as a successful click', async () => {
+    const send = vi.fn()
+    const tabId = openBrowserTab()
+
+    cleanups.push(registerPreviewScriptRunner(tabId, async () => undefined))
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
+
+    expect(send).not.toHaveBeenCalled()
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('no input was sent')
+  })
+
   it('says so when the overlay itself swallowed the click', async () => {
     const tabId = openBrowserTab()
 

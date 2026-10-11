@@ -1,0 +1,20 @@
+name: memex8
+repo: https://github.com/Ex8-ca/memex8
+sha: 9f30627c7d7f35d44e0b6aa73e81417482d5bdb9
+subdir: plugins/memex8
+version: "1.1.0"
+description: "Self-hosted vector memory (Qdrant + TurboQuant compression) with auto-discovered knowledge realms, semantic search across conversations and ingested documents, and a slumber pipeline for memory consolidation. v1.1.0 adds optional per-session injection dedup with char-budget gate, decision/evaluation memory-type promotion (slower decay for load-bearing turns), prompt-injection sanitization on read, configurable system-prompt template, export/import memories as JSON, and a /memex8 slash command. New memory behaviours are opt-in; /memex8 export|import is confined to $HERMES_HOME/plugin-data/memex8 unless enable_export_import=true. Disclosure — auto-stores a truncated copy (first 300 chars) of every user and assistant turn, plus per-message previews of the whole transcript at session end and before context compression, to the memex8 server at MEMEX8_BASE_URL (self-hosted; default http://localhost:8080) using MEMEX8_API_KEY."
+maintainer: Ex8-ca
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Ex8-ca/memex8/blob/main/plugins/memex8/README.md
+image: https://raw.githubusercontent.com/Ex8-ca/memex8/9f30627c7d7f35d44e0b6aa73e81417482d5bdb9/plugins/memex8/docs/banner.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_end
+    - on_pre_compress
+  provides_middleware: []
+  requires_env:
+    - MEMEX8_API_KEY

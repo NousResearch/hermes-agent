@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
     ASYNC_HANDOFF_GUIDANCE, DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    API_SERVER_FILE_DELIVERY_HINT,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
@@ -422,7 +423,22 @@ def _default_platform_hint(platform_key: str) -> str:
             pass
     if platform_key == "telegram" and hint and _telegram_rich_messages_enabled():
         hint = hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
+    if platform_key == "api_server" and hint and _api_server_file_delivery_enabled():
+        hint = hint.rstrip() + " " + API_SERVER_FILE_DELIVERY_HINT
     return hint
+
+
+def _api_server_file_delivery_enabled() -> bool:
+    """``gateway.api_server.file_delivery.enabled``; False on any read failure.
+
+    Resolved once per prompt build like every platform hint, so the system prompt stays byte-stable
+    for the life of a conversation (a config edit lands in the next session).
+    """
+    try:
+        from gateway.platforms.api_server_file_delivery import file_delivery_config
+        return bool(file_delivery_config().enabled)
+    except Exception:
+        return False
 
 
 def _cron_delivery_hint(agent: Any) -> str:

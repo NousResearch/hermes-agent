@@ -111,6 +111,9 @@ export interface RosterRow {
   installId?: string
   last_session?: SessionPreview | null
   remoteSource?: boolean
+  /** Kept from an earlier paint because its source did not answer this
+   *  fetch: shown, but never evidence of what the backend holds now. */
+  retained?: boolean
   route?: ProfileRoute
   sourceError?: null | string
   sourceMissing?: boolean

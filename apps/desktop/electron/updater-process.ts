@@ -1,4 +1,4 @@
-import { spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { execFileSync, spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -470,6 +470,41 @@ export function stagedUpdaterSupportsPrewrittenMarker(
   return typeof mtimeMs === 'number' && Number.isFinite(mtimeMs) && mtimeMs >= MARKER_SELF_ADOPT_EPOCH_MS
 }
 
+/**
+ * Clear the staged macOS updater helper's quarantine and, when its signature
+ * does not verify, ad-hoc sign it so Gatekeeper lets it run. Best effort.
+ */
+export function repairMacUpdaterHelper(
+  updater: string | null,
+  deps: { isMac: boolean; log: (line: string) => void }
+): void {
+  if (!deps.isMac || !updater) {
+    return
+  }
+
+  try {
+    execFileSync('/usr/bin/xattr', ['-cr', updater], { stdio: 'ignore' })
+  } catch (err) {
+    deps.log(`[updates] macOS updater helper quarantine repair skipped: ${(err as Error).message}`)
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--verify', updater], { stdio: 'ignore' })
+
+    return
+  } catch {
+    // Unsigned or invalid helper. Apply a local ad-hoc signature so Gatekeeper
+    // does not block the staged updater before it can run.
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', updater], { stdio: 'ignore' })
+    deps.log('[updates] repaired macOS updater helper signature')
+  } catch (err) {
+    deps.log(`[updates] macOS updater helper signature repair skipped: ${(err as Error).message}`)
+  }
+}
+
 export interface SpawnUpdaterProcessDeps {
   isWindows?: boolean
   spawnProcess?: (command: string, args: string[], options: SpawnOptions) => UpdaterChild
@@ -496,6 +531,67 @@ export function spawnUpdaterProcess(
   child.unref()
 
   return child
+}
+
+/**
+ * Stop a hand-off the Desktop has given up on (C2 timeout), so a script that
+ * starts late cannot run an update the UI already reported as "did not start".
+ * POSIX: the detached launcher leads its own process group — kill the group.
+ * Windows: the `cmd start /b` wrapper exits at once and PowerShell outlives it,
+ * so stop the wrapper's recorded children that carry this Desktop's
+ * `-DesktopPid` (a reused pid never matches both), then the wrapper's tree if
+ * it is still running. Best effort; the script is adopt-only besides (A4).
+ */
+export function killHandoffTree(
+  child: UpdaterChild & { exitCode?: number | null; signalCode?: string | null },
+  {
+    isWindows = process.platform === 'win32',
+    desktopPid = process.pid,
+    kill = process.kill.bind(process),
+    spawnProcess = spawn
+  }: {
+    isWindows?: boolean
+    desktopPid?: number
+    kill?: typeof process.kill
+    spawnProcess?: typeof spawn
+  } = {}
+): void {
+  const pid = child.pid
+
+  if (!Number.isInteger(pid) || !pid || pid <= 0) {
+    return
+  }
+
+  if (!isWindows) {
+    try {
+      kill(-pid, 'SIGKILL')
+    } catch {
+      try {
+        kill(pid, 'SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+
+    return
+  }
+
+  const wrapperRunning = child.exitCode == null && child.signalCode == null
+
+  const command =
+    `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}' | ` +
+    `Where-Object { $_.CommandLine -match '-DesktopPid\\s+${desktopPid}(\\s|$)' } | ` +
+    `ForEach-Object { taskkill.exe /PID $_.ProcessId /T /F | Out-Null }` +
+    (wrapperRunning ? `; taskkill.exe /PID ${pid} /T /F | Out-Null` : '')
+
+  try {
+    spawnProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      stdio: 'ignore',
+      windowsHide: true
+    }).on('error', () => {})
+  } catch {
+    // Best effort.
+  }
 }
 
 export interface UpdaterHandoffOutcome {

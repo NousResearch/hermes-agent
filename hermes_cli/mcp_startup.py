@@ -15,8 +15,8 @@ _mcp_discovery_lock = threading.Lock()
 # override): a shared Desktop/dashboard backend serving several profiles runs one discovery per
 # profile instead of the first profile to build an agent claiming the slot for everybody (#67605).
 # A single-profile process has exactly one key, so behaviour is the old single-slot form.
-_mcp_discovery_started: Set[str] = set()
-_mcp_discovery_thread: Dict[str, threading.Thread] = {}
+_mcp_discovery_started: set[str] = set()
+_mcp_discovery_thread: dict[str, threading.Thread] = {}
 _mcp_discovery_deferred: Optional[threading.Timer] = None
 # Process-wide MCP server-name allowlist derived from ``-t/--toolsets``.
 # ``None`` = no filter (spawn every configured server). Set once at CLI
@@ -151,7 +151,7 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         thread.start()
 
 
-def _resolve_discovery_timeout(explicit: "float | None", *, single_query: bool = False) -> float:
+def _resolve_discovery_timeout(explicit: float | None, *, single_query: bool = False) -> float:
     """Resolve the MCP discovery wait bound: explicit arg > config.yaml > ``DEFAULT_CONFIG``.
 
     Lazy and fail-safe: a missing/invalid value or broken config falls back to a short bound so
@@ -257,7 +257,7 @@ def start_deferred_mcp_discovery_now() -> None:
     timer.function()
 
 
-def wait_for_mcp_discovery(timeout: "float | None" = None, *, single_query: bool = False) -> None:
+def wait_for_mcp_discovery(timeout: float | None = None, *, single_query: bool = False) -> None:
     """Wait for background MCP discovery before the first tool snapshot.
 
     ``join`` returns the instant discovery completes, so this only blocks for a still-pending
@@ -290,7 +290,7 @@ def mcp_discovery_in_flight() -> bool:
     return thread is not None and thread.is_alive()
 
 
-def join_mcp_discovery(timeout: "float | None" = None) -> bool:
+def join_mcp_discovery(timeout: float | None = None) -> bool:
     """Block up to ``timeout`` for THIS module's discovery; True once complete, False if still
     running. For the off-critical-path late-refresh waiter (accepts a long wait, reports outcome)."""
     thread = _current_home_thread()
@@ -303,7 +303,7 @@ def join_mcp_discovery(timeout: "float | None" = None) -> bool:
 def ensure_mcp_discovery_before_agent_build(
     *,
     logger,
-    timeout: "float | None" = None,
+    timeout: float | None = None,
     single_query: bool = False,
     thread_name: str = "cli-mcp-discovery") -> None:
     """Give configured MCP tools a bounded chance to register before AIAgent.

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pydantic import Field
 
+from tools.tour_presets import TourPreset
+
 from .base import JsonValue, Params, Payload, Result, WireEnum
 from .registry import event, server_request
 
@@ -52,6 +54,44 @@ class ClarifyResult(Result):
 
 server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,
                doc="The clarify tool: ask the user 1-5 questions.")
+
+
+class SetupChooseKind(WireEnum):
+    question = "question"
+    accent = "accent"
+    theme = "theme"
+    layout = "layout"
+    connectors = "connectors"
+    plugins = "plugins"
+    tour = "tour"
+    fork = "fork"
+    machine_use = "machine_use"
+
+
+class SetupChooseOption(Params):
+    id: str
+    label: str
+    detail: str | None = None
+
+
+class SetupChooseRequestParams(ServerRequestParams):
+    kind: SetupChooseKind
+    question: str
+    options: list[SetupChooseOption] | None = None
+    multi_select: bool = False
+    # Row ids the card starts with picked: the plugins the setup facts found (Blender).
+    preselected: list[str] | None = None
+
+
+class SetupChooseResult(Result):
+    picked: str | list[str] | None = None
+    # The name the card showed for each picked row (one per id in ``picked``); the model says it, not the id.
+    label: str | list[str] | None = None
+    # Composer text that named no row of the card: the user's words, never a pick.
+    said: str | None = None
+
+
+server_request("setup_choose", params=SetupChooseRequestParams, result=SetupChooseResult)
 
 
 # ── approval ──────────────────────────────────────────────────────────────────────────────────
@@ -199,6 +239,7 @@ class TourRequestParams(ServerRequestParams):
     side: str | None = None
     steps: list[TourStep] | None = None
     step_index: int | None = None
+    preset: TourPreset | None = None
 
 
 server_request("tour", params=TourRequestParams, result=ValueResult,

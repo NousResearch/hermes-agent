@@ -30,6 +30,7 @@ def _git(*args: str, cwd: str | None = None) -> str:
         encoding="utf-8",
         errors="replace",
         timeout=60,
+        check=False,
     )
     assert result.returncode == 0, f"git {' '.join(args)} failed: {result.stderr}"
     return result.stdout
@@ -287,3 +288,70 @@ def test_parent_worktree_deferred_until_children_done(
         assert kb.complete_task(conn, child, summary="child done")
     # last child terminal -> deferred parent worktree reaped
     assert not parent_wt.exists()
+
+
+def _running_scratch_parent(conn, title: str = "parent") -> tuple[str, Path]:
+    tid = kb.create_task(conn, title=title)
+    assert kb.claim_task(conn, tid) is not None  # -> running
+    ws = Path(kbw.resolve_workspace(kb.get_task(conn, tid)))
+    kbw.set_workspace_path(conn, tid, ws)
+    return tid, ws
+
+
+@pytest.mark.parametrize("live_status", ["running", "blocked", "review"])
+def test_live_parent_scratch_survives_last_child_archived(
+    kanban_home: Path, live_status: str
+) -> None:
+    """#133501: the deferred sweep must not reap a still-live parent's scratch.
+
+    ``_try_cleanup_parent_workspaces`` (#33774) exists for a parent that is
+    already terminal while children still need its handoff files. A parent
+    still running/blocked/review owns its workspace until its own terminal
+    transition, so archiving its last active child must not delete it.
+    """
+    with kbc.connect_closing() as conn:
+        parent, ws = _running_scratch_parent(conn)
+        (ws / "work.txt").write_text("in progress", encoding="utf-8")
+        child = kb.create_task(conn, title="probe")
+        kb.link_tasks(conn, parent, child)
+        if live_status == "blocked":
+            assert kb.block_task(conn, parent, reason="waiting")
+        elif live_status == "review":
+            assert kb.request_review(conn, parent, summary="please review", force=True)
+        assert kb.archive_task(conn, child)
+        assert kb.get_task(conn, parent).status == live_status
+    assert (ws / "work.txt").is_file()
+
+
+def test_live_parent_worktree_survives_last_child_archived(
+    kanban_home: Path, repo: Path
+) -> None:
+    """#133501, worktree flavour: a running parent's clean linked worktree —
+    its worker's cwd — must not be removed because a child got archived."""
+    with kbc.connect_closing() as conn:
+        parent, parent_wt = _worktree_task(conn, repo, title="live parent")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
+        assert kb.claim_task(conn, parent, claimer="worker") is not None
+        child = kb.create_task(conn, title="probe")
+        kb.link_tasks(conn, parent, child)
+        assert kb.archive_task(conn, child)
+        assert kb.get_task(conn, parent).status == "running"
+    assert parent_wt.is_dir()
+
+
+def test_terminal_scratch_parent_still_swept_after_last_child(
+    kanban_home: Path,
+) -> None:
+    """#33774 unchanged by the #133501 guard: a parent that finished while a
+    child was still active still gets its scratch reaped by the last child's
+    completion."""
+    with kbc.connect_closing() as conn:
+        parent, ws = _running_scratch_parent(conn)
+        (ws / "handoff.txt").write_text("x", encoding="utf-8")
+        child = kb.create_task(conn, title="probe")
+        kb.link_tasks(conn, parent, child)
+        assert kb.complete_task(conn, parent, summary="parent done")
+        assert ws.is_dir()  # live child still needs the handoff files
+        assert kb.archive_task(conn, child)
+    assert not ws.exists()

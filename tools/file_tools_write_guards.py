@@ -24,7 +24,8 @@ from tools.binary_extensions import (
 )
 from tools.file_tools_paths import (
     _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
-from tools.file_tools_read_tracking import _has_full_write_baseline, _read_mtime_drifted
+from tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
+import itertools
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -279,7 +280,7 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
 
     try:
         import tools.approval as _approval
-        from tools.approval_context import get_current_session_key
+        from tools.approval_context import _fire_approval_hook, get_current_session_key
         from tools.approval_gateway_wait import _await_gateway_decision
         from tools.approval_prompt import prompt_dangerous_approval
     except Exception:
@@ -319,8 +320,19 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             # No human channel (script, cron, background thread): fail closed —
             # auto-approving here would recreate the persistence vector.
             return blocked.format(why=_NO_HUMAN)
+        # -q (every kanban worker), cron and unattended platforms can have a callback registered that nobody
+        # answers: fail closed now, and never auto-approve, whatever approvals.<context>_mode says.
+        from tools.approval_context import _no_user_can_answer
+        if _no_user_can_answer():
+            return blocked.format(why=_NO_HUMAN)
+        # Same observer payload as the gateway branch (#131876), fired like the
+        # dangerous-command CLI prompt in tools/approval.py.
+        hook_kwargs = dict(command=display, description=description, pattern_key="protected_instruction_file",
+                           pattern_keys=["protected_instruction_file"], session_key=session_key, surface="cli")
+        _fire_approval_hook("pre_approval_request", **hook_kwargs)
         choice = prompt_dangerous_approval(
             display, description, allow_permanent=False, allow_session=False, approval_callback=callback)
+        _fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
         if choice == "cancelled":
             return blocked.format(why="approval prompt could not be delivered or was not answered "
                                       f"({getattr(choice, 'cause', 'no answer')}).")
@@ -546,9 +558,10 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
     Refuses BEFORE any disk mutation (the pre-#65604 warning arrived after the
     clobber): a sibling/external/partial-read staleness finding, or an existing
     file with no full-content baseline for this task (never read in full, read
-    redacted, only patched). Net-new files, files this task fully read (in one
-    page or by paging contiguously to the last line) or wrote, unresolvable
-    paths and the file-state kill switch all let the write proceed.
+    redacted, only patched without one). Net-new files, files this task fully read
+    (in one page or by paging contiguously to the last line), wrote, or patched
+    from such a baseline, unresolvable paths and the file-state kill switch all
+    let the write proceed.
     """
     if file_state.guard_disabled():
         return None
@@ -567,9 +580,13 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
         return None
     if not exists:
         return None
+    if _is_own_blind_patch(resolved, task_id):
+        return (
+            "Your patch changed this file without a full view of its current content. Read the current file "
+            "in full before a whole-file overwrite, or continue with targeted patches.")
     return (
         f"{resolved} exists but this task has not seen its full current content "
-        "(never read, only patched, or only a redacted/partial view). Read the "
+        "(never read, patched without a prior full read, or only a redacted/partial view). Read the "
         "file — every page of it, if it needs offset/limit — or use patch for a "
         "targeted edit; a stale conversation copy must not overwrite the current "
         "disk content.")
@@ -618,7 +635,7 @@ def _looks_like_read_file_line_numbered_content(content: str) -> bool:
             numbered.append(int(prefix))
     if len(numbered) < 2 or len(numbered) / len(lines) < 0.6:
         return False
-    consecutive_pairs = sum(1 for prev, current in zip(numbered, numbered[1:]) if current == prev + 1)
+    consecutive_pairs = sum(1 for prev, current in itertools.pairwise(numbered) if current == prev + 1)
     return consecutive_pairs >= len(numbered) - 1
 
 

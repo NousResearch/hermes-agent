@@ -30,7 +30,7 @@ class ConnectorConfig:
     enabled: bool = True
 
     @classmethod
-    def from_raw(cls, raw: Any) -> "ConnectorConfig":
+    def from_raw(cls, raw: Any) -> ConnectorConfig:
         """Malformed configuration falls back to the enabled default."""
         if isinstance(raw, bool):
             return cls(enabled=raw)

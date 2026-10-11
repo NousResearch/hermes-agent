@@ -731,7 +731,7 @@ class CLIInfoMixin:
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
         reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
         compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens if compressor.last_prompt_tokens > 0 else 0
+        last_prompt = max(0, compressor.last_prompt_tokens)
         ctx_len = compressor.context_length
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
@@ -1009,15 +1009,10 @@ class CLIInfoMixin:
         conversation_history, so message alternation stays intact.
         """
         try:
-            from agent.skill_commands import reload_skills, get_skill_commands
+            from agent.skill_commands import reload_skills
             if not self._command_running:
                 print(t("cli.reload_skills.reloading"))
             result = reload_skills()
-
-            # Sync cli.py's module-level _skill_commands so help / dispatch / Tab-completion see
-            # the updated dict without a restart.
-            import cli as _cli
-            _cli._skill_commands = get_skill_commands()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])
             total = result.get("total", 0)

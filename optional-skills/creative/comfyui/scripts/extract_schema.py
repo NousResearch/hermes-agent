@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import (  # noqa: E402
+from _common import (
     OUTPUT_NODES, PARAM_PATTERNS, PROMPT_FIELDS,
     is_link, iter_embedding_refs, iter_model_deps, iter_nodes, unwrap_workflow,
 )

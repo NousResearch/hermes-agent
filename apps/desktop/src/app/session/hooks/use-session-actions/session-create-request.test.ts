@@ -9,7 +9,7 @@ vi.mock('@/store/gateway', () => ({
 
 import { createGatewaySession } from './session-create-request'
 
-// Verbatim admission rejections from backends predating #122899 (tui_gateway/contracts/registry.py).
+// Verbatim admission rejections from older backends (tui_gateway/contracts/registry.py).
 const rejection = (field: string, suffix = '') =>
   new JsonRpcGatewayError(`invalid params for session.create: ${field}: Extra inputs are not permitted${suffix}`, {
     code: 4000
@@ -47,6 +47,20 @@ describe('createGatewaySession', () => {
     const requestGateway = vi.fn().mockRejectedValueOnce(V0213_REJECTION).mockResolvedValueOnce({ session_id: 's2' })
     await expect(createGatewaySession(null, params, requestGateway)).resolves.toEqual({ session_id: 's2' })
     expect(requestGateway.mock.calls.map(call => call[1])).toEqual([params, withoutFlag])
+  })
+
+  it('drops service_tier (fast kept) for a pre-Ultrafast backend, one rejected field at a time', async () => {
+    const tiered = { ...params, fast: true, service_tier: 'ultrafast' }
+    const { cwd_explicit: _flag, service_tier: _tier, ...legacy } = tiered
+
+    const requestGateway = vi
+      .fn()
+      .mockRejectedValueOnce(rejection('service_tier', OUT_OF_SYNC))
+      .mockRejectedValueOnce(V0213_REJECTION)
+      .mockResolvedValueOnce({ session_id: 's3' })
+
+    await expect(createGatewaySession(null, tiered, requestGateway)).resolves.toEqual({ session_id: 's3' })
+    expect(requestGateway.mock.calls.map(call => call[1])).toEqual([tiered, { ...legacy, cwd_explicit: true }, legacy])
   })
 
   it('never resends on any other failure, even one that mentions the field', async () => {

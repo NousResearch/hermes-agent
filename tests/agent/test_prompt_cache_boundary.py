@@ -14,10 +14,10 @@ import copy
 import pytest
 from unittest.mock import patch
 
-import agent.skill_bundles as skill_bundles
-import agent.skill_commands as skill_commands
-import tools.skills_tool as skills_tool
-import agent.prompt_cache_boundary as prompt_cache_boundary
+from agent import skill_bundles
+from agent import skill_commands
+from tools import skills_tool
+from agent import prompt_cache_boundary
 from agent.prompt_cache_boundary import (
     find_stable_prefix,
     register_stable_prefix,
@@ -196,17 +196,54 @@ class TestRequestLocalSplit:
         assert plan.messages[0]["content"][0]["cache_control"] == MARKER
         assert "cache_control" not in plan.messages[0]["content"][1]
 
-    def test_strip_reconstructs_exact_string_and_redecorates_identically(self):
+    @pytest.mark.parametrize("later_turns", [0, 4], ids=["holds-a-marker", "outside-the-marker-window"])
+    def test_strip_reconstructs_exact_string_and_redecorates_identically(self, later_turns):
+        """Caches key on content, so the scaffold goes out as the same [scaffold, tail] parts on
+        every request, marked or not; the failover stripper must flatten either shape."""
         scaffold = "stable scaffold\n\n" + _SINGLE_SKILL_INSTRUCTION
         register_stable_prefix(scaffold)
         original = [{"role": "user", "content": scaffold + "ticket=one"}]
+        original += [{"role": role, "content": f"turn {i}"} for i in range(later_turns)
+                     for role in ("assistant", "user")]
 
         marked = apply_anthropic_cache_control(copy.deepcopy(original))
+        assert [p["text"] for p in marked[0]["content"]] == [scaffold, "ticket=one"]
         first_wire = copy.deepcopy(marked)
         stripped = strip_anthropic_cache_control(marked)
 
         assert stripped == original
         assert apply_anthropic_cache_control(copy.deepcopy(stripped)) == first_wire
+
+    def test_unmarked_split_re_entering_the_window_marks_the_scaffold(self):
+        """Re-applying the planner to its own output (MoA reference trim, re-decoration) must
+        treat an unmarked [scaffold, tail] split like the canonical string: the breakpoint goes
+        on the scaffold, never on the volatile tail."""
+        scaffold = "stable scaffold\n\n" + _SINGLE_SKILL_INSTRUCTION
+        register_stable_prefix(scaffold)
+        original = [{"role": "user", "content": scaffold + "ticket=one"}]
+        original += [{"role": role, "content": f"turn {i}"} for i in range(4) for role in ("assistant", "user")]
+
+        unmarked = apply_anthropic_cache_control(copy.deepcopy(original))
+        assert all("cache_control" not in part for part in unmarked[0]["content"])
+
+        again = apply_anthropic_cache_control(copy.deepcopy(unmarked[:1]))
+        assert again == apply_anthropic_cache_control(copy.deepcopy(original[:1]))
+        assert again[0]["content"][0]["cache_control"] == MARKER
+        assert "cache_control" not in again[0]["content"][1]
+
+    def test_direct_tool_cache_plan_keeps_the_split_outside_the_marker_window(self):
+        """The native tool-cache layout plans without apply_anthropic_cache_control, so it needs
+        the same unmarked split or its third request re-writes the scaffold."""
+        scaffold = "stable scaffold\n\n" + _SINGLE_SKILL_INSTRUCTION
+        register_stable_prefix(scaffold)
+        history = [{"role": "user", "content": scaffold + "ticket=one"}]
+        history += [{"role": role, "content": f"turn {i}"} for i in range(4) for role in ("assistant", "user")]
+        tools = [{"type": "function", "function": {"name": "terminal", "parameters": {}}}]
+
+        plan = build_prompt_cache_plan(history, tools, native_anthropic=True, direct_native_tool_cache=True)
+
+        assert plan.messages[0]["content"] == [{"type": "text", "text": scaffold}, {"type": "text", "text": "ticket=one"}]
+        assert isinstance(history[0]["content"], str)
 
     def test_strip_flattens_even_after_the_prefix_was_evicted(self):
         """Mid-turn failover re-decorates a request built many messages ago

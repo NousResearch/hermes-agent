@@ -333,6 +333,24 @@ _BACKGROUND_NOTES = {
         "after you END YOUR TURN: do anything that does not depend on them, then stop with a one-line status. Do not "
         "poll transcripts or artifacts to wait for them."
     ),
+    # Persist-only surfaces (stateless api_server sessions with a declared server-history consumer):
+    # the completion is appended to the session transcript WITHOUT a model wake, so it reaches the
+    # model only inside the user's next turn (#85957, #135818). The note must say so — the "one"/"many"
+    # wording would have the model promise an unprompted follow-up that never comes.
+    "one_persist": (
+        "Subagent is running in the background; its result is saved to this session's transcript when it finishes and "
+        "becomes visible to you only with the user's NEXT message — nothing re-enters the conversation on its own. "
+        "Do anything that does not depend on it, then stop with a one-line status that tells the user the results "
+        "will be included when they next message you. Do not promise an unprompted follow-up, and do not poll its "
+        "transcript or artifacts to wait for it."
+    ),
+    "many_persist": (
+        "{n} subagents are running in parallel in the background as {k} completion unit(s); each unit's results are "
+        "saved to this session's transcript when that unit finishes and become visible to you only with the user's "
+        "NEXT message — nothing re-enters the conversation on its own. Do anything that does not depend on them, then "
+        "stop with a one-line status that tells the user the results will be included when they next message you. Do "
+        "not promise an unprompted follow-up, and do not poll transcripts or artifacts to wait for them."
+    ),
     "control_hint": (
         "While a child runs you can orchestrate it live with this same tool: delegate_task(action='list') to see live "
         "children, action='steer' with subagent_id + message to redirect one, action='stop' with subagent_id to end "
@@ -344,14 +362,22 @@ _BACKGROUND_NOTES = {
     ),
 }
 
-def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
-    """Model-facing handle for an accepted background call: one entry per async unit."""
+def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]], persist_only: bool = False) -> dict:
+    """Model-facing handle for an accepted background call: one entry per async unit.
+
+    ``persist_only``: the originating session receives detached completions as transcript rows
+    without a model wake (``_resolve_async_wake_sid`` returned a non-empty id), so the note must
+    state that results arrive with the user's next message instead of as a new one."""
     goals = [t["goal"] for t in batch.task_list]
     n = len(goals)
+    note_key = ("one_persist" if n == 1 else "many_persist") if persist_only else ("one" if n == 1 else "many")
+    note = _BACKGROUND_NOTES[note_key]
+    if n > 1:
+        note = note.format(n=n, k=len(units))
     payload = {
         "status": "dispatched", "mode": "background", "count": n,
         "delegation_id": batch.live_deleg_id or units[0][1], "goals": goals,
-        "note": _BACKGROUND_NOTES["one"] if n == 1 else _BACKGROUND_NOTES["many"].format(n=n, k=len(units)),
+        "note": note,
     }
     if len(units) > 1:
         payload["units"] = [
@@ -424,6 +450,10 @@ def _dispatch_background(batch: _Batch) -> str:
     if wake_sid is None:
         logger.info("delegate_task: async delivery unsupported on this session runtime; running the batch synchronously instead.")
         return _run_sync_with_note(batch, "no_async")
+    # Non-empty wake_sid = the origin session declared a server-history consumer but cannot be
+    # woken (stateless api_server): completions persist as transcript rows, so the dispatch note
+    # must promise delivery with the user's next message, not a self-driven new one (#135818).
+    persist_only = bool(wake_sid)
 
     parent_agent = batch.parent_agent
     session_key, origin_ui_session_id = _resolve_async_session_key(parent_agent, batch.origin_ui_session_id)
@@ -461,7 +491,7 @@ def _dispatch_background(batch: _Batch) -> str:
         # the unit inline so no task is silently dropped.
         logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
         inline_results.extend(_execute_and_aggregate(unit)["results"])
-    payload = _dispatched_payload(batch, dispatched)
+    payload = _dispatched_payload(batch, dispatched, persist_only=persist_only)
     if inline_results:
         payload["inline_results"] = inline_results
     return json.dumps(payload, ensure_ascii=False)

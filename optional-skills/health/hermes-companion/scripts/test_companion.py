@@ -644,6 +644,155 @@ def test_skip_log_is_throttled() -> None:
     check("repeat skip is throttled", not companion.log_skip_throttled(key, "INFO", "unit test skip"))
 
 
+def test_sync_marker_gated_sweeps_and_cache() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        threads_dir = tmp_path / "threads"
+        threads_dir.mkdir(parents=True, exist_ok=True)
+        companion.reset_dispatch_cache()
+
+        moment = datetime(2026, 10, 9, 14, 0, 0, tzinfo=timezone.utc)
+        thread = companion.create_dispatch_thread(
+            threads_dir,
+            "Gating Test",
+            "Initial body",
+            target_profile="default",
+            sender="user",
+            now=moment,
+        )
+        tid = thread["thread_id"]
+
+        # 1. Test in-memory cache avoids re-reading meta.json from disk
+        original_read_json = companion.read_json_checked
+        read_calls = 0
+
+        def counting_read_json(p: Path):
+            nonlocal read_calls
+            read_calls += 1
+            return original_read_json(p)
+
+        companion.read_json_checked = counting_read_json
+        try:
+            # First scan loads and caches
+            scan1 = companion.scan_dispatch_threads(threads_dir)
+            check("first scan reads from disk", read_calls == 1)
+            check("first scan found thread", len(scan1["threads"]) == 1)
+
+            # Second scan with unchanged file should hit in-memory cache
+            scan2 = companion.scan_dispatch_threads(threads_dir)
+            check("second scan uses cache without disk read", read_calls == 1)
+            check("second scan returns identical thread", scan2["threads"][0]["thread_id"] == tid)
+
+            # Touch meta file with new timestamp/mtime: should trigger re-read
+            meta_file = threads_dir / tid / "meta.json"
+            time.sleep(0.01)
+            meta_file.touch()
+            scan3 = companion.scan_dispatch_threads(threads_dir)
+            check("scan after mtime touch re-reads disk", read_calls == 2)
+        finally:
+            companion.read_json_checked = original_read_json
+
+        # 2. Test sync marker gating in dispatch_pending_once
+        # First, reply to the thread so there are 0 pending letters
+        companion.reply_to_thread(threads_dir, tid, "Agent reply", sender="agent", now=moment)
+
+        args = companion.build_parser().parse_args(["--daemon", "--icloud-dir", str(tmp_path)])
+        # Baseline sweep: establishes sync marker baseline
+        report1 = companion.dispatch_pending_once(args, moment, threads_dir)
+        check("baseline sweep completes with 0 pending", report1["pending"] == 0 and report1["replies"] == 0)
+
+        # Gated sweep: sync marker has NOT changed, should skip scan completely
+        original_scan = companion.scan_dispatch_threads
+        scan_called = False
+
+        def tracking_scan(p: Path):
+            nonlocal scan_called
+            scan_called = True
+            return original_scan(p)
+
+        companion.scan_dispatch_threads = tracking_scan
+        try:
+            report2 = companion.dispatch_pending_once(args, moment, threads_dir)
+            check("gated sweep skips scan entirely", not scan_called)
+            check("gated sweep returns zero report", report2["pending"] == 0 and report2["replies"] == 0)
+
+            # Touch sync marker: next sweep should notice change and scan
+            companion.touch_sync_marker(threads_dir, tid, now=moment)
+            time.sleep(0.01)
+            (threads_dir / ".sync_marker.json").touch()
+            report3 = companion.dispatch_pending_once(args, moment, threads_dir)
+            check("sweep after marker touch invokes scan", scan_called)
+        finally:
+            companion.scan_dispatch_threads = original_scan
+
+
+def test_archived_threads_segregation_and_migration() -> None:
+    companion.reset_dispatch_cache()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        threads_dir = tmp_path / "threads"
+        archive_dir = tmp_path / "archive"
+        threads_dir.mkdir(parents=True, exist_ok=True)
+        moment = datetime(2026, 10, 11, 12, 0, 0, tzinfo=timezone.utc)
+
+        # 1. Create two active threads
+        t1 = companion.create_dispatch_thread(threads_dir, "Active letter 1", "Body 1", now=moment)
+        t2 = companion.create_dispatch_thread(threads_dir, "Active letter 2", "Body 2", now=moment)
+        tid1 = t1["thread_id"]
+        tid2 = t2["thread_id"]
+
+        check("both folders exist in threads_dir", (threads_dir / tid1).is_dir() and (threads_dir / tid2).is_dir())
+
+        # 2. Archive t1
+        archived_meta = companion.archive_dispatch_thread(threads_dir, tid1, now=moment)
+        check("archive returns archived meta", archived_meta is not None and archived_meta["status"] == "archived")
+        check("t1 moved out of threads_dir", not (threads_dir / tid1).exists())
+        check("t1 exists in archive_dir", (archive_dir / tid1).is_dir())
+        check("t1 messages still readable in archive", len(companion.list_thread_messages(threads_dir, tid1)) == 1)
+
+        # 3. Active scanning loops only enumerate threads_dir -> only t2 returned
+        scan = companion.scan_dispatch_threads(threads_dir)
+        active_ids = [t["thread_id"] for t in scan["threads"]]
+        check("active scan only returns t2", active_ids == [tid2])
+        check("archive_dir is segregated and ignored by active scan", tid1 not in active_ids)
+
+        # 4. Listing archived threads via list_dispatch_threads(archive_dir) returns t1
+        archived_scan = companion.list_dispatch_threads(archive_dir)
+        check("archived list returns t1", len(archived_scan) == 1 and archived_scan[0]["thread_id"] == tid1)
+
+        # 5. Legacy migration: simulate an old thread that has status 'archived' inside threads_dir
+        legacy_id = "th_legacy_archived"
+        legacy_folder = threads_dir / legacy_id
+        legacy_folder.mkdir()
+        (legacy_folder / "messages").mkdir()
+        legacy_meta = {
+            "thread_id": legacy_id,
+            "subject": "Legacy thread",
+            "target_profile": "default",
+            "status": "archived",
+            "created_at": "2026-10-10T10:00:00Z",
+            "updated_at": "2026-10-10T10:00:00Z",
+            "message_count": 1,
+        }
+        (legacy_folder / "meta.json").write_text(json.dumps(legacy_meta), encoding="utf-8")
+
+        # Scan should detect archived status, move to archive_dir, and exclude from active results
+        scan_migration = companion.scan_dispatch_threads(threads_dir)
+        active_ids_after = [t["thread_id"] for t in scan_migration["threads"]]
+        check("scan auto-migrates legacy thread", not legacy_folder.exists())
+        check("legacy thread now in archive_dir", (archive_dir / legacy_id).is_dir())
+        check("active scan excludes migrated legacy thread", legacy_id not in active_ids_after)
+
+        # 6. Unarchive t1
+        unarchived_meta = companion.unarchive_dispatch_thread(threads_dir, tid1, now=moment)
+        check("unarchive returns replied status", unarchived_meta is not None and unarchived_meta["status"] == "replied")
+        check("t1 moved back to threads_dir", (threads_dir / tid1).is_dir())
+        check("t1 removed from archive_dir", not (archive_dir / tid1).exists())
+        scan_after_unarchive = companion.scan_dispatch_threads(threads_dir)
+        res_ids = [t["thread_id"] for t in scan_after_unarchive["threads"]]
+        check("t1 now back in active scan", tid1 in res_ids and tid2 in res_ids)
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -673,6 +822,8 @@ def main() -> int:
     test_daemon_loop_is_bounded()
     test_unreadable_meta_is_reported()
     test_skip_log_is_throttled()
+    test_sync_marker_gated_sweeps_and_cache()
+    test_archived_threads_segregation_and_migration()
     print("ok")
     return 0
 

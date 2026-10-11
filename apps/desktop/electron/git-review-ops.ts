@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-import simpleGit from 'simple-git'
+import { simpleGit } from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
 import { execGit, noConsoleGitEnv, simpleGitBinary, windowsGitHost } from './no-console-git'

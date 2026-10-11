@@ -2167,10 +2167,14 @@ updates:
   # Disable passive CLI/banner update checks with `hermes config set updates.check false`.
   # Explicit `hermes update --check` and `hermes update` remain available.
   check: true
-  # Create a full HERMES_HOME zip before every `hermes update`.
-  # Backups land in ~/.hermes/backups/ and can be restored with `hermes import`.
-  # Off by default because large homes can add minutes to every update.
-  pre_update_backup: false
+  # Pre-update safety backup before every `hermes update`.
+  #   quick (default) - fast snapshot of critical state (pairing JSONs, cron jobs,
+  #             config.yaml, .env, auth.json, profile DBs) into state-snapshots/;
+  #             files over 1 GiB are skipped. Restore via `/snapshot`.
+  #   full  - quick snapshot PLUS a full HERMES_HOME zip in ~/.hermes/backups/
+  #             (restore with `hermes import`); slow on large homes.
+  #   off   - no pre-update backup.
+  pre_update_backup: "quick"
 
   # Number of pre-update backup zips to retain.
   backup_keep: 5
@@ -2182,6 +2186,12 @@ updates:
   #   discard - drop the update-created stash after success; use only on managed
   #             installs where local source edits should not persist
   non_interactive_local_changes: "stash"
+
+  # A clean parked feature branch is switched to the update target so
+  # non-interactive updates keep working (commits stay on the branch; a loud
+  # notice names it). A dirty tree blocks the switch and the code update is
+  # skipped. false = never auto-switch.
+  auto_switch_parked_branch: true
 
 
 # =============================================================================

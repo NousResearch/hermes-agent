@@ -7,6 +7,7 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
 ``base_session_env``, ``base_wait``, ``path_utils``).
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Iterable
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
 from tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
@@ -222,6 +223,25 @@ def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
 # ---------------------------------------------------------------------------
 
 
+@contextlib.contextmanager
+def owner_scope(env):
+    """Resolve ``get_hermes_home()`` against the profile that created *env*.
+
+    Teardown runs on the idle reaper thread, at exit or under GC, none of which carry the
+    owning profile's scope. Unscoped, sync-back and the persistent snapshot stores
+    (modal/vercel/singularity) resolve the launch profile's home instead.
+    """
+    home = getattr(env, "_owner_hermes_home", None)
+    if home is None:
+        yield
+        return
+    token = set_hermes_home_override(home)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
 class BaseEnvironment(ABC):
     """Common interface and unified execution flow for all Hermes backends. Subclasses
     implement ``_run_bash()`` and ``cleanup()``; the base provides ``execute()`` with
@@ -261,6 +281,8 @@ class BaseEnvironment(ABC):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
+        # Envs are built in the owning profile's scope; teardown runs outside it (see owner_scope).
+        self._owner_hermes_home = get_hermes_home()
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
@@ -734,7 +756,8 @@ class BaseEnvironment(ABC):
     # --- Shared helpers ---
     def __del__(self):
         try:
-            self.cleanup()
+            with owner_scope(self):
+                self.cleanup()
         except Exception:
             pass
 

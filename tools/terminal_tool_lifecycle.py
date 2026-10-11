@@ -87,17 +87,21 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
     ``force_remove`` is forwarded to ``cleanup()`` only when given and the backend's
     signature accepts it (``DockerEnvironment``, issue #20561; other backends don't).
     Shared by ``cleanup_vm``, the idle reaper and the prompt-time backend probe so
-    the signature check lives in one place.
+    the signature check lives in one place. Runs in the env's owning profile scope:
+    the reaper thread and atexit carry none, so sync-back and snapshot stores would
+    otherwise write into the launch profile's home.
     """
-    if hasattr(env, 'cleanup'):
-        if force_remove is not None and "force_remove" in inspect.signature(env.cleanup).parameters:
-            env.cleanup(force_remove=force_remove)
-        else:
-            env.cleanup()
-    elif hasattr(env, 'stop'):
-        env.stop()
-    elif hasattr(env, 'terminate'):
-        env.terminate()
+    from tools.environments.base import owner_scope
+    with owner_scope(env):
+        if hasattr(env, 'cleanup'):
+            if force_remove is not None and "force_remove" in inspect.signature(env.cleanup).parameters:
+                env.cleanup(force_remove=force_remove)
+            else:
+                env.cleanup()
+        elif hasattr(env, 'stop'):
+            env.stop()
+        elif hasattr(env, 'terminate'):
+            env.terminate()
 
 
 def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s") -> None:
@@ -326,6 +330,7 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
             _last_activity.pop(key, None)
             if env is not None:
                 evicted.append(env)
+    from tools.environments.base import owner_scope
     for env in evicted:
-        with _quiet("cleanup of degraded environment failed"):
+        with _quiet("cleanup of degraded environment failed"), owner_scope(env):
             env.cleanup()

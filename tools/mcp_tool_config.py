@@ -204,6 +204,18 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     return delegated_child_subprocess_env(env)
 
 
+def _env_value_case_insensitive(env: dict, name: str):
+    """Read a Windows environment mapping without depending on key casing."""
+    wanted = name.casefold()
+    value = None
+    for key, candidate in env.items():
+        if key.casefold() == wanted:
+            # _build_safe_env starts with the inherited spelling and then updates with
+            # configured values; Windows environment lookup follows the last effective value.
+            value = candidate
+    return value
+
+
 def _which_with_config_pathext(command: str, path_arg, env: dict):
     """Resolve *command* under the config env's PATHEXT (Windows only; ``shutil.which`` uses the PARENT's).
 
@@ -211,7 +223,9 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
     extensions in order) but reads nothing from and writes nothing to ``os.environ``: swapping
     the parent's PATHEXT around a ``which`` call would publish this server's per-profile value
     to every other thread for the duration, and a ``finally``-restore cannot undo that window."""
-    cfg_pathext = next((v for k, v in env.items() if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()), None)
+    cfg_pathext = _env_value_case_insensitive(env, "PATHEXT")
+    if not isinstance(cfg_pathext, str) or not cfg_pathext.strip():
+        cfg_pathext = None
     if not cfg_pathext or cfg_pathext == os.environ.get("PATHEXT"):
         return None
     # PATHEXT is Windows-defined: ";"-separated even when resolved off-Windows
@@ -338,17 +352,31 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     ``execvp`` will see); a miss stays as-written for an honest spawn failure."""
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
+    path_key = (
+        next((key for key in reversed(tuple(resolved_env)) if key.casefold() == "path"), "PATH")
+        if sys.platform == "win32" else "PATH"
+    )
     launcher = re.sub(r"\.(cmd|exe)$", "", resolved_command, flags=re.IGNORECASE)  # Windows spellings
     managed = _managed_launcher(launcher) if launcher in _MANAGED_LAUNCHERS else None
     if managed is not None:
         resolved_command, dirs = managed
         # Moved to the front even when already on PATH behind a user's copy.
         keys = {os.path.normcase(d) for d in dirs}
-        rest = [p for p in resolved_env.get("PATH", "").split(os.pathsep) if p and os.path.normcase(p) not in keys]
-        resolved_env["PATH"] = os.pathsep.join([*dirs, *rest])
+        path_key = (
+            next((key for key in reversed(tuple(resolved_env)) if key.casefold() == "path"), "PATH")
+            if sys.platform == "win32" else "PATH"
+        )
+        rest = [p for p in str(resolved_env.get(path_key, "")).split(os.pathsep)
+                if p and os.path.normcase(p) not in keys]
+        resolved_env[path_key] = os.pathsep.join([*dirs, *rest])
         return resolved_command, resolved_env
     if os.sep not in resolved_command:
-        path_arg = resolved_env.get("PATH")
+        path_key = (
+            next((key for key in reversed(tuple(resolved_env)) if key.casefold() == "path"), "PATH")
+            if sys.platform == "win32" else "PATH"
+        )
+        path_arg = (resolved_env.get(path_key) if sys.platform == "win32"
+                    else resolved_env.get("PATH"))
         which_hit = shutil.which(resolved_command, path=path_arg) if path_arg is not None else None
         if which_hit is None and sys.platform == "win32" and resolved_env:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)
@@ -364,7 +392,7 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
             resolved_command = which_hit
     command_dir = os.path.dirname(resolved_command)
     if command_dir:
-        resolved_env = _prepend_path(resolved_env, command_dir)
+        resolved_env = _prepend_path(resolved_env, command_dir, path_key=path_key)
     return resolved_command, resolved_env
 
 

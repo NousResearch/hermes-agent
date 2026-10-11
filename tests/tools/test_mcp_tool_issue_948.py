@@ -88,6 +88,27 @@ def test_resolve_stdio_command_empty_path_is_a_miss(monkeypatch, tmp_path):
     assert command == "other-mcp-server"  # cwd-only lookup: no ambient fallback
 
 
+def test_resolve_stdio_command_uses_last_case_insensitive_path_entry(tmp_path, monkeypatch):
+    """Windows config env overrides inherited PATH even when casing creates two keys."""
+    monkeypatch.setattr("tools.mcp_tool_config.sys.platform", "win32")
+    inherited, configured = tmp_path / "inherited", tmp_path / "configured"
+    inherited.mkdir()
+    configured.mkdir()
+    tool = configured / "mcp-tool"
+    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    tool.chmod(0o755)
+    env = {"PATH": str(inherited), "Path": str(configured)}
+    monkeypatch.setattr(
+        "tools.mcp_tool_config.shutil.which",
+        lambda command, path=None: str(tool) if path == str(configured) else None,
+    )
+
+    command, resolved = _resolve_stdio_command("mcp-tool", env)
+
+    assert command == str(tool)
+    assert resolved["Path"] == str(configured)
+
+
 def test_config_pathext_lookup_never_touches_parent_environ(tmp_path, monkeypatch):
     """Resolving under a configured PATHEXT must not mutate the parent's ``os.environ``:
     a multiplexed gateway resolves servers for several profiles from one process, and

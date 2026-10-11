@@ -1,8 +1,9 @@
 """Text-response stop gates for the conversation turn loop.
 
-When the model stops with a text answer, three gates may instead append the answer as an
+When the model stops with a text answer, four gates may instead append the answer as an
 interim row plus a synthetic user-role nudge and continue the turn: verify-on-stop (#65919),
-the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
+the ``pre_verify`` plugin hook after code edits, the kanban worker terminal-tool guard, and
+the false-stop guard (empty routing block plus an unkept promise, one continuation).
 Each keeps the candidate answer as a budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
 this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
@@ -91,6 +92,50 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
         return None
 
 
+def _false_stop_nudge(agent, final_msg, final_response) -> Optional[str]:
+    """One continuation when a stop is a promise over an empty routing block.
+
+    The assistant row is real content and is not flagged. A second hit, or an
+    exhausted iteration budget, releases and logs why.
+    """
+    try:
+        from agent.false_stop_guard import (
+            FALSE_STOP_NUDGE,
+            classify_false_stop_budget,
+            false_stop_decision,
+            false_stop_signal_category,
+        )
+
+        text = final_response if isinstance(final_response, str) else ""
+        if not text:
+            content = final_msg.get("content")
+            text = content if isinstance(content, str) else ""
+        tools = final_msg.get("tool_calls") or []
+        tool_count = len(tools) if isinstance(tools, (list, tuple)) else 0
+        try:
+            cont = int(getattr(agent, "_false_stop_continuations", 0) or 0)
+        except (TypeError, ValueError):
+            cont = 0
+        budget = classify_false_stop_budget(
+            getattr(agent, "iteration_budget", None),
+            getattr(agent, "max_iterations", None),
+            getattr(agent, "api_call_count", None),
+        )
+        finish = final_msg.get("finish_reason")
+        if false_stop_decision(text, finish, tool_count, cont, budget) != "nudge":
+            if false_stop_decision(text, finish, tool_count, 0, "remaining") == "nudge":
+                if cont >= 1:
+                    logger.info("guard_released_second_stop")
+                elif budget == "exhausted":
+                    logger.info("guard_budget_exhausted_release")
+            return None
+        logger.info("guard_fired signal=%s", false_stop_signal_category(text))
+        return FALSE_STOP_NUDGE
+    except Exception:
+        logger.debug("false-stop guard check failed", exc_info=True)
+        return None
+
+
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
     only the nudge is flagged synthetic (#65919)."""
@@ -107,10 +152,10 @@ def apply_stop_gates(
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:
-    """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
-    are user-role rows appended only after the assistant answer row, so role alternation
-    holds. Hook lookups are imported lazily from their origin modules (tests patch them
-    there)."""
+    """Run verify-on-stop → pre_verify hook → kanban stop guard → false-stop, in that
+    order. Nudges are user-role rows appended only after the assistant answer row, so
+    role alternation holds. Hook lookups are imported lazily from their origin modules
+    (tests patch them there)."""
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
@@ -170,6 +215,18 @@ def apply_stop_gates(
             "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
         )
         return verdict
+
+    _fs_nudge = _false_stop_nudge(agent, final_msg, final_response)
+    if _fs_nudge:
+        agent._false_stop_continuations = getattr(agent, "_false_stop_continuations", 0) + 1
+        # Distinct from a genuine stop so a crash mid-continuation is not stored as done.
+        # The assistant row itself stays unflagged: it is the attempted answer.
+        final_msg["finish_reason"] = "false_stop_continue"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history, "false-stop interim flush failed"
+        )
+        return _continue(_fs_nudge, "_false_stop_synthetic")
+
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,

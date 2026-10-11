@@ -630,6 +630,15 @@ def _part_function_call(part: dict[str, Any]) -> Optional[dict[str, Any]]:
     return fc if isinstance(fc, dict) and fc.get("name") else None
 
 
+def _prompt_is_blocked(response: dict[str, Any]) -> bool:
+    feedback = response.get("promptFeedback")
+    if not isinstance(feedback, dict):
+        return False
+
+    reason = feedback.get("blockReason")
+    return isinstance(reason, str) and bool(reason) and reason != "BLOCK_REASON_UNSPECIFIED"
+
+
 def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespace:
     candidates = resp.get("candidates") or []
     cand = parts = None
@@ -650,6 +659,8 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
         elif fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
     finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    if _prompt_is_blocked(resp):
+        finish_reason = "content_filter"
     usage = _usage_from_metadata(metadata) if (metadata := resp.get("usageMetadata")) else None
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
@@ -743,7 +754,8 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
     candidates = event.get("candidates") or []
     metadata = event.get("usageMetadata")
     model = event.get("modelVersion")
-    if not candidates and not (metadata or model or event.get("responseId")):
+    prompt_blocked = _prompt_is_blocked(event)
+    if not candidates and not (metadata or model or event.get("responseId") or prompt_blocked):
         return []
     cand = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
     parts = (cand.get("content") or {}).get("parts") or []
@@ -771,8 +783,10 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
                      "arguments": args_str.removeprefix(last_arguments)}
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
-    if finish_reason_raw := str(cand.get("finishReason") or ""):
+    finish_reason = "content_filter" if prompt_blocked else None
+    if not prompt_blocked and (finish_reason_raw := str(cand.get("finishReason") or "")):
         finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
+    if finish_reason:
         finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
         chunks.append(finish_chunk)
     if not chunks:

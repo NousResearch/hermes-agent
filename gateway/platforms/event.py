@@ -97,9 +97,9 @@ class MessageEvent:
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
     # so untrusted payload text stays conversational. New fields append after it (positional compat).
     allow_gateway_control: bool = True
-    # Was this message addressed to this bot? False lets a bare silence marker stand (the adapter
-    # knows the message was meant for someone else); None means unknown and keeps the visible
-    # fallback, like True.
+    # Does this message expect a reply from this bot? False lets a bare silence marker stand: the
+    # adapter knows it was meant for someone else, or it is a feedback reaction on the bot's own
+    # message. None means unknown and keeps the visible fallback, like True.
     reply_expected: Optional[bool] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.

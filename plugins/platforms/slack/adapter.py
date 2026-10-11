@@ -3884,19 +3884,23 @@ class SlackAdapter(BasePlatformAdapter):
         if thread_ts is None:
             return
         await self._handle_slack_message(
-            self._synthetic_reaction_event(event, action, thread_ts, team_id))
+            self._synthetic_reaction_event(event, action, thread_ts, team_id, explicit_allowlist))
 
     def _synthetic_reaction_event(
-        self, event: dict, action: str, thread_ts: str, team_id: str) -> dict:
+        self, event: dict, action: str, thread_ts: str, team_id: str, explicit_allowlist: bool) -> dict:
         """Message-shaped event for a reaction. The reaction's own event_ts keeps the deduplicator
         from conflating it with the reacted-to message; ``_hermes_force_process`` skips the mention
-        requirement (user auth and allowed_channels still apply); ``_hermes_reaction`` is
-        informational. An optional handoff target channel replaces the reacted-to channel; a
-        channel-only target is a handoff, not a reply — respond top-level there."""
+        requirement (user auth and allowed_channels still apply). ``_hermes_reaction.reply_expected``
+        is the turn's ``MessageEvent.reply_expected``: only a designated trigger (an allowlisted
+        emoji, or a handoff target) expects a reply; a catch-all reaction on the bot's own message is
+        feedback and may end on a bare silence marker. An optional handoff target channel replaces
+        the reacted-to channel; a channel-only target is a handoff, not a reply — respond top-level
+        there."""
         item = event.get("item") or {}
         channel_id, msg_ts = item.get("channel"), item.get("ts")
         reaction_name, user_id = event.get("reaction") or "", event.get("user")
         emoji_text = self._REACTION_EMOJI_MAP.get(reaction_name, reaction_name)
+        target_channel, target_thread = self._slack_reaction_trigger_target()
         synthetic: dict = {
             "type": "message",
             "user": user_id,
@@ -3907,13 +3911,13 @@ class SlackAdapter(BasePlatformAdapter):
             "_hermes_force_process": True,
             "_hermes_reaction": {
                 "name": reaction_name, "action": action, "reacted_to_ts": msg_ts,
-                "event_ts": event.get("event_ts")}}
+                "event_ts": event.get("event_ts"),
+                "reply_expected": bool(explicit_allowlist or target_channel)}}
         if team_id:
             synthetic["team"] = team_id
         # Optional handoff target (#45265): route the reaction-triggered turn into a configured channel (and
         # optionally thread) instead of the source thread. A channel-only target is a handoff, not a reply —
         # respond top-level there.
-        target_channel, target_thread = self._slack_reaction_trigger_target()
         if target_channel:
             synthetic["channel"] = target_channel
             synthetic["channel_type"] = "im" if target_channel.startswith("D") else "channel"
@@ -4661,14 +4665,16 @@ class SlackAdapter(BasePlatformAdapter):
         # Thread-root media is delivered ahead of the trigger message's own files.
         media_urls, media_types, media_text_inlined, text = await self._collect_inbound_media(
             event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
+        # A reaction carries its own verdict; every other message is judged by how it was addressed.
+        reaction = event.get("_hermes_reaction") or {}
         msg_event = await self._build_message_event(
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
-            reply_expected=self._slack_reply_expected(
+            reply_expected=reaction.get("reply_expected") if reaction else self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
-                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
+                addressed=is_one_to_one_dm or is_mentioned or is_command_text))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():

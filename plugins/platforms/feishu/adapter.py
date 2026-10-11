@@ -2430,6 +2430,8 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._dispatch_synthetic_event(
             text=synthetic_text, message_type=MessageType.TEXT, chat_id=chat_id, sender_id=user_id_obj,
             event_chat_type=chat_type_raw, raw_message=data, message_id=message_id,
+            # Only reactions on our own messages route: feedback, so the agent may stay silent.
+            reply_expected=False,
         )
 
     def _is_card_action_duplicate(self, token: str) -> bool:
@@ -2476,7 +2478,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _dispatch_synthetic_event(
         self, *, text: str, message_type: MessageType, chat_id: str, sender_id: Any, event_chat_type: str,
-        raw_message: Any, message_id: str,
+        raw_message: Any, message_id: str, reply_expected: Optional[bool] = None,
     ) -> None:
         """Wrap a reaction/card click as a MessageEvent and run it through the guarded pipeline."""
         sender_profile = await self._resolve_sender_profile(sender_id)
@@ -2493,7 +2495,7 @@ class FeishuAdapter(BasePlatformAdapter):
         synthetic_event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=raw_message,
             message_id=message_id, channel_prompt=self._resolve_channel_prompt(chat_id),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(), reply_expected=reply_expected,
         )
         await self._handle_message_with_guards(synthetic_event)
 

@@ -872,7 +872,9 @@ class PhotonAdapter(BasePlatformAdapter):
             # `[Replying to your previous message: "..."]` when targetText is present.
             await self.handle_message(_event(
                 f"reaction:added:{content.get('emoji') or ''}", reply_to_message_id=target_id,
-                reply_to_text=content.get("targetText") or None, reply_to_is_own_message=True))
+                reply_to_text=content.get("targetText") or None, reply_to_is_own_message=True,
+                # A tapback on our own message is feedback: the agent may stay silent.
+                reply_expected=False))
             return
         # U+FFFC placeholder: wait for the real attachment. Detected before _record_last_inbound
         # so the placeholder isn't the reaction target.

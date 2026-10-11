@@ -62,4 +62,3 @@ path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(dict(passed=passed, count=len(results), cases=results), indent=2))
 print(json.dumps(dict(passed=passed, count=len(results), receipt=str(path), cases=[{k:r[k] for k in ('tree','command','populated','exit_code','output_ok','mutated')} for r in results]), indent=2))
 raise SystemExit(0 if passed else 1)
-

@@ -42,4 +42,3 @@ def test_acp_image_mime_never_chooses_the_staged_extension(tmp_path, monkeypatch
     with pytest.raises(GatewayClientError):
         _stage_user_content(_content_blocks_to_openai_user_content([block]))
     assert list(staging.iterdir()) == []
-

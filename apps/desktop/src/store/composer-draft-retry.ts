@@ -66,4 +66,3 @@ export function writeDraftRetry(scope: string | null | undefined, retry: Compose
     // Best-effort like the draft text itself: without it a reload sends the words as new.
   }
 }
-

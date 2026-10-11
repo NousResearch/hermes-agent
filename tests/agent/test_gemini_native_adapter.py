@@ -916,3 +916,31 @@ def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keep
         tool_choice="auto", model=model, response_format={"type": "json_object"}, tools_as_json_schema=True,
     )["generationConfig"]
     assert ("responseMimeType" in generation) is keeps_json
+
+
+def test_build_gemini_request_strips_leading_orphaned_model_tool_calls():
+    """Gemini HTTP 400 (INVALID_ARGUMENT): function call must follow user or function response turn.
+    Leading model turns (e.g. tool calls) or tool responses before the first user turn must be stripped."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "read_task", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "name": "read_task", "content": "task_result"},
+        {"role": "user", "content": "Hello, how are you?"},
+        {"role": "assistant", "content": "I am doing well, how can I help?"},
+    ]
+
+    request = build_gemini_request(messages=messages, model="gemini-3-flash", tools=[])
+    contents = request["contents"]
+    # Must start with role='user' and real user prompt, not the orphaned tool call
+    assert contents[0]["role"] == "user"
+    assert contents[0]["parts"][0]["text"] == "Hello, how are you?"
+    assert contents[1]["role"] == "model"
+    assert contents[1]["parts"][0]["text"] == "I am doing well, how can I help?"
+

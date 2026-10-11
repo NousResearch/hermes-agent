@@ -5468,7 +5468,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             flipped = "assistant" if summary_role == "user" else "user"
             if flipped != last_head_role and last_head_role is not None and not force_user_leading:
                 summary_role = flipped
-            else:
+            elif first_tail_visible_idx in (0, None):
                 merge_into_tail = bool(tail_messages)
         return summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx
 
@@ -5680,9 +5680,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
                 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(self._summary_has_user_turn),
             })
-        # Default carrier is tail[0]: an exempt row absorbs the summary invisibly. The forced repair
-        # path needs a non-empty role=user row, so it targets the template-visible row.
-        merge_target_idx = first_tail_visible_idx if force_user_leading and first_tail_visible_idx is not None else 0
+        # Default carrier is tail[0]: when merge_into_tail is True, tail[0] absorbs the summary.
+        # If first_tail_visible_idx > 0, merge_into_tail is False so summary is prepended as a standalone
+        # role="user" turn ahead of the leading tool rows.
+        merge_target_idx = 0
         for tail_idx, msg in enumerate(tail_messages):
             # Tag carried-forward tail rows so archive_and_compact treats their originals as
             # superseded duplicates (#86366).

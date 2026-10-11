@@ -399,6 +399,22 @@ def _merge_alternating(contents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return merged
 
 
+def _sanitize_gemini_contents(contents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sanitize message sequences for Gemini generateContent:
+    Strip any leading orphaned model turns (e.g. tool calls) or orphaned tool responses
+    preceding the first genuine user turn so conversations never lead with orphaned tool calls (HTTP 400).
+    """
+    if not contents:
+        return contents
+    first_real_user_idx = next(
+        (i for i, c in enumerate(contents) if c.get("role") == "user" and not _has_function_response(c)),
+        None,
+    )
+    if first_real_user_idx is not None and first_real_user_idx > 0:
+        contents = contents[first_real_user_idx:]
+    return contents
+
+
 def _build_gemini_contents(
     messages: list[dict[str, Any]], include_tool_call_ids: bool = False, *, is_gemini3: bool = False
 ) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
@@ -426,7 +442,7 @@ def _build_gemini_contents(
         if parts:
             contents.append({"role": "model" if role == "assistant" else "user", "parts": parts})
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
-    return _merge_alternating(contents), ({"role": "system", "parts": [{"text": joined_system}]} if joined_system else None)
+    return _merge_alternating(_sanitize_gemini_contents(contents)), ({"role": "system", "parts": [{"text": joined_system}]} if joined_system else None)
 
 
 def _function_declaration(tool: Any, *, json_schema: bool = False) -> Optional[dict[str, Any]]:

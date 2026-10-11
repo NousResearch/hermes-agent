@@ -78,6 +78,7 @@ def _role_hist(messages: list[dict]) -> dict[str, int]:
     return hist
 
 
+@pytest.mark.allow_real_home_io
 class TestCompressAlwaysKeepsAUserTurn:
     def test_kanban_worker_recompaction_keeps_user_turn(self, compressor):
         """The exact #58753 shape: no system prompt in the list, a
@@ -173,6 +174,7 @@ def _has_nonempty_user_text(messages: list[dict]) -> bool:
     )
 
 
+@pytest.mark.allow_real_home_io
 class TestCompressKeepsANonEmptyUserTurn:
     """A bare ``role == "user"`` check is not enough: the surviving user
     message can be image-only (no caption). ``_strip_historical_media``
@@ -247,11 +249,10 @@ class TestCompressKeepsANonEmptyUserTurn:
 
     def test_merge_targets_the_colliding_tail_message_not_index_zero(self, compressor):
         """Template-exempt rows (bare tool-call assistant / tool messages)
-        ahead of the colliding tail user message must not divert the merge:
-        merging into literal tail index 0 would attach the summary to an
-        exempt row and leave the real (image-only) user message untouched
-        and still empty, silently defeating the forced role="user" this
-        block exists to guarantee.
+        ahead of the colliding tail user message must not leave tool turns
+        unanchored ahead of the summary: when leading exempt rows exist, the
+        summary is placed as a standalone user turn at index 0 ahead of the tail,
+        guaranteeing non-empty user text and valid alternation without HTTP 400.
         """
         from agent.context_compressor import SUMMARY_PREFIX
 
@@ -271,7 +272,9 @@ class TestCompressKeepsANonEmptyUserTurn:
             out = c.compress(messages, current_tokens=90_000)
 
         assert _has_nonempty_user_text(out), (
-            "REGRESSION: the summary merged into tail index 0 (a "
-            "template-exempt row) instead of the colliding image-only "
-            f"user message, leaving zero non-empty user turns. Output: {out}"
+            "REGRESSION: the summary failed to provide a non-empty user message. "
+            f"Output: {out}"
+        )
+        assert out[0].get("role") == "user", (
+            f"First message must be role='user' to anchor subsequent tool turns, got: {out[0].get('role')}"
         )

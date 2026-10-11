@@ -117,7 +117,7 @@ def _gateway_status() -> str:
 def _count_skills(hermes_home: Path) -> int:
     """Count installed skills."""
     skills_dir = hermes_home / "skills"
-    return sum(1 for item in skills_dir.rglob("SKILL.md") if not is_excluded_skill_path(item)) if skills_dir.is_dir() else 0
+    return sum(1 for item in skills_dir.rglob("SKILL.md") if not is_excluded_skill_path(item, root=skills_dir)) if skills_dir.is_dir() else 0
 
 
 def _cron_summary(hermes_home: Path) -> str:

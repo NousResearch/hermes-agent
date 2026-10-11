@@ -30,11 +30,38 @@ EXCLUDED_SKILL_DIRS = frozenset((
 # via skill_view(skill, file_path=...), never scanned as standalone skills.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
+def is_disabled_skill_dir(name: str) -> bool:
+    """True for a path component marking a hidden/disabled tree inside a skills
+    root: any dot- or underscore-prefixed name (``.archive``, ``_archive``,
+    ``_staging-*``) plus the explicit EXCLUDED_SKILL_DIRS entries (``venv``,
+    ``node_modules``). Underscore prefixes must disable too — an archived
+    ``_archive`` or staging ``_staging-*`` tree silently went live in every
+    session otherwise (#132917)."""
+    return name in EXCLUDED_SKILL_DIRS or name.startswith((".", "_"))
+
+
 def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
     """True if *path* should be skipped by skill scanners (VCS/dependency/cache
-    dirs + support packages). Apply to every SKILL.md from a direct ``rglob``."""
-    parts = PurePath(str(path)).parts
-    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(path, root=root)
+    dirs + support packages). Apply to every SKILL.md from a direct ``rglob``.
+
+    The dot/underscore prefix rule (``_archive``, ``_staging-*``) applies to the
+    components below *root*, or to every component of a relative path. A bare
+    absolute path keeps exact-name semantics so an ancestor like ``~/.hermes``
+    never disables the tree below it (#132917). A root-relative path paired with
+    *root* (``path.relative_to(root)`` callers) applies the prefix rule too — the
+    caller already scoped it."""
+    pure = PurePath(str(path))
+    parts = pure.parts
+    prefix_scoped = root is not None or not pure.is_absolute()
+    if root is not None and pure.is_absolute():
+        try:
+            parts = pure.relative_to(PurePath(str(root))).parts
+        except ValueError:
+            prefix_scoped = False  # tree unrelated to root: exact names only
+    excluded = any(part in EXCLUDED_SKILL_DIRS for part in parts)
+    if not excluded and prefix_scoped:
+        excluded = any(is_disabled_skill_dir(part) for part in parts)
+    return excluded or is_skill_support_path(path, root=root)
 
 
 def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
@@ -845,7 +872,7 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     matches: list[str] = []
     for root, dirs, files in os.walk(str(skills_dir), followlinks=True):
         has_skill_md = "SKILL.md" in files
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        dirs[:] = [d for d in dirs if not is_disabled_skill_dir(d) and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
         if filename in files:
             matches.append(os.path.join(root, filename))
     yield from map(Path, sorted(matches))

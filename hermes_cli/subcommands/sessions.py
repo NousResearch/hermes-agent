@@ -12,12 +12,13 @@ def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
 
-def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
-    """Attach the ``sessions`` subcommand to ``subparsers``."""
-    sessions_parser = subparsers.add_parser(
-        "sessions", help="Manage session history (list, rename, export, prune, delete)",
-        description="View and manage the SQLite session store")
-    sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
+def _build_overview_parsers(sessions_subparsers) -> None:
+    attention = sessions_subparsers.add_parser("attention", help="Declare or resolve an observation (not mutation permission)")
+    attention.add_argument("attention_action", choices=("open", "resolve"))
+    attention.add_argument("session_id", help="Exact session identifier (no prefix or title)")
+    attention.add_argument("--turn-id", required=True, help="Exact current observation generation")
+    attention.add_argument("--request-id", help="Exact request to resolve")
+    attention.add_argument("--request-turn-id", help="Original generation of a validation retained across turns")
 
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
@@ -25,6 +26,16 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_list.add_argument("--workspace", metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).")
+
+
+def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
+    """Attach the ``sessions`` subcommand to ``subparsers``."""
+    sessions_parser = subparsers.add_parser(
+        "sessions", help="Manage session history (list, rename, export, prune, delete)",
+        description="View and manage the SQLite session store")
+    sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
+
+    _build_overview_parsers(sessions_subparsers)
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "

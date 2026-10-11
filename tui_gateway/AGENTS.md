@@ -49,6 +49,12 @@ New question for the user = `_ask("<method>", sid, params, timeout)` in the emit
 and a `server_request(...)` in `contracts/server_requests.py`.
 New event = `event("<type>", Payload)` in `contracts/events.py`; the emitter is checked against it.
 
+`server_requests.py` owns content-free native attention publication/settlement for
+its closed human-request list. Resolve the owner through the actual session agent
+and DB; never infer a wait from tool names or Desktop read/act/tour RPCs. Response,
+timeout and cancellation use exact request/turn fencing. Storage/coverage contract:
+`website/docs/developer-guide/conversation-observations.md`.
+
 ## Profile scope in RPC methods
 
 One `serve` process may host sessions from several profile homes (Desktop pooled backends launch

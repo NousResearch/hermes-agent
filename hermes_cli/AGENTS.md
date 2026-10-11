@@ -2,6 +2,10 @@
 
 Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/cli-internals.md`.
 
+Observation reads use native auth/profile resolution and read-only SessionDB;
+`sessions attention` fences indicators, not mutation permission. Contract:
+`website/docs/developer-guide/conversation-observations.md`.
+
 ## CLI architecture
 
 `cli.py` holds `HermesCLI` (REPL loop, config, slash dispatch); behaviour lives in mixins

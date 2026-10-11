@@ -579,6 +579,46 @@ CREATE TABLE IF NOT EXISTS session_turn_leases (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS session_observations (
+    conversation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 0),
+    lease_digest TEXT NOT NULL,
+    lease_acquired_at REAL NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('running', 'terminal')),
+    result_status TEXT CHECK (result_status IN ('complete', 'interrupted', 'error')),
+    result_at REAL,
+    attention_json TEXT NOT NULL DEFAULT '[]',
+    attention_covered INTEGER NOT NULL DEFAULT 0 CHECK (attention_covered IN (0, 1)),
+    updated_at REAL NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS session_observations_delete
+AFTER DELETE ON sessions
+BEGIN
+    DELETE FROM session_observations WHERE conversation_id = old.id OR session_id = old.id;
+END;
+
+-- A newer native admission invalidates an older terminal even if that producer
+-- never publishes its own generation (old code, or death before begin).
+CREATE TRIGGER IF NOT EXISTS session_observations_new_lease
+AFTER INSERT ON session_turn_leases
+BEGIN
+    UPDATE session_observations SET state='running', result_status=NULL, result_at=NULL,
+        revision=revision+1, updated_at=NEW.acquired_at
+        WHERE conversation_id=NEW.conversation_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_observations_reclaimed_lease
+AFTER UPDATE OF holder, acquired_at ON session_turn_leases
+WHEN OLD.holder != NEW.holder OR OLD.acquired_at != NEW.acquired_at
+BEGIN
+    UPDATE session_observations SET state='running', result_status=NULL, result_at=NULL,
+        revision=revision+1, updated_at=NEW.acquired_at
+        WHERE conversation_id=NEW.conversation_id;
+END;
+
 CREATE TABLE IF NOT EXISTS async_delegations (
     delegation_id TEXT PRIMARY KEY,
     origin_session TEXT NOT NULL,

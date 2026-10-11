@@ -31,6 +31,20 @@ _REFRESH_WRITE_PATIENCE_S = 20.0
 _REFRESH_EXPIRY_MARGIN_S = 2.0
 
 
+def observe_durable_turn(lease, action: str, value=None) -> None:
+    """Publish an admitted lease's observation lifecycle; lease-less turns stay unknown."""
+    if lease is None:
+        return
+    if action == "begin":
+        lease.begin_observation()
+    elif action == "result":
+        lease.finish_observation_result(value)
+    elif action == "exception":
+        lease.finish_observation_exception(value)
+    else:
+        raise ValueError("Unknown observation lifecycle action")
+
+
 class DurableTurnLease:
     """An admitted session turn lease plus the periodic timers that keep it alive and watch the turn.
 
@@ -55,6 +69,43 @@ class DurableTurnLease:
         self.interrupt_message: Optional[str] = None
         self.watchdog = None  # TurnLivenessWatchdog when configured
         self.timer_handles: list = []  # periodic_scheduler handles, cancelled in join_threads
+        self.observation_turn_id = None
+        self.observation_finished = False
+
+    def begin_observation(self) -> None:
+        if not callable(getattr(type(self.db), "begin_session_observation", None)):
+            return
+        try:
+            self.observation_turn_id = self.db.begin_session_observation(
+                self._current_session_id(), self.holder,
+                attention_covered=getattr(self.agent, "platform", None) in {"desktop", "tui"})
+            self.agent._observation_turn_id = self.observation_turn_id
+        except Exception as exc:
+            logger.warning("Turn observation unavailable (%s)", type(exc).__name__, exc_info=True)
+
+    def finish_observation(self, status: str) -> None:
+        if self.observation_turn_id is None or self.observation_finished:
+            return
+        self.observation_finished = True
+        try:
+            self.db.finish_session_observation(self._current_session_id(), self.holder, self.observation_turn_id, status)
+        except Exception as exc:
+            logger.warning("Terminal observation unavailable (%s)", type(exc).__name__, exc_info=True)
+
+    def finish_observation_result(self, result) -> None:
+        """Seal explicit native flags, never an unclassified return or response text."""
+        if not isinstance(result, dict):
+            return
+        if result.get("interrupted") is True:
+            self.finish_observation("interrupted")
+        elif result.get("failed") is True or result.get("error"):
+            self.finish_observation("error")
+        elif result.get("completed") is True:
+            self.finish_observation("complete")
+
+    def finish_observation_exception(self, exc: BaseException) -> None:
+        interrupted = isinstance(exc, (KeyboardInterrupt, InterruptedError)) or type(exc).__name__ == "CancelledError"
+        self.finish_observation("interrupted" if interrupted else "error")
 
     def _current_session_id(self) -> str:
         return getattr(self.agent, "session_id", None) or self.session_id
@@ -120,6 +171,7 @@ class DurableTurnLease:
         if getattr(agent, "_active_session_turn_lease_holder", None) == self.holder:
             agent._active_session_turn_lease_holder = None
             agent._active_session_turn_lease_ttl_seconds = None
+            agent._observation_turn_id = None
 
     def is_turn_active(self) -> bool:
         with self._lock:

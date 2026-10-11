@@ -35,6 +35,21 @@ list_router = APIRouter()
 search_router = APIRouter()
 manage_router = APIRouter()
 
+
+@list_router.get("/api/session-observations")
+def api_session_observations(session_id: List[str] = Query(default=[]), profile: Optional[str] = None):
+    """Authenticated metadata-only snapshot; no schema heal, resume or session creation."""
+    from fastapi.responses import JSONResponse
+    from hermes_state_observations import read_session_observations_at_path, validate_observation_ids
+    try:
+        ids = validate_observation_ids(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    name = _serving_profile(profile)  # Native validation and named-profile existence checks.
+    rows = read_session_observations_at_path(_session_db_path_for_profile(profile), ids, profile=name)
+    return JSONResponse({"schema_version": 1, "profile": name, "observations": rows},
+                        headers={"Cache-Control": "no-store"})
+
 _cron_default_profile = late("_cron_default_profile", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")

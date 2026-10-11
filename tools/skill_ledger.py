@@ -20,7 +20,7 @@ import re
 import tarfile
 import time as _time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -307,7 +307,7 @@ def append_entry(
         if action != "pre-rollback":
             before, after = _delta(before or [], after or [])
         entry = {
-            "id": uuid.uuid4().hex[:12], "ts": datetime.now(timezone.utc).isoformat(),
+            "id": uuid.uuid4().hex[:12], "ts": datetime.now(UTC).isoformat(),
             "actor": actor if actor in _VALID_ACTORS else derive_actor(),
             "action": action, "skill": skill, "evidence": evidence or {},
             "before": before or [], "after": after or []}

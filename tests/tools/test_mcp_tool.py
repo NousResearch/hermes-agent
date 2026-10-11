@@ -1295,7 +1295,6 @@ class TestToolsetInjection:
             result1 = discover_mcp_tools()
             assert "mcp__good__ping" in result1
             assert "mcp__broken__ping" not in result1
-            first_attempts = call_count
 
             # "Fix" the broken server
             broken_fixed = True
@@ -3055,7 +3054,7 @@ class TestMCPDiscoveryCrossProcessLock:
             with patch("tools.mcp_tool_loop._try_acquire_mcp_discovery_lock", mock_acquire), \
                  patch("tools.mcp_tool._MCP_AVAILABLE", True), \
                  patch("tools.mcp_tool_config._load_mcp_config", return_value=mock_config), \
-                 patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp__test_srv__ping"]) as reg_spy:
+                 patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp__test_srv__ping"]):
                 result = discover_mcp_tools()
             assert result == ["mcp__test_srv__ping"]
             release_spy.assert_called_once()
@@ -3071,7 +3070,7 @@ class TestMCPDiscoveryCrossProcessLock:
              patch("tools.mcp_tool_config._load_mcp_config", return_value=mock_config), \
              patch("tools.mcp_tool_discovery.register_mcp_servers") as reg_spy, \
              patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
-            result = discover_mcp_tools()
+            discover_mcp_tools()
         # Must still run local discovery
         reg_spy.assert_called_once_with(mock_config)
 

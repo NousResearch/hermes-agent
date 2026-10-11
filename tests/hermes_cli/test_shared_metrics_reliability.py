@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from types import SimpleNamespace
 
 import pytest
@@ -43,7 +43,7 @@ def marks(tmp_path, monkeypatch):
 
 
 def _identity(monkeypatch, *shas: str) -> None:
-    committed = int((datetime.now(timezone.utc) - timedelta(days=10)).timestamp())
+    committed = int((datetime.now(UTC) - timedelta(days=10)).timestamp())
     sequence = iter(shas)
     last = {"sha": shas[0]}
 

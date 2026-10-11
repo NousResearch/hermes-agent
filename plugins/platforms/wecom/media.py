@@ -323,7 +323,7 @@ class WeComMediaMixin:
             else:
                 media_response = await self._send_media_message(chat_id, prepared["final_type"], upload_result["media_id"])
             logger.info("[%s] %s OK: %s", self.name, "send_reply_media" if reply_req_id else "send_media_message", media_response)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("[%s] TIMEOUT in _send_media_source for %s", self.name, media_source)
             return SendResult(success=False, error="Timeout sending media to WeCom")
         except Exception as exc:

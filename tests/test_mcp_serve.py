@@ -655,7 +655,7 @@ class TestE2EAttachmentsFetch:
 
 class TestE2EEventsPoll:
     def test_poll_empty(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
+        server, _bridge = mcp_server_e2e
         result = _run_tool(server, "events_poll")
         assert result["events"] == []
         assert result["next_cursor"] == 0

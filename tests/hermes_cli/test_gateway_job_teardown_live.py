@@ -143,15 +143,15 @@ class TestJobObjectMechanismLive:
         # updater/watcher exiting while its job tears down.
         return (
             "import subprocess, sys, pathlib\n"
-            "sys.path.insert(0, r'%s')\n"
+            f"sys.path.insert(0, r'{_REPO_ROOT!s}')\n"
             "from hermes_cli._subprocess_compat import (\n"
             "    windows_detach_flags, windows_detach_flags_without_breakaway)\n"
-            "flags = %s()\n"
-            "p = subprocess.Popen([sys.executable, '-c', %r],\n"
+            f"flags = {flags_helper}()\n"
+            f"p = subprocess.Popen([sys.executable, '-c', {_SLEEPER!r}],\n"
             "    creationflags=flags, stdin=subprocess.DEVNULL,\n"
             "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-            "pathlib.Path(r'%s').write_text(str(p.pid), encoding='utf-8')\n"
-        ) % (str(_REPO_ROOT), flags_helper, _SLEEPER, pid_file)
+            f"pathlib.Path(r'{pid_file}').write_text(str(p.pid), encoding='utf-8')\n"
+        )
 
     def _run_in_job(self, tmp_path: Path, flags_helper: str) -> int:
         pid_file = tmp_path / f"{flags_helper}.pid"
@@ -202,7 +202,8 @@ class TestJobObjectMechanismLive:
             )
         finally:
             subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True
+                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                check=False,
             )
 
     def test_non_breakaway_child_killed_by_job_teardown(self, tmp_path):
@@ -216,7 +217,8 @@ class TestJobObjectMechanismLive:
             )
         finally:
             subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True
+                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                check=False,
             )
 
 

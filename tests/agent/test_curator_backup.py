@@ -443,7 +443,7 @@ def test_rollback_recovers_cleanly_from_a_partial_extract(backup_env, monkeypatc
 
     monkeypatch.setattr(cb.tarfile, "open", _open)
 
-    ok, msg, _ = cb.rollback()
+    ok, _msg, _ = cb.rollback()
     assert not ok
 
     assert not (skills / "alpha" / "alpha").exists(), \

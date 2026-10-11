@@ -515,7 +515,7 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 
     monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
 
-    label, text, _acct = _run_reference(
+    _label, text, _acct = _run_reference(
         {"provider": "openai-codex", "model": "gpt-5.5"},
         [{"role": "user", "content": "review this PR"}],
     )
@@ -669,7 +669,7 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
 
     # The chokepoint preserves anthropic identity despite the explicit base_url,
     # so call_llm routes through the anthropic provider branch (not custom).
-    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+    resolved_provider, _model, _base_url, _api_key, _mode = _resolve_task_provider_model(
         task="moa_reference",
         provider="anthropic",
         model="claude-opus-4-8",
@@ -725,7 +725,7 @@ def test_run_reference_captures_usage_and_cost(monkeypatch):
         lambda *a, **k: SimpleNamespace(amount_usd=0.0123, status="estimated", source="table"),
     )
 
-    label, text, acct = _run_reference(
+    _label, text, acct = _run_reference(
         {"provider": "openrouter", "model": "vendor/adv-model"},
         [{"role": "user", "content": "state?"}],
     )

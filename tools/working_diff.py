@@ -46,6 +46,7 @@ def _run(args: list[str], cwd: str, timeout: int = _GIT_TIMEOUT):
         cwd=cwd, capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",
         stdin=subprocess.DEVNULL, env=env,
+        check=False,
     )
     return proc.returncode, proc.stdout
 

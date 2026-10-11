@@ -314,10 +314,10 @@ def _print_device_code_instructions(
 
 
 def _poll_device_token_generic(
-    post: Callable[[], "httpx.Response"], *, expires_in: int, poll_interval: int,
+    post: Callable[[], httpx.Response], *, expires_in: int, poll_interval: int,
     validate_success: Callable[[dict[str, Any]], None],
-    on_non_json_error: Callable[["httpx.Response"], Exception],
-    on_error: Callable[["httpx.Response", dict[str, Any]], Exception],
+    on_non_json_error: Callable[[httpx.Response], Exception],
+    on_error: Callable[[httpx.Response, dict[str, Any]], Exception],
     on_timeout: Callable[[], Exception]) -> dict[str, Any]:
     """RFC 8628 device-code polling loop shared by the Nous and xAI flows.
 

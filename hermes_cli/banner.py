@@ -428,7 +428,7 @@ def banner_snapshot_fingerprint() -> Optional[str]:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
-def load_banner_snapshot(enabled_toolsets: list[str] = None) -> Optional[dict[str, Any]]:
+def load_banner_snapshot(enabled_toolsets: list[str] | None = None) -> Optional[dict[str, Any]]:
     """Return the stored banner snapshot when its fingerprint is current."""
     blob = _quiet(lambda: json.loads(_banner_snapshot_path().read_text(encoding="utf-8-sig")))
     if not isinstance(blob, dict):
@@ -467,7 +467,7 @@ def save_banner_snapshot(tools: list[dict], enabled_toolsets: list[str], availab
     _quiet(_write)
 
 
-def compute_toolset_availability(enabled_toolsets: list[str] = None) -> dict[str, Any]:
+def compute_toolset_availability(enabled_toolsets: list[str] | None = None) -> dict[str, Any]:
     """Compute ``{"unavailable_toolsets", "lazy_tools", "disabled_tools"}`` for the banner.
 
     Split out so the result can be snapshotted and replayed without importing ``model_tools``.
@@ -685,9 +685,9 @@ def _banner_skill_lines(skills_by_category: dict[str, list[str]], skills_enabled
 
 
 def build_welcome_banner(
-    console: "Console", model: str, cwd: str, tools: list[dict] = None, enabled_toolsets: list[str] = None,
-    session_id: str = None, get_toolset_for_tool=None, context_length: int = None, provider: str = None,
-    availability: dict[str, Any] = None, skills_by_category: dict[str, list[str]] = None,
+    console: "Console", model: str, cwd: str, tools: list[dict] | None = None, enabled_toolsets: list[str] | None = None,
+    session_id: str | None = None, get_toolset_for_tool=None, context_length: int | None = None, provider: str | None = None,
+    availability: dict[str, Any] | None = None, skills_by_category: dict[str, list[str]] | None = None,
     context_pinned: bool = False,
 ):
     """Build and print a welcome banner with caduceus on left and info on right.

@@ -225,7 +225,7 @@ class TestVisionAnalyzeScaleDisclosure:
         # Downscale factor disclosed, computed from the crop dimensions.
         m = re.search(r"downscaled from (\d+)x(\d+) to (\d+)x(\d+)", note)
         assert m
-        ow, oh, nw, nh = (int(v) for v in m.groups())
+        ow, oh, nw, _nh = (int(v) for v in m.groups())
         assert (ow, oh) == (2400, 1800)
         assert f"{ow / nw:.2f}" in note
         # Crop offset disclosed: coordinates are relative to the crop origin.

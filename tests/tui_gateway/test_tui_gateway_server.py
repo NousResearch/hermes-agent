@@ -3507,7 +3507,7 @@ def test_live_visible_history_keeps_candidate_and_new_flushed_turn_real_db(tmp_p
     db.append_message("s1", role="user", content="turn 2")
     db.append_message("s1", role="assistant", content="turn 2 reply", finish_reason="stop")
 
-    model_history, display_history = db.get_resume_conversations("s1")
+    model_history, _display_history = db.get_resume_conversations("s1")
     live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
     texts = [m.get("text") for m in server._history_to_messages(live_history)]
 

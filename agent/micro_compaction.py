@@ -11,6 +11,8 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from agent.compaction_events import publish_micro
+from agent.context_compressor_telemetry import _safe_int
 from agent.message_metadata import record_absorbed_message
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
@@ -200,10 +202,13 @@ class MicroCompactionMixin:
         self._micro_compact_consecutive_failures = 0
         self._micro_compact_last_failure_cursor = -1
 
-    def _micro_compact(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _micro_compact(
+        self, messages: list[dict[str, Any]], *, turn_session_id: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         """Run one round of micro-compaction (entry point from ``finalize_turn()``). Returns the
         (possibly modified) list and syncs the session DB via ``archive_and_compact`` (the
-        append-only flush alone would double-load on resume)."""
+        append-only flush alone would double-load on resume). ``turn_session_id`` is the session the
+        caller's turn started in; it parents the pass's Relay mark when this session has no scope yet."""
         if not self._micro_compact_enabled:
             return messages
 
@@ -234,7 +239,8 @@ class MicroCompactionMixin:
         def _telemetry(outcome: str, result: list[dict[str, Any]], **extra: Any) -> None:
             self._emit_micro_compaction_telemetry(
                 outcome=outcome, messages_before=n_messages, messages_after=len(result),
-                tokens_before=_tokens_before, duration_ms=int((time.monotonic() - _started_at) * 1000), **extra,
+                tokens_before=_tokens_before, duration_ms=int((time.monotonic() - _started_at) * 1000),
+                turn_session_id=turn_session_id, **extra,
             )
 
         if _skip:  # unanswerable watermark (unbounded archive) or a stale generation (no lease): skip
@@ -340,10 +346,10 @@ class MicroCompactionMixin:
     def _emit_micro_compaction_telemetry(
         self, *, outcome: str, messages_before: int, messages_after: int, tokens_before: int | None,
         tokens_after: int | None, exchange_tokens: int | None = None, duration_ms: int | None = None,
+        turn_session_id: str | None = None,
     ) -> None:
         """Emit one content-free JSON log line for a micro-compaction pass.
         ``tokens_delta`` < 0 means the pass shrank the transcript; ``*_total`` fields accumulate."""
-        _safe_int = _cc()._safe_int
         try:
             delta = tokens_after - tokens_before if tokens_before is not None and tokens_after is not None else None
             self._micro_compact_tokens_saved_total -= delta or 0
@@ -368,10 +374,11 @@ class MicroCompactionMixin:
                 "occupancy_pct": occupancy, "main_model": self.model or "", "aux_model": self.summary_model or "",
             }
             logger.info("micro compaction telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":")))
+            publish_micro(payload, turn_session_id=turn_session_id)
         except Exception as exc:
             logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 
-    def _micro_start_watermark(self, held: list[dict[str, Any]]) -> "tuple[Optional[str], Optional[int]]":
+    def _micro_start_watermark(self, held: list[dict[str, Any]]) -> tuple[Optional[str], Optional[int]]:
         """``(skip_outcome, watermark)`` taken before a pass's slow step; *skip_outcome* is the telemetry
         label of a pass that must not run, or None.
 

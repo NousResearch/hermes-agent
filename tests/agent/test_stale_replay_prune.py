@@ -1,11 +1,8 @@
-"""Tests for stale codex_reasoning_items pruning during compaction (#71058).
+"""Tests for compaction's codex_reasoning_items handling (#71058, #71077 by @webtecnica).
 
-Salvaged from PR #71077 (@webtecnica) with two correctness fixes:
-the prune boundary is the last USER message (a Codex turn spans multiple
-assistant messages whose reasoning items must replay together), and the
-newest native compaction checkpoint (type="compaction") is exempt because
-it carries already-pruned history, not per-turn reasoning.  Checkpoints a
-newer carrier shadows are pruned: the wire builder discards them anyway
+Per-turn reasoning items are never pruned (they are replay continuity). Only
+checkpoints (type="compaction") that a newer carrier shadows are pruned: the
+wire builder discards them anyway
 (#102374; the durable twin lives in tests/hermes_state/test_append_messages_batch.py).
 """
 
@@ -23,67 +20,18 @@ def _compaction():
     return {"type": "compaction", "encrypted_content": "checkpoint-blob"}
 
 
-def test_prior_turn_reasoning_items_are_pruned():
+def test_prior_turn_reasoning_items_survive_compaction():
+    """Encrypted reasoning is continuity, not dead weight: the compacted list becomes canonical history and
+    the wire builder filters per issuer/model, so no turn's items are pruned (only shadowed checkpoints)."""
     messages = [
         {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "a1", "codex_reasoning_items": [_reasoning("rs_a")]},
+        {"role": "assistant", "content": "a1", "codex_reasoning_items": [_compaction(), _reasoning("rs_a")]},
         {"role": "user", "content": "turn 2"},
         {"role": "assistant", "content": "a2", "codex_reasoning_items": [_reasoning("rs_b")]},
     ]
-    pruned = _prune_stale_reasoning_replay(messages)
-    assert pruned == 1
-    assert "codex_reasoning_items" not in messages[1]
-    # Active turn (after last user message) keeps its items.
+    assert _prune_stale_reasoning_replay(messages) == 0
+    assert messages[1]["codex_reasoning_items"] == [_compaction(), _reasoning("rs_a")]
     assert messages[3]["codex_reasoning_items"] == [_reasoning("rs_b")]
-
-
-def test_multi_message_active_turn_chain_is_never_pruned():
-    """A Codex turn spans assistant+tool_calls -> tool -> assistant; ALL of
-    the active turn's reasoning items must survive (the #71077 review gap)."""
-    messages = [
-        {"role": "user", "content": "old turn"},
-        {"role": "assistant", "content": "old", "codex_reasoning_items": [_reasoning("rs_old")]},
-        {"role": "user", "content": "active turn"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}],
-            "codex_reasoning_items": [_reasoning("rs_chain1")],
-        },
-        {"role": "tool", "content": "result", "tool_call_id": "c1"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "t", "arguments": "{}"}}],
-            "codex_reasoning_items": [_reasoning("rs_chain2")],
-        },
-        {"role": "tool", "content": "result", "tool_call_id": "c2"},
-        {"role": "assistant", "content": "done", "codex_reasoning_items": [_reasoning("rs_final")]},
-    ]
-    pruned = _prune_stale_reasoning_replay(messages)
-    assert pruned == 1  # only the old turn
-    assert "codex_reasoning_items" not in messages[1]
-    for idx in (3, 5, 7):
-        assert messages[idx].get("codex_reasoning_items"), f"active-chain msg {idx} lost its items"
-
-
-def test_native_compaction_checkpoints_survive_pruning():
-    """type="compaction" items are cumulative context carriers — they must
-    survive on stale messages even when reasoning items are stripped."""
-    messages = [
-        {"role": "user", "content": "turn 1"},
-        {
-            "role": "assistant",
-            "content": "a1",
-            "codex_reasoning_items": [_compaction(), _reasoning("rs_a")],
-        },
-        {"role": "user", "content": "turn 2"},
-        {"role": "assistant", "content": "a2"},
-    ]
-    pruned = _prune_stale_reasoning_replay(messages)
-    assert pruned == 1
-    # Reasoning stripped, checkpoint kept.
-    assert messages[1]["codex_reasoning_items"] == [_compaction()]
 
 
 def test_checkpoint_only_sidecar_untouched_and_uncounted():
@@ -213,8 +161,9 @@ class TestShadowedCheckpointsArePruned:
             "codex_reasoning_items": [self._checkpoint("live")],
         })
         _prune_stale_reasoning_replay(messages)
-        assert "codex_reasoning_items" not in messages[1]
-        assert "codex_reasoning_items" not in messages[3]
+        # Shadowed checkpoints go; each turn's own reasoning stays (continuity, not dead weight).
+        assert messages[1]["codex_reasoning_items"] == [_reasoning("rs_0")]
+        assert messages[3]["codex_reasoning_items"] == [_reasoning("rs_1")]
         assert messages[-1]["codex_reasoning_items"] == [self._checkpoint("live")]
 
     def test_compress_retains_exactly_the_checkpoints_the_wire_builder_keeps(self):

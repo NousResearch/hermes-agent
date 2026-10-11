@@ -4,7 +4,7 @@ import contextlib
 import json
 import re
 import sys
-from datetime import timezone
+from datetime import timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -119,7 +119,7 @@ def _next_run_overdue_seconds(next_run_at: Any) -> Optional[float]:
     if dt is None:
         return None
     # Same-tzinfo subtraction is wall-clock arithmetic in Python; compare instants.
-    return (now().astimezone(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+    return (now().astimezone(UTC) - dt.astimezone(UTC)).total_seconds()
 
 
 def _next_run_row(job: dict[str, Any]) -> tuple[str, str]:
@@ -625,7 +625,7 @@ def _print_active_jobs_summary(jobs) -> None:
     # job its configured zone), so order by instant, never by ISO text; display the stored stamp.
     # `_parse_aware` hands back one shared ZoneInfo, and Python compares same-tzinfo datetimes
     # by wall clock (wrong across a DST fold) — normalise to UTC before ordering.
-    next_runs = [(parsed.astimezone(timezone.utc), j["next_run_at"]) for j in jobs
+    next_runs = [(parsed.astimezone(UTC), j["next_run_at"]) for j in jobs
                  if (parsed := _parse_aware(j.get("next_run_at"))) is not None]
     print(f"  {len(jobs)} active job(s)")
     if next_runs:

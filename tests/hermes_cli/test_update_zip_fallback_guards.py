@@ -290,6 +290,7 @@ def test_zip_overlay_flag_is_valid_against_real_git(tmp_path):
     status = subprocess.run(
         ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=all", "--ignored=matching"],
         capture_output=True, text=True,
+        check=False,
     ).stdout
     assert update_cmd._zip_overlay_block_reason(tmp_path) is None, status
 

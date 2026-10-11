@@ -71,7 +71,7 @@ def write_catalog_sidecar_record(target: Path, catalog: dict, sha: str) -> None:
     sidecar = {
         "catalog_name": catalog["name"], "repo": catalog["repo"], "sha": sha,
         "tier": catalog.get("tier") or "community",
-        "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        "installed_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
     try:
@@ -481,7 +481,8 @@ class RepinResult(NamedTuple):
 # Surfaces a re-pin can widen without the user seeing a diff: each is a list of identifiers the
 # new manifest adds (``desktop`` = a Desktop half appeared). Compared as sets — removals are not consent events.
 _SURFACE_LABELS = {"capabilities": "host capabilities", "tools": "tools", "hooks": "hooks",
-                   "python_dependencies": "Python dependencies", "desktop": "Desktop UI half"}
+                   "python_dependencies": "Python dependencies", "desktop": "Desktop UI half",
+                   "requires_auth": "your sign-in for"}
 
 
 def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
@@ -499,7 +500,7 @@ def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
     return {
         "capabilities": set(_declared_capabilities_from_manifest(manifest, str(manifest.get("name") or "?"))),
         "tools": _list("provides_tools"), "hooks": _list("provides_hooks", "hooks"),
-        "python_dependencies": _list("python_dependencies"),
+        "python_dependencies": _list("python_dependencies"), "requires_auth": _list("requires_auth"),
         "desktop": {"desktop/plugin.js"} if (tree / "desktop" / "plugin.js").is_file() else set(),
     }
 
@@ -834,7 +835,7 @@ def installed_catalog_state(installed: dict[str, dict[str, Any]]) -> dict[str, A
     return {
         "entries": entries,
         "removed": [{"name": r.name, "repo": r.repo, "reason": r.reason, "date": r.date} for r in resolved_removed_entries()],
-        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
     }
 
 

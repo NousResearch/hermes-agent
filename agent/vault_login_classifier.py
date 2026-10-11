@@ -23,6 +23,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+import itertools
 
 LOGIN_AUTOFILL_TOKENS = ("username", "email", "tel", "current-password")
 
@@ -75,7 +76,7 @@ class LoginControl:
     max_length: Optional[int] = None
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "LoginControl":
+    def from_dict(cls, raw: dict[str, Any]) -> LoginControl:
         form_index = raw.get("formIndex", raw.get("form_index"))
         max_length = raw.get("maxLength", raw.get("max_length"))
         return cls(
@@ -167,9 +168,7 @@ def select_password_fill(
     passwords = [c for c in classified if c.token == "current-password"]
     if not passwords or not password:
         return []
-    best_password = sorted(
-        passwords, key=lambda c: (-c.score, c.control.index)
-    )[0]
+    best_password = min(passwords, key=lambda c: (-c.score, c.control.index))
     return [
         {
             "index": best_password.control.index,
@@ -236,7 +235,7 @@ def build_otp_fills(otp_controls: list[ClassifiedLoginControl], code: str) -> li
     boxes = sorted((c for c in otp_controls if c.control.max_length == 1), key=lambda c: c.control.index)
     if (len(boxes) == len(code)
             and len({b.control.form_index for b in boxes}) == 1
-            and all(b.control.index - a.control.index == 1 for a, b in zip(boxes, boxes[1:]))):
+            and all(b.control.index - a.control.index == 1 for a, b in itertools.pairwise(boxes))):
         return [{"index": b.control.index, "token": "one-time-code", "value": ch} for b, ch in zip(boxes, code)]
     return [{"index": best.control.index, "token": "one-time-code", "value": code}]
 

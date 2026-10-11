@@ -221,18 +221,18 @@ def _encode_sixel(frame) -> str:
     px = pal.load()
     alpha = frame.getchannel("A").load()
     w, h = pal.size
-    out = ["\x1bP0;1;0q", '"1;1;%d;%d' % (w, h)]
+    out = ["\x1bP0;1;0q", f'"1;1;{w:d};{h:d}']
     used = sorted({px[x, y] for y in range(h) for x in range(w)})
     for idx in used:  # color registers on a 0..100 scale
         r, g, b = (palette[idx * 3 + c] if idx * 3 + c < len(palette) else 0 for c in range(3))
-        out.append("#%d;2;%d;%d;%d" % (idx, r * 100 // 255, g * 100 // 255, b * 100 // 255))
+        out.append(f'#{idx:d};2;{r * 100 // 255:d};{g * 100 // 255:d};{b * 100 // 255:d}')
 
     for band in range(0, h, 6):
         ys = range(band, min(band + 6, h))
         for color_idx in used:
             chars = [chr(63 + sum(1 << (y - band) for y in ys if alpha[x, y] > 32 and px[x, y] == color_idx)) for x in range(w)]
             runs = ((ch, len(list(group))) for ch, group in groupby(chars))  # run-length: ``!<n><ch>`` for runs longer than 3
-            out.append("#%d" % color_idx + "".join("!%d%s" % (n, ch) if n > 3 else ch * n for ch, n in runs) + "$")  # ``$`` = band CR
+            out.append(f'#{color_idx:d}' + "".join(f"!{n:d}{ch}" if n > 3 else ch * n for ch, n in runs) + "$")  # ``$`` = band CR
         out.append("-")  # next band
     return "".join(out) + "\x1b\\"
 
@@ -246,7 +246,7 @@ def _downscale_cells(frame, *, target_cols: int) -> list[list[Cell]]:
     from PIL import Image
 
     target_cols = max(4, target_cols)
-    target_rows = max(2, int(round(target_cols * (frame.height / max(1, frame.width)) * 0.5)) * 2)
+    target_rows = max(2, round(target_cols * (frame.height / max(1, frame.width)) * 0.5) * 2)
     px = frame.resize((target_cols, target_rows), Image.LANCZOS).convert("RGBA").load()
     return [
         [(px[x, y], px[x, y + 1] if y + 1 < target_rows else (0, 0, 0, 0)) for x in range(target_cols)]

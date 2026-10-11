@@ -6,7 +6,7 @@ description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hin
 
 # Memory Providers
 
-Hermes Agent ships with 5 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md, and more (such as Honcho, Hindsight and Supermemory) are available from the [plugin catalog](./plugins.md). Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 2 external memory provider plugins (RetainDB and ByteRover) that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md, and more (such as Honcho, Hindsight, Supermemory and Holographic) are available from the [plugin catalog](./plugins.md). Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,9 +22,9 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: holographic  # or retaindb, byterover,
-                         # or honcho / hindsight / supermemory / mem0 / openviking (plugin
-                         # catalog — run `hermes plugins install <name>` first)
+  provider: retaindb  # or byterover,
+                      # or honcho / hindsight / supermemory / mem0 / openviking / holographic
+                      # (plugin catalog — run `hermes plugins install <name>` first)
 ```
 
 ## How It Works
@@ -551,6 +551,10 @@ Hindsight reads `$HERMES_HOME/hindsight/config.json` (per profile home), `~/.hin
 
 ### Holographic
 
+:::info Plugin catalog
+Holographic is maintained by [itpartypattaya](https://github.com/itpartypattaya/hermes-plugin-holographic) and installed from the [plugin catalog](./plugins.md) rather than bundled with Hermes. It is the provider that used to ship in-tree, with the same provider name, settings and database. Existing setups are migrated automatically — see [Migrating from bundled Holographic](#migrating-from-bundled-holographic).
+:::
+
 Local SQLite fact store with FTS5 full-text search, trust scoring, and HRR (Holographic Reduced Representations) for compositional algebraic queries.
 
 | | |
@@ -564,7 +568,8 @@ Local SQLite fact store with FTS5 full-text search, trust scoring, and HRR (Holo
 
 **Setup:**
 ```bash
-hermes memory setup    # select "holographic"
+hermes plugins install holographic   # from the plugin catalog
+hermes memory setup                  # select "holographic"
 # Or manually:
 hermes config set memory.provider holographic
 ```
@@ -582,6 +587,20 @@ hermes config set memory.provider holographic
 - `reason` — compositional AND queries across multiple entities
 - `contradict` — automated detection of conflicting facts
 - Trust scoring with asymmetric feedback (+0.05 helpful / -0.10 unhelpful)
+
+The catalog plugin has its own release notes and options beyond this list; see its [README](https://github.com/itpartypattaya/hermes-plugin-holographic) for the current tool actions and settings.
+
+#### Migrating from bundled Holographic
+
+Holographic used to ship inside the Hermes tree. If your `config.yaml` already has `memory.provider: holographic`, there is nothing to do:
+
+- `hermes update` installs the catalog plugin into every profile home that names the provider.
+- If the plugin is still missing on the first agent start (`hermes chat`, the gateway, Desktop), Hermes installs it and tells you it did.
+- With `security.allow_lazy_installs: false` the agent-start path does not install anything; it prints the exact `hermes plugins install holographic` command instead.
+
+Your facts (`$HERMES_HOME/memory_store.db`, or the `db_path` you set) and your `plugins.hermes-memory-store` settings are read exactly as before, so no memory is lost. Verify with `hermes memory status` and `hermes plugins list`.
+
+If you installed Nous Research's interim copy by URL (`NousResearch/hermes-plugin-holographic`, now archived), `hermes plugins update holographic` moves it onto the catalog entry; your data stays where it is.
 
 ---
 
@@ -781,7 +800,7 @@ package command. Restart Hermes after successful dependency preparation.
 | **OpenViking** (plugin catalog) | Self-hosted | Free | 6 | `hermes plugins install openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `hermes plugins install mem0` | Server-side LLM extraction + self-hosted/OSS modes |
 | **Hindsight** (plugin catalog) | Cloud/Local | Free/Paid | 3 | `hermes plugins install hindsight` | Knowledge graph + reflect synthesis |
-| **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
+| **Holographic** (plugin catalog) | Local | Free | 2 | `hermes plugins install holographic` | HRR algebra + trust scoring |
 | **RetainDB** | Cloud | $20/mo | 10 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `hermes plugins install supermemory` | Context fencing + session graph ingest + multi-container |
@@ -804,9 +823,11 @@ published through the [plugin catalog](./plugins.md). Hindsight moved first (see
 [Upgrading from the bundled Honcho](#upgrading-from-the-bundled-honcho)), Supermemory (see
 [Migrating from bundled Supermemory](#migrating-from-bundled-supermemory)), Mem0 (see
 [Migrating from bundled Mem0](#migrating-from-bundled-mem0)) and OpenViking (see
-[Migrating from bundled OpenViking](#migrating-from-bundled-openviking)). Holographic, RetainDB
-and ByteRover leave core on October 15, 2026; their standalone repositories are unmaintained
-and open for a new maintainer. Nothing changes for you: the
+[Migrating from bundled OpenViking](#migrating-from-bundled-openviking)) and Holographic (now
+maintained by itpartypattaya, see
+[Migrating from bundled Holographic](#migrating-from-bundled-holographic)). RetainDB and
+ByteRover leave core on October 15, 2026; their standalone repositories are unmaintained and
+open for a new maintainer. Nothing changes for you: the
 provider name, the settings it reads, its data directory and its tools stay the same.
 When a provider you have configured stops shipping with Hermes, `hermes update` installs its
 catalog plugin for every profile that names it; if you update through the Desktop app, the

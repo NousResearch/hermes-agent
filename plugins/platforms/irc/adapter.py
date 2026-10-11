@@ -210,10 +210,8 @@ class IRCAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None):
-      
         if not chat_id or any(ch in chat_id for ch in ("\r", "\n", "\x00", " ")):
-  
-            return SendResult(success=False, error="chat_id contains illegal IRC charac
+            return SendResult(success=False, error="chat_id contains illegal IRC characters")
         if not self._writer or self._writer.is_closing():
             return SendResult(success=False, error="Not connected")
         for line in self._split_message(content, chat_id):

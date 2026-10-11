@@ -312,6 +312,45 @@ def test_retire_derives_receiver_kind_from_channel_identity_match():
         assert pub.reader.resolve("suffixed-preview").requested["receiver"] == {"kind": "discontinued"}
 
 
+def test_retire_refuses_a_stable_head_without_the_previews_targets():
+    """An Intel preview cannot be pinned to an arm64-only stable head it has no package in."""
+    from hermes_cli.release_channels import ChannelError, canonical_json
+
+    def with_arches(manifest, arches):
+        row = manifest["packages"][0]
+        return dict(manifest, packages=[dict(row, arch=arch) for arch in arches])
+
+    with object_server() as (url, objects, _headers, _requests, _faults):
+        pub = publisher(url, verify_build=lambda request, manifest: True)
+        pub.create("intel-preview")
+        pub.create("stable")
+        build = pub.allocate("intel-preview", "a" * 40, "1.0.0")
+        key = "releases/channel-builds/" + build["buildId"] + "/build.json"
+        objects[key] = canonical_json(with_arches(put_build(objects, build), ("x64",)))
+        pub.promote(build["buildId"])
+        target = pub._read("stable")[0]
+        target["policy"] = "stable-release"
+        stable = dict(build, channel="stable", identity=target["identity"], releaseTag="v2.0.0", version="2.0.0",
+                      windowsVersion="2.0.0.0", sourceVersion="2.0.0", buildId="d" * 32)
+        stable_manifest = put_build(objects, stable)
+        stable_key = "releases/channel-builds/" + stable["buildId"] + "/build.json"
+
+        def publish_stable(arches):
+            raw = canonical_json(with_arches(stable_manifest, arches))
+            objects[stable_key] = raw
+            target.update(nextSequence=stable["sequence"] + 1, head={
+                "buildId": stable["buildId"], "sequence": stable["sequence"], "manifestKey": stable_key,
+                "sha256": hashlib.sha256(raw).hexdigest()})
+            objects["releases/channels/stable.json"] = canonical_json(target)
+
+        publish_stable(("arm64",))
+        with pytest.raises(ChannelError, match="lacks a package"):
+            pub.retire("intel-preview", "stable", "2.0.0")
+        assert pub._read("intel-preview")[0]["state"] == "active"
+        publish_stable(("arm64", "x64"))
+        assert pub.retire("intel-preview", "stable", "2.0.0")["destinationHead"] == target["head"]
+
+
 def test_mutable_read_loss_recovery_never_clones_another_allocation():
     from scripts.releases.channels import ChannelConflict
     from hermes_cli.release_channels import canonical_json
@@ -464,6 +503,15 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
             channel_releases.match_accepted_packages(manifest, wrong)
         with pytest.raises(ChannelError, match="every native"):
             channel_releases.match_accepted_packages(dict(manifest, packages=manifest["packages"][:1]), accepted)
+        # A release that did not opt into macOS Intel accepts three desktop packages.
+        def no_intel(rows, key):
+            return [row for row in rows if (row[key], row["arch"]) not in (("darwin", "x64"), ("macos", "x64"))]
+        lean = dict(accepted, packages=no_intel(accepted["packages"], "platform"))
+        assert channel_releases.native_legs(lean) == ("darwin-arm64", "win32-arm64", "win32-x64", "windows-universal")
+        assert channel_releases.native_legs(accepted) == channel_releases.NATIVE_LEGS
+        channel_releases.match_accepted_packages(dict(manifest, packages=no_intel(manifest["packages"], "platform")), lean)
+        with pytest.raises(ChannelError, match="every native"):
+            channel_releases.match_accepted_packages(manifest, lean)
         # Exercise the real controller, HTTP receipt downloader, immutable feeds,
         # manifest and final CAS; only GitHub admission and generated product facts
         # are fixture inputs (no native signature acceptance is claimed here).

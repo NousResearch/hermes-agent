@@ -872,6 +872,57 @@ def test_disabled_composite_debugging_prunes_constituent_platform_toolsets():
     assert "web" not in enabled
 
 
+def test_search_toolset_is_a_visible_selectable_checklist_row():
+    """#134593: ``search`` shares ``web_search`` with ``web`` but was never on any
+    editing surface, so ``agent.disabled_toolsets: [search]`` could strip
+    web_search while ``web`` kept showing enabled. The overlapping toolset must
+    be offered by the checklist (default-off; ``web`` still ships web_search)."""
+    assert "search" in _checklist_toolset_keys("cli")
+    assert "search" in _DEFAULT_OFF_TOOLSETS
+
+
+def test_saved_search_toolset_resolves_its_single_member():
+    """Selecting the new row resolves exactly its documented member — search
+    only, no content extraction — and no implicit composite expansion of it."""
+    config = {"platform_toolsets": {"cli": ["search"]}}
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "search" in enabled
+    from model_tools import _select_tool_names
+
+    assert _select_tool_names(sorted(enabled), None, quiet_mode=True) == {"web_search"}
+
+
+def test_implicit_composite_does_not_expand_search():
+    """A composite-only config (no saved ``search``) must not gain the row: the
+    default-off exemption is for explicit saves, not implicit inference."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "search" not in enabled
+    assert "web" in enabled
+
+
+def test_disabled_search_drops_the_saved_row_and_keeps_web_extract():
+    """#134593 parity for the visible row: with ``search`` saved next to the
+    composite, ``agent.disabled_toolsets: [search]`` removes the ``search`` row
+    from the listing while ``web`` survives on web_extract — the suppression is
+    now observable on an official surface instead of hiding behind ``web``."""
+    from model_tools import _select_tool_names
+
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli", "search"]},
+        "agent": {"disabled_toolsets": ["search"]},
+    }
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "search" not in enabled
+    assert "web" in enabled
+    runtime = _select_tool_names(sorted(enabled), ["search"], quiet_mode=True)
+    assert "web_search" not in runtime
+    assert "web_extract" in runtime
+
+
 def test_disabled_composite_display_matches_runtime_tool_selection():
     """Display/runtime parity: a toolset is listed as enabled iff the agent keeps
     at least one of its tools after the runtime's tool-level subtraction."""

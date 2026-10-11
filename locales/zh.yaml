@@ -2198,6 +2198,7 @@ cli:
     response_transformed: "[回复在流式输出后已被转换]"
     banner_tagline: "{name} - AI 代理框架"
     banner_version: "Hermes Agent v{version}（{date}）"
+    banner_version_only: "Hermes Agent v{version}"
   subagents:
     cannot_steer_process: "后台进程无法引导；请停止它或查看日志。"
     count_live: "{count} 个运行中"

@@ -2198,6 +2198,7 @@ cli:
     response_transformed: "[Respuesta transformada después del streaming]"
     banner_tagline: "{name} - Framework de agentes de IA"
     banner_version: "Hermes Agent v{version} ({date})"
+    banner_version_only: "Hermes Agent v{version}"
   subagents:
     cannot_steer_process: "Los procesos en segundo plano no se pueden redirigir; deténlos o lee el registro."
     count_live: "{count} activos"

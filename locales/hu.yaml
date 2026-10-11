@@ -2215,6 +2215,7 @@ cli:
     response_transformed: "[A válasz a streamelés után átalakult]"
     banner_tagline: "{name} - AI-ügynök keretrendszer"
     banner_version: "Hermes Agent v{version} ({date})"
+    banner_version_only: "Hermes Agent v{version}"
   subagents:
     cannot_steer_process: "Háttérfolyamatok nem irányíthatók; állítsd le őket, vagy olvasd el a naplót."
     count_live: "{count} élő"

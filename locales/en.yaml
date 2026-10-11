@@ -2297,6 +2297,7 @@ cli:
     response_transformed: "[Response transformed after streaming]"
     banner_tagline: "{name} - AI Agent Framework"
     banner_version: "Hermes Agent v{version} ({date})"
+    banner_version_only: "Hermes Agent v{version}"
 
   subagents:
     cannot_steer_process: "Background processes cannot be steered; stop them or read the log."

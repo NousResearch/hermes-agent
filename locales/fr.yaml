@@ -2471,6 +2471,7 @@ cli:
     response_transformed: "[Réponse transformée après la diffusion en continu]"
     banner_tagline: "{name} - Framework d'agent IA"
     banner_version: "Hermes Agent v{version} ({date})"
+    banner_version_only: "Hermes Agent v{version}"
   subagents:
     cannot_steer_process: "Les processus en arrière-plan ne peuvent pas être orientés ; arrêtez-les ou lisez le journal."
     count_live: "{count} en cours"

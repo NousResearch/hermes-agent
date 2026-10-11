@@ -2198,6 +2198,7 @@ cli:
     response_transformed: "[Freagra claochlaithe tar éis an tsruthaithe]"
     banner_tagline: "{name} - Creatlach Gníomhaire IS"
     banner_version: "Hermes Agent v{version} ({date})"
+    banner_version_only: "Hermes Agent v{version}"
   subagents:
     cannot_steer_process: "Ní féidir próisis chúlra a stiúradh; stop iad nó léigh an loga."
     count_live: "{count} beo"

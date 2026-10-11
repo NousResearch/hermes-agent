@@ -2198,6 +2198,7 @@ cli:
     response_transformed: "[Ответ преобразован после потоковой передачи]"
     banner_tagline: "{name} — фреймворк ИИ-агентов"
     banner_version: "Hermes Agent v{version} ({date})"
+    banner_version_only: "Hermes Agent v{version}"
   subagents:
     cannot_steer_process: "Фоновые процессы нельзя корректировать; остановите их или прочитайте лог."
     count_live: "активных: {count}"

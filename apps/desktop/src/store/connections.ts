@@ -548,19 +548,22 @@ export async function selectConnection(connectionId: string, options: SelectConn
     // already makes the latest source win; this guard also prevents an older
     // request from repainting its profile list after that newer activation.
     if (revision === switchRevision) {
-      await rememberConnection(connectionId)
-
-      // Remembering crosses IPC too; a newer click may now own the draft.
-      if (revision !== switchRevision) {
-        return
-      }
-
+      // Re-home in the same turn the commit lands. The target is painted and
+      // the barrier is down, so a Send during the IPC below must not still
+      // read the previous source's draft.
       if (!restoreOnBoot) {
         $showAllProfiles.set(false)
       }
 
       if (currentNewChatIntent() === draftIntent) {
         rehomeNewChatDraft(targetProfile, restoreOnBoot)
+      }
+
+      await rememberConnection(connectionId)
+
+      // Remembering crosses IPC too; a newer click may now own the refresh.
+      if (revision !== switchRevision) {
+        return
       }
 
       await refreshActiveProfile()

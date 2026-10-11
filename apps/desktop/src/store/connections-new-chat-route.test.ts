@@ -38,6 +38,7 @@ import {
   setPrimaryGateway,
   setPrimaryGatewayConnection
 } from './gateway'
+import { $gatewaySwitching } from './gateway-switch'
 import {
   $activeGatewayProfile,
   $newChatRoute,
@@ -139,6 +140,27 @@ it('preserves the explicit draft when the target dial fails', async () => {
   await expect(selectConnection('local')).rejects.toThrow('offline')
   expect($newChatRoute.get()).toEqual(route)
   expect(resolveNewChatOwnerRoute()).toEqual(route)
+})
+
+it('re-homes the draft before remembering the source, so a Send during that IPC names the shown profile', async () => {
+  await selectConnection('homelab', { profile: 'gaming' })
+  expect(resolveNewChatOwnerRoute()).toEqual({ connectionId: 'homelab', profile: 'gaming' })
+  const remembered = deferred<{ ok: boolean; registry: DesktopConnectionsRegistry }>()
+  Object.assign(window.hermesDesktop!, {
+    connections: { setLastUsed: vi.fn().mockReturnValueOnce(remembered.promise) }
+  })
+  const switching = selectConnection('homelab', { profile: 'default' })
+  await vi.waitFor(() => expect(window.hermesDesktop!.connections!.setLastUsed).toHaveBeenCalled())
+  // The UI already shows default with the switch barrier down: a Send now
+  // resolves its owner from the draft, which must not still name gaming.
+  const foreground = { connectionId: activeGatewayConnectionId(), profile: $activeGatewayProfile.get() }
+  const switchingUi = $gatewaySwitching.get()
+  const owner = resolveNewChatOwnerRoute()
+  remembered.resolve({ ok: true, registry })
+  await switching
+  expect(foreground).toEqual({ connectionId: 'homelab', profile: 'default' })
+  expect(switchingUi).toBe(false)
+  expect(owner).toEqual({ connectionId: 'homelab', profile: 'default' })
 })
 
 it('does not overwrite a newer draft when remembering a committed switch settles late', async () => {

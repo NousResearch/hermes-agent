@@ -3855,31 +3855,61 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     return True
 
 
-def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
-    """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE)."""
+def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE).
+
+    Returns the deleted ``task_attachments`` stored paths so the caller can
+    reap blobs nothing references anymore once the txn has committed."""
+    blob_paths = [
+        row[0] for row in conn.execute(
+            "SELECT stored_path FROM task_attachments WHERE task_id = ?", (task_id,)
+        )
+    ]
     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
-    for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs"):
+    for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs", "task_attachments"):
         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+    return blob_paths
+
+
+def _reap_attachment_blobs(conn: sqlite3.Connection, stored_paths: list[str]) -> None:
+    """Best-effort unlink of blobs no row references anymore (mirrors
+    :func:`delete_attachment`); run after the deleting txn committed."""
+    for stored_path in stored_paths:
+        still_referenced = conn.execute(
+            "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1",
+            (stored_path,),
+        ).fetchone() is not None
+        if still_referenced:
+            continue
+        with contextlib.suppress(OSError):
+            p = Path(stored_path)
+            if p.is_file():
+                p.unlink()
 
 
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Hard-delete an ARCHIVED task (+ related rows); anything else must be
     archived first so data loss takes two deliberate actions."""
+    blob_paths: list[str] = []
     with write_txn(conn):
         if _task_status(conn, task_id) != "archived":
             return False
-        _delete_task_relations(conn, task_id)
+        blob_paths = _delete_task_relations(conn, task_id)
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        return cur.rowcount == 1
+        deleted = cur.rowcount == 1
+    _reap_attachment_blobs(conn, blob_paths)
+    return deleted
 
 
 def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Hard-delete a task and its related rows in one txn; False when not found."""
+    blob_paths: list[str] = []
     with write_txn(conn):
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
-        _delete_task_relations(conn, task_id)
+        blob_paths = _delete_task_relations(conn, task_id)
+    _reap_attachment_blobs(conn, blob_paths)
     recompute_ready(conn)
     return True
 

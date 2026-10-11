@@ -1,5 +1,6 @@
 """Tests for the long-lived gateway heap-trim helper."""
 
+import logging
 from unittest.mock import Mock
 
 import pytest
@@ -12,15 +13,23 @@ def _reset_trim_state(monkeypatch):
     monkeypatch.setattr(mem_trim, "_last_trim_monotonic", 0.0)
     monkeypatch.setattr(mem_trim, "_probe_done", True)
     monkeypatch.setattr(mem_trim, "_malloc_trim", None)
+    # raising=False keeps the fixture valid against the pre-#131766 module, where
+    # the darwin probe globals did not exist yet.
+    monkeypatch.setattr(mem_trim, "_darwin_probe_done", True, raising=False)
+    monkeypatch.setattr(mem_trim, "_darwin_relief", None, raising=False)
     monkeypatch.setattr(mem_trim, "_trim_call_count", 0)
 
 
-def test_unsupported_allocator_is_noop_without_gc(monkeypatch):
+def test_gc_collect_runs_even_without_platform_primitive(monkeypatch):
+    # Reverses the pre-#131766 contract: with NO page-release primitive resolved
+    # (unsupported platform or allocator), trim_memory must still run its
+    # rate-limited gc.collect() pass — cycle collection was never glibc-specific.
+    # Only the reported success flag stays False when there is no primitive.
     collect = Mock()
     monkeypatch.setattr(mem_trim.gc, "collect", collect)
 
     assert mem_trim.trim_memory(force=True, reason="test") is False
-    collect.assert_not_called()
+    collect.assert_called_once()
 
 
 def test_config_kill_switch_overrides_force_from_config_file(monkeypatch, tmp_path):
@@ -77,8 +86,61 @@ def test_success_collects_then_trims(monkeypatch):
     assert mem_trim._last_trim_monotonic == 100.0
 
 
+def test_darwin_pressure_relief_runs_after_gc_and_reports_success(monkeypatch):
+    # macOS page release: libSystem malloc_zone_pressure_relief(zone=None, len=0,
+    # flags=0) relieves every allocator zone. It must run AFTER the cycle
+    # collection and report success (True) when it executes without raising —
+    # the void API has no return code, so "executed" is the success contract.
+    monkeypatch.setattr(mem_trim.sys, "platform", "darwin")
+    calls = []
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: calls.append("gc"))
+    relief = Mock(
+        side_effect=lambda zone, length, flags: calls.append(("relief", zone, length, flags)))
+    monkeypatch.setattr(mem_trim, "_darwin_probe_done", True)
+    monkeypatch.setattr(mem_trim, "_darwin_relief", relief)
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+
+    assert mem_trim.trim_memory(force=True, reason="turn") is True
+    assert calls == ["gc", ("relief", None, 0, 0)]
+    assert mem_trim._trim_call_count == 1
+    assert mem_trim._last_trim_monotonic == 100.0
 
 
+def test_darwin_relief_failure_is_fail_open_and_rate_limited(monkeypatch):
+    # A raising pressure-relief call behaves like a failing malloc_trim: warn,
+    # return False, and keep the cooldown timestamp so bursts do not stack retries.
+    monkeypatch.setattr(mem_trim.sys, "platform", "darwin")
+    relief = Mock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr(mem_trim, "_darwin_probe_done", True)
+    monkeypatch.setattr(mem_trim, "_darwin_relief", relief)
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: None)
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+
+    assert mem_trim.trim_memory(reason="test", cooldown_seconds=60) is False
+    assert mem_trim._last_trim_monotonic == 100.0
+    assert mem_trim.trim_memory(cooldown_seconds=60) is False
+    assert relief.call_count == 1
+
+
+def test_darwin_success_log_still_honors_log_every_n_throttle(monkeypatch, caplog):
+    # The darwin path must not bypass the _should_log_trim throttle: with
+    # log_every_n=3 only the third successful release logs, exactly like the
+    # glibc malloc_trim path.
+    monkeypatch.setattr(mem_trim.sys, "platform", "darwin")
+    monkeypatch.setattr(mem_trim, "_config_settings", lambda: (True, 0.0, 3, 0.0))
+    relief = Mock()
+    monkeypatch.setattr(mem_trim, "_darwin_probe_done", True)
+    monkeypatch.setattr(mem_trim, "_darwin_relief", relief)
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: None)
+    ticks = iter((100.0, 101.0, 102.0))
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: next(ticks))
+
+    with caplog.at_level(logging.INFO, logger=mem_trim.logger.name):
+        for _ in range(3):
+            assert mem_trim.trim_memory(reason="turn", cooldown_seconds=0) is True
+
+    trim_logs = [r for r in caplog.records if "memory trim" in r.getMessage()]
+    assert len(trim_logs) == 1
 
 
 def test_cooldown_suppresses_repeated_collection(monkeypatch):

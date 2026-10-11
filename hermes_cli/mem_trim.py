@@ -1,8 +1,9 @@
 """Rate-limited heap release for long-lived Hermes gateway processes.
 
-On Linux/glibc, ``malloc_trim(0)`` can return pages from freed Python/C allocations to the OS. Other
-platforms and allocators are safe no-ops. Behavior is configured under ``context.memory_trim`` in
-``config.yaml``.
+``malloc_trim(0)`` (Linux/glibc) and ``malloc_zone_pressure_relief`` (macOS 10.15+) can
+return pages from freed Python/C allocations to the OS. Unsupported platforms still get
+the rate-limited ``gc.collect()`` pass; page release is simply a safe no-op there.
+Behavior is configured under ``context.memory_trim`` in ``config.yaml``.
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ _trim_lock = threading.Lock()
 _last_trim_monotonic = 0.0
 _probe_done = False
 _malloc_trim: Callable[[int], int] | None = None
+_darwin_probe_done = False
+_darwin_relief: Callable[[int | None, int, int], None] | None = None
 _trim_call_count = 0
 
 
@@ -106,8 +109,9 @@ def collect_memory_snapshot(history_bytes: int | None = None) -> dict[str, int |
 def _should_log_trim(
     *, force: bool, log_every_n: int, call_count: int, before: dict[str, int | None],
     after: dict[str, int | None], info_log_min_delta_mb: float) -> bool:
-    # Called only after malloc_trim reported success; a forced successful trim is an
-    # explicit observability event regardless of RSS.
+    # Called only after the platform page-release primitive reported success (glibc
+    # malloc_trim non-zero, darwin pressure relief executed without raising); a forced
+    # successful trim is an explicit observability event regardless of RSS.
     if force:
         return True
     if call_count % log_every_n:
@@ -139,13 +143,38 @@ def _probe_glibc_malloc_trim() -> Callable[[int], int] | None:
     return _malloc_trim
 
 
+def _probe_darwin_pressure_relief() -> Callable[[int | None, int, int], None] | None:
+    """Resolve libSystem's malloc_zone_pressure_relief once; None off macOS.
+
+    Void API (macOS 10.15+): ``relief(zone, length, flags)`` has no return code, so
+    "executed without raising" is the success contract.
+    """
+    global _darwin_probe_done, _darwin_relief
+    if _darwin_probe_done:
+        return _darwin_relief
+    _darwin_probe_done = True
+    if sys.platform != "darwin":
+        return None
+    try:
+        relief = ctypes.CDLL("libSystem.B.dylib").malloc_zone_pressure_relief
+        relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint]
+        relief.restype = None
+        _darwin_relief = relief
+    except Exception as exc:
+        logger.debug("malloc_zone_pressure_relief unavailable: %s", exc)
+    return _darwin_relief
+
+
 def trim_memory(
     *, force: bool = False, reason: str = "", cooldown_seconds: float | None = None) -> bool:
-    """Collect cycles and ask glibc to release free heap pages.
+    """Collect cycles and release free heap pages back to the OS.
 
-    Returns ``True`` only when ``malloc_trim(0)`` ran and reported success. Unsupported allocators,
-    the config kill switch, cooldown suppression, and all runtime errors return ``False`` without
-    affecting the caller.
+    Returns ``True`` only when the platform's page-release primitive ran successfully:
+    glibc ``malloc_trim(0)`` reporting non-zero, or macOS ``malloc_zone_pressure_relief``
+    executing without raising (a void API, so execution IS the success contract). The
+    rate-limited ``gc.collect()`` runs on every platform; unsupported page-release
+    targets return ``False`` after still collecting. The config kill switch, cooldown
+    suppression, and runtime errors return ``False`` without affecting the caller.
     """
     enabled, configured_cooldown, log_every_n, info_log_min_delta_mb = _config_settings()
     if not enabled:
@@ -154,8 +183,7 @@ def trim_memory(
     global _last_trim_monotonic, _trim_call_count
     with _trim_lock:
         trim = _probe_glibc_malloc_trim()
-        if trim is None:
-            return False
+        relief = _probe_darwin_pressure_relief() if sys.platform == "darwin" else None
         now = time.monotonic()
         cooldown = configured_cooldown if cooldown_seconds is None else _cooldown_seconds(cooldown_seconds)
         since_last = now - _last_trim_monotonic
@@ -168,8 +196,20 @@ def trim_memory(
             before = collect_memory_snapshot()
             started = time.perf_counter()
             gc.collect()
-            trim_result = trim(0)
-            released = bool(trim_result)
+            if trim is not None:
+                trim_result = trim(0)
+                released = bool(trim_result)
+            elif relief is not None:
+                # All zones (None), no byte cap (0), default flags (0): full
+                # heuristic pressure relief across the process.
+                relief(None, 0, 0)
+                trim_result = True
+                released = True
+            else:
+                # No page-release primitive here: the gc pass above is still worth
+                # its cost, only the success flag stays False.
+                trim_result = False
+                released = False
             after = collect_memory_snapshot()
             duration_ms = (time.perf_counter() - started) * 1000
             _trim_call_count += 1

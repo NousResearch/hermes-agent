@@ -271,6 +271,36 @@ def _skip(seen: set, excluded: set, *keys: str) -> bool:
     return any(k in seen for k in lowered) or any(k in excluded for k in lowered)
 
 
+def _expanded_excluded_provider_set(entries) -> set:
+    """Normalized ``model_catalog.excluded_providers`` entries expanded to every
+    key the providers they name surface under.
+
+    An exclusion names a provider by slug OR any alias (``moonshot`` →
+    ``kimi-coding``), case- and whitespace-insensitively. The canonical skeleton
+    loop (``inventory._append_unconfigured_rows``) and the CLI picker
+    (``main_provider_setup``) both expand ``_PROVIDER_ALIASES`` before filtering;
+    these row filters historically raw-matched only, so an aliased exclusion hid
+    a provider in ``hermes model`` while it survived on the gateway/TUI/Desktop
+    pickers. Expanding alias → canonical AND canonical → every sibling alias here
+    keeps a single spelling from leaking a row keyed under any other name.
+    (Concept rebased from #94362, which targeted the pre-refactor
+    ``model_switch.py`` layout this code has since moved out of.)"""
+    raw = {str(p).strip().lower() for p in (entries or ()) if p and str(p).strip()}
+    if not raw:
+        return set()
+    from hermes_cli.models import _PROVIDER_ALIASES
+
+    names_for: dict[str, set[str]] = {}
+    for alias, canon in _PROVIDER_ALIASES.items():
+        canon = str(canon).strip().lower()
+        names_for.setdefault(canon, {canon}).add(str(alias).strip().lower())
+    out = set(raw)
+    for canon, names in names_for.items():
+        if names & raw:
+            out |= names
+    return out
+
+
 def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
     """Yield ``(hermes_id, mdev_id, pconfig, env_vars)`` for section-1 rows.
 
@@ -657,7 +687,7 @@ def _collect_authed_provider_slugs(
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.providers import HERMES_OVERLAYS
     from hermes_cli.models import CANONICAL_PROVIDERS
-    excluded_set = {str(p).strip().lower() for p in excluded if p}
+    excluded_set = _expanded_excluded_provider_set(excluded)
     slugs: list[str] = []
     seen: set[str] = set()
 
@@ -1274,7 +1304,7 @@ def list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url, current_model=current_model,
         max_models=max_models, for_picker=for_picker, force_fresh_nous_tier=force_fresh_nous_tier,
         probe_custom_providers=probe_custom_providers, probe_current_custom_provider=probe_current_custom_provider,
-        refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
+        refresh=refresh, excluded=_expanded_excluded_provider_set(excluded_providers),
         non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
         curated=_build_curated_lists(current_provider, current_base_url, current_model,
                                      non_blocking=non_blocking_catalogs))

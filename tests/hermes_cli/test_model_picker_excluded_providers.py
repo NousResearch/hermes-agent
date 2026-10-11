@@ -219,3 +219,168 @@ def test_unconfigured_rows_empty_excluded_is_noop():
     empty = {r["slug"].lower() for r in _append_unconfigured_rows([], _picker_ctx(excluded=[]))}
     none = {r["slug"].lower() for r in _append_unconfigured_rows([], _picker_ctx(excluded=None))}
     assert base == empty == none
+
+
+# ─── authed picker rows (list_authenticated_providers) ────────────────────────
+# The skeleton loop and the CLI picker expand ``_PROVIDER_ALIASES`` before
+# filtering, but the authed-row filters in ``model_switch_providers`` raw-matched
+# the normalized entries only: excluding the alias ``moonshot`` left the
+# authenticated ``kimi-coding`` row visible on the gateway/TUI/Desktop pickers
+# while ``hermes model`` hid it. Alias parity for that path (#68816 contract,
+# rebased from #94362).
+
+
+def test_expanded_excluded_set_is_alias_aware():
+    """An alias exclusion expands to its canonical slug (and siblings), a
+    canonical exclusion expands to every alias that surfaces it."""
+    from hermes_cli.model_switch_providers import _expanded_excluded_provider_set
+
+    by_alias = _expanded_excluded_provider_set(["moonshot"])
+    assert "moonshot" in by_alias
+    assert "kimi-coding" in by_alias, "alias exclusion must hide the canonical slug"
+
+    by_canonical = _expanded_excluded_provider_set(["kimi-coding"])
+    assert "kimi-coding" in by_canonical
+    assert "moonshot" in by_canonical and "kimi" in by_canonical, (
+        "canonical exclusion must cover every key the provider surfaces as"
+    )
+
+
+def test_expanded_excluded_set_normalizes_case_and_whitespace():
+    from hermes_cli.model_switch_providers import _expanded_excluded_provider_set
+
+    for entry in ("Moonshot", "  moonshot  ", "  KIMI-CODING ", "MOONSHOT"):
+        got = _expanded_excluded_provider_set([entry])
+        assert "kimi-coding" in got, f"{entry!r} should hide kimi-coding; got {got}"
+
+
+def test_expanded_excluded_set_empty_and_none_are_noop():
+    from hermes_cli.model_switch_providers import _expanded_excluded_provider_set
+
+    assert _expanded_excluded_provider_set([]) == set()
+    assert _expanded_excluded_provider_set(None) == set()
+    assert _expanded_excluded_provider_set(["", "  ", None]) == set()
+
+
+def test_expanded_excluded_set_leaves_unrelated_providers_alone():
+    from hermes_cli.model_switch_providers import _expanded_excluded_provider_set
+
+    got = _expanded_excluded_provider_set(["moonshot"])
+    assert "openrouter" not in got
+    assert "kimi-coding-cn" not in got, "the CN sibling is a distinct provider"
+
+
+def _stub_kimi_authed_discovery(monkeypatch):
+    """Isolate ``list_authenticated_providers`` to the Kimi family, fully offline:
+    stubbed models.dev map/catalog/overlays/canonical list plus a canned model-id
+    fetch, so no network, no credentials and no user config are involved."""
+    import agent.models_dev as md
+    import hermes_cli.models as hm
+    import hermes_cli.models_catalog_static as csm
+    from hermes_cli import models_catalog_static
+
+    monkeypatch.setattr(md, "PROVIDER_TO_MODELS_DEV", {
+        "kimi": "kimi-for-coding",
+        "kimi-coding": "kimi-for-coding",
+        "moonshot": "kimi-for-coding",
+        "kimi-coding-cn": "kimi-for-coding",
+    })
+    monkeypatch.setattr(md, "fetch_models_dev", lambda *a, **k: {
+        "kimi-for-coding": {"name": "Kimi For Coding", "env": ["KIMI_API_KEY"]},
+    })
+
+    from agent.models_dev import ProviderInfo
+
+    monkeypatch.setattr(md, "get_provider_info", lambda _pid: ProviderInfo(
+        id="kimi-for-coding", name="Kimi For Coding", env=("KIMI_API_KEY",), api=""))
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    canonical = [
+        models_catalog_static.ProviderEntry("kimi-coding", "Kimi / Kimi Coding Plan", "desc"),
+        models_catalog_static.ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)", "desc"),
+    ]
+    monkeypatch.setattr(hm, "CANONICAL_PROVIDERS", canonical)
+    monkeypatch.setattr(csm, "CANONICAL_PROVIDERS", canonical)
+    monkeypatch.setattr(hm, "cached_provider_model_ids", lambda *a, **k: ["kimi-k2.6"])
+    monkeypatch.setattr(hm, "clear_provider_models_cache", lambda *a, **k: None)
+    monkeypatch.setenv("KIMI_API_KEY", "sk-test-kimi")
+    # Separate credential so the CN row is not dedup-collapsed into the global one.
+    monkeypatch.setenv("KIMI_CN_API_KEY", "sk-test-kimi-cn")
+
+
+def _authed_slugs(monkeypatch, excluded, **kw):
+    from hermes_cli import model_switch
+
+    rows = model_switch.list_authenticated_providers(
+        max_models=10, excluded_providers=excluded, **kw)
+    return {str(r.get("slug", "")).lower() for r in rows}
+
+
+def test_authed_row_hidden_by_alias_exclusion(monkeypatch):
+    """The #68816 contract on the authed path: ``excluded_providers: [moonshot]``
+    must hide the authenticated ``kimi-coding`` row — it used to leak through
+    because the row filters never expanded aliases."""
+    _stub_kimi_authed_discovery(monkeypatch)
+
+    baseline = _authed_slugs(monkeypatch, [])
+    assert "kimi-coding" in baseline, f"sanity: kimi-coding should list; got {baseline}"
+
+    assert "kimi-coding" not in _authed_slugs(monkeypatch, ["moonshot"])
+    assert "kimi-coding" not in _authed_slugs(monkeypatch, ["Moonshot"])
+    assert "kimi-coding" not in _authed_slugs(monkeypatch, ["  moonshot  "])
+    assert "kimi-coding" not in _authed_slugs(monkeypatch, ["kimi-coding"])
+
+
+def test_authed_alias_exclusion_keeps_unrelated_rows(monkeypatch):
+    """Excluding the global Kimi family must not touch the distinct CN provider."""
+    _stub_kimi_authed_discovery(monkeypatch)
+
+    baseline = _authed_slugs(monkeypatch, [])
+    assert "kimi-coding-cn" in baseline, f"sanity: CN row should list; got {baseline}"
+
+    slugs = _authed_slugs(monkeypatch, ["moonshot"])
+    assert "kimi-coding" not in slugs
+    assert "kimi-coding-cn" in slugs, "unrelated providers must remain visible"
+    assert slugs == baseline - {"kimi-coding"}, "only the excluded provider should be removed"
+
+
+def test_authed_alias_exclusion_empty_is_noop(monkeypatch):
+    _stub_kimi_authed_discovery(monkeypatch)
+
+    baseline = _authed_slugs(monkeypatch, [])
+    assert _authed_slugs(monkeypatch, []) == baseline
+    assert _authed_slugs(monkeypatch, None) == baseline
+    assert _authed_slugs(monkeypatch, []) == baseline
+
+
+def test_authed_alias_excluded_current_provider_stays_hidden(monkeypatch):
+    """An excluded provider stays excluded even when it is the current provider
+    (the existing picker behavior — expansion must not reintroduce it)."""
+    _stub_kimi_authed_discovery(monkeypatch)
+
+    baseline = _authed_slugs(monkeypatch, [], current_provider="kimi-coding")
+    assert "kimi-coding" in baseline, f"sanity: current provider should list; got {baseline}"
+
+    slugs = _authed_slugs(monkeypatch, ["moonshot"], current_provider="kimi-coding")
+    assert "kimi-coding" not in slugs
+
+
+def test_payload_alias_exclusion_hides_row_for_desktop(monkeypatch):
+    """End-to-end over the Desktop path: ``build_models_payload`` with
+    ``include_unconfigured=True`` (what ``GET /api/model/options`` serves) must
+    emit no ``kimi-coding`` row when the exclusion names its alias — neither the
+    authed row nor a canonical skeleton may resurrect it."""
+    _stub_kimi_authed_discovery(monkeypatch)
+    from hermes_cli.inventory import build_models_payload
+
+    def _payload(excluded):
+        p = build_models_payload(
+            _picker_ctx(excluded=excluded), include_unconfigured=True,
+            probe_custom_providers=False, non_blocking_catalogs=True)
+        return {str(r.get("slug", "")).lower() for r in p["providers"]}
+
+    baseline = _payload([])
+    assert "kimi-coding" in baseline, f"sanity: kimi-coding should be in payload; got {baseline}"
+
+    slugs = _payload(["moonshot"])
+    assert "kimi-coding" not in slugs, "alias-excluded provider leaked into the payload"
+    assert "kimi-coding-cn" in slugs, "unrelated providers must remain in the payload"

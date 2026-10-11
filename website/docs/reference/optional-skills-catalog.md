@@ -220,6 +220,7 @@ hermes skills uninstall <skill-name>
 | [**initiate-setup**](../user-guide/skills/optional/productivity/productivity-initiate-setup.md) | Run the first-run setup chat in the Hermes desktop app. |
 | [**live-dashboard**](../user-guide/skills/optional/productivity/productivity-live-dashboard.md) | Build self-updating dashboards from live sources. |
 | [**memento-flashcards**](../user-guide/skills/optional/productivity/productivity-memento-flashcards.md) | Spaced-repetition flashcards: create, review, quiz, export. |
+| [**memory-extension**](../user-guide/skills/optional/productivity/productivity-memory-extension.md) | Extend Hermes memory: index + on-demand detail files. |
 | [**property-listings**](../user-guide/skills/optional/productivity/productivity-property-listings.md) | Present property and rental listings as desktop cards. |
 | [**shop**](../user-guide/skills/optional/productivity/productivity-shop.md) | Shop catalog search, checkout, order tracking, returns. |
 | [**shopify**](../user-guide/skills/optional/productivity/productivity-shopify.md) | Query Shopify Admin/Storefront GraphQL APIs via curl. |

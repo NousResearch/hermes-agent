@@ -28,6 +28,22 @@ def _hits(src: str) -> list[int]:
     ("from asyncio import sleep\nasync def f():\n    await sleep(3600)\n", True),
     ("import asyncio\ntask = asyncio.create_task(asyncio.sleep(60))\n", True),
     ("import time\ndef f(interval):\n    time.sleep(interval)\n", True),  # a sleep whatever the value
+    # a loop that only waits out the clock, or polls with no deadline, is still a fixed delay
+    ("import time\nend = time.monotonic() + 2\nwhile time.monotonic() < end:\n    time.sleep(0.1)\n",
+     True),
+    ("import time\nwhile not done():\n    time.sleep(0.01)\n", True),
+    ("import time\nend = time.monotonic() + 2\nwhile True:\n    time.sleep(1)\n"
+     "    if time.monotonic() > end:\n        break\n", True),
+    # ... but the interval of a poll under a deadline is the compliant shape
+    ("import time\nend = time.monotonic() + 5\nwhile not done() and time.monotonic() < end:\n"
+     "    time.sleep(0.05)\n", False),
+    ("import time\ndef w(p):\n    end = time.monotonic() + 5\n    while time.monotonic() < end:\n"
+     "        if p():\n            return True\n        time.sleep(0.5)\n", False),
+    ("import asyncio\nasync def w(p):\n    loop = asyncio.get_running_loop()\n    end = loop.time() + 5\n"
+     "    while not p():\n        assert loop.time() < end\n        await asyncio.sleep(0.01)\n", False),
+    # a def inside the poll loop is not its interval
+    ("import time\nend = time.monotonic() + 5\nwhile not done() and time.monotonic() < end:\n"
+     "    def cb():\n        time.sleep(1)\n", True),
     ("import threading\nthreading.Event().wait(0.2)\n", True),  # an Event nobody can set
     # yields and non-sleeps
     ("import time\ntime.sleep(0)\n", False),

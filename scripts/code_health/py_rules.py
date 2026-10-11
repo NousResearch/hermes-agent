@@ -935,16 +935,65 @@ def _zero(node: ast.expr | None) -> bool:
             and node.value == 0)
 
 
-def wall_clock_sleep(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
-    """``time.sleep(x)`` / ``asyncio.sleep(x)`` (any alias) with ``x`` not a literal zero.
+_CLOCKS = {"time.monotonic", "time.time", "time.perf_counter", "time.monotonic_ns", "time.time_ns"}
 
-    Every non-zero delay counts, however small: the sub-10 ms ones on main are poll intervals
-    and timestamp-separation hacks, which a Windows runner's ~15.6 ms clock already breaks.
-    A non-literal delay counts too (it is a sleep whether or not the value is known).
+
+def _reads_clock(node: ast.AST) -> bool:
+    """A wall-clock read: ``time.monotonic()`` and friends, or an event loop's ``.time()``."""
+    for inner in _eager(node):
+        if isinstance(inner, ast.Call):
+            name = _call_name(inner)
+            if name in _CLOCKS or name.endswith(("loop().time", "loop.time")):
+                return True
+    return False
+
+
+def _condition_exit(loop: ast.While) -> bool:
+    """The loop can end on something other than the clock: a non-clock condition in its test,
+    or a ``break``/``return`` under an ``if`` whose test is not a clock comparison."""
+    test = loop.test
+    if not isinstance(test, ast.Constant) and not (isinstance(test, ast.Compare) and _reads_clock(test)):
+        return True
+    for stmt in loop.body:
+        for node in _eager(stmt):
+            if isinstance(node, ast.If) and not _reads_clock(node.test):
+                if any(isinstance(n, (ast.Break, ast.Return)) for s in node.body for n in _eager(s)):
+                    return True
+    return False
+
+
+def _deadline_poll(loop: ast.While) -> bool:
+    """A loop polling a condition under a deadline: it reads a clock (test or body) and can
+    end on the condition. ``while time.monotonic() < end: sleep(.1)`` alone is a fixed delay."""
+    clock = _reads_clock(loop.test) or any(_reads_clock(stmt) for stmt in loop.body)
+    return clock and _condition_exit(loop)
+
+
+def _sleep_loops(tree: ast.Module) -> Iterator[tuple[ast.Call, ast.AST | None]]:
+    """Each call in ``tree`` with its nearest enclosing loop in the same function (or None)."""
+    stack: list[tuple[ast.AST, ast.AST | None]] = [(tree, None)]
+    while stack:
+        node, loop = stack.pop()
+        for child in ast.iter_child_nodes(node):
+            inner = loop
+            if isinstance(child, (*_FUNCS, ast.Lambda)):
+                inner = None
+            elif isinstance(child, (ast.While, ast.For, ast.AsyncFor)):
+                inner = child
+            if isinstance(child, ast.Call):
+                yield child, loop
+            stack.append((child, inner))
+
+
+def wall_clock_sleep(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+    """``time.sleep(x)`` / ``asyncio.sleep(x)`` (any alias) with ``x`` not a literal zero,
+    unless it is the interval of a loop polling a condition under a deadline.
+
+    Every other non-zero delay counts, however small: the sub-10 ms ones on main are poll
+    intervals without a deadline and timestamp-separation hacks, which a Windows runner's
+    ~15.6 ms clock already breaks. A non-literal delay counts too.
     """
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
+    for node, loop in _sleep_loops(tree):
         names = _SLEEPS.get(_call_name(node))
         if names is None:
             continue
@@ -952,8 +1001,9 @@ def wall_clock_sleep(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
         if names == ("timeout",) and (delay is None or (
                 isinstance(delay, ast.Constant) and delay.value is None)):
             continue  # an Event wait without a deadline hangs; it does not sleep
-        if not _zero(delay):
-            yield node.lineno
+        if _zero(delay) or (isinstance(loop, ast.While) and _deadline_poll(loop)):
+            continue
+        yield node.lineno
 
 
 CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {

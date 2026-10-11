@@ -42,7 +42,7 @@ def wait_until(predicate: Callable[[], T], timeout: float = DEFAULT_TIMEOUT,
             return value
         if time.monotonic() >= deadline:
             raise _timed_out(what, timeout)
-        time.sleep(interval)  # health: allow HX013 -- the shared poll interval under a deadline
+        time.sleep(interval)
 
 
 async def async_wait_until(predicate: Callable[[], T], timeout: float = DEFAULT_TIMEOUT,
@@ -55,4 +55,4 @@ async def async_wait_until(predicate: Callable[[], T], timeout: float = DEFAULT_
             return value
         if time.monotonic() >= deadline:
             raise _timed_out(what, timeout)
-        await asyncio.sleep(interval)  # health: allow HX013 -- the shared poll interval under a deadline
+        await asyncio.sleep(interval)

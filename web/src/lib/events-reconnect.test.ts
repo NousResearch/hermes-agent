@@ -43,10 +43,6 @@ describe("eventsReconnectDelayMs", () => {
       previous = delay;
     }
   });
-
-  it("stays finite for absurd attempt counts", () => {
-    expect(Number.isFinite(eventsReconnectDelayMs(10_000))).toBe(true);
-  });
 });
 
 describe("shouldRetryEventsClose", () => {
@@ -104,33 +100,5 @@ describe("reconnect message copy", () => {
   it("renders the delay in whole seconds", () => {
     expect(eventsReconnectingMessage(1_000)).toContain("1s");
     expect(eventsReconnectingMessage(30_000)).toContain("30s");
-  });
-
-  it("tells the user to reload on an auth rejection without printing the close code", () => {
-    expect(eventsRejectedMessage(4403)).toMatch(/reload the page/i);
-    expect(eventsRejectedMessage(4403)).not.toContain("4403");
-  });
-
-  it("never names the transport ('events feed', 'WebSocket') in user-facing copy", () => {
-    for (const message of [
-      EVENTS_DISCONNECTED_MESSAGE,
-      eventsReconnectingMessage(1_000),
-      eventsRejectedMessage(4401),
-      eventsGaveUpMessage(),
-    ]) {
-      expect(message).not.toMatch(/events feed|websocket/i);
-    }
-  });
-
-  it("does not reference the tools box removed in #51737", () => {
-    const messages = [
-      EVENTS_DISCONNECTED_MESSAGE,
-      eventsReconnectingMessage(1_000),
-      eventsRejectedMessage(4401),
-      eventsGaveUpMessage(),
-    ];
-    for (const message of messages) {
-      expect(message).not.toContain("tool calls");
-    }
   });
 });

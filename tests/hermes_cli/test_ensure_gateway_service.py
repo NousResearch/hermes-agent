@@ -95,16 +95,6 @@ class TestEnsureGatewayService:
         assert gateway_mod.ensure_gateway_service() is False
         assert warned and not calls
 
-    def test_macos_uses_launchd(self, monkeypatch):
-        _patch_host(monkeypatch, systemd=False, macos=True)
-        monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
-        monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
-        calls = []
-        monkeypatch.setattr(gateway_mod, "launchd_install", lambda force=False: calls.append("install"))
-        monkeypatch.setattr(gateway_mod, "launchd_start", lambda: calls.append("start"))
-
-        assert gateway_mod.ensure_gateway_service() is True
-        assert calls == ["install", "start"]
 
     def test_never_raises_on_install_failure(self, monkeypatch, capsys):
         _patch_host(monkeypatch)

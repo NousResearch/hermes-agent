@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tupl
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.permissions import _child_env as _sanitized_cua_env
+from tools.computer_use.permissions import stale_tcc_grant_hint
 
 # Match the ALLOWED_STATUS_VALUES + ALLOWED_OVERALL_VALUES the cua-driver integration test pins.
 _STATUS_GLYPH = {"pass": "✅", "fail": "❌", "skip": "⏭️"}
@@ -34,8 +35,8 @@ _DEAD_DAEMON_MSG = ("{unit} is configured to run `cua-driver serve` but no daemo
                     "the unit is not running (crash loop, stopped, or never started)")
 _DEAD_DAEMON_HINT = ("Check `systemctl --user status {unit}` / `journalctl --user -u {unit}`; a driver reinstall does not "
                      "start the daemon and cannot fix a broken unit")
-Report = Dict[str, Any]
-_Row = Tuple[str, str, Report]  # (status, message, extra {hint?, data?}) for one check
+Report = dict[str, Any]
+_Row = tuple[str, str, Report]  # (status, message, extra {hint?, data?}) for one check
 
 
 class HealthReportUnavailable(RuntimeError):
@@ -44,9 +45,9 @@ class HealthReportUnavailable(RuntimeError):
 def _run_cli(binary: str, *args: str, timeout: float) -> subprocess.CompletedProcess:
     """Run ``<binary> args`` with UTF-8 capture + sanitized env (raises on failure)."""
     return subprocess.run([binary, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                          env=_sanitized_cua_env(), stdin=subprocess.DEVNULL)
+                          env=_sanitized_cua_env(), stdin=subprocess.DEVNULL, check=False)
 
-def _cli_text(binary: str, *args: str, timeout: float, exc_types: Tuple[type, ...] = _IO_EXC) -> Union[subprocess.CompletedProcess, BaseException]:
+def _cli_text(binary: str, *args: str, timeout: float, exc_types: tuple[type, ...] = _IO_EXC) -> subprocess.CompletedProcess | BaseException:
     """``_run_cli`` that returns (not raises) any exception in *exc_types*."""
     try:
         return _run_cli(binary, *args, timeout=timeout)
@@ -64,7 +65,7 @@ def _read_cli_version(binary: str, *, timeout: float = 5.0) -> Optional[str]:
     cp = _cli_text(binary, "--version", timeout=timeout, exc_types=_IO_EXC + (ValueError, TypeError))
     return None if isinstance(cp, BaseException) else _first_line(cp.stdout or cp.stderr or "")
 
-def _cli_driver_version(binary: str, timeout: float = 5.0) -> Tuple[str, Optional[str]]:
+def _cli_driver_version(binary: str, timeout: float = 5.0) -> tuple[str, Optional[str]]:
     """(status, version_or_message) from ``cua-driver --version``."""
     cp = _cli_text(binary, "--version", timeout=timeout)
     if isinstance(cp, BaseException):
@@ -127,7 +128,7 @@ def _mcp_rpc(proc: subprocess.Popen, msg_id: int, method: str, params: Any = Non
     proc.stdin.flush()
     line = proc.stdout.readline()
     if not line:
-        tail: List[str] = []
+        tail: list[str] = []
         with suppress(Exception):  # last 3 stderr lines, best-effort
             tail = [str(x) for x in (proc.stderr.read() or "").strip().splitlines()[-3:]]
         raise RuntimeError(f"cua-driver mcp produced no response for {method!r}. stderr tail: {tail or '(empty)'}")
@@ -171,7 +172,7 @@ def _drive_health_report(binary: str, *, include: Sequence[str] = (), skip: Sequ
 def _structured(result: Report) -> Report:
     return result["structuredContent"] if isinstance(result.get("structuredContent"), dict) else {}
 
-def _probe_tool(proc: subprocess.Popen, msg_id: int, name: str) -> Tuple[Optional[Report], Optional[str]]:
+def _probe_tool(proc: subprocess.Popen, msg_id: int, name: str) -> tuple[Optional[Report], Optional[str]]:
     """``(result, None)`` on success; ``(None, error_text)`` on isError or RPC failure."""
     try:
         result = _call_tool(proc, msg_id, name)
@@ -229,7 +230,7 @@ def _cli_doctor_row(txt: Optional[str]) -> Optional[_Row]:
                                  {"data": {"snippet": txt[:2000]}})
 
 # Fallback composite probe table, in emitted order: (check name, row builder(ctx) -> _Row | None to omit).
-_FALLBACK_PROBES: Tuple[Tuple[str, Callable[[Report], Optional[_Row]]], ...] = (
+_FALLBACK_PROBES: tuple[tuple[str, Callable[[Report], Optional[_Row]]], ...] = (
     ("binary_version", lambda c: (c["ver_status"], c["ver_msg"], {})),
     ("platform_supported", lambda c: ("pass", f"platform={c['plat']}", {}) if c["plat"] in _SUPPORTED_PLATFORMS else ("fail", f"platform={c['plat']} (unsupported)", {})),
     # doctor does not start a session, so session_active is never probed
@@ -242,7 +243,7 @@ _FALLBACK_PROBES: Tuple[Tuple[str, Callable[[Report], Optional[_Row]]], ...] = (
     ("cli_doctor", lambda c: _cli_doctor_row(c["doctor_txt"])),
 )
 
-def _overall_from(checks: List[Report]) -> str:
+def _overall_from(checks: list[Report]) -> str:
     """failed if binary missing/bad; ok if accessibility fine and nothing failed; else degraded."""
     by_name = {c.get("name"): c.get("status") for c in checks}
     if by_name.get("binary_version") != "pass":
@@ -272,6 +273,19 @@ def _compose_fallback_report(binary: str, *, reason: str = "", timeout: float = 
             "overall": _overall_from(checks), "checks": checks,
             "fallback": True, "fallback_reason": reason or "health_report unavailable"}
 
+_TCC_CHECK_FIELDS = {"tcc_accessibility": "accessibility", "tcc_screen_recording": "screen_recording"}
+
+def _apply_stale_tcc_guard(report: Report) -> Report:
+    """Append the stale-row recovery to every failed ``tcc_*`` check. Applied at the report seam so the driver's
+    own health_report rows (0.22+) get it too, not only the 0.10 fallback probes — the users hit by a stale row
+    are on current drivers (trycua/cua#3170)."""
+    checks = report.get("checks")
+    for check in (c for c in (checks if isinstance(checks, list) else ()) if isinstance(c, dict)):
+        field = _TCC_CHECK_FIELDS.get(check.get("name"))
+        if field and check.get("status") == "fail":
+            check["hint"] = f"{check.get('hint') or ''} {stale_tcc_grant_hint(field)}".strip()
+    return report
+
 def _apply_display_count_guard(report: Report) -> Report:
     """Fail an 'ok' screen_capture_capability with ``display_count=0``: macOS ScreenCaptureKit reports 0 on headless
     / asleep panels — TCC fine, health_report ok, yet every capture is 0x0. Turns a silent failure actionable; applied
@@ -288,14 +302,14 @@ def _apply_display_count_guard(report: Report) -> Report:
                 report["overall"] = "degraded"
     return report
 
-def cua_daemon_units(config_dir: Optional[str] = None) -> List[Tuple[str, str, str, bool, Optional[str]]]:
+def cua_daemon_units(config_dir: Optional[str] = None) -> list[tuple[str, str, str, bool, Optional[str]]]:
     """(kind, unit, exec_target, runs_serve, --socket path or None) for every systemd user unit / XDG autostart
     entry whose Exec runs cua-driver — the hand-written daemon units Linux relies on (there is no managed
     autostart). ``%h`` is expanded in the socket path so it can be probed; the exec target is left as written."""
     home = os.path.expanduser("~")
     # systemd --user and XDG autostart both honour $XDG_CONFIG_HOME; a host that sets it keeps its units there.
     base = config_dir or os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
-    units: List[Tuple[str, str, str, bool, Optional[str]]] = []
+    units: list[tuple[str, str, str, bool, Optional[str]]] = []
     sources = (("systemd user unit", os.path.join(base, "systemd", "user"), ".service", "ExecStart"),
                ("XDG autostart entry", os.path.join(base, "autostart"), ".desktop", "Exec"))
     for kind, directory, suffix, key in sources:
@@ -305,7 +319,7 @@ def cua_daemon_units(config_dir: Optional[str] = None) -> List[Tuple[str, str, s
             continue
         for name in names:
             try:
-                with open(os.path.join(directory, name), encoding="utf-8", errors="replace") as fh:
+                with open(os.path.join(directory, name), encoding="utf-8-sig", errors="replace") as fh:
                     text = fh.read()
             except OSError:
                 continue
@@ -320,13 +334,13 @@ def cua_daemon_units(config_dir: Optional[str] = None) -> List[Tuple[str, str, s
                               os.path.expanduser(socket.replace("%h", home)) if socket else None))
     return units
 
-def _stale_cua_exec_references(config_dir: Optional[str] = None) -> List[Tuple[str, str, str]]:
+def _stale_cua_exec_references(config_dir: Optional[str] = None) -> list[tuple[str, str, str]]:
     """(kind, unit, target) for daemon units whose cua-driver Exec points at a pruned ``packages/releases/<version>/``
     directory. The installer prunes all but the last five, so a versioned reference crash-loops with 203/EXEC after
     every upgrade while every binary-level check stays green (#114748). ``packages/current`` and still-present
     release dirs are healthy by construction and never reported."""
     home = os.path.expanduser("~")
-    findings: List[Tuple[str, str, str]] = []
+    findings: list[tuple[str, str, str]] = []
     for kind, unit, target, _serve, _socket in cua_daemon_units(config_dir):
         resolved = os.path.expanduser(target.replace("%h", home))
         if "/packages/releases/" in resolved and not os.path.exists(resolved):
@@ -441,6 +455,7 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
         print(f"cua-driver health_report failed: {e}", file=sys.stderr)
         return 2
     report = _apply_display_count_guard(report)
+    report = _apply_stale_tcc_guard(report)
     report = _apply_stale_unit_guard(report)
     report = _apply_daemon_liveness_guard(report, binary)
     identity = _build_identity(binary, report)

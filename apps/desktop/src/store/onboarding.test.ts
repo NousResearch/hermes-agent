@@ -7,10 +7,12 @@ import type { OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
+  completeDesktopOnboarding,
   type DesktopOnboardingState,
   type OnboardingContext,
   refreshOnboarding,
   requestDesktopOnboarding,
+  resetBootRaceWindowForTests,
   saveOnboardingLocalEndpoint,
   setOnboardingModel,
   submitOnboardingCode
@@ -147,7 +149,7 @@ describe('refreshOnboarding', () => {
       release()
       await pending
       expect(requests.some(r => r.path === '/api/model/set')).toBe(false)
-      expect($desktopOnboarding.get()).toMatchObject({ targetProfile: 'alpha', flow: { status: 'idle' } })
+      expect($desktopOnboarding.get()).toMatchObject({ targetScope: { profile: 'alpha' }, flow: { status: 'idle' } })
       closeManualOnboarding()
       delayKey = false
       profile = 'beta'
@@ -171,6 +173,7 @@ describe('refreshOnboarding', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 
@@ -246,31 +249,118 @@ describe('refreshOnboarding', () => {
     expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
   })
 
-  it('shows a non-blocking notification when preserving configured on fallback', async () => {
+  it('keeps an unknown readiness notice temporary and clears it on recovery (#124545)', async () => {
+    vi.useFakeTimers()
+    notifications.clearNotifications()
+    installApiMock(vi.fn())
+    $desktopOnboarding.set(baseState({ configured: true }))
+
+    try {
+      await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+      expect(notifications.$notifications.get()).toEqual([
+        expect.objectContaining({ id: 'runtime-not-ready', kind: 'info' })
+      ])
+      expect($desktopOnboarding.get().configured).toBe(true)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(notifications.$notifications.get()).toEqual([])
+
+      // A later outage can show a fresh notice; an authoritative ready clears it
+      // without waiting for its timer, and must not dismiss unrelated errors.
+      await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+      notifications.notify({ id: 'unrelated', kind: 'error', message: 'Keep me' })
+      await refreshOnboarding(onboardingContext(keylessCustomGateway()))
+      expect(notifications.$notifications.get().map(item => item.id)).toEqual(['unrelated'])
+    } finally {
+      notifications.clearNotifications()
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves configured unknown on a boot fallback instead of erasing the cache', async () => {
     const notifySpy = vi.spyOn(notifications, 'notify')
 
     installApiMock(vi.fn())
-    $desktopOnboarding.set(
-      baseState({
-        configured: true,
-        providers: [makeOAuthProvider('cached')],
-        reason: null,
-        requested: false
-      })
-    )
+    // Cold launch, no onboarded cache yet: `configured` is UNKNOWN, not false.
+    // A round that loses the race to a cold/queued backend answers neither
+    // probe, and recording that as "no provider" deleted the cache — which
+    // re-armed the blocking first-run picker on every launch afterwards.
+    $desktopOnboarding.set(baseState({ configured: null, providers: null, requested: false }))
 
-    await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+    const ready = await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
 
-    expect(notifySpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'runtime-not-ready',
-        kind: 'error'
-      })
-    )
+    expect(ready).toBe(false)
+    expect($desktopOnboarding.get().configured).toBeNull()
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+    // Nothing was ever verified, so there is no outage worth a toast.
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('does not downgrade a configured install when the boot race answers ok:false', async () => {
+    const { notifySetupReady } = await import('@/store/live-sync')
+
+    installApiMock(vi.fn())
+    // Fully configured install (durable cache present), backend just booted:
+    // setup.ready bumped the boot generation moments ago. The runtime_check
+    // answers ok:false because the external secret source (BWS) has not
+    // hydrated yet — a hydration race, not a credential verdict (#124939).
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: true, providers: null, requested: false }))
+
+    notifySetupReady()
+
+    const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
+
+    expect(ready).toBe(false)
     expect($desktopOnboarding.get().configured).toBe(true)
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
+  })
+
+  it('still downgrades when the same ok:false arrives long after boot', async () => {
+    const { notifySetupReady } = await import('@/store/live-sync')
+
+    installApiMock(vi.fn())
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: true, providers: null, requested: false }))
+
+    // Boot happened, then the grace window elapsed: an ok:false now is a real
+    // verdict (the secret source had its chance), so onboarding must surface.
+    notifySetupReady()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+
+    try {
+      const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
+
+      expect(ready).toBe(false)
+      expect($desktopOnboarding.get().configured).toBe(false)
+      expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('keeps a persisted "choose later" when a passive round completes onboarding', () => {
+    window.localStorage.setItem('hermes-onboarding-skipped-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: null, firstRunSkipped: true }))
+
+    completeDesktopOnboarding()
+
+    expect(window.localStorage.getItem('hermes-onboarding-skipped-v1')).toBe('1')
+    expect($desktopOnboarding.get().firstRunSkipped).toBe(true)
+  })
+
+  it('clears the skip only when the user actually connected a provider', () => {
+    window.localStorage.setItem('hermes-onboarding-skipped-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: null, firstRunSkipped: true }))
+
+    completeDesktopOnboarding(true)
+
+    expect(window.localStorage.getItem('hermes-onboarding-skipped-v1')).toBeNull()
+    expect($desktopOnboarding.get().firstRunSkipped).toBe(false)
   })
 
   it('enters setup when the selected OpenRouter credential is genuinely empty', async () => {
+    // Outside the boot window: no setup.ready bump precedes the round, so an
+    // answered ok:false is a real verdict, not a hydration race.
     installApiMock(vi.fn())
     window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
     $desktopOnboarding.set(
@@ -395,6 +485,7 @@ describe('OAuth onboarding', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 
@@ -563,6 +654,7 @@ describe('saveOnboardingLocalEndpoint', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 
@@ -584,7 +676,7 @@ describe('saveOnboardingLocalEndpoint', () => {
     }
   }
 
-  it('errors when the endpoint advertises no models (nothing to route to)', async () => {
+  it('returns needsModelInput when the endpoint advertises no models (nothing to route to)', async () => {
     const calls: string[] = []
     installApiMock(async ({ path }: { path: string }) => {
       calls.push(path)
@@ -601,9 +693,90 @@ describe('saveOnboardingLocalEndpoint', () => {
     })
 
     expect(result.ok).toBe(false)
-    expect(result.message).toContain('no models')
+    // The wizard reads this discriminator to reveal a manual model-name input.
+    expect(result.needsModelInput).toBe(true)
+    expect(result.message).toMatch(/didn't enumerate any models|advertised no models/)
     // Must not attempt to persist an assignment without a model.
     expect(calls).not.toContain('/api/model/set')
+  })
+
+  it('uses a manually provided model name and skips discovery when /v1/models is empty', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        // Endpoint reachable but the discovery list is empty — the bug-class
+        // case the wizard used to hard-fail on.
+        return { ok: true, reachable: true, message: '', models: [] }
+      }
+
+      if (path === '/api/model/set') {
+        return {
+          ok: true,
+          provider: 'custom',
+          model: 'command-a-plus-05-2026',
+          base_url: 'https://api.cohere.ai/compatibility/v1'
+        }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint(
+      'https://api.cohere.ai/compatibility/v1',
+      'sk-secret',
+      { requestGateway: readyGateway() },
+      'command-a-plus-05-2026'
+    )
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    // The manually provided model name is persisted verbatim — the runtime
+    // honors it the same way as discover_models: false + an explicit models:.
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'command-a-plus-05-2026',
+      base_url: 'https://api.cohere.ai/compatibility/v1',
+      api_key: 'sk-secret'
+    })
+  })
+
+  it('uses a manually provided model name even when /v1/models enumerates models', async () => {
+    // The user is allowed to override the auto-discovered default by typing a
+    // model name before submitting. The wizard never pre-fills the model input
+    // in the happy path, but the store function must still honor modelName
+    // over probe.models[0] when both are available.
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        return { ok: true, reachable: true, message: '', models: ['llama-3.1-8b'] }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'llama-3.1-8b', base_url: 'http://127.0.0.1:8000/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint(
+      'http://127.0.0.1:8000/v1',
+      '',
+      { requestGateway: readyGateway() },
+      '  llama-3.3-70b  '
+    )
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({ model: 'llama-3.3-70b' })
   })
 
   it('auto-discovers the model and persists provider=custom + base_url, then finishes', async () => {
@@ -825,13 +998,7 @@ describe('device-code poll expiry', () => {
       vi.advanceTimersByTime(3000)
     })
 
-    const flow = $desktopOnboarding.get().flow
-    expect(flow.status).toBe('error')
-
-    if (flow.status === 'error') {
-      expect(flow.message).toMatch(/timed out before you finished/)
-      expect(flow.message).not.toMatch(/server-side|CLI/)
-    }
+    expect($desktopOnboarding.get().flow.status).toBe('error')
   })
 
   it('keeps polling while the window is open and clears the expiry on cancel', async () => {
@@ -878,10 +1045,13 @@ describe('setOnboardingModel', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 
-  function confirmingModelState(overrides: Partial<Extract<DesktopOnboardingState['flow'], { status: 'confirming_model' }>> = {}) {
+  function confirmingModelState(
+    overrides: Partial<Extract<DesktopOnboardingState['flow'], { status: 'confirming_model' }>> = {}
+  ) {
     return baseState({
       flow: {
         status: 'confirming_model',

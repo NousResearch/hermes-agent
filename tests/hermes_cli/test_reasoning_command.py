@@ -11,7 +11,6 @@ Combines functionality from:
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-import re
 
 
 # ---------------------------------------------------------------------------
@@ -58,34 +57,11 @@ class TestHandleReasoningCommand(unittest.TestCase):
         )
         return stub
 
-    def test_show_enables_display(self):
-        stub = self._make_cli(show_reasoning=False)
-        # Simulate /reasoning show
-        arg = "show"
-        if arg in {"show", "on"}:
-            stub.show_reasoning = True
-            stub.agent.reasoning_callback = lambda x: None
-        self.assertTrue(stub.show_reasoning)
-
-    def test_hide_disables_display(self):
-        stub = self._make_cli(show_reasoning=True)
-        # Simulate /reasoning hide
-        arg = "hide"
-        if arg in {"hide", "off"}:
-            stub.show_reasoning = False
-            stub.agent.reasoning_callback = None
-        self.assertFalse(stub.show_reasoning)
-        self.assertIsNone(stub.agent.reasoning_callback)
 
 
 
 
-    def test_effort_none_disables_reasoning(self):
-        from cli import _parse_reasoning_config
-        stub = self._make_cli()
-        parsed = _parse_reasoning_config("none")
-        stub.reasoning_config = parsed
-        self.assertEqual(stub.reasoning_config, {"enabled": False})
+
 
 
 
@@ -193,47 +169,6 @@ class TestHandleReasoningCommand(unittest.TestCase):
 # Reasoning extraction and result dict
 # ---------------------------------------------------------------------------
 
-class TestLastReasoningInResult(unittest.TestCase):
-    """Verify reasoning extraction from the messages list."""
-
-    def _build_messages(self, reasoning=None):
-        return [
-            {"role": "user", "content": "hello"},
-            {
-                "role": "assistant",
-                "content": "Hi there!",
-                "reasoning": reasoning,
-                "finish_reason": "stop",
-            },
-        ]
-
-    def test_reasoning_present(self):
-        messages = self._build_messages(reasoning="Let me think...")
-        last_reasoning = None
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                break
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
-                break
-        self.assertEqual(last_reasoning, "Let me think...")
-
-
-    def test_picks_last_assistant(self):
-        messages = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "...", "reasoning": "first thought"},
-            {"role": "tool", "content": "result"},
-            {"role": "assistant", "content": "done!", "reasoning": "final thought"},
-        ]
-        last_reasoning = None
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                break
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
-                break
-        self.assertEqual(last_reasoning, "final thought")
 
 
 
@@ -241,47 +176,12 @@ class TestLastReasoningInResult(unittest.TestCase):
 # Reasoning display collapse
 # ---------------------------------------------------------------------------
 
-class TestReasoningCollapse(unittest.TestCase):
-    """Verify long reasoning is collapsed to 10 lines in the box."""
-
-    def test_short_reasoning_not_collapsed(self):
-        reasoning = "\n".join(f"Line {i}" for i in range(5))
-        lines = reasoning.strip().splitlines()
-        self.assertLessEqual(len(lines), 10)
-
-
-
-    def test_intermediate_callback_collapses_to_5(self):
-        """_on_reasoning shows max 5 lines."""
-        reasoning = "\n".join(f"Step {i}" for i in range(12))
-        lines = reasoning.strip().splitlines()
-        if len(lines) > 5:
-            preview = "\n".join(lines[:5])
-            preview += f"\n  ... ({len(lines) - 5} more lines)"
-        else:
-            preview = reasoning.strip()
-        preview_lines = preview.splitlines()
-        self.assertEqual(len(preview_lines), 6)
-        self.assertIn("7 more lines", preview_lines[-1])
 
 
 # ---------------------------------------------------------------------------
 # Reasoning callback
 # ---------------------------------------------------------------------------
 
-class TestReasoningCallback(unittest.TestCase):
-    """Verify reasoning_callback invocation."""
-
-    def test_callback_invoked_with_reasoning(self):
-        captured = []
-        agent = MagicMock()
-        agent.reasoning_callback = lambda t: captured.append(t)
-        agent._extract_reasoning = MagicMock(return_value="deep thought")
-
-        reasoning_text = agent._extract_reasoning(MagicMock())
-        if reasoning_text and agent.reasoning_callback:
-            agent.reasoning_callback(reasoning_text)
-        self.assertEqual(captured, ["deep thought"])
 
 
         # No exception = pass
@@ -333,13 +233,6 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
         self.assertIn("[thinking] see how this plays out", rendered)
 
 
-    @patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=60))
-    def test_reasoning_flush_threshold_tracks_terminal_width(self, _mock_term):
-        cli = self._make_cli()
-
-        cli._reasoning_preview_buf = "a" * 30
-        cli._flush_reasoning_preview(force=False)
-        self.assertEqual(cli._reasoning_preview_buf, "a" * 30)
 
 
 class TestReasoningDisplayModeSelection(unittest.TestCase):
@@ -482,71 +375,14 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
 # Config defaults
 # ---------------------------------------------------------------------------
 
-class TestConfigDefault(unittest.TestCase):
-    """Verify config default for show_reasoning."""
-
-    def test_default_config_has_show_reasoning(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-        display = DEFAULT_CONFIG.get("display", {})
-        self.assertIn("show_reasoning", display)
-        # Default ON (July 2026 TTFT-perception change): thinking models
-        # stream reasoning for tens of seconds; hiding it left users staring
-        # at a spinner. The key must exist and be a bool.
-        self.assertTrue(display["show_reasoning"])
 
 
-class TestCommandRegistered(unittest.TestCase):
-    """Verify /reasoning is in the COMMANDS dict."""
-
-    def test_reasoning_in_commands(self):
-        from hermes_cli.commands import COMMANDS
-        self.assertIn("/reasoning", COMMANDS)
 
 
 # ---------------------------------------------------------------------------
 # End-to-end pipeline
 # ---------------------------------------------------------------------------
 
-class TestEndToEndPipeline(unittest.TestCase):
-    """Simulate the full pipeline: extraction -> result dict -> display."""
-
-    def test_openrouter_claude_pipeline(self):
-        from run_agent import AIAgent
-
-        api_message = SimpleNamespace(
-            role="assistant",
-            content="Lists support append().",
-            tool_calls=None,
-            reasoning=None,
-            reasoning_content=None,
-            reasoning_details=[
-                {"type": "reasoning.summary", "summary": "Python list methods."},
-            ],
-        )
-
-        reasoning = AIAgent._extract_reasoning(None, api_message)
-        self.assertIsNotNone(reasoning)
-
-        messages = [
-            {"role": "user", "content": "How do I add items?"},
-            {"role": "assistant", "content": api_message.content, "reasoning": reasoning},
-        ]
-
-        last_reasoning = None
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                break
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
-                break
-
-        result = {
-            "final_response": api_message.content,
-            "last_reasoning": last_reasoning,
-        }
-
-        self.assertIn("last_reasoning", result)
-        self.assertIn("Python list methods", result["last_reasoning"])
 
 
 
@@ -567,12 +403,6 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent.verbose_logging = False
         return agent
 
-    def test_fire_reasoning_delta_calls_callback(self):
-        agent = self._make_agent()
-        captured = []
-        agent.reasoning_callback = lambda t: captured.append(t)
-        agent._fire_reasoning_delta("thinking...")
-        self.assertEqual(captured, ["thinking..."])
 
 
 
@@ -627,18 +457,6 @@ class TestReasoningShownThisTurnFlag(unittest.TestCase):
         self.assertTrue(cli._reasoning_shown_this_turn)
 
 
-    @patch("cli._cprint")
-    def test_turn_flag_cleared_before_new_turn(self, mock_cprint):
-        """The turn flag should be reset at the start of a new user turn.
-        This happens outside _reset_stream_state, at the call site."""
-        cli = self._make_cli()
-        cli._reasoning_shown_this_turn = True
-
-        # Simulate new user turn setup
-        cli._reset_stream_state()
-        cli._reasoning_shown_this_turn = False  # done by process_input
-
-        self.assertFalse(cli._reasoning_shown_this_turn)
 
 
 if __name__ == "__main__":

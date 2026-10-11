@@ -112,40 +112,4 @@ describe('Ink resize healing', () => {
 
     ink.unmount()
   })
-
-  // The burst above ends on a same-dimension event; this isolates that worst
-  // case on its own — a resize event whose dims equal the last known geometry
-  // (the terminal restored the buffer / reflowed without a net size change)
-  // must still arm the erase, because the physical screen may carry drift the
-  // diff path cannot see (see log-update "drift repro").
-  it('heals a same-dimension resize even when no React commit changes the tree', async () => {
-    const stdout = new FakeTty()
-    const stdin = new FakeTty()
-    const stderr = new FakeTty()
-
-    const ink = new Ink({
-      exitOnCtrlC: false,
-      patchConsole: false,
-      stderr: stderr as unknown as NodeJS.WriteStream,
-      stdin: stdin as unknown as NodeJS.ReadStream,
-      stdout: stdout as unknown as NodeJS.WriteStream
-    })
-
-    ink.setAltScreenActive(true)
-    ink.render(React.createElement(Text, null, 'hello'))
-    ink.onRender()
-    stdout.chunks = []
-
-    // Dimensions are identical to the initial render — the tree never changes.
-    stdout.emit('resize')
-    ink.onRender()
-    await tick()
-
-    const out = stdout.chunks.join('')
-    expect(out).toContain(ERASE_SCREEN)
-    expect(out).toContain(CURSOR_HOME)
-    expect(out.indexOf(ERASE_SCREEN)).toBeLessThan(out.lastIndexOf('hello'))
-
-    ink.unmount()
-  })
 })

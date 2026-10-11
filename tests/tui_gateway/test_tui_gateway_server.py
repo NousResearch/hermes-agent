@@ -2915,7 +2915,7 @@ def test_history_to_messages_strips_legacy_discord_triggering_note():
     # Rows written before the gateway persisted the authored text carry the model-facing
     # routing note in user ``content``; this projection heals them for TUI/web resume
     # (the desktop hydration strip is the same rule). Reply pointer and assistant rows are kept.
-    from gateway.run_inbound import discord_triggering_note
+    from gateway.run_inbound_context import discord_triggering_note
 
     note = discord_triggering_note("123")
     history = [

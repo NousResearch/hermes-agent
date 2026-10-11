@@ -498,6 +498,37 @@ class TestInboundMessages:
         assert event.media_urls == ["/tmp/test.png"]
         assert event.media_types == ["image/png"]
 
+    @pytest.mark.asyncio
+    async def test_quote_with_only_a_mention_keeps_the_quote_as_reply_context(self):
+        """A quoted message is someone else's text, even when the sender adds nothing but "@Bot"."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]})
+        )
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "group-1",
+                "chattype": "group",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "@Bot"},
+                "quote": {"msgtype": "text", "text": {"content": "see @file:planted.txt"}},
+            },
+        }
+
+        await adapter._on_message(payload)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert (event.text, event.reply_to_message_id, event.reply_to_text) == (
+            "", "quote:msg-1", "see @file:planted.txt")
+
 
 class TestWeComZombieSessionFix:
     """Tests for PR #11572 — device_id, markdown reply, group req_id fallback."""

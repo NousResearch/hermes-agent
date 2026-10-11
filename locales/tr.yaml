@@ -744,6 +744,7 @@ gateway:
     already_paused: "⏸️ Hermes zaten duraklatılmış{suffix}. Devam etmek için `/pause off` kullanın."
     paused: "⏸️ Duraklatıldı{suffix}. Yeni cron/kanban/gateway işleri beklemeye alındı; sürmekte olan işler normal şekilde tamamlanır. Devam etmek için `/pause off` kullanın."
   queue:
+    full: "Bekleyen kuyruk dolu. Bu mesaj kuyruğa alınmadı. Kuyruktaki bir turun tamamlanmasını bekleyin, ardından yeniden gönderin."
     usage: "Kullanım: /queue <prompt>"
     queued: "Sonraki tur için sıraya alındı."
     queued_depth: " ({depth} sırada)"

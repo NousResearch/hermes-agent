@@ -744,6 +744,7 @@ gateway:
     already_paused: "⏸️ Hermes는 이미 일시 중지되어 있어요{suffix}. 재개하려면 `/pause off`를 사용하세요."
     paused: "⏸️ 일시 중지됨{suffix}. 새 크론/칸반/게이트웨이 작업은 보류되고, 진행 중인 작업은 정상적으로 끝나요. 재개하려면 `/pause off`를 사용하세요."
   queue:
+    full: "대기열이 가득 찼습니다. 이 메시지는 대기열에 추가되지 않았습니다. 대기 중인 턴이 끝난 후 다시 보내세요."
     usage: "사용법: /queue <prompt>"
     queued: "다음 턴 대기열에 추가했어요."
     queued_depth: " ({depth}개 대기 중)"

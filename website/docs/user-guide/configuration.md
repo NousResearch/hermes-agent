@@ -1217,9 +1217,9 @@ See [Memory Providers](./features/memory-providers.md) for the analogous single-
 
 ## Iteration Budget
 
-When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 500 turns). Hermes does **not** inject mid-task pressure warnings — earlier builds warned the model at 70%/90% budget, which caused models to abandon complex tasks prematurely and was removed in April 2026.
+When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (unlimited by default — see `agent.max_turns` below). Hermes does **not** inject mid-task pressure warnings — earlier builds warned the model at 70%/90% budget, which caused models to abandon complex tasks prematurely and was removed in April 2026.
 
-Instead, when the budget is actually exhausted (500/500), Hermes injects one message asking the model to wrap up and allows a single **grace call** so it can deliver a final response. If that grace call still doesn't produce text, the agent is asked to summarise what it accomplished.
+Instead, when a finite budget is actually exhausted (e.g. 500/500 under `agent.max_turns: 500`), Hermes injects one message asking the model to wrap up and allows a single **grace call** so it can deliver a final response. If that grace call still doesn't produce text, the agent is asked to summarise what it accomplished.
 
 ```yaml
 agent:

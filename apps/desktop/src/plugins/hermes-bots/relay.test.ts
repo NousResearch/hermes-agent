@@ -959,10 +959,12 @@ describe('the drain loop wires drain → deliver → reply', () => {
     await pushAndSettle()
 
     expect(calls.find(call => call.method === 'bot_relay.deliver')?.params).toMatchObject({
-      from_connection: 'a',
-      from_handle: 'scout',
-      from_profile: 'scout'
+      author: { id: 'bot:a/scout', name: 'scout', is_bot: true }
     })
+    const deliverParams = calls.find(call => call.method === 'bot_relay.deliver')?.params ?? {}
+    expect(deliverParams).not.toHaveProperty('from_connection')
+    expect(deliverParams).not.toHaveProperty('from_handle')
+    expect(deliverParams).not.toHaveProperty('from_profile')
 
     stopBotRelay()
   })

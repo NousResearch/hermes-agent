@@ -3068,8 +3068,8 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     queued = _queued_prompt_snapshot(session)
     preview = next((" ".join(text.split())[:160] for msg in reversed(history)
                     if (text := _content_display_text(msg.get("content", msg.get("text", ""))).strip())), "")
-    if queued:
-        preview = " ".join(str(queued.get("user") or preview).split())[:160]
+    if queued and queued["user"]:
+        preview = " ".join(queued["user"].split())[:160]
     elif inflight:
         preview = " ".join(str(inflight.get("assistant") or inflight.get("user") or preview).split())[:160]
     now = time.time()

@@ -26982,10 +26982,26 @@
       },
       "QueuedPrompt": {
         "additionalProperties": false,
+        "description": "``session_auto_continue._queued_prompt_snapshot``: the accepted next-turn prompt. ``images`` are the\nstaged paths of its attached images (absent when it has none); ``user`` is empty for an image-only prompt.",
         "properties": {
           "user": {
             "title": "User",
             "type": "string"
+          },
+          "images": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Images"
           }
         },
         "required": [

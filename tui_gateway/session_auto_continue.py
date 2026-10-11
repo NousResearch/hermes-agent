@@ -603,10 +603,16 @@ def _restore_agent_history_after_turn_error(session: dict, agent) -> bool:
 
 def _queued_prompt_snapshot(session: dict) -> dict | None:
     """The accepted next-turn prompt without its transport handle, for the live-session projection (Desktop may
-    reconnect while it is still queued)."""
+    reconnect while it is still queued). Its images exist only in the envelope until it drains, so their staged
+    paths ride along; an image-only prompt has no text and is still queued."""
     queued = session.get("queued_prompt")
-    user = _inflight_text(queued.get("text")) if isinstance(queued, dict) else ""
-    return {"user": user} if user else None
+    if not isinstance(queued, dict):
+        return None
+    user = _inflight_text(queued.get("text"))
+    images = [str(path) for path in queued.get("image_paths") or []]
+    if not (user or images):
+        return None
+    return {"user": user, "images": images} if images else {"user": user}
 
 
 def register(server) -> None:

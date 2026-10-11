@@ -3128,8 +3128,10 @@ export interface InflightTurn {
   recoverable?: boolean | null
   error_surface?: Record<string, unknown> | null
 }
+/** ``session_auto_continue._queued_prompt_snapshot``: the accepted next-turn prompt. ``images`` are the staged paths of its attached images (absent when it has none); ``user`` is empty for an image-only prompt. */
 export interface QueuedPrompt {
   user: string
+  images?: string[] | null
 }
 /** One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting client re-delivers it to its request handlers. */
 export interface OpenRequestEntry {

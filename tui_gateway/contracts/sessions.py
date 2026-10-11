@@ -45,7 +45,11 @@ class InflightTurn(Result):
 
 
 class QueuedPrompt(Result):
+    """``session_auto_continue._queued_prompt_snapshot``: the accepted next-turn prompt. ``images`` are the
+    staged paths of its attached images (absent when it has none); ``user`` is empty for an image-only prompt."""
+
     user: str
+    images: list[str] | None = None
 
 
 class TodoState(Result):

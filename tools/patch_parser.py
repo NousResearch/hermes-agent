@@ -15,6 +15,7 @@ if TYPE_CHECKING:  # annotations only; the real import is per-call in apply_v4a_
     from tools.file_operations_common import PatchResult
 
 from tools.file_operations_common import PatchResult
+from utils import split_lf_lines
 
 
 class OperationType(Enum):
@@ -287,7 +288,7 @@ def _written(result: Any, diff: str, path: str, read_sha256: Optional[str]) -> A
 def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
     """Unified diff ``a/path`` -> ``b/path`` (``new=None`` = deletion, ``/dev/null``)."""
     return ''.join(difflib.unified_diff(
-        old.splitlines(keepends=True), [] if new is None else new.splitlines(keepends=True),
+        split_lf_lines(old), [] if new is None else split_lf_lines(new),
         fromfile=f"a/{path}", tofile="/dev/null" if new is None else f"b/{path}"))
 
 

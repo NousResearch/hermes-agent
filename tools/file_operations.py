@@ -23,6 +23,7 @@ from typing import Optional, Dict
 from pathlib import Path
 
 from tools.binary_extensions import has_binary_extension
+from utils import split_lf_lines
 from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
@@ -629,7 +630,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
         return ''.join(difflib.unified_diff(
-            old_content.splitlines(keepends=True), new_content.splitlines(keepends=True),
+            split_lf_lines(old_content), split_lf_lines(new_content),
             fromfile=f"a/{filename}", tofile=f"b/{filename}"))
 
     # --- READ ---------------------------------------------------------------

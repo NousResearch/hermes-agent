@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
-from utils import safe_json_loads
+from utils import safe_json_loads, split_lf_lines
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
@@ -707,7 +707,7 @@ def _diff_from_snapshot(snapshot: LocalEditSnapshot | None) -> str | None:
             continue
         display_path = _display_diff_path(path)
         diff = "".join(unified_diff(
-            (before or "").splitlines(keepends=True), (after or "").splitlines(keepends=True),
+            split_lf_lines(before or ""), split_lf_lines(after or ""),
             fromfile=f"a/{display_path}", tofile=f"b/{display_path}",
         ))
         if diff:
@@ -735,7 +735,7 @@ def _emit_inline_diff(diff_text: str, print_fn) -> bool:
     if print_fn is None or not diff_text:
         return False
     try:
-        for line in [t("display.diff.review_header"), *diff_text.rstrip("\n").splitlines()]:
+        for line in [t("display.diff.review_header"), *split_lf_lines(diff_text.rstrip("\n"), keepends=False)]:
             print_fn(line)
         return True
     except Exception:
@@ -750,7 +750,7 @@ def _render_inline_unified_diff(diff: str) -> list[str]:
     """Render unified diff lines in Hermes' inline transcript style."""
     rendered: list[str] = []
     from_file = to_file = None
-    for raw_line in diff.splitlines():
+    for raw_line in split_lf_lines(diff, keepends=False):
         if raw_line.startswith("--- "):
             from_file = raw_line[4:].strip()
             continue
@@ -770,7 +770,7 @@ def _render_inline_unified_diff(diff: str) -> list[str]:
 def _split_unified_diff_sections(diff: str) -> list[str]:
     """Split a unified diff into per-file sections."""
     sections: list[list[str]] = [[]]
-    for line in diff.splitlines():
+    for line in split_lf_lines(diff, keepends=False):
         if line.startswith("--- ") and sections[-1]:
             sections.append([])
         sections[-1].append(line)

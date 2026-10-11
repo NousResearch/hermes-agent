@@ -1,0 +1,5 @@
+name: lanseq-provider-profile
+kind: model-provider
+version: 1.0.0
+description: Lanseq OpenAI-compatible inference provider
+author: Lanseq Technology

@@ -1871,7 +1871,7 @@ export * as icons from '@/lib/icons'
  *  commit (`isComposing` or the legacy keyCode 229). Use it on every plugin
  *  text field whose bare Enter performs an action. */
 export { isSubmitEnter } from '@/lib/ime'
-export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
+export { type KeybindContribution, KEYBINDS_AREA, PLUGIN_APP_ACTIONS } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
 /** A `Map` with a ceiling, for the module-level caches a plugin keeps across
  *  a renderer that stays open for days. Only for values that can be

@@ -197,6 +197,16 @@ def _accepts_thinking_disable(model: str) -> bool:
     )
 
 
+def _is_pre_thinking_haiku(model: str) -> bool:
+    """Haiku generations that never get a thinking request (through 4.5). Haiku 5.5+ uses adaptive thinking."""
+    from agent.anthropic_thinking_policy import claude_family_version
+
+    if "haiku" not in model.lower():
+        return False
+    parsed = claude_family_version(model)
+    return parsed is None or parsed[0] != "haiku" or parsed[1] < (5, 5)
+
+
 def _forbids_sampling_params(model: str) -> bool:
     """True for models that 400 on any non-default temperature/top_p/top_k (Opus 4.7 and later;
     unknown Claude defaults to forbidding). The 4.6 family and the legacy manual-thinking families
@@ -600,7 +610,7 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
 def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max_tokens: int) -> dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
-    manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
+    manual-only compat endpoints (MiniMax) get budget_tokens. Haiku through 4.5 gets none. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
     so "summarized" is requested to keep the activity feed populated."""
     if reasoning_config.get("enabled") is False:
@@ -610,7 +620,7 @@ def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max
         if _model_matches(model, _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS):
             return {"thinking": {"type": "between_tools"}}
         return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
-    if "haiku" in model.lower():
+    if _is_pre_thinking_haiku(model):
         return {}
     effort = str(reasoning_config.get("effort", "medium")).lower()
     if _supports_adaptive_thinking(model):
@@ -672,8 +682,8 @@ def build_anthropic_kwargs(
             }
     # Map reasoning_config to Anthropic's thinking parameter. Claude 4.6+ models use adaptive thinking +
     # output_config.effort. Older models use manual thinking with budget_tokens. MiniMax Anthropic-compat
-    # endpoints support thinking (manual mode only, not adaptive). Haiku does NOT support extended thinking
-    # — skip entirely. Kimi / Moonshot models also use adaptive thinking: their Anthropic-compatible
+    # endpoints support thinking (manual mode only, not adaptive). Haiku through 4.5 gets no thinking
+    # request; Haiku 5.5+ is adaptive. Kimi / Moonshot models also use adaptive thinking: their Anthropic-compatible
     # endpoints (api.moonshot.cn/anthropic, api.kimi.com/coding) accept ``thinking.type="adaptive"`` +
     # ``output_config.effort``, and the replay-validation 400s that originally motivated dropping the
     # parameter (#13848) no longer occur. (Kimi on chat_completions enables thinking via extra_body in the

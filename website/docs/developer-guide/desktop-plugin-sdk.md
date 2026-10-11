@@ -376,6 +376,11 @@ ctx.registerMany([
 
 Keybinds are user-rebindable in settings; `defaults` is just the initial binding.
 
+To trigger one of the app's **own** actions (toggle the browser panel, open
+Settings, focus the composer), never dispatch a synthetic `KeyboardEvent` for its
+shortcut — the user may have rebound it. Call
+[`ctx.runAction(id)`](#run-app-actions) instead.
+
 ### Themes
 
 A theme contribution ships a full `DesktopTheme` as its `data` (name, label,
@@ -423,8 +428,8 @@ host.onEvent('gateway.ready', () => {
 
 Both doors persist per profile, so a plugin-driven switch sticks exactly like a
 manual pick. To tint the *active* theme rather than replace it, use
-`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the standalone
-[Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
+`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the official
+[Accent Picker](https://github.com/NousResearch/hermes-official-plugins/tree/main/accent-picker)
 plugin is the worked example (it is also a complete, installable disk plugin).
 
 #### Styling the chat switch — `data-session-switching`
@@ -556,6 +561,7 @@ and its siblings; the pet-wallet row uses the [pet bubble](#pet-bubble) door):
 | memory-review (#115966) | `host.request('slash.exec', { session_id, command })` for `/memory …` — already SDK-only | optional: `host.composer.insertText(sid, '/memory pending', { mode: 'prefix' })` to seat the command for the user instead of executing it |
 | intelligent-tool-break (#115964) | "Message" button only toasts "type /break" (no composer write) | `host.composer.setDraft(host.state.focusedSessionId.get(), '/break ')` then `host.composer.focus(null)` restores the intended behaviour |
 | pet-wallet (#135178) | `document.querySelector('canvas[aria-label$=" pet"]')` to find the core pet, a `position:fixed; z-index:9999` overlay on `document.body` that follows it every frame, document-wide capture-phase pointer listeners | `ctx.pet.say(text, { id: 'balance', tone?, ttlMs? })` — the core bubble shows it over the pet, in-window and popped out, labelled with the plugin name; `ctx.pet.visible` tells you when there is no pet so you can fall back to your status-bar chip |
+| browser-toggle | `document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'L', ctrlKey: true, shiftKey: true, … }))` to fake the built-in browser-panel shortcut; silently stops working when the user rebinds or unbinds it | `ctx.runAction('view.showBrowser')` — runs the same handler as the shortcut and the palette entry, whatever the binding ([run app actions](#run-app-actions)) |
 
 `sessionId` in the table is the id the plugin's UI is bound to; for a composer
 slot render it is `host.state.focusedSessionId.get()`.
@@ -1099,6 +1105,8 @@ ctx.os.writeClipboard(text)                // system clipboard → Promise<boole
 ctx.pet.say(text, { id?, tone?, ttlMs? })   // line in the core pet's speech bubble → disposer
 ctx.pet.clear(id?)                         // drop one line (or all of yours)
 ctx.pet.visible                            // ReadableAtom<boolean> — is a pet on screen?
+ctx.runAction('view.showBrowser')          // run a built-in app action → { ok: true } | { ok: false, reason, error }
+ctx.listActions()                          // [{ id, label, category }] — the ids runAction accepts
 host.navigate('/route')                    // hash-route navigation
 host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
@@ -1316,6 +1324,76 @@ code; the main window sends it the live lines with the rest of the pet state.
 Pointer input on the pet (drag, shift-click pop-out, overlay click) belongs to
 the host and has no plugin hook. Use a palette command, a status-bar item, or
 your own pane for actions.
+
+### Run app actions — `ctx.runAction` {#run-app-actions}
+
+The app's own commands — the ones behind keyboard shortcuts and the command
+palette — can be run by id. The plugin gets exactly the handler the shortcut
+runs, so the user rebinding (or unbinding) that shortcut in Settings ▸ Keyboard
+Shortcuts changes nothing for you:
+
+```ts
+import { TITLEBAR_AREAS } from '@hermes/plugin-sdk'
+import { jsx } from 'react/jsx-runtime'
+
+register(ctx) {
+  ctx.register({
+    id: 'browser',
+    area: TITLEBAR_AREAS.right,
+    render: () => jsx('button', { onClick: () => ctx.runAction('view.showBrowser'), children: 'Browser' })
+  })
+
+  // Results are values, never exceptions.
+  const result = ctx.runAction('nav.settings')
+  if (!result.ok) console.log(result.reason, result.error)
+
+  // Discover what is allowed (labels are localized, same as the shortcuts panel).
+  for (const { id, label } of ctx.listActions()) console.log(id, label)
+}
+```
+
+```ts
+interface PluginContext {
+  runAction(id: PluginAppActionId): PluginRunActionResult
+  listActions(): Array<{ id: PluginAppActionId; label: string; category: string }>
+}
+
+type PluginRunActionResult =
+  | { ok: true }
+  | { ok: false; reason: 'unknown' | 'denied' | 'unavailable'; error: string }
+```
+
+Only view and navigation actions are allowed. `PluginAppActionId` is the typed
+union; `PLUGIN_APP_ACTIONS` is the same list at runtime:
+
+| Id | What it does |
+|---|---|
+| `view.showBrowser` | Toggle the browser panel |
+| `view.showFiles` | Show the file browser |
+| `view.toggleSidebar` | Toggle the left sidebar |
+| `view.toggleRightSidebar` | Toggle the right side |
+| `view.toggleReview` | Toggle the review (git) pane |
+| `view.toggleStatusbar` | Toggle the status bar |
+| `view.findInPage` | Open find-in-page |
+| `composer.focus` | Focus the composer |
+| `session.new` | Start a new chat |
+| `session.focusSearch` | Focus session search |
+| `conversation.scrollPageUp` / `conversation.scrollPageDown` | Scroll the transcript a page |
+| `nav.commandPalette` | Toggle the command palette |
+| `nav.settings`, `nav.profiles`, `nav.capabilities`, `nav.messaging`, `nav.artifacts`, `nav.cron`, `nav.agents` | Open that page |
+| `keybinds.openPanel` | Open Settings ▸ Keyboard Shortcuts |
+
+Anything else is refused: `{ ok: false, reason: 'denied' }` for a real app
+action that is not on the list (archive, pin, profile / model / reasoning
+switches, terminals, new window, open folder, HUD, close tab, …),
+`reason: 'unknown'` for an id that does not exist. Either way nothing runs and a
+`[plugin:<id>] runAction: …` warning is logged. `reason: 'unavailable'` means the
+app shell that owns the handlers is not mounted yet (very early startup); retry
+from a user action. Destructive and privileged operations (deleting sessions,
+signing out, approvals, model/provider changes, updates, quitting) are not app
+actions a plugin can run.
+
+Feature-detect on older hosts: `ctx.runAction?.('view.showBrowser')`.
 
 ### Desktop appearance settings — `host.settings`
 
@@ -1899,7 +1977,7 @@ pipeline as a trust boundary.
 | Category | Exports |
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
+| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
 | Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |

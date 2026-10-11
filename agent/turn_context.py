@@ -1304,12 +1304,10 @@ def build_api_messages(
             # and assistant rows may carry a sanitize-divergence sidecar.
             api_msg["content"] = _api_content
 
-        # Pass reasoning back to the API for ALL assistant messages so multi-turn
-        # reasoning context is preserved.
+        # Replay stored reasoning on every carrier the active route reads (and strip the
+        # rest): message_sanitization.reasoning_replay_route owns the decision.
         agent._copy_reasoning_content_for_api(msg, api_msg)
-        # 'reasoning' is trajectory-only (copied to 'reasoning_content' above);
         # finish_reason is rejected by strict APIs (e.g. Mistral).
-        api_msg.pop("reasoning", None)
         api_msg.pop("finish_reason", None)
         # Fill empty non-final user/assistant wire copies so the pre-call sanitizer
         # stops re-healing and flooding errors.log; durable history is untouched.
@@ -1323,10 +1321,11 @@ def build_api_messages(
         # reject unknown fields. New dicts keep the internal list intact for Codex.
         if agent._should_sanitize_tool_calls():
             agent._sanitize_tool_calls_for_strict_api(
-                api_msg, model=_sanitize_model_for(agent, moa_config)
+                api_msg, model=_sanitize_model_for(agent, moa_config),
+                base_url=agent.base_url, provider=agent.provider,
             )
-        # 'reasoning_details' is kept here; the chat-completions transport drops it on the
-        # wire for every route that does not replay it (OpenRouter/Nous do).
+        # 'reasoning_details' is shaped by the replay policy above on chat_completions and
+        # left intact for the native adapters (anthropic/bedrock rebuild signed blocks from it).
         api_messages.append(api_msg)
 
     # A provider-rejected Anthropic signature is suppressed outside canonical history and

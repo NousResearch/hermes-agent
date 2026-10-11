@@ -448,7 +448,7 @@ import {
   releaseLocalBackendSlotAfterExit
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
-import { poolTouchKeys } from './pool-touch-scope'
+import { markPoolScopeReleased, poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
 import {
   createKeepAwake,
@@ -670,6 +670,7 @@ import {
   appliedPrimaryWindowRoute,
   registrySshPoolScopeByConnectionId,
   registrySshScopeForWindowRoute,
+  type WindowConnectionRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
@@ -15559,6 +15560,26 @@ ipcMain.handle('hermes:connection:for', async (event, payload) => {
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
 const windowConnectionRouteOwners = new Set<number>()
 
+// Event-driven release for #102187: a window's active route moved to another
+// profile, so the previous route's backend is no longer the live one. Without
+// this the pool only learns a backend is unused via timeouts (4-min fresh
+// window, 10-min idle reaper) while the 60s renderer keepalive already
+// stopped mattering the moment the socket closed — so visiting a 4th profile
+// within minutes of three others queued its spawn behind full slots until the
+// 30s ticket expired (config page / chat hang). Rewinding is race-free for
+// multi-window use: a backend another window still touches re-freshens itself.
+function releasePreviousRouteBackend(previous: WindowConnectionRoute | null) {
+  if (!previous) {
+    return
+  }
+
+  markPoolScopeReleased(backendPool, backendScopeKey(previous.connectionId, previous.profile), Date.now(), POOL_KEEPALIVE_FRESH_MS)
+  // The retirement proof is unchanged: the retirer still requires the
+  // backend's own idle acknowledgement before stopping it, so a backend
+  // that is busy (a stream, backend-side cron) is not killed by this.
+  poolRetirer.wake()
+}
+
 function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknown) {
   const id = sender.id
   const previous = windowConnectionRoutes.get(id)
@@ -15569,6 +15590,9 @@ function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknow
     previous?.profile !== next?.profile ||
     previous?.registryScoped !== next?.registryScoped
   ) {
+    // #102187: the window switched away from the previous route — release its
+    // pool backend's slot now instead of waiting out the fresh/idle timeouts.
+    releasePreviousRouteBackend(previous)
     void resetPreviewReach(id)
   }
 

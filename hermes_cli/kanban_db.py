@@ -3427,6 +3427,43 @@ def _nonblank_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _prior_implementer_from_parents(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Nearest writer ancestor of ``task_id``, used when a reviewer run was
+    claimed straight from ``ready`` and never went through a review handoff.
+
+    A staged pipeline dispatches every card ``blocked -> ready -> running``: there
+    is no ``review`` column and no ``review_requested`` event, so a stage that
+    judges an *attempt* (review, acceptance) reaches ``request_changes`` without
+    the provenance the review lane records. Returning the closest ancestor that is
+    not the reviewer itself keeps the return path pointed at a writer instead of
+    guessing; ``None`` means there is no such ancestor, and the caller then
+    refuses rather than reassigning to whoever happens to hold the card.
+    """
+    me = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    reviewer = _canonical_assignee(_nonblank_str(_row_get(me, "assignee")) if me else None)
+    frontier = [str(r["parent_id"]) for r in conn.execute(
+        "SELECT parent_id FROM task_links WHERE child_id = ?", (task_id,),
+    ).fetchall()]
+    seen: set[str] = set()
+    while frontier:
+        nxt: list[str] = []
+        for pid in frontier:
+            if pid in seen:
+                continue
+            seen.add(pid)
+            row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (pid,)).fetchone()
+            if row is None:
+                continue
+            candidate = _canonical_assignee(_nonblank_str(_row_get(row, "assignee")))
+            if candidate and candidate != reviewer:
+                return candidate
+            nxt.extend(str(r["parent_id"]) for r in conn.execute(
+                "SELECT parent_id FROM task_links WHERE child_id = ?", (pid,),
+            ).fetchall())
+        frontier = nxt
+    return None
+
+
 def request_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
@@ -3451,14 +3488,32 @@ def request_changes(
 
         claimed_event = _latest_event(conn, task_id, "claimed", current_run_id)
         claimed_payload = _json_dict(_row_get(claimed_event, "payload"))
-        if claimed_payload.get("source_status") != "review":
-            return False, "active run was not claimed from review"
+        from_review_lane = claimed_payload.get("source_status") == "review"
 
         requested_event = _latest_event(conn, task_id, "review_requested")
-        if requested_event is None:
-            return False, "no prior review_requested event"
-        implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
-        if implementer is None:
+        implementer = None
+        if requested_event is not None:
+            implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
+        if not from_review_lane:
+            # Claimed straight from ``ready``: a staged pipeline (no ``review``
+            # column, no ``review_requested`` event) dispatched this stage
+            # directly. Fall back to the graph for an implementer, but still
+            # refuse when there is no writer ancestor rather than handing the
+            # card back to the reviewer that just rejected it.
+            fallback = _prior_implementer_from_parents(conn, task_id)
+            if implementer is None:
+                implementer = fallback
+            elif fallback and fallback != implementer:
+                # Provenance and graph disagree; the graph is the live truth.
+                implementer = fallback
+            if implementer is None:
+                return False, "review handoff has no valid implementer provenance"
+        elif implementer is None:
+            # Inside the review lane a handoff with no implementer (the card was
+            # already assigned to its own reviewer) is genuinely absent
+            # provenance, and the parent walk is not a substitute: the reviewer
+            # is legitimately an ancestor's peer, so walking would misroute the
+            # rejection to whoever happens to be upstream.
             return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
 

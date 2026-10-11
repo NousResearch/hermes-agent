@@ -87,6 +87,38 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Per-row fault isolation (ready / review dispatch)
+# ---------------------------------------------------------------------------
+
+# A per-row fault is stamped with this prefix so it stays distinguishable from a
+# genuine spawn/auth failure. The stamp is counted and retried like any other
+# non-success, but must never be read as a quota wall: a poison row's traceback
+# can mention "403"/"auth" by accident, and ``blocker_auth`` would then park the
+# card forever instead of letting the failure counter trip.
+_ROW_ERROR_STAMP_PREFIX = "dispatch_error:"
+
+# Exceptions raised while dispatching ONE row that must cost that row only, not
+# the board's whole pass. Curated, deliberately not a bare ``Exception``: a
+# programming error or a spawn-path bug outside this surface still fails the
+# tick loudly — that loud abort is how the original poisoning was noticed at all.
+#
+# Deliberately NO ``sqlite3.Error``. Its ``OperationalError`` subclass covers
+# board-wide faults — 'database is locked', I/O errors, a corrupt file — so
+# containing one would attribute an unavailable BOARD to a single card: the row
+# gets a ``dispatch_error:`` stamp, its failure counter climbs, and the breaker
+# eventually parks it, while the pass cheerfully walks a board that is actually
+# unavailable. The row-data failures this boundary exists for are Python-level
+# parse failures on a dynamically-typed cell (``bytes`` where a ``str`` reader
+# expected text, ``int()``/``json`` on a TEXT value, a row shape the builder did
+# not expect), which the classes below cover without pre-empting a DB fault.
+_ROW_ISOLATION_ERRORS: tuple[type[BaseException], ...] = (
+    TypeError,      # bytes where a str reader expected text
+    ValueError,     # unparseable column value (int()/json on a TEXT cell)
+    KeyError,       # a row shape the row builder did not expect
+    IndexError,
+)
+
 
 @dataclass
 class DispatchResult:
@@ -152,6 +184,11 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    row_errors: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, repr(exc))`` for ready/review rows whose dispatch raised
+    inside the per-row unit (see ``_ROW_ISOLATION_ERRORS``). One entry per
+    poisoned row; the pass continues and every other card still dispatches. A
+    non-empty list is the operator signal that used to be a failed board tick."""
 
 
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
@@ -1585,10 +1622,18 @@ def check_respawn_guard(
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
     # crash is different: its persisted error includes the worker's last
     # captured output, which is context rather than a diagnosis and may contain
-    # benign commands such as ``claude auth status`` (#117097).
+    # benign commands such as ``claude auth status`` (#117097). Our own per-row
+    # fault stamp is exempt too: its traceback may mention a status code or
+    # "auth" by accident, and parking the card here would hide it from the
+    # failure counter that has to trip for a permanently toxic row.
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if (
+        err
+        and not err.startswith(_ROW_ERROR_STAMP_PREFIX)
+        and latest_outcome != "crashed"
+        and _RESPAWN_BLOCKER_RE.search(err)
+    ):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
@@ -2022,6 +2067,83 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _isolate_row_error(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    result: "DispatchResult",
+    exc: BaseException,
+    *,
+    lane: str,
+    failure_limit: int,
+) -> None:
+    """Attribute ONE row's dispatch exception to that row and let the pass run on.
+
+    Records ``(task_id, repr(exc))`` on ``result``, stamps the row so a
+    permanently toxic card is visible and eventually auto-blocks, and emits a
+    ``tick_row_error`` event for ``hermes kanban tail``. Best-effort by
+    construction: this IS the error path, so a failure to book-keep must never
+    re-abort the pass it was called to protect.
+    """
+    task_id = row["id"]
+    result.row_errors.append((str(task_id), repr(exc)))
+    error = f"{_ROW_ERROR_STAMP_PREFIX} {type(exc).__name__}: {exc}"
+    try:
+        current = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        # A row that ``_dispatch_lane_task`` had already claimed still holds the
+        # claim and an open run; one that raised before the claim (profile
+        # lookup, respawn guard) has neither — and ``_record_task_failure``'s
+        # release path is scoped to ``status = 'running'``, so asking it to
+        # release an unclaimed row would silently skip the failure counter.
+        claimed = current is not None and current["status"] == "running"
+        if _record_task_failure(
+            conn, task_id, error,
+            outcome="spawn_failed", failure_limit=failure_limit,
+            release_claim=claimed, end_run=claimed,
+        ):
+            result.auto_blocked.append(task_id)
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, task_id, "tick_row_error", {
+                "lane": lane,
+                "error": repr(exc),
+                "status": current["status"] if current is not None else None,
+            })
+    except Exception as inner:  # noqa: BLE001 — bookkeeping must not re-abort
+        _kb._log.warning(
+            "kanban dispatcher: could not record row error for %s: %s", task_id, inner,
+        )
+
+
+def _dispatch_lane_task_isolated(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    assignee: str,
+    result: "DispatchResult",
+    **kwargs,
+) -> bool:
+    """``_dispatch_lane_task`` behind the per-row fault boundary.
+
+    Every failure inside ONE row's dispatch stays that row's: a raise from the
+    profile lookup, the respawn guard or the claim is recorded on ``result``
+    (``row_errors``) and the ready/review loop moves to the next card. The
+    review-lane reservation preflight (:func:`_any_spawnable_review`) shares
+    this same boundary, so its per-row inspection cannot end the tick either.
+    Only the curated :data:`_ROW_ISOLATION_ERRORS` are contained — a board-level
+    fault (lane enumeration, reclaim, promotion, budget, or a ``sqlite3``
+    failure such as a locked database) still fails the tick loudly.
+    """
+    try:
+        return _dispatch_lane_task(conn, row, assignee, result, **kwargs)
+    except _ROW_ISOLATION_ERRORS as exc:
+        _isolate_row_error(
+            conn, row, result, exc,
+            lane=kwargs.get("lane", "ready"),
+            failure_limit=kwargs.get("failure_limit", DEFAULT_FAILURE_LIMIT),
+        )
+        return False
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2281,6 +2403,9 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    result: Optional["DispatchResult"] = None,
+    failure_limit: int = DEFAULT_FAILURE_LIMIT,
+    isolated_indexes: Optional[set[int]] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
@@ -2289,21 +2414,39 @@ def _any_spawnable_review(
     assignee already at the per-profile cap, or respawn-guarded — cannot
     consume the reservation, so it must not withhold capacity from an
     otherwise ready task (one such row would pin ``ready_budget`` to 0).
+
+    This pass runs BEFORE the ready loop, so it sits inside the same per-row
+    fault boundary as the loops it feeds: an unreadable review row is contained
+    with :func:`_isolate_row_error` (recorded on ``result``, counted once) and
+    treated as "cannot reserve" instead of raising out of the tick and skipping
+    every other card. Its index is added to ``isolated_indexes`` so the review
+    loop below does not isolate the SAME row a second time in one pass.
     """
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
     running = per_profile_running or {}
-    for row in review_rows:
-        assignee = row["assignee"]
-        if not assignee:
-            continue
-        if profile_exists is not None and not profile_exists(assignee):
-            continue
-        if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
-            continue
-        if check_respawn_guard(conn, row["id"], lane="review") is None:
-            return True
+    for index, row in enumerate(review_rows):
+        try:
+            assignee = row["assignee"]
+            if not assignee:
+                continue
+            if profile_exists is not None and not profile_exists(assignee):
+                continue
+            if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
+                continue
+            if check_respawn_guard(conn, row["id"], lane="review") is None:
+                return True
+        except _ROW_ISOLATION_ERRORS as exc:
+            # A row we cannot inspect cannot reserve capacity, and must cost
+            # that row only — never the reservation pass, never the tick.
+            if result is not None:
+                _isolate_row_error(
+                    conn, row, result, exc,
+                    lane="review", failure_limit=failure_limit,
+                )
+            if isolated_indexes is not None:
+                isolated_indexes.add(index)
     return False
 
 
@@ -2385,9 +2528,14 @@ def _dispatch_once_locked(
     # backlog. When spawnable review work exists and there is any budget, hold
     # one slot back.
     ready_budget = spawn_budget
+    # Rows the reservation preflight could not read (already isolated there):
+    # the review loop skips them so one poison row counts ONCE per tick.
+    review_isolated: set[int] = set()
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        result=result, failure_limit=failure_limit,
+        isolated_indexes=review_isolated,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
@@ -2411,21 +2559,33 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
-        if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
+        if _dispatch_lane_task_isolated(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1
 
     # A review agent (sdlc-review) approves (→ done) or requests changes
     # (→ ready/todo). Review spawns share max_spawn with ready tasks. The loop
     # checks the FULL shared ``spawn_budget`` — the reservation above caps the
     # ready lane, it grants no extra capacity here.
-    for row in review_rows:
+    for index, row in enumerate(review_rows):
         if spawn_budget is not None and spawned >= spawn_budget:
             break
+        if index in review_isolated:
+            # Already contained (and failure-counted) by the reservation
+            # preflight above; counting it again would inflate the retry budget.
+            continue
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
+        if _dispatch_lane_task_isolated(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1
+    if result.row_errors:
+        # Loud, once per pass: the operator signal that used to be a failed tick.
+        _kb._log.warning(
+            "kanban dispatcher: %d poisoned row(s) skipped on this board pass; every "
+            "other ready/review card still dispatched. %s",
+            len(result.row_errors),
+            "; ".join(f"{tid}: {err}" for tid, err in result.row_errors[:5]),
+        )
     return result
 
 

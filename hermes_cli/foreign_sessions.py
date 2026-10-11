@@ -335,3 +335,21 @@ def run_sessions_import(args, db=None) -> Optional[str]:
     print(f"✓ Imported {_SOURCE_LABELS.get(source, source)} session as {session_id}")
     print(f"  Continue it with:  hermes --resume {session_id}")
     return session_id
+
+
+def _import_foreign_resume(args) -> None:
+    """--resume @claude / @codex: import a foreign session and resume it."""
+    _resume_foreign = getattr(args, "resume", None)
+    if not (isinstance(_resume_foreign, str) and _resume_foreign.strip().lower() in ("@claude", "@codex")):
+        return
+    _picked = pick_foreign_session(_resume_foreign.strip().lower().lstrip("@"))
+    if _picked is None:
+        sys.exit(1)
+    try:
+        _imported_id = import_foreign_session(_picked.source, _picked.path)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    print(f"✓ Imported as {_imported_id} — resuming it now.")
+    print(f"  (later: hermes --resume {_imported_id})")
+    args.resume = _imported_id

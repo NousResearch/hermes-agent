@@ -278,3 +278,67 @@ def test_in_dir_leaves_unset_terminal_cwd_unset(main_mod, monkeypatch, tmp_path)
     main_mod._apply_in_dir(_args(in_dir=str(target)))
 
     assert "TERMINAL_CWD" not in os.environ
+
+
+# ---------------------------------------------------------------------------
+# No --in: a local launch's own directory must win over an inherited
+# TERMINAL_CWD too (#136842) — --oneshot bypasses cli.py, so the launch-dir
+# re-export at cli import never runs there.
+# ---------------------------------------------------------------------------
+
+
+def test_no_in_dir_refreshes_inherited_terminal_cwd_to_launch_dir(main_mod, monkeypatch, tmp_path):
+    """A nested/subagent-spawned `hermes chat` (or a shell/.env export) inherits the
+    parent's TERMINAL_CWD. Without --in every cwd consumer (resolve_agent_cwd, the
+    terminal tool, file-tool base dir) anchored on the inherited directory while
+    sessions.cwd recorded the launch dir — three surfaces, two answers."""
+    import os
+    from pathlib import Path
+
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    launch = tmp_path / "work"
+    inherited = tmp_path / "decoy"
+    launch.mkdir()
+    inherited.mkdir()
+    monkeypatch.chdir(launch)
+    monkeypatch.setenv("TERMINAL_CWD", str(inherited))
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    main_mod._apply_in_dir(_args(in_dir=None))
+
+    assert Path(os.environ["TERMINAL_CWD"]).resolve() == launch.resolve()
+    assert resolve_agent_cwd().resolve() == launch.resolve()
+
+
+def test_no_in_dir_leaves_unset_terminal_cwd_unset(main_mod, monkeypatch, tmp_path):
+    """A plain launch that did not inherit the variable must stay that way: seeding it
+    would leak a host path into ssh/container backends that keep their own default."""
+    import os
+
+    launch = tmp_path / "work"
+    launch.mkdir()
+    monkeypatch.chdir(launch)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    main_mod._apply_in_dir(_args(in_dir=None))
+
+    assert "TERMINAL_CWD" not in os.environ
+
+
+def test_no_in_dir_keeps_inherited_terminal_cwd_for_remote_backend(main_mod, monkeypatch, tmp_path):
+    """A non-local backend keeps its inherited/remote anchor: TERMINAL_CWD can name a
+    remote path there, and the launch dir is a host path that must not replace it."""
+    import os
+    from pathlib import Path
+
+    launch = tmp_path / "work"
+    launch.mkdir()
+    monkeypatch.chdir(launch)
+    monkeypatch.setenv("TERMINAL_CWD", "/remote/workspace")
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+
+    main_mod._apply_in_dir(_args(in_dir=None))
+
+    assert os.environ["TERMINAL_CWD"] == "/remote/workspace"
+    assert Path.cwd().resolve() == launch.resolve()

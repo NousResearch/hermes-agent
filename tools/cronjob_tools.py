@@ -703,6 +703,10 @@ def _action_create(a: dict[str, Any]) -> str:
     except CronSchedulerRegistrationError as exc:
         _partial = exc.to_dict()
         return tool_error(_partial.pop("error"), success=False, **_partial)
+    except ValueError as exc:
+        # create_job refuses a pinned job whose model cannot be resolved (dead-pin guard, card
+        # t_92b4a684) — surface the refusal instead of creating an inert job silently.
+        return tool_error(str(exc), success=False)
     _create_message = " ".join(filter(None, (f"Cron job '{job['name']}' created.",
         "Created PAUSED — resume to schedule, or explicitly run now." if not job.get("enabled", True) else None,
         _local_delivery_notice(job, deliver))))

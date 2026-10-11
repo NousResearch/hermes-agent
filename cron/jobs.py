@@ -1656,23 +1656,102 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _model_name_from_block(model_cfg: Any) -> str:
+    """The model NAME a ``model:`` config block names: ``model: <name>`` shorthand, or a dict's
+    ``default`` / ``model`` / ``name`` key. ``""`` when it names none."""
+    if isinstance(model_cfg, str):
+        return model_cfg.strip()
+    if isinstance(model_cfg, dict):
+        return _normalize_job_optional_text(
+            model_cfg.get("default") or model_cfg.get("model") or model_cfg.get("name")) or ""
+    return ""
+
+
+def _load_home_model_block(home: Path) -> Any:
+    """``model:`` block of *home*'s ``config.yaml`` ({} when absent/empty/unreadable).
+
+    A NAMED profile's home is self-contained: the effective-config loader reads only that home's
+    ``config.yaml``, so a profile with no ``model:`` block has no default model of its own.
+    """
+    from hermes_cli.config_effective import load_user_config_effective
+
+    cfg_path = Path(home) / "config.yaml"
+    if not cfg_path.exists():
+        return {}
+    with contextlib.suppress(Exception):
+        cfg = load_user_config_effective(cfg_path)
+        if isinstance(cfg, dict):
+            return cfg.get("model") or {}
+    return {}
+
+
+def host_default_model(active_home: Optional[Path] = None) -> tuple[str, str, Any]:
+    """``(model, provider, model_cfg)`` a NAMED profile inherits from the HOST root config.
+
+    The active home's own config is the first source (see ``_main_model_pin`` / the scheduler); when
+    it carries no ``model:`` block, a named profile (``<root>/profiles/<name>``) falls back to the
+    HOST root's ``<root>/config.yaml`` default — the same default the root profile runs on — so an
+    unpinned cron job created in that profile's store RUNS instead of dying with "has no model
+    configured" (card t_92b4a684). ``("", "", {})`` when the active home IS the root, or when the
+    host config names no model either.
+    """
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+
+    active = Path(active_home) if active_home is not None else get_hermes_home()
+    try:
+        root = Path(get_default_hermes_root(home=active))
+        same_root = root.resolve() == active.resolve()
+    except OSError:  # pragma: no cover - unreadable path
+        return "", "", {}
+    if same_root:
+        return "", "", {}
+    block = _load_home_model_block(root)
+    model = _model_name_from_block(block)
+    if not model:
+        return "", "", {}
+    provider = ""
+    if isinstance(block, dict):
+        provider = _normalize_job_optional_text(block.get("provider")) or ""
+    return model, provider, block
+
+
+def _profile_store_label(home: Optional[Path] = None) -> str:
+    """Human label for a refusal message: the profile name whose store this is, else ``default``."""
+    home = Path(home) if home is not None else get_hermes_home()
+    return home.name if home.parent.name == "profiles" else "default"
+
+
+_NO_MAIN_MODEL_ERROR = (
+    "Cannot pin this job: no main model is resolvable for the '{label}' cron store "
+    "(this profile's config.yaml has no model.default and the host config has none either), so a "
+    "pinned job would be created DEAD. Set a default with `hermes model <name>` (or a `model:` "
+    "block in config.yaml) and retry, or create the job unpinned."
+)
+
+
 def _main_model_pin() -> tuple[Optional[str], Optional[str]]:
     """``(provider, model)`` the main agent runs on right now (``model.default`` + the provider it
     resolves to), for ``pinned=True`` jobs: the lock is a plain per-job pin, so the scheduler needs
-    no second precedence axis. ``(None, None)`` when nothing is configured (the job stays unpinned)."""
-    from hermes_cli.config_effective import load_user_config_effective
-
-    cfg_path = get_hermes_home() / "config.yaml"
-    cfg = load_user_config_effective(cfg_path) if cfg_path.exists() else {}
-    model_cfg = cfg.get("model") or {}
-    model = model_cfg.get("default") or model_cfg.get("model") if isinstance(model_cfg, dict) else model_cfg
-    model = _normalize_job_optional_text(model)
+    no second precedence axis. A NAMED profile with no ``model:`` of its own inherits the HOST root
+    default (``host_default_model``); ``(None, None)`` when nothing resolves anywhere — the caller
+    REFUSES rather than creating a silently-dead job (card t_92b4a684)."""
+    home = get_hermes_home()
+    model_cfg = _load_home_model_block(home)
+    model = _model_name_from_block(model_cfg)
+    requested: Optional[str] = None
+    if not model:
+        _host_model, _host_provider, _host_cfg = host_default_model(home)
+        if _host_model:
+            model = _host_model
+            model_cfg = _host_cfg
+            requested = _host_provider or None
     if not model:
         return None, None
     provider = None
     with contextlib.suppress(Exception):
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        provider = _normalize_job_optional_text(resolve_runtime_provider(requested=None).get("provider"))
+        provider = _normalize_job_optional_text(
+            resolve_runtime_provider(requested=requested).get("provider"))
     return (provider.lower() if provider else None), model
 
 
@@ -1888,6 +1967,11 @@ def create_job(
     name = name or label_source[:50].strip()
     if pinned and not f["model"]:
         f["provider"], f["model"] = _main_model_pin()
+        if not f["model"]:
+            # A pinned job with no model is created DEAD (it errors at every fire). Refuse at the
+            # door instead of persisting an inert job silently (card t_92b4a684).
+            raise ValueError(
+                _NO_MAIN_MODEL_ERROR.format(label=_profile_store_label(get_hermes_home())))
     next_run_at = _next_run_or_reject_past_oneshot(parsed_schedule, name, schedule, "")
 
     job = {
@@ -2023,6 +2107,10 @@ def _apply_pin_update(job: dict[str, Any], updates: dict[str, Any]) -> None:
     if pinned:
         if not _normalize_job_optional_text(job.get("model")):
             updates["provider"], updates["model"] = _main_model_pin()
+            if not updates["model"]:
+                # Same dead-pin guard as create_job (card t_92b4a684).
+                raise ValueError(
+                    _NO_MAIN_MODEL_ERROR.format(label=_profile_store_label(get_hermes_home())))
     else:
         updates["provider"], updates["model"] = None, None
 

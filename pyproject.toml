@@ -163,6 +163,8 @@ dependencies = [
   # Store update queries and request results project collection interfaces.
   "winrt-windows-foundation-collections>=3.2.1,<4; sys_platform == 'win32' and python_version >= '3.14'",
   "winrt-windows-services-store>=3.2.1,<4; sys_platform == 'win32' and python_version >= '3.14'",
+  # Package-owned inference cache via ApplicationData.Current.LocalCacheFolder.
+  "winrt-windows-storage>=3.2.1,<4; sys_platform == 'win32' and python_version >= '3.14'",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images
   # (>5 MB or >8000px) at embed time; without it the byte AND pixel-dimension
   # shrink paths no-op, so an oversized image bakes into immutable history and

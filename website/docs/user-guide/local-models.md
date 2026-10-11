@@ -185,6 +185,34 @@ in PM's store; `runtimes/llamacpp/` holds mutable presets and server state.
 Selecting a local model as your main model uses the standard
 `model.provider: llamacpp` + `model.default` settings.
 
+### Windows package storage
+
+MSIX installs, including the Microsoft Store app, keep downloaded models, speech models, inference
+state, download partials, and downloaded tool/runtime updates under its
+Windows-managed `LocalCache/hermes-inference/` directory. Hermes obtains the
+physical path from `ApplicationData.Current.LocalCacheFolder` and passes that
+path to native processes, including `llama-server.exe`. This works with
+filesystem virtualization disabled. Binaries shipped inside the app remain
+in the installed package.
+
+Windows preserves this cache across app updates, excludes it from app-data
+backup, and removes it when you uninstall Hermes. Reinstalling requires
+downloading these models again. See Microsoft's
+[app-data storage guidance](https://learn.microsoft.com/en-us/windows/apps/develop/data/store-and-retrieve-app-data).
+
+This changes where the packaged app downloads and reads inference files.
+Existing files under `%LOCALAPPDATA%\hermes` are left untouched: nothing is
+moved, copied, or automatically cleaned up. Download models into the package
+cache when using the packaged app; another installation can continue using
+its existing downloads. Uninstall removes the package cache, not those older
+external files.
+
+Explicit custom `HERMES_HOME` locations and Hugging Face cache settings retain
+their existing ownership. Existing shared Hugging Face downloads are not migrated.
+
+Your configuration, credentials, conversations, and memories stay in the
+Hermes home. CLI/source installs retain their existing storage layout.
+
 ## Requirements and limits
 
 - **Windows:** CUDA on supported NVIDIA targets, Vulkan on x64, or CPU.

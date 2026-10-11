@@ -1,4 +1,5 @@
 """Authenticated WS projection of the gateway authority; no TUI execution fallback."""
+import asyncio
 from dataclasses import asdict
 from pathlib import Path
 import sqlite3
@@ -261,7 +262,6 @@ class AuthorityConnection:
             if 'skills' in params:
                 # Skill files are read off the owner loop, once per NEW session (a retried
                 # request_id resumes the frozen policy and never re-renders).
-                import asyncio
                 from gateway.session_local_recovery import local_identity
                 from gateway.session_policy import render_launch_skills
                 params.setdefault('request_id', uuid.uuid4().hex)
@@ -270,15 +270,14 @@ class AuthorityConnection:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
             ref = create_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt)
             if params.get('accept_hooks') is True:
-                import asyncio
                 from gateway.session_policy import accept_launch_hooks, restore_policy
                 from hermes_state_local import local_receipt
                 policy = restore_policy(local_receipt(self.authority.db, ref.session_id)['policy'])
                 await asyncio.to_thread(accept_launch_hooks, policy)
             if title:
-                title_new_session(self.authority, ref, title)
+                await asyncio.to_thread(title_new_session, self.authority, ref, title)
             if hidden:
-                self.authority.db.set_session_hidden(ref.session_id, True)
+                await asyncio.to_thread(self.authority.db.set_session_hidden, ref.session_id, True)
         return await self.resume(ref, {})
 
     async def ping(self, ref, params):

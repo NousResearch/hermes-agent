@@ -153,13 +153,22 @@ class SessionAuthority:
         return self.db.get_compression_tip(ref.session_id) or ref.session_id
 
     def register(self, source):
+        return self._publish_route(source, *self._reserve_route(source))
+
+    def _reserve_route(self, source):
+        """The durable half of ``register`` (routing entry + reserved row): thread-safe, so async
+        callers run it off the owner loop and publish the live entry on the loop."""
         self._require_admission_open()
         entry = self.runner.session_store.get_or_create_session(source)
         sid = self.logical_owner(entry.session_id)
-        self.sessions.setdefault(sid, LiveSession(source, entry.session_key))
         # SessionStore reserves routing metadata before the first AIAgent exists.
         if self.db.get_session(sid) is None:
             self.db.create_session(sid, source=source.platform.value)
+        return sid, entry.session_key
+
+    def _publish_route(self, source, sid, route):
+        self._require_admission_open()
+        self.sessions.setdefault(sid, LiveSession(source, route))
         return SessionRef(self.profile_id, sid)
 
     def agent(self, ref):
@@ -230,7 +239,7 @@ class SessionAuthority:
                     live.event_stream.fanout.detach(transport)
                 if not live.subscribers:
                     from gateway.session_acp_lifecycle import end_idle_acp_session
-                    end_idle_acp_session(self, session_id)
+                    await asyncio.to_thread(end_idle_acp_session, self, session_id)
                 return
         raise RuntimeStoreError('not_found')
 
@@ -311,7 +320,7 @@ class SessionAuthority:
         payload = await prepare_native(self.runner, event)
         self._require_admission_open()
         source = restore_native(payload).source
-        ref = self.register(source)
+        ref = self._publish_route(source, *await asyncio.to_thread(self._reserve_route, source))
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
         from gateway.session_runtime_workers import tracked_write
@@ -765,7 +774,11 @@ class SessionAuthority:
             live.pause_notified = False
             if row is None:
                 from gateway.session_acp_lifecycle import end_idle_acp_session
-                end_idle_acp_session(self, ref.session_id)
+                # A write (idle check + stamp in one txn): off-loop. Input scheduled meanwhile set
+                # ``rescan`` on this still-live drain, which must claim it rather than exit.
+                await asyncio.to_thread(end_idle_acp_session, self, ref.session_id)
+                if live.rescan:
+                    continue
                 return
             admission_id = row['admission_id']
             try:
@@ -888,8 +901,9 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     # yielding, so no other task observes a half-registered authority.
     from pathlib import Path
     db_key = await asyncio.to_thread(Path(db.db_path).resolve)
-    epoch = begin_runtime_epoch(db, instance_id=instance_id)
-    recover_session_inputs(db, epoch=epoch)
+    epoch = await asyncio.to_thread(begin_runtime_epoch, db, instance_id=instance_id)
+    # Hot-serve builds a profile while the loop serves the others: both writes stay off it.
+    await asyncio.to_thread(recover_session_inputs, db, epoch=epoch)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     if register:
         runner.session_authority = authority

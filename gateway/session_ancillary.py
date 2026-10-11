@@ -1,7 +1,8 @@
-"""Desktop/Ink projections of existing owner state, plus the session-scoped process stop.
+"""Desktop/Ink projections of existing owner state, plus the session-scoped process verbs.
 
 No legacy server, manager construction, process recovery, or execution on reads. ``process.stop``
-is the one write: it stops exactly the processes ``process.list`` projects for the session.
+and ``process.kill`` stop only processes ``process.list`` projects for the session; ``reload.mcp``
+reconciles only the requesting profile's MCP servers.
 """
 import asyncio
 from functools import partial
@@ -24,7 +25,8 @@ def handlers(connection):
         'subagent.list': 'subagents', 'subagent.tail': 'tail',
     }.items()}, 'approval.pending': partial(approvals, connection),
         'approval.received': partial(approvals, connection, ack=True),
-        'process.stop': partial(stop_processes, connection)}
+        'process.stop': partial(stop_processes, connection),
+        'process.kill': partial(kill_process, connection), 'reload.mcp': partial(reload_mcp, connection)}
 
 
 async def approvals(connection, ref, params, *, ack=False):
@@ -77,13 +79,9 @@ async def read(connection, ref, params, *, kind):
         return {'processes': process_snapshot(authority, ref, agent, records)}
 
 
-async def stop_processes(connection, ref, params):
-    """Ink ``/stop``: kill the background processes this session owns (what ``process.list``
-    shows), never the registry-wide ``kill_all`` the legacy sidecar ran, which on the shared owner
-    reached every chat, Desktop window and served profile (dokterdok N2). An explicit stop, so a
-    ``persist_on_release`` job of THIS session is still reached (#41225)."""
-    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
-        raise RuntimeStoreError('invalid_params')
+def _owned_targets(connection, ref, params, *, select):
+    """``(registry, ids)``: the session's own processes (what ``process.list`` shows) that
+    ``select(process)`` keeps; ``(None, [])`` when no process was ever registered here."""
     authority = connection.authority
     if ref.session_id not in authority.sessions:
         raise RuntimeStoreError('not_found')
@@ -93,13 +91,61 @@ async def stop_processes(connection, ref, params):
         _require_current_route(authority, ref)
         agent, records = _owner_objects(authority, ref)
         module = sys.modules.get('tools.process_registry')
-        if module is None:  # nothing ever registered a process in this interpreter
-            return {'killed': 0}
+        if module is None:
+            return None, []
         registry = module.process_registry
         keys, owners = _ownership(authority, ref, agent, records)
         with registry._lock:
-            targets = [p.id for p in _owned_locked(registry, keys, owners)
-                       if not p.exited or p._scope_stop_pending]
+            return registry, [p.id for p in _owned_locked(registry, keys, owners) if select(p)]
+
+
+async def kill_process(connection, ref, params):
+    """Desktop's per-process Stop: one process THIS session owns (the ``process.list`` rule); any
+    other id, another chat's included, is ``not_found``. The legacy sidecar handler looked the
+    session up in its own table, which never holds an authority session."""
+    if (set(params) - {'session_id', 'process_id', 'profile'} or not ref.session_id
+            or not isinstance(params.get('process_id'), str) or not params['process_id']):
+        raise RuntimeStoreError('invalid_params')
+    registry, ids = _owned_targets(connection, ref, params, select=lambda p: p.id == params['process_id'])
+    if not ids:
+        raise RuntimeStoreError('not_found')
+    return await asyncio.to_thread(registry.kill_process, ids[0])
+
+
+async def reload_mcp(connection, ref, params):
+    """Desktop's MCP add / toggle / repair: bring THIS profile's live MCP servers in step with its
+    config (the owner's housekeeping reconcile, run now) and refresh this profile's cached agents.
+    Never the sidecar's teardown of every server, which cut every chat's in-flight MCP calls."""
+    if set(params) - {'session_id', 'confirm', 'rev', 'profile'}:
+        raise RuntimeStoreError('invalid_params')
+    if 'session:control' not in connection.actor.capabilities:
+        raise RuntimeStoreError('permission_denied')
+    if params.get('confirm') is not True:
+        return {'status': 'confirm_required', 'message': 'Reloading MCP refreshes every chat of this profile.'}
+    from tools.mcp_oauth import suppress_interactive_oauth
+    from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
+
+    def reconcile():
+        with suppress_interactive_oauth():
+            return reconcile_mcp_servers_with_config()
+    result = await asyncio.to_thread(reconcile)
+    from gateway.session_authorities import served_profile_name
+    runner = connection.authority.runner
+    multiplex = bool(getattr(runner.config, 'multiplex_profiles', False))
+    runner._mcp_reload_refresh_cached_agents(multiplex, served_profile_name(connection.authority.profile_id))
+    changed = ', '.join(f'{k}: {", ".join(v)}' for k, v in result.items() if v) or 'no server changes'
+    return {'status': 'reloaded', 'message': f'MCP servers reconciled ({changed})'}
+
+
+async def stop_processes(connection, ref, params):
+    """Ink ``/stop``: kill the background processes this session owns (what ``process.list``
+    shows), never the registry-wide ``kill_all`` the legacy sidecar ran, which on the shared owner
+    reached every chat, Desktop window and served profile (dokterdok N2). An explicit stop, so a
+    ``persist_on_release`` job of THIS session is still reached (#41225)."""
+    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    registry, targets = _owned_targets(connection, ref, params,
+                                       select=lambda p: not p.exited or p._scope_stop_pending)
 
     def kill():
         results = [registry.kill_process(pid, source='process.stop', consume_output=False) for pid in targets]

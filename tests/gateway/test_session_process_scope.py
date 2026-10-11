@@ -10,8 +10,8 @@ from tests.gateway.fixtures.local_recovery_probe import child_env
 def test_stop_is_session_scoped_and_global_verbs_keep_the_owner_refusal(tmp_path):
     """Ink ``/stop`` kills only its own session's processes (a persisted one included); another
     chat's processes, persisted or not, survive. ``delegation.pause``, ``reload.env``,
-    ``reload.mcp`` and ``agents.list`` keep the authority's -32601 instead of reaching the legacy
-    handler that pauses every spawn, rewrites the shared environ or reloads every MCP server."""
+    and ``agents.list`` keep the authority's -32601 instead of reaching the legacy
+    handler that pauses every spawn or rewrites the shared environ."""
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir()
@@ -29,4 +29,5 @@ def test_stop_is_session_scoped_and_global_verbs_keep_the_owner_refusal(tmp_path
     assert receipt['exited_after_sessionless'] == [True, True, False, False], receipt
     assert receipt['pause'] == -32601 and receipt['spawn_paused'] is False, receipt
     assert receipt['reload_env'] == -32601 and receipt['environ_rewritten'] is False, receipt
-    assert receipt['reload_mcp'] == -32601 and receipt['agents_list'] == -32601, receipt
+    # reload.mcp is now served by the owner, profile-scoped (test_desktop_process_verbs.py).
+    assert receipt['agents_list'] == -32601, receipt

@@ -567,7 +567,7 @@ describe('usePromptActions /stop', () => {
 
     expect(calls).toEqual([
       { method: 'session.interrupt', params: { session_id: 'rt-target-session' } },
-      { method: 'process.stop', params: {} }
+      { method: 'process.stop', params: { session_id: 'rt-target-session' } }
     ])
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
@@ -594,7 +594,7 @@ describe('usePromptActions /stop', () => {
     await handle!.submitText('/stop')
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
-    expect(requestGateway).toHaveBeenCalledWith('process.stop', {})
+    expect(requestGateway).toHaveBeenCalledWith('process.stop', { session_id: RUNTIME_SESSION_ID })
   })
 })
 

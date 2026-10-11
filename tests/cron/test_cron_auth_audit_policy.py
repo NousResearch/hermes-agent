@@ -30,7 +30,7 @@ def test_local_deadline_not_provider(error):
 
 @pytest.mark.parametrize('error', ['Request timed out.', 'httpx.ReadTimeout: timed out', 'APITimeoutError: timed out', 'ConnectTimeout: timed out'])
 def test_provider_timeout_retained(monkeypatch, error):
-    monkeypatch.setattr(scheduler, 'load_config', lambda: {})
+    monkeypatch.setattr(scheduler, 'load_config', dict)
     monkeypatch.setattr(scheduler, 'get_fallback_chain', lambda cfg: [])
     msg = scheduler._summarize_cron_failure_for_delivery({'id':'audit'}, error)
     assert 'did not respond in time' in msg

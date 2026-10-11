@@ -3462,6 +3462,19 @@ _PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
 )
 
 
+def is_contentless_reasoning(text: str) -> bool:
+    """Whether reasoning carries no answer at all: blank, or a longer-than-fragment run with
+    not one letter or digit (any script).
+
+    The reasoning-only clean-stop promotion exists for parsers that file a real answer as
+    reasoning. A terse symbol answer (``✓``, ``👍``) stays fragment-sized, so it is still
+    promoted; a punctuation/whitespace-only run beyond the degenerate-fragment cap (e.g. a
+    provider repeating token id 0 as 32 ``!``) is a decode collapse, never an answer.
+    """
+    t = (text or "").strip()
+    return not t or (len(t) > _DEGENERATE_FINAL_MAX_CHARS and not any(ch.isalnum() for ch in t))
+
+
 def promoted_reasoning_announces_action(text: str) -> bool:
     """Whether promoted reasoning ENDS on a first-person plan to act (stall, not an answer).
 

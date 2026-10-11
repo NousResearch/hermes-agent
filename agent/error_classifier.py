@@ -617,6 +617,30 @@ _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
 # fails mid-stream (#62662). Deterministic for the request, so fall back instead of retrying.
 _STREAM_RENDER_ERROR_PATTERNS = ("error rendering", "rendering prompt", "jinja template", "jinja render")
 
+# llama.cpp's llama-server relays a chat template's own ``raise_exception(...)`` as HTTP 500
+# ``server_error`` ("While executing CallExpression ... Jinja Exception: <message>"). The template
+# refuses this request's shape and will refuse every retry of it, so the transient 5xx ladder only
+# burns minutes before the turn fails. Route it by what the template refused instead.
+_TEMPLATE_RAISE_PATTERNS = ("jinja exception", "raise_exception(")
+# Qwen 3.8 templates whitelist xhigh/medium/low ("Unexpected reasoning effort high. Supported
+# types are ...") — the one-shot reasoning recovery resends without the effort (template default).
+_TEMPLATE_REASONING_PATTERNS = ("reasoning effort", "reasoning_effort", "reasoningeffort")
+
+
+def _template_raise_verdict(msg: str) -> Verdict:
+    if any(p in msg for p in _TEMPLATE_REASONING_PATTERNS):
+        return _V_REASONING_MANDATORY
+    if any(p in msg for p in _ROLE_ALTERNATION_PATTERNS):
+        return _V_ROLE_ALTERNATION
+    return _V_FORMAT_ERROR
+
+
+# Shared by the 5xx handlers and the status-less path: a proxy may relabel the 500, and a
+# mid-stream refusal arrives as a bare status-less APIError (see _STREAM_RENDER_ERROR_PATTERNS).
+# Always checked LAST, so it only claims bodies that were otherwise generic (server_error /
+# overloaded / unknown); a context-overflow or validation phrase keeps its own recovery.
+_TEMPLATE_RAISE_RULES = ((_TEMPLATE_RAISE_PATTERNS, _template_raise_verdict),)
+
 # Status-less message path, head (before usage-limit disambiguation).
 _MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
                        (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE),
@@ -632,7 +656,7 @@ _MESSAGE_TAIL_RULES = (
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW), (_AUTH_PATTERNS, _V_AUTH_ROTATE),
     (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
     (_TIMEOUT_MESSAGE_PATTERNS, _V_TIMEOUT), (_CONNECTION_MESSAGE_PATTERNS, _V_TIMEOUT),
-)
+) + _TEMPLATE_RAISE_RULES
 
 # Structured error code → verdict. The error-code rate_limit verdict rotates
 # but does not set should_fallback (unlike the message/status paths).
@@ -1092,7 +1116,7 @@ def _status_5xx(c: _Ctx) -> Verdict:
     validation = any(p in c.msg for p in _REQUEST_VALIDATION_PATTERNS) or c.code in _5XX_VALIDATION_CODES
     if validation and not _is_server_injected_param_rejection(c.msg, c.provider_slug):
         return _V_FORMAT_ERROR
-    return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_SERVER_ERROR
+    return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES + _TEMPLATE_RAISE_RULES) or _V_SERVER_ERROR
 
 
 def _classify_402(error_msg: str, result_fn: Callable[..., Any]) -> Any:
@@ -1227,8 +1251,8 @@ _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
-    503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
-    529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
+    503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES + _TEMPLATE_RAISE_RULES) or _V_OVERLOADED,
+    529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES + _TEMPLATE_RAISE_RULES) or _V_OVERLOADED,
 }
 
 

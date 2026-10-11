@@ -264,3 +264,82 @@ def test_confirmed_claim_loss_mid_run_still_yields(temp_home, monkeypatch):
     assert record["last_status"] is None
     assert record["fire_claim"]["by"] == "replacement:deadbeef"
     assert "discarded" in get_execution(job["execution_id"])["error"]
+
+
+_UNKNOWN_DELIVERY_ERROR = (
+    "timed out while gateway delivery was in progress; outcome is unknown and was not retried"
+)
+
+
+@pytest.mark.parametrize(
+    "run_result, expected_status, expected_error, expected_streak",
+    [
+        ((True, "output text", "the report", None), "delivery_failed", None, 0),
+        ((False, "output text", "", _REAL_ERROR), "error", _REAL_ERROR, 1),
+    ],
+    ids=["unknown-delivered-ok", "unknown-delivered-failure-notice"],
+)
+def test_unknown_fenced_delivery_keeps_terminal_status_when_claim_sample_misses(
+    temp_home, monkeypatch, run_result, expected_status, expected_error, expected_streak,
+):
+    """#132078: the restart-safe worker's wait budget fences the send ``unknown`` while the
+    gateway is still mid-send; the message lands anyway, then the runner tail dies and the
+    post-delivery claim sample misses. The run must keep its real outcome — an ok run stays a
+    delivery-only blemish (streak untouched), a failed run keeps its real error — instead of
+    recording ``_OWNERSHIP_LOST_INTERRUPTED`` for a shutdown that never happened."""
+    from cron.jobs import get_job
+
+    sched, job, hb, delivered = _drive(
+        monkeypatch, run_result=run_result, samples_before_miss=2)
+
+    def fence_unknown(delivery_job, content, **kwargs):
+        delivered.append(content)
+        delivery_job["_delivery_outcome_unknown"] = True
+        return _UNKNOWN_DELIVERY_ERROR
+
+    monkeypatch.setattr(sched, "_deliver_result", fence_unknown)
+
+    assert sched.run_one_job(job) is True
+
+    assert len(delivered) == 1, "the notice had left the worker process"
+    assert hb.missed == 1, "exactly the post-delivery sample missed"
+    record = get_job(job["id"])
+    assert record["last_status"] == expected_status
+    assert record["last_error"] == expected_error
+    assert record["last_error"] != sched._OWNERSHIP_LOST_INTERRUPTED
+    assert record["failure_streak"] == expected_streak
+    assert record["last_delivery_error"] == _UNKNOWN_DELIVERY_ERROR
+
+
+def test_worker_wait_timeout_stamps_the_unknown_delivery_outcome(monkeypatch, tmp_path):
+    """The worker's queue branch marks a delivery the queue fenced ``unknown`` on the job, so the
+    post-delivery ownership check can tell "uncertain" from "failed"; a later confirmed outcome
+    re-derives the marker per attempt (#132078)."""
+    from cron import scheduler_delivery
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "cron.delivery_queue.enqueue_and_wait",
+        lambda execution_id, job, content, **kw: _UNKNOWN_DELIVERY_ERROR)
+    monkeypatch.setattr(
+        "cron.delivery_queue.get_status",
+        lambda execution_id: {"status": "unknown", "error": _UNKNOWN_DELIVERY_ERROR})
+    monkeypatch.setattr("cron.jobs.get_job", lambda job_id: {})
+    monkeypatch.setattr(
+        scheduler_delivery, "_resolve_delivery_targets",
+        lambda job, for_failure=False: [{"platform": "telegram", "chat_id": "123"}])
+    monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", "exec-1")
+
+    job = {"id": "job-1", "execution_id": "exec-1", "deliver": "telegram:123"}
+    assert scheduler_delivery._deliver_result(
+        job, "done", adapters=None, loop=None) == _UNKNOWN_DELIVERY_ERROR
+    assert job.get("_delivery_outcome_unknown") is True
+
+    monkeypatch.setattr(
+        "cron.delivery_queue.enqueue_and_wait",
+        lambda execution_id, job, content, **kw: None)
+    monkeypatch.setattr(
+        "cron.delivery_queue.get_status",
+        lambda execution_id: {"status": "delivered", "error": None})
+    assert scheduler_delivery._deliver_result(job, "done", adapters=None, loop=None) is None
+    assert job.get("_delivery_outcome_unknown") is None

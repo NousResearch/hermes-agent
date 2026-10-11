@@ -174,26 +174,6 @@ def _inchannel_seed_allowed(*, is_dm: bool, user_id: Optional[str]) -> bool:
     return bool(is_dm or user_id)
 
 
-def _redact_cron_payload(text: str, what: str) -> str:
-    """Fail-closed secret redaction for anything a cron job emits outward.
-
-    Every outward lane — chat message, session mirror, bot-chat turn — must apply the same policy,
-    so the policy lives in one place. ``force=True`` because this is a safety boundary, not
-    logging: the ``security.redact_secrets`` preference governs how much is scrubbed from the
-    user's own logs and must not be able to turn scrubbing off on the way out to a chat (same
-    reasoning as ``tools/delegation_live_log.py``). Empty input is returned as-is; any failure
-    inside the redactor replaces the payload entirely rather than letting an unscanned value out.
-    """
-    if not text:
-        return text
-    try:
-        from agent.redact import redact_sensitive_text
-        return redact_sensitive_text(text, force=True)
-    except Exception as e:
-        logger.warning("Failed to redact secrets from cron %s: %s", what, e)
-        return "[REDACTED - redaction failed]"
-
-
 def _cron_display_name(job: dict) -> str:
     """Job name/id as it appears in outward-facing text. The mirror sinks and the thread title
     splice the job *name* around the redacted payload, and the name is user-controlled config — a
@@ -1979,6 +1959,7 @@ def _deliver_result(
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
     job.pop("_notification_all_targets_suppressed", None)
+    job.pop("_delivery_outcome_unknown", None)
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
@@ -2001,6 +1982,12 @@ def _deliver_result(
         delivery_status = get_status(external_execution)
         if delivery_status and delivery_status["status"] == "suppressed":
             job["_notification_all_targets_suppressed"] = True
+        if delivery_status and delivery_status["status"] == "unknown":
+            # The queue fenced the send uncertain (the worker's wait budget ran out mid-send);
+            # the gateway's at-most-once attempt may still land, so the returned error says
+            # "unknown", not "failed" — the scheduler must not read it as a delivery failure
+            # (#132078).
+            job["_delivery_outcome_unknown"] = True
         from cron.jobs import get_job
         refreshed = get_job(job["id"]) or {}
         job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
@@ -2129,3 +2116,7 @@ from cron import scheduler as _sched
 from cron import scheduler_delivery_origin as _origin
 from cron import scheduler_preflight as _preflight
 from cron import scheduler_script as _script
+
+# Split out for the file-size ratchet; re-exported here so every existing caller (and any
+# monkeypatch of this module's name) keeps working unchanged.
+from cron.scheduler_delivery_redact import _redact_cron_payload as _redact_cron_payload

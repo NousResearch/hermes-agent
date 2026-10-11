@@ -206,6 +206,7 @@ On macOS, `F6`/`F7` mean the physical function keys, not the media/system contro
 | `Ctrl+R` / `F7` | Toggle the live work dock between its multi-row preview and a single summary line without moving composer focus. `Ctrl+R` is the reliable fallback when macOS reserves the function-key row. Besides subagents and background processes, the dock shows a standing `/goal` (active, parked or paused, with turns used) on its top row and the prompts waiting in `/queue` on its bottom rows. |
 | `Ctrl+D` | Exit |
 | `Ctrl+Z` | Suspend Hermes to background (Unix only). Run `fg` in the shell to resume. |
+| `Ctrl+]` | **Detach** the running foreground terminal command: it keeps running as a tracked background process (notify on completion) and the agent continues. Same as `/detach`. Configurable via `display.background_key`; only active while a turn runs. |
 | `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands |
 | `!<command>` | **Shell mode** — run a shell command yourself without spending a model turn (e.g. `!git status`, `!pytest -x`). See below. |
 
@@ -385,6 +386,17 @@ Most terminals send the same byte sequence for `Enter` and `Shift+Enter` by defa
 | macOS Terminal.app, stock Windows Terminal (stable) | Not supported — `Shift+Enter` is indistinguishable from `Enter` |
 
 Where the terminal cannot distinguish them, `Alt+Enter` and `Ctrl+J` continue to work by default. **On Windows Terminal specifically, `Alt+Enter` is captured by the terminal (toggles fullscreen) and never reaches Hermes — use `Ctrl+Enter` (delivered as `Ctrl+J`) or `Ctrl+J` directly for a newline.**
+
+### Detach key compatibility
+
+`Ctrl+]` (detach, see [Redirecting the Agent Mid-Turn](#redirecting-the-agent-mid-turn)) reaches Hermes as the single byte `0x1d` in native terminals. Terminals built on xterm.js translate `Ctrl+<punctuation>` by the key's **US-layout position** instead of the character your layout produces, so on non-US layouts it may never arrive.
+
+| Terminal | Status |
+|---|---|
+| Windows Terminal, Warp, tmux | `Ctrl+]` delivered |
+| VS Code terminal (non-US layouts) | Not delivered — `/detach` always works; or set `display.background_key`, or add a VS Code keybinding that sends it: `{"key": "ctrl+]", "command": "workbench.action.terminal.sendSequence", "args": {"text": "\u001d"}, "when": "terminalFocus"}` |
+
+To check what your terminal sends for any key, run `python scripts/keystroke_diagnostic.py`.
 
 ## Redirecting the Agent Mid-Turn
 

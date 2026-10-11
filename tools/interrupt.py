@@ -3,6 +3,7 @@ agent session does not kill tools in other sessions (the gateway runs many agent
 process). The agent passes its execution thread id to set_interrupt(); tools call
 is_interrupted(), which checks the CURRENT thread."""
 
+import contextlib
 import contextvars
 import logging
 import threading
@@ -25,6 +26,9 @@ _interrupt_reasons: dict[int, str] = {}
 # Threads asked to YIELD: hand a long-running foreground command to the background
 # instead of killing it, so a mid-turn user message is not parked behind it.
 _yield_threads: set[int] = set()
+# Why a yield was requested (e.g. ``"user_detach"`` for the explicit detach key / ``/detach``);
+# absent = the historical mid-turn-message redirect. Read by the terminal tool to pick its note.
+_yield_reasons: dict[int, str] = {}
 _lock = threading.Lock()
 # Tool-worker tid a deadline worker acts for. ``run_bounded_sync`` runs its worker under
 # ``contextvars.copy_context()``, so a guard chain moved onto that worker still honours
@@ -46,6 +50,8 @@ def set_interrupt(active: bool, thread_id: int | None = None, *, reason: str | N
             _interrupt_reasons.pop(tid, None)
         if not active:
             _yield_threads.discard(tid)
+            if tid is not None:
+                _yield_reasons.pop(tid, None)
         _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
     if _DEBUG_INTERRUPT:
         logger.info(
@@ -71,13 +77,57 @@ def is_thread_interrupted(thread_id: int | None) -> bool:
         return thread_id in _interrupted_threads
 
 
-def request_yield(thread_id: int) -> None:
+def request_yield(thread_id: int, reason: str | None = None) -> None:
     """Ask the tool running on *thread_id* to yield: a foreground terminal command hands
     its live process to the background registry and returns at once, so a user's mid-turn
     message (``redirect()`` during tool execution) is delivered instead of parked behind it.
-    The command itself is never killed; that is what ``set_interrupt`` is for."""
+    The command itself is never killed; that is what ``set_interrupt`` is for. ``reason``
+    (e.g. ``"user_detach"``) lets the tool tell the model why it was moved."""
     with _lock:
         _yield_threads.add(thread_id)
+        if reason:
+            _yield_reasons[thread_id] = reason
+        else:
+            _yield_reasons.pop(thread_id, None)
+
+
+def pop_yield_reason(thread_id: int | None) -> str | None:
+    """Take the reason recorded with the last yield request for *thread_id* (``None`` if none)."""
+    if thread_id is None:
+        return None
+    with _lock:
+        return _yield_reasons.pop(thread_id, None)
+
+
+# Tool-worker tids currently blocked in a wait that CAN yield (a foreground terminal command on
+# the local backend, which arms ``yield_handler``). Lets an explicit detach tell "nothing
+# detachable is running" apart from "detaching" instead of setting a bit nobody will consume.
+_yield_armed: dict[int, int] = {}
+
+
+@contextlib.contextmanager
+def yield_armed(thread_id: int | None = None):
+    """Mark *thread_id* (default: current thread) as in a yieldable wait for the block's duration."""
+    tid: int = thread_id if thread_id is not None else threading.get_ident()
+    with _lock:
+        _yield_armed[tid] = _yield_armed.get(tid, 0) + 1
+    try:
+        yield tid
+    finally:
+        with _lock:
+            left = _yield_armed.get(tid, 0) - 1
+            if left > 0:
+                _yield_armed[tid] = left
+            else:
+                _yield_armed.pop(tid, None)
+
+
+def is_yield_armed(thread_id: int | None) -> bool:
+    """Whether *thread_id* is currently in a wait that honours a yield request."""
+    if thread_id is None:
+        return False
+    with _lock:
+        return thread_id in _yield_armed
 
 
 def is_thread_yield_requested(thread_id: int | None) -> bool:

@@ -25,6 +25,7 @@ import sys
 import time
 import threading
 import atexit
+import contextlib
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 
@@ -857,7 +858,8 @@ from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
     gateway_lifecycle_block, self_repo_block,
 )
-from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
+from tools.terminal_tool_background import (
+    _DETACHED_NOTE, _YIELDED_NOTE, spawn_background_process, yield_to_background_handler)
 from tools.terminal_tool_result import finalize_foreground_result
 
 
@@ -1268,11 +1270,14 @@ def _run_foreground(
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
-            result = env.execute(
-                command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
-                **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
-                                task_id=task_id, session_key=session_key),
-            )
+            _yk = _yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
+                                task_id=task_id, session_key=session_key)
+            from tools.interrupt import yield_armed
+            # Only a wait that can actually yield is advertised as detachable (local backend).
+            with (yield_armed() if _yk else contextlib.nullcontext()):
+                result = env.execute(
+                    command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True, **_yk,
+                )
             break
         except Exception as e:
             # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it
@@ -1291,10 +1296,14 @@ def _run_foreground(
             return _error_json(_redact_terminal_error_text(f"Command execution failed: {type(e).__name__}: {e}"))
 
     if result.get("yielded_session_id"):  # handed to the background: no exit status yet
+        from tools.interrupt import pop_yield_reason
+        detached = pop_yield_reason(threading.current_thread().ident) == "user_detach"
         return json.dumps({
             "output": result.get("output", ""), "exit_code": None, "error": None,
             "status": "yielded_to_background", "session_id": result["yielded_session_id"],
-            "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
+            "pid": result.get("pid"), "notify_on_complete": True,
+            **({"detached_by_user": True} if detached else {}),
+            "note": _DETACHED_NOTE if detached else _YIELDED_NOTE,
         }, ensure_ascii=False)
     if metered:
         record_terminal_outcome(command, env_type, result)

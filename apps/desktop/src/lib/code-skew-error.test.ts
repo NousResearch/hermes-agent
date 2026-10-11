@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isCodeSkewRestartRequired } from './code-skew-error'
+import { isCodeSkewRestartRequired, servingPidFromCodeSkewError } from './code-skew-error'
 
 const SKEW_IPC =
   'Error invoking remote method \'hermes:api\': Error: 503: {"detail":"Restart required: This process is running code from 08b4875f4a but the checkout on disk is now 48d2528066. The model picker would risk a stale-module crash — restart the Desktop-owned backend to load the new code (use Restart backend in Hermes Desktop, or quit and reopen the app)"}'
@@ -8,6 +8,15 @@ const SKEW_IPC =
 describe('isCodeSkewRestartRequired', () => {
   it('detects the Models-page IPC 503 from a stale Desktop-owned backend', () => {
     expect(isCodeSkewRestartRequired(new Error(SKEW_IPC))).toBe(true)
+  })
+
+  it('extracts the serving pid from a code-skew 503 so recycle can reap leftovers (#101561)', () => {
+    const withPid =
+      'Error invoking remote method \'hermes:api\': Error: 503: {"detail":"Restart required: This process is running code from 08b4875f4a but the checkout on disk is now 48d2528066 (pid=4242). The model picker would risk a stale-module crash"}'
+
+    expect(servingPidFromCodeSkewError(new Error(withPid))).toBe(4242)
+    expect(servingPidFromCodeSkewError(new Error(SKEW_IPC))).toBeNull()
+    expect(servingPidFromCodeSkewError(null)).toBeNull()
   })
 
   it('detects a bare FastAPI detail string', () => {

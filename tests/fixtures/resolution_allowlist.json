@@ -308,6 +308,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "hermes_cli/main_dashboard.py",
+    "symbol": "_restart_managed_dashboard_service",
+    "kind": "bare_which"
+  },
+  {
     "path": "hermes_cli/main_tui_launch.py",
     "symbol": "_apply_tui_python_env",
     "kind": "bare_which"

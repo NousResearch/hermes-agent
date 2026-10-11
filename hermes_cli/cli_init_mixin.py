@@ -210,25 +210,19 @@ class CLIInitMixin:
         self.run_budget_seconds = run_budget if run_budget is not None else CLI_CONFIG["agent"].get("run_budget_seconds")
 
     def _init_toolsets(self, toolsets):
-        from cli import CLI_CONFIG, validate_toolset
+        from cli import CLI_CONFIG
         self.enabled_toolsets = toolsets
         from agent.skill_utils import parse_config_string_list
 
         self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
 
         if toolsets and "all" not in toolsets and "*" not in toolsets:
-            # MCP server names only resolve after discover_mcp_tools runs; skip them here.
-            mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            # Plugin toolsets register during plugin discovery, which startup runs on a background thread
-            # that has not necessarily landed yet; names it declared (or the previous launch persisted, which
-            # get_plugin_toolset_keys_nowait serves) are not typos (#71650).
-            try:
-                from hermes_cli.plugins import get_plugin_toolset_keys_nowait
-                plugin_ts_names = get_plugin_toolset_keys_nowait()
-            except Exception:
-                plugin_ts_names = set()
-            invalid = [t for t in toolsets
-                       if not validate_toolset(t) and t not in mcp_names and t not in plugin_ts_names]
+            # Names that only resolve after MCP/plugin discovery are not typos: configured MCP server
+            # aliases, plugin toolset keys (#71650) and plugin-provided portable MCP servers (#119457).
+            # The shared resolver covers all of them and mirrors what tools_config lets through.
+            from hermes_cli.toolset_validation import saved_toolset_resolver
+            is_valid = saved_toolset_resolver(CLI_CONFIG)
+            invalid = [t for t in toolsets if not is_valid(t)]
             if invalid:
                 from agent.i18n import t as _t
                 self._console_print(f"[bold red]{_t('cli.startup.unknown_toolsets', names=', '.join(invalid))}[/]")

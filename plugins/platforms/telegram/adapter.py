@@ -178,6 +178,11 @@ _MEDIA_KIND_KEYS = {
     "video file": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.telegram.telegram_bot_mentions import (
+    entity_sources as _mention_entity_sources, entity_type as _mention_entity_type,
+    entity_span as _mention_entity_span,
+    extract_bot_mention_usernames as _extract_anywhere_bot_mentions,
+    leading_bot_mention_usernames as _leading_bot_mention_usernames)
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -5885,9 +5890,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return None
         return cls._GENERAL_TOPIC_THREAD_ID if is_forum_group else None
 
-    # Decides only whether a FOREIGN @handle is bot-shaped; our own handle is matched by identity, never
-    # shape (collectible/Fragment bot usernames need not end in "bot").
-    _FOREIGN_BOT_HANDLE_RE = re.compile(r"[a-z0-9_]{2,29}bot", re.IGNORECASE)
     _BOT_IDENTITY_TTL_SECONDS = 300.0  # how long an observed identity is trusted before re-check
 
     def _current_bot_username(self) -> str:
@@ -5955,86 +5957,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
-    @staticmethod
-    def _entity_sources(message: Message):
-        """``(text, entities)`` pairs for the message text and caption."""
-        yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
-        yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
-
-    @staticmethod
-    def _entity_type(entity) -> str:
-        return str(getattr(entity, "type", "")).split(".")[-1].lower()
-
-    @classmethod
-    def _entity_span(cls, source_text: str, entity) -> Optional[str]:
-        """The entity's text, or None when its offsets are unusable."""
-        # Telegram's official group-disambiguation form for slash commands (``/cmd@botname``) is emitted as
-        # a single ``bot_command`` entity covering the whole span — there is no accompanying ``mention``
-        # entity. Treat it as a direct address to this bot when the ``@botname`` suffix matches. This is the
-        # form Telegram's own command menu autocomplete produces in groups, so dropping it at the mention
-        # gate would break /new, /reset, /help, ... for every group that has ``require_mention`` enabled
-        # (#15415).
-        offset = int(getattr(entity, "offset", -1))
-        length = int(getattr(entity, "length", 0))
-        if offset < 0 or length <= 0:
-            return None
-        return cls._telegram_entity_text(source_text, offset, length)
-
     @classmethod
     def _extract_bot_mention_usernames(cls, message: Message, self_username: str = "") -> set[str]:
-        """Explicit bot usernames mentioned in text/captions: foreign handles count only when bot-shaped
-        (``...bot``), ``self_username`` opts our OWN handle in regardless of shape. Entity mentions are
-        authoritative; the raw-text fallback is deliberately narrow."""
-        mentioned_bot_usernames: set[str] = set()
-        own = (self_username or "").lstrip("@").lower()
-
-        def _is_bot_handle(handle: str) -> bool:
-            if not handle:
-                return False
-            if own and handle == own:
-                return True
-            return bool(cls._FOREIGN_BOT_HANDLE_RE.fullmatch(handle))
-
-        for source_text, entities in cls._entity_sources(message):
-            for entity in entities:
-                entity_type = cls._entity_type(entity)
-                if entity_type not in {"mention", "bot_command"}:
-                    continue
-                entity_text = cls._entity_span(source_text, entity)
-                if entity_text is None:
-                    continue
-                entity_text = entity_text.strip()
-                if entity_type == "mention":
-                    handle = entity_text.lstrip("@").lower()
-                    if _is_bot_handle(handle):
-                        mentioned_bot_usernames.add(handle)
-                    continue
-                # /cmd@botname is one bot_command entity; its suffix is an explicit bot address.
-                at_index = entity_text.find("@")
-                if at_index < 0:
-                    continue
-                command_target = entity_text[at_index + 1:].strip().lower()
-                if _is_bot_handle(command_target):
-                    mentioned_bot_usernames.add(command_target)
-        # Entity-less fallback only: if Telegram supplied entities, trust them (no URL/code rescue).
-        for raw_text, entities in cls._entity_sources(message):
-            if not raw_text or entities:
-                continue
-            for match in re.finditer(r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{2,31})\b", raw_text):
-                handle = match.group(1).lower()
-                if _is_bot_handle(handle):
-                    mentioned_bot_usernames.add(handle)
-        return mentioned_bot_usernames
-
-    @staticmethod
-    def _telegram_entity_text(source_text: str, offset: int, length: int) -> str:
-        """Return a Telegram entity span using UTF-16 code-unit offsets."""
-        if offset < 0 or length <= 0:
-            return ""
-        try:
-            return source_text.encode("utf-16-le")[offset * 2:(offset + length) * 2].decode("utf-16-le")
-        except UnicodeDecodeError:
-            return ""
+        """Bot usernames mentioned anywhere in the message (facade over ``telegram_bot_mentions``)."""
+        return _extract_anywhere_bot_mentions(message, self_username)
 
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
@@ -6044,11 +5970,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         expected = f"@{bot_username}" if bot_username else None
         # Server-side MessageEntity values are authoritative: raw substrings like "foo@hermes_bot.example"
         # or handles inside URLs/code are not mentions.
-        for source_text, entities in self._entity_sources(message):
+        for source_text, entities in _mention_entity_sources(message):
             for entity in entities:
-                entity_type = self._entity_type(entity)
+                entity_type = _mention_entity_type(entity)
                 if entity_type == "mention" and expected:
-                    span = self._entity_span(source_text, entity)
+                    span = _mention_entity_span(source_text, entity)
                     if span is not None and span.strip().lower() == expected:
                         return True
                 elif entity_type == "text_mention":
@@ -6057,7 +5983,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                         return True
                 elif entity_type == "bot_command" and expected:
                     # ``/cmd@botname`` (what the group command menu produces) must count as a direct address.
-                    command_text = self._entity_span(source_text, entity)
+                    command_text = _mention_entity_span(source_text, entity)
                     if command_text is None:
                         continue
                     at_index = command_text.find("@")
@@ -6085,18 +6011,27 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             task.add_done_callback(tracked.discard)
 
     def _explicit_bot_mentions_exclude_self(self, message: Message) -> bool:
-        """True when explicit bot handles target other bots, not this one (``@bot3 hi @bot4`` must not
-        wake ``@bot1`` via reply/wake-word fallbacks)."""
+        """True when the message is *addressed* to other bots, not this one.
+
+        Only a leading run of handles addresses another bot (#136236): a foreign handle that
+        merely appears later in the text talks about that bot and must not silence us. Our own
+        handle anywhere still wins, as before — ``@bot3 hi @bot4`` must not wake ``@bot1`` via
+        reply/wake-word fallbacks."""
         if not self._bot:
             return False
         bot_username = self._current_bot_username()
         if not bot_username:
             return False
-        mentioned_bot_usernames = self._extract_bot_mention_usernames(message, bot_username)
-        excludes_self = bool(mentioned_bot_usernames) and bot_username not in mentioned_bot_usernames
+        addressed = _leading_bot_mention_usernames(message, bot_username)
+        excludes_self = bool(addressed) and bot_username not in self._extract_bot_mention_usernames(message, bot_username)
         if excludes_self:
             # Either truly for another bot, or our handle is stale after a rename — re-check out of band.
             self._schedule_bot_identity_recheck()
+            logger.info(
+                "[%s] Skipping Telegram message %s in chat %s addressed to other bot(s): %s",
+                self.name, getattr(message, "message_id", None), self._chat_id_str(message),
+                ", ".join(f"@{handle}" for handle in sorted(addressed)),
+            )
         return excludes_self
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:

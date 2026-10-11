@@ -236,8 +236,14 @@ const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
 const BACKTICK_NOISE_RE = /`{3,}/g
 
+// An interim seals the prose, but its unresolved tools still belong to the live turn.
 export const selectMessageRunning = (state: MessageRunningStateSlice) =>
-  state.thread.isRunning && state.message.status?.type === 'running'
+  state.thread.isRunning &&
+  (state.message.status?.type === 'running' ||
+    (state.message.metadata?.custom?.interim === true &&
+      state.message.parts?.some(
+        part => part.type === 'tool-call' && part.result === undefined && part.completedAt === undefined
+      ) === true))
 
 function titleForTool(name: string): string {
   const normalized = name.replace(/^browser_/, '').replace(/^web_/, '')

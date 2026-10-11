@@ -40,8 +40,8 @@ describe('tool events for a part that already exists on a sealed message', () =>
     event('message.delta', 101, { text: 'Scraping the page.' })
     event('tool.start', 102, { args: { url: 'https://example.test' }, name: 'browser', tool_id: 'call-late-1' })
     // Interim commentary seals the streaming bubble while the browser scrape
-    // keeps running (minutes in practice). streamId drops; the tool part is
-    // sealed with completedAt and no result.
+    // keeps running (minutes in practice). streamId drops while the tool
+    // part remains open until its completion arrives.
     event('message.interim', 103, { text: 'Scraping the page.' })
     event('tool.complete', 260.5, { name: 'browser', result: 'ok', tool_id: 'call-late-1' })
 

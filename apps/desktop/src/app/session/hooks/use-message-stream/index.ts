@@ -651,7 +651,7 @@ export function useMessageStream({
             m.id === streamId
               ? {
                   ...m,
-                  parts: completeOpenTimelineParts(replaceTextPart(m.parts), occurredAt),
+                  parts: completeOpenTimelineParts(replaceTextPart(m.parts), occurredAt, 'response'),
                   completedAt: occurredAt,
                   pending: false,
                   interim: true
@@ -682,7 +682,7 @@ export function useMessageStream({
               m.id === prevSameText.id
                 ? {
                     ...m,
-                    parts: completeOpenTimelineParts(replaceTextPart(m.parts), occurredAt),
+                    parts: completeOpenTimelineParts(replaceTextPart(m.parts), occurredAt, 'response'),
                     completedAt: occurredAt,
                     pending: false,
                     interim: true
@@ -1191,7 +1191,7 @@ export function useMessageStream({
 
         return {
           ...state,
-          messages: nextMessages,
+          messages: sealOpenToolParts(nextMessages),
           streamId: null,
           pendingBranchGroup: null,
           sawAssistantPayload: true,

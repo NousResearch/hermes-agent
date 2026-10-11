@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from difflib import get_close_matches
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.connectors.contract import Actor, SettleReason, TargetState, allowed
@@ -245,10 +246,25 @@ def run_managed_action(
             items = client.list_connectors()
             if connectors:
                 wanted = set(connectors)
+                available = [str(i.get("connector", "")).lower() for i in items
+                             if isinstance(i, dict) and i.get("connector")]
                 items = [i for i in items if str(i.get("connector", "")).lower() in wanted]
-            return json.dumps({"connectors": items, "hint": (
+                found = {str(i.get("connector", "")).lower() for i in items}
+                unknown = []
+                for name in connectors:
+                    if name in found:
+                        continue
+                    match = get_close_matches(name, available, n=1)
+                    entry = {"name": name}
+                    if match:
+                        entry["did_you_mean"] = match[0]
+                    unknown.append(entry)
+            payload = {"connectors": items, "hint": (
                 "connected=false means calls to that connector will return CONNECTION_REQUIRED. "
-                "Use action 'connect' to start an authorization.")}, ensure_ascii=False)
+                "Use action 'connect' to start an authorization.")}
+            if connectors and unknown:
+                payload["unknown"] = unknown
+            return json.dumps(payload, ensure_ascii=False)
         if not connectors:
             return tool_error(
                 f"'{action}' requires 'connectors': the connector slugs to authorize (e.g. [\"gmail\"]). "

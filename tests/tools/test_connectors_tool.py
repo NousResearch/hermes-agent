@@ -20,6 +20,7 @@ class FakeClient:
         return [
             {"connector": "gmail", "enabled": True, "connected": False},
             {"connector": "linear", "enabled": True, "connected": True},
+            {"connector": "googlecalendar", "enabled": True, "connected": False},
         ]
 
     def connections(self, connectors, *, reinitiate=False):
@@ -52,10 +53,49 @@ def test_status_lists_and_filters_connectors():
     ]
 
 
+def test_status_names_unknown_connectors_and_suggests_close_matches():
+    client = FakeClient()
+    out = json.loads(
+        manage_connections(
+            {"action": "status", "connectors": ["google-calendar", "slack"]},
+            client_factory=lambda: client,
+        )
+    )
+
+    assert out["connectors"] == []
+    assert out["unknown"] == [
+        {"name": "google-calendar", "did_you_mean": "googlecalendar"},
+        {"name": "slack"},
+    ]
 
 
 
 
+
+
+
+def test_status_mixed_filters_preserve_known_rows_through_registry(monkeypatch):
+    from tools.connectors import managed
+    from tools.connectors.gateway import config
+    from tools.registry import registry
+
+    client = FakeClient()
+    monkeypatch.setattr(managed, "managed_client", lambda: client)
+    monkeypatch.setattr(config, "connectors_available", lambda: True)
+    out = json.loads(registry.dispatch(
+        "manage_connections",
+        {"action": "status", "connectors": ["GMAIL", "google-calendar", "slack"]},
+    ))
+
+    assert out["connectors"] == [
+        {"connector": "gmail", "enabled": True, "connected": False}
+    ]
+    assert out["unknown"] == [
+        {"name": "google-calendar", "did_you_mean": "googlecalendar"},
+        {"name": "slack"},
+    ]
+    assert "CONNECTION_REQUIRED" in out["hint"]
+    assert client.calls == [("list",)]
 
 
 def test_connect_without_connectors_is_a_usage_error():

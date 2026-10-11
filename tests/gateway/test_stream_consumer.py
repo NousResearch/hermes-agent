@@ -855,6 +855,25 @@ class TestInterimCommentaryMessages:
         assert sent_texts == ["I'll inspect the repository first.", "Done."]
         assert consumer.final_response_sent is True
 
+    @pytest.mark.asyncio
+    async def test_commentary_sends_logged_at_info_with_increasing_sequence(self, caplog):
+        """#122905: a long turn's interim commentary sends were invisible at INFO, so
+        their actual delivery order couldn't be reconstructed from the log. Each
+        successful commentary send must log at INFO with a monotonically increasing
+        per-turn sequence number."""
+        adapter = MagicMock()
+        adapter.name = "Telegram"
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        consumer = GatewayStreamConsumer(adapter=adapter, chat_id="chat_123")
+
+        with caplog.at_level("INFO", logger="gateway.stream_consumer"):
+            assert await consumer._send_commentary("gainage 45 s") is True
+            assert await consumer._send_commentary("repos 30 s") is True
+
+        info_records = [r for r in caplog.records if r.levelname == "INFO"]
+        assert "seq=1" in info_records[-2].message
+        assert "seq=2" in info_records[-1].message
+
 
 class TestCancelledConsumerSetsFlags:
     """Cancellation must set final_response_sent when already_sent is True.

@@ -188,6 +188,9 @@ def _trim_results(results: list[dict]) -> list[dict]:
             "url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""),
             "error": r.get("error"),
             **({"blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
+            **({"metadata": r["metadata"]}
+               if isinstance(r.get("metadata"), dict)
+               and r["metadata"].get("served_by") == "local-pdf" else {}),
         }
         for r in results
     ]

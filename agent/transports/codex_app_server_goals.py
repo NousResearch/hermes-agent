@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from contextlib import suppress
 
-from hermes_cli.codex_goals import native_objective, pause_native_goal, record_native_goal
+from hermes_cli.codex_goals import native_objective, pause_native_goal, record_native_goal, native_goal_resource_limited
 from hermes_cli.goals import load_goal
 
 
@@ -71,9 +71,7 @@ def _attach_native_goal(session, state, objective, *, initial_turn):
             raise RuntimeError("Bound native Goal changed or disappeared; refusing to reset its ledger")
         if existing.get("tokenBudget") != state.token_budget:
             raise RuntimeError("Native Goal budget changed; refusing an implicit budget override")
-        budget = existing.get("tokenBudget")
-        if (existing.get("status") in {"budgetLimited", "usageLimited"}
-                or (budget is not None and existing.get("tokensUsed", 0) >= budget)):
+        if native_goal_resource_limited(existing):
             return existing
         params = {"status": "active"}
         if existing["objective"] != objective:
@@ -101,8 +99,7 @@ def run_native_goal(session, user_input, *, session_id, state, on_turn=None, int
         raise RuntimeError("Native Goal belongs to a different thread; refusing to reset progress or budget")
     native = _attach_native_goal(session, state, objective, initial_turn=initial_turn)
     budget = native.get("tokenBudget")
-    exhausted = budget is not None and native.get("tokensUsed", 0) >= budget
-    if initial_turn is None and (native.get("status") in {"budgetLimited", "usageLimited"} or exhausted):
+    if initial_turn is None and native_goal_resource_limited(native):
         reason = (f"Codex Goal {native['status']}: tokens {native.get('tokensUsed', 0)}/{budget}; "
                   "no work started and no budget reset; explicit budget authorization is required")
         pause_native_goal(session_id, goal_id, reason)

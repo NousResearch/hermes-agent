@@ -53,6 +53,7 @@ import { PanelEmpty } from '../../overlays/panel'
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
+import { useHubLinks } from '../use-hub-links'
 
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 
@@ -574,6 +575,8 @@ export const PluginsTab = memo(function PluginsTab({
   const [pickerMounted, setPickerMounted] = useState(open)
   const [dragging, setDragging] = useState(false)
   const sectionRef = useRef<HTMLElement>(null)
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  useHubLinks(frameRef, scope)
 
   if (open && !pickerMounted) {
     setPickerMounted(true)
@@ -866,6 +869,7 @@ export const PluginsTab = memo(function PluginsTab({
               }}
             >
               <iframe
+                ref={frameRef}
                 sandbox="allow-scripts allow-same-origin"
                 src={CATALOG_PICKER_URL}
                 style={{

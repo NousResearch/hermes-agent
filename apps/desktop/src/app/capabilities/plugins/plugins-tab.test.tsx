@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createPluginContext } from '@/contrib/plugin'
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
+import { openExternalLink } from '@/lib/external-link'
 import { queryClient } from '@/lib/query-client'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
@@ -14,6 +15,11 @@ import { $connection } from '@/store/session'
 import { PluginsTab } from './plugins-tab'
 
 const requestGateway = vi.fn(async () => ({ plugins: [] }))
+
+vi.mock('@/lib/external-link', async importOriginal => ({
+  ...(await importOriginal<{ openExternalLink: typeof openExternalLink }>()),
+  openExternalLink: vi.fn()
+}))
 
 const connectionFixture = {
   baseUrl: 'http://localhost',
@@ -560,6 +566,22 @@ describe('PluginsTab catalog UX', () => {
   })
 
   afterEach(cleanup)
+
+  it('opens a catalog link from the embedded frame', async () => {
+    render(<PluginsTab profile="workbot" />)
+    const frame = screen.getByTitle('Plugin catalog') as HTMLIFrameElement
+    const url = 'https://github.com/NousResearch/hermes-agent'
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin: 'https://hermes-agent.nousresearch.com',
+        source: frame.contentWindow,
+        data: { type: 'hermes-hub-open-link', url }
+      })
+    )
+
+    await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(url))
+  })
 
   it('grows the catalog when its top-edge sash is dragged up, and resets on double-click', () => {
     // jsdom has no layout: give the Capabilities column a real height so the

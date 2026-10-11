@@ -82,6 +82,46 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
             assert 'commit(s) not on origin/main leave the branch' in output
 
 
+@pytest.mark.parametrize('keep,discard', [(False, False), (True, False), (False, True), (True, True)])
+def test_no_update_stash_policy_preserves_checkout_and_completion(
+    request, monkeypatch, keep, discard,
+):
+    """A no-op honors the same discard > keep > restore policy as a pulled update."""
+    from hermes_cli import update_cmd_stash
+
+    t = request.getfixturevalue('update_tree')
+    git(t.clone, 'checkout', '-q', 'main')
+    git(t.clone, 'fetch', '-q', 'origin')
+    git(t.clone, 'merge', '--ff-only', 'origin/main')
+    before = git(t.clone, 'rev-parse', 'HEAD')
+    source = t.clone / 'content.txt'
+    clean = source.read_bytes()
+    local = b'local source customization\n'
+    source.write_bytes(local)
+    t.args.channel, t.args.keep_stash = 'main', keep
+    monkeypatch.setattr(update_cmd, '_updates_config',
+                        lambda: {'non_interactive_local_changes': 'discard' if discard else 'stash'})
+    monkeypatch.setattr(update_cmd, '_UPDATE_CRITICAL_MODULES', ())
+    monkeypatch.setattr(hermes_main, '_sync_with_upstream_if_needed',
+                        update_cmd._sync_with_upstream_if_needed)
+
+    hermes_main.cmd_update(t.args)
+
+    assert git(t.clone, 'rev-parse', 'HEAD') == before
+    assert source.read_bytes() == (local if not (keep or discard) else clean)
+    stashes = git(t.clone, 'stash', 'list', '--format=%H').splitlines()
+    if keep and not discard:
+        stash_ref, = stashes
+        assert git(t.clone, 'show', f'{stash_ref}:content.txt') == local.decode().strip()
+    else:
+        assert stashes == []
+    assert update_cmd_stash._unrestored_autostash_notice() is None
+    request, = t.requests
+    assert request['expected_sha'] == before
+    assert request['source'] == str(t.clone)
+    assert 'up to date' in request['completion_message'].lower()
+
+
 @pytest.mark.parametrize('mode', ['count', 'age', 'unparseable'])
 def test_rescue_retention_uses_real_refs(tmp_path, monkeypatch, mode):
     from datetime import datetime, timedelta, timezone

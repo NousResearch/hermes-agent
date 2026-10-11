@@ -496,3 +496,15 @@ jobs:
         with:
           path: ci-timings-baseline.json
           key: ci-timings-baseline-${{ github.run_id }}
+
+      - name: Publish Test Report
+        uses: ctrf-io/github-test-reporter@7974087018bf4857cf5a9d78723e152038c3fa31 #v1.3.0
+        with:
+          report-path: '.github/ctrf/*.json'
+          flaky-rate-report: true
+          previous-results-max: 100
+          upload-artifact: true
+          fetch-previous-results: true
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

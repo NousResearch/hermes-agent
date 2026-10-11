@@ -551,15 +551,19 @@ still dispatch through the passthrough plane as before; the manifest only
 keeps Discord's registry in sync with what the gateway's dispatcher handles.
 
 **Inbound `reply_to` enrichment (Phase 4).** A platform reply may carry
-`reply_to: {text?, author?, is_own?}` alongside `reply_to_message_id` — what
+`reply_to: {message_id?, text?, channel_id?, origin_channel_id?, author?, attachments?, is_own?}`
+alongside the legacy `reply_to_message_id` — what
 the user QUOTED, populated only from data the connector already had in hand
 (Discord's inline `referenced_message`, Telegram's inline
 `reply_to_message`, WhatsApp `context.from` + a bounded per-instance
 inbound-text cache for the text leg). Absent fields mean the platform didn't
 carry the data — never triggers an extra platform API call. `is_own` = the
 quoted message was authored by the fronted bot (same evidence as the
-`is_reply_to_bot` relevance marker). The gateway maps these onto the same
-MessageEvent reply-context fields native adapters populate.
+`is_reply_to_bot` relevance marker). `author` is either the legacy display-name
+string or `{id, name}`; each attachment contains `{id?, filename?, content_type?, url}`
+where `url` has already been re-hosted by the connector. The gateway maps these
+onto the same MessageEvent reply-context fields native adapters populate, while
+keeping the inbound message ID as the outbound reply anchor.
 
 **`typing` `content?` (Slack status clear).** A `typing` frame normally omits
 `content` — the connector renders its platform's active indicator ("is

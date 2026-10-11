@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 
 export type VoicePlaybackSource = 'read-aloud' | 'voice-conversation'
-export type VoicePlaybackStatus = 'idle' | 'preparing' | 'speaking'
+export type VoicePlaybackStatus = 'idle' | 'preparing' | 'speaking' | 'paused'
 
 export interface VoicePlaybackState {
   audioElement: HTMLAudioElement | null

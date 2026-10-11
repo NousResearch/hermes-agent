@@ -3247,6 +3247,7 @@ export interface Translations {
     removeAttachment: (label: string) => string
     dictating: string
     preparingAudio: string
+    paused: string
     speakingResponse: string
     readingAloud: string
     themeSuggestions: string
@@ -4357,6 +4358,8 @@ export interface Translations {
       readAloudFailed: string
       preparingAudio: string
       stopReading: string
+      pauseReading: string
+      resumeReading: string
       readAloud: string
       copyFullResponse: string
       readAloudFullResponseHint: string

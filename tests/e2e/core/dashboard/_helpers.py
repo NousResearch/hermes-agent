@@ -234,6 +234,7 @@ def _assert_profiles_root_under(sb: Sandbox) -> None:
     probe = subprocess.run(
         [sys.executable, "-c", "from hermes_cli.profiles import _get_profiles_root as r; print(r())"],
         env=sb.env(), cwd=str(sb.home), capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+        check=False,
     )
     assert probe.returncode == 0, probe.stderr[-2000:]
     got = Path(probe.stdout.strip().splitlines()[-1]).resolve()
@@ -346,7 +347,7 @@ def run_py(sb: Sandbox, code: str, *args: str, hermes_home: Path | None = None,
            timeout: float = 120.0) -> subprocess.CompletedProcess:
     extra = {"HERMES_HOME": str(hermes_home)} if hermes_home else None
     return subprocess.run([sys.executable, "-c", code, *args], env=sb.env(extra), cwd=str(sb.home),
-                          capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+                          capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
 
 
 SEED_SESSIONS = """

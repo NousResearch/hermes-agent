@@ -943,7 +943,6 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
     adapter.config.extra["history_backfill"] = True
     adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] context")
 
-    bot_user = adapter._client.user
     dm_channel = SimpleNamespace(
         id=999,
         name=None,

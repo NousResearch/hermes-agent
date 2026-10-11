@@ -131,7 +131,6 @@ class _OAStream:
 def patched_create(self, *a, **kw):
     msgs = kw.get("messages") or []
     import re as _re
-    first = msgs[0] if msgs else {}
     sysm = next((m for m in msgs if m.get("role") == "system"), None)
     nonsys = [m for m in msgs if m.get("role") != "system"]
     f0 = nonsys[0] if nonsys else {}

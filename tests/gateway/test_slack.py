@@ -4293,7 +4293,6 @@ class TestTrackingStructureBounds:
                 "team_id": "T1",
                 "response_url": f"https://hooks.slack.com/commands/{i}",
             }
-            respond = AsyncMock()
             await adapter._handle_slash_command(command)
         assert len(adapter._slash_command_contexts) <= adapter._SLASH_CTX_MAX
         # Newest stash survives. Keys are workspace-scoped 3-tuples (#20583)

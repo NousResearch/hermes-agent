@@ -104,7 +104,7 @@ class Home:
             timeout: float = TURN_TIMEOUT) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", *argv], cwd=str(self.home), env=self.env(extra_env),
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, check=False)
 
 
 def _iso(delta_s: float) -> str:

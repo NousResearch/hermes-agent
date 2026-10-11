@@ -9,6 +9,7 @@ Shared helpers are reached via the late-binding seam in :mod:`hermes_cli.web_dep
 so a test's ``monkeypatch.setattr(<owning module>, "_helper", ...)`` keeps working.
 """
 
+import asyncio
 import contextlib
 import copy
 import functools
@@ -916,16 +917,16 @@ async def open_profile_terminal_endpoint(name: str):
         command = _profile_setup_command(name)
 
         if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
+            subprocess.Popen(["cmd.exe", "/c", "start", "", command])  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object
         elif sys.platform == "darwin":
             escaped = command.replace("\\", "\\\\").replace('"', '\\"')
-            subprocess.Popen(["osascript", "-e",
+            subprocess.Popen(["osascript", "-e",  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object
                               f'tell application "Terminal"\nactivate\ndo script "{escaped}"\nend tell'])
         else:
             for executable, popen_args in _linux_terminal_commands(command):
-                if subprocess.call(["which", executable], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL) == 0:
-                    subprocess.Popen(popen_args)
+                if await asyncio.to_thread(subprocess.call, ["which", executable], stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL) == 0:
+                    subprocess.Popen(popen_args)  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object
                     break
             else:
                 raise HTTPException(status_code=400, detail="No supported terminal emulator found")

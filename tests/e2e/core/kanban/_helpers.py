@@ -113,6 +113,7 @@ class Board:
         proc = subprocess.run(
             [PY, "-m", "hermes_cli.main", "kanban", *args], cwd=str(self.root), env=self.env(),
             capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+            check=False,
         )
         if check and proc.returncode != 0:
             raise AssertionError(f"kanban {' '.join(args)} rc={proc.returncode}\n{proc.stdout}\n{proc.stderr}")

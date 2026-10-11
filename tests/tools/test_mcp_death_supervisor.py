@@ -177,6 +177,7 @@ def test_refuses_to_run_inside_the_parents_own_process_group():
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
 
     assert proc.returncode == 2

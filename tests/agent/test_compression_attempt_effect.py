@@ -97,7 +97,7 @@ def test_committed_summary_records_trigger_effect_and_method_without_content(cap
 
     with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
         with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
-            compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="pre_api")
+            _compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="pre_api")
 
     [record] = _attempt_records(caplog)
     assert record["trigger_source"] == "pre_api"
@@ -121,7 +121,7 @@ def test_deterministic_fallback_commit_records_its_method_and_dropped_items(capl
 
     with patch.object(agent.context_compressor, "_generate_summary", return_value=None):
         with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
-            compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000)
+            _compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000)
 
     [record] = _attempt_records(caplog)
     assert record["commit_status"] == "committed"

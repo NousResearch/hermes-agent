@@ -41,6 +41,7 @@ def _cron(ph: ParityHome, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         hermes_argv("cron", *args), cwd=ph.home, env=ph.env(), capture_output=True, text=True,
         timeout=TURN_TIMEOUT, stdin=subprocess.DEVNULL,
+        check=False,
     )
 
 

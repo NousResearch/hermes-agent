@@ -1203,7 +1203,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         try:
             result = subprocess.run(
                 ["git", "worktree", "list"], capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=10, cwd=repo_root)
+                errors="replace", timeout=10, cwd=repo_root, check=False)
             out = result.stdout.strip() if result.returncode == 0 else ""
         except Exception:
             out = ""

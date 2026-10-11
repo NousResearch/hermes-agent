@@ -162,7 +162,7 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
                 sid = asyncio.run(create_resume_target(desc))
                 command = command[:5] + ["-Q", "--resume", sid, "--query-file", str(query)]
             result = subprocess.run(command, cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
-                                    capture_output=True, text=True, encoding="utf-8", timeout=75)
+                                    capture_output=True, text=True, encoding="utf-8", timeout=75, check=False)
             assert owner.poll() is None
             with closing(sqlite3.connect(f"file:{home / 'state.db'}?mode=ro", uri=True)) as db:
                 admissions = db.execute("SELECT status FROM session_admissions").fetchall()

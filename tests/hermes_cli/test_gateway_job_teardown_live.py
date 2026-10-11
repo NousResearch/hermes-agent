@@ -202,7 +202,8 @@ class TestJobObjectMechanismLive:
             )
         finally:
             subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True
+                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                check=False,
             )
 
     def test_non_breakaway_child_killed_by_job_teardown(self, tmp_path):
@@ -216,7 +217,8 @@ class TestJobObjectMechanismLive:
             )
         finally:
             subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True
+                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                check=False,
             )
 
 

@@ -33,7 +33,7 @@ def _cprint(text: str) -> None:
 
 def _git(args, cwd, timeout: float = 10, **kwargs):
     """Run ``git *args`` in *cwd* capturing UTF-8 text; raises like ``subprocess.run``."""
-    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8",
+    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8",  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
                           errors="replace", timeout=timeout, cwd=cwd, **kwargs)
 
 
@@ -739,6 +739,7 @@ def _worktree_branch_pr_merged(
         result = subprocess.run(
             ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
+            check=False,
         )
         if result.returncode != 0:
             return False

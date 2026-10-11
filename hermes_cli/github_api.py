@@ -49,6 +49,7 @@ def _gh_cli_token() -> Optional[str]:
         result = subprocess.run(
             ["gh", "auth", "token"], capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_GH_CLI_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
+            check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("gh CLI token lookup unavailable: %s", exc)

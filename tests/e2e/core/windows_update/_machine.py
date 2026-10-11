@@ -106,7 +106,7 @@ def harness_git(*args: str, cwd: Path | None = None, env: dict[str, str] | None 
     base = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     base.update(env or {})
     res = subprocess.run([REAL_GIT, "-c", "safe.directory=*", *args], cwd=cwd, env=base,
-                         capture_output=True, timeout=timeout)
+                         capture_output=True, timeout=timeout, check=False)
     out, err = _decode(res.stdout), _decode(res.stderr)
     if res.returncode:
         raise RuntimeError(f"harness git {' '.join(args)} failed rc={res.returncode}: {err[-2000:]}")
@@ -345,7 +345,7 @@ class Machine:
             code = proc.wait(timeout=timeout)
             self.timings.append((label, round(time.monotonic() - started, 1)))
         except subprocess.TimeoutExpired:
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
             proc.wait(timeout=60)
             reader.join(timeout=10)
             raise AssertionError(
@@ -520,7 +520,7 @@ class Machine:
         kill_tree(self.owned_processes())
         for proc in self._spawned:
             if proc.poll() is None:
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
 
     def teardown(self) -> None:
         self.kill_owned()
@@ -658,4 +658,4 @@ def taskkill_tree(pid: int) -> subprocess.CompletedProcess:
 
     rc 0 means every process in the tree was terminated. rc 128 can still mean ``pid`` itself was
     killed (a job member died with it mid-walk): read stdout, see ``_kill_delivered``."""
-    return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)
+    return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60, check=False)

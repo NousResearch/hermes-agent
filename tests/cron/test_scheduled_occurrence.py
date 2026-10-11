@@ -49,7 +49,7 @@ def _fire(home, mode):
     env['HERMES_HOME'] = str(home)
     env['PYTHONPATH'] = str(Path(__file__).resolve().parents[2])
     result = subprocess.run([sys.executable, '-c', _FIRE, mode], env=env,
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90)
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 
 

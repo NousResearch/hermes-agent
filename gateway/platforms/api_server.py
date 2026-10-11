@@ -985,7 +985,7 @@ def _notify_cron_provider_jobs_changed() -> None:
 # endpoints are authenticated, so this is not the trust boundary). Optional import:
 # a missing scanner must not disable the cron REST API.
 try:
-    from tools.cronjob_tools import _scan_cron_prompt as _scan_cron_prompt
+    from tools.cronjob_tools import _scan_cron_prompt
 except Exception:  # pragma: no cover - scanner is optional hardening
     _scan_cron_prompt = None
 

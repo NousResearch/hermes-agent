@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type * as ConfigApi from '@/api/config'
 import { $settingsRequestProfile } from '@/store/settings-scope'
+import * as voicePrefs from '@/store/voice-prefs'
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
@@ -68,7 +69,8 @@ beforeAll(async () => {
   ;({ ConfigSettings } = await import('./config-settings'))
 }, 60_000)
 
-beforeEach(() => {
+beforeEach(async () => {
+  await voicePrefs.setAutoSpeakReplies(false)
   scopeProfileMock.set('default')
   getElevenLabsVoices.mockResolvedValue({ available: false })
   getHermesConfigSchema.mockResolvedValue({ fields: {} })
@@ -78,6 +80,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  vi.restoreAllMocks()
 })
 
 function renderConfigSettings(activeSectionId = 'safety') {
@@ -96,6 +99,46 @@ function renderConfigSettings(activeSectionId = 'safety') {
 }
 
 describe('ConfigSettings autosave', () => {
+  it('syncs the Voice auto-TTS setting to Desktop read-aloud without a separate config write', async () => {
+    getHermesConfigRecord.mockResolvedValue({ voice: { auto_tts: false } })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'voice.auto_tts': { type: 'boolean' } } })
+    const setter = vi.spyOn(voicePrefs, 'setAutoSpeakReplies')
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings('voice')
+      const toggle = await screen.findByRole('switch')
+      await act(async () => {
+        toggle.click()
+      })
+
+      expect(setter).toHaveBeenCalledWith(true)
+      expect(voicePrefs.$autoSpeakReplies.get()).toBe(true)
+      expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBe('true')
+      expect(saveHermesConfig).not.toHaveBeenCalled()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(700)
+      })
+      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
+      expect(saveHermesConfig.mock.calls[0]).toEqual([{ voice: { auto_tts: true } }, 'default'])
+
+      await act(async () => {
+        toggle.click()
+      })
+      expect(setter).toHaveBeenCalledWith(false)
+      expect(voicePrefs.$autoSpeakReplies.get()).toBe(false)
+      expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBe('false')
+      expect(saveHermesConfig).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(700)
+      })
+      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(2))
+      expect(saveHermesConfig.mock.calls[1]).toEqual([{ voice: { auto_tts: false } }, 'default'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

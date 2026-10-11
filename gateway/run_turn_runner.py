@@ -220,7 +220,7 @@ class TurnRunner:
                 # Between tools the model is genuinely "thinking" again — revert to the static default.
                 adapter.set_status_text(ctx.source.chat_id, None)
         except Exception as err:
-            logger.debug("live status update failed: %s", err)
+            logger.warning("live status update failed: %s", err)
 
     def _progress_onboarding_hint(self, kwargs: dict) -> None:
         """First-touch onboarding: the first time a tool exceeds _LONG_TOOL_THRESHOLD_S while

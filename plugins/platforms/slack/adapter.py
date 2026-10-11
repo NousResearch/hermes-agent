@@ -2756,6 +2756,8 @@ class SlackAdapter(BasePlatformAdapter):
         _status = getattr(self, "_status_text", {}).get(str(chat_id)) or getattr(
             self.config, "typing_status_text", None)
         _status = _status or self._default_status_text(_status_started)
+        logger.info("live-status render diagnostic: channel=%s thread=%s dynamic=%s status=%s",
+                    chat_id, thread_ts, bool(getattr(self, "_status_text", {}).get(str(chat_id))), _status)
         await self._set_thread_status(chat_id, team_id, thread_ts, _status, "failed")
 
     async def _set_thread_status(

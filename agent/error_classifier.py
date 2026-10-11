@@ -1173,7 +1173,17 @@ def _classify_400(c: _Ctx) -> Verdict:
     # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
     # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
     # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
+    # Not every route says "reasoning is mandatory": Z.ai's direct API (glm-5.3-flash) answers a
+    # refused reasoning_effort with "This model always engages in thinking and cannot be disabled;
+    # please use low, high, or max" (code 1210), naming the accepted levels instead of the field
+    # rejection. ``is_reasoning_required_rejection`` is purpose-built for that "cannot be disabled"
+    # wording, so consult it too — otherwise the 400 falls through to request validation and the
+    # loop silently abandons the provider as format_error instead of stepping the effort up.
+    if (
+        _REASONING_MANDATORY_PATTERN in msg
+        or is_reasoning_field_rejection(msg)
+        or is_reasoning_required_rejection(msg)
+    ):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

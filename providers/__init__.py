@@ -226,6 +226,26 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     return profile
 
 
+def _wire_scoped_veto_active(profile, provider_name: str, model: str) -> bool:
+    """Whether a ``supports_vision_tool_messages=False`` veto still applies once the profile
+    scoped it with ``vision_tool_messages_veto_wires``: the veto holds only on the declared
+    api_modes. The per-model wire is derivable without runtime state for the OpenCode families
+    alone (``models.opencode_model_api_mode`` re-derives it from the model id, mirroring the
+    runtime resolver's ``opencode_by_model`` ladder); any other provider stays vetoed — the
+    veto is a fail-closed guard against tool-content 400s that poison the whole history
+    (#89981), so it lifts only with an explicit declaration AND a derived wire outside it."""
+    wires = getattr(profile, "vision_tool_messages_veto_wires", None)
+    if wires is None:
+        return True
+    try:
+        from hermes_cli.models import opencode_model_api_mode, opencode_provider_family
+        if opencode_provider_family(provider_name) is None:
+            return True
+        return opencode_model_api_mode(provider_name, model) in tuple(wires)
+    except Exception:
+        return True
+
+
 def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool:
     """Whether an active route or its aggregator-targeted model rejects image tool parts.
 
@@ -238,7 +258,7 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     provider_name = str(provider or "").strip().lower()
     profile = get_provider_profile(provider_name)
     if profile is not None and profile.supports_vision_tool_messages is False:
-        return True
+        return _wire_scoped_veto_active(profile, provider_name, model)
     # Routing aggregators accept a ``vendor/model`` identifier while the request is sent
     # to the aggregator; the target provider can have stricter message-shape support than
     # the aggregator's generic OpenAI-compatible transport profile.
@@ -250,7 +270,9 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     if not separator or not target_name:
         return False
     target_profile = get_provider_profile(target_name.strip().lower())
-    return target_profile is not None and target_profile.supports_vision_tool_messages is False
+    if target_profile is None or target_profile.supports_vision_tool_messages is not False:
+        return False
+    return _wire_scoped_veto_active(target_profile, target_name.strip().lower(), model)
 
 
 def list_providers() -> list[ProviderProfile]:

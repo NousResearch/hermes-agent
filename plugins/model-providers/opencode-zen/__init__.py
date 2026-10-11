@@ -126,12 +126,17 @@ opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
-    # The Go relay's upstream validates tool content as a strict string: list-type tool
-    # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
+    # The Go relay's chat-completions wire validates tool content as a strict string: list-type
+    # tool content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
     # be a valid string`` (Console Go, #104731) or 400s ``text is not set`` (MiMo, #47026),
     # and the rejected row stays in history so every later call dies too. Images in user
     # messages are fine, so vision itself keeps working via the text-summary downgrade.
+    # Wire-scoped (#132837): those failures are chat-completions-era; the responses/codex wire
+    # accepts image parts inside ``function_call_output`` (verified live on opencode-go
+    # muse-spark-1.3-contributor, 2026-10-04), so the veto lifts only on that wire — the
+    # per-model api_mode is re-derived from the model id (see vision_tool_messages_veto_wires).
     supports_vision_tool_messages=False,
+    vision_tool_messages_veto_wires=("chat_completions", "anthropic_messages"),
 )
 
 register_provider(opencode_zen)

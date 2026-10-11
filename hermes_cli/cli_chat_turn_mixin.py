@@ -383,6 +383,36 @@ class CLIChatTurnMixin:
         except Exception as exc:
             logging.error("run_conversation raised: %s", exc, exc_info=True)
             _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
+            # Network-class turn failure -> typed session breakpoint receipt
+            # in the transcript (otherwise sessions freeze silently on local
+            # network outages and the returning user has no marker).
+            #
+            # Append to the AUTHORITATIVE persisted list (``agent._session_messages``),
+            # NOT ``self.conversation_history``: ``_chat_settle_turn`` reassigns
+            # ``conversation_history`` from ``turn.result["messages"]`` (empty ``[]`` on
+            # this error path, set just below), so a receipt parked there is wiped
+            # before anything reads it. The SQLite flush likewise writes rows from
+            # ``_session_messages`` and treats ``conversation_history`` as an
+            # already-durable *skip*-set, so only the ``_session_messages`` copy
+            # survives a restart — the receipt's whole promise.
+            try:
+                from agent.session_breakpoint_receipt import maybe_append_network_breakpoint
+                _persist_list = getattr(self.agent, "_session_messages", None)
+                if isinstance(_persist_list, list):
+                    maybe_append_network_breakpoint(
+                        _persist_list, exc,
+                        provider=str(getattr(self.agent, "provider", "") or self.provider or ""),
+                        model=str(getattr(self.agent, "model", "") or self.model or ""),
+                        error_summary=_summary,
+                    )
+            except Exception:
+                # Receipt is best-effort decoration of an error path — never break
+                # it. But do NOT discard the traceback: the callee swallows its own
+                # internal failures, so anything reaching here is a call-site bug
+                # (e.g. a renamed kwarg) that would otherwise be silently dead.
+                logging.warning(
+                    "session breakpoint receipt append failed", exc_info=True
+                )
             from hermes_cli.cli_chat_error_copy import chat_error_response
             turn.result = {
                 "final_response": chat_error_response(

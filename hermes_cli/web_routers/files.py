@@ -266,6 +266,11 @@ def _fs_backend(profile: Optional[str] = None):
     with _profile_scope(profile):
         terminal = dict(load_config().get("terminal") or {})
         profile_env = load_env()
+    # The terminal may run over SSH while the files it writes live on storage this host
+    # also mounts (same path on both sides). Then reads must not depend on a live SSH
+    # session: `files_via: local` keeps the bridge on the host filesystem.
+    if str(terminal.get("files_via") or "").strip().lower() == "local":
+        return None
     for key, env_name in {
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",

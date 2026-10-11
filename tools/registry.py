@@ -683,6 +683,7 @@ class ToolRegistry:
             raise ValueError(
                 f"Tool {name!r}: schema['parameters'] must be an object (JSON Schema dict), "
                 f"got {type(params).__name__}")
+        is_async = is_async or inspect.iscoroutinefunction(handler)
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner

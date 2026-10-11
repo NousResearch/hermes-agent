@@ -29,10 +29,12 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     from gateway.session_authorities import active_authority
     authority = active_authority(self.gateway_runner)
     if authority is not None:
-        from gateway.session_api import bind_api_session
+        from gateway.session_api import bind_api_steps, run_steps_off_loop
         if db is not authority.db:
             raise RuntimeError('profile_mismatch')
-        return bind_api_session(authority, session_id, hosted_dispatch=dispatch.as_mapping()).session_id
+        # The binding transaction runs off the owner loop, in admission order (as API admission does).
+        return (await run_steps_off_loop(authority, bind_api_steps(
+            authority, session_id, hosted_dispatch=dispatch.as_mapping()))).session_id
 
     def atomic(conn):
         row = conn.execute("SELECT id, title, source FROM sessions WHERE id=?", (session_id,)).fetchone()

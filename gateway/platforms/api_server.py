@@ -3211,10 +3211,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             store = getattr(runner, "session_store", None)
             if store is not None:
                 await asyncio.to_thread(store.remove_by_session_id, session_id)
-            # Retirement erased the chat's image references; bytes nothing else holds go too. On
-            # the loop, like API image capture + admission, so no fresh capture is collected early.
+            # Retirement erased the chat's image references; bytes nothing else holds go too. Off the
+            # loop like every other media release: its holder check and unlink are one write txn.
             from gateway.session_ingress_media import collect_unheld_api_images
-            collect_unheld_api_images(db)
+            await asyncio.to_thread(collect_unheld_api_images, db)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth

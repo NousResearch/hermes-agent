@@ -504,6 +504,14 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
             values[_VALUE_FLAGS[tok]] = value
         else:
             filtered.append(tok)  # a trailing bare ``--provider`` stays part of the model text
+    # Discord's native /model renders its option as ``name:<value>``; pasting that text into
+    # another surface (Telegram, Slack, CLI, TUI) made ``name:<provider>/<model>`` the model id
+    # under the CURRENT provider. Strip one leading option label here, for every surface.
+    if filtered and (label := re.match(r"(?i)^(?:name|model)[:=](.*)$", filtered[0])):
+        if label.group(1):
+            filtered[0] = label.group(1)
+        else:  # ``name: <value>`` — the label is its own token
+            filtered.pop(0)
     return ModelFlagParseResult(model_input=" ".join(filtered).strip(), **values, **flags)
 
 

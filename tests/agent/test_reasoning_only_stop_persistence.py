@@ -48,6 +48,7 @@ def _run(agent, responses, user_message="hello", conversation_history=None):
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
+        patch("model_tools.handle_function_call", return_value="ok"),
     ):
         return agent.run_conversation(user_message, conversation_history=conversation_history)
 
@@ -140,7 +141,8 @@ def test_planning_tail_reasoning_only_stop_with_tools_runs_continuation_not_comp
 
 def test_planning_tail_stall_is_bounded_by_the_continuation_cap(loop_agent):
     """A model that never acts is nudged at most twice; the third planning-only stop is promoted
-    so the turn still ends instead of looping."""
+    so the turn still ends — now with the resume hint attached instead of a silent stop (v4)."""
+    from agent.turn_final_response import _STALL_EXHAUSTED_HINT
     from tests.agent.test_run_agent import _mock_response
 
     loop_agent.valid_tool_names = {"terminal"}
@@ -155,7 +157,10 @@ def test_planning_tail_stall_is_bounded_by_the_continuation_cap(loop_agent):
     ])
 
     assert result["api_calls"] == 3
-    assert result["final_response"] == tail
+    # v4: the cap still bounds a model that never acts — the turn ends — and the reply now
+    # carries the resume hint instead of silently stopping on the plan tail.
+    assert result["final_response"].startswith(tail)
+    assert _STALL_EXHAUSTED_HINT in result["final_response"]
 
 
 def test_genuine_reasoning_only_answer_with_tools_still_promotes_on_first_call(loop_agent):
@@ -224,3 +229,40 @@ def test_native_claude_carrier_thinking_only_stop_continues_instead_of_promoting
 
     assert result["final_response"] == "391 = 17 x 23."
     assert result["api_calls"] == 2
+
+
+# ── v4: the continuation cap is CONSECUTIVE — real progress refreshes it ────────────────────
+
+
+def test_continuation_budget_refreshes_after_real_tool_progress(loop_agent):
+    """Replays the user-reported mid-task silent stop: three plan-tail stops, each preceded by
+    real tool work. Before v4 the third stop ran out the shared cap and the turn ended on a
+    dangling plan tail ("...and downloading:"); with the consecutive budget every stop that
+    follows progress is nudged, and only a model that stalls WITHOUT acting runs out."""
+    from agent.conversation_loop import _CODEX_ACK_CONTINUATION_NUDGE
+    from tests.agent.test_run_agent import _mock_response, _mock_tool_call
+
+    loop_agent.valid_tool_names = {"terminal"}
+    loop_agent._stall_guards = True
+
+    def tool_round(cid):
+        return _mock_response(
+            content="", finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="terminal", arguments="{}", call_id=cid)],
+        )
+
+    def plan_tail_stop():
+        return _mock_response(content="步骤一完成，现在继续处理下一步：", finish_reason="stop")
+
+    result = _run(loop_agent, [
+        tool_round("c1"), plan_tail_stop(),  # stop after tool work -> nudge 1/2
+        tool_round("c2"), plan_tail_stop(),  # stop after tool work -> budget refreshed, nudge again
+        tool_round("c3"), plan_tail_stop(),  # stop after tool work -> budget refreshed, nudge again
+        _mock_response(content="All steps complete.", finish_reason="stop"),
+    ])
+
+    assert result["final_response"] == "All steps complete."
+    # Every plan-tail stop was nudged (3x), not capped at two: 3 tool rounds + 3 stalls + final.
+    nudges = [m for m in result["messages"] if m.get("content") == _CODEX_ACK_CONTINUATION_NUDGE]
+    assert len(nudges) == 3
+    assert loop_agent.client.chat.completions.create.call_count == 7

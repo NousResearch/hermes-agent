@@ -264,7 +264,9 @@ async def test_completion_permission_tracks_admitted_input(monkeypatch, tmp_path
     if kind == "consumed_sibling":
         monkeypatch.setattr(runner, "_process_completion_consumed", lambda evt: evt["session_id"] == "old")
         assert runner._refresh_process_completion_event(event)
-        assert event.text == "Other result"
+        from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
+        assert event.text.startswith("Other result\n\n")
+        assert event.text.endswith(INTERNAL_NOTIFICATION_FOOTER)
         assert runner._completion_silence_metadata(event) == {"completion_silence_allowed": True}
     else:
         human = MessageEvent(

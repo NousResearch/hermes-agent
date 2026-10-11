@@ -1682,6 +1682,7 @@ class GatewayNotificationsMixin:
         event.text = remaining[0][0] if len(remaining) == 1 else self._format_coalesced_process_completions(
             [(text, evt, None) for text, evt in remaining]
         )
+        event.text = _mark_internal_notification(event.text)
         if silence_allowed:
             setattr(event, "_completion_silence_text", event.text)
         return True

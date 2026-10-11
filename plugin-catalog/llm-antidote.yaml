@@ -1,0 +1,26 @@
+name: llm-antidote
+repo: https://github.com/GroveMinting/llmAntidote
+sha: 2070999bcb0eeada738d4419722815fe17e5a033
+description: >-
+  Runtime guardrails, behavioral evaluation, and signed fleet admission for
+  Hermes Agent: a versioned capability policy that blocks or requires approval
+  for model tool calls, paired synthetic behavioral evaluation with no real side
+  effects, and a signed local promotion gate that refuses a model whose evidence
+  does not satisfy signed fleet policy. Hooks-only (no agent tools).
+maintainer: GroveMinting
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "3.2.3"
+docs_url: https://github.com/GroveMinting/llmAntidote#readme
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_api_request
+    - on_session_start
+    - on_session_reset
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

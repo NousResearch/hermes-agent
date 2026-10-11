@@ -838,7 +838,9 @@ def _redact_cli_secret_flags(text: str, *, file_read: bool = False) -> str:
         value = raw[len(quote):-len(quote)] if quote else raw
         sentinel = re.match(r'«redacted[^»]*»', value)
         if (not value or value == '***' or (sentinel and sentinel.end() == len(value))
-                or _CLI_REFERENCE_RE.fullmatch(value)
+                # A whole expression can itself contain a credential flag. Mask
+                # that whole value rather than hiding the inner flag from re.sub.
+                or (_CLI_REFERENCE_RE.fullmatch(value) and not _CLI_SECRET_FLAG_RE.search(value))
                 or (not quote and value.startswith('--'))):
             return match.group(0)
         # A prior prefix pass may mask only the start of a quoted credential.

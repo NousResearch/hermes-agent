@@ -34,7 +34,8 @@ class TestCLIFlagRegressions(unittest.TestCase):
 
     def test_complete_references_preserved_on_output_and_file_surfaces(self):
         for reference in ("$TOKEN", "${TOKEN}", "${{ secrets.GH_TOKEN }}",
-                          "$(op read vault/item/password)", "$1", "$env:API_KEY"):
+                          "$(op read vault/item/password)", "$1", "$env:API_KEY",
+                          "$(login --password-policy strong --api-key-file /keys/key --token-count 3)"):
             for quote in ("", '"', "'", '\\"'):
                 for surface in ("ordinary", "code", "file", "ps"):
                     with self.subTest(reference=reference, quote=quote, surface=surface):
@@ -73,6 +74,21 @@ class TestCLIFlagRegressions(unittest.TestCase):
                 result = self.redact(text, surface)
                 self.assertEqual(result, f'server --password "{mask}" --port 80')
                 self.assertEqual(self.redact(result, surface), result)
+
+    def test_expression_with_nested_credential_flag_is_fully_masked(self):
+        for flag in ("--password", "--token", "--api-key"):
+            for separator in (" ", "="):
+                for expression in (f"$(login {flag}{separator}SYNTHETICsecret)",
+                                   "${{ login " + flag + separator + "SYNTHETICsecret }}"):
+                    for quote in ("", '"', "'", '\\"'):
+                        for surface in ("ordinary", "code", "file", "ps"):
+                            with self.subTest(flag=flag, separator=separator, expression=expression,
+                                              quote=quote, surface=surface):
+                                text = f"server --token {quote}{expression}{quote} --port 80"
+                                mask = "«redacted-secret»" if surface == "file" else "***"
+                                result = self.redact(text, surface)
+                                self.assertEqual(result, f"server --token {quote}{mask}{quote} --port 80")
+                                self.assertEqual(self.redact(result, surface), result)
 
 
 if __name__ == "__main__":

@@ -66,6 +66,7 @@ hermes skills uninstall <skill-name>
 | [**baoyu-comic**](../user-guide/skills/optional/creative/creative-baoyu-comic.md) | Knowledge comics (知识漫画): educational, biography, tutorial. |
 | [**brag**](../user-guide/skills/optional/creative/creative-brag.md) | Project launch video via Hyperframes, upstream-maintained. |
 | [**brag-slim**](../user-guide/skills/optional/creative/creative-brag-slim.md) | Launch video from a project or URL, upstream-maintained. |
+| [**cad**](../user-guide/skills/optional/creative/creative-cad.md) | Parametric CAD to STEP/STL/3MF/GLB, upstream-maintained. |
 | [**comfyui**](../user-guide/skills/optional/creative/creative-comfyui.md) | Generate images, video, and audio via diffusion workflows. |
 | [**concept-diagrams**](../user-guide/skills/optional/creative/creative-concept-diagrams.md) | Generate flat, minimal educational SVG visuals as HTML. |
 | [**creative-ideation**](../user-guide/skills/optional/creative/creative-creative-ideation.md) | Generate ideas via named methods from creative practice. |
@@ -87,6 +88,7 @@ hermes skills uninstall <skill-name>
 | [**system-atlas**](../user-guide/skills/optional/creative/creative-system-atlas.md) | Build explorable isometric architecture atlases as HTML. |
 | [**tldraw-offline**](../user-guide/skills/optional/creative/creative-tldraw-offline.md) | Drive and script tldraw offline canvases with an agent. |
 | [**unreal-mcp**](../user-guide/skills/optional/creative/creative-unreal-mcp.md) | Automate Unreal Engine editor scenes, actors, and renders. |
+| [**urdf**](../user-guide/skills/optional/creative/creative-urdf.md) | URDF robot description authoring, upstream-maintained. |
 
 ## data-science
 

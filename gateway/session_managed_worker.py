@@ -23,6 +23,9 @@ HELLO_SECONDS = 60
 # After Stop the child interrupts its agent and emits its result; the owner terminates a
 # child that has not acknowledged within this window instead of waiting on the pipe forever.
 STOP_ACK_SECONDS = 30
+# Own session (POSIX): a worker whose owner died kills its whole group (managed_worker
+# _die_with_owner); on Windows it exits itself.
+WORKER_POPEN = {'start_new_session': True, 'close_fds': True}
 
 
 class ManagedExecutionUnknown(RuntimeError):
@@ -439,7 +442,7 @@ async def execute_managed(authority, ref, row, policy):
         log_path = worker_log_path(authority.profile_id)
         process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
             cwd=cwd, stdin=subprocess.PIPE, env=env, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL if log_path is None else subprocess.PIPE, close_fds=True)
+            stderr=subprocess.DEVNULL if log_path is None else subprocess.PIPE, **WORKER_POPEN)
     except asyncio.CancelledError:
         # acquire_process owns late-child cleanup; no bootstrap or reservation was sent.
         return _interrupted_before_bootstrap(authority, row)

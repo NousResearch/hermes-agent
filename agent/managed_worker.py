@@ -133,6 +133,22 @@ class WorkerChannel:
 
 
 _INTERRUPTED = object()
+# The owner's control pipe closing under a live worker means the owner died (a closing owner
+# signals the worker itself). The agent is interrupted at once; cooperative tools get this long.
+ORPHAN_GRACE_SECONDS = 10
+
+
+def _die_with_owner():
+    """Then end this worker and, on POSIX, every descendant still in its process group: the owner
+    spawns it as a group leader (``start_new_session``). Tools that open their own session (the
+    terminal tool, background processes meant to outlive the turn) are not in it. Never a group
+    this process does not lead."""
+    def kill():
+        if os.name != 'nt' and os.getpgrp() == os.getpid():
+            import signal
+            os.killpg(os.getpid(), signal.SIGKILL)  # windows-footgun: ok — POSIX only
+        os._exit(1)
+    threading.Timer(ORPHAN_GRACE_SECONDS, kill).start()
 
 
 class WorkerControls:
@@ -180,9 +196,11 @@ class WorkerControls:
                         if state is not None:
                             state['answer'] = frame['value']
                             state['event'].set()
-        except (EOFError, OSError, ValueError):
+        except (EOFError, OSError, ValueError) as exc:
             self.stop()
             self.finish.set()
+            if not isinstance(exc, ValueError):
+                _die_with_owner()
 
     def approval(self, data):
         from tools.approval import ack_gateway_approval

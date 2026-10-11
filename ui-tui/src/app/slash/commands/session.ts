@@ -218,6 +218,21 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'search sessions by content or title',
+    name: 'search',
+    run: arg => {
+      const query = arg.trim()
+
+      // Bare opens the overlay on the empty-query hint; an argument prefills
+      // the box and fires one immediate search (no debounce on the fill).
+      // A switcher New-row dispatch yields to the search overlay it opened; from the composer path this is a no-op.
+      patchOverlayState(
+        query ? { sessions: false, sessionSearch: { query } } : { sessions: false, sessionSearch: true }
+      )
+    }
+  },
+
+  {
     help: 'attach an image',
     name: 'image',
     run: (arg, ctx) => ctx.composer.attachImagePath(arg)

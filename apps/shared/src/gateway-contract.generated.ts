@@ -3206,6 +3206,25 @@ export interface SessionListRow {
   source?: string
   _lineage_root_id?: string | null
 }
+export interface SessionSearchParams {
+  profile?: string | null
+  query?: string
+  limit?: number | null
+}
+export interface SessionSearchResult {
+  results: SessionSearchRow[]
+}
+/** One ``session.search`` hit resolved to its lineage tip (``_lineage_root_id`` groups a compressed conversation, the same field ``SessionListRow`` carries). */
+export interface SessionSearchRow {
+  id: string
+  title?: string
+  preview?: string
+  started_at?: number
+  source?: string
+  snippet?: string
+  role?: string | null
+  _lineage_root_id?: string | null
+}
 export interface SessionMostRecentParams {
   profile?: string | null
 }
@@ -5391,6 +5410,8 @@ export interface RpcMethods {
   'session.resume': { params: SessionResumeParams; result: SessionResumeResult }
   /** Export the transcript to ~/.hermes/sessions/saved (classic /save). */
   'session.save': { params: SessionSaveParams; result: SessionSaveResult }
+  /** Search stored sessions by id, message content (FTS) and title; deduped by compression lineage, each hit resolved to its live tip (dashboard /api/sessions/search parity). */
+  'session.search': { params: SessionSearchParams; result: SessionSearchResult }
   /** Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage. */
   'session.set_hidden': { params: SessionSetHiddenParams; result: SessionSetHiddenResult }
   /** Run a start_chat request again from the session that made it (the handoff card's Retry). */
@@ -5711,6 +5732,7 @@ export const RPC_METHODS = [
   'session.redirect',
   'session.resume',
   'session.save',
+  'session.search',
   'session.set_hidden',
   'session.start_chat',
   'session.status',

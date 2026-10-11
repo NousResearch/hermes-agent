@@ -3553,6 +3553,24 @@
       }
     },
     {
+      "name": "session.search",
+      "summary": "Search stored sessions by id, message content (FTS) and title; deduped by compression lineage, each hit resolved to its live tip (dashboard /api/sessions/search parity).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionSearchParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionSearchResult"
+        }
+      }
+    },
+    {
       "name": "session.set_hidden",
       "summary": "Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage.",
       "params": [
@@ -32087,6 +32105,123 @@
           }
         },
         "title": "SessionSaveResult",
+        "type": "object"
+      },
+      "SessionSearchParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "query": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          }
+        },
+        "title": "SessionSearchParams",
+        "type": "object"
+      },
+      "SessionSearchResult": {
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SessionSearchRow"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "SessionSearchResult",
+        "type": "object"
+      },
+      "SessionSearchRow": {
+        "additionalProperties": false,
+        "description": "One ``session.search`` hit resolved to its lineage tip (``_lineage_root_id`` groups a\ncompressed conversation, the same field ``SessionListRow`` carries).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "preview": {
+            "default": "",
+            "title": "Preview",
+            "type": "string"
+          },
+          "started_at": {
+            "default": 0,
+            "title": "Started At",
+            "type": "number"
+          },
+          "source": {
+            "default": "",
+            "title": "Source",
+            "type": "string"
+          },
+          "snippet": {
+            "default": "",
+            "title": "Snippet",
+            "type": "string"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Role"
+          },
+          "_lineage_root_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lineage Root Id"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "SessionSearchRow",
         "type": "object"
       },
       "SessionSetHiddenParams": {

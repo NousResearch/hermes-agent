@@ -428,7 +428,7 @@ from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
@@ -1813,22 +1813,15 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         both_photo = existing_is_photo and incoming_is_photo
         incoming_has_media = bool(event.media_urls)
 
-        def _padded_inline_flags(msg: MessageEvent) -> list[Optional[bool]]:
-            flags = list(getattr(msg, "media_text_inlined", []) or [])
-            return flags + [None] * (len(msg.media_urls) - len(flags))
-        incoming_inline_flags: list[Optional[bool]] = []
-        if incoming_has_media:
-            existing.media_text_inlined = _padded_inline_flags(existing)
-            incoming_inline_flags = _padded_inline_flags(event)
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
             if both_photo or incoming_has_media:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-                existing.media_text_inlined.extend(incoming_inline_flags)
+                existing.absorb_media(event)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            existing.absorb_message_ids(event)
+            existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
@@ -1844,6 +1837,8 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
+            existing.absorb_message_ids(event)
+            existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
             return
     pending_messages[session_key] = event
@@ -2582,8 +2577,9 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+                existing.absorb_media(event)
+            existing.absorb_message_ids(event)
+            existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -3528,6 +3524,25 @@ class BasePlatformAdapter(ABC):
     _OK_EMOJI: Optional[str] = None
     _FAIL_EMOJI: Optional[str] = None
 
+    async def prepare_turn_context(
+        self, event: MessageEvent, *, origin: Optional[SessionSource],
+        acknowledged_state: Optional[Dict[str, Any]], first_turn: bool,
+    ) -> Optional[TurnContextUpdate]:
+        """Report context for this turn: changes to the chat since the conversation last
+        acknowledged its state, and earlier messages that a new session has not seen.
+
+        The gateway calls this while it prepares every inbound turn. ``origin`` is the session's
+        origin source, or ``None`` before the session exists. ``acknowledged_state`` is the
+        ``channel_state`` saved with the most recent user transcript row that has one.
+        ``first_turn`` is true when the session transcript is empty. Return ``None`` to add no note
+        and leave the saved state unchanged.
+
+        For an adapter that overrides this hook, the session-context prompt keeps the chat name,
+        topic and user name from the session origin, so a rename does not rewrite the system prompt
+        of a running conversation. An override must therefore report name and topic changes in its
+        note."""
+        return None
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
@@ -3823,6 +3838,13 @@ class BasePlatformAdapter(ABC):
         return result
 
     def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
+        """Return True when two text debounce events came from the same sender and do not reply
+        to different messages."""
+        return (self._same_text_debounce_sender(existing, event)
+                and not existing.reply_context_conflicts(event))
+
+    @staticmethod
+    def _same_text_debounce_sender(existing: MessageEvent, event: MessageEvent) -> bool:
         """Return True when two text debounce events came from the same sender."""
 
         def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
@@ -3861,7 +3883,11 @@ class BasePlatformAdapter(ABC):
                 existing_pending = self._pending_messages.get(session_key)
                 if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
                     merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
-                return
+                    return
+                if not self._same_text_debounce_sender(state.event, event):
+                    return
+                logger.debug("[%s] Busy text for %s replies to a third message; merging it into the "
+                             "debounce buffer, which keeps its own reply context", self.name, session_key)
         now = time.monotonic()
         if state is None:
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
@@ -3869,13 +3895,27 @@ class BasePlatformAdapter(ABC):
         else:
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
+            if event.media_urls:
+                state.event.media_text_inlined.extend(
+                    [None] * (len(state.event.media_urls) - len(state.event.media_text_inlined))
+                )
+                state.event.media_urls.extend(event.media_urls)
+                state.event.media_types.extend(event.media_types)
+                state.event.media_text_inlined.extend(event.media_text_inlined)
+                state.event.media_text_inlined.extend(
+                    [None] * (len(state.event.media_urls) - len(state.event.media_text_inlined))
+                )
+            state.event.absorb_reply_context(event)
             state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:
+                state.event.merged_message_ids.extend(
+                    message_id for message_id in (state.event.message_id, *event.merged_message_ids)
+                    if message_id
+                )
                 state.event.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
-                state.event.reply_to_message_id = str(latest_anchor)
+            else:
+                state.event.absorb_message_ids(event)
             state.last_ts = now
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)
@@ -4817,6 +4857,7 @@ class BasePlatformAdapter(ABC):
         user_id_alt: Optional[str] = None, chat_id_alt: Optional[str] = None, is_bot: bool = False,
         scope_id: Optional[str] = None, guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
+        source_permalink: Optional[str] = None,
         role_authorized: bool = False, auto_thread_created: bool = False,
         auto_thread_initial_name: Optional[str] = None) -> SessionSource:
         """Build a SessionSource; with ``gateway.profile_routes`` configured the matching
@@ -4830,7 +4871,7 @@ class BasePlatformAdapter(ABC):
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
-            message_id=_opt(message_id))
+            message_id=_opt(message_id), source_permalink=_opt(source_permalink))
         # Profile from configured routes, else the owning profile of a dedicated secondary bot (so no
         # later ``source.profile``-less fallback can re-route the message through the default bot's routes).
         owner_profile = getattr(self, "_owner_profile", None)

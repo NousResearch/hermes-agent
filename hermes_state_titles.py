@@ -183,6 +183,10 @@ class SessionTitlesMixin:
             "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL", (source, session_id)
         ) > 0
 
+    def set_session_source(self, session_id: str, source: str) -> bool:
+        """Update the client-facing source label for an existing session."""
+        return self._write_rowcount("UPDATE sessions SET source = ? WHERE id = ?", (source, session_id)) > 0
+
     def get_session_by_title(self, title: str) -> Optional[dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
         row = self._read_one(

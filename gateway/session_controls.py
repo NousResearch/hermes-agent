@@ -58,7 +58,9 @@ class AuthorityConnection:
         for sibling in (registry or ()):
             if sibling is not self.authority and profile_matches_home(profile, Path(sibling.profile_id)):
                 connection = self._siblings.get(sibling.profile_id)
-                if connection is None:
+                # A re-served profile is a new authority under the same id: never keep routing to
+                # the retired one (it refuses every admission for the rest of this socket's life).
+                if connection is None or connection.authority is not sibling:
                     identity = dict(self._identity, profile_id=sibling.profile_id, instance_id=sibling.instance_id)
                     connection = AuthorityConnection(sibling, self.transport, identity, operator=self._operator)
                     self._siblings[sibling.profile_id] = connection

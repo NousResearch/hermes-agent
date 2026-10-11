@@ -26,7 +26,9 @@ def withdraw_menu(adapter: MatrixAdapter, prompt) -> None:
 async def expire_menu(adapter: MatrixAdapter, prompt) -> None:
     adapter._choice_picker_prompts_by_event.pop(prompt.message_id, None)
     withdraw_menu(adapter, prompt)
-    await adapter._send_invalid_reaction_feedback(prompt.chat_id, prompt.message_id, EXPIRED_NOTICE)
+    await adapter._send_invalid_reaction_feedback(
+        prompt.chat_id, prompt.message_id, EXPIRED_NOTICE, metadata=prompt.notice_metadata,
+    )
 
 
 async def send_reaction_menu(

@@ -394,8 +394,18 @@ class _MatrixPickerPrompt:
     requester_user_id: str | None = None
     expires_at: float | None = None
     resolved: bool = False
+    metadata: dict = field(default_factory=dict)
     bot_reaction_events: dict[str, str] = field(default_factory=dict)
     is_menu: bool = False
+
+    @property
+    def notice_metadata(self) -> dict[str, str] | None:
+        """Send metadata that keeps a notice about this card in the card's thread."""
+        thread_id = str(self.metadata.get("thread_id") or "")
+        return {
+            "thread_id": thread_id,
+            "matrix_thread_fallback_event_id": self.message_id,
+        } if thread_id else None
 
 
 _MatrixModelPickerPrompt = _MatrixChoicePickerPrompt = _MatrixPickerPrompt
@@ -1855,7 +1865,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
             lambda message_id, requester, expires_at: _MatrixPickerPrompt(
                 chat_id=chat_id, message_id=message_id, session_key=session_key, choices=choices,
                 on_selected=on_selected, requester_user_id=requester,
-                expires_at=time.monotonic() + MENU_TIMEOUT_SECONDS if is_menu else expires_at, is_menu=is_menu),
+                expires_at=time.monotonic() + MENU_TIMEOUT_SECONDS if is_menu else expires_at, is_menu=is_menu, metadata=dict(metadata or {})),
             registry, choices, label)
 
     async def send_reaction_menu(self, menu: ReactionMenu, session_key: str, on_selected, metadata: dict) -> SendResult:

@@ -361,3 +361,80 @@ async def test_inactive_menu_withdraws_its_controls(monkeypatch, retirement):
         "replaced": (["$first-go", "$first-stop"], [], ["$menu-2"]),
     }[retirement]
     selected.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("thread_id", ["$root", ""])
+@pytest.mark.parametrize("reply_mode", ["first", "off"])
+async def test_menu_expiry_notice_replies_to_the_card_in_its_original_thread(
+    monkeypatch, thread_id, reply_mode
+):
+    from unittest.mock import MagicMock
+
+    from tools.reaction_menu_model import ReactionMenu
+
+    adapter, clock = _menu_adapter(monkeypatch)
+    adapter._reply_to_mode = reply_mode
+    adapter._send_reaction = AsyncMock(return_value="$seed")
+    adapter._schedule_reaction_redaction = MagicMock()
+    sent = []
+
+    async def send_room_message(room, content, *, finalize=True, notice=False):
+        sent.append(content)
+        return f"$event-{len(sent)}"
+
+    monkeypatch.setattr(adapter, "_send_room_message", send_room_message)
+    monkeypatch.setattr(adapter, "send", MatrixAdapter.send.__get__(adapter))
+    monkeypatch.setattr(
+        adapter,
+        "_send_invalid_reaction_feedback",
+        MatrixAdapter._send_invalid_reaction_feedback.__get__(adapter),
+    )
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.test",
+        user_id="@alice:matrix.test",
+        thread_id=thread_id,
+    )
+    selected = AsyncMock()
+    menu = ReactionMenu.from_arguments(
+        "Choose",
+        [{"emoji": "✅", "label": "Go", "payload": "Go"}],
+    )
+    await adapter.send_reaction_menu(
+        menu,
+        "lane",
+        selected,
+        {
+            "chat_id": source.chat_id,
+            "requester_user_id": source.user_id,
+            "thread_id": thread_id,
+        },
+    )
+    await adapter.send(
+        source.chat_id, "Later output", metadata={"thread_id": thread_id}
+    )
+    clock.now = 1000.0
+    await adapter._on_reaction(_menu_reaction(source, "$event-1"))
+
+    relation: dict[str, object] = (
+        {} if reply_mode == "off" else {"m.in_reply_to": {"event_id": "$event-1"}}
+    )
+    if thread_id:
+        relation.update(
+            rel_type="m.thread",
+            event_id=thread_id,
+            is_falling_back=reply_mode == "off",
+        )
+        relation["m.in_reply_to"] = {"event_id": "$event-1"}
+    assert {
+        "notice": sent[-1]["body"],
+        "relation": sent[-1].get("m.relates_to", {}),
+        "pending": list(adapter._choice_picker_prompts_by_event),
+        "selected": selected.await_count,
+    } == {
+        "notice": "This menu has expired. Ask for a new menu if you still want to choose.",
+        "relation": relation,
+        "pending": [],
+        "selected": 0,
+    }

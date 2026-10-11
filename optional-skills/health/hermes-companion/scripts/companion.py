@@ -1925,9 +1925,39 @@ def reply_to_thread(
     if not meta:
         return None
 
+    # Turn-based status validation & optimistic concurrency guard
+    current_status = meta.get("status", "")
+    if sender == "agent":
+        if current_status not in ("pending_agent", "failed"):
+            log("WARN", f"turn-based collision guard: agent cannot reply to thread '{thread_id}' with status '{current_status}'")
+            return None
+    elif sender == "user":
+        if current_status != "replied":
+            log("WARN", f"turn-based collision guard: user cannot reply to thread '{thread_id}' with status '{current_status}'")
+            return None
+
     moment = now or utcnow()
     timestamp_str = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
-    seq = meta.get("message_count", 0) + 1
+
+    # Determine highest existing sequence index on disk to guard against collisions
+    disk_seq = 0
+    msgs_dir = thread_folder / "messages"
+    if safe_is_dir(msgs_dir):
+        try:
+            for item in msgs_dir.iterdir():
+                name = item.name
+                if name.startswith("."):
+                    name = name[1:]
+                if name.endswith(".icloud"):
+                    name = name[:-7]
+                if name.endswith(".json"):
+                    prefix = name[:-5].split("_")[0]
+                    if prefix.isdigit():
+                        disk_seq = max(disk_seq, int(prefix))
+        except OSError:
+            pass
+
+    seq = max(meta.get("message_count", 0), disk_seq) + 1
     msg_id = f"msg_{uuid.uuid4().hex[:8]}"
     date_part = moment.strftime("%Y%m%d%H%M%S")
     filename = f"{seq:03d}_{sender}_{date_part}_{msg_id}.json"

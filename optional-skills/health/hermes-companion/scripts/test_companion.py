@@ -884,6 +884,74 @@ def test_icloud_placeholder_cache_fallback() -> None:
         check("message placeholder fallback id matches", msgs2[0]["id"] == msgs1[0]["id"])
 
 
+def test_turn_based_concurrency_guards_and_sequence_indexing() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        threads_dir = tmp_path / "threads"
+        threads_dir.mkdir(parents=True, exist_ok=True)
+        moment = datetime(2026, 10, 11, 12, 0, 0, tzinfo=timezone.utc)
+
+        # 1. User creates a thread (status: pending_agent, seq: 1)
+        created = companion.create_dispatch_thread(
+            threads_dir, "Project Status", "How is the project going?", target_profile="default", sender="user", now=moment
+        )
+        tid = created["thread_id"]
+        check("thread created with pending_agent", created["status"] == "pending_agent")
+        check("initial message seq is 1", created["message_count"] == 1)
+
+        # 2. Concurrency guard: User cannot reply while thread is pending_agent
+        user_conflict_reply = companion.reply_to_thread(
+            threads_dir, tid, "Follow-up question before agent answers", sender="user", now=moment
+        )
+        check("user reply refused during pending_agent turn", user_conflict_reply is None)
+
+        # 3. Agent replies (status transitions to replied, seq: 2)
+        agent_reply = companion.reply_to_thread(
+            threads_dir, tid, "The project is on track.", sender="agent", now=moment + timedelta(minutes=1)
+        )
+        check("agent reply succeeds", agent_reply is not None and agent_reply["sender"] == "agent")
+        meta = companion.safe_read_json(threads_dir / tid / "meta.json")
+        check("thread status transitioned to replied", meta is not None and meta.get("status") == "replied")
+        check("message count incremented to 2", meta is not None and meta.get("message_count") == 2)
+
+        # 4. Concurrency guard: Agent cannot reply again while thread is replied
+        agent_conflict_reply = companion.reply_to_thread(
+            threads_dir, tid, "Duplicate unprompted reply", sender="agent", now=moment + timedelta(minutes=2)
+        )
+        check("agent reply refused during replied status", agent_conflict_reply is None)
+
+        # 5. User replies now that thread is in replied status (status transitions to pending_agent, seq: 3)
+        user_valid_reply = companion.reply_to_thread(
+            threads_dir, tid, "Great, thanks for the update!", sender="user", now=moment + timedelta(minutes=3)
+        )
+        check("user reply succeeds in replied status", user_valid_reply is not None and user_valid_reply["sender"] == "user")
+        meta = companion.safe_read_json(threads_dir / tid / "meta.json")
+        check("thread status transitioned back to pending_agent", meta is not None and meta.get("status") == "pending_agent")
+        check("message count incremented to 3", meta is not None and meta.get("message_count") == 3)
+
+        # 6. Monotonic disk sequence defense: simulate a higher sequence file already present on disk (e.g. 005)
+        msgs_dir = threads_dir / tid / "messages"
+        rogue_filename = "005_agent_20261011120500_msg_rogue01.json"
+        rogue_msg = {
+            "id": "msg_rogue01",
+            "thread_id": tid,
+            "sender": "agent",
+            "timestamp": "2026-10-11T12:05:00Z",
+            "body": "Simulated rogue message",
+        }
+        (msgs_dir / rogue_filename).write_text(json.dumps(rogue_msg), encoding="utf-8")
+
+        # Agent replies to user turn: next sequence must be max(3, 5) + 1 = 6, avoiding collision with 005
+        next_agent_reply = companion.reply_to_thread(
+            threads_dir, tid, "Acknowledged.", sender="agent", now=moment + timedelta(minutes=6)
+        )
+        check("agent reply succeeds after rogue file", next_agent_reply is not None)
+        meta = companion.safe_read_json(threads_dir / tid / "meta.json")
+        check("monotonic seq advanced to 6", meta is not None and meta.get("message_count") == 6)
+        files_006 = list(msgs_dir.glob("006_*.json"))
+        check("letter file with 006 prefix created", len(files_006) == 1)
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -917,6 +985,7 @@ def main() -> int:
     test_archived_threads_segregation_and_migration()
     test_delete_dispatch_thread()
     test_icloud_placeholder_cache_fallback()
+    test_turn_based_concurrency_guards_and_sequence_indexing()
     print("ok")
     return 0
 

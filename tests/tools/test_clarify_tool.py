@@ -92,6 +92,14 @@ class TestClarifySchema:
         assert params["required"] == ["questions"]
         assert params["properties"]["questions"]["maxItems"] == MAX_QUESTIONS
 
+    def test_schema_says_context_must_be_visible_not_in_reasoning(self):
+        """Models that narrate in a reasoning block hide the plan the user is
+        asked to approve (#133320); the description must steer that context
+        into visible text."""
+        description = CLARIFY_SCHEMA["description"]
+        assert "never your reasoning" in description
+        assert "in the question text" in description
+
 
 class TestClarifyToolMultiSelect:
     """Tests for multi_select (checkbox) support added to clarify_tool."""

@@ -99,6 +99,9 @@ Hermes validates `plugin.json`, Agent Skills frontmatter, fixed component
 locations, `mcp.json`, resolved paths, and symlink containment locally. It does
 not fetch JSON schemas while loading a package. A bad skill or MCP entry is
 skipped at its own boundary when valid sibling components can still load.
+A skill's `allowed-tools` frontmatter may be either the spec's space-separated
+string or a YAML list of strings; Hermes stores it as written and does not
+enforce it.
 `PLUGIN_ROOT` points to the resolved package root. `PLUGIN_DATA` points to a
 profile-scoped writable directory managed by Hermes.
 Values declared in portable MCP `env` are visible package data, not a secret

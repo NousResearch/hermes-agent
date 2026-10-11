@@ -222,8 +222,15 @@ def _valid_skill_frontmatter(frontmatter: Mapping[str, Any], directory_name: str
             return "compatibility must be a string of 1 to 500 characters"
     if "metadata" in frontmatter and not _str_map(frontmatter["metadata"]):
         return "metadata must map string keys to string values"
-    if "allowed-tools" in frontmatter and not isinstance(frontmatter["allowed-tools"], str):
-        return "allowed-tools must be a string"
+    if "allowed-tools" in frontmatter:
+        # The Agent Skills spec text says "space-separated string", but Claude Code, Copilot and
+        # most other hosts also accept a YAML list (agentskills/agentskills#515 / PR #573), and
+        # skills-ref itself does not type-check the field. Hermes never enforces allowed-tools,
+        # so accept both shapes rather than silently dropping list-form skills.
+        allowed_tools = frontmatter["allowed-tools"]
+        if not isinstance(allowed_tools, str) and not (
+                isinstance(allowed_tools, list) and _all_str(allowed_tools)):
+            return "allowed-tools must be a string or a YAML list of strings"
     return None
 
 

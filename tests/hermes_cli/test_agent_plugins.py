@@ -199,7 +199,9 @@ def test_invalid_skill_does_not_hide_valid_sibling(tmp_path: Path) -> None:
         ("compatibility", ""),
         ("compatibility", 1),
         ("metadata", []),
-        ("allowed-tools", ["terminal"]),
+        ("allowed-tools", 1),
+        ("allowed-tools", ["terminal", 1]),
+        ("allowed-tools", {"terminal": True}),
     ],
 )
 def test_rejects_invalid_optional_skill_fields(
@@ -209,6 +211,25 @@ def test_rejects_invalid_optional_skill_fields(
     _write_skill(tmp_path, "bad-skill", **{field: value})
     package = load_agent_plugin(tmp_path, tmp_path / "data")
     assert package.skills == ()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Bash(git:*) Bash(jq:*) Read",
+        ["Bash(stripe *)", "Bash(which stripe)", "Skill", "Read"],
+    ],
+)
+def test_accepts_allowed_tools_as_string_or_yaml_list(tmp_path: Path, value: object) -> None:
+    """Spec text says space-separated string; YAML lists are the de-facto form (agentskills#515)."""
+    _write_json(tmp_path / "plugin.json", _manifest())
+    _write_skill(tmp_path, "tooled", **{"allowed-tools": value})
+
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+
+    assert [skill.name for skill in package.skills] == ["tooled"]
+    assert package.skills[0].frontmatter["allowed-tools"] == value
+    assert not any(d.scope == "skill:tooled" for d in package.diagnostics)
 
 
 @pytest.mark.require_symlinks

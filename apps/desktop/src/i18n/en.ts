@@ -4599,6 +4599,9 @@ export const en: Translations = {
       moreActions: 'More actions',
       branchNewChat: 'Branch in new chat',
       react: 'React',
+      // Screen-reader-only headings for moving between messages.
+      userMessageHeading: 'You said',
+      assistantMessageHeading: 'Hermes said',
       dismissError: 'Dismiss error',
       responseStopped: 'Response stopped',
       errorLayers: {

@@ -43,6 +43,9 @@ export const arAssistant = {
       moreActions: 'إجراءات إضافية',
       branchNewChat: 'تفريع إلى محادثة جديدة',
       react: 'تفاعل',
+      // Screen-reader-only headings for moving between messages.
+      userMessageHeading: 'أنت قلت',
+      assistantMessageHeading: 'Hermes قال',
       dismissError: 'تجاهل الخطأ',
       errorLayers: {
         auth: 'خطأ في المصادقة',

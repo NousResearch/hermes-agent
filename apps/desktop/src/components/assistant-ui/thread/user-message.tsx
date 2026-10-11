@@ -45,6 +45,7 @@ export function StickyHumanMessageContainer({
   children: ReactNode
   messageId?: string
 }) {
+  const { t } = useI18n()
   return (
     // Fragment, not a wrapper: a wrapping element becomes the sticky's
     // containing block (it'd stick within its own height = never). The bubble
@@ -57,6 +58,7 @@ export function StickyHumanMessageContainer({
         data-role="user"
         data-slot="aui_user-message-root"
       >
+        <h2 className="sr-only">{t.assistant.thread.userMessageHeading}</h2>
         {children}
       </div>
       {attachments}

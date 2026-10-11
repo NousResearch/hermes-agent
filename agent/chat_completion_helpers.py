@@ -2114,6 +2114,13 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
                 continue
             old_model, old_provider = bound
             fb_model = agent.model  # normalized by the binder
+            # Turn-scoped log of WHY each rung was left (#133361): the restart-limit finalizer
+            # re-stamps the turn's failure_reason from it. ``None`` (unattributed activation)
+            # must survive as None — a bogus reason would read as a provider verdict.
+            if getattr(agent, "_fallback_activation_reasons", None) is None:
+                agent._fallback_activation_reasons = []
+            agent._fallback_activation_reasons.append(
+                reason.value if reason is not None else None)
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
             notice = (

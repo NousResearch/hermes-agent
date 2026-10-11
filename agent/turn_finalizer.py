@@ -15,7 +15,11 @@ from typing import Any, Callable, List, Optional, Tuple
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.interrupt_control import interrupted_during_api_call_reason
-from agent.turn_failure_copy import exit_reason_failure, stamp_failure
+from agent.turn_failure_copy import (
+    exit_reason_failure,
+    restart_limit_failure_reason,
+    stamp_failure,
+)
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
@@ -580,6 +584,15 @@ def finalize_turn(
     # Advisory verdicts (``fails_turn=False``) only add the code: ``failed``/``completed`` keep
     # the loop's values so cron, kanban and transcript persistence behave as before.
     _exit_failure = None if interrupted else exit_reason_failure(_turn_exit_reason)
+    # A restart-limit exit whose whole chain walked transient walls is a provider outage, not
+    # a loop bug (#133361): re-stamp the dominant provider reason so the Kanban worker exits 75
+    # (rate-limited) instead of 1 (counted crash). Mixed/unattributed keeps ``loop_error``.
+    if _exit_failure is not None:
+        _restart_reason = restart_limit_failure_reason(
+            _turn_exit_reason, getattr(agent, "_fallback_activation_reasons", None)
+        )
+        if _restart_reason is not None:
+            _exit_failure = _exit_failure._replace(reason=_restart_reason)
     if _exit_failure is not None and _exit_failure.fails_turn:
         failed = True
 

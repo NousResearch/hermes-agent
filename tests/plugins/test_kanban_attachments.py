@@ -190,6 +190,30 @@ def test_worker_context_lists_attachments_with_absolute_path(kanban_home):
         conn.close()
 
 
+def test_worker_context_lists_done_parent_attachments(kanban_home):
+    conn = kbc.connect()
+    try:
+        parent_id = _make_task(conn, title="research map")
+        child_id = kb.create_task(conn, title="implement from map", parents=[parent_id])
+        dest_dir = kb.task_attachments_dir(parent_id)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        blob = dest_dir / "infra-map.md"
+        blob.write_bytes(b"# map")
+        kb.add_attachment(
+            conn, parent_id, filename="infra-map.md",
+            stored_path=str(blob.resolve()), content_type="text/markdown", size=5,
+        )
+        assert kb.complete_task(conn, parent_id, summary="map attached", force=True)
+        ctx = kb.build_worker_context(conn, child_id)
+        parent_section = ctx.split("## Parent task results", 1)[1]
+        assert "map attached" in parent_section
+        assert str(blob.resolve()) in parent_section
+        # The child's own attachments section stays about the child only.
+        assert "## Attachments" not in ctx
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # REST surface — upload / list / download / delete round-trip
 # ---------------------------------------------------------------------------

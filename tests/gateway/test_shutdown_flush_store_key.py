@@ -15,6 +15,7 @@ These tests drive the real shutdown entry points (``adapter.cancel_background_ta
 ``runner.stop()``) and the real recovery pass, with the two derivations disagreeing.
 """
 
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -22,6 +23,7 @@ import pytest
 
 from gateway.config import GatewayConfig
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.yuanbao import RecallGuardMiddleware
 from gateway.session import SessionStore
 from gateway.shutdown_flush import flush_pending_to_file, recover_pending_to_db
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
@@ -46,9 +48,9 @@ class _FakeGatewayDB:
         self.appended.append(kwargs)
 
 
-def _store(tmp_path, db):
+def _store(tmp_path, db, *, config=None):
     with patch("gateway.session.SessionStore._ensure_loaded"):
-        store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        store = SessionStore(sessions_dir=tmp_path / "sessions", config=config or GatewayConfig())
     store._loaded = True
     store._db = db  # pin: _db_for_key returns this db for every key (no profile I/O)
     return store
@@ -173,3 +175,78 @@ def test_a_derivation_result_that_names_no_session_keeps_the_slot_key(tmp_path, 
     assert flush_pending_to_file({ADAPTER_KEY: _queued_event()},
                                  session_key_for=lambda _source: derived) == 1
     assert _payload_keys(flush_dir) == [ADAPTER_KEY]
+
+
+# --- A supported synthetic producer whose value keeps the slot key's owner --------------------
+#
+# ``RecallGuardMiddleware._interrupt_for_recall`` (yuanbao.py's branch C) writes its notice
+# straight into the matched in-flight slot, and a recall callback may arrive with no
+# ``from_account`` (``DecodeMiddleware.parse_json_push`` admits it). The notice's ``source`` is
+# then partial, so its own derivation drops the participant the slot key holds and names a key no
+# session was ever created under — re-deriving there strands the notice. The slot itself was
+# filled by the ordinary dispatch, so its key is the one the store routes and must be kept.
+RECALL_SLOT_KEY = "agent:main:telegram:group:group:G:main:u1"
+RECALL_PARTIAL_KEY = "agent:main:telegram:group:group:G:main"
+
+
+def _wire_aligned(tmp_path, db):
+    """Adapter and store agree on per-user isolation: the matched slot key is a routed key."""
+    runner, adapter = make_restart_runner()
+    store = _store(tmp_path, db, config=GatewayConfig(thread_sessions_per_user=True))
+    runner.session_store = store
+    adapter.set_session_store(store)
+    adapter.config.extra["group_sessions_per_user"] = True
+    adapter.config.extra["thread_sessions_per_user"] = True
+    return runner, adapter, store
+
+
+def _queue_recall_notice(adapter, recalled_id: str = "recalled-1") -> MessageEvent:
+    """Drive the real recall producer against the maps the ordinary dispatch would have filled."""
+    matched = make_restart_source(chat_id="group:G", chat_type="group", thread_id="main")
+    assert adapter._event_session_key(MessageEvent(
+        text="", message_type=MessageType.TEXT, source=matched)) == RECALL_SLOT_KEY
+    adapter._active_sessions[RECALL_SLOT_KEY] = asyncio.Event()
+    adapter._processing_msg_ids = {RECALL_SLOT_KEY: recalled_id}
+    adapter._processing_msg_texts = {}  # blank: no redaction polling for a notice under test
+    RecallGuardMiddleware._interrupt_for_recall(adapter, RECALL_SLOT_KEY, recalled_id, "G", "")
+    return adapter._pending_messages[RECALL_SLOT_KEY]
+
+
+@pytest.mark.asyncio
+async def test_a_recall_notice_with_a_partial_source_keeps_its_slot_key(tmp_path, flush_dir):
+    """The notice keeps the key it was queued under, and recovery lands it in that session."""
+    db = _FakeGatewayDB({RECALL_SLOT_KEY: {"id": "sid-recall", "started_at": 0.0}})
+    _runner, adapter, store = _wire_aligned(tmp_path, db)
+    notice = _queue_recall_notice(adapter)
+    assert notice.source.user_id is None
+    assert store._generate_session_key(notice.source) == RECALL_PARTIAL_KEY
+
+    await adapter.cancel_background_tasks()
+
+    assert _payload_keys(flush_dir) == [RECALL_SLOT_KEY]
+    recovered = recover_pending_to_db(db, session_resolver=store.resolve_session_id_for_key)
+    assert recovered == 1
+    assert [call["session_id"] for call in db.appended] == ["sid-recall"]
+    assert [call["content"] for call in db.appended] == [notice.text]
+    assert _spooled_files(flush_dir) == []
+
+
+@pytest.mark.asyncio
+async def test_the_runner_flush_keeps_a_routed_slot_key_too(tmp_path, flush_dir):
+    """``runner.stop()`` keys its queue head the same way: routed slot key, not a re-derivation."""
+    db = _FakeGatewayDB({RECALL_SLOT_KEY: {"id": "sid-recall", "started_at": 0.0}})
+    runner, adapter, store = _wire_aligned(tmp_path, db)
+    notice = _queue_recall_notice(adapter)
+    adapter._pending_messages.pop(RECALL_SLOT_KEY)  # moved into the runner's queue head
+    runner.session_store = store
+    runner._pending_messages[RECALL_SLOT_KEY] = notice
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.publish_runtime_status"
+    ):
+        await runner.stop()
+
+    assert _payload_keys(flush_dir) == [RECALL_SLOT_KEY]
+    recovered = recover_pending_to_db(db, session_resolver=store.resolve_session_id_for_key)
+    assert recovered == 1
+    assert [call["session_id"] for call in db.appended] == ["sid-recall"]

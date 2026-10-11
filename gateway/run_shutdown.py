@@ -1902,15 +1902,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             self._release_running_agent_state(_session_key)
         # Flush pending messages before clearing: under FTS5 corruption they are the only surviving copy.
         with suppress(Exception):
-            from gateway.shutdown_flush import flush_pending_to_file
-            flush_pending_to_file(dict(self._pending_messages), reason="shutdown", session_key_for=self._session_key_for_source)
+            from gateway.shutdown_flush import flush_pending_to_file, runner_flush_keying
+            flush_pending_to_file(dict(self._pending_messages), reason="shutdown", **runner_flush_keying(self))
         # The overflow FIFO tail lives in SessionState.conversation.queued_events — flush it too.
         with suppress(Exception):
-            from gateway.shutdown_flush import flush_overflow_to_file
+            from gateway.shutdown_flush import flush_overflow_to_file, runner_flush_keying
             flush_overflow_to_file(
                 {_k: list(_st.conversation.queued_events)
                  for _k, _st in dict(self.__dict__.get("_sessions") or {}).items() if _st.conversation.queued_events},
-                reason="shutdown", session_key_for=self._session_key_for_source,
+                reason="shutdown", **runner_flush_keying(self),
             )
         # Live SessionState views: clear() resets one field per session (never a wholesale dict swap).
         self._running_agents.clear()

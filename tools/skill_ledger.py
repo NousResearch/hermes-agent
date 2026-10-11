@@ -311,12 +311,22 @@ def append_entry(
             "actor": actor if actor in _VALID_ACTORS else derive_actor(),
             "action": action, "skill": skill, "evidence": evidence or {},
             "before": before or [], "after": after or []}
+        from tools import skill_native_audit as native_audit
+        try:
+            if invocation := native_audit.ledger_invocation_id():
+                entry["native_skill_call"] = invocation
+        except Exception:  # health: allow BLE001 -- audit observer failure must preserve mutation results without exposing private exceptions
+            native_audit._warn()
         path = ledger_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with _ledger_lock():
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
             _maintain_size()
+        try:
+            native_audit.ledger_appended(entry["id"], entry["evidence"])
+        except Exception:  # health: allow BLE001 -- audit observer failure must preserve mutation results without exposing private exceptions
+            native_audit._warn()
         return entry["id"]
     except Exception as e:
         logger.warning("skill_ledger: failed to append entry (%s) — mutation unaffected", e)

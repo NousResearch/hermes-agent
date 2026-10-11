@@ -275,6 +275,11 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
                     note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)
+                    from tools import skill_native_audit as native_audit
+                    try:
+                        native_audit.batch_rollback_observed(rollback_failed)
+                    except Exception:  # health: allow BLE001 -- audit observer failure must preserve rollback without exposing private exceptions
+                        native_audit._warn()
                     fail = {  # key order is wire-visible
                         "success": False,
                         "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "

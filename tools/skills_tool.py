@@ -129,11 +129,11 @@ def check_skills_requirements() -> bool:
 
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; active profile dir first
-    (respects test monkeypatching), then skills.external_dirs."""
+    (respects test monkeypatching), then skills.extra_dirs, then skills.external_dirs."""
     dirs_to_check = [_skills_dir()]
     with suppress(Exception):
-        from agent.skill_utils import get_external_skills_dirs
-        dirs_to_check.extend(get_external_skills_dirs())
+        from agent.skill_utils import get_external_skills_dirs, get_extra_skills_dirs
+        dirs_to_check.extend(get_extra_skills_dirs() + get_external_skills_dirs())
     for skills_dir in dirs_to_check:
         with suppress(ValueError):
             if len(parts := skill_path.relative_to(skills_dir).parts) >= 3:

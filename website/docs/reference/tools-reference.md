@@ -390,6 +390,14 @@ Registered on the `hermes-discord` platform toolset. Moderation actions require 
 |------|-------------|----------------------|
 | `discord_admin` | Manage a Discord server via the REST API: list guilds/channels/roles, create/edit/delete channels, manage role grants, timeouts, kicks, and bans. | `DISCORD_BOT_TOKEN` + bot permissions |
 
+## `matrix_admin` toolset
+
+Restricted to Matrix sessions and off by default. Enable it for Matrix in `hermes tools`.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `matrix_pin` | Pin or unpin an event in the current Matrix room by changing its `m.room.pinned_events` state. The requesting user must have the room power level required to change pins, and the homeserver checks that the bot can send the state event. | Matrix gateway session + bot room permission |
+
 ## `hermes-yuanbao` toolset
 
 Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's chat app; these tools drive its DM/group/sticker APIs.

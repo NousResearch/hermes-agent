@@ -305,12 +305,24 @@ class CopilotACPClient:
 
     @staticmethod
     def _terminate_process(proc: subprocess.Popen[str]) -> None:
+        # Signal the whole session/group, not just the tracked launcher: the npm `copilot`
+        # wrapper spawns a native child that outlives its parent, so terminating the launcher
+        # alone leaks that descendant — under a PID-1 container it reparents to init and
+        # accumulates (~2.6 GiB RSS across 16 leaks in #124835). Signal the group while the
+        # launcher is still alive (before the child can reparent), then escalate to SIGKILL,
+        # then reap the launcher itself so it does not linger as a zombie.
+        import signal
+
+        from agent.deadline import kill_process_tree
+        with contextlib.suppress(Exception):
+            kill_process_tree(proc.pid, sig=signal.SIGTERM)
         try:
-            proc.terminate()
             proc.wait(timeout=2)
         except Exception:
             with contextlib.suppress(Exception):
-                proc.kill()
+                kill_process_tree(proc.pid, sig=getattr(signal, "SIGKILL", signal.SIGTERM))
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=2)
 
     def _release_process(self, proc: subprocess.Popen[str]) -> None:
         """Reap one session's own child. ``is_closed`` flips only when the last live
@@ -363,16 +375,20 @@ class CopilotACPClient:
 
             # Hide the console the CLI child would otherwise flash on Windows (#56747). Hide-only — stdio
             # pipes stay intact for the ACP wire.
+            # Lead a new session/process group so the launcher AND the native descendant the npm
+            # `copilot` wrapper spawns can be reaped together on teardown (#124835): a killpg needs
+            # the leader to equal the child pid, and without this the wrapper shares the parent's
+            # group. POSIX-only; Windows ignores start_new_session and taskkill /T walks the tree.
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._acp_cwd, env=_build_subprocess_env(),
-                creationflags=windows_hide_flags(),
+                creationflags=windows_hide_flags(), start_new_session=True,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(f"Could not start Copilot ACP command '{self._acp_command}'. Install GitHub Copilot CLI or set "
                                "HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.") from exc
         if proc.stdin is None or proc.stdout is None:
-            proc.kill()
+            self._terminate_process(proc)  # reap the launcher's native child too (#124835)
             raise RuntimeError("Copilot ACP process did not expose stdin/stdout pipes.")
         with self._active_process_lock:
             self._active_processes.add(proc)

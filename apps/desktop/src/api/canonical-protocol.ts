@@ -385,13 +385,7 @@ export class CanonicalDesktopProtocol {
     if (!value || typeof value !== 'object') { return value }
 
     const mutation = MUTATION_METHODS.has(method) || ((method === 'slash.exec' || method === 'config.set') && typeof params.operation === 'string')
-
-    if (typeof value.session_id === 'string' && typeof value.revision === 'number') {
-      const owner = canonicalSessionKey(value.session_id, params.profile)
-
-      // An exact-retry receipt replays its ORIGINAL revision; never move the CAS value backwards.
-      if (!mutation || value.revision >= (this.revisions.get(owner) ?? -1)) { this.revisions.set(owner, value.revision) }
-    }
+    this.adoptRevision(params, value, mutation)
 
     if (mutation) { return this.mutationReceipt(method, params, value) }
 
@@ -408,6 +402,14 @@ export class CanonicalDesktopProtocol {
     }
 
     return value
+  }
+
+  // An exact-retry mutation receipt replays its ORIGINAL revision; never move the CAS value backwards.
+  private adoptRevision(params: Record<string, unknown>, value: any, mutation: boolean): void {
+    if (typeof value.session_id !== 'string' || typeof value.revision !== 'number') { return }
+    const owner = canonicalSessionKey(value.session_id, params.profile)
+
+    if (!mutation || value.revision >= (this.revisions.get(owner) ?? -1)) { this.revisions.set(owner, value.revision) }
   }
 
   private admissionReceipt(method: string, params: Record<string, unknown>, value: any): any {

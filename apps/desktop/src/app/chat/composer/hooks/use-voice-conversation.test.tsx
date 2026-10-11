@@ -29,11 +29,13 @@ vi.mock('@/lib/voice-barge-in', () => ({
 const markVoicePlaybackInterrupted = vi.fn()
 const stopVoicePlayback = vi.fn()
 const takeVoicePlaybackInterrupted = vi.fn(() => true)
+const duckVoicePlayback = vi.fn()
 
 const playSpeechTextMock = vi.fn(async () => true)
 const startSpeechStreamMock = vi.fn(async () => null)
 
 vi.mock('@/lib/voice-playback', () => ({
+  duckVoicePlayback: (...args: unknown[]) => duckVoicePlayback(...(args as [boolean])),
   markVoicePlaybackInterrupted: () => markVoicePlaybackInterrupted(),
   playSpeechText: (...args: unknown[]) => playSpeechTextMock(...(args as [])),
   startSpeechStream: (...args: unknown[]) => startSpeechStreamMock(...(args as [])),
@@ -256,6 +258,148 @@ describe('useVoiceConversation full-duplex barge-in', () => {
 
     expect(onInterrupt).not.toHaveBeenCalled()
     expect(stopVoicePlayback).toHaveBeenCalled()
+  })
+
+  // Playback-phase trips mute the reply and let the capture decide (#129843):
+  // over speakers the reply's own bleed trips the VAD far more often than a
+  // real interruption, and stopping at trip time cut the reply forever.
+  describe('playback-phase ducking (#129843)', () => {
+    const enterPlayback = async (
+      hook: ReturnType<typeof renderConversation>['hook'],
+      onPlaying?: () => void
+    ) => {
+      await act(async () => {
+        await hook.result.current.start()
+      })
+      await enterThinking(hook)
+      await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+
+      // Turn finished; TTS is audibly flowing now. The reply only becomes
+      // visible to the loop here — a pending response present during the
+      // thinking phase would open the live speech session before the monitor
+      // ever arms.
+      hook.rerender({ busy: false })
+      onPlaying?.()
+      $voicePlayback.set({
+        audioElement: null,
+        messageId: 'assistant-stream-1',
+        sequence: 1,
+        source: 'voice-conversation',
+        status: 'speaking'
+      })
+
+      return monitorCalls.at(-1)
+    }
+
+    afterEach(() => {
+      $voicePlayback.set({
+        audioElement: null,
+        messageId: null,
+        sequence: 0,
+        source: null,
+        status: 'idle'
+      })
+    })
+
+    it('mutes instead of stopping when speech trips while TTS is playing', async () => {
+      const { hook, onInterrupt } = renderConversation()
+
+      const monitor = await enterPlayback(hook)
+
+      act(() => {
+        monitor?.onSpeech()
+      })
+
+      expect(duckVoicePlayback).toHaveBeenCalledTimes(1)
+      expect(duckVoicePlayback).toHaveBeenCalledWith(true)
+      expect(stopVoicePlayback).not.toHaveBeenCalled()
+      expect(markVoicePlaybackInterrupted).not.toHaveBeenCalled()
+      expect(onInterrupt).not.toHaveBeenCalled()
+    })
+
+    it('unmutes and submits nothing when the capture transcribes empty (bleed trip)', async () => {
+      const { hook, onSubmit } = renderConversation({ transcript: '' })
+
+      const monitor = await enterPlayback(hook)
+
+      act(() => {
+        monitor?.onSpeech()
+      })
+
+      await act(async () => {
+        monitor?.onUtterance?.(new Blob(['x'], { type: 'audio/webm' }))
+      })
+
+      await waitFor(() => expect(duckVoicePlayback).toHaveBeenCalledWith(false))
+      expect(stopVoicePlayback).not.toHaveBeenCalled()
+      // Only the kickoff turn was submitted — the empty capture never was.
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+    })
+
+    it('unmutes and clears the latch when the capture is a TTS self-echo', async () => {
+      let replyReady = false
+
+      const { hook, onSubmit } = renderConversation({
+        pendingResponse: () => (replyReady ? { id: 'reply-1', pending: false, text: 'Here is the answer.' } : null),
+        transcript: 'Here is the answer.'
+      })
+
+      const monitor = await enterPlayback(hook, () => {
+        replyReady = true
+      })
+
+      act(() => {
+        monitor?.onSpeech()
+      })
+
+      await act(async () => {
+        monitor?.onUtterance?.(new Blob(['e'], { type: 'audio/webm' }))
+      })
+
+      await waitFor(() => expect(duckVoicePlayback).toHaveBeenCalledWith(false))
+      expect(takeVoicePlaybackInterrupted).toHaveBeenCalled()
+      expect(stopVoicePlayback).not.toHaveBeenCalled()
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+    })
+
+    it('stops the muted reply for good once the capture is a real interruption', async () => {
+      const { hook, onSubmit } = renderConversation({ transcript: 'no, do it differently' })
+
+      const monitor = await enterPlayback(hook)
+
+      act(() => {
+        monitor?.onSpeech()
+      })
+
+      await act(async () => {
+        monitor?.onUtterance?.(new Blob(['n'], { type: 'audio/webm' }))
+      })
+
+      // The deferred interruption latch lands with the confirmed stop.
+      await waitFor(() => expect(markVoicePlaybackInterrupted).toHaveBeenCalledTimes(1))
+      expect(stopVoicePlayback).toHaveBeenCalledTimes(1)
+      expect(duckVoicePlayback).not.toHaveBeenCalledWith(false)
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('no, do it differently'))
+    })
+
+    it('stops the muted reply when the capture is a spoken stop command', async () => {
+      const { hook, onStopWord, onSubmit } = renderConversation({ transcript: 'stop' })
+
+      const monitor = await enterPlayback(hook)
+
+      act(() => {
+        monitor?.onSpeech()
+      })
+
+      await act(async () => {
+        monitor?.onUtterance?.(new Blob(['s'], { type: 'audio/webm' }))
+      })
+
+      await waitFor(() => expect(onStopWord).toHaveBeenCalledTimes(1))
+      expect(stopVoicePlayback).toHaveBeenCalledTimes(1)
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+      expect(onSubmit).not.toHaveBeenCalledWith('stop')
+    })
   })
 
   it('a spoken stop command in the barge capture ends the conversation instead of submitting', async () => {

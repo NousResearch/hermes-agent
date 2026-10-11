@@ -47,6 +47,9 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+# Phase re-check cadence once a gateway_progress_status plugin phrases the heartbeat, and its text cap.
+_PHASE_RECHECK = 20.0
+_PROGRESS_STATUS_MAX = 600
 
 _tool_call_logger_lock = threading.Lock()
 
@@ -4003,6 +4006,12 @@ class GatewayTurnMixin:
             with suppress(Exception):
                 await _stts_finally.wait_complete(timeout=2.0)
 
+        if _notify_task:
+            with suppress(asyncio.CancelledError, Exception):
+                await _notify_task
+            with suppress(Exception):
+                await self._run_agent_settle_heartbeat(turn_ctx)
+
         tracking_task.cancel()
         if session_key:
             # Release the slot only if this run's generation still owns it (/stop or /new may have
@@ -4198,6 +4207,7 @@ class GatewayTurnMixin:
         long_running_notifications=off disables)."""
         from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
         _notify_start = time.time()
+        turn_ctx._heartbeat_started_at = _notify_start
         _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
         if _NOTIFY_INTERVAL <= 0 or _long_running_mode == "off":
@@ -4208,13 +4218,20 @@ class GatewayTurnMixin:
         if not _notify_adapter:
             return
         _heartbeat_msg_id: Optional[str] = None
+        # A ``gateway_progress_status`` plugin may phrase the heartbeat. Once it does, phase changes are
+        # re-checked every _PHASE_RECHECK seconds and the bubble is edited only when its change_key moves
+        # (or the normal interval has passed), so a quiet stretch costs no edits.
+        _sleep_for = _NOTIFY_INTERVAL
+        _last_key: Optional[str] = None
+        _last_edit_at = 0.0
         while True:
-            await asyncio.sleep(_NOTIFY_INTERVAL)
+            await asyncio.sleep(_sleep_for)
             if not self._should_emit_long_running_notification(
                 session_key, agent_holder[0], _executor_task_holder[0]
             ):
                 break
-            _elapsed_mins = int((time.time() - _notify_start) // 60)
+            _elapsed_s = time.time() - _notify_start
+            _elapsed_mins = int(_elapsed_s // 60)
             # Terse heartbeat by default; the iteration counter is gated on busy_ack_detail.
             _status_detail = ""
             _want_iteration_detail = bool(
@@ -4236,6 +4253,16 @@ class GatewayTurnMixin:
                 if _long_running_mode == "generic"
                 else t("gateway.progress.working_heartbeat", minutes=_elapsed_mins, detail=_status_detail)
             )
+            _plugin_status = None if _long_running_mode == "generic" else self._progress_status_from_plugins(
+                turn_ctx, agent_holder[0], _elapsed_s, "running", None, _heartbeat_msg_id,
+            )
+            if _plugin_status:
+                _sleep_for = min(_NOTIFY_INTERVAL, _PHASE_RECHECK)
+                _heartbeat_text, _key = _plugin_status
+                if _heartbeat_msg_id and _key == _last_key and time.time() - _last_edit_at < _NOTIFY_INTERVAL:
+                    continue
+            else:
+                _sleep_for, _key = _NOTIFY_INTERVAL, None
             try:
                 _notify_res = None
                 if _heartbeat_msg_id:
@@ -4257,10 +4284,76 @@ class GatewayTurnMixin:
                     )
                     if getattr(_notify_res, "success", False) and getattr(_notify_res, "message_id", None):
                         _heartbeat_msg_id = str(_notify_res.message_id)
+                        turn_ctx._heartbeat_msg_id = _heartbeat_msg_id
                         if turn_ctx._cleanup_progress:
                             turn_ctx._cleanup_msg_ids.append(_heartbeat_msg_id)
+                        if _plugin_status:  # tell the plugin which message it is phrasing
+                            self._progress_status_from_plugins(
+                                turn_ctx, agent_holder[0], _elapsed_s, "running", None, _heartbeat_msg_id,
+                            )
+                if _notify_res and getattr(_notify_res, "success", False):
+                    _last_key, _last_edit_at = _key, time.time()
             except Exception as _ne:
                 logger.debug("Long-running notification error: %s", _ne)
+
+    def _progress_status_from_plugins(
+        self, turn_ctx: TurnContext, agent: Any, elapsed_s: float, state: str, outcome: Optional[str],
+        message_id: Optional[str],
+    ) -> Optional[tuple]:
+        """``(text, change_key)`` from the first ``gateway_progress_status`` plugin that phrases this turn's
+        heartbeat bubble, else None (Hermes' own wording). ``state`` is "running" or "ended"; ``outcome``
+        (ended only) is completed | interrupted | failed | restarted. A callback returns a string, or
+        ``{"text", "change_key"}`` where change_key decides whether a re-check is worth an edit."""
+        source = turn_ctx.source
+        try:
+            from hermes_cli.plugins import invoke_hook
+            results = invoke_hook(
+                "gateway_progress_status",
+                session_id=getattr(agent, "session_id", None) or turn_ctx.session_id,
+                session_key=turn_ctx.session_key,
+                platform=getattr(getattr(source, "platform", None), "value", None) or str(getattr(source, "platform", "")),
+                chat_id=getattr(source, "chat_id", None), message_id=message_id,
+                elapsed_s=float(elapsed_s), state=state, outcome=outcome,
+            )
+        except Exception as exc:
+            logger.debug("gateway_progress_status hook failed: %s", exc)
+            return None
+        for res in results or []:
+            if isinstance(res, str) and res.strip():
+                return res.strip()[:_PROGRESS_STATUS_MAX], res.strip()
+            if isinstance(res, dict) and str(res.get("text") or "").strip():
+                text = str(res["text"]).strip()[:_PROGRESS_STATUS_MAX]
+                return text, str(res.get("change_key") or text)
+        return None
+
+    async def _run_agent_settle_heartbeat(self, turn_ctx: TurnContext) -> None:
+        """When the turn ends, edit its "Working" bubble to what happened, so a failed, interrupted or
+        restarted turn never leaves a bubble that still says it is working. A completed turn's bubble is
+        then deleted as before when display.cleanup_progress is on."""
+        msg_id = getattr(turn_ctx, "_heartbeat_msg_id", None)
+        if not msg_id:
+            return
+        result = turn_ctx.result_holder[0]
+        if getattr(self, "_draining", False) or getattr(self, "_restart_requested", False):
+            outcome = "restarted"
+        elif isinstance(result, dict) and result.get("interrupted"):
+            outcome = "interrupted"
+        elif isinstance(result, dict) and not result.get("failed") and (
+            result.get("completed") or result.get("final_response")
+        ):
+            outcome = "completed"
+        else:
+            outcome = "failed"
+        elapsed_s = time.time() - (getattr(turn_ctx, "_heartbeat_started_at", None) or time.time())
+        plugin = self._progress_status_from_plugins(turn_ctx, turn_ctx.agent_holder[0], elapsed_s, "ended", outcome, msg_id)
+        text = plugin[0] if plugin else t(f"gateway.progress.working_heartbeat_{outcome}", minutes=int(elapsed_s // 60))
+        adapter = self._delivery_adapter_for(turn_ctx.source)
+        if not adapter:
+            return
+        try:
+            await asyncio.wait_for(adapter.edit_message(turn_ctx.source.chat_id, msg_id, text), timeout=10)
+        except Exception as exc:  # a stale bubble is cosmetic; never fail the turn over it
+            logger.debug("Heartbeat settle edit failed: %s", exc)
 
     async def _run_agent_inner(
         self, message: str, context_prompt: str, history: list[dict[str, Any]],

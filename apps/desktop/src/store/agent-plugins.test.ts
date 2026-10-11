@@ -7,7 +7,8 @@ import {
   installAgentPlugin,
   isDesktopRelevantPlugin,
   normalizeAgentPluginRow,
-  saveAgentPluginSettings
+  saveAgentPluginSettings,
+  updateAgentPlugin
 } from './agent-plugins'
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
@@ -18,24 +19,35 @@ afterEach(() => {
   $agentPluginsProfile.set(undefined)
 })
 
+// A `plugins.manage` call that honours its deadline (30s unless the caller overrides it) like the
+// real channel, but only answers after 45s; `list` refreshes answer at once.
+const slowManageRequest = (result: unknown) =>
+  vi.fn(
+    <T>(_method: string, params?: Record<string, unknown>, timeoutMs = 30_000): Promise<T> =>
+      new Promise((resolve, reject) => {
+        if (params?.action === 'list') {
+          resolve({ plugins: [] } as T)
+
+          return
+        }
+
+        const deadline = setTimeout(
+          () => reject(new Error(`request timed out after ${timeoutMs / 1000}s: plugins.manage`)),
+          timeoutMs
+        )
+
+        setTimeout(() => {
+          clearTimeout(deadline)
+          resolve(result as T)
+        }, 45_000)
+      })
+  )
+
 describe('installAgentPlugin', () => {
   it('waits for a slow successful install instead of reporting the generic 30s timeout', async () => {
     vi.useFakeTimers()
 
-    const request = vi.fn(
-      <T>(_method: string, _params?: Record<string, unknown>, timeoutMs = 30_000): Promise<T> =>
-        new Promise((resolve, reject) => {
-          const deadline = setTimeout(
-            () => reject(new Error(`request timed out after ${timeoutMs / 1000}s: plugins.manage`)),
-            timeoutMs
-          )
-
-          setTimeout(() => {
-            clearTimeout(deadline)
-            resolve({ ok: true, plugin_name: 'demo' } as T)
-          }, 45_000)
-        })
-    )
+    const request = slowManageRequest({ ok: true, plugin_name: 'demo' })
 
     const install = installAgentPlugin(request as never, { identifier: 'demo', profile: 'research' })
 
@@ -58,6 +70,26 @@ describe('installAgentPlugin', () => {
       ok: false,
       timedOut: true
     })
+  })
+})
+
+describe('updateAgentPlugin (#135565)', () => {
+  it('waits for a slow catalog re-pin instead of reporting the generic 30s timeout', async () => {
+    vi.useFakeTimers()
+
+    const request = slowManageRequest({ ok: true })
+
+    const update = updateAgentPlugin(request as never, 'demo', 'Update failed', 'research')
+
+    await vi.advanceTimersByTimeAsync(45_000)
+
+    expect(await update).toEqual({ kind: 'applied' })
+    // The re-pin repeats an install's expensive work, so it carries the install budget, not the 30s default.
+    expect(request).toHaveBeenCalledWith(
+      'plugins.manage',
+      expect.objectContaining({ action: 'update', name: 'demo', profile: 'research' }),
+      120_000
+    )
   })
 })
 

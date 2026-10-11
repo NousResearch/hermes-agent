@@ -19,6 +19,7 @@ except ImportError:
     pytest.skip("mautrix not installed", allow_module_level=True)
 
 from gateway.platforms.event import MessageType
+from tests.gateway.matrix_helpers import FakeMediaDownload
 
 
 # ---------------------------------------------------------------------------
@@ -94,16 +95,28 @@ def _make_audio_event(
     return event
 
 
-def _make_state_store(member_count: int = 2):
-    """Create a mock state store with get_members/get_member support."""
-    store = MagicMock()
-    # get_members returns a list of member user IDs
-    members = [MagicMock() for _ in range(member_count)]
-    store.get_members = AsyncMock(return_value=members)
-    # get_member returns a single member info object
-    member = MagicMock()
-    member.displayname = "Alice"
-    store.get_member = AsyncMock(return_value=member)
+def _make_state_store():
+    """A mautrix state store in which the bot and Alice have joined the test room."""
+    from mautrix.client.state_store import MemoryStateStore
+    from mautrix.client.state_store.memory import SerializedStateStore
+    from mautrix.types import RoomID, UserID
+
+    room_id = RoomID("!test:example.org")
+    store = MemoryStateStore()
+    serialized: SerializedStateStore = {
+        "members": {room_id: {
+            UserID("@bot:example.org"): {"membership": "join"},
+            UserID("@alice:example.org"): {
+                "membership": "join",
+                "displayname": "Alice",
+            },
+        }},
+        "full_member_list": {room_id: True},
+        "power_levels": {},
+        "encryption": {},
+        "create": {},
+    }
+    store.deserialize(serialized)
     return store
 
 
@@ -122,9 +135,8 @@ class TestMatrixVoiceMessageDetection:
         self.adapter._message_handler = AsyncMock()
         # Mock _mxc_to_http to return a fake HTTP URL
         self.adapter._mxc_to_http = lambda url: f"https://matrix.example.org/_matrix/media/v3/download/{url[6:]}"
-        # Mock client for authenticated download — download_media returns bytes directly
         self.adapter._client = MagicMock()
-        self.adapter._client.download_media = AsyncMock(return_value=b"fake audio data")
+        self.download = FakeMediaDownload(b"fake audio data").install(self.adapter._client)
         # State store for DM detection
         self.adapter._client.state_store = _make_state_store()
 
@@ -150,8 +162,7 @@ class TestMatrixVoiceMessageDetection:
         # Should be a local path, not an HTTP URL
         assert not captured_event.media_urls[0].startswith("http"), \
             f"media_urls should contain local path, got {captured_event.media_urls[0]}"
-        # download_media is called with a ContentURI wrapping the mxc URL
-        self.adapter._client.download_media.assert_awaited_once()
+        assert self.download.requested == ["mxc://example.org/abc123"]
         assert captured_event.media_types == ["audio/ogg"]
 
 
@@ -170,11 +181,10 @@ class TestMatrixVoiceCacheFallback:
 
     @pytest.mark.asyncio
     async def test_voice_cache_failure_falls_back_to_http_url(self):
-        """If caching fails (download returns None), voice message should still be delivered with HTTP URL."""
+        """If the download fails, the voice message should still be delivered with the HTTP URL."""
         event = _make_audio_event(is_voice=True)
 
-        # download_media returns None on failure
-        self.adapter._client.download_media = AsyncMock(return_value=None)
+        FakeMediaDownload(fail=True).install(self.adapter._client)
 
         captured_event = None
 

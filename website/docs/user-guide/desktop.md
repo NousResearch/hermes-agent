@@ -838,6 +838,47 @@ this fix) changes the app's identity once, so macOS will re-prompt one final
 time. Grants are stable from then on. If a permission gets stuck, reset it with
 `tccutil reset All com.nousresearch.hermes` and re-grant.
 
+### Keychain prompt after updates (macOS)
+
+If you enabled **Settings → Gateway → "Encrypt saved secrets with the OS
+keychain"** (opt-in, default off), macOS may ask for the `Hermes Safe Storage`
+keychain item's password the first time you launch the app after each update
+from source. This is expected, and the safe answer is always the same:
+
+> Click **Always Allow**. Never click Deny, and never delete the keychain item —
+> deleting it permanently orphans every credential stored under it (gateway
+tokens, native OAuth tokens); "Always Allow" keeps them and is cumulative, one
+click per rebuild.
+
+**Why it happens.** macOS binds an app-created keychain item's access list to
+the *Team ID* of the app's code signature (`teamid:<ID>`). Ad-hoc and
+self-signed signatures carry no Team ID — Apple stamps them with the build's
+`cdhash` instead — so every rebuild looks like a different app to the keychain.
+A self-signed certificate (the `--setup-tcc-identity` flow above) does **not**
+fix this: it keeps TCC grants stable, but the keychain item still re-prompts
+once per rebuild.
+
+**How to stop it for good.** Sign local rebuilds with an Apple-issued identity
+that carries a Team ID — the free Apple ID personal team in Xcode is enough
+(`Apple Development: …`), as is `Developer ID Application: …`:
+
+1. List the identities already on your machine:
+   ```bash
+   security find-identity -v -p codesigning
+   ```
+2. Point Hermes at one that starts with `Apple Development` or
+   `Developer ID Application`:
+   ```bash
+   hermes config set desktop.macos_signing_identity "Apple Development: your@email (ABCDE12345)"
+   ```
+3. Update once more. After one final **Always Allow**, every later rebuild is
+prompt-free: the keychain access list matches on the Team ID instead of the
+per-build cdhash.
+
+Without a Team ID, one prompt per rebuild is mandated by the OS — the updater
+prints a note about this when it detects the combination. Users who never
+turned the keychain setting on are unaffected.
+
 ## See also
 
 - [CLI Guide](./cli.md) — the terminal interface

@@ -2780,8 +2780,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             # unrelated manual topic (python-telegram-bot exposes the field since 21.x).
             if getattr(created, "is_name_implicit", False) is not True:
                 return
-            if name:
-                self._cache_dm_topic_from_message(str(chat.id), str(thread_id), str(name))
+            # NOTE: do NOT cache the client-supplied name in ``_dm_topics``. That map is the
+            # OPERATOR-config cache (``extra.dm_topics``, filled by ``_setup_dm_topics``), and
+            # ``_get_dm_topic_info`` reports a dict for anything in it — which makes
+            # ``_rename_telegram_topic_for_session_title`` believe the name was chosen by the
+            # operator and skip the auto-rename. Caching Telegram's truncated placeholder
+            # ("check my mem...") here froze the topic on that placeholder instead of the
+            # generated session title. The reuse window is tracked separately by the runner
+            # (``_note_pending_lobby_topic``), so nothing here needs the name.
             runner = getattr(self, "gateway_runner", None)
             note = getattr(runner, "_note_pending_lobby_topic", None)
             if callable(note):

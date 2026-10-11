@@ -715,6 +715,66 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reused_client_topic_is_not_treated_as_operator_topic(tmp_path):
+    """A topic captured from Telegram's own service message must still be auto-renamed.
+
+    Regression (PR #135959 commit 2): _capture_telegram_created_dm_topic cached the
+    CLIENT-supplied placeholder name in ``_dm_topics``, the operator-config cache. The rename
+    lane skips any topic _get_dm_topic_info reports as a dict — meant for operator-declared
+    ``extra.dm_topics`` names — so every reused fresh-lobby topic kept Telegram's truncated
+    placeholder ("check my mem...") instead of the generated session title. The capture must
+    carry ONLY the thread id (via the runner's reuse window), never the name.
+    """
+    from hermes_state import SessionDB
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="9880",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:9880",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    # The adapter that receives the capture also serves the rename (delivery adapter).
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.rename_dm_topic = AsyncMock()
+    adapter.gateway_runner = SimpleNamespace(
+        _note_pending_lobby_topic=lambda chat_id, thread_id: None,
+    )
+    runner._delivery_adapter_for = lambda _source: adapter
+
+    update = SimpleNamespace(message=SimpleNamespace(
+        chat=SimpleNamespace(id=208214988, type="private"),
+        message_thread_id=9880,
+        forum_topic_created=SimpleNamespace(name="check my mem...", is_name_implicit=True),
+    ))
+    adapter._capture_telegram_created_dm_topic(update)
+
+    # The capture must not have claimed the topic as operator-configured...
+    assert adapter._get_dm_topic_info("208214988", "9880") is None
+
+    # ...so the generated session title still reaches the topic.
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="9880"),
+        "sess-topic",
+        "Review and improve memory provider memories",
+    )
+
+    adapter.rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="9880",
+        name="Review and improve memory provider memories",
+    )
+    db.close()
+
+
+@pytest.mark.asyncio
 async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
     """Unauthorized DMs cannot flip multi-session mode on."""
     import gateway.run as gateway_run
@@ -1133,7 +1193,9 @@ def test_capture_records_telegram_created_dm_topic_for_the_runner():
     adapter._capture_telegram_created_dm_topic(update)
 
     assert recorded == [(_LOBBY_CHAT, "8790")]
-    assert adapter._dm_topics.get(f"{_LOBBY_CHAT}:Trip") == 8790
+    # The client-supplied placeholder name must NOT enter the operator-config cache: doing so
+    # makes _get_dm_topic_info report a dict and the auto-rename lane skip the generated title.
+    assert adapter._dm_topics == {}
 
 
 def test_capture_ignores_manually_named_dm_topics():

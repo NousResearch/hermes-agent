@@ -663,6 +663,15 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "state (files, config, etc.) may reflect work described here — avoid repeating it:",
 )
 
+# Bracketed head every shipped handoff prefix opens with. When the model re-emits the
+# handoff as an assistant reply it keeps this marker but paraphrases the boilerplate
+# after it (#132934), defeating the byte-exact match; the classifier falls back to a
+# marker + compaction-vocabulary check so those rows still classify as handoffs.
+_HANDOFF_MARKER_PREFIX = "[CONTEXT COMPACTION — REFERENCE ONLY]"
+# Opening window the confirmation tokens must land in, and the tokens themselves.
+_PARAPHRASED_HANDOFF_WINDOW = 400
+_PARAPHRASED_HANDOFF_TOKENS = ("compact", "summary", "handoff")
+
 # Bounded probe: catch the restored head plus a few stacked handoff/ack turns
 # without treating arbitrary summary-looking live-tail rows as proof of a resume.
 _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES = 4
@@ -4297,10 +4306,32 @@ Write only the summary body. Do not include any preamble or prefix."""
         text = cls._strip_summary_prefix(summary)
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
+    @classmethod
+    def _starts_with_summary_prefix(cls, text: str) -> bool:
+        """Return True if *text* begins with any known handoff prefix, or with the
+        bracketed compaction marker followed by compaction vocabulary in the opening
+        window (model-paraphrased handoff, #132934)."""
+        if text.startswith((
+            SUMMARY_PREFIX,
+            LEGACY_SUMMARY_PREFIX,
+            *_HISTORICAL_SUMMARY_PREFIXES,
+        )):
+            return True
+        return cls._is_paraphrased_handoff_head(text)
+
     @staticmethod
-    def _starts_with_summary_prefix(text: str) -> bool:
-        """Return True if *text* begins with any known handoff prefix."""
-        return text.startswith((SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES))
+    def _is_paraphrased_handoff_head(text: str) -> bool:
+        """Recognize a handoff the model paraphrased behind the bracketed marker.
+
+        The marker alone is not enough (a reply could quote it while discussing
+        compaction), so the window AFTER the marker must also carry compaction
+        vocabulary — the marker itself contains "compaction" and would satisfy
+        the token check on its own."""
+        if not text.startswith(_HANDOFF_MARKER_PREFIX):
+            return False
+        head_end = len(_HANDOFF_MARKER_PREFIX)
+        window = text[head_end:head_end + _PARAPHRASED_HANDOFF_WINDOW].lower()
+        return any(token in window for token in _PARAPHRASED_HANDOFF_TOKENS)
 
     @classmethod
     def classify_summary_content(cls, content: Any) -> Optional[str]:

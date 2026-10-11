@@ -696,5 +696,75 @@ def test_messaging_settings_handles_invalid_utf8_in_telegram_allowlist(tmp_path:
     assert "123456789" in env_text
 
 
+def _secret_migrator(mod, base: Path, openclaw_config, env_text: str = ""):
+    """Migrator wired for a channel-secret migration under ``base``."""
+    source = base / ".openclaw"
+    target = base / ".hermes"
+    source.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
+    (source / "openclaw.json").write_text(json.dumps(openclaw_config), encoding="utf-8")
+    if env_text:
+        (source / ".env").write_text(env_text, encoding="utf-8")
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=True,
+        workspace_target=None, overwrite=False, migrate_secrets=True, output_dir=None,
+    )
+    return migrator, target
+
+
+def test_secretref_channel_tokens_are_resolved_not_silently_dropped(tmp_path: Path):
+    """A channel token declared as a SecretRef must migrate, not be dropped.
+
+    ``migrate_secret_settings`` only accepted a bare ``str``, so the normal
+    OpenClaw shape -- a SecretRef (``{"source": ..., "id": ...}``) -- was
+    silently skipped even with ``--migrate-secrets``: the ``.env``-backed
+    resolver (``_resolve_channel_secret``) existed but had no caller (#131863).
+    """
+    mod = load_module()
+    migrator, target = _secret_migrator(
+        mod, tmp_path,
+        {"channels": {
+            "telegram": {"botToken": {"source": "env", "id": "TELEGRAM_BOT_TOKEN"}},
+            "discord": {"token": {"source": "env", "id": "DISCORD_BOT_TOKEN"}},
+            "slack": {"botToken": {"source": "env", "id": "SLACK_BOT_TOKEN"},
+                      "appToken": {"source": "env", "id": "SLACK_APP_TOKEN"}},
+        }},
+        env_text=("TELEGRAM_BOT_TOKEN=tg-secret\nDISCORD_BOT_TOKEN=dc-secret\n"
+                  "SLACK_BOT_TOKEN=sl-bot\nSLACK_APP_TOKEN=sl-app\n"),
+    )
+
+    config = migrator.load_openclaw_config()
+    migrator.migrate_secret_settings(config)
+    migrator.migrate_discord_settings(config)
+    migrator.migrate_slack_settings(config)
+
+    env_text = (target / ".env").read_text(encoding="utf-8")
+    for key, val in (("TELEGRAM_BOT_TOKEN", "tg-secret"), ("DISCORD_BOT_TOKEN", "dc-secret"),
+                     ("SLACK_BOT_TOKEN", "sl-bot"), ("SLACK_APP_TOKEN", "sl-app")):
+        assert f"{key}={val}" in env_text, key
+
+
+def test_unresolvable_secretref_stays_skipped_and_plain_tokens_still_migrate(tmp_path: Path):
+    """The resolver must not invent a value for a file/exec SecretRef, and a
+    plain string token (the pre-existing shape) must keep migrating verbatim."""
+    mod = load_module()
+
+    file_ref, file_target = _secret_migrator(
+        mod, tmp_path / "fileref",
+        {"channels": {"telegram": {"botToken": {"source": "file", "id": "TG"}}}},
+    )
+    file_ref.migrate_secret_settings(file_ref.load_openclaw_config())
+    assert "TELEGRAM_BOT_TOKEN" not in (
+        (file_target / ".env").read_text(encoding="utf-8") if (file_target / ".env").exists() else ""
+    )
+
+    plain, plain_target = _secret_migrator(
+        mod, tmp_path / "plain",
+        {"channels": {"telegram": {"botToken": "  plain-token  "}}},
+    )
+    plain.migrate_secret_settings(plain.load_openclaw_config())
+    assert "TELEGRAM_BOT_TOKEN=plain-token" in (plain_target / ".env").read_text(encoding="utf-8")
+
+
 
 

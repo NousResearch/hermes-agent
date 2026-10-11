@@ -1,0 +1,26 @@
+name: operations
+repo: https://github.com/c-pompa/operations-hermes-desktop-plugin
+sha: d04f1e7d20aebb6be825b006bcee15c178f8c800
+subdir: plugins/operations
+title: Operations
+description: A Hermes Desktop page for running a fleet - topology, model traffic, handoffs, traces, merge requests and conformance checks in one place.
+maintainer: c-pompa
+tier: community
+category: desktop
+docs_url: https://github.com/c-pompa/operations-hermes-desktop-plugin#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/d04f1e7d20aebb6be825b006bcee15c178f8c800/screenshots/card.png
+screenshots:
+  - https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/d04f1e7d20aebb6be825b006bcee15c178f8c800/screenshots/overview.png
+  - https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/d04f1e7d20aebb6be825b006bcee15c178f8c800/screenshots/topology.png
+  - https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/d04f1e7d20aebb6be825b006bcee15c178f8c800/screenshots/conformance.png
+readme: true
+platforms: []
+known_issues:
+  - Request, error, host and conformance results come from hermes-metrics-dash's metrics.db; without it those sections show "unavailable".
+  - Merge requests and the GitLab conformance standard need the GitLab host and token set in the plugin's settings (or GITLAB_HOST and GITLAB_TOKEN).
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_kanban_dispatch_tick]
+  provides_middleware: []
+  requires_env: []

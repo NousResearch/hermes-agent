@@ -144,6 +144,16 @@ async def test_an_inconclusive_authorization_check_does_not_cancel(check):
 
 
 @pytest.mark.asyncio
+async def test_sender_without_a_user_id_cannot_cancel_the_turn():
+    # An intake that forwards a slash command with no sender id (some group paths do) must fail
+    # closed: the runner drops it at admission, nothing is marked, the turn keeps running.
+    adapter, runner, key, task = await _busy_session()
+    await _send_and_settle(adapter, runner, "", "/stop")
+    _assert_turn_untouched(adapter, runner, key, task)
+    task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_accepted_stop_cancels_the_turn_and_drops_the_held_text():
     adapter, runner, key, task = await _busy_session()
     await adapter.handle_message(_event(OWNER, "/stop"))

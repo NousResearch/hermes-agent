@@ -8,8 +8,10 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { type SessionInfo, setSessionArchived } from '@/hermes'
+import { setSessionArchived } from '@/hermes'
 import { setSessions } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
+import { makeSessionInfo } from '@/test/session-info'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -34,41 +36,24 @@ vi.mock('@/store/profile', async importOriginal => ({
 const STORED_ID = 'chat-1'
 const RUNTIME_ID = 'runtime-1'
 
-function storedSession(): SessionInfo {
-  return {
-    ended_at: null,
-    id: STORED_ID,
-    input_tokens: 0,
-    is_active: false,
-    last_active: 1,
-    message_count: 2,
-    model: null,
-    output_tokens: 0,
-    preview: null,
-    source: 'desktop',
-    started_at: 1,
-    title: 'idle chat',
-    tool_call_count: 0
-  } as SessionInfo
-}
-
 type Handle = Pick<ReturnType<typeof useSessionActions>, 'archiveSession'>
 
 interface HarnessProps {
-  busy?: Partial<ClientSessionState>
+  foregroundBusy: boolean
   onReady: (handle: Handle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   selected: boolean
 }
 
-function Harness({ busy, onReady, requestGateway, selected }: HarnessProps) {
+function Harness({ foregroundBusy, onReady, requestGateway, selected }: HarnessProps) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
-  const state = { ...busy } as ClientSessionState
+  const activeRuntimeId = selected ? RUNTIME_ID : 'runtime-other'
+  const selectedStoredId = selected ? STORED_ID : 'chat-other'
 
   const actions = useSessionActions({
-    activeSessionId: selected ? RUNTIME_ID : 'runtime-other',
-    activeSessionIdRef: ref<string | null>(selected ? RUNTIME_ID : 'runtime-other'),
-    busyRef: ref(selected && Boolean(busy?.busy)),
+    activeSessionId: activeRuntimeId,
+    activeSessionIdRef: ref<string | null>(activeRuntimeId),
+    busyRef: ref(foregroundBusy),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
@@ -78,9 +63,9 @@ function Harness({ busy, onReady, requestGateway, selected }: HarnessProps) {
     resetViewSync: vi.fn(),
     routedSessionId: null,
     runtimeIdByStoredSessionIdRef: ref(new Map([[STORED_ID, RUNTIME_ID]])),
-    selectedStoredSessionId: selected ? STORED_ID : 'chat-other',
-    selectedStoredSessionIdRef: ref<string | null>(selected ? STORED_ID : 'chat-other'),
-    sessionStateByRuntimeIdRef: ref(new Map([[RUNTIME_ID, state]])),
+    selectedStoredSessionId: selectedStoredId,
+    selectedStoredSessionIdRef: ref<string | null>(selectedStoredId),
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: () => ({}) as ClientSessionState
   })
@@ -92,32 +77,41 @@ function Harness({ busy, onReady, requestGateway, selected }: HarnessProps) {
   return null
 }
 
-async function archive(props: Omit<HarnessProps, 'onReady'>) {
+async function archive({ foregroundBusy = false, selected = false } = {}) {
+  const requestGateway = vi.fn().mockResolvedValue({})
   let handle: Handle | undefined
-  render(<Harness {...props} onReady={h => (handle = h)} />)
+
+  render(
+    <Harness
+      foregroundBusy={foregroundBusy}
+      onReady={h => (handle = h)}
+      requestGateway={requestGateway}
+      selected={selected}
+    />
+  )
   await waitFor(() => expect(handle).toBeDefined())
   await act(() => handle!.archiveSession(STORED_ID))
+
+  return requestGateway
 }
 
 describe('archiveSession releases the active-session slot', () => {
   beforeEach(() => {
-    setSessions([storedSession()])
-    vi.mocked(setSessionArchived).mockReset()
+    setSessions([makeSessionInfo({ id: STORED_ID, message_count: 2, source: 'desktop' })])
+    vi.mocked(setSessionArchived).mockReset().mockResolvedValue({ ok: true })
   })
 
   afterEach(() => {
     cleanup()
     setSessions([])
+    $sessionStates.set({})
   })
 
   it.each([
     ['selected', true],
     ['background', false]
   ])('closes the idle runtime of a %s chat', async (_label, selected) => {
-    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
-    const requestGateway = vi.fn().mockResolvedValue({})
-
-    await archive({ requestGateway, selected })
+    const requestGateway = await archive({ selected })
 
     expect(setSessionArchived).toHaveBeenCalledWith(STORED_ID, true, undefined)
     await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: RUNTIME_ID }))
@@ -127,22 +121,27 @@ describe('archiveSession releases the active-session slot', () => {
   it.each([
     ['streaming', { busy: true }],
     ['waiting on the user', { needsInput: true }],
-    ['awaiting a response', { awaitingResponse: true }]
-  ])('leaves a runtime that is %s alone', async (_label, busy) => {
-    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
-    const requestGateway = vi.fn().mockResolvedValue({})
+    ['awaiting a response', { awaitingResponse: true }],
+    ['running on the backend', { turnLive: true }]
+  ])('leaves a runtime that is %s alone', async (_label, live) => {
+    $sessionStates.set({ [RUNTIME_ID]: live as ClientSessionState })
 
-    await archive({ busy, requestGateway, selected: false })
+    const requestGateway = await archive()
 
     expect(setSessionArchived).toHaveBeenCalled()
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
   })
 
+  it('leaves the selected chat alone while the foreground is busy', async () => {
+    const requestGateway = await archive({ foregroundBusy: true, selected: true })
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+  })
+
   it('keeps the runtime when the archive itself fails', async () => {
     vi.mocked(setSessionArchived).mockRejectedValue(new Error('archive failed'))
-    const requestGateway = vi.fn().mockResolvedValue({})
 
-    await archive({ requestGateway, selected: false })
+    const requestGateway = await archive()
 
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
   })

@@ -60,21 +60,48 @@ _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. 
 _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "idle_timeout", "lru_evict", "tui_shutdown"})
 
 
-def _lease_metadata(live_session_id: str) -> dict:
-    """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``. Bot Chat delivery is
-    admitted by the session authority (gateway/session_bot), never gated on a lease flag."""
-    return {"live_session_id": live_session_id}
+def _desktop_instance_id() -> str:
+    """This process's Desktop app-instance identity, or "" when it is not a Desktop backend.
+
+    Resolved lazily (the registry module is imported on first use, like every other helper here) and
+    never fatal: without an identity a takeover is simply impossible, which is the safe default.
+    """
+    try:
+        from hermes_cli.active_sessions import desktop_instance_id
+        return desktop_instance_id()
+    except Exception:
+        logger.debug("Desktop instance identity unavailable", exc_info=True)
+        return ""
+
+
+def _lease_metadata(live_session_id: str, *, client_attached: bool | None = None) -> dict:
+    """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``.
+
+    A process started by a Desktop app instance ALSO records that instance's identity and whether it
+    still holds a live client transport for this chat, so a NEW backend of the SAME Desktop can take
+    the chat over after a reconnect (see ``_same_desktop_holder_may_be_superseded``). Both keys are
+    additive and conditional: a non-Desktop runtime keeps exactly the historical shape.
+    """
+    metadata = {"live_session_id": live_session_id}
+    if instance := _desktop_instance_id():
+        from hermes_cli.active_sessions import CLIENT_ATTACHED_METADATA_KEY, DESKTOP_INSTANCE_METADATA_KEY
+        metadata[DESKTOP_INSTANCE_METADATA_KEY] = instance
+        # A claim happens on a user turn, so the client is attached unless a caller says otherwise.
+        metadata[CLIENT_ATTACHED_METADATA_KEY] = True if client_attached is None else bool(client_attached)
+    return metadata
 
 
 def _claim_active_session_slot(
-    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None
+    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None,
+    supersede: Callable[[dict], bool] | None = None,
 ) -> tuple[Any, str | None]:
     try:
         from hermes_cli.active_sessions import try_acquire_active_session
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
             metadata=_lease_metadata(live_session_id),
-            track_liveness=str(surface or "").strip().lower() == "desktop")
+            track_liveness=str(surface or "").strip().lower() == "desktop",
+            supersede=supersede)
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
         # Fail CLOSED: an errored claim has NOT proven the session unowned; lease-less = silent double-writer hole.
@@ -122,11 +149,22 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
-    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
+    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream.
+    A refusal then tries the in-process detached-sibling takeover, then the cross-process same-Desktop
+    one; and a Desktop backend re-checks the registry for a lease a sibling took over (see
+    ``_desktop_lease_revoked``) instead of serving a second writer under its stale token."""
     if (canonical := _canonical_ledger_refusal(session)) is not None:
         return canonical
-    if session.get("active_session_lease") is not None:
-        return None
+    if (held := session.get("active_session_lease")) is not None:
+        if not _desktop_lease_revoked(session, held):
+            return None
+        # A sibling runtime of the SAME Desktop instance took this chat over while this one had no
+        # client; its entry carries a NEW lease id, so this stale token can no longer release it and
+        # serving a turn under it would be the double writer the fence exists to prevent. Drop it and
+        # go through the claim path again (which re-takes the lease if the situation still holds).
+        session.pop("active_session_lease", None)
+        session.pop("_lease_client_attached", None)
+        logger.info("Session %s: its active lease was superseded by a sibling Desktop runtime; re-claiming", sid)
     key = str(session.get("session_key") or "")
     lease, limit_message = _claim_active_session_slot(
         key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
@@ -134,7 +172,11 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
         _attach_lease(session, lease)
         return None
     from hermes_cli.active_sessions import SESSION_NOT_OWNED
-    if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
+    if getattr(limit_message, "reason", None) != SESSION_NOT_OWNED:
+        return limit_message
+    if _take_over_detached_runtime_lease(sid, session, key):
+        return None
+    if _take_over_same_desktop_runtime_lease(sid, session, key):
         return None
     return limit_message
 
@@ -179,6 +221,9 @@ def _canonical_ledger_refusal(session: dict):
 def _attach_lease(session: dict, lease) -> None:
     session["active_session_lease"] = lease
     session.pop("_lease_taken_over", None)  # owning again: its finalize ends the row like any owner
+    # A claim happens on the turn path, so this runtime HAS a client for the chat; the marker is
+    # published to the registry only when it changes (see _sync_lease_client_attachment).
+    session["_lease_client_attached"] = True
 
 
 def _detached_lease_holder(session: dict, key: str) -> tuple[str, dict] | None:
@@ -223,6 +268,140 @@ def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool
     except Exception:
         logger.exception("lease-takeover interrupt failed sid=%s", other_sid)
     return True
+
+
+def _holder_turn_in_flight(holder: dict, home) -> bool:
+    """True when the lease holder still has a turn in flight for this chat. Fail CLOSED.
+
+    The durable turn marker (``tui_gateway.turn_marker``, #94778) already answers this across
+    processes: it is written when a turn starts and cleared on any conclusion, and it names the
+    writer's pid. A marker for this chat whose writer is the HOLDER's pid means the holder is still
+    running a turn there — its client is gone, so its output goes nowhere and taking the lease over
+    would let two agents append to one stored session. Anything unreadable (no key, no holder pid,
+    an unreadable marker, an unprovable writer) counts as in flight.
+    """
+    key = str(holder.get("session_id") or "")
+    holder_pid = holder.get("pid")
+    if (not key or not isinstance(holder_pid, int) or isinstance(holder_pid, bool) or holder_pid <= 0):
+        return True
+    try:
+        from tui_gateway.turn_marker import marker_writer_state, read_turn_marker
+        marker = read_turn_marker(Path(home) if home else Path(get_hermes_home()), key)
+    except Exception:
+        logger.debug("Cannot read the turn marker for %s", key, exc_info=True)
+        return True
+    if not isinstance(marker, dict):
+        return False  # nothing in flight (or a concluded turn's marker already cleared)
+    if int(marker.get("writer_pid") or 0) != holder_pid:
+        return False  # not this holder's marker (unsurvivable attribution: a crash marker with no pid)
+    return marker_writer_state(marker) != "dead"
+
+
+def _same_desktop_holder_may_be_superseded(holder: dict, *, home=None) -> bool:
+    """May this runtime REPLACE ``holder``'s lease for the same chat? Fail CLOSED on every doubt.
+
+    The Desktop dials a NEW ``hermes serve --isolated`` backend per connection, so after a gateway
+    restart / renderer reload / SSH reconnect the SAME Desktop app instance is a different pid, and
+    the old backend — never idle-reaped by design — fences the user out of their own chat with
+    ``SESSION_NOT_OWNED`` for as long as it lives (the cross-process half of the #104691 takeover).
+
+    All of these must hold, or the refusal stands:
+      * THIS process is a Desktop backend with an instance identity, and
+      * the holder is a Desktop lease whose recorded instance identity is OURS (same app instance —
+        a second Desktop installation, a CLI/TUI session, another surface and a foreign pid all
+        differ here, and a profile mismatch never even shares a registry), and
+      * the holder has EXPLICITLY published ``client_attached: False`` for the chat. A missing or
+        unreadable marker is not proof its client is gone, so it refuses, and
+      * the holder has NO turn in flight (``_holder_turn_in_flight``): the in-process takeover can
+        interrupt the peer's turn, this one cannot, and the fence exists to prevent two writers.
+    """
+    if not (instance := _desktop_instance_id()):
+        return False
+    if str(holder.get("surface") or "").strip().lower() != "desktop":
+        return False
+    try:
+        holder_pid = int(holder.get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if holder_pid <= 0 or holder_pid == os.getpid():
+        return False  # an unreadable pid, or our own (the in-process takeover owns that decision)
+    from hermes_cli.active_sessions import (
+        DESKTOP_INSTANCE_METADATA_KEY, lease_client_attached,
+    )
+    if str((holder.get("metadata") or {}).get(DESKTOP_INSTANCE_METADATA_KEY) or "") != instance:
+        return False
+    if lease_client_attached(holder) is not False:
+        return False
+    return not _holder_turn_in_flight(holder, home)
+
+
+def _take_over_same_desktop_runtime_lease(sid: str, session: dict, key: str) -> bool:
+    """Re-claim ``key`` replacing a lease held by another runtime of THIS Desktop app instance.
+
+    Cross-process sibling of ``_take_over_detached_runtime_lease``: there is no session record to
+    inspect and no way to reach the peer's turn from here, so eligibility rests entirely on what the
+    holder published (``_same_desktop_holder_may_be_superseded``) and the handoff is one atomic
+    registry write under the file lock that just proved the holder alive. The peer is not interrupted
+    from this process: it must have no client AND no turn in flight, so nothing of its work is lost
+    and no second writer can start over it.
+    """
+    home = session.get("profile_home")
+    lease, limit_message = _claim_active_session_slot(
+        key, live_session_id=sid, surface=_session_source(session), profile_home=home,
+        supersede=lambda holder: _same_desktop_holder_may_be_superseded(holder, home=home))
+    if limit_message is not None:
+        return False
+    _attach_lease(session, lease)
+    logger.info("Session %s took over lease for %s from a sibling Desktop runtime", sid, key)
+    return True
+
+
+def _desktop_lease_revoked(session: dict, lease) -> bool:
+    """True when this Desktop backend's own lease is no longer the registry's entry for the chat.
+
+    Only a Desktop backend can be superseded by a sibling (see ``_lease_metadata``), and only the
+    registry knows: the superseding entry carries a NEW lease id, so this stale token's ``release()``
+    is already a no-op and serving a turn under it would run a second writer. A registry that cannot
+    be read answers False — unprovable ownership keeps today's behaviour, and the takeover predicate
+    itself fails closed.
+    """
+    if not _desktop_instance_id() or str(getattr(lease, "surface", "") or "").strip().lower() != "desktop":
+        return False
+    if not getattr(lease, "enabled", False) or getattr(lease, "released", False):
+        return False
+    try:
+        from hermes_cli.active_sessions import active_session_registry_snapshot
+        entries = active_session_registry_snapshot(registry_home=session.get("profile_home"))
+    except Exception:
+        logger.debug("Cannot verify active session lease %s against the registry",
+                     getattr(lease, "lease_id", ""), exc_info=True)
+        return False
+    return not any(str(entry.get("lease_id") or "") == str(lease.lease_id) for entry in entries)
+
+
+def _sync_lease_client_attachment(session: dict | None, attached: bool) -> None:
+    """Publish whether THIS runtime still has a live client transport for its chat's lease.
+
+    Written only for a Desktop backend holding a real lease, and only on a transition (the attach
+    path runs on every prompt submit). Every failure is swallowed: the marker is an input to a
+    fail-closed handoff — a stale True merely refuses one — never a gate on serving the chat.
+    """
+    if not session or not _desktop_instance_id():
+        return
+    if str(_session_source(session) or "").strip().lower() != "desktop":
+        return
+    lease = session.get("active_session_lease")
+    if lease is None or not getattr(lease, "enabled", False) or getattr(lease, "released", False):
+        return
+    if session.get("_lease_client_attached") is attached:
+        return
+    try:
+        from hermes_cli.active_sessions import mark_active_session_client_attachment
+        if mark_active_session_client_attachment(lease, attached=attached):
+            session["_lease_client_attached"] = attached
+    except Exception:
+        logger.debug("Failed to publish the client-attachment marker for %s",
+                     session.get("session_key"), exc_info=True)
 
 
 def _lease_retry(attempts: int, fn) -> Exception | None:
@@ -885,6 +1064,8 @@ def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> Non
     # See #83716.
     if transport is not _detached_ws_transport:
         _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
+        # The chat has a live client again: a same-Desktop peer must stop being able to take its lease.
+        _sync_lease_client_attachment(session, True)
 
 
 def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
@@ -1050,6 +1231,7 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
     for sid, session in clientless:
         claimed_for_teardown = None
         should_schedule_reap = False
+        client_gone_session = None
         # session.resume fast-path attaches under _session_resume_lock: take it so a reconnect can't attach
         # between the detach above and the claim.
         with _session_resume_lock, _sessions_lock:
@@ -1085,6 +1267,10 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                     current.pop("_client_gone_interrupt_requested", None)
                     current.pop("_client_gone_interrupt_polls", None)
                     should_schedule_reap = True
+                    # A Desktop chat that lost its client is exactly what a sibling backend of the
+                    # SAME Desktop instance may then take over; publish that fact out of this lock
+                    # block (the registry write is I/O).
+                    client_gone_session = current
                     # Register before releasing the detachment claim: an old disconnect
                     # must not arm its first timer over a reconnect's newer detachment.
                     with contextlib.suppress(Exception):
@@ -1093,6 +1279,8 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
             reaped += _teardown_popped_session(claimed_for_teardown, end_reason=end_reason)
         elif should_schedule_reap:
             detached += 1
+        if client_gone_session is not None:
+            _sync_lease_client_attachment(client_gone_session, False)
     return reaped, detached
 
 

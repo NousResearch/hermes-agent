@@ -241,6 +241,25 @@ _SSH_RUNTIME_PURELIB: Optional[tuple[str, int, int]] = None
 _SSH_RUNTIME_MARKER: Optional[str] = None
 
 
+def _apply_ssh_desktop_identity(ssh_lock_path: Optional[Path]) -> None:
+    """Record the Desktop app-instance identity of THIS backend from its SSH token path.
+
+    The Desktop spawns ``serve --isolated --ssh-session-token-file
+    <home>/.hermes/desktop-ssh/<ownershipId>/<nonce>.token`` where ``ownershipId`` is
+    ``sha256(installationId + profile scope)``: stable across every backend of one Desktop app
+    instance, different for another installation. Until now it only named the lock/log directory;
+    recording it lets a session lease be handed over by a NEW backend of the SAME Desktop instance
+    after a reconnect while every other owner keeps refusing (see
+    ``hermes_cli.active_sessions.set_desktop_instance_id``).
+    """
+    if ssh_lock_path is None:
+        return
+    from hermes_cli.active_sessions import set_desktop_instance_id
+
+    # ``<ownershipId>/backend.lock.json`` — the parent directory NAMES the ownership slot.
+    set_desktop_instance_id(Path(ssh_lock_path).parent.name)
+
+
 def _apply_ssh_session_token(token: str) -> None:
     global _SESSION_TOKEN
     if token:
@@ -1366,13 +1385,16 @@ def start_server(
     discovery never adopts this process.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state, never persisted or exported to children; ``ssh_lock_path`` is the
-    Desktop's ``backend.lock.json`` for that ownership slot (supersession watchdog).
+    Desktop's ``backend.lock.json`` for that ownership slot (supersession watchdog), and its
+    parent directory names the Desktop app instance that owns the slot — recorded as this
+    backend's lease-handoff identity (``_apply_ssh_desktop_identity``).
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+    _apply_ssh_desktop_identity(ssh_lock_path)
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).

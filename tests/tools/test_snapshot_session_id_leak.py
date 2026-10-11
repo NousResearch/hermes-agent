@@ -105,7 +105,8 @@ def test_export_dump_drops_every_bridged_var_and_the_delegation_marker():
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     from gateway.session_context import _VAR_MAP
 
-    scoped = [*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER]
+    kanban = ["HERMES_KANBAN_TASK", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_RUN_ID"]
+    scoped = [*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER, *kanban]
     exports = "; ".join([f'export {n}="x"' for n in scoped] + ['export HERMES_HOME="/h"', 'export MYVAR="keep"'])
     out = subprocess.run(
         ["bash", "-c", f"{exports}; {_export_dump_excluding_session_vars('/dev/stdout')}"],

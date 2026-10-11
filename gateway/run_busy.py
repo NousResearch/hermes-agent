@@ -19,7 +19,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from gateway.session import SessionSource, key_source_for
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -125,11 +125,45 @@ class GatewayBusySessionMixin:
         if not overflow:
             return pending_event
         if pending_event is None:
-            return overflow.pop(0)
+            return self._pop_overflow_for(overflow, adapter)
         if adapter is not None and hasattr(adapter, "_pending_messages"):
-            adapter._pending_messages[session_key] = overflow.pop(0)
+            staged = self._pop_overflow_for(overflow, adapter)
+            if staged is not None:
+                adapter._pending_messages[session_key] = staged
         # else: no adapter — leave the head in place so we don't silently drop it.
         return pending_event
+
+    def _pop_overflow_for(self, overflow: list, adapter: Any) -> Optional[MessageEvent]:
+        """Pop the oldest overflow event *adapter*'s lane may run. A session group (#79198) queues
+        chats from several adapters on one key; each adapter drains only its own, so a follow-up is
+        never answered on another chat's adapter."""
+        for index, queued in enumerate(overflow):
+            source = getattr(queued, "source", None)
+            if (adapter is None or source is None or key_source_for(source) is source
+                    or self._delivery_adapter_for(source) is adapter):
+                return overflow.pop(index)
+        return None
+
+    def _crosses_turn_origin(self, event: MessageEvent, session_key: str) -> bool:
+        """True when a session group (#79198) shares *session_key* and *event* comes from another
+        chat than the running turn. Every turn has exactly one origin, so such an event queues as
+        its own turn and never steers, interrupts or merges into the running one."""
+        state = self._peek_session_state(session_key)
+        running = getattr(getattr(state.turn, "event", None), "source", None) if state else None
+        source = getattr(event, "source", None)
+        if running is None or source is None:
+            return False
+        if key_source_for(source) is source and key_source_for(running) is running:
+            return False
+        return (source.platform, source.chat_id, source.thread_id) != (
+            running.platform, running.chat_id, running.thread_id)
+
+    def _queue_if_crosses_turn_origin(self, event: MessageEvent, session_key: str) -> bool:
+        """Queue *event* as its own turn when it crosses the running turn's origin; True if queued."""
+        if not self._crosses_turn_origin(event, session_key):
+            return False
+        self._queue_or_replace_pending_event(session_key, event)
+        return True
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
@@ -156,11 +190,14 @@ class GatewayBusySessionMixin:
             pending_slot = getattr(adapter, "_pending_messages", None)
             if not isinstance(pending_slot, dict) or pending_slot.get(session_key):
                 return None  # slot occupied (busy) or no slot storage — promotion owns this
-            head = overflow.pop(0)
+            head = self._pop_overflow_for(overflow, adapter)
+            if head is None:
+                return None
             # Keep the slot occupied so the drain promotes in order and a mid-chain arrival routes
             # to overflow instead of jumping the queue (same invariant as _promote_queued_event).
-            if overflow:
-                pending_slot[session_key] = overflow.pop(0)
+            staged = self._pop_overflow_for(overflow, adapter) if overflow else None
+            if staged is not None:
+                pending_slot[session_key] = staged
             logger.warning(
                 "Rescued orphaned FIFO overflow event for idle session "
                 "%s — it was queued during a busy window but the post-turn "
@@ -840,6 +877,8 @@ class GatewayBusySessionMixin:
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
+        if self._queue_if_crosses_turn_origin(event, session_key):
+            return True
         # Internal synthetic events (delegation / background completions) must never interrupt or
         # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
         # queue them through the FIFO (security metadata kept apart).

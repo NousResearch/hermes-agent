@@ -697,7 +697,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
-        if _handled:
+        if _handled or self._queue_if_crosses_turn_origin(event, _quick_key):
             return _result
 
         effective_busy_input_mode = self._effective_busy_input_mode(source)

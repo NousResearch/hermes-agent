@@ -28,16 +28,6 @@ from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _sh
 logger = logging.getLogger(__name__)
 
 
-def _consume_detached_handler_exception(task: asyncio.Task) -> None:
-    """Done-callback for a detached fatal-error handler task (carrier cancelled in
-    ``_notify_fatal_error``): retrieve its exception so asyncio never logs "never retrieved"."""
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("Detached fatal-error handler task failed: %s", exc, exc_info=exc)
-
-
 # Audio exts for native audio delivery; Telegram's narrower sets stay separate (.m2a is audio to
 # Hermes but not to sendAudio).
 _AUDIO_MIME_TYPES = {
@@ -424,14 +414,15 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.helpers import consume_detached_handler_exception, fence_state_after
+from gateway.platforms.base_session_groups import acquire_group_turn, defer_to_group_turn
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, build_session_key, key_source_for
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
@@ -2248,7 +2239,7 @@ class BasePlatformAdapter(ABC):
             except asyncio.CancelledError:
                 # Carrier cancelled (our own teardown inside the handler): let it finish detached.
                 if not task.done():
-                    task.add_done_callback(_consume_detached_handler_exception)
+                    task.add_done_callback(consume_detached_handler_exception)
                 raise
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
@@ -2562,7 +2553,7 @@ class BasePlatformAdapter(ABC):
         self._canonicalize(source)  # identity FIRST; no key derivation before it
         extra = self.config.extra
         return build_session_key(
-            source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            key_source_for(source), group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
             profile=self._session_key_profile(source))
 
@@ -4074,6 +4065,8 @@ class BasePlatformAdapter(ABC):
         if session_key in self._active_sessions:
             await self._handle_message_while_active(event, session_key)
             return
+        if await defer_to_group_turn(self, event, session_key):
+            return  # another chat in the session group (#79198) owns the key
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
 
@@ -4562,6 +4555,7 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        group_turn = None  # session-group turn lock (#79198), held through delivery
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4575,6 +4569,7 @@ class BasePlatformAdapter(ABC):
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
+            group_turn = await acquire_group_turn(event, session_key)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
@@ -4671,18 +4666,22 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
-            await self._release_turn_marker(event)
-            event._turn_marker_handoff = False  # a later run of this object clears its own marker
-            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
-            # alive.
-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
-            # Callback work or a late refresh may have recreated typing — one final bounded stop.
-            await self._stop_typing_refresh(
-                event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
-            # Flush any timer that missed the in-band drain, then reconcile ownership.
-            await self._flush_text_debounce_now(session_key)
-            self._finish_session_task(session_key, interrupt_event)
+            try:
+                await self._release_turn_marker(event)
+                event._turn_marker_handoff = False  # a later run of this object clears its own marker
+                # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
+                # alive.
+                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                await self._fire_post_delivery_callback(session_key, interrupt_event)
+                # Callback work or a late refresh may have recreated typing — one final bounded stop.
+                await self._stop_typing_refresh(
+                    event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
+                # Flush any timer that missed the in-band drain, then reconcile ownership.
+                await self._flush_text_debounce_now(session_key)
+                self._finish_session_task(session_key, interrupt_event)
+            finally:  # release even when cleanup raises, so the group key never stays locked
+                if group_turn is not None:
+                    group_turn.release()
 
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot

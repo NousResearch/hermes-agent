@@ -86,6 +86,15 @@ class CaptureResult:
     # ``max_elements`` the backend asked the driver's AX walk to stop at (0 = unbounded / not applicable);
     # ``len(elements) >= ax_max_elements > 0`` means the tree may be truncated.
     ax_max_elements: int = 0
+    # Driver snapshot handle of this capture (`structuredContent.snapshot_id`) when the driver minted one.
+    # Element actions use it (via the backend's token map) for stale detection; surfaced so a model on an
+    # element_token-less driver can pass snapshot_id= explicitly.
+    snapshot_id: Optional[str] = None
+    # The captured window's frame in SCREEN-ABSOLUTE native pixels (x, y, w, h) when discovery reported it
+    # (None on exact-target captures that skipped list_windows). This is the only sound source for the
+    # screenshot-space ↔ screen-space transform (screenshot px = (screen px - origin) * w_img/w_win);
+    # inferring scale from the largest element bounds breaks on multi-monitor layouts.
+    window_frame: Optional[tuple[int, int, int, int]] = None
 
 
 @dataclass
@@ -133,12 +142,14 @@ class ComputerUseBackend(ABC):
 
     @abstractmethod
     def capture(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,
-                window_id: Optional[int] = None) -> CaptureResult: ...
+                window_id: Optional[int] = None, max_elements: Optional[int] = None,
+                max_depth: Optional[int] = None) -> CaptureResult: ...
 
     @abstractmethod
     def click(self, *, element: Optional[int] = None, x: Optional[int] = None, y: Optional[int] = None,
               button: str = "left", click_count: int = 1, modifiers: Optional[list[str]] = None,
-              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult: ...
+              delivery_mode: Optional[str] = None, bring_to_front: bool = False,
+              element_token: Optional[str] = None, snapshot_id: Optional[str] = None) -> ActionResult: ...
 
     @abstractmethod
     def drag(self, *, from_element: Optional[int] = None, to_element: Optional[int] = None,
@@ -149,7 +160,8 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def scroll(self, *, direction: str, amount: int = 3, element: Optional[int] = None,
                x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[list[str]] = None,
-               delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult: ...
+               delivery_mode: Optional[str] = None, bring_to_front: bool = False,
+               element_token: Optional[str] = None, snapshot_id: Optional[str] = None) -> ActionResult: ...
 
     @abstractmethod
     def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
@@ -170,7 +182,8 @@ class ComputerUseBackend(ABC):
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult: ...  # route input to `app` (name / bundle ID)
 
     @abstractmethod
-    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult: ...  # e.g. AXPopUpButton selection
+    def set_value(self, value: str, element: Optional[int] = None, *, element_token: Optional[str] = None,
+                  snapshot_id: Optional[str] = None) -> ActionResult: ...  # e.g. AXPopUpButton selection
 
     def wait(self, seconds: float) -> ActionResult:  # default implementation
         time.sleep(max(0.0, min(seconds, 30.0)))

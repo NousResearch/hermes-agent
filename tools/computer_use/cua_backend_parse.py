@@ -52,6 +52,12 @@ def _action_result_from(name: str, ok: bool, message: str, meta: dict[str, Any],
     def _typed(value: Any, typ) -> Any:
         return value if isinstance(value, typ) else None
 
+    # Refusal/limitation code — drivers spell it "code" or "reason_code", and structured refusals
+    # nest it as `refusal.code` (e.g. snapshot_id_required).
+    code = _raw("code") or _raw("reason_code")
+    if code is None:
+        refusal = _raw("refusal")
+        code = refusal.get("code") if isinstance(refusal, dict) else None
     return ActionResult(
         ok=ok, action=name, message=message, meta=meta,
         verified=_typed(_raw("verified"), bool), effect=_typed(_raw("effect"), str),
@@ -59,8 +65,7 @@ def _action_result_from(name: str, ok: bool, message: str, meta: dict[str, Any],
         degraded=_typed(_raw("degraded"), bool),
         # What we asked for; the driver's `path` records the rung that ran.
         delivery_mode=_typed(requested_delivery, str),
-        # Refusal/limitation code — drivers spell it "code" or "reason_code".
-        code=_typed(_raw("code") or _raw("reason_code"), str),
+        code=_typed(code, str),
     )
 
 def _z_index_uninformative(windows: list[dict[str, Any]]) -> bool:
@@ -235,10 +240,18 @@ def _ingest_windows(raw_windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if pid_int is None or window_id_int is None:
             continue
         z_raw, app_name, title = w.get("z_index"), w.get("app_name", ""), w.get("title", "")
+        bounds = w.get("bounds")
+        win_bounds: Optional[tuple] = None
+        if isinstance(bounds, dict):
+            with contextlib.suppress(TypeError, ValueError):
+                win_bounds = tuple(int(bounds[k]) for k in ("x", "y", "width", "height"))
         windows.append({
             "app_name": app_name if isinstance(app_name, str) else "",
             "pid": pid_int,
             "window_id": window_id_int,
+            # Screen-absolute native px (x, y, w, h) when reported — the denominator of the
+            # screenshot-space transform. None when the driver omitted bounds.
+            "bounds": win_bounds,
             # Only explicit False means off-screen; null (Linux 0.6.x) means unknown.
             "off_screen": w.get("is_on_screen") is False,
             "title": title if isinstance(title, str) else "",

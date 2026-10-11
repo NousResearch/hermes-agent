@@ -1781,9 +1781,9 @@ DEFAULT_CONFIG = {
         # DENIES unless transport_fallback is "builtin". Presentation only: plugins cannot detect,
         # suppress, or auto-approve commands outside a correlated human response.
         "approval": {"transport": "builtin", "transport_fallback": "deny"},
-        # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/.cursorrules, project-local
-        # .hermes config) always need human approval, even under yolo. Extra patterns are fnmatch
-        # globs on the basename (e.g. "*.mdc").
+        # To prevent instruction persistence, writes to AGENTS.md/AGENTS.override.md/CLAUDE.md/
+        # SOUL.md/.hermes.md/HERMES.md/.cursorrules, .cursor/rules/*.mdc and project-local .hermes
+        # config always need human approval, even under yolo. Extra patterns are basename fnmatch globs.
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
         "website_blocklist": {"enabled": False, "domains": [], "shared_files": []},

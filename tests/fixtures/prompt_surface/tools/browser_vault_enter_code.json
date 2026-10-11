@@ -1,0 +1,14 @@
+{
+  "description": "The page asks for a one-time / verification / 2FA code after the password: call this. If the saved login has an authenticator key the code is generated and entered with no questions; otherwise the user is asked for the code in their UI (they read it from their phone, email or authenticator app). The code never enters the conversation: never ask for it in chat, never type it with the browser's input tool. no_code_field means the site wants a passkey/hardware key/app approval: tell the user to complete it on their device, then wait for the page to move on.",
+  "name": "browser_vault_enter_code",
+  "parameters": {
+    "properties": {
+      "handle": {
+        "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved).",
+        "type": "string"
+      }
+    },
+    "required": [],
+    "type": "object"
+  }
+}

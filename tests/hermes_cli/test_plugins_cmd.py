@@ -157,7 +157,7 @@ class TestGitPullPluginDirAutostash:
         import subprocess as sp
 
         def git(cwd, *args):
-            r = sp.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+            r = sp.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
             assert r.returncode == 0, r.stderr
             return r.stdout
 

@@ -63,13 +63,14 @@ def _get_project_plugins_dir() -> Optional[Path]:
 
 
 def _is_memory_provider_dir(path: Path) -> bool:
-    """Cheap text heuristic (no import): ``__init__.py`` mentions the memory provider contract."""
+    """Cheap text heuristic (no import): ``__init__.py`` mentions the memory provider contract.
+    A miss in the first 8 KB falls back to parsing, so a long module docstring cannot hide a provider."""
     init_file = path / "__init__.py"
     try:
         if not init_file.exists():
             return False
         source = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
-        return "register_memory_provider" in source or "MemoryProvider" in source
+        return "register_memory_provider" in source or "MemoryProvider" in source or _defines_memory_provider(path)
     except OSError as exc:  # one mode-000 / ACL-denied child must not abort discovery
         logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
         return False
@@ -211,7 +212,7 @@ def discover_memory_providers() -> list[tuple[str, str, bool]]:
     return results
 
 
-def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -> Optional["MemoryProvider"]:
+def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -> Optional[MemoryProvider]:
     """Load a MemoryProvider by name (bundled, user, project, then pip entry point);
     None if not found or failing to load. Skills register only for the configured
     active provider unless ``register_skills`` is explicit, so inspecting inactive
@@ -309,7 +310,7 @@ def import_provider_module(name: str, submodule: Optional[str] = None):
     return importlib.import_module(f"{package.__name__}.{submodule}") if submodule else package
 
 
-def _instantiate_subclass(namespace) -> Optional["MemoryProvider"]:
+def _instantiate_subclass(namespace) -> Optional[MemoryProvider]:
     """First instantiable ``MemoryProvider`` subclass found among *namespace*'s attributes."""
     from agent.memory_provider import MemoryProvider
 
@@ -323,7 +324,7 @@ def _instantiate_subclass(namespace) -> Optional["MemoryProvider"]:
     return None
 
 
-def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True) -> Optional["MemoryProvider"]:
+def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True) -> Optional[MemoryProvider]:
     """Import a provider entry point and extract the MemoryProvider instance: an
     instance, a subclass, a module with ``register(ctx)``, a factory / ``register``
     callable, or a namespace holding a subclass — in that order."""
@@ -359,7 +360,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
     return provider
 
 
-def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional["MemoryProvider"]:
+def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional[MemoryProvider]:
     """Import a provider module; ``register(ctx)`` first, else a top-level subclass."""
     name = provider_dir.name
     from hermes_cli.plugin_isolation import user_plugin_host

@@ -2014,6 +2014,91 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert "sk-super-secret" not in yaml.safe_dump(cfg)
 
 
+    @pytest.mark.parametrize("clear_key", [False, True])
+    @pytest.mark.parametrize("credential_field", ["key_env", "api_key_env"])
+    @pytest.mark.parametrize("shared", [False, True])
+    def test_custom_endpoint_edit_preserves_or_clears_api_key_env(self, clear_key, credential_field, shared):
+        """Real edits preserve omitted references; blank removes pointers, not shared secrets."""
+        from hermes_cli.config import (
+            custom_endpoint_key_env, get_compatible_custom_providers, load_config,
+            load_env, read_raw_config, save_config, save_env_value,
+        )
+        from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+
+        env_var = "SHARED_ENDPOINT_KEY" if shared else custom_endpoint_key_env("local")
+        save_env_value(env_var, "shared-placeholder")
+        cfg = load_config()
+        cfg["providers"] = {
+            "local": {
+                "name": "Local", "base_url": "http://127.0.0.1:8000/v1",
+                "model": "local-model", credential_field: env_var,
+            },
+        }
+        if clear_key:
+            # All credential spellings may coexist in a hand-written record.
+            cfg["providers"]["local"].update(api_key="inline-placeholder", key_env=env_var, api_key_env=env_var)
+        save_config(cfg)
+        assert _get_named_custom_provider("custom:local")["api_key"] == "shared-placeholder"
+
+        payload = {
+            "id": "local", "name": "Local edited",
+            "base_url": "http://127.0.0.1:8000/v1", "model": "local-model",
+        }
+        if clear_key:
+            payload["api_key"] = ""
+        response = self.client.post("/api/providers/custom-endpoints", json=payload)
+        assert response.status_code == 200, response.text
+
+        raw_entry = read_raw_config()["providers"]["local"]
+        reloaded = load_config()
+        entry = reloaded["providers"]["local"]
+        normalized = next(e for e in get_compatible_custom_providers(reloaded) if e.get("provider_key") == "local")
+        runtime = _get_named_custom_provider("custom:local")
+        assert raw_entry["name"] == entry["name"] == runtime["name"] == "Local edited"
+        assert "local-model" in raw_entry["models"]
+        if clear_key:
+            for persisted in (raw_entry, entry, normalized):
+                assert not {"api_key", "key_env", "api_key_env"}.intersection(persisted)
+            assert runtime["api_key"] == ""
+        else:
+            assert raw_entry[credential_field] == env_var
+            assert normalized["key_env"] == env_var
+            assert runtime["key_env"] == env_var
+            assert runtime["api_key"] == "shared-placeholder"
+        if clear_key and not shared:
+            assert env_var not in load_env()
+        else:
+            assert load_env()[env_var] == "shared-placeholder"
+
+    @pytest.mark.parametrize("credential_field", ["key_env", "api_key_env"])
+    def test_delete_custom_endpoint_clears_hand_written_model_credential(self, credential_field):
+        from hermes_cli.auth import _model_level_key_env
+        from hermes_cli.config import load_config, load_env, read_raw_config, save_config, save_env_value
+        from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+
+        save_env_value("MY_RELAY_KEY", "shared-placeholder")
+        cfg = load_config()
+        cfg["providers"] = {"relay": {
+            "name": "Relay", "base_url": "https://relay.example/v1", "model": "m",
+            credential_field: "MY_RELAY_KEY",
+        }}
+        cfg["model"] = {
+            "provider": "relay", "default": "m", "base_url": "https://relay.example/v1",
+            credential_field: "MY_RELAY_KEY",
+        }
+        save_config(cfg)
+        assert _model_level_key_env("relay") == "MY_RELAY_KEY"
+        assert _get_named_custom_provider("custom:relay")["api_key"] == "shared-placeholder"
+
+        response = self.client.delete("/api/providers/custom-endpoints/relay")
+        assert response.status_code == 200, response.text
+        for persisted in (read_raw_config(), load_config()):
+            assert "relay" not in persisted.get("providers", {})
+            assert not {"api_key", "key_env", "api_key_env"}.intersection(persisted["model"])
+        assert _model_level_key_env("relay") == ""
+        assert _get_named_custom_provider("custom:relay") is None
+        assert load_env()["MY_RELAY_KEY"] == "shared-placeholder"
+
     def test_custom_endpoint_save_pins_api_mode_and_resolves_reasoning_alias(self):
         """Desktop's Custom Endpoints form pins the transport and keeps alias metadata (#93622).
 
@@ -2219,26 +2304,27 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert get_env_value(custom_endpoint_key_env("local-8000")) == "sk-first"
         assert get_env_value(custom_endpoint_key_env("local-8001")) == "sk-second"
 
-    def test_custom_endpoint_response_reports_a_key_held_in_env(self):
+    @pytest.mark.parametrize("credential_field", ["key_env", "api_key_env"])
+    def test_custom_endpoint_response_reports_a_key_held_in_env(self, credential_field):
         """has_api_key must follow key_env, not just a plaintext api_key.
 
         Reading only ``api_key`` made the panel report "no API key" for every
         endpoint whose credential had been moved to .env.
         """
-        resp = self.client.post(
-            "/api/providers/custom-endpoints",
-            json={
-                "id": "proxy",
-                "name": "Proxy",
-                "base_url": "https://llm.example.com/v1",
-                "model": "m",
-                "api_key": "sk-in-env",
-            },
-        )
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {"proxy": {
+            "name": "Proxy", "base_url": "https://llm.example.com/v1", "model": "m",
+            credential_field: "SHARED_ENDPOINT_KEY",
+        }}
+        save_config(cfg)
+        resp = self.client.get("/api/providers/custom-endpoints")
+        assert resp.status_code == 200, resp.text
 
         endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
         assert endpoint["has_api_key"] is True
-        assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
+        assert endpoint["api_key_preview"] == "${SHARED_ENDPOINT_KEY}"
 
     def test_env_rejects_its_redacted_preview(self):
         """Invariant: a GET preview (sentinel or legacy bare mask) never gains write
@@ -2307,7 +2393,9 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert providers["env-preview"]["key_env"] == "NEW_ENDPOINT_KEY"
         assert providers["legacy-preview"]["api_key"] == "legacy-secret-B-0987654321"
 
-    def test_activating_an_endpoint_carries_its_credential_either_way(self):
+    @pytest.mark.parametrize("credential_field", ["key_env", "api_key_env"])
+    @pytest.mark.parametrize("make_default", [False, True])
+    def test_activating_an_endpoint_carries_its_credential_either_way(self, credential_field, make_default):
         """Activate must work for both key_env and pre-#69449 plaintext entries."""
         from hermes_cli.config import load_config, save_config
 
@@ -2324,13 +2412,20 @@ CONFIG_SCHEMA = ProviderConfigSchema(
                 "name": "Modern",
                 "base_url": "https://llm.modern.com/v1",
                 "model": "m",
-                "key_env": "MODERN_API_KEY",
+                credential_field: "MODERN_API_KEY",
                 "models": {"m": {}},
             },
         }
         save_config(cfg)
 
-        self.client.post("/api/providers/custom-endpoints/modern/activate", json={})
+        if make_default:
+            response = self.client.post("/api/providers/custom-endpoints", json={
+                "id": "modern", "name": "Modern", "base_url": "https://llm.modern.com/v1",
+                "model": "m", "make_default": True,
+            })
+        else:
+            response = self.client.post("/api/providers/custom-endpoints/modern/activate", json={})
+        assert response.status_code == 200, response.text
         model_cfg = load_config()["model"]
         assert model_cfg["key_env"] == "MODERN_API_KEY"
         assert "api_key" not in model_cfg

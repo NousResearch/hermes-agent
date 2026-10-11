@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -303,11 +304,34 @@ def _windows_script_argv(argv: list[str]) -> list[str]:
     if kind is None or not os.path.isfile(argv[0]):
         return argv
     if kind == "python":
-        return [sys.executable, *argv]
+        return [_windows_python_interpreter(), *argv]
     # Resolved inside the caller's try: no Git for Windows raises RuntimeError carrying the
     # installer's own actionable guidance, which is a better diagnostic than any we could add.
     from tools.environments.local import _find_bash
     return [_find_bash(), *argv]
+
+
+def _windows_python_interpreter() -> str:
+    """``sys.executable`` while it still exists; a PATH python once it does not.
+
+    ``hermes update`` rotates the managed runtime by renaming ``tools/python-<ver>`` away, so a
+    long-lived gateway's ``sys.executable`` can go stale mid-session, and spawning a
+    ``fail_closed`` .py hook with it would refuse every ``terminal`` call on an interpreter that
+    is no longer there (#134514) — the bash branch already resolves its interpreter from PATH.
+    The WindowsApps ``python.exe`` alias is a 0-byte reparse point that opens the Store instead
+    of running the hook, so an empty "hit" is treated as no hit; with no usable fallback the
+    stale path is returned unchanged and the spawn fails exactly as before."""
+    if os.path.isfile(sys.executable):
+        return sys.executable
+    fallback = shutil.which("python")
+    if fallback and os.path.getsize(fallback) > 0:
+        logger.warning(
+            "shell-hook interpreter %s is gone (managed runtime rotated?) — spawning .py hooks with %s from PATH instead",
+            sys.executable,
+            fallback,
+        )
+        return fallback
+    return sys.executable
 
 
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:

@@ -31,6 +31,7 @@ from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
 )
+from gateway.run_inbound_turn_context import prepend_turn_context_note
 from gateway.session import (
     SessionSource, build_session_context, is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
@@ -1591,7 +1592,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         return message_text
 
     @staticmethod
-    def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
+    def _prepend_inbound_reply_context(
+        event: MessageEvent, source: SessionSource, message_text: str, *, redact_pii: bool = False,
+    ) -> str:
         """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
@@ -1599,8 +1602,27 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
             reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            if getattr(event, "reply_to_is_own_message", False):
+                pointer = "Replying to your previous message: "
+            elif event.reply_to_author_authorized is None:
+                # Some adapters fill reply_to_author_id with a phone number. Identify the author
+                # only when the adapter has checked their authorisation, and hash a bare ID
+                # under redact_pii.
+                pointer = "Replying to: "
+            else:
+                from gateway.session import _hash_sender_id, _should_redact_pii, neutralize_untrusted_inline_text
+
+                trust = "[unverified] " if event.reply_to_author_authorized is False else ""
+                author = event.reply_to_author_name
+                if not author and event.reply_to_author_id:
+                    author = event.reply_to_author_id
+                    if _should_redact_pii(source.platform, redact_pii):
+                        author = _hash_sender_id(author)
+                pointer = (
+                    f"Replying to {trust}{neutralize_untrusted_inline_text(author)}: " if author
+                    else f"Replying to: {trust}"
+                )
+            message_text = f'[{pointer}"{reply_text}"]\n\n{message_text}'
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is
@@ -1737,7 +1759,17 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        redact_pii = False
+        if event.reply_to_text:
+            from gateway.run import _load_gateway_config
+
+            with suppress(Exception):
+                redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+        message_text = self._prepend_inbound_reply_context(event, source, message_text, redact_pii=redact_pii)
+        return await prepend_turn_context_note(
+            self, event=event, source=source, session_key=session_key, history=history,
+            message_text=message_text,
+        )
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],

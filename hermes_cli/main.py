@@ -142,6 +142,8 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
+    workspace_cwd: object = None,
+    max_turns: object = None,
     resume: object = None,
     reasoning: object = None,
 ) -> None:
@@ -155,6 +157,8 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
+            workspace_cwd=workspace_cwd,
+            max_turns=max_turns,
             resume=resume,
             reasoning=reasoning,
         )
@@ -3097,6 +3101,8 @@ def _run_oneshot_from_args(args) -> None:
         toolsets=getattr(args, "toolsets", None),
         skills=getattr(args, "skills", None),
         usage_file=getattr(args, "usage_file", None),
+        workspace_cwd=os.getcwd() if getattr(args, "in_dir", None) else None,
+        max_turns=getattr(args, "max_turns", None),
         resume=getattr(args, "resume", None),
         reasoning=getattr(args, "reasoning", None),
     )

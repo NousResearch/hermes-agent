@@ -825,3 +825,61 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
         assert "make -j8 all" in text
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_apiserver_persist_runs_in_owning_profile_scope(
+    monkeypatch, tmp_path,
+):
+    """A served profile's api_server session gets its delivery row in ITS OWN
+    store: the persist runs under that profile's home, not the launch profile's."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    runner.adapters[Platform.API_SERVER] = SimpleNamespace(
+        supports_async_delivery=False, handle_message=AdmittingHandler(),
+    )
+    served_home = tmp_path / "profiles" / "secondary"
+    served_home.mkdir(parents=True)
+    monkeypatch.setattr(runner, "_served_api_server_wake_profile", lambda evt, sid: "secondary")
+    monkeypatch.setattr(runner, "_resolve_profile_home_for_source", lambda source: served_home)
+
+    import gateway.wake as wake_mod
+    from hermes_constants import get_hermes_home
+
+    homes = []
+
+    async def fake_persist(adapter, *, text, session_id, evt=None):
+        homes.append(get_hermes_home())
+
+    monkeypatch.setattr(wake_mod, "persist_delegation_delivery", fake_persist)
+
+    evt = {"type": "async_delegation", "delegation_id": "deleg_x", "session_key": "raw-sid"}
+    assert await runner._inject_watch_notification("[BATCH COMPLETE]", evt) is True
+    assert homes == [served_home]
+    assert get_hermes_home() != served_home
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_apiserver_foreign_profile_hint_is_retryable(
+    monkeypatch, tmp_path,
+):
+    """A completion whose session is not in the hinted profile's store is not
+    persisted into the launch profile's store."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    runner.adapters[Platform.API_SERVER] = SimpleNamespace(
+        supports_async_delivery=False, handle_message=AdmittingHandler(),
+    )
+
+    def not_owned(evt, sid):
+        raise LookupError("not in served profile")
+
+    monkeypatch.setattr(runner, "_served_api_server_wake_profile", not_owned)
+    import gateway.wake as wake_mod
+    persisted = []
+
+    async def fake_persist(adapter, *, text, session_id, evt=None):
+        persisted.append(session_id)
+
+    monkeypatch.setattr(wake_mod, "persist_delegation_delivery", fake_persist)
+    evt = {"type": "async_delegation", "delegation_id": "deleg_y", "session_key": "raw-sid"}
+    assert await runner._inject_watch_notification("[BATCH COMPLETE]", evt) is False
+    assert persisted == []

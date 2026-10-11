@@ -6,6 +6,7 @@ not what should be persisted in conversation history.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any, Optional
 
@@ -146,3 +147,110 @@ def is_partial_silence_marker(text: Any) -> bool:
         c and any(marker.startswith(c) for marker in LIVE_GATEWAY_SILENT_MARKERS)
         for c in _canonical_silence_candidates(text)
     )
+
+
+_FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})(?:.*)?$")
+_LOOP_COMPLETE_LINE_RE = re.compile(r"^\s*LOOP_COMPLETE\s*[.!]?\s*$", re.IGNORECASE)
+_LOOP_COMPLETE_MARKER = "LOOP_COMPLETE"
+
+
+def _fenced_line_states(lines: list[str]) -> list[bool]:
+    states: list[bool] = []
+    fence_char = None
+    fence_len = 0
+    for line in lines:
+        states.append(fence_char is not None)
+        match = _FENCE_LINE_RE.match(line.rstrip("\r\n"))
+        if not match:
+            continue
+        fence = match.group(1)
+        if fence_char is not None:
+            if fence[0] == fence_char and len(fence) >= fence_len:
+                fence_char = None
+                fence_len = 0
+        else:
+            fence_char, fence_len = fence[0], len(fence)
+    return states
+
+
+def is_loop_complete_marker(text: Any) -> bool:
+    return isinstance(text, str) and _LOOP_COMPLETE_LINE_RE.fullmatch(text) is not None
+
+
+def strip_trailing_loop_complete_marker(text: Any) -> Any:
+    """Strip only trailing top-level LOOP_COMPLETE lines for display."""
+    if not isinstance(text, str):
+        return text
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return text
+    fenced = _fenced_line_states(lines)
+    end = len(lines)
+    while end:
+        while end and not lines[end - 1].strip():
+            end -= 1
+        if not end or fenced[end - 1] or not is_loop_complete_marker(lines[end - 1]):
+            break
+        end -= 1
+    return "".join(lines[:end]).rstrip() if end < len(lines) else text
+
+
+def ends_with_partial_loop_complete_marker(text: Any) -> bool:
+    if not isinstance(text, str):
+        return False
+    lines = text.splitlines(keepends=True)
+    end = len(lines)
+    while end and not lines[end - 1].strip():
+        end -= 1
+    if not end or _fenced_line_states(lines)[end - 1]:
+        return False
+    candidate = lines[end - 1].strip().upper()
+    return bool(candidate) and _LOOP_COMPLETE_MARKER.startswith(candidate)
+
+
+def hide_loop_complete_marker(event: Any, response: Any) -> Any:
+    """Display text for a gateway final reply: strip a trailing ``LOOP_COMPLETE``.
+
+    The marker is /loop control text, but the /loop and /goal post-turn hooks read the delivered
+    reply and must still see it, so the raw reply is stashed on ``event`` as
+    ``_raw_final_response`` first (``GatewayGoalsMixin._final_text_for_post_turn_hooks`` prefers
+    it). Lanes that only send, with no post-turn hook, pass ``event=None``.
+    """
+    if event is not None:
+        event._raw_final_response = str(response or "")
+    return strip_trailing_loop_complete_marker(response)
+
+
+def split_trailing_loop_complete_marker(text: Any, *, context: str = "") -> tuple[Any, str]:
+    """Split safe prefix from a trailing top-level marker candidate for streaming.
+
+    The held tail is the trailing candidate line plus every complete top-level marker line
+    (and blank line) directly before it, so a repeated marker never flashes on screen.
+    ``context`` is the text already released this segment: fence state is judged over
+    ``context + text`` (a fence opened in an earlier chunk may close in this one), but only
+    ``text`` is ever split, since ``context`` is already on screen.
+    """
+    if not isinstance(text, str):
+        return text, ""
+    context = context if isinstance(context, str) else ""
+    full = context + text
+    if not ends_with_partial_loop_complete_marker(full):
+        return text, ""
+    lines = full.splitlines(keepends=True)
+    end = len(lines)
+    while end and not lines[end - 1].strip():
+        end -= 1
+    if not end:
+        return text, ""
+    fenced = _fenced_line_states(lines)
+    start = end - 1
+    probe = start
+    while probe:
+        while probe and not lines[probe - 1].strip():
+            probe -= 1
+        if not probe or fenced[probe - 1] or not is_loop_complete_marker(lines[probe - 1]):
+            break
+        probe -= 1
+        start = probe
+    cut = max(len("".join(lines[:start])) - len(context), 0)
+    return text[:cut], text[cut:]

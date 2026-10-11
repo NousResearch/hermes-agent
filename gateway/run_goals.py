@@ -346,6 +346,11 @@ class GatewayGoalsMixin:
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:
         """Text for /goal and /loop after a gateway turn. Streamed turns return None from
         _handle_message_with_agent (already_sent); the delivered reply is stashed on the event."""
+        # Delivery strips display-only control markers (LOOP_COMPLETE) from the returned text;
+        # the raw reply it stashed is authoritative for /loop completion detection.
+        raw = getattr(event, "_raw_final_response", None)
+        if isinstance(raw, str) and raw.strip():
+            return raw
         text = ""
         if isinstance(agent_result, dict):
             text = str(agent_result.get("final_response") or "")

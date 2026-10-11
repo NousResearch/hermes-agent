@@ -178,6 +178,14 @@ class StreamDeliveryMixin:
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None:
             return
+        # Interim text is display-only (loop detection reads the final response), so hide the
+        # /loop control marker here, the one funnel every surface's interim callback shares.
+        from gateway.response_filters import strip_trailing_loop_complete_marker
+        visible = strip_trailing_loop_complete_marker(visible)
+        if not visible or not visible.strip():
+            for part in record:
+                self._record_delivered_interim_text(part)
+            return
         try:
             cb(visible, already_streamed=already_streamed)
             for part in record:

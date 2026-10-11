@@ -212,6 +212,40 @@ async def test_queued_human_turn_also_gets_the_visible_fallback():
     assert delivered and not is_intentional_silence_response(delivered)
 
 
+def _queued_turn_ctx():
+    return SimpleNamespace(
+        session_key="agent:main:telegram:group:-1001:12345", stream_consumer_holder=[None],
+        mute_notification_reply=False, persist_user_display_kind=None, reply_expected=True,
+        source=_source(), _status_thread_metadata=None, event_message_id=None,
+        inbound_message_id="loop-msg", run_generation=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_queued_first_response_strips_loop_complete_but_keeps_raw_result():
+    """The queued-follow-up lane sends before the normal completion filter, so it strips the
+    /loop marker itself; the result dict keeps it for loop completion detection."""
+    runner = gateway_run.GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock(return_value=True)
+    result = {"final_response": "CI is green.\nLOOP_COMPLETE", "failed": False}
+
+    await runner._run_agent_deliver_first_response(_queued_turn_ctx(), None, result, result, None)
+
+    assert runner._deliver_queued_first_response.await_args.args[0] == "CI is green."
+    assert result["final_response"].endswith("LOOP_COMPLETE")
+
+
+@pytest.mark.asyncio
+async def test_queued_bare_loop_complete_sends_nothing():
+    runner = gateway_run.GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock(return_value=True)
+    result = {"final_response": "LOOP_COMPLETE", "failed": False}
+
+    await runner._run_agent_deliver_first_response(_queued_turn_ctx(), None, result, result, None)
+
+    runner._deliver_queued_first_response.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_path):
     """The chain's LAST turn decides whether a bare marker may vanish, not the opener."""

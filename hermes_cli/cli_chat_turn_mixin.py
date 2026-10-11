@@ -684,6 +684,8 @@ class CLIChatTurnMixin:
             ChatConsole, _ACCENT, _RST, _cprint, _maybe_remap_for_light_mode, _post_stream_transform_output,
             _render_final_assistant_content,
         )
+        from gateway.response_filters import strip_trailing_loop_complete_marker
+        response = strip_trailing_loop_complete_marker(response)
         if response and not (turn.result and turn.result.get("response_previewed", False)):
             try:
                 from hermes_cli.skin_engine import get_active_skin

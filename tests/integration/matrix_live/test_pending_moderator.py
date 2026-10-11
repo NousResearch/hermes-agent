@@ -159,6 +159,62 @@ def test_actual_moderator_withdrawal_preserves_input_after_refused_redaction(
     )
 
 
+@pytest.mark.parametrize("withdrawn", [False, True])
+def test_moderator_observer_signals_only_completed_withdrawal(withdrawn):
+    import ast
+    from types import FunctionType
+
+    events = []
+
+    async def withdraw(self, room, author, target):
+        events.append(("completed", withdrawn))
+        return withdrawn
+
+    def signal(kind, payload):
+        events.append((kind, json.loads(payload)))
+
+    observer = next(
+        node
+        for node in ast.parse(OBSERVE).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "observed_withdraw"
+    )
+    namespace: dict[str, object] = {
+        "original_withdraw": withdraw,
+        "signal": signal,
+        "json": json,
+    }
+    exec(
+        compile(ast.Module(body=[observer], type_ignores=[]), __file__, "exec"),
+        namespace,
+    )
+
+    observed_withdraw = namespace["observed_withdraw"]
+    assert isinstance(observed_withdraw, FunctionType)
+
+    async def exercise():
+        result = observed_withdraw(None, "!room", "@author", "$target")
+        before = list(events)
+        completed = await result
+        return {"before": before, "withdrawn": completed, "events": events}
+
+    expected_events = [("completed", withdrawn)]
+    if withdrawn:
+        expected_events.append((
+            "moderator-withdrawn",
+            {
+                "room": "!room",
+                "author": "@author",
+                "target": "$target",
+            },
+        ))
+    assert asyncio.run(exercise()) == {
+        "before": [],
+        "withdrawn": withdrawn,
+        "events": expected_events,
+    }
+
+
 OBSERVE = r"""
 import json
 from urllib.parse import quote
@@ -175,8 +231,8 @@ async def observed_batch(self,event):
 MatrixIntakeMixin._dispatch_text_batch = observed_batch
 original_withdraw = MatrixRedactionMixin._withdraw_redacted_message
 original_redact = MatrixRedactionMixin._on_redaction
-def observed_withdraw(self,room,author,target):
-    result = original_withdraw(self,room,author,target)
+async def observed_withdraw(self,room,author,target):
+    result = await original_withdraw(self,room,author,target)
     if result:
         signal('moderator-withdrawn',json.dumps({'room':room,'author':author,'target':target}))
     return result

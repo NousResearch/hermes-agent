@@ -623,13 +623,16 @@ def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_h
     client_metadata = mo._build_client_metadata(cfg)
     mo._maybe_preregister_client(storage, cfg, client_metadata)
     redirect_uri = (cfg.get("redirect_uri") or None) if ssh_proxy_hint else None
+    # One expected-state slot per flow: the redirect handler captures the state from the
+    # authorization URL so both callback readers attribute callbacks to THIS login (#134964).
+    flow_state = mo._make_flow_state()
     return {
         "client_metadata": client_metadata,
         "storage": storage,
-        "redirect_handler": mo._make_redirect_handler(port, redirect_uri=redirect_uri, redirect_host=cfg.get("redirect_host")),
+        "redirect_handler": mo._make_redirect_handler(port, redirect_uri=redirect_uri, redirect_host=cfg.get("redirect_host"), flow_state=flow_state),
         # mcp 2.0 dropped OAuthClientProvider's own `timeout`; the configured
         # `oauth.timeout` bounds the callback waiter's poll loop instead.
-        "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
+        "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300)), flow_state=flow_state),
         "token_user_agent": mo.token_request_user_agent(cfg),
         "oauth_flow": cfg.get("flow", "browser"),
         **mo.cimd_provider_kwargs(cfg)}

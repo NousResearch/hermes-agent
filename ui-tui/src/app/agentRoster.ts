@@ -6,7 +6,7 @@ import type { SubagentListResponse } from '../gatewayTypes.js'
 import type { SubagentProgress } from '../types.js'
 
 import { useTurnSelector } from './turnStore.js'
-import { $uiState } from './uiStore.js'
+import { $uiSessionId } from './uiStore.js'
 
 // Session-local presentation only; never persisted to config.
 export const $agentDockCollapsed = atom(false)
@@ -56,7 +56,7 @@ export function mergeAgentRoster(events: SubagentProgress[], data: SubagentListR
 export function useAgentRoster() {
   const events = useTurnSelector(s => s.subagents)
   const snapshot = useStore($agentSnapshot)
-  const { sid } = useStore($uiState)
+  const sid = useStore($uiSessionId)
 
   return useMemo(() => mergeAgentRoster(events, snapshot.sid === sid ? snapshot.data : EMPTY), [events, snapshot, sid])
 }

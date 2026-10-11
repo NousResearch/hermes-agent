@@ -730,6 +730,30 @@ class SessionGatewayMixin:
         self._execute_write(_do)
         return counts
 
+    def rebase_session_paths(self, pairs) -> int:
+        """Rebase ``sessions.cwd``/``git_repo_root`` under a renamed profile directory.
+
+        *pairs* are ``(old_prefix, new_prefix)`` from ``profile_path_rebase.prefix_pairs``; only
+        whole path components match, so a sibling ``profiles/<old>2`` is untouched. Returns the
+        number of sessions changed. Idempotent, so safe under ``_execute_write``'s retry.
+        """
+        from hermes_cli.profile_path_rebase import rebase_path
+
+        def _do(conn) -> int:
+            changed = 0
+            for session_id, cwd, repo_root in conn.execute(
+                    "SELECT id, cwd, git_repo_root FROM sessions "
+                    "WHERE cwd IS NOT NULL OR git_repo_root IS NOT NULL").fetchall():
+                new_cwd, new_root = rebase_path(cwd, pairs), rebase_path(repo_root, pairs)
+                if new_cwd is None and new_root is None:
+                    continue
+                conn.execute("UPDATE sessions SET cwd = ?, git_repo_root = ? WHERE id = ?",
+                             (new_cwd or cwd, new_root or repo_root, session_id))
+                changed += 1
+            return changed
+
+        return self._execute_write(_do)
+
     def purge_profile_state(self, profile: str) -> dict[str, int]:
         """Delete exact profile identity from this state database (#111926, delete side).
 

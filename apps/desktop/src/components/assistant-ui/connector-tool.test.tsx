@@ -128,7 +128,11 @@ function Where() {
 
 describe('ConnectorOffer named-account notice', () => {
   it('says which name Hermes chose once the account connected, and Rename opens that account (by id) on the Connectors tab', () => {
-    const request = { ...REQUEST, settled: true, targets: [{ ...GMAIL, alias: 'work', connectionId: 'ca_work', state: 'connected' as const }] }
+    const request = {
+      ...REQUEST,
+      settled: true,
+      targets: [{ ...GMAIL, alias: 'work', connectionId: 'ca_work', state: 'connected' as const }]
+    }
 
     setConnectionRequest(request)
     render(

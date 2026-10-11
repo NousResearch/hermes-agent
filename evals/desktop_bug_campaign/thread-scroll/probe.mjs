@@ -5,7 +5,7 @@ const out=process.env.THREAD_SCROLL_OUTPUT;
 assert.ok(out, 'Set THREAD_SCROLL_OUTPUT to the isolated artifact directory');
 fs.mkdirSync(out,{recursive:true});
 const url=process.env.THREAD_SCROLL_URL ?? 'http://127.0.0.1:18480/scroll-campaign-probe.html?thread';
-const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+const browser=await chromium.launch({channel:'chromium',executablePath:process.env.AGENT_BROWSER_EXECUTABLE_PATH,headless:true,args:['--no-sandbox']});
 try {
 const page=await browser.newPage({viewport:{width:1200,height:800}});
 const errors=[];page.on('pageerror',e=>errors.push(e.message));

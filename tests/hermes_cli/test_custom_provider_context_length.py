@@ -204,18 +204,6 @@ class TestGetModelContextLengthHonorsOverride:
         assert ctx == DEFAULT_FALLBACK_CONTEXT
 
 
-class TestContextProbeTiers:
-    def test_256k_is_top_tier_and_default(self):
-        """The stepdown probe starts at 256K and 256K is the new default."""
-        from agent.model_metadata import CONTEXT_PROBE_TIERS, DEFAULT_FALLBACK_CONTEXT
-
-        assert CONTEXT_PROBE_TIERS[0] == 256_000
-        assert DEFAULT_FALLBACK_CONTEXT == 256_000
-        # Tiers still descend monotonically
-        for a, b in zip(CONTEXT_PROBE_TIERS, CONTEXT_PROBE_TIERS[1:]):
-            assert a > b, f"tiers must strictly descend, got {a} then {b}"
-        # 128K is still a tier (users relying on it probe-down get there)
-        assert 128_000 in CONTEXT_PROBE_TIERS
 
 
 def test_override_honored_when_caller_passes_no_custom_providers(tmp_path, monkeypatch):

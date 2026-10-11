@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -25,7 +27,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import process_identity as pi
-from hermes_cli import update_cmd
 
 
 class _FakeNoSuchProcess(Exception):
@@ -229,6 +230,29 @@ def test_ledger_entries_filters_dead_reused_and_foreign(tmp_path):
     assert [e["pid"] for e in live] == [100]
 
 
+@pytest.mark.platforms("posix")
+def test_ledger_entries_excludes_a_killed_but_unreaped_process(tmp_path):
+    """A zombie is dead even though it keeps its create_time until reaped: ``hermes update``
+    books the stopped dashboard gone, then must not find it again as a pre-update survivor."""
+    import psutil
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        created = psutil.Process(child.pid).create_time()
+        child.terminate()
+        deadline = time.monotonic() + 10
+        while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline, "child never became a zombie"
+            time.sleep(0.05)
+        ledger = tmp_path / "spawn-ledger.json"
+        ledger.write_text(json.dumps([_entry(child.pid, created, purpose="dashboard")]), encoding="utf-8")
+        with patch.object(pi, "_ledger_path", return_value=ledger):
+            assert pi.ledger_entries(project_root=Path("/x/install")) == []
+    finally:
+        child.kill()
+        child.wait()
+
+
 def test_spawner_is_dead_tristate():
     fake = _fake_psutil({500: 5.0})
     with patch.dict(sys.modules, {"psutil": fake}):
@@ -248,7 +272,7 @@ def _holders(*pids):
 
 
 def test_updater_reaps_ledger_proven_orphans():
-    from hermes_cli import main as cli_main
+    from hermes_cli import update_cmd_windows
 
     entries = [
         _entry(200, 2.0, spawner_pid=700, spawner_create=7.0),   # spawner dead → reap
@@ -259,18 +283,125 @@ def test_updater_reaps_ledger_proven_orphans():
     with patch.dict(sys.modules, {"psutil": fake}), \
          patch.object(pi, "ledger_entries", return_value=entries), \
          patch.object(pi, "spawner_is_dead", wraps=pi.spawner_is_dead):
-        assert cli_main._ledger_reapable_backend_pids(_holders(200, 201, 202, 203)) == [200]
+        assert update_cmd_windows._ledger_reapable_backend_pids(_holders(200, 201, 202, 203)) == [200]
 
 
-def test_updater_ledger_rung_empty_without_ledger():
-    from hermes_cli import main as cli_main
-
-    with patch.object(pi, "ledger_entries", return_value=[]):
-        assert cli_main._ledger_reapable_backend_pids(_holders(200)) == []
 
 
 def test_updater_ledger_rung_never_raises():
-    from hermes_cli import main as cli_main
+    from hermes_cli import update_cmd_windows
 
     with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
-        assert cli_main._ledger_reapable_backend_pids(_holders(200)) == []
+        assert update_cmd_windows._ledger_reapable_backend_pids(_holders(200)) == []
+
+
+def test_desktop_ssh_backend_spawn_shape_is_desktop_owned(monkeypatch):
+    """Desktop's SSH spawn is ``env HERMES_DESKTOP=1 hermes serve --isolated ... --ssh-session-token-file F``
+    with NO token env var (its tests assert the var name never appears on the wire). Missing that
+    shape made the SSH child claim ROLE_SERVE on the remote host (the #119824 shape there)."""
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    ssh_argv = ["serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
+                "--ssh-session-token-file", "/home/u/.hermes/desktop-ssh/abc.token"]
+
+    assert pi.is_desktop_owned_backend(ssh_argv) is True
+    monkeypatch.setattr(sys, "argv", ["hermes", *ssh_argv])
+    assert pi.is_desktop_owned_backend() is True
+    # The bare inherited flag (a Desktop terminal pane running `hermes serve`) is still not ownership.
+    assert pi.is_desktop_owned_backend(["serve", "--host", "127.0.0.1", "--port", "0"]) is False
+
+
+# ---------------------------------------------------------------------------
+# Host-reclaim rung: reap_orphaned_backend_owner (#121964)
+# ---------------------------------------------------------------------------
+
+def _reap(entry_pid=555, create=55.0, procs=None, kill_fn=None, **entry_kw):
+    """Run the reclaim predicate with a faked psutil world; returns (result, kills)."""
+    entry = _entry(entry_pid, create, **entry_kw)
+    kills = []
+    fake = _fake_psutil({} if procs is None else procs)
+    with patch.dict(sys.modules, {"psutil": fake}), \
+         patch.object(pi, "ledger_entries", return_value=[entry]):
+        result = pi.reap_orphaned_backend_owner(
+            entry_pid, create, kill_fn=(kills.append if kill_fn is None else kill_fn))
+    return result, kills
+
+
+def test_reclaim_reaps_dead_spawner_owner():
+    result, kills = _reap(spawner_pid=700, spawner_create=7.0, procs={555: 55.0})
+    assert result == 555
+    assert kills == [555]
+
+
+def test_reclaim_spares_live_spawner_owner():
+    result, kills = _reap(spawner_pid=500, spawner_create=5.0, procs={555: 55.0, 500: 5.0})
+    assert result is None
+    assert kills == []
+
+
+def test_reclaim_spares_unprovable_spawner():
+    # Spawner probe itself fails (permission): unprovable means never touch.
+    import types
+
+    from unittest.mock import MagicMock
+
+    def _process(pid):
+        if pid == 500:
+            raise PermissionError(pid)
+        proc = MagicMock()
+        proc.create_time.return_value = 55.0
+        return proc
+
+    fake = types.SimpleNamespace(Process=_process, NoSuchProcess=_FakeNoSuchProcess)
+    with patch.dict(sys.modules, {"psutil": fake}), \
+         patch.object(pi, "ledger_entries",
+                      return_value=[_entry(555, 55.0, spawner_pid=500, spawner_create=5.0)]):
+        assert pi.reap_orphaned_backend_owner(555, 55.0, kill_fn=lambda pid: None) is None
+
+
+def test_reclaim_reaps_null_spawner_orphan_to_init():
+    from hermes_cli import dashboard_procs
+
+    with patch.object(dashboard_procs, "_process_ppid", return_value=1), \
+         patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value=set()):
+        # Ancient orphan: create_time far past vs real clock → past the lock-write grace.
+        result, kills = _reap(procs={555: 1000.0}, create=1000.0)
+    assert result == 555
+    assert kills == [555]
+
+
+def test_reclaim_spares_null_spawner_with_live_parent():
+    from hermes_cli import dashboard_procs
+
+    with patch.object(dashboard_procs, "_process_ppid", return_value=1234):
+        result, kills = _reap(procs={555: 55.0})
+    assert result is None
+    assert kills == []
+
+
+def test_reclaim_spares_lock_claimed_orphan():
+    """A valid backend.lock.json claims the PID: another session owns it, never kill."""
+    from hermes_cli import dashboard_procs
+
+    with patch.object(dashboard_procs, "_process_ppid", return_value=1), \
+         patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value={555}):
+        result, kills = _reap(procs={555: 1000.0}, create=1000.0)
+    assert result is None
+    assert kills == []
+
+
+def test_reclaim_spares_interactive_purposes_and_self():
+    result, kills = _reap(purpose="chat", spawner_pid=700, spawner_create=7.0,
+                          procs={555: 55.0})
+    assert (result, kills) == (None, [])
+    with patch.object(pi.os, "getpid", return_value=555):
+        result, kills = _reap(spawner_pid=700, spawner_create=7.0, procs={555: 55.0})
+    assert (result, kills) == (None, [])
+
+
+def test_reclaim_ignores_unknown_pid_and_never_raises():
+    with patch.dict(sys.modules, {"psutil": _fake_psutil({555: 55.0})}), \
+         patch.object(pi, "ledger_entries", return_value=[_entry(555, 55.0)]):
+        assert pi.reap_orphaned_backend_owner(999, 9.0, kill_fn=lambda pid: None) is None
+    with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
+        assert pi.reap_orphaned_backend_owner(555, 55.0, kill_fn=lambda pid: None) is None

@@ -57,7 +57,7 @@ class SSHEnvironment(BaseEnvironment):
 
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
-                 probe_only: bool = False):
+                 probe_only: bool = False, sync_files: bool = True):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
@@ -76,13 +76,16 @@ class SSHEnvironment(BaseEnvironment):
         if probe_only:
             self._sync_manager = None
             return
+        self._remote_home_detected = False
         self._remote_home = self._detect_remote_home()
-        self._ensure_remote_dirs()
-        self._sync_manager = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
-            upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
-            bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
-        self._sync_manager.sync(force=True)
+        self._sync_manager = None
+        if sync_files:
+            self._ensure_remote_dirs()
+            self._sync_manager = FileSyncManager(
+                get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+                upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
+                bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
+            self._sync_manager.sync(force=True)
         self.init_session()
 
     def _control_socket_for(self, send_env: tuple[str, ...]) -> Path:
@@ -153,6 +156,7 @@ class SSHEnvironment(BaseEnvironment):
             result = self._run_ssh("echo $HOME", timeout=10)
             if result.returncode == 0 and result.stdout.strip():
                 logger.debug("SSH: remote home = %s", result.stdout.strip())
+                self._remote_home_detected = True
                 return result.stdout.strip()
         return "/root" if self.user == "root" else f"/home/{self.user}"
 
@@ -250,7 +254,7 @@ class SSHEnvironment(BaseEnvironment):
         ssh_cmd = self._build_ssh_command() + [
             f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}"]
         with open(dest, "wb") as f:
-            result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120)
+            result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120, check=False)
         if result.returncode != 0:
             stderr = result.stderr.decode(errors="replace").strip()
             # A socket not named *.sock is the only rc=2 we knowingly accept, and only when
@@ -292,6 +296,6 @@ class SSHEnvironment(BaseEnvironment):
                 continue
             with contextlib.suppress(OSError, subprocess.SubprocessError):
                 cmd = ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", f"{self.user}@{self.host}"]
-                subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+                subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
             with contextlib.suppress(OSError):
                 socket.unlink()

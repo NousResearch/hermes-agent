@@ -1,0 +1,27 @@
+name: talaria-webui
+repo: https://github.com/liamsmith86/talaria-webui
+sha: 550007b87d2a8fc664c323522a2736c7d5282af5
+subdir: src/talaria/hermes_plugin
+description: "Extends Hermes Agent API capabilities to deliver a richer chat interface with Talaria WebUI. Disclosure — adds API_SERVER_KEY-authenticated /talaria/v1 routes to the Hermes API server (cross-session history search, rewind/branch/compress of API sessions, runs with the profile's instructions and prefill); stores response metadata (no message bodies) in $HERMES_HOME/talaria/observations.db; relies on private api_server/AIAgent internals behind feature detection."
+maintainer: liamsmith86
+tier: community
+category: web
+requires_hermes: '>=0.21.5'
+docs_url: https://github.com/liamsmith86/talaria-webui/tree/550007b87d2a8fc664c323522a2736c7d5282af5/src/talaria/hermes_plugin
+version: "1.5.0"
+image: https://raw.githubusercontent.com/liamsmith86/talaria-webui/550007b87d2a8fc664c323522a2736c7d5282af5/.github/assets/social-preview.jpg
+screenshots:
+  - https://raw.githubusercontent.com/liamsmith86/talaria-webui/550007b87d2a8fc664c323522a2736c7d5282af5/.github/assets/demo-desktop.gif
+  - https://raw.githubusercontent.com/liamsmith86/talaria-webui/550007b87d2a8fc664c323522a2736c7d5282af5/.github/assets/demo-mobile.gif
+readme: true
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - post_api_request
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

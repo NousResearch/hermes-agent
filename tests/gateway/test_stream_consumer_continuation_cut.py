@@ -49,3 +49,9 @@ class TestContinuationWordBoundary:
         consumer._last_sent_text = "у" * 100
         final_text = ("у" * 100) + ("д" * 20)
         assert consumer._continuation_text(final_text) == "д" * 20
+
+    def test_whole_word_prefix_is_not_resent(self):
+        # The preview ends exactly on a word; the continuation must not repeat it.
+        consumer = _make_consumer()
+        consumer._last_sent_text = "Here is the answer ▉"
+        assert consumer._continuation_text("Here is the answer to your question.") == "to your question."

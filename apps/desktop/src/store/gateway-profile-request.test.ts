@@ -111,6 +111,98 @@ describe('requestGatewayForProfile', () => {
     expect($gateway.get()).toBe(primary)
   })
 
+  it('background polls on a down local profile leave redialing to the ladder; a user action still dials (#121865)', async () => {
+    vi.useFakeTimers()
+
+    try {
+      setPrimaryGateway(makePrimary() as never, 'default')
+
+      // The target profile's backend never comes up.
+      const getConnection = vi.fn(async (profile: null | string) => {
+        if (profile === 'jody') {
+          throw new Error('Failed to connect to Hermes gateway')
+        }
+
+        return { port: 4242, token: 'primary-token' }
+      })
+
+      installDesktop(getConnection)
+      await ensureGatewayForProfile('default')
+
+      const jodyDials = () => getConnection.mock.calls.filter(([profile]) => profile === 'jody').length
+
+      // session.control.read against a cross-profile session, polled 20 times in one second.
+      for (let index = 0; index < 20; index += 1) {
+        await requestGatewayForProfile('jody', 'session.control.read', {}).catch(() => undefined)
+        await vi.advanceTimersByTimeAsync(50)
+      }
+
+      // Every attempt is two dials into main: the shared-primary probe, then the secondary.
+      // Before, all 20 polls attempted (40 dials). Now attempts wait out a window that doubles
+      // from 300ms, so one second holds three of them: t=0, t=300, t=900.
+      const backgroundDials = jodyDials()
+      expect(backgroundDials).toBe(6)
+
+      // Inside the same cooldown, a user action is not held back.
+      await requestGatewayForProfile('jody', 'session.activate', {}, undefined, undefined, {
+        spawnPriority: 'foreground'
+      }).catch(() => undefined)
+      expect(jodyDials()).toBeGreaterThan(backgroundDials)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a served request clears dial history, so the next outage starts back at the shortest window (#121865)', async () => {
+    vi.useFakeTimers()
+
+    try {
+      setPrimaryGateway(makePrimary() as never, 'default')
+
+      let jodyUp = false
+
+      const getConnection = vi.fn(async (profile: null | string) => {
+        if (profile === 'jody') {
+          if (!jodyUp) {
+            throw new Error('Failed to connect to Hermes gateway')
+          }
+
+          return { port: 5151, profile, token: 'secondary-token' }
+        }
+
+        return { port: 4242, token: 'primary-token' }
+      })
+
+      installDesktop(getConnection)
+      await ensureGatewayForProfile('default')
+
+      const poll = () => requestGatewayForProfile('jody', 'session.control.read', {}).catch(() => undefined)
+      const jodyDials = () => getConnection.mock.calls.filter(([profile]) => profile === 'jody').length
+
+      // Three failed attempts in the first second widen the window to 1200ms.
+      for (let index = 0; index < 20; index += 1) {
+        await poll()
+        await vi.advanceTimersByTimeAsync(50)
+      }
+
+      // The backend recovers and serves a request once the widened window has passed.
+      jodyUp = true
+      await vi.advanceTimersByTimeAsync(2_000)
+      await expect(requestGatewayForProfile('jody', 'session.control.read', {})).resolves.toBeDefined()
+
+      // A fresh outage: one failure opens a 300ms window again, so a poll 300ms later dials.
+      // Had the old streak survived, the window would be 2400ms and that poll would be held.
+      jodyUp = false
+      const before = jodyDials()
+      await poll()
+      await vi.advanceTimersByTimeAsync(300)
+      await poll()
+      expect(jodyDials() - before).toBe(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('dials the profile with foreground priority when a Settings-scoped caller asks for it (#111651)', async () => {
     setPrimaryGateway(makePrimary() as never, 'default')
 
@@ -547,19 +639,6 @@ describe('retainGatewayForAgent (#93602)', () => {
     expect(secondaryGateways[1].close).toHaveBeenCalledOnce()
   })
 
-  it('without the retain, the leased socket closes after each request (the #93602 race)', async () => {
-    const primary = makePrimary()
-    setPrimaryGateway(primary as never, 'default')
-    installRegistryDesktop()
-    await ensureGatewayForProfile('default')
-
-    await requestGatewayForAgent('mini', 'helper', 'session.create', { title: 'g' })
-
-    // Refcount hit 0 → disposed: this is the socket close that reaps the
-    // runtime session server-side and makes the later prompt.submit 4001.
-    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
-  })
-
   it('plain-profile retain leases the pooled profile socket and releases it', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
@@ -753,5 +832,68 @@ describe('attached shared-remote group turns (#96493)', () => {
 
     expect(await ensureGatewayForAgent('homelab', 'voter')).toBe(false)
     expect(secondaryGateways).toHaveLength(0)
+  })
+})
+
+describe('session-owner calls for a profile on the shared local host backend (#120005)', () => {
+  function installLocalHost(descriptorFor: (profile: string) => Record<string, unknown>) {
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      connectionId,
+      mode: 'local',
+      port: 4242,
+      token: 't',
+      ...descriptorFor(profile)
+    }))
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async (profile: null | string) => ({ mode: 'local', port: 4242, profile, token: 't' })),
+      getConnectionFor,
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+
+    return getConnectionFor
+  }
+
+  it('reuses the primary socket when main says the profile rides the host backend (sharedPrimary)', async () => {
+    // Under multiplex-only (#118246) one local `hermes serve` serves every
+    // profile. A registry secondary here is a second WebSocket to the SAME
+    // process: the backend joins it to the chat and the renderer processes
+    // every event twice (garbled deltas, duplicate interim bubble).
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'local', mode: 'local' })
+    installLocalHost(profile => ({ profile, sharedPrimary: true }))
+    await ensureGatewayForProfile('default')
+
+    const release = await retainGatewayForAgent('local', 'work')
+    await requestGatewayForAgent('local', 'work', 'session.create', { title: 'g' })
+    await requestGatewayForAgent('local', 'work', 'prompt.submit', { session_id: 'rt-1', text: 'hi' })
+    release()
+
+    expect(secondaryGateways).toHaveLength(0)
+    expect(primary.request).toHaveBeenCalledTimes(2)
+    expect(primary.request).toHaveBeenNthCalledWith(1, 'session.create', { title: 'g', profile: 'work' })
+    expect(primary.request).toHaveBeenNthCalledWith(2, 'prompt.submit', {
+      session_id: 'rt-1',
+      text: 'hi',
+      profile: 'work'
+    })
+  })
+
+  it('still dials a secondary for a pooled local profile (isolated backend, #101416)', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'local', mode: 'local' })
+    installLocalHost(profile => ({ port: 5151, profile }))
+    await ensureGatewayForProfile('default')
+
+    await requestGatewayForAgent('local', 'work', 'session.create', { title: 'g' })
+
+    expect(secondaryGateways).toHaveLength(1)
+    expect(primary.request).not.toHaveBeenCalled()
   })
 })

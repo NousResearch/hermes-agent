@@ -231,6 +231,7 @@ export function advanceSessionTranscriptWindow(
     // the component-local map would pin the complete source array after the
     // session store intentionally releases a cold transcript.
     memos.delete(sessionKey)
+
     return state
   }
 

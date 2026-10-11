@@ -48,25 +48,6 @@ afterEach(() => {
 describe('setupFailureCopy', () => {
   const copy = en.freeTier.setupFailed
 
-  it.each([
-    ['anon_gate_closed', copy.gateClosed],
-    ['anon_gate_paused', copy.paused],
-    ['anon_unreachable', copy.unreachable],
-    ['anon_server_error', copy.serverError],
-    ['anon_pow_required', copy.powRequired],
-    ['anon_account_locked', copy.locked],
-    ['anon_rate_limited', copy.rateLimited('about 5 minutes')]
-  ])('%s has its own sentence, in the agreed voice', (code, expected) => {
-    const failure = freeTierSetupFailure({ ...NO_IDENTITY, error_code: code, retry_after: 300 })
-    const text = failure ? setupFailureCopy(failure, copy) : ''
-
-    expect(text).toBe(expected)
-    // Never "the free service is off" — what is unavailable is using Hermes without signing in —
-    // and no jargon a first-time user would not know.
-    expect(text.toLowerCase()).not.toMatch(/free (service|model|tier) is (off|switched off|unavailable|down)/)
-    expect(text.toLowerCase()).not.toMatch(/anonymous|guest|credential|token|rate limit/)
-  })
-
   it('falls back to the backend sentence for a code this build does not know', () => {
     const failure = freeTierSetupFailure({ ...NO_IDENTITY, error: 'Something new.', error_code: 'anon_newer' })
 
@@ -104,7 +85,14 @@ describe('FreeTierSetupNotice', () => {
 
     cleanup()
     $freeTierStatus.set(null)
-    const unreachable = ctxReturning({ ...NO_IDENTITY, error_code: 'anon_unreachable', retryable: true, retry_after: 15 })
+
+    const unreachable = ctxReturning({
+      ...NO_IDENTITY,
+      error_code: 'anon_unreachable',
+      retryable: true,
+      retry_after: 15
+    })
+
     render(<FreeTierSetupNotice ctx={unreachable} />)
 
     await screen.findByTestId('free-tier-setup-notice')

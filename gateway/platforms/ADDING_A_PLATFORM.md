@@ -83,6 +83,13 @@ plugin guide with code examples and hook documentation.
 
 ---
 
+Plugin-registered native handlers (`ctx.register_platform_handler(<platform>, factory)`): call
+`self._wire_plugin_handlers(native_client)` once in `connect()` before your own catch-all handlers. The base
+class then handles plugins that load mid-run — the runner calls `rewire_plugin_handlers()` on every
+plugin-loaded event and only factories not yet wired on that native client run. Override it only when your
+adapter keeps a second plugin registry (Slack action handlers) or dispatches by registration order with a
+catch-all last (Telegram hoists late handlers ahead of core); see `gateway/run_plugin_rewire.py`.
+
 ## Built-in Path (Core Contributors Only)
 
 Checklist for integrating a platform directly into the Hermes core.
@@ -151,6 +158,8 @@ def check_<platform>_requirements() -> bool:
 - Use `MessageEvent`, `MessageType` from `gateway.platforms.event` and `SendResult` from base
 - Use `cache_image_from_bytes`, `cache_audio_from_bytes`, `cache_document_from_bytes` for attachments
 - Filter self-messages (prevent reply loops)
+- Drop redelivered inbound IDs with `MessageDeduplicator` (`gateway/platforms/helpers.py`) held as an adapter
+  attribute; the runner's reconnect copies its live IDs into the rebuilt adapter, a hand-rolled cache starts empty
 - Filter sync/echo messages if the platform has them
 - Redact sensitive identifiers (phone numbers, tokens) in all log output
 - Implement reconnection with exponential backoff + jitter for streaming connections

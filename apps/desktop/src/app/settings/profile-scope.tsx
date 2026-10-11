@@ -16,9 +16,7 @@ import type { ProfileInfo } from '@/types/hermes'
 // (ui_meta['hermes-bots'].title), else the app-wide profileLabel
 // (display_name → slug). Scoped to this selector on purpose — the profile
 // rail and Profiles page keep naming profiles by display_name.
-export function settingsScopeLabel(
-  profile: Pick<ProfileInfo, 'bot_title' | 'display_name' | 'name'>
-): string {
+export function settingsScopeLabel(profile: Pick<ProfileInfo, 'bot_title' | 'display_name' | 'name'>): string {
   return (profile.bot_title ?? '').trim() || profileLabel(profile)
 }
 

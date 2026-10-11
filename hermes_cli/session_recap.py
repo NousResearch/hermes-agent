@@ -29,7 +29,7 @@ def _coerce_text(value: Any) -> str:
         return value
     if not isinstance(value, list):
         return str(value)
-    parts: List[str] = []
+    parts: list[str] = []
     for block in value:
         text = block if isinstance(block, str) else block.get("text") if isinstance(block, Mapping) else None
         if isinstance(text, str) and (text or isinstance(block, str)):
@@ -37,7 +37,7 @@ def _coerce_text(value: Any) -> str:
     return "\n".join(parts)
 
 
-def _tool_call_name_and_args(tool_call: Any) -> Tuple[str, Mapping[str, Any]]:
+def _tool_call_name_and_args(tool_call: Any) -> tuple[str, Mapping[str, Any]]:
     """``(name, arguments_dict)`` from a tool_call; ``arguments`` may be a JSON string or dict ({} if unparsable)."""
     fn = tool_call.get("function") if isinstance(tool_call, Mapping) else None
     if not isinstance(fn, Mapping):
@@ -52,7 +52,7 @@ def _tool_call_name_and_args(tool_call: Any) -> Tuple[str, Mapping[str, Any]]:
     return name, raw_args if isinstance(raw_args, Mapping) else {}
 
 
-def _iter_assistant_tool_calls(messages: Sequence[Mapping[str, Any]]) -> Iterable[Tuple[str, Mapping[str, Any]]]:
+def _iter_assistant_tool_calls(messages: Sequence[Mapping[str, Any]]) -> Iterable[tuple[str, Mapping[str, Any]]]:
     for msg in messages:
         if not isinstance(msg, Mapping) or msg.get("role") != "assistant":
             continue
@@ -63,7 +63,7 @@ def _iter_assistant_tool_calls(messages: Sequence[Mapping[str, Any]]) -> Iterabl
                 yield name, args
 
 
-def _count_visible_turns(messages: Sequence[Mapping[str, Any]]) -> Tuple[int, int, int]:
+def _count_visible_turns(messages: Sequence[Mapping[str, Any]]) -> tuple[int, int, int]:
     """Return ``(user_turn_count, assistant_turn_count, tool_message_count)``."""
     roles = Counter(msg.get("role") for msg in messages if isinstance(msg, Mapping))
     return roles["user"], roles["assistant"], roles["tool"]
@@ -81,7 +81,7 @@ def _latest_text(messages: Sequence[Mapping[str, Any]], role: str) -> Optional[s
 
 def _recent_window(
     messages: Sequence[Mapping[str, Any]], window: int = _RECENT_TURN_WINDOW
-) -> List[Mapping[str, Any]]:
+) -> list[Mapping[str, Any]]:
     """Tail slice covering at most ``window`` user+assistant turns (tool messages ride along)."""
     count = 0
     for i in range(len(messages) - 1, -1, -1):
@@ -111,8 +111,8 @@ def _shortened_path(path: str) -> str:
 
 
 def _summarise_tool_activity(
-    tool_calls: Sequence[Tuple[str, Mapping[str, Any]]],
-) -> Tuple[List[Tuple[str, int]], List[str]]:
+    tool_calls: Sequence[tuple[str, Mapping[str, Any]]],
+) -> tuple[list[tuple[str, int]], list[str]]:
     """``(tool_counts_sorted_desc, recently_edited_files)`` — files are distinct paths, newest first."""
     counter: Counter[str] = Counter()
     files_seen: dict[str, str] = {}  # raw path -> shortened, insertion ordered
@@ -124,7 +124,7 @@ def _summarise_tool_activity(
     return sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])), list(files_seen.values())
 
 
-def _join_capped(items: List[str], limit: int) -> str:
+def _join_capped(items: list[str], limit: int) -> str:
     """``a, b, c (+N more)`` — comma-join the first *limit* items and count the rest."""
     text = ", ".join(items[:limit])
     extra = len(items) - limit
@@ -144,7 +144,7 @@ def build_recap(
 ) -> str:
     """Multi-line plain-text recap of recent activity (80-col terminal / gateway bubble friendly).
     ``platform`` is accepted for forward compat and does not change behavior."""
-    lines: List[str] = ["Session recap"]
+    lines: list[str] = ["Session recap"]
     if session_title or session_id:
         lines[0] += f" — {session_title or session_id[:8]}"
     if not messages:

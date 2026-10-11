@@ -5,14 +5,18 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent.reasoning_effort import KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, thinking_toggle_extras
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
 
 _HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
+    # Exclude brotli: httpx's brotlicffi backend has a streaming decode bug on
+    # Moonshot's content-encoding: br SSE responses (#28043, #48428, #59556).
+    # gzip sidesteps it while still compressing the transfer.
+    "Accept-Encoding": "gzip",
 }
 
 
@@ -48,11 +52,17 @@ class KimiProfile(ProviderProfile):
         return [model for model in models if model.strip().lower() != "k3"]
 
     def build_api_kwargs_extras(
-        self, *, reasoning_config: dict | None = None, **context
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Moonshot treats extra_body.thinking and reasoning_effort as mutually
-        exclusive (400 on both): send effort when requested, else the toggle."""
-        return thinking_toggle_extras(reasoning_config, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES)
+        exclusive (400 on both): send effort when requested, else the toggle. K2.x keeps
+        replayed prior-turn reasoning_content only with ``thinking.keep: "all"`` (default null
+        ignores it; platform.kimi.ai/docs/guide/use-thinking-models); K3 always keeps it."""
+        extra_body, top_level = thinking_toggle_extras(reasoning_config, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES)
+        thinking = extra_body.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type") == "enabled" and "k2" in (model or "").lower():
+            extra_body["thinking"] = {**thinking, "keep": "all"}
+        return extra_body, top_level
 
 
 def _kimi(name: str, aliases: tuple, env_vars: tuple, base_url: str) -> KimiProfile:

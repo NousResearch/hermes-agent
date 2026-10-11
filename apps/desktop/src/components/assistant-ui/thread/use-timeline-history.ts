@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, getSessionOwnerHint } from '@/store/session'
@@ -33,25 +34,34 @@ export function useTimelineHistory() {
   const [index, setIndex] = useState<{ key: string; value: TimelineIndex } | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
 
-  const loadMore = useCallback(async (beyondRowId?: number) => {
-    if (!storedId) {
-      return
-    }
-
-    try {
-      const value = await fetchTimelineIndex(storedId, scope, beyondRowId)
-
-      if (view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId) {
-        setIndex({ key, value })
-        setFailed(null)
+  const loadMore = useCallback(
+    async (beyondRowId?: number) => {
+      if (!storedId) {
+        return
       }
-    } catch {
-      // Old backends keep the loaded rail and their explicit Show earlier path.
-      setFailed(key)
-    }
-    // Owner is represented by key; do not restart on object identity alone.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, storedId, runtimeId, view])
+
+      // A freshly minted draft has no state.db row until the first prompt persists
+      // it (#123622) — fetching its timeline before then only ever 404s, since an
+      // empty local view already IS the correct (empty) render.
+      if (sessionCreatedThisRun(storedId) && view.$messages.get().length === 0) {
+        return
+      }
+
+      try {
+        const value = await fetchTimelineIndex(storedId, scope, beyondRowId)
+
+        if (view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId) {
+          setIndex({ key, value })
+          setFailed(null)
+        }
+      } catch {
+        // Old backends keep the loaded rail and their explicit Show earlier path.
+        setFailed(key)
+      }
+      // Owner is represented by key; do not restart on object identity alone.
+    },
+    [key, storedId, runtimeId, view]
+  )
 
   useEffect(() => {
     if (!storedId) {
@@ -86,7 +96,9 @@ export function useTimelineHistory() {
   // chronological), page it forward once per new prompt — no timer; an
   // incomplete index still pages on demand.
   const last = value?.entries.at(-1)?.rowId
-  const stale = value?.complete === true && newestPromptRowId !== undefined && (last === undefined || last < newestPromptRowId)
+
+  const stale =
+    value?.complete === true && newestPromptRowId !== undefined && (last === undefined || last < newestPromptRowId)
 
   useEffect(() => {
     if (!stale || failed === key) {

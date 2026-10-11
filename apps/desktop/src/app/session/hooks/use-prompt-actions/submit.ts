@@ -3,7 +3,7 @@ import { type MutableRefObject, useCallback } from 'react'
 
 import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { translateNow, type Translations } from '@/i18n'
-import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, finalizeInterruptedMessages } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
@@ -43,16 +43,17 @@ import { isCronRunSessionId, refreshCronRunWriteGate } from '../../../cron/open-
 import type { ClientSessionState } from '../../../types'
 import { routeTargetFromToken, sessionContextDrift } from '../session-context-drift'
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
+import {
+  bindSubmittedRowReceipt,
+  createOptimisticUserBubble
+} from '../use-session-actions/optimistic-user-dedup'
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
+import { handleSubmitPipelineError } from './submit-error'
 import {
   acquireSubmitInFlight,
   type GatewayRequest,
-  inlineErrorMessage,
-  isProviderSetupError,
-  isSessionBusyError,
-  isSessionNotOwnedError,
   isTargetSessionBusy,
   releaseSubmitInFlight,
   SessionRecoveryAborted,
@@ -452,8 +453,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
-      const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
       // What the bubble shows. A `/skill` send carries the whole expanded
       // skill body as its text — model-facing scaffolding — so the dispatcher
       // hands us the invocation to render instead. Everything else shows what
@@ -463,13 +462,20 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // the optimistic bubble in place.
       const submittedAt = Date.now() / 1000
 
-      const buildUserMessage = (): ChatMessage => ({
-        id: optimisticId,
-        role: 'user',
-        parts: [textPart(bubbleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
-        timestamp: submittedAt,
-        attachmentRefs
+      // Optimistic-row identity + receipt binding live in the extracted
+      // sibling (see optimistic-user-dedup): the bubble factory reads the live
+      // refs array, and the submitted transport text is stamped on the row so
+      // a mid-send timeline refresh dedupes the persisted twin against it
+      // instead of appending a duplicate (#131848).
+      const bubble = createOptimisticUserBubble({
+        attachments,
+        attachmentRefs: () => attachmentRefs,
+        bubbleText,
+        submittedAt
       })
+
+      const optimisticId = bubble.optimisticId
+      const buildUserMessage = bubble.buildUserMessage
 
       const releaseBusy = () => {
         releaseSubmitLock()
@@ -882,8 +888,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // the gateway receives @file: paths that resolve in its workspace.
         // Images keep their inline bounded thumbnail — see optimisticAttachmentRef.
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
-        rewriteOptimistic(liveSessionId, syncedAttachments)
         const text = buildContextText(syncedAttachments)
+
+        // Stamp the transport text BEFORE the rewrite re-fires the bubble
+        // factory, so the row carries the exact content the gateway is about
+        // to persist (#131848).
+        bubble.setSubmittedText(text)
+        rewriteOptimistic(liveSessionId, syncedAttachments)
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,
@@ -969,21 +980,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           const rowId = submitted.result?.user_row_id
 
           if (typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0) {
-            // The worker may finish before this acknowledgement arrives. Bind
-            // only this send's optimistic occurrence; never reset live state or
-            // assume the newest user row still belongs to this RPC.
-            updateSessionState(submitted.sessionId, state => {
-              const index = state.messages.findIndex(message => message.id === optimisticId && message.role === 'user')
-
-              if (index < 0 || state.messages[index].rowId === rowId) {
-                return state
-              }
-
-              return {
-                ...state,
-                messages: state.messages.map((message, i) => (i === index ? { ...message, rowId } : message))
-              }
-            })
+            bindSubmittedRowReceipt(updateSessionState, submitted.sessionId, optimisticId, rowId)
           }
 
           acceptedRuntimeSessionId = submitted.sessionId
@@ -1025,59 +1022,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         return true
       } catch (err) {
-        releaseBusy()
-
-        // A queued drain that raced a not-yet-settled turn gets a transient
-        // "session busy" (4009). Don't surface an error bubble/toast — the entry
-        // stays queued and the composer's bounded auto-drain retries when idle.
-        if (options?.fromQueue && isSessionBusyError(err)) {
-          return false
-        }
-
-        const message = inlineErrorMessage(err, copy.promptFailed)
-        const occurredAt = Date.now() / 1000
-        // Another surface owns the session (#106217): a deterministic gateway
-        // refusal, so the error card drops Retry and offers a new session.
-        const notOwned = isSessionNotOwnedError(err)
-
-        updateSessionState(
+        return handleSubmitPipelineError({
+          copy,
+          err,
+          fromQueue: Boolean(options?.fromQueue),
+          releaseBusy,
           sessionId,
-          state => ({
-            ...state,
-            messages: [
-              ...state.messages,
-              {
-                id: `assistant-error-${Date.now()}`,
-                role: 'assistant',
-                parts: [],
-                error: message || copy.promptFailed,
-                ...(notOwned && { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }),
-                branchGroupId: state.pendingBranchGroup ?? undefined,
-                completedAt: occurredAt,
-                timestamp: occurredAt
-              }
-            ],
-            busy: false,
-            awaitingResponse: false,
-            pendingBranchGroup: null,
-            sawAssistantPayload: true,
-            // The failed submit's clock seed dies with the turn it never got.
-            turnStartedAt: null
-          }),
-          targetStoredSessionId
-        )
-
-        if (targetIsCurrentView() && isProviderSetupError(err)) {
-          requestDesktopOnboarding(copy.providerCredentialRequired)
-
-          return false
-        }
-
-        if (targetIsCurrentView()) {
-          notifyError(err, copy.promptFailed)
-        }
-
-        return false
+          storedSessionId: targetStoredSessionId,
+          targetIsCurrentView: targetIsCurrentView(),
+          updateSessionState
+        })
       }
     },
     [

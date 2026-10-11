@@ -271,6 +271,35 @@ export function registerTerminalIpc({
     }
   }
 
+  // One destroyed hook per owner WebContents, not one per terminal tab.
+  // Per-session `once('destroyed')` stacks past Node's 10-listener cap
+  // (MaxListenersExceededWarning: 11 destroyed listeners on [WebContents])
+  // because disposeTerminalSession never removes its own hook. Sweep all
+  // sessions owned by the sender instead — same cleanup, bounded to 1.
+  const destroyedHookOwners = new Set<number>()
+
+  function disposeTerminalSessionsForWebContentsId(webContentsId: number) {
+    for (const [id, info] of [...terminalSessions.entries()]) {
+      if (info.webContentsId === webContentsId) {
+        disposeTerminalSession(id)
+      }
+    }
+  }
+
+  function ensureDestroyedHook(sender: any) {
+    const sid = sender.id
+
+    if (destroyedHookOwners.has(sid)) {
+      return
+    }
+
+    destroyedHookOwners.add(sid)
+    sender.once('destroyed', () => {
+      destroyedHookOwners.delete(sid)
+      disposeTerminalSessionsForWebContentsId(sid)
+    })
+  }
+
   // node-pty's published tarball ships the POSIX `spawn-helper` without an exec
   // bit; the dev flow resolves node-pty straight from node_modules (nothing
   // chmods it there), so the first terminal spawn dies with `posix_spawnp
@@ -366,7 +395,7 @@ export function registerTerminalIpc({
         // Already reaped.
       }
     })
-    event.sender.once('destroyed', () => disposeTerminalSession(id))
+    ensureDestroyedHook(event.sender)
 
     return { cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
   })

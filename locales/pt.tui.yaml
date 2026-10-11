@@ -114,7 +114,6 @@ canonical.queue.clipboardImageFailed: "falha na imagem da área de transferênci
 canonical.queue.discardFailed: "falha ao descartar: {0}"
 canonical.queue.invalidRecord: "Registro de entrada pendente inválido: {0}"
 canonical.queue.journalCleanupFailed: "entrada entregue; falha ao limpar o diário: {0}"
-canonical.queue.noClipboardImage: "nenhuma imagem encontrada na área de transferência"
 canonical.queue.notSavedDraftKept: "entrada não salva: {0} — rascunho mantido"
 canonical.queue.notSavedQueueKept: "entrada não salva: {0} — fila mantida"
 canonical.queue.serverRow: "[{0}] {1}"

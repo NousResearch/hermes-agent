@@ -52,8 +52,7 @@ export const canonicalEn = {
       statusInputNotSaved: 'input not saved',
       unknownExecution: 'unknown execution — Ctrl+X to discard before retrying',
       invalidRecord: (name: string) => `Invalid pending input record: ${name}`,
-      clipboardImageFailed: (message: string) => `clipboard image failed: ${message}`,
-      noClipboardImage: 'No image found in clipboard'
+      clipboardImageFailed: (message: string) => `clipboard image failed: ${message}`
     },
     // lib/imageAttachments.ts — owner-staged image validation.
     images: {

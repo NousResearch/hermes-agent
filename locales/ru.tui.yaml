@@ -114,7 +114,6 @@ canonical.queue.clipboardImageFailed: "ошибка изображения из 
 canonical.queue.discardFailed: "не удалось сбросить: {0}"
 canonical.queue.invalidRecord: "Недопустимая запись ожидающего ввода: {0}"
 canonical.queue.journalCleanupFailed: "ввод доставлен; не удалось очистить журнал: {0}"
-canonical.queue.noClipboardImage: "в буфере обмена не найдено изображение"
 canonical.queue.notSavedDraftKept: "ввод не сохранён: {0} — черновик сохранён"
 canonical.queue.notSavedQueueKept: "ввод не сохранён: {0} — очередь сохранена"
 canonical.queue.serverRow: "[{0}] {1}"

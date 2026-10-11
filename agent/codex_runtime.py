@@ -857,11 +857,11 @@ class _CodexResponseAssembler:
     active_message_phase: str | None = None
     # Reasoning summary parts carry no separator; a summary_index change is where the blank line belongs.
     active_summary_index: Any = None
-    terminal_status: str = "completed"
+    terminal_status: str | None = None
     terminal_usage = terminal_response_id = terminal_incomplete_details = terminal_error = None
     terminal_model = None
     terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
-    # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
+    # Only an observed response.completed frame can settle pending calls.
     saw_response_completed = False
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
@@ -1086,14 +1086,15 @@ class _CodexResponseAssembler:
         output: list[Any] = self._settled_output() if self.saw_response_completed else list(self.output_items)
         # With only plain text deltas (no tool calls), synthesize one message item.
         if not output and self.text_deltas and not self.has_tool_calls:
-            output = [SimpleNamespace(type="message", role="assistant", status="completed", content=self.content_deltas)]
+            output = [SimpleNamespace(type="message", role="assistant",
+                                      status="completed" if self.saw_terminal else "in_progress", content=self.content_deltas)]
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.terminal_model, incomplete_details=self.terminal_incomplete_details,
-            error=self.terminal_error, service_tier=self.terminal_service_tier)
+            error=self.terminal_error, service_tier=self.terminal_service_tier, terminal_observed=self.saw_terminal)
 
 
 def _consume_codex_event_stream(
@@ -1101,8 +1102,8 @@ def _consume_codex_event_stream(
     on_first_delta=None, on_event=None, interrupt_check=None,
 ) -> SimpleNamespace:
     """Consume a Codex Responses SSE stream into a Response-shaped ``SimpleNamespace`` (see
-    :class:`_CodexResponseAssembler`; ``status`` is ``completed`` when the stream ended with content but no
-    terminal frame; ``model`` is the observed terminal model, or ``None`` when absent).
+    :class:`_CodexResponseAssembler`; ``status`` and ``model`` are observed terminal fields,
+    or ``None`` when absent; ``terminal_observed`` distinguishes terminal frames from stream exhaustion).
 
     Callbacks: ``on_text_delta`` per output_text delta, suppressed once a function_call is seen;
     ``on_reasoning_delta`` for reasoning and ``phase=analysis`` deltas (also commentary without a commentary

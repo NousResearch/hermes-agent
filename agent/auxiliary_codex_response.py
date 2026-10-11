@@ -27,6 +27,7 @@ def _parse_codex_final_response(
         status=getattr(final, "status", None),
         incomplete_details=getattr(final, "incomplete_details", None),
         error=getattr(final, "error", None),
+        terminal_observed=getattr(final, "terminal_observed", None),
     )
     # Aux has no continuation to re-elicit a leaked tool call, so tool-call-shaped text stays content
     # and goes through the normalizer's own phase/completion gates (no clear, no WARNING).

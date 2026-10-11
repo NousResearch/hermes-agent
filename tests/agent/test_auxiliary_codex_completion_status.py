@@ -169,3 +169,151 @@ def test_actual_adapter_retains_native_completion_cause(
         "tools": [("call_1", "inspect", '{"path":"x"}')] if tool_call else [],
         "usage": SimpleNamespace(prompt_tokens=11, completion_tokens=3, total_tokens=14),
     }
+
+
+@pytest.mark.parametrize("done_item", [False, True], ids=["text-delta", "item-done"])
+@pytest.mark.parametrize(
+    "terminal, done_marker",
+    [(None, False), (None, True), ("completed", True), ("incomplete", True)],
+)
+def test_real_sdk_auxiliary_stream_requires_terminal_evidence(
+    monkeypatch, done_item, terminal, done_marker
+):
+    import json
+
+    import httpx
+
+    from agent import auxiliary_client
+    from agent.native_usage_openai import UsageValidatedOpenAI
+
+    events = [{"type": "response.output_text.delta", "delta": "partial answer"}]
+    if done_item:
+        events.append(
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "type": "message",
+                    "id": "msg_native",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "partial answer",
+                            "annotations": [],
+                        }
+                    ],
+                },
+            }
+        )
+    if terminal is not None:
+        events.append(
+            {
+                "type": f"response.{terminal}",
+                "response": {
+                    "id": "resp_native",
+                    "model": "served-model",
+                    "status": terminal,
+                    "output": [],
+                    "incomplete_details": {"reason": "max_output_tokens"}
+                    if terminal == "incomplete"
+                    else None,
+                    "usage": {
+                        "input_tokens": 12,
+                        "output_tokens": 8,
+                        "total_tokens": 23,
+                    },
+                },
+            }
+        )
+    sse = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+    if done_marker:
+        sse += "data: [DONE]\n\n"
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(
+            200, text=sse, headers={"content-type": "text/event-stream"}
+        )
+
+    with UsageValidatedOpenAI(
+        api_key="fixture",
+        base_url="https://chatgpt.com/backend-api/codex",
+        max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+    ) as sdk:
+        client = auxiliary_client.CodexAuxiliaryClient(sdk, "selected-model")
+        monkeypatch.setattr(
+            auxiliary_client,
+            "_get_cached_client",
+            lambda *a, **kw: (client, "selected-model"),
+        )
+        monkeypatch.setattr(
+            auxiliary_client,
+            "_resolve_task_provider_model",
+            lambda *a, **kw: (
+                "openai",
+                "selected-model",
+                None,
+                "fixture",
+                "codex_responses",
+            ),
+        )
+        response = auxiliary_client.call_llm(
+            messages=[{"role": "user", "content": "Answer."}]
+        )
+
+    (choice,) = response.choices
+    assert {
+        "id": response.id,
+        "model": response.model,
+        "status": response.status,
+        "details": response.incomplete_details.model_dump()
+        if response.incomplete_details is not None
+        else None,
+        "content": choice.message.content,
+        "finish": choice.finish_reason,
+        "tools": choice.message.tool_calls,
+        "usage": response.usage,
+        "requests": len(requests),
+    } == {
+        "id": "resp_native" if terminal else None,
+        "model": "served-model" if terminal else None,
+        "status": terminal,
+        "details": {"reason": "max_output_tokens"}
+        if terminal == "incomplete"
+        else None,
+        "content": "partial answer",
+        "finish": "stop" if terminal == "completed" else "length",
+        "tools": None,
+        "usage": SimpleNamespace(prompt_tokens=12, completion_tokens=8, total_tokens=23)
+        if terminal
+        else None,
+        "requests": 1,
+    }
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_shared_stream_normalizer_requires_terminal_evidence(terminal):
+    from agent.codex_responses_adapter import _normalize_codex_response
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="partial answer")
+    ]
+    if terminal:
+        events.append(
+            SimpleNamespace(
+                type="response.completed", response=SimpleNamespace(status="completed")
+            )
+        )
+    final = _consume_codex_event_stream(events, model="selected-model")
+    message, finish = _normalize_codex_response(final, issuer_kind="codex_backend")
+
+    assert (final.status, message.content, finish) == (
+        "completed" if terminal else None,
+        "partial answer",
+        "stop" if terminal else "incomplete",
+    )

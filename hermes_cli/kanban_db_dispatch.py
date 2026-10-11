@@ -1763,7 +1763,7 @@ def dispatch_profile_allowlist_summary() -> str:
 
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, assignee FROM tasks "
         "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
         (status,),
     ).fetchall()
@@ -1773,7 +1773,15 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     if profile_exists is None:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
-    return any(profile_exists(row["assignee"]) for row in rows)
+    for row in rows:
+        if not profile_exists(row["assignee"]):
+            continue
+        # Recent successes and PR URLs are inputs to review handoffs; only
+        # ready work needs those duplicate-work guards applied here.
+        if status == "ready" and check_respawn_guard(conn, row["id"], lane=status):
+            continue
+        return True
+    return False
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_diagnostics as kd
 
@@ -193,6 +194,87 @@ def test_stranded_in_ready_fires_when_age_exceeds_threshold():
     assert stranded[0].severity == "warning"
     assert stranded[0].data["age_seconds"] == 45 * 60
     assert stranded[0].data["assignee"] == "demo"
+
+
+def test_stranded_in_ready_reports_recorded_guard_without_reassign_advice():
+    now = 100_000
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+    events = [
+        _event("created", ts=now - 45 * 60),
+        _event("respawn_guarded", ts=now - 60, reason="active_pr"),
+    ]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    stranded = next(d for d in diags if d.kind == "stranded_in_ready")
+    assert stranded.severity == "warning"
+    assert stranded.data["guard_reason"] == "active_pr"
+    assert stranded.data["guard_recorded_at"] == now - 60
+    assert any(action.kind == "reassign" for action in stranded.actions)
+
+
+def test_fresh_ready_task_with_recorded_guard_is_not_called_stranded():
+    now = 100_000
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+    events = [
+        _event("created", ts=now - 5 * 60),
+        _event("respawn_guarded", ts=now - 60, reason="recent_success"),
+    ]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert not any(d.kind == "stranded_in_ready" for d in diags)
+
+
+def test_expired_guard_keeps_stranded_diagnostic_visible():
+    now = 100_000
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+    events = [
+        _event("created", ts=now - 60 * 60),
+        _event("respawn_guarded", ts=now - 45 * 60, reason="recent_success"),
+    ]
+    diagnostics = kd.compute_task_diagnostics(task, events, [], now=now)
+    stranded = next(d for d in diagnostics if d.kind == "stranded_in_ready")
+    assert stranded.severity == "error"
+    assert stranded.data["guard_reason"] == "recent_success"
+    assert any(action.kind == "reassign" for action in stranded.actions)
+
+
+def test_guard_does_not_hide_stranded_after_requeue_event():
+    now = 100_000
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+    events = [
+        _event("created", ts=now - 60 * 60),
+        _event("respawn_guarded", ts=now - 50 * 60, reason="active_pr"),
+        _event("unblocked", ts=now - 45 * 60),
+    ]
+    diagnostics = kd.compute_task_diagnostics(task, events, [], now=now)
+    stranded = next(d for d in diagnostics if d.kind == "stranded_in_ready")
+    assert stranded.severity == "warning"
+    assert stranded.data["ready_since"] == now - 45 * 60
+    assert any(action.kind == "reassign" for action in stranded.actions)
+
+
+@pytest.mark.parametrize("guard_signal", ["recent_success", "active_pr"])
+def test_review_spawnability_preserves_review_handoff_inputs(
+    kanban_home, monkeypatch, guard_signal,
+):
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(conn, title="review", assignee="reviewer")
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _name: True)
+        if guard_signal == "recent_success":
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, outcome, started_at, ended_at) "
+                "VALUES (?, 'reviewer', 'completed', 'completed', ?, ?)",
+                (task_id, int(time.time()) - 1, int(time.time())),
+            )
+        else:
+            kb.add_comment(
+                conn, task_id, "operator",
+                "PR: https://github.com/example/repo/pull/1",
+            )
+
+        assert kbd.has_spawnable_review(conn)
+    finally:
+        conn.close()
 
 
 

@@ -6,9 +6,10 @@ bot). Every row is asserted in one fixture so the two historical fixes (#69246 s
 preserved, #70625 route-override egress) cannot drift apart again.
 """
 
+import asyncio
 import weakref
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -154,3 +155,45 @@ def test_restored_rows_fail_closed_on_intake_and_deliver_only_via_a_unique_owner
     bare = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", user_id="42")
     assert solo.runner._intake_adapter_for(bare) is solo.runner._delivery_adapter_for(bare) is solo.primary
     assert solo.runner._intake_adapter_for(None) is None and solo.runner._delivery_adapter_for(None) is None
+
+
+def test_restored_notifications_leave_through_the_recorded_bot_or_not_at_all(mux):
+    """Background-process notices for a restored session follow the persisted ``transport_profile``
+    like every other delivery, never the runtime profile's bot (regression for #135763)."""
+    r = mux.runner
+    for bot in (mux.primary, mux.team_b):
+        bot.send = AsyncMock()
+    entries = {}
+    r.session_store = SimpleNamespace(_ensure_loaded=lambda: None, _entries=entries)
+
+    def watcher(chat_id, runtime, transport):
+        key = f"agent:{runtime or 'main'}:telegram:dm:{chat_id}"
+        origin = SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm", user_id=chat_id,
+                               profile=runtime)
+        entries[key] = SimpleNamespace(origin=origin, transport_profile=transport)
+        return {"session_key": key, "chat_id": chat_id}
+
+    def notify(evt):
+        asyncio.run(r._send_watcher_message("telegram", evt["chat_id"], None, "done", evt))
+
+    # shared bot -> profile that owns its own bot: received by the default bot, runs as team_b
+    via_shared = watcher("555", "team_b", "default")
+    assert r._resolve_injection_adapter("telegram", r._build_process_event_source(via_shared)) is mux.primary
+    notify(via_shared)
+    mux.primary.send.assert_awaited_once()
+    mux.team_b.send.assert_not_awaited()
+
+    # secondary-owned bot -> default runtime: answers through the secondary bot
+    via_team_b = watcher("999", None, "team_b")
+    assert r._resolve_injection_adapter("telegram", r._build_process_event_source(via_team_b)) is mux.team_b
+    notify(via_team_b)
+    mux.team_b.send.assert_awaited_once()
+
+    # the recorded bot is down: nothing is admitted or sent, and the default bot never stands in
+    r._profile_adapters["team_b"] = {}
+    r._profile_failed_platforms = {"team_b": {Platform.TELEGRAM: {}}}
+    assert r._resolve_injection_adapter("telegram", r._build_process_event_source(via_team_b)) is None
+    assert asyncio.run(r._inject_watch_notification("done", via_team_b)) is False
+    notify(via_team_b)
+    mux.primary.send.assert_awaited_once()
+    mux.team_b.send.assert_awaited_once()

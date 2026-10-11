@@ -282,6 +282,15 @@ class GatewayAuthorizationMixin:
             return self._primary_adapters().get(platform) if platform else None
         return None
 
+    def _delivery_adapters_for(self, source: Optional[SessionSource]) -> dict:
+        """The adapter map that may ANSWER *source*: the receiving bot's when its identity names one
+        (live, or restored from ``transport_profile``), else the runtime profile's. Callers that need
+        platform aliasing (relay-fronted platforms) pick from this instead of ``_delivery_adapter_for``."""
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        known = identity is not None and identity.transport_known
+        return self._adapters_for_profile(identity.transport_profile if known else getattr(source, "profile", None))
+
     def _delivery_adapter_for(self, source: Optional[SessionSource]):
         """The adapter that ANSWERS *source*: sends, edits, typing, progress, pickers, pending slots.
 
@@ -305,7 +314,7 @@ class GatewayAuthorizationMixin:
         # fixture) uses the unique-owner heuristic below.
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        if identity is not None and identity.multiplexed and not identity.transport_inferred:
+        if identity is not None and identity.transport_known:
             return None
         # No identity, or one whose transport was only inferred (hand-built source, pre-column row):
         # the unique owner of ``(platform, runtime_profile)`` delivers.

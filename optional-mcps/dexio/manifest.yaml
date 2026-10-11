@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: dexio
+connector_slug: dexio
+description: >-
+  A shared markdown wiki your agents read and write, with a link graph
+  and broken-link checks.
+source: https://dexio.wiki/docs
+
+# Official vendor-hosted remote MCP (URL-only; Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (public clients and loopback redirects accepted); Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://app.dexio.wiki/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - dexio
+  hosts:
+    - dexio.wiki
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Dexio, or to
+  create a free account (or run `hermes mcp login dexio`). Pick the
+  workspace to connect and approve, then restart the session so the tools
+  load.

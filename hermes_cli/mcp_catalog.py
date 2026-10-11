@@ -118,6 +118,8 @@ class CatalogEntry:
     post_install: str = ""
     suggest: Optional[SuggestSpec] = None
     manifest_path: Path = field(default_factory=Path)
+    # Optional catalog-side opt-out only; absent preserves the client's default.
+    sampling: dict[str, bool] = field(default_factory=dict)
 
 
 class CatalogError(Exception):
@@ -338,10 +340,15 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     suggest = _parse_suggest(path, data.get("suggest"))
     connector_slug = _parse_connector_slug(path, data.get("connector_slug"))
     install = _parse_install(path, data.get("install"))
+    sampling = data.get("sampling", {})
+    if (not isinstance(sampling, dict) or set(sampling) - {"enabled"}
+            or any(not isinstance(value, bool) for value in sampling.values())):
+        raise CatalogError(f"{path}: sampling allows only a boolean 'enabled' value")
     return CatalogEntry(
         name=name, description=description, source=str(data.get("source") or "").strip(),
         transport=transport, auth=auth, connector_slug=connector_slug, tools=tools, install=install,
         post_install=str(data.get("post_install") or ""), suggest=suggest, manifest_path=path,
+        sampling=dict(sampling),
     )
 
 
@@ -539,6 +546,8 @@ def _inline_non_secret_value(obj: Any, name: str, value: str) -> Any:
 def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> dict:
     """Translate a manifest into the ``mcp_servers.<name>`` block format used by hermes_cli/mcp_config.py."""
     cfg: dict = {}
+    if entry.sampling:
+        cfg["sampling"] = dict(entry.sampling)
     t = entry.transport
     if t.type == "stdio":
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)

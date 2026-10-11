@@ -223,6 +223,22 @@ def verify_request(agent: Any, binding: InvocationBinding, api_kwargs: Any) -> d
         raise InvocationBindingError("credential_mismatch")
     if not isinstance(api_kwargs, Mapping) or api_kwargs.get("model") != binding.model:
         raise InvocationBindingError("model_mismatch")
+    if agent.api_mode == "chat_completions":
+        extra_body = api_kwargs.get("extra_body")
+        if extra_body is not None and not isinstance(extra_body, Mapping):
+            raise InvocationBindingError("request_overrides_invalid")
+        if isinstance(extra_body, Mapping):
+            if "model" in extra_body and extra_body["model"] != binding.model:
+                raise InvocationBindingError("model_mismatch")
+            effort_values = [extra_body[key] for key in ("reasoning_effort",) if key in extra_body]
+            extra_reasoning = extra_body.get("reasoning")
+            if isinstance(extra_reasoning, Mapping) and "effort" in extra_reasoning:
+                effort_values.append(extra_reasoning["effort"])
+            if any(
+                not isinstance(effort, str) or effort.strip().lower() != binding.reasoning_effort
+                for effort in effort_values
+            ):
+                raise InvocationBindingError("reasoning_mismatch")
     wire_effort = wire_reasoning_effort(agent.api_mode, api_kwargs)
     if wire_effort is None:
         raise InvocationBindingError("reasoning_unproven")

@@ -201,6 +201,26 @@ def test_matching_request_reaches_bound_key_and_is_recorded_unattested(db, facto
     assert reference["status"] == "bound_unattested" and reference["account_verified"] is False
 
 
+@pytest.mark.parametrize(
+    ("extra_body", "code"),
+    [
+        ({"model": "gpt-other"}, "model_mismatch"),
+        ({"reasoning_effort": "low"}, "reasoning_mismatch"),
+        ({"model": "gpt-other", "reasoning_effort": "low"}, "model_mismatch"),
+        ({"reasoning": {"effort": "low"}}, "reasoning_mismatch"),
+        ([{"model": "gpt-other"}], "request_overrides_invalid"),
+    ],
+)
+def test_openai_extra_body_cannot_override_bound_model_or_effort(db, factory, extra_body, code):
+    agent = _agent(db, _pool(**{"cred-a": "sk-a"}), _binding(), factory=factory)
+
+    with _refused(code):
+        agent._interruptible_api_call({**WIRE, "extra_body": extra_body})
+
+    _assert_nothing_built_or_sent(factory)
+    assert _record(db) is None
+
+
 def test_wire_effort_is_read_from_the_payload_only():
     assert wire_reasoning_effort("anthropic_messages", ANTHROPIC_WIRE) == "high"
     # budget-token thinking and omitted thinking (haiku) prove no effort

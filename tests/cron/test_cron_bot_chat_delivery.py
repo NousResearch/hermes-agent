@@ -142,6 +142,75 @@ def test_deliver_runs_canonical_bot_chat_lane():
     assert calls["env"][TURN_REPORT_FILE_ENV] == calls["report_path"]
 
 
+def test_deliver_hermes_bin_pins_the_child_launcher(monkeypatch, tmp_path):
+    """$HERMES_BIN wins over the module form: a gateway running from a package-manager
+    workspace must not re-bootstrap delivery children into a phantom install (#133325)."""
+    pinned = tmp_path / "pinned-hermes"
+    pinned.touch()
+    calls = {}
+
+    def fake_run(argv, env, report_path, timeout):
+        calls["argv"] = argv
+        return _completed()
+
+    monkeypatch.setenv("HERMES_BIN", str(pinned))
+    with mock.patch.object(sched_delivery, "_run_bot_chat_turn", side_effect=fake_run):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the output", "")
+
+    assert err is None
+    assert calls["argv"][0] == str(pinned)
+    assert calls["argv"][1:3] == ["-p", "default"]
+
+
+def test_deliver_hermes_bin_bare_name_resolves_on_path(monkeypatch):
+    """A bare-name $HERMES_BIN keeps PATH semantics instead of a same-directory file."""
+    calls = {}
+
+    def fake_run(argv, env, report_path, timeout):
+        calls["argv"] = argv
+        return _completed()
+
+    monkeypatch.setenv("HERMES_BIN", "hermes")
+    with mock.patch.object(sched_delivery, "_run_bot_chat_turn", side_effect=fake_run), \
+         mock.patch.object(sched_delivery.shutil, "which", return_value="/opt/published/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is None
+    assert calls["argv"][0] == "/opt/published/hermes"
+
+
+def test_deliver_hermes_bin_batch_shim_falls_back_to_module_form(monkeypatch):
+    """Batch shims never become argv[0]: cmd.exe reinterprets otherwise literal argv."""
+    calls = {}
+
+    def fake_run(argv, env, report_path, timeout):
+        calls["argv"] = argv
+        return _completed()
+
+    monkeypatch.setenv("HERMES_BIN", "C:\\tools\\hermes.cmd")
+    with mock.patch.object(sched_delivery, "_run_bot_chat_turn", side_effect=fake_run):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is None
+    assert calls["argv"][:3] == [sys.executable, "-m", "hermes_cli.main"]
+
+
+def test_deliver_blank_hermes_bin_keeps_module_form(monkeypatch):
+    """A whitespace-only $HERMES_BIN is unset for selection purposes."""
+    calls = {}
+
+    def fake_run(argv, env, report_path, timeout):
+        calls["argv"] = argv
+        return _completed()
+
+    monkeypatch.setenv("HERMES_BIN", "   ")
+    with mock.patch.object(sched_delivery, "_run_bot_chat_turn", side_effect=fake_run):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is None
+    assert calls["argv"][:3] == [sys.executable, "-m", "hermes_cli.main"]
+
+
 
 
 def test_deliver_failure_reports_both_streams_labeled():

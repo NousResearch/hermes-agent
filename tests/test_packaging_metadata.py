@@ -51,3 +51,26 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     assert len(pins) == 1 and pins[0].operator == "==" and Version(pins[0].version) >= floor
     versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "starlette"]
     assert versions and all(version >= floor for version in versions)
+
+
+def test_exact_pinned_deps_exempt_from_exclude_newer():
+    # An exact pin cannot float, so the 14-day cutoff adds zero float protection
+    # for it — but uv reads an absent PyPI upload date as "newer than the
+    # cutoff" and filters the pinned version, bricking resolution ("pilk==0.2.4
+    # has no publish time"). Every == pin must carry an exclude-newer exemption
+    # (false, or a reviewed date for the advisory-fix shape).
+    from packaging.utils import canonicalize_name
+
+    metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project = metadata["project"]
+    requirements = [Requirement(dep) for dep in project["dependencies"]]
+    requirements += [Requirement(dep)
+                     for specs in project.get("optional-dependencies", {}).values()
+                     for dep in specs]
+    requirements += [Requirement(dep)
+                     for dep in metadata.get("dependency-groups", {}).get("dev", [])]
+    exact = {canonicalize_name(req.name) for req in requirements
+             if any(spec.operator == "==" for spec in req.specifier)}
+    exempt = {canonicalize_name(name)
+              for name in metadata["tool"]["uv"].get("exclude-newer-package", {})}
+    assert exact <= exempt, f"exact pins missing an exclude-newer exemption: {sorted(exact - exempt)}"

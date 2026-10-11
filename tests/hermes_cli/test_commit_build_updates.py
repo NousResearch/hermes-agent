@@ -48,6 +48,7 @@ def test_root_cannot_update_user_owned_install(tmp_path, monkeypatch):
 
     monkeypatch.setattr("hermes_cli.update_contract.os.geteuid", lambda: 0)
     monkeypatch.setattr(type(tmp_path), "stat", lambda self: UserStat())
+    _neutralize_host_install_markers(monkeypatch, tmp_path)
     refusal = evaluate_update_admission(tmp_path)
 
     assert refusal is not None
@@ -61,8 +62,23 @@ def test_root_can_update_root_owned_install(tmp_path, monkeypatch):
 
     monkeypatch.setattr("hermes_cli.update_contract.os.geteuid", lambda: 0)
     monkeypatch.setattr(type(tmp_path), "stat", lambda self: RootStat())
+    _neutralize_host_install_markers(monkeypatch, tmp_path)
 
     assert evaluate_update_admission(tmp_path) is None
+
+
+def _neutralize_host_install_markers(monkeypatch, tmp_path) -> None:
+    """Pin the ownership-admission tests to Layer 0 only.
+
+    These tests exercise the root/install-owner gate, but ``evaluate_update_admission``
+    also consults host state below it: the baked ``/etc/hermes/image-provenance.json``
+    marker (a verifier host that itself runs an image-managed install flips the
+    admissible case into an unrelated ``image-marker`` refusal) and the
+    ``HERMES_MANAGED`` signal. Both describe the HOST, not the fixture, so they are
+    neutralized here.
+    """
+    monkeypatch.setattr("hermes_cli.image_provenance.IMAGE_PROVENANCE_PATH", tmp_path / "absent")
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
 
 
 @pytest.mark.parametrize("passive", [False, True])

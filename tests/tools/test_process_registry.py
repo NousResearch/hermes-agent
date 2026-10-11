@@ -1136,13 +1136,13 @@ class TestPopenLeakOnSetupFailure:
         def boom(*args, **kwargs):
             raise RuntimeError("Thread creation failed")
 
-        # The orphan path terminates through _terminate_host_pid, which
+        # The orphan path terminates through terminate_host_pid, which
         # revalidates the recorded kernel start time before signalling, so a
         # MagicMock pid can never reach a real killpg/os.kill.
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", side_effect=boom), \
-             patch.object(ProcessRegistry, "_terminate_host_pid") as terminate, \
+             patch.object(ProcessRegistry, "terminate_host_pid") as terminate, \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
                 registry.spawn_local("echo hello", cwd="/tmp")
@@ -1410,7 +1410,7 @@ class TestKillProcess:
             )
             term_patch = patch.object(
                 ProcessRegistry,
-                "_terminate_host_pid",
+                "terminate_host_pid",
                 side_effect=reader_wins_during_signal,
             )
             saver = patch(
@@ -1575,7 +1575,7 @@ def test_drain_notifications_owns_event_callback_beats_key_equality():
 
 
 # ---------------------------------------------------------------------------
-# _terminate_host_pid — cross-platform process-tree termination
+# terminate_host_pid — cross-platform process-tree termination
 # ---------------------------------------------------------------------------
 
 
@@ -1607,7 +1607,7 @@ class TestTerminateHostPidWindows:
 
         monkeypatch.setattr(pr.subprocess, "run", fake_run)
 
-        pr.ProcessRegistry._terminate_host_pid(12345)
+        pr.ProcessRegistry.terminate_host_pid(12345)
 
         assert captured["args"][0] == "taskkill"
         assert "/PID" in captured["args"]
@@ -1648,7 +1648,7 @@ class TestTerminateHostPidPosix:
         monkeypatch.setattr(pr.ProcessRegistry, "_daemon_term_grace_seconds",
                             staticmethod(lambda: 0.0))
 
-        pr.ProcessRegistry._terminate_host_pid(12345)
+        pr.ProcessRegistry.terminate_host_pid(12345)
 
         assert terminate_order == [12345, 101, 102, 103], (
             "Parent must receive SIGTERM before any snapshot descendant"
@@ -1684,7 +1684,7 @@ class TestTerminateHostPidPosix:
         parent = subprocess.Popen(["bash", str(parent_sh)], stdin=subprocess.DEVNULL)
         try:
             assert _wait_until(lambda: log.exists() and "up" in log.read_text(), timeout=5.0)
-            ProcessRegistry._terminate_host_pid(parent.pid)
+            ProcessRegistry.terminate_host_pid(parent.pid)
             assert _wait_until(lambda: parent.poll() is not None, timeout=5.0)
             lines = log.read_text().split()
             assert parent.returncode == 0, f"supervisor must exit cleanly, got {parent.returncode}"
@@ -1710,7 +1710,7 @@ class TestTerminateHostPidPosix:
         monkeypatch.setattr(psutil, "Process", boom)
         monkeypatch.setattr(pr.os, "kill", fake_kill)
 
-        pr.ProcessRegistry._terminate_host_pid(12345)
+        pr.ProcessRegistry.terminate_host_pid(12345)
 
         assert kill_calls == [(12345, signal.SIGTERM)]
 
@@ -1733,7 +1733,7 @@ class TestPidReuseGuard:
             real_start = ProcessRegistry._safe_host_start_time(proc.pid)
             assert real_start is not None, "no /proc start time on this platform?"
             # Simulate recycling: the recorded baseline no longer matches.
-            registry._terminate_host_pid(proc.pid, expected_start=real_start + 1)
+            registry.terminate_host_pid(proc.pid, expected_start=real_start + 1)
             # The process must still be alive — the guard refused to signal it.
             assert not _wait_until(lambda: proc.poll() is not None, timeout=0.3)
             assert proc.poll() is None
@@ -1759,7 +1759,7 @@ class TestPidReuseGuard:
 @pytest.mark.skipif(sys.platform == "win32",
                     reason="POSIX SIGTERM→SIGKILL escalation; Windows uses taskkill /F")
 class TestSigkillEscalation:
-    """Bounded SIGTERM→SIGKILL escalation in _terminate_host_pid.
+    """Bounded SIGTERM→SIGKILL escalation in terminate_host_pid.
 
     A daemon that ignores/stalls on SIGTERM must be force-killed after the
     configured grace window so it can't leak indefinitely — while well-behaved
@@ -1792,7 +1792,7 @@ class TestSigkillEscalation:
                             staticmethod(lambda: 0.3))
         proc = self._spawn_trap()
         try:
-            ProcessRegistry._terminate_host_pid(proc.pid)
+            ProcessRegistry.terminate_host_pid(proc.pid)
             assert _wait_until(lambda: proc.poll() is not None, timeout=4.0), \
                 "SIGTERM-ignoring daemon should be SIGKILLed after grace"
         finally:
@@ -1807,7 +1807,7 @@ class TestSigkillEscalation:
         proc = self._spawn_trap()
         try:
             real_start = ProcessRegistry._safe_host_start_time(proc.pid)
-            ProcessRegistry._terminate_host_pid(
+            ProcessRegistry.terminate_host_pid(
                 proc.pid, expected_start=(real_start or 0) + 1)
             assert not _wait_until(lambda: proc.poll() is not None, timeout=0.3)
             assert proc.poll() is None
@@ -1859,7 +1859,7 @@ class TestSigkillEscalation:
         child_pids = [int(x) for x in parent.stdout.readline().split()]
         all_pids = [parent.pid] + child_pids
         try:
-            ProcessRegistry._terminate_host_pid(parent.pid)
+            ProcessRegistry.terminate_host_pid(parent.pid)
 
             def _pid_dead(p: int) -> bool:
                 # A pid is "dead" for our purposes if it no longer exists OR
@@ -1877,7 +1877,7 @@ class TestSigkillEscalation:
             def _all_dead():
                 return all(_pid_dead(p) for p in all_pids)
 
-            # _terminate_host_pid SIGKILLs synchronously before returning, so
+            # terminate_host_pid SIGKILLs synchronously before returning, so
             # the kill signals are already delivered here. The only remaining
             # wait is the kernel tearing down 3 processes and the reparented
             # children transitioning to zombie — which can lag on a loaded CI
@@ -2581,7 +2581,7 @@ class TestSystemdCgroupIsolation:
         stopped = []
         terminated = []
         monkeypatch.setattr(registry, "_host_pid_is_ours", lambda pid, start: False)
-        monkeypatch.setattr(registry, "_terminate_host_pid", lambda pid, start: terminated.append((pid, start)))
+        monkeypatch.setattr(registry, "terminate_host_pid", lambda pid, start: terminated.append((pid, start)))
         monkeypatch.setattr("tools.process_registry._stop_systemd_unit", lambda unit: stopped.append(unit) or True)
 
         with patch.object(registry, "_write_checkpoint"):

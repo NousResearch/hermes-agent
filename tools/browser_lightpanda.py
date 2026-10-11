@@ -182,7 +182,7 @@ def _safe_start_time(pid: int) -> Optional[int]:
 def _tree_kill(pid: int, expected_start) -> None:
     """Tree-kill ``pid`` via ProcessRegistry, verifying its start time first."""
     from tools.process_registry import ProcessRegistry
-    ProcessRegistry._terminate_host_pid(pid, expected_start=expected_start)
+    ProcessRegistry.terminate_host_pid(pid, expected_start=expected_start)
 
 
 def _write_record(server: LightpandaServer) -> None:

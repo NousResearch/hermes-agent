@@ -1262,10 +1262,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 # Scope teardown is the authoritative cleanup for the worker cgroup;
                 # the systemd-run wrapper PID is terminated below as fallback.
                 _stop_systemd_unit(session.systemd_unit)
-            # _terminate_host_pid revalidates the kernel start time captured at
+            # terminate_host_pid revalidates the kernel start time captured at
             # spawn before signalling: pgid == pid would only prove the pid leads a
             # group, and a reaped child can be recycled onto an unrelated leader.
-            self._terminate_host_pid(proc.pid, session.host_start_time)
+            self.terminate_host_pid(proc.pid, session.host_start_time)
         with suppress(Exception):
             proc.wait(timeout=5)
 
@@ -2278,7 +2278,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         elif session.process:
             # Tree kill: on Windows Popen.terminate() only kills the shell wrapper and
             # leaves Git Bash descendants behind.
-            self._terminate_host_pid(session.process.pid, session.host_start_time)
+            self.terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
             session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:
@@ -2304,7 +2304,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 return result
             # Identity was just proven above. Re-passing the start time would make
             # an unreadable probe refuse the kill and leave the re-adopted child running.
-            self._terminate_host_pid(session.pid)
+            self.terminate_host_pid(session.pid)
         else:
             return {
                 # Reject non-positive timeouts — the schema declares minimum=1, but not every caller

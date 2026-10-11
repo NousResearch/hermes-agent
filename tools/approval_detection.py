@@ -477,7 +477,7 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'npm\s+' + _PKG_OPTS + r'(?:uninstall|unlink|remove|rm|r|un)\b', "package manager uninstall"),
     (_CMDPOS + r'pnpm\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm|un)\b', "package manager uninstall"),
     (_CMDPOS + r'yarn\s+' + _PKG_OPTS + r'(?:global\s+)?(?:uninstall|remove)\b', "package manager uninstall"),
-    (_CMDPOS + r'pip(?:3)?\s+' + _PKG_OPTS + r'uninstall\b', "package manager uninstall"),
+    (_CMDPOS + r'pip(?:3(?:\.\d+)?)?\s+' + _PKG_OPTS + r'uninstall\b', "package manager uninstall"),  # pip3.12 too
     (_CMDPOS + r'brew\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm)\b', "package manager uninstall"),
 ]
 

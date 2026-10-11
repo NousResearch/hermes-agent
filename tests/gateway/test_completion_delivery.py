@@ -17,6 +17,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
@@ -919,7 +920,7 @@ def test_durable_attempts_require_route_ownership(route, batch_size, isolated_re
         runner.adapters = {Platform.RELAY: adapter}
     result = asyncio.run(runner._deliver_async_delegation_group(events))
     owned = route != 'missing'
-    assert result is (True if owned else False)
+    assert result is owned
     assert adapter.handle_message.await_count == int(owned)
     for event in events:
         row = get_durable_delegation(event['delegation_id'])

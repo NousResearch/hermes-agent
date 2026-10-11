@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import contextvars
 import subprocess
 import threading
 from typing import Optional
@@ -32,7 +33,7 @@ def _close_late_session_db_result(future: concurrent.futures.Future) -> None:
 
 def defer_teardown_to_running_worker(
     future: Optional[concurrent.futures.Future], session_db, agent, job_id: str, job_name: str,
-    cron_session_id: str, workdir: Optional[str] = None,
+    cron_session_id: str, workdir: Optional[str] = None, *, on_finish=None,
 ) -> bool:
     """Return True when the worker is still running and its Future will finalize the session
     and tear the agent down on completion; False when the caller must do it now."""
@@ -46,10 +47,12 @@ def defer_teardown_to_running_worker(
                 _finalize_cron_session(session_db, agent, job_id, job_name, cron_session_id,
                                        workdir=workdir)
         finally:
-            _teardown_cron_agent(agent, job_id)
+            _teardown_cron_agent(agent, job_id, on_finish=on_finish)
+
+    context = contextvars.copy_context()
 
     # Runs inline if the worker finished between done() and here — still exactly once.
-    future.add_done_callback(_finish)
+    future.add_done_callback(lambda done: context.run(_finish, done))
     return True
 
 

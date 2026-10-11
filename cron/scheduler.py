@@ -46,8 +46,6 @@ from hermes_cli.config import (
 from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
 from hermes_time import now as _hermes_now, safe_strftime
 from agent.interrupt_compat import request_hard_interrupt
-from agent.delegation_context import (
-    enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from agent.memory_provider import ctx_bound
 from agent.session_activity import AwakeIdleMeter
 from agent.turn_failure_copy import is_max_iteration_handoff
@@ -2317,76 +2315,6 @@ _CRON_DELIVERY_VARS = (
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID")
 
 
-class _CronRunScope:
-    """Per-run ContextVar / tool-cwd scope for ``run_job`` (ContextVars, not os.environ, so
-    parallel jobs don't clobber each other). Construct before the try, ``enter()`` as its first
-    statement, ``exit()`` in the finally — every setter here has a matching reset there.
-
-    HERMES_SESSION_* are deliberately NOT seeded from job["origin"]: it is delivery metadata, not
-    a sender, and terminal/tts/skills/send_message tools would act as if the origin user were
-    driving the agent. Delivery reads job["origin"] / HERMES_CRON_AUTO_DELIVER_* directly.
-    """
-
-    def __init__(self, job: dict, job_id: str, execution_id: Optional[str]):
-        from gateway.session_context import set_session_vars, _VAR_MAP
-        from tools.terminal_tool import record_session_cwd
-
-        self._var_map = _VAR_MAP
-        # Resolve workdir BEFORE set_session_vars so it owns the _SESSION_CWD set/clear.
-        self.workdir = _resolve_job_workdir(job, job_id)
-        self._ctx_tokens = set_session_vars(
-            platform="",
-            chat_id="",
-            chat_name="",
-            # Cron can't receive completions after its turn; async delegation output could
-            # otherwise route to an unrelated chat via the ambient session key => inline delegation.
-            # We clear the HERMES_SESSION_* routing keys just below, so an async delegation's completion
-            # event carries session_key="" — _enrich_async_delegation_routing cannot resolve it and
-            # _inject_watch_notification drops it ("no routing metadata"). And by the time a child finishes,
-            # run_job has already shipped the job's final response via _deliver_result; there is no turn
-            # left to re-enter. (Worse, get_current_session_key() can fall back to the ambient os.environ
-            # HERMES_SESSION_KEY, which risks routing a cron subagent's output into an unrelated user chat.)
-            # Declaring the channel stateless routes delegate_task to its existing inline/synchronous path,
-            # so results return within the job's own turn. See declare_stateless_channel(). Upstream:
-            # #53027, #63142.
-            async_delivery=False,
-            cwd=self.workdir or "",
-        )
-        for name in _CRON_DELIVERY_VARS:
-            _VAR_MAP[name].set("")
-        # Workdir binds to the per-run task id (tool-layer cwd authority) instead of mutating
-        # global TERMINAL_CWD; _SESSION_CWD above remains the prompt/context-file authority.
-        self.task_id = f"cron:{job_id}:{execution_id or job.get('execution_id') or uuid.uuid4().hex}"
-        if self.workdir:
-            record_session_cwd(self.task_id, self.workdir)
-        self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
-        self._cron_session_token = None
-        self._non_dispatcher_token = None
-
-    def enter(self) -> None:
-        # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
-        # os.environ fallback used by standalone entrypoints/tests).
-        self._cron_session_token = self._cron_session_var.set("1")
-        # Mark NOT the kanban worker: a worker's cronjob(action="run") lands here with
-        # HERMES_KANBAN_TASK in env, and an unrelated job could close the worker's task. Must be a
-        # ContextVar, NOT an os.environ clear (env is shared with the worker heartbeat and
-        # concurrent jobs); copy_context() carries it into the agent thread.
-        self._non_dispatcher_token = enter_non_dispatcher_owned_context()
-
-    def exit(self) -> None:
-        from gateway.session_context import clear_session_vars
-        from tools.terminal_tool import clear_session_cwd
-
-        clear_session_cwd(self.task_id)
-        clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
-        if self._cron_session_token is not None:
-            self._cron_session_var.reset(self._cron_session_token)
-        if self._non_dispatcher_token is not None:
-            exit_non_dispatcher_owned_context(self._non_dispatcher_token)
-        for name in _CRON_DELIVERY_VARS:
-            self._var_map[name].set("")
-
-
 def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
     """Re-read .env for this run and publish the auto-deliver target into the session ContextVars."""
     # Reset the secret-source cache FIRST or a Bitwarden/BSM-backed secret is never re-resolved
@@ -2527,20 +2455,13 @@ def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
-    """Execute a single cron job. Returns (success, full_output_doc, final_response, error).
-    ``defer_agent_teardown``: if a list, the live agent is appended instead of torn down; the caller
-    MUST call ``_teardown_cron_agent(agent)`` AFTER delivery (a torn-down async client can't
-    deliver). ``extra_prompt``: per-fire context, never persisted.
+    """Execute one cron job; return (success, output document, final response, error).
 
-    ``defer_agent_teardown``: when a caller passes a list, ``run_job`` skips the agent's async-resource
-    teardown (``agent.close()`` + ``cleanup_stale_async_clients()``) in its ``finally`` block and instead
-    appends the live agent to that list. The caller is then responsible for calling
-    ``_teardown_cron_agent(agent)`` AFTER it has delivered the result. This closes the ordering window in
-    #58720 where delivery ran against a torn-down async client (defense-in-depth alongside the
-    interpreter-shutdown guard). When ``None`` (the default) teardown happens inline as before, so every
-    existing caller is unchanged.
-    ``extra_prompt``: optional per-run context from ``cronjob(action='run', prompt=...)`` (#57331). Appended
-    to the stored prompt for this fire only — never persisted to the job definition.
+    ``defer_agent_teardown`` collects profile-bound cleanup callables retaining the live agent
+    and its run owner. The caller MUST invoke them AFTER delivery: closing the async client first
+    races delivery (#58720). With ``None``, cleanup starts inline. A bounded cleanup timeout lets
+    the scheduler proceed; the run owner stays registered until the cleanup thread finishes.
+    ``extra_prompt`` is per-fire context from cronjob(action='run', prompt=...), never persisted.
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
@@ -2559,6 +2480,7 @@ def run_job(
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
+    from cron.scheduler_run_scope import _CronRunScope
     scope = _CronRunScope(job, job_id, execution_id)
     try:
         scope.enter()
@@ -2634,31 +2556,14 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
-        from cron.scheduler_detached_worker import defer_teardown_to_running_worker
-        _worker_teardown_deferred = defer_teardown_to_running_worker(
-            _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id,
-            workdir=scope.workdir)
-        scope.exit()
-        if _session_db and not _worker_teardown_deferred:
-            _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id,
-                                   workdir=scope.workdir)
-        # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
-        # teardown, hand the live agent back: delivery needs a live async client.
-        # Release subprocesses, terminal sandboxes, browser daemons, and the main OpenAI/httpx client held
-        # by this ephemeral cron agent. Without this, a gateway that ticks cron every N minutes leaks fds
-        # per job until it hits EMFILE (#10200 / "too many open files"). When the caller opted to defer
-        # teardown (passed a list), hand the live agent back instead of closing it here — delivery must run
-        # against a live async client, and the caller tears down afterwards (#58720).
-        if not _worker_teardown_deferred:
-            if defer_agent_teardown is not None:
-                if agent is not None:
-                    defer_agent_teardown.append(agent)
-            else:
-                _teardown_cron_agent(agent, job_id)
+        from cron.scheduler_run_cleanup import finish_run
+        finish_run(scope, _worker_state.get("future"), _session_db, agent,
+                   job_id, job_name, _cron_session_id, defer_agent_teardown)
 
 
 def _teardown_cron_agent(
-    agent, job_id: str, *, timeout_seconds: Optional[float] = None
+    agent, job_id: str, *, timeout_seconds: Optional[float] = None,
+    on_finish: Optional[Callable[[], None]] = None,
 ) -> None:
     """Release an ephemeral cron agent's async resources within a hard bound (this runs outside the
     inactivity watchdog). Shared by ``run_job``'s finally and deferred post-delivery teardown.
@@ -2667,22 +2572,12 @@ def _teardown_cron_agent(
     invoke the identical cleanup AFTER delivery. The timeout matters because this executes after
     ``run_conversation`` has returned, outside the agent inactivity watchdog.
     """
-    def _cleanup_agent() -> None:
-        try:
-            if agent is not None:
-                agent.close()
-        except (Exception, KeyboardInterrupt) as e:
-            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
-        # Worker-thread event loop dies with the executor; reap httpx clients cached under it.
-        try:
-            from agent.auxiliary_client import cleanup_stale_async_clients
-            cleanup_stale_async_clients()
-        except Exception as e:
-            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+    from functools import partial
+    from cron.scheduler_run_cleanup import close_cron_agent_resources
 
     _run_cron_cleanup_with_timeout(
-        _cleanup_agent, job_id=job_id, label="agent resource teardown",
-        timeout_seconds=timeout_seconds)
+        partial(close_cron_agent_resources, agent, job_id, on_finish=on_finish),
+        job_id=job_id, label="agent resource teardown", timeout_seconds=timeout_seconds)
 
 
 def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
@@ -3359,18 +3254,18 @@ def _run_one_job_body(
 
         _terminal_scope_token = install_profile_terminal_scope(_get_hermes_home())
         # Defer agent teardown until AFTER delivery: closing first races the live send against a
-        # torn-down async client (#58720). run_job hands the agent back via this list instead.
+        # torn-down async client (#58720). run_job hands back profile-bound cleanup actions via this list.
         _deferred_agents: list = []
 
         def _teardown_deferred() -> None:
-            # run_job's finally still hands back the agent when it raises; tear it down here so a failed run
+            # run_job's finally still queues cleanup when it raises; run it here so a failed run
             # never leaks its async resources (#10200), then re-raise into the outer handler. BaseException
             # (not just Exception) so a KeyboardInterrupt/SystemExit mid-run still triggers teardown before
             # propagating.
             # Tear down the deferred agent(s) now that save + delivery have run (or raised). Must happen on
             # every path so cron agents never leak their subprocesses/clients (#10200).
-            for _deferred_agent in _deferred_agents:
-                _teardown_cron_agent(_deferred_agent, job["id"])
+            for teardown in _deferred_agents:
+                teardown()
 
         _run_kwargs = {
             "defer_agent_teardown": _deferred_agents,
@@ -3381,7 +3276,7 @@ def _run_one_job_body(
         try:
             success, output, final_response, error = run_job(job, **_run_kwargs)
         except BaseException:
-            # run_job hands back the agent even when raising; tear down so a failed run never leaks.
+            # run_job queues cleanup even when raising; run it so a failed run never leaks.
             # BaseException so KeyboardInterrupt/SystemExit mid-run still trigger teardown.
             _teardown_deferred()
             raise

@@ -448,19 +448,34 @@ async def _advisory_pressure(status: dict[str, Any], home: Path) -> None:
             status[key] = {"pressure": "unknown"}
 
     try:
-        from hermes_state import SessionDB as _SDB
-        from hermes_constants import get_hermes_home as _ghh
-        _db_path = _ghh() / "state.db"
-        if _db_path.exists():
-            _sdb = _SDB(db_path=_db_path, read_only=True)
-            try:
-                _rebuild = _sdb.fts_rebuild_status()
-            finally:
-                _sdb.close()
-            if _rebuild is not None:
-                status["fts_rebuild"] = _rebuild
+        # Off-loop: opening state.db and reading the rebuild marker can wait on a busy writer.
+        _rebuild = await run_in_threadpool(_fts_rebuild_status)
+        if _rebuild is not None:
+            status["fts_rebuild"] = _rebuild
     except Exception:
         pass
+
+
+def _fts_rebuild_status() -> Optional[dict[str, Any]]:
+    from hermes_state import SessionDB as _SDB
+    from hermes_constants import get_hermes_home as _ghh
+    _db_path = _ghh() / "state.db"
+    if not _db_path.exists():
+        return None
+    _sdb = _SDB(db_path=_db_path, read_only=True)
+    try:
+        return _sdb.fts_rebuild_status()
+    finally:
+        _sdb.close()
+
+
+def _status_sync_reads() -> tuple[tuple[int, int], bool, str]:
+    """The blocking reads behind /api/status, run together on a worker thread: the raw
+    config.yaml parse for the schema version, the install-method probe and the auth-store
+    read. On a loaded host each can take hundreds of ms, and on the event loop that stalled
+    every websocket reply on the backend for as long."""
+    return (check_config_version(), bool(_dashboard_local_update_managed_externally()),
+            _nous_session_validity())
 
 
 @router.get("/api/status")
@@ -482,7 +497,8 @@ async def get_status(profile: Optional[str] = None):
         status_scope.__enter__()
 
     try:
-        current_ver, latest_ver = check_config_version()
+        (current_ver, latest_ver), update_managed_externally, nous_session_valid = (
+            await run_in_threadpool(_status_sync_reads))
         gateway = await _resolve_gateway_status(profile_dir, _GATEWAY_HEALTH_URL)
         gateway_running, gateway_state = gateway["gateway_running"], gateway["gateway_state"]
 
@@ -508,7 +524,7 @@ async def get_status(profile: Optional[str] = None):
         status = {
             "version": get_version_info().base_version, "release_date": __release_date__,
             "config_version": current_ver, "latest_config_version": latest_ver,
-            "can_update_hermes": not _dashboard_local_update_managed_externally(),
+            "can_update_hermes": not update_managed_externally,
             "gateway_running": gateway_running, "gateway_state": gateway_state,
             "gateway_platforms": gateway["gateway_platforms"],
             "gateway_exit_reason": gateway["gateway_exit_reason"],
@@ -525,7 +541,7 @@ async def get_status(profile: Optional[str] = None):
             "gateway_drainable": derive_gateway_drainable(
                 gateway_running=gateway_running, gateway_state=gateway_state),
             "restart_drain_timeout": restart_drain_timeout, "active_sessions": active_sessions,
-            **auth, "nous_session_valid": _nous_session_validity()}
+            **auth, "nous_session_valid": nous_session_valid}
 
         # Stable per-install identity (first call may touch disk). Omitted (not null) when
         # unpersistable so older-client behavior and the no-identity fallback stay identical.

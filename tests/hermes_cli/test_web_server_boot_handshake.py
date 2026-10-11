@@ -177,6 +177,82 @@ def test_get_status_does_not_block_event_loop():
         f"/api/status returned {results.get('status_code')} instead of 200"
     )
 
+def _status_loop_max_gap(slow_patches) -> tuple[float, int]:
+    """Run /api/status with ``slow_patches`` applied while a ticker measures the largest gap
+    between event-loop wakeups. Returns ``(max_gap_seconds, status_code)``."""
+    import contextlib
+
+    import httpx
+
+    out: dict[str, float] = {}
+
+    async def _run():
+        done = asyncio.Event()
+        gaps: list[float] = []
+
+        async def _ticker():
+            last = time.perf_counter()
+            while not done.is_set():
+                await asyncio.sleep(0.01)
+                now = time.perf_counter()
+                gaps.append(now - last)
+                last = now
+
+        transport = httpx.ASGITransport(app=web_server_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # Warm-up request: first-call imports are a one-time cost, not what is measured here.
+            await client.get("/api/status", timeout=SLOW_SECONDS + 10)
+            ticker = asyncio.create_task(_ticker())
+            await asyncio.sleep(0.05)
+            r = await client.get("/api/status", timeout=SLOW_SECONDS + 10)
+            done.set()
+            await ticker
+        out["gap"], out["code"] = max(gaps), r.status_code
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(_web_server_lifecycle, "_resolve_restart_drain_timeout", lambda: 180.0))
+        for target, name, replacement in slow_patches:
+            stack.enter_context(patch.object(target, name, replacement))
+        asyncio.run(_run())
+    return out["gap"], int(out["code"])
+
+
+def _sleeping(result):
+    def _slow(*_args, **_kwargs):
+        time.sleep(SLOW_SECONDS)
+        return result
+    return _slow
+
+
+def test_get_status_parses_config_version_off_the_event_loop():
+    """The raw config.yaml parse behind ``config_version`` ran on the loop, so every
+    /api/status poll on a loaded host froze websocket replies for the length of the parse."""
+    import hermes_cli.config as config_mod
+
+    gap, code = _status_loop_max_gap([(config_mod, "check_config_version", _sleeping((1, 1)))])
+    assert code == 200
+    assert gap < SLOW_SECONDS * 0.5, f"event loop stalled {gap:.2f}s during /api/status"
+
+
+def test_get_status_reads_auth_validity_off_the_event_loop():
+    import hermes_cli.auth as auth_mod
+
+    gap, code = _status_loop_max_gap([(auth_mod, "get_nous_session_validity", _sleeping("unknown"))])
+    assert code == 200
+    assert gap < SLOW_SECONDS * 0.5, f"event loop stalled {gap:.2f}s during /api/status"
+
+
+def test_get_status_opens_state_db_for_fts_status_off_the_event_loop():
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=get_hermes_home() / "state.db")
+    db.close()
+    gap, code = _status_loop_max_gap([(SessionDB, "fts_rebuild_status", _sleeping(None))])
+    assert code == 200
+    assert gap < SLOW_SECONDS * 0.5, f"event loop stalled {gap:.2f}s during /api/status"
+
+
 # ---------------------------------------------------------------------------
 # Test 3 — no orphan accumulation: concurrent probes all receive 200
 # ---------------------------------------------------------------------------

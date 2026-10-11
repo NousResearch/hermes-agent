@@ -246,7 +246,16 @@ def build_inspection_js(nonce: str) -> str:
 
 _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
-  const elements = Array.from(document.querySelectorAll("input, select"));
+  // Shadow-piercing collect: many logins (Home Assistant, custom-element SPAs) render their
+  // form inside a shadow root, where document.querySelectorAll never sees it. Walk every
+  // element (shadow hosts can be anything, not just inputs) and recurse into open shadow roots.
+  const elements = [];
+  (function walk(root) {
+    for (const e of root.querySelectorAll("*")) {
+      if (e.tagName === "INPUT" || e.tagName === "SELECT") elements.push(e);
+      if (e.shadowRoot) walk(e.shadowRoot);
+    }
+  })(document);
   const forms = Array.from(document.forms);
   elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
@@ -306,10 +315,21 @@ _FILL_JS_TEMPLATE = """(() => {
   }
   const fills = __FILLS__;
   const nonce = __NONCE__;
+  // Shadow-piercing lookup: stamped controls may live inside a shadow root (see the
+  // shadow-piercing collect in the inspection script), so plain document.querySelector
+  // would never find them.
+  const shadowQuery = (selector) => {
+    const out = [];
+    (function walk(root) {
+      for (const n of root.querySelectorAll(selector)) out.push(n);
+      for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
+    })(document);
+    return out;
+  };
   let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
-    const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
+    const el = shadowQuery('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
     if (!el || (f.token === "current-password" && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
@@ -327,6 +347,6 @@ _FILL_JS_TEMPLATE = """(() => {
       if (el.value.length > 0) filled += 1;
     } catch (e) { /* skip */ }
   }
-  document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  shadowQuery("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
   return JSON.stringify({ filled });
 })()"""

@@ -61,6 +61,17 @@ def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    # Camofox mode: the agent-browser CLI has no eval, and the supervisor (if one
+    # was attached mid-flow via the `get cdp-url` auto-attach) points at the
+    # packaged agent-browser Chromium — not the Camofox tab the user is looking
+    # at. Prefer Camofox's REST endpoint outright when it's the active mode.
+    if _camofox_active():
+        res = _camofox_eval_res(task_id, expression)
+        if res is not None:
+            return res
+        # res is None when this Camofox server has no /tabs/{id}/evaluate
+        # endpoint — fall through to the other paths.
+
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
@@ -116,6 +127,110 @@ def _ensure_supervisor(task_id: str):
         return None
 
 
+def _camofox_active() -> bool:
+    """True when the browser_* tools drive Camofox (REST-only, no CDP supervisor).
+
+    Centralized mode probe: a missing/broken Camofox module is "not Camofox
+    mode", so callers can branch without their own defensive try/except."""
+    try:
+        from tools.browser_camofox import is_camofox_mode
+
+        return bool(is_camofox_mode())
+    except Exception:  # health: allow BLE001 -- mode probe: any failure means "not Camofox mode"
+        return False
+
+
+def _camofox_resync_tab(task_id: str) -> bool:
+    """Refresh the session's tab_id from the Camofox server.
+
+    The server garbage-collects idle tabs while the session map keeps the stale id,
+    and _adopt_existing_tab only rehydrates when tab_id is EMPTY — a dead-but-present
+    id is never corrected, so eval then hits a tab the page no longer is (or a dead
+    one). List the session's live tabs (userId + listItemId are the integration's
+    ownership keys, exactly like _adopt_existing_tab) and prefer a live one:
+    a session_key-matched tab first, else the most recent. Returns True when a live
+    tab is now tracked."""
+    try:
+        from tools.browser_camofox import _get, _get_session, _user_params
+
+        session = _get_session(task_id or "default")
+        live = _get("/tabs", params=_user_params(session), timeout=5).get("tabs", [])
+        dict_tabs = [t for t in live if isinstance(t, dict) and t.get("tabId")]
+        if not dict_tabs:
+            return False
+        current = session.get("tab_id")
+        if current and any(t.get("tabId") == current for t in dict_tabs):
+            return True  # the tracked tab is still alive — don't wander
+        # Pick deterministically: a session_key-matched tab is the integration's
+        # own; otherwise the newest server-side (the server lists tabs in
+        # creation order — the API returns no timestamps). Never a stale older
+        # orphan.
+        candidates = [t for t in dict_tabs if t.get("listItemId") == session.get("session_key")] or dict_tabs
+        tab_id = candidates[-1].get("tabId")
+        if isinstance(tab_id, str) and tab_id:
+            session["tab_id"] = tab_id
+            return True
+    except Exception as exc:  # health: allow BLE001 -- best-effort tab resync: a failed list means "keep the tracked id", never fatal
+        logger.debug("vault fill: camofox tab resync failed (%s)", exc)
+    return False
+
+
+def _camofox_eval_res(task_id: str, expression: str) -> Optional[Dict[str, Any]]:
+    """Evaluate non-secret JS via Camofox's /tabs/{id}/evaluate REST endpoint.
+
+    Mirrors ``browser_tool._camofox_eval`` (the path browser_console uses, which
+    works headless) but returns the raw value so the fill-script nonce contract
+    still holds. Uses the session's tab and recreates one only when the server
+    reports it gone (a dead-but-present id evaluates against a stale page — the
+    exact failure mode of the pre-fix "could not determine page origin"); the
+    recreation mirrors camofox_navigate's 404 handling. Returns None when this
+    Camofox server has no evaluate endpoint (404/405/501 on the EVALUATE call)
+    so the caller can fall through to the CLI path."""
+    from tools.browser_camofox import _ensure_tab, _post, _tab_path
+    from tools.browser_tool import _parse_eval_value
+    import requests as _requests
+
+    _camofox_resync_tab(task_id)
+    session = _ensure_tab(task_id or "default")
+    tab_id = session.get("tab_id") or session.get("id")
+    if not tab_id:
+        return None
+    try:
+        resp = _post(_tab_path(session, "evaluate"),
+                     {"expression": expression, "userId": session["user_id"]})
+    except _requests.HTTPError as exc:
+        # Tab itself is gone (server GC'd it) — recreate once and retry, exactly
+        # like camofox_navigate's dead-tab recovery.
+        if exc.response is not None and exc.response.status_code == 404:
+            session["tab_id"] = None
+            session = _ensure_tab(task_id or "default")
+            tab_id = session.get("tab_id") or session.get("id")
+            if not tab_id:
+                return None
+            try:
+                resp = _post(_tab_path(session, "evaluate"),
+                             {"expression": expression, "userId": session["user_id"]})
+            except Exception as inner:
+                if any(code in str(inner) for code in ("404", "405", "501")):
+                    return None
+                raise inner
+        else:
+            if any(code in str(exc) for code in ("404", "405", "501")):
+                return None
+            raise
+    except Exception as exc:
+        if any(code in str(exc) for code in ("404", "405", "501")):
+            return None
+        raise
+    raw = resp.get("result") if isinstance(resp, dict) else resp
+    parsed = _parse_eval_value(raw)
+    if isinstance(parsed, dict) and parsed.get("success") is False:
+        return {"success": False, "error": str(parsed.get("error") or "eval failed")}
+    if isinstance(parsed, dict) and "result" in parsed:
+        parsed = parsed.get("result")
+    return {"success": True, "result": parsed}
+
+
 def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
@@ -125,6 +240,21 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
     """
+    # Camofox mode: its tab lives behind the Camofox REST API, not behind the
+    # agent-browser/CDP supervisor (which, if the `get cdp-url` auto-attach ran,
+    # points at a different, packaged Chromium). Prefer Camofox's auth'd REST
+    # body — never subprocess argv — and skip the supervisor entirely.
+    if _camofox_active():
+        res = _camofox_eval_res(task_id, expression)
+        if res is not None:
+            if res.get("success"):
+                return res
+            return {
+                "success": False,
+                "error_type": "eval_failed",
+                "error": str(res.get("error") or "eval failed"),
+            }
+
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception as exc:
@@ -397,6 +527,43 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
                        "next": "Submit the form (many sites auto-submit when the last digit lands)."})
 
 
+def _resolve_fill_origin(
+    effective_task_id: str,
+    allowed: list[str],
+    kind: str,
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Pre-check for browser_vault_fill: resolve the current page origin against the
+    vault item's allowed origins. Returns (origin, error_dict) — exactly one is None.
+
+    In Camofox mode the tab lives behind the Camofox REST API, not the
+    agent-browser supervisor — and _focus_bound_origin's supervisor auto-attach
+    (`get cdp-url`) spawns/keeps a second, packaged Chromium alive for no
+    benefit. Skip it there; the Camofox eval is authoritative."""
+    page_origin = None
+    if not _camofox_active():
+        for candidate in allowed:
+            page_origin = _focus_bound_origin(effective_task_id, candidate, kind)
+            if page_origin:
+                break
+    page_origin = page_origin or _current_page_origin(effective_task_id)
+    if not page_origin:
+        return None, {
+            "success": False,
+            "error": "Could not determine the current page origin. Navigate to the login page first.",
+        }
+    if page_origin not in allowed:
+        return None, {
+            "success": False,
+            "error_type": "origin_mismatch",
+            "error": (
+                f"Refused: current page origin ({page_origin}) does not match "
+                f"the vault item's bound origin(s) ({', '.join(allowed)}). Vault fills "
+                "only run on the exact origin(s) the credential was saved for."
+            ),
+        }
+    return page_origin, None
+
+
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     """Fill the current page's password field from a vault handle.
 
@@ -455,28 +622,10 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # every saved origin is a valid fill target. Matching stays exact-origin —
     # nothing wildcard/parent-domain is ever inferred.
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
-    page_origin = None
-    for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
-            break
-    page_origin = page_origin or _current_page_origin(effective_task_id)
-    if not page_origin:
-        return json.dumps(
-            {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
-        )
-    if page_origin not in allowed:
-        return json.dumps(
-            {
-                "success": False,
-                "error_type": "origin_mismatch",
-                "error": (
-                    f"Refused: current page origin ({page_origin}) does not match "
-                    f"the vault item's bound origin(s) ({', '.join(allowed)}). Vault fills "
-                    "only run on the exact origin(s) the credential was saved for."
-                ),
-            }
-        )
+    page_origin, origin_error = _resolve_fill_origin(effective_task_id, allowed, meta.kind)
+    if origin_error is not None:
+        return json.dumps(origin_error)
+    assert page_origin is not None  # _resolve_fill_origin returns exactly one None
 
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps

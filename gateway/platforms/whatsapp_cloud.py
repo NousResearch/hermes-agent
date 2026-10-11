@@ -535,7 +535,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None, f"File {os.path.basename(file_path)} is {size} bytes; Cloud API {media_kind} cap is {cap} bytes"
         mime_type = mime_type or mimetypes.guess_type(file_path)[0] or _DEFAULT_MIME.get(media_kind, "application/octet-stream")
         try:
-            with open(file_path, "rb") as fh:
+            with open(file_path, "rb") as fh:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                 files = {"file": (os.path.basename(file_path), fh, mime_type), "messaging_product": (None, "whatsapp"), "type": (None, mime_type)}
                 resp = await self._http_client.post(self._graph_url("media"), headers=self._auth_headers(json_body=False), files=files)
         except Exception as exc:

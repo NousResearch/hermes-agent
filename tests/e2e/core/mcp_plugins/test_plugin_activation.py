@@ -137,7 +137,7 @@ def test_plugin_sandbox_selects_real_pm_tools_offline(tmp_path: Path) -> None:
     child = subprocess.run([sys.executable, "-c",
                             "from pm._uv import _toolchain; assert _toolchain(realize=False) is not None"],
                            env=eh.env({"HERMES_DISABLE_LAZY_INSTALLS": "1"}), cwd=eh.project,
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr
 
 
@@ -284,7 +284,7 @@ def name_collision(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         backup = write_portable_plugin(eh, "foo.bak-x", {"srv": portable_stdio(
             root / "backup.jsonl", eh.tag, MCPE2E_CANARY="CANARY-BACKUP")}, name="foo", version="1.0.0")
         listing = subprocess.run(hermes_argv("plugins", "list", "--plain", "--no-bundled"), cwd=eh.project,
-                                 env=eh.env(), capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+                                 env=eh.env(), capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL, check=False)
         assert listing.returncode == 0, listing.stderr[-2000:]
         try:
             turn = run_chat_q(eh, "Use the foo plugin.")

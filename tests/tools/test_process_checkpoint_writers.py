@@ -84,6 +84,27 @@ def test_gateway_recovery_takes_only_dead_writers_jobs_and_its_shutdown_spares_l
                 writer.wait(timeout=30)
 
 
+@pytest.mark.live_system_guard_bypass
+def test_another_processs_checkpoint_keeps_a_live_writers_running_job():
+    """Two CLIs on one profile: the second one's checkpoint (no jobs of its own) must not erase
+    the first one's running watcher, which tools reading processes.json still need to see."""
+    from tools.process_registry import _checkpoint_path
+
+    live_writer = job = None
+    try:
+        live_writer, job = _start_writer("cli-a", "stay")
+        ProcessRegistry()._write_checkpoint()  # the other CLI finishing its own job
+
+        entries = json.loads(_checkpoint_path().read_text(encoding="utf-8"))
+        assert [e["session_id"] for e in entries] == [job["session_id"]]
+    finally:
+        if job:
+            ProcessRegistry._terminate_host_pid(job["pid"], job["start"])
+        if live_writer is not None and live_writer.poll() is None and live_writer.stdin:
+            live_writer.stdin.close()
+            live_writer.wait(timeout=30)
+
+
 def test_a_writer_on_a_recycled_pid_keeps_the_dead_writers_unfingerprinted_entries():
     """A crashed writer whose start time was unreadable left entries under a PID the kernel has
     since given to this process; this process's checkpoint must not take them for its own."""
@@ -119,7 +140,8 @@ def test_detached_finish_never_replaces_the_producers_saved_result():
         job.stdin.write("OK-42\n")
         job.stdin.close()
         assert session._completion_event.wait(timeout=30)
-        assert adopter.get(session.id).exited
+        refreshed = adopter.get(session.id)  # a gone recovered PID is pruned, not given an exit
+        assert refreshed is None or refreshed.exited
 
         from hermes_constants import get_hermes_home
         receipt = json.loads((get_hermes_home() / "logs" / "process-results" / f"{session.id}.json")

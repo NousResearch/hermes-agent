@@ -188,13 +188,18 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
     import json
     import tempfile
 
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_default_hermes_root
 
     root = install_root() if project_root is None else Path(project_root)
 
-    # The blessed roots: the canonical locations installers create.
+    # The blessed roots: the canonical locations installers create. Installers create the
+    # checkout under the INSTALL ROOT, never under a profile (no installer writes
+    # ``profiles/<name>/hermes-agent``), and this step runs in the pre-profile bootstrap phase
+    # where ``get_hermes_home()`` would both warn "wrong profile" and -- once a profile home IS
+    # exported -- miss the real blessed root, leaving a shipped install unstamped and `hermes
+    # update` refusing it. ``get_default_hermes_root()`` keeps an explicit custom root as-is.
     blessed = (
-        get_hermes_home() / "hermes-agent",
+        get_default_hermes_root() / "hermes-agent",
         Path("/usr/local/lib/hermes-agent"),
     )
 

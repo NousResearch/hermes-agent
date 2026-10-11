@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import sys
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
@@ -235,6 +235,30 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         pass
 
 
+@contextmanager
+def _console_log_handlers_muted():
+    """Mute console log handlers (``-v``, ``HERMES_PLUGINS_DEBUG``) while leaving file logging on.
+
+    Not ``logging.disable()``: that gate sits in ``Logger.isEnabledFor`` ahead of every handler,
+    so it also kept every record out of agent.log / errors.log. Handlers created during the run
+    bind to the devnull redirect instead.
+    """
+    loggers = [logging.getLogger(), *logging.Logger.manager.loggerDict.values()]
+    muted = [
+        (handler, handler.level)
+        for lg in loggers
+        for handler in getattr(lg, "handlers", ())  # loggerDict also holds PlaceHolders
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
+    ]
+    for handler, _ in muted:
+        handler.setLevel(logging.CRITICAL + 1)
+    try:
+        yield
+    finally:
+        for handler, level in muted:
+            handler.setLevel(level)
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -252,10 +276,6 @@ def run_oneshot(
     the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
     by this turn. Returns the exit code; the caller owns process termination.
     """
-    # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
-    # root logger. File handlers from setup_logging() keep working (level-independent).
-    logging.disable(logging.CRITICAL)
-
     # --provider without --model is ambiguous (the provider may not host the configured model, and
     # picking its catalog default hides the mismatch). Validate BEFORE the stderr redirect.
     env_model_early = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
@@ -284,15 +304,17 @@ def run_oneshot(
     # subagent result discarded. Stateless routes it to the inline/synchronous path.
     declare_stateless_channel()
 
-    # Redirect stderr AND stdout for the entire call tree; the final response goes to the real
-    # stdout at the end.
+    # Redirect stderr AND stdout for the entire call tree and mute console log handlers (AIAgent,
+    # tools and provider adapters log through the root logger); the final response goes to the
+    # real stdout at the end.
     real_stdout = sys.stdout
     real_stderr = sys.stderr
 
     response: Optional[str] = None
     result: dict = {}
     failure: BaseException | None = None
-    with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
+    with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull), \
+            _console_log_handlers_muted():
         try:
             response, result = _run_agent(
                 prompt,

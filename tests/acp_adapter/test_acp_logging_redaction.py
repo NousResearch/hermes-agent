@@ -1,6 +1,6 @@
 """ACP adapter stderr logging must go through RedactingFormatter.
 
-``_setup_logging`` clears root handlers and installs its own stderr handler;
+``_setup_logging`` replaces the root console handlers with its own stderr handler;
 before the fix it used a plain ``logging.Formatter`` — zero redaction on a
 surface that logs request/response internals. See issue #77484.
 """
@@ -19,7 +19,7 @@ def test_acp_stderr_handler_redacts_secrets():
         _setup_logging()
         root = logging.getLogger()
         assert root.handlers, "ACP logging setup installed no handler"
-        handler = root.handlers[0]
+        handler = root.handlers[-1]  # appended after any kept Hermes file-queue handler
         assert isinstance(handler, logging.StreamHandler)
         record = logging.LogRecord(
             name="acp.test",

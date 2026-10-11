@@ -387,7 +387,10 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
 
     See #97052.
     """
-    from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
+    from hermes_cli.update_cmd import (
+        _count_commits_between, _fetch_is_rate_limited, _has_upstream_remote, _no_prompt_git_kwargs, _retry_on_rate_limit,
+        _should_skip_upstream_prompt,
+    )
     from hermes_cli.update_cmd_check import tracking_refspec
     from hermes_cli.update_custody import run_git
     if not _has_upstream_remote(git_cmd, cwd) and (
@@ -395,10 +398,15 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     ):
         return False
     print("\n→ Fetching upstream...")
-    try:
-        run_git(git_cmd, ["fetch", "upstream", tracking_refspec("upstream", "main"), "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
-    except subprocess.CalledProcessError:
-        print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
+    fetch = _retry_on_rate_limit(lambda: run_git(
+        git_cmd, ["fetch", "upstream", tracking_refspec("upstream", "main"), "--quiet"],
+        cwd=cwd, capture_output=True, text=True, check=False, **_no_prompt_git_kwargs(),
+    ))
+    if fetch.returncode != 0:
+        if _fetch_is_rate_limited(fetch.stderr):
+            print("  ✗ Upstream is still rate-limiting fetches (HTTP 429). Skipping upstream sync; retry later.")
+        else:
+            print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return False
     # One commit for the whole sync (m2): the short `upstream/main` also names a local branch of
     # that name, so the count and the merge could each see a different commit.

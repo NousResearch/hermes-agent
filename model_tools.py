@@ -885,6 +885,11 @@ def handle_function_call(
     it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
     bridge catalog to this session's grant (None = unrestricted).
     """
+    if function_name == "drive_preview" and isinstance(function_args, dict):
+        from tools.preview_validation import preview_drag_error
+        error = preview_drag_error(function_args)
+        if error:
+            return tool_error(error)
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}

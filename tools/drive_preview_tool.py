@@ -11,9 +11,10 @@ the platform-injected callback. ``desktop_ui`` toolset: desktop-sourced sessions
 from typing import Callable, Optional
 
 from tools.desktop_ui import passthrough_json
+from tools.preview_validation import preview_drag_error
 from tools.registry import registry, tool_error
 
-ACTIONS = ("elements", "click", "hover", "type", "scroll", "press", "strobe", "back", "forward", "reload")
+ACTIONS = ("elements", "click", "drag", "hover", "type", "scroll", "press", "strobe", "back", "forward", "reload")
 SCROLL_TO = ("top", "bottom")
 
 # Verbs that need something to act on — a ref from the last inventory, or a
@@ -21,7 +22,7 @@ SCROLL_TO = ("top", "bottom")
 NEEDS_TARGET = ("click", "hover", "type", "press")
 
 
-def drive_preview_tool(
+def _drive_preview_tool(
     action: str = "", ref: Optional[str] = None, selector: Optional[str] = None, text: Optional[str] = None,
     key: Optional[str] = None, submit: Optional[bool] = None, amount: Optional[int] = None,
     to: Optional[str] = None, limit: Optional[int] = None, full: Optional[bool] = None,
@@ -61,6 +62,32 @@ def drive_preview_tool(
     return passthrough_json(raw)
 
 
+def drive_preview_tool(action: str = "", callback: Optional[Callable] = None, **fields) -> str:
+    """Keyword entry point; keep raw presence/types for the shared dispatcher."""
+    if "limit" in fields:
+        fields["max"] = fields.pop("limit")
+    return dispatch_drive_preview({"action": action, **fields}, callback)
+
+
+def dispatch_drive_preview(args: dict, callback: Optional[Callable] = None) -> str:
+    """Both registry and inline dispatch retain and validate the entire raw payload."""
+    error = preview_drag_error(args)
+    if error:
+        return tool_error(error)
+    if isinstance(args.get("action"), str) and args["action"].strip().lower() == "drag":
+        if callback is None:
+            return tool_error("drive_preview is only available in the Hermes desktop app.")
+        try:
+            raw = callback({**args, "action": "drag"})
+        except Exception as exc:
+            return tool_error(f"Failed to act on the in-app browser: {exc}")
+        return passthrough_json(raw) if raw else tool_error("No GUI window answered with a page.")
+    fields = {k: args[k] for k in (
+        "action", "ref", "selector", "text", "key", "submit", "amount", "to", "full", "allow_shortcut"
+    ) if k in args}
+    return _drive_preview_tool(**fields, limit=args.get("max"), callback=callback)
+
+
 ACT_PREVIEW_SCHEMA = {
     "name": "drive_preview",
     # Response-shape teaching kept only where skipping it wastes calls (delta
@@ -79,7 +106,10 @@ ACT_PREVIEW_SCHEMA = {
         "'rebound' as ref lists ('rebound' needs nothing from you — the ref "
         "already follows the rebuilt element). Anything unmentioned is "
         "unchanged; do not re-read to check. Input is real (pointer travels, "
-        "hover menus open). Actions: elements, click, hover (park the "
+        "hover menus open). drag: exactly one ref or selector, and finite dx/dy "
+        "in guest CSS pixels (each within ±2000, not both zero). Native input delivery "
+        "does not prove application state changed; file/DataTransfer drops are not supported. "
+        "Actions: elements, click, drag, hover (park the "
         "pointer — opens dropdowns before clicking in), type (submit=true "
         "also presses Enter), scroll, press, strobe (visual flourish only — "
         "one call runs a multi-second burst; never loop it), back/forward/"
@@ -104,6 +134,8 @@ ACT_PREVIEW_SCHEMA = {
                 "type": "string",
                 "description": "CSS selector fallback. Prefer ref.",
             },
+            "dx": {"type": "number", "minimum": -2000, "maximum": 2000, "description": "drag: horizontal CSS-pixel delta."},
+            "dy": {"type": "number", "minimum": -2000, "maximum": 2000, "description": "drag: vertical CSS-pixel delta."},
             "text": {"type": "string", "description": "type: the text."},
             "submit": {
                 "type": "boolean",
@@ -144,9 +176,5 @@ registry.register(
     name="drive_preview",
     toolset="desktop_ui",
     schema=ACT_PREVIEW_SCHEMA,
-    handler=lambda args, **kw: drive_preview_tool(
-        action=args.get("action", ""), limit=args.get("max"), callback=kw.get("callback"),
-        **{k: args.get(k) for k in (
-            "ref", "selector", "text", "key", "submit", "amount", "to", "full", "allow_shortcut")},
-    ),
+    handler=lambda args, **kw: dispatch_drive_preview(args, callback=kw.get("callback")),
     emoji="🖱️")

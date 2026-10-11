@@ -71,7 +71,8 @@ import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
-import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
+import { type PreviewInputEvent, registerPreviewInput } from './preview-input'
+import { capturePreviewGuest, type PreviewGuest } from './preview-input-guest'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
 import { registerPreviewScriptRunner } from './preview-script-runner'
@@ -886,31 +887,19 @@ export function PreviewPane({
       return
     }
 
-    return registerPreviewInput(tabId, {
-      focus: () => {
+    return registerPreviewInput(tabId, () => capturePreviewGuest(
+      () => {
         const webview = webviewRef.current
 
-        // Trusted input still reaches the guest while hidden. Focusing the
-        // webview element would steal the host's composer focus even when inert.
-        if (webview && !isElementInHiddenPane(webview)) {
-          webview.focus?.()
+        if (!webview?.sendInputEvent || !webview.executeJavaScript || !webview.getWebContentsId) {
+          return null
         }
+
+        return webview as PreviewWebview & PreviewGuest
       },
-      send: event => {
-        const webview = webviewRef.current
-
-        // Never optional-chain this call away: a missing method would make every
-        // agent click a silent no-op that still reports success, because the
-        // overlay and the read-back both run on the separate script channel.
-        if (typeof webview?.sendInputEvent !== 'function') {
-          throw new Error('preview webview cannot take input events')
-        }
-
-        // The guest keeps its own (per-host) zoom, which the act engine's CSS
-        // measurements do not include — ask the webview, not the window.
-        webview.sendInputEvent(toWebviewInputSpace(event, webview.getZoomFactor?.()))
-      }
-    })
+      // Hidden guests must not steal the host composer's focus.
+      guest => !isElementInHiddenPane(guest)
+    ))
   }, [isRemoteHtml, isWebPreview, tabId])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)

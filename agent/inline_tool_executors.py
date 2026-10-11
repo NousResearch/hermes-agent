@@ -256,11 +256,8 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
         ("start_line", "start_line"), ("count", "count"),
     ),
     "desktop_preview": _desktop_preview,
-    "drive_preview": _callback_tool(
-        "tools.drive_preview_tool", "drive_preview_tool", "drive_preview_callback",
-        ("action", "action", ""), ("ref", "ref"), ("selector", "selector"), ("text", "text"),
-        ("key", "key"), ("submit", "submit"), ("amount", "amount"), ("to", "to"), ("limit", "max"),
-    ),
+    "drive_preview": lambda agent, args, ctx: import_module("tools.drive_preview_tool").dispatch_drive_preview(
+        args, callback=getattr(agent, "drive_preview_callback", None)),
     "annotate_preview": _callback_tool(
         "tools.annotate_preview_tool", "annotate_preview_tool", "drive_preview_callback",
         ("action", "action", "add"), ("ref", "ref"), ("selector", "selector"), ("label", "label"),
@@ -291,6 +288,12 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
 
 def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
     def _exec(agent, args: dict, ctx: InlineToolContext) -> Any:
+        if name == "drive_preview":
+            from tools.preview_validation import preview_drag_error
+            from tools.registry import tool_error
+            error = preview_drag_error(args)
+            if error:
+                return tool_error(error)
         return executor(agent, coerce_tool_args(name, args), ctx)
     return _exec
 

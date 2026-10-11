@@ -146,13 +146,18 @@ class HostedRoomAuthorityRPC:
         if any(row['status'] == 'unknown' for row, _, _ in rows):
             raise RuntimeStoreError('unknown_execution')
         from gateway.session_hosted_attachments import submission_payload
-        payload = await asyncio.to_thread(
-            submission_payload, self, params['prompt'], params.get('attachments'))
-        authorize_write = self.authorize_write
-        receipt = await self.authority.submit(self.principal, Submission(
-            request_id, self.ref, payload, 'queue'),
-            _authorize_write=(lambda conn: authorize_write(conn, task, generation))
-            if authorize_write is not None else None)
+        from gateway.session_ingress_media import capture_lease
+        # One lease from capture through the admission commit: documents ride in the prompt text,
+        # so submit's own lease does not hold them, and an older row's release could unlink a
+        # shared content-addressed capture in between.
+        with capture_lease():
+            payload = await asyncio.to_thread(
+                submission_payload, self, params['prompt'], params.get('attachments'))
+            authorize_write = self.authorize_write
+            receipt = await self.authority.submit(self.principal, Submission(
+                request_id, self.ref, payload, 'queue'),
+                _authorize_write=(lambda conn: authorize_write(conn, task, generation))
+                if authorize_write is not None else None)
         self.callbacks[receipt.admission_id] = params['on_terminal']
         if receipt.status in {'queued', 'started'}:
             waiter = self.authority.waiters.get(receipt.admission_id)

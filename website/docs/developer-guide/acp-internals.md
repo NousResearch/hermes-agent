@@ -149,6 +149,18 @@ repair is session rotation, not another row.
 - calls `agent.interrupt()` when available
 - causes the prompt response to return `stop_reason="cancelled"`
 
+### Stop reasons
+
+`acp_adapter/stop_reason.py::acp_stop_reason` maps the turn result onto the ACP vocabulary so
+a client can tell a finished answer from one that was cut short:
+
+| `stop_reason` | When |
+|---|---|
+| `cancelled` | the client cancelled the turn (wins over every other verdict) |
+| `max_tokens` | the model hit its output cap and every continuation attempt was exhausted (`failure_reason="truncated"`) |
+| `max_turn_requests` | Hermes' iteration budget ended the turn with a summary (`turn_exit_reason="max_iterations_reached(N/N)"`) |
+| `end_turn` | everything else, including transport failures (those are reported in the message, not the stop reason) |
+
 ### Forking
 
 `fork_session()` deep-copies message history into a new live session, preserving conversation state while giving the fork its own session ID and cwd.

@@ -35,6 +35,7 @@ from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.stop_reason import acp_stop_reason
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
 from agent.interrupt_compat import request_hard_interrupt
@@ -1003,7 +1004,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
         await self._send_usage_update(state)
-        return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
+        return PromptResponse(stop_reason=acp_stop_reason(result, cancelled=cancelled), usage=usage)
 
     async def _drain_queued_prompts(self, state: SessionState, session_id: str, conn: Any) -> None:
         """Run queued prompts while the session is idle. Reached from ``_finish_turn`` and

@@ -968,7 +968,12 @@ class GatewayNotificationsMixin:
                     _served_notice_target_key(
                         profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
                     for profile, platform, cfg in self._served_home_channel_configs()
-                    if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
+                    if (
+                        cfg.enabled
+                        and cfg.home_channel
+                        and cfg.home_channel.chat_id
+                        and cfg.gateway_restart_notification
+                    )
                 }
                 delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
                 if owed <= delivered:

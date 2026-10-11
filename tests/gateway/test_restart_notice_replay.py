@@ -128,3 +128,44 @@ async def test_partial_delivery_is_persisted_and_not_repeated(boot_notice):
     # Nothing pending: a later reconnect stays silent.
     await _reconnect(recovered, Platform.DISCORD, discord)
     discord.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_live_home_does_not_block_other_startup_notices(boot_notice):
+    runner, marker = boot_notice
+    broken = _adapter()
+    broken.send.return_value = SendResult(success=False, error="permanent failure")
+    reachable = _adapter()
+    runner.config.platforms[Platform.TELEGRAM] = PlatformConfig(
+        enabled=True,
+        home_channel=HomeChannel(platform=Platform.TELEGRAM, chat_id="reachable-home", name="Reachable"),
+    )
+    runner.adapters[Platform.DISCORD] = broken
+    runner.adapters[Platform.TELEGRAM] = reachable
+
+    await _boot(runner)
+
+    broken.send.assert_awaited_once()
+    reachable.send.assert_awaited_once()
+    assert json.loads(marker.read_text(encoding="utf-8"))["delivered_targets"] == [
+        ["telegram", "reachable-home", None]
+    ]
+
+    # A transient live-transport failure must remain pending so reconnect replay can deliver it.
+    recovered = _adapter()
+    await _reconnect(runner, Platform.DISCORD, recovered)
+
+    recovered.send.assert_awaited_once()
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_disabled_home_is_not_owed(boot_notice):
+    runner, marker = boot_notice
+    runner.config.platforms[Platform.DISCORD].enabled = False
+    runner.adapters[Platform.DISCORD] = _adapter()
+
+    await _boot(runner)
+
+    runner.adapters[Platform.DISCORD].send.assert_not_called()
+    assert not marker.exists()

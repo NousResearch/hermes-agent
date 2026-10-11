@@ -9,14 +9,14 @@
 # variables tests/tools/test_ssh_environment.py reads (appended to $GITHUB_ENV
 # too when it is set). `docker rm -f hermes-test-sshd` stops it.
 #
-# The image is a plain Debian with GNU tar and bash, the shape of a real remote
-# host (the backend's file sync uses `tar --no-overwrite-dir`). AcceptEnv lets
-# the SendEnv passthrough test reach the remote shell.
+# The image is a plain Debian (13, current stable) with GNU tar and bash, the shape of a real remote
+# host (the backend's file sync uses `tar --no-overwrite-dir`). Container-side setup lives in
+# test_sshd_container_setup.sh, mounted read-only at /setup.
 set -euo pipefail
 
 state_dir="${1:?usage: start_test_sshd.sh <state-dir> [port]}"
 port="${2:-2222}"
-image="${HERMES_TEST_SSHD_IMAGE:-debian:12-slim}"
+image="${HERMES_TEST_SSHD_IMAGE:-debian:13-slim}"
 name="hermes-test-sshd"
 
 mkdir -p "$state_dir"
@@ -26,23 +26,10 @@ state_dir="$(cd "$state_dir" && pwd)"
 cp "$state_dir/id_ed25519.pub" "$state_dir/authorized_keys"
 
 docker rm -f "$name" >/dev/null 2>&1 || true
+setup="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_sshd_container_setup.sh"
 docker run -d --name "$name" -p "127.0.0.1:${port}:22" \
-  -v "$state_dir:/keys:ro" "$image" bash -c '
-    set -e
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq --no-install-recommends openssh-server >/dev/null
-    install -m 600 /keys/host_ed25519 /etc/ssh/ssh_host_ed25519_key
-    install -m 644 /keys/host_ed25519.pub /etc/ssh/ssh_host_ed25519_key.pub
-    useradd -m -s /bin/bash hermes
-    usermod -p "*" hermes
-    install -d -m 700 -o hermes -g hermes /home/hermes/.ssh
-    install -m 600 -o hermes -g hermes /keys/authorized_keys /home/hermes/.ssh/authorized_keys
-    printf "%s\n" "HostKey /etc/ssh/ssh_host_ed25519_key" "PasswordAuthentication no" \
-      "AcceptEnv HERMES_RB_*" > /etc/ssh/sshd_config.d/hermes-test.conf
-    mkdir -p /run/sshd
-    exec /usr/sbin/sshd -D -e
-  ' >/dev/null
+  -v "$state_dir:/keys:ro" -v "$setup:/setup/setup.sh:ro" \
+  "$image" bash /setup/setup.sh >/dev/null
 
 for _ in $(seq 1 120); do
   if ssh -i "$state_dir/id_ed25519" -p "$port" -o BatchMode=yes -o ConnectTimeout=2 \

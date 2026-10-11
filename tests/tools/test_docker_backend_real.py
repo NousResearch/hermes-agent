@@ -6,7 +6,7 @@ a broken ``docker run``/``docker exec`` argv, snapshot bootstrap, cwd tracking o
 env forwarding fails here instead of on a user's machine.
 
 Armed by ``HERMES_TEST_DOCKER_IMAGE`` (a small public image with bash, e.g.
-``debian:12-slim``); the remote-backends CI lane sets it. Skipped otherwise. Once
+``debian:13-slim``); the remote-backends CI lane sets it. Skipped otherwise. Once
 armed a missing daemon FAILS rather than skips: a lane that reports green over
 zero coverage is the state this file exists to end.
 """

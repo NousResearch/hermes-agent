@@ -340,6 +340,8 @@ CASES = {
         ["tests/tools/test_docker_environment.py"], _lanes(python=True, python_prod=False, scan=True)),
     "sshd harness → remote_backends": (
         ["scripts/ci/start_test_sshd.sh"], _lanes(python=True, remote_backends=True)),
+    "sshd container setup → remote_backends": (
+        ["scripts/ci/test_sshd_container_setup.sh"], _lanes(python=True, remote_backends=True)),
     "other tool → no remote_backends": (["tools/file_tools.py"], _lanes(python=True, scan=True)),
     "gateway python → no slow lane": (["gateway/run.py", "agent/x.py"], _lanes(python=True, scan=True)),
     "desktop renderer → no slow lane": (["apps/desktop/src/app/chat/composer.tsx"], _lanes(frontend=True)),

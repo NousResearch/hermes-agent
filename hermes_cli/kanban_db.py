@@ -1337,7 +1337,7 @@ def create_task(
                 if task_status == "todo":
                     # Parked behind an open parent: record why, exactly as
                     # link_tasks does, so the board never shows an unexplained todo.
-                    gating = [p for p in parents if _task_status(conn, p) not in ("done", "archived")]
+                    gating = [pid for pid, _ in unsatisfied_parents(conn, task_id)]
                     if gating:
                         _append_event(
                             conn,
@@ -1590,9 +1590,8 @@ def link_tasks(
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
         _link(conn, parent_id, child_id)
-        # If child was ready but parent is not yet terminal, demote child to todo
-        # (archived counts as terminal, matching _parents_satisfied/recompute_ready).
-        if _task_status(conn, parent_id) not in ("done", "archived"):
+        # New edges obey the same verdict gate as readiness and claim.
+        if not _parents_satisfied(conn, child_id):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -2084,12 +2083,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?", (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if _parents_satisfied(conn, task_id):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2122,28 +2116,37 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
 
 # --- Claim / complete / block ---
 
-def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
+def _is_gate_failure(result: Optional[str]) -> bool:
+    """The fixed, case-sensitive gate convention; other results remain fail-open."""
+    return result == "GATE_FAIL" or bool(result and result.endswith("_GATE_FAIL"))
+
+
+def _unsatisfied_parent_rows(conn: sqlite3.Connection, task_id: str) -> list:
     return conn.execute(
-        "SELECT 1 FROM task_links l "
+        "SELECT p.id, p.title, p.status, p.result FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
-    ).fetchone() is None
+        "AND (p.status NOT IN ('done', 'archived') "
+        "OR p.result = 'GATE_FAIL' "
+        "OR substr(p.result, -10) = '_GATE_FAIL') ORDER BY p.id", (task_id,),
+    ).fetchall()
+
+
+def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether every direct parent completed without a gate failure."""
+    return not _unsatisfied_parent_rows(conn, task_id)
 
 
 def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
-    """``(parent_id, status)`` for every direct parent :func:`_parents_satisfied`
-    still counts as open (``done`` / ``archived`` release the child), in id
-    order, so a refusal or a board view can name the blockers instead of the
-    caller guessing. Read-only."""
-    rows = conn.execute(
-        "SELECT p.id, p.status FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
-        "ORDER BY p.id", (task_id,),
-    ).fetchall()
-    return [(row["id"], row["status"]) for row in rows]
+    """Parent id and blocker description, including a failed gate verdict.
+
+    The two-item shape remains compatible with CLI and dashboard refusal messages.
+    """
+    return [
+        (row["id"], f"{row['status']}, result={row['result']}"
+         if _is_gate_failure(row["result"]) else row["status"])
+        for row in _unsatisfied_parent_rows(conn, task_id)
+    ]
 
 
 def _claim_and_open_run(
@@ -3074,10 +3077,17 @@ def edit_task(
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
     ]
+    terminations = []
+    gate_released = False
     with write_txn(conn):
-        status = _task_status(conn, task_id)
+        previous = conn.execute("SELECT status, result FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        status = previous["status"] if previous else None
         if status is None or (result is not None and status != "done"):
             return False
+        gate_failed = (result is not None and _is_gate_failure(result)
+                       and not _is_gate_failure(previous["result"]))
+        gate_released = (result is not None and not _is_gate_failure(result)
+                         and _is_gate_failure(previous["result"]))
         assignments = []
         params = []
         for field, value in (("title", title), ("body", body), ("priority", priority)):
@@ -3136,6 +3146,17 @@ def edit_task(
                 },
                 run_id=run_id,
             )
+        if gate_failed:
+            from hermes_cli.kanban_db_invalidation import invalidate_descendants
+
+            invalidation = invalidate_descendants(
+                conn, task_id, author="gate-result-edit", gate_result=result,
+            )
+            terminations = invalidation["terminations"]
+    for pid, claim_lock, started_at in terminations:
+        _terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
+    if gate_released:
+        recompute_ready(conn)
     notify_task_updated(conn, task_id, changed_fields, board=board)
     return True
 
@@ -3504,37 +3525,31 @@ def promote_task(
     """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
     Refused while a parent is unfinished; ``dry_run`` only validates.
     Returns ``(ok, reason)``."""
-    cur_status = _task_status(conn, task_id)
-    if cur_status is None:
-        return False, f"task {task_id} not found"
-
-    if cur_status not in ("todo", "blocked"):
-        return False, (
-            f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
-        )
-
-    # No override: claim_task demotes ready -> todo on an undone parent whichever
-    # writer set 'ready', so a forced promotion would only report a success the
-    # first claim silently reverts (#106195). The dependency itself is the knob.
-    parents = conn.execute(
-        "SELECT t.id, t.status FROM tasks t "
-        "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ?", (task_id,),
-    ).fetchall()
-    unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
-    if unsatisfied:
-        return False, (
-            f"unsatisfied parent dependencies: {', '.join(unsatisfied)} "
-            f"(the ready -> running claim re-checks parents, so promotion cannot "
-            f"bypass them; complete the parents or drop the link with "
-            f"`hermes kanban unlink <parent_id> {task_id}`)"
-        )
+    def validate():
+        cur_status = _task_status(conn, task_id)
+        if cur_status is None:
+            return f"task {task_id} not found"
+        if cur_status not in ("todo", "blocked"):
+            return (f"task {task_id} is {cur_status!r}; promote only applies to "
+                    f"'todo' or 'blocked'")
+        blockers = unsatisfied_parents(conn, task_id)
+        if blockers:
+            details = ", ".join(f"{pid} ({description})" for pid, description in blockers)
+            return (f"unsatisfied parent dependencies: {details} "
+                    f"(claim re-checks parents; correct the parent result, complete the parents "
+                    f"or drop the link with `hermes kanban unlink <parent_id> {task_id}`)")
+        return None
 
     if dry_run:
-        return True, None
+        error = validate()
+        return error is None, error
 
+    # Validate under the same IMMEDIATE transaction as the update, including
+    # parent verdicts committed by another writer just before BEGIN.
     with write_txn(conn):
+        error = validate()
+        if error:
+            return False, error
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
             "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
@@ -3542,7 +3557,6 @@ def promote_task(
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
         _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
-
     return True, None
 
 
@@ -3675,80 +3689,14 @@ def invalidate_descendants_for_parent_reopen(
     Returns ``{"invalidated": [{id, prior_status, new_status, resume_status}],
     "terminations": [(worker_pid, claim_lock, worker_started_at)]}``.
     """
+    from hermes_cli.kanban_db_invalidation import invalidate_descendants
+
     caller_owns_txn = bool(conn.in_transaction)
-    now = int(time.time())
-    invalidated: list[dict[str, Any]] = []
-    terminations: list[tuple[Optional[int], Optional[str], Optional[int]]] = []
-    with write_txn(conn, allow_nested=True):
-        rows = conn.execute(
-            """
-            WITH RECURSIVE descendants(id) AS (
-                SELECT child_id FROM task_links WHERE parent_id = ?
-                UNION
-                SELECT l.child_id
-                FROM task_links l
-                JOIN descendants d ON d.id = l.parent_id
-            )
-            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock, t.worker_started_at
-            FROM descendants d
-            JOIN tasks t ON t.id = d.id
-            ORDER BY t.id
-            """,
-            (task_id,),
-        ).fetchall()
-        for row in rows:
-            previous_status = row["status"]
-            if previous_status not in {"ready", "review", "running", "done"}:
-                continue
-            resume_status = "ready"
-            run_id = None
-            if previous_status == "review":
-                resume_status = "review"
-            elif previous_status == "running":
-                resume_status = _retry_status_for_run(conn, row["id"], row["current_run_id"])
-                terminations.append((row["worker_pid"], row["claim_lock"], row["worker_started_at"]))
-                run_id = _end_run(
-                    conn, row["id"], outcome="reclaimed", status="todo",
-                    summary=f"ancestor {task_id} reopened",
-                )
-            # consecutive_failures = 0: deliberate operator reset — see
-            # docstring for why this diverges from reopen_review_task.
-            conn.execute(
-                "UPDATE tasks SET status = 'todo', completed_at = NULL, "
-                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-                "current_run_id = NULL, consecutive_failures = 0 WHERE id = ?", (row["id"],),
-            )
-            entry = {
-                "id": row["id"], "prior_status": previous_status,
-                "new_status": "todo", "resume_status": resume_status,
-            }
-            _append_event(
-                conn, row["id"], "descendant_invalidated",
-                {"ancestor": task_id, **{k: v for k, v in entry.items() if k != "id"}},
-                run_id=run_id,
-            )
-            # Legacy 'status' event so existing live-feed consumers still see
-            # the move without learning the new event kind.
-            _append_event(
-                conn, row["id"], "status",
-                {
-                    "status": "todo", "reason": "ancestor_reopened", "parent": task_id,
-                    "previous_status": previous_status, "resume_status": resume_status,
-                },
-                run_id=run_id,
-            )
-            _insert_comment(
-                conn, row["id"], author, f"Invalidated: ancestor {task_id} was reopened; "
-                f"retracted from '{previous_status}' to 'todo' "
-                f"(will resume via '{resume_status}').", now,
-            )
-            invalidated.append(entry)
+    result = invalidate_descendants(conn, task_id, author=author)
     if not caller_owns_txn:
-        # Standalone: committed above, audit trail durable, safe to kill now.
-        # Composed calls leave this to the caller post-commit.
-        for pid, claim_lock, started_at in terminations:
+        for pid, claim_lock, started_at in result["terminations"]:
             _terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
-    return {"invalidated": invalidated, "terminations": terminations}
+    return result
 
 
 def specify_triage_task(

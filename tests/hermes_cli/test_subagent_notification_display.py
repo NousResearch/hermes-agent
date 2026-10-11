@@ -74,7 +74,7 @@ def test_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, 
         emitted, dispatched = [], []
         monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
         monkeypatch.setattr(server, "_notif_dispatch_event", lambda *args: dispatched.append(args))
-        session = {"session_key": event["session_key"], "history_lock": threading.RLock()}
+        session = {"session_key": event["session_key"], "history_lock": threading.RLock(), "agent": SimpleNamespace()}
         server._notif_handle_event("ui-session", session, event, set(), registry, format_process_notification, None)
         assert emitted[0][2]["text"] == expected
         assert dispatched[0][3] == payload

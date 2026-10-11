@@ -80,6 +80,49 @@ def test_board_empty(client):
     assert data["assignees"] == ["default"]
     assert data["latest_event_id"] == 0
 
+def test_dashboard_completion_forwards_evidence_to_shared_gate(client):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="Dashboard evidence", completion_contract="evidence-required")
+    rejected = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "done", "result": "completed"},
+    )
+    assert rejected.status_code == 400
+    accepted = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={
+            "status": "done", "result": "completed",
+            "evidence": [{"kind": "review", "detail": "dashboard receipt"}],
+        },
+    )
+    assert accepted.status_code == 200
+    with kbc.connect() as conn:
+        assert kb.latest_run(conn, task_id).metadata["completion_evidence"][0]["detail"] == "dashboard receipt"
+
+def test_dashboard_create_preserves_evidence_required_contract(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Dashboard evidence", "completion_contract": "evidence-required"},
+    )
+    assert created.status_code == 200
+    task_id = created.json()["task"]["id"]
+
+    rejected = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "done", "result": "completed"},
+    )
+    assert rejected.status_code == 400
+
+    accepted = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={
+            "status": "done", "result": "completed",
+            "evidence": [{"kind": "review", "detail": "dashboard receipt"}],
+        },
+    )
+    assert accepted.status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------

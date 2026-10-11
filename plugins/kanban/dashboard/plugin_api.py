@@ -430,6 +430,7 @@ class CreateTaskBody(BaseModel):
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
+    completion_contract: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -541,6 +542,7 @@ class UpdateTaskBody(BaseModel):
     # Handoff fields forwarded to complete_task on -> 'done' (parity with ``hermes kanban complete``).
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    evidence: Optional[list[dict]] = None
     # In a PATCH ``None`` means "field not sent", so ``clear_*=True`` is the explicit clear signal.
     # ``reasoning_effort="none"`` is a VALUE (thinking off); it is cleared separately so
     # dropping a model override doesn't silently reset the depth.
@@ -560,6 +562,7 @@ class BulkTaskBody(BaseModel):
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    evidence: Optional[list[dict]] = None
     reclaim_first: bool = False
     # Same semantics as UpdateTaskBody.
     model_override: Optional[str] = None
@@ -593,7 +596,8 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
 # detection) and ``done`` pass ``force=True``: a dashboard action is a human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
     "done": lambda conn, tid, p: kanban_db.complete_task(
-        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True),
+        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata,
+        evidence=p.evidence, force=True),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(

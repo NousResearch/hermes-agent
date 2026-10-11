@@ -441,11 +441,16 @@ _LAZY_LOCALIZED_TABLES = {"COMMANDS": build_commands, "COMMANDS_BY_CATEGORY": bu
 SUBCOMMANDS: dict[str, list[str]] = {
     f"/{_cmd.name}": list(_cmd.subcommands) for _cmd in COMMAND_REGISTRY if _cmd.subcommands}
 
-_PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
+# Tolerant of spaced pipes ("[reason | off]") and names containing "_" / "-"
+# ("[auto|codex_app_server]"); flag pairs ("--global|--session") stay unmatched
+# because each alternative must start with a letter.
+_PIPE_SUBS_RE = re.compile(r"[A-Za-z][\w-]*(?:\s*\|\s*[A-Za-z][\w-]*)+")
 for _cmd in COMMAND_REGISTRY:
     _m = _PIPE_SUBS_RE.search(_cmd.args_hint) if _cmd.args_hint else None
     if _m and f"/{_cmd.name}" not in SUBCOMMANDS:
-        SUBCOMMANDS[f"/{_cmd.name}"] = _m.group(0).split("|")
+        SUBCOMMANDS[f"/{_cmd.name}"] = [
+            s.strip() for s in re.split(r"\s*\|\s*", _m.group(0))
+        ]
 
 
 # /help sub-groups for the large "Session" category (category itself is load-bearing for gateway

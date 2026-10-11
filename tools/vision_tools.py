@@ -884,6 +884,109 @@ async def _run_analysis(
                     logger.warning("Could not delete temporary file: %s", cleanup_error, exc_info=True)
 
 
+# --- aux-vision pre-send budget -------------------------------------------------------------
+# An aux vision call (vision_analyze -> auxiliary.vision) is ONE-SHOT: unlike a native embed the
+# payload is not baked into history, so its cap is about wire/ingest latency, not per-turn token
+# cost. Measured on antigravity/gemini-3.7-flash-tiered: a 9 MB PNG sent at full size (12.0 MB
+# base64) took 30.0 s, the same image downscaled to 1568px/0.18 MB took 4.6 s. The old order
+# ("send full-res first, downscale only if the provider rejects >20 MB") meant one big screenshot
+# blew a 45 s auxiliary timeout and the rejection retry never ran. 1568 px is the long edge every
+# provider downsamples to anyway. 1 MB (base64) keeps an ordinary screenshot byte-identical
+# (no quality loss) while a multi-MB plate is re-encoded down to ~130 KB. History embeds use
+# the tighter 512 KB capture/request budget; this path is one-shot, so it can afford 1 MB.
+_AUX_VISION_BUDGET_BYTES = 1024 * 1024
+_AUX_VISION_MAX_DIMENSION = 1568
+_AUX_VISION_JPEG_QUALITIES = (82, 62)
+
+
+def _aux_vision_budget() -> tuple:
+    """``(max_base64_bytes, max_dimension)`` for the pre-send aux-vision downscale."""
+    budget = _cfg_auxiliary("vision", "max_image_bytes", default=_AUX_VISION_BUDGET_BYTES)
+    dim = _cfg_auxiliary("vision", "max_dimension", default=_AUX_VISION_MAX_DIMENSION)
+    try:
+        budget = int(budget)
+    except (TypeError, ValueError):
+        budget = _AUX_VISION_BUDGET_BYTES
+    try:
+        dim = int(dim)
+    except (TypeError, ValueError):
+        dim = _AUX_VISION_MAX_DIMENSION
+    return (max(64 * 1024, min(budget, _MAX_BASE64_BYTES)),
+            max(256, min(dim, _EMBED_MAX_DIMENSION)))
+
+
+def _aux_vision_downscale(image_path: Path, max_base64_bytes: int, max_dimension: int,
+                          scale_out: Optional[dict] = None) -> Optional[str]:
+    """One-decode, exact-fit JPEG data URL (``None`` without Pillow, or when the result would not
+    be smaller than the source file).
+
+    Fast path: ``Image.draft`` lets libjpeg decode at 1/2, 1/4 or 1/8 scale, then a single
+    exact-fit ``thumbnail`` to the long-edge cap and at most two JPEG encodes -- instead of the
+    generic ladder's repeated halvings x quality steps.
+    """
+    Image = _import_pillow_for_resize()
+    if Image is None:
+        return None
+    try:
+        src_bytes = image_path.stat().st_size
+    except OSError:
+        return None
+    try:
+        with Image.open(image_path) as img:
+            try:
+                img.draft("RGB", (max_dimension, max_dimension))
+            except Exception:
+                pass
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            orig_size = img.size
+            if max(img.size) > max_dimension:
+                img.thumbnail((max_dimension, max_dimension), Image.LANCZOS)
+            best: Optional[bytes] = None
+            for quality in _AUX_VISION_JPEG_QUALITIES:
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=quality, optimize=False)
+                best = buf.getvalue()
+                if len(best) <= max_base64_bytes * 3 // 4:
+                    break
+            if best is None or len(best) >= src_bytes:
+                return None          # never hand the wire a bigger payload than the source
+            if scale_out is not None and img.size != orig_size:
+                scale_out.update(orig_width=orig_size[0], orig_height=orig_size[1],
+                                 new_width=img.size[0], new_height=img.size[1])
+            return "data:image/jpeg;base64," + base64.b64encode(best).decode()
+    except Exception as exc:
+        logger.warning("Aux vision downscale failed (%s); sending the raw image", exc)
+        return None
+
+
+def _aux_vision_data_url(image_path: Path, mime_type: Optional[str], max_base64_bytes: int,
+                         max_dimension: int, scale_out: Optional[dict] = None) -> Optional[str]:
+    """Data URL for an aux vision request, already inside the aux budget.
+
+    Returns the raw encode untouched when it already fits (no decode, no re-encode, no quality
+    loss), otherwise the downscaled JPEG, and ``None`` when neither could be produced so the
+    caller falls back to its own encode + size-rejection path. Invariant: only ever shrinks.
+    """
+    raw: Optional[str] = None
+    try:
+        raw = _image_to_base64_data_url(image_path, mime_type=mime_type)
+    except Exception as exc:
+        logger.debug("Raw aux vision encode failed (%s)", exc)
+    try:
+        over_dims = _image_exceeds_dimension(image_path, max_dimension)
+    except Exception:
+        over_dims = False
+    if raw is not None and len(raw) <= max_base64_bytes and not over_dims:
+        return raw
+    downscaled = _aux_vision_downscale(image_path, max_base64_bytes, max_dimension, scale_out)
+    if downscaled is not None and (raw is None or len(downscaled) < len(raw)):
+        logger.info("Aux vision image budgeted: %.1f KB -> %.1f KB (max %d px)",
+                    (len(raw) / 1024 if raw else 0.0), len(downscaled) / 1024, max_dimension)
+        return downscaled
+    return raw
+
+
 async def vision_analyze_tool(
     image_url: str, user_prompt: str, model: str | None = None,
     task_id: Optional[str] = None, region: Optional[list] = None) -> str:
@@ -893,12 +996,21 @@ async def vision_analyze_tool(
         prepared = await _prepare_image(image_url, task_id, region, validate_decode=False)
         temp_paths.append(prepared.path)
         logger.info("Image ready (%.1f KB)", prepared.size_bytes / 1024)
-        # Send at full resolution first; on a size rejection, downscale and retry.
-        logger.info("Converting image to base64...")
-        image_data_url = await _run_encode_on_cpu_executor(
-            _image_to_base64_data_url, prepared.path, mime_type=prepared.mime)
-        logger.info("Image converted to base64 (%.1f KB)", len(image_data_url) / 1024)
+        # Budget BEFORE the wire, not after a rejection. An aux vision call is one-shot (nothing
+        # here is baked into history), so the cap is ingest latency, not per-turn tokens: a 9 MB
+        # PNG cost 30.0 s as a 12 MB base64 payload and 4.6 s once downscaled to 1568px/0.18 MB.
+        # The "send full-res first" order is what burned a 45 s auxiliary timeout, so the
+        # size-rejection retry below never got the chance to run.
         _scale_info: dict = {}
+        _budget_bytes, _budget_dim = _aux_vision_budget()
+        image_data_url = await _run_encode_on_cpu_executor(
+            _aux_vision_data_url, prepared.path, prepared.mime,
+            _budget_bytes, _budget_dim, _scale_info)
+        if image_data_url is None:
+            logger.info("Converting image to base64...")
+            image_data_url = await _run_encode_on_cpu_executor(
+                _image_to_base64_data_url, prepared.path, mime_type=prepared.mime)
+        logger.info("Image converted to base64 (%.1f KB)", len(image_data_url) / 1024)
         if len(image_data_url) > _MAX_BASE64_BYTES:
             image_data_url = await _resize_prepared(prepared, _scale_info)
             if len(image_data_url) > _MAX_BASE64_BYTES:

@@ -3,6 +3,7 @@ import tomllib
 from pathlib import Path
 
 from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -51,3 +52,15 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     assert len(pins) == 1 and pins[0].operator == "==" and Version(pins[0].version) >= floor
     versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "starlette"]
     assert versions and all(version >= floor for version in versions)
+
+
+def test_exact_pinned_deps_exempt_from_exclude_newer():
+    # An exact pin has no float for the cutoff to guard, and a mirror that omits upload
+    # dates makes uv count the pinned file as newer than the cutoff (#133876).
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project = manifest["project"]
+    specs = [*project["dependencies"], *(s for extra in project["optional-dependencies"].values() for s in extra)]
+    pinned = {canonicalize_name(req.name) for req in map(Requirement, specs)
+              if any(s.operator == "==" for s in req.specifier)}
+    exempt = {canonicalize_name(name) for name in manifest["tool"]["uv"]["exclude-newer-package"]}
+    assert not pinned - exempt, f"exact pins missing from [tool.uv.exclude-newer-package]: {sorted(pinned - exempt)}"

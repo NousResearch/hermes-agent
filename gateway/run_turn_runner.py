@@ -207,7 +207,9 @@ class TurnRunner:
         try:
             if event_type == "tool.started" and tool_name and ctx._run_still_current():
                 from agent.display import build_status_phrase
-                adapter.set_status_text(ctx.source.chat_id, build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None))
+                phrase = build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None)
+                # Keep the actual tool identity visible, not just its friendly verb.
+                adapter.set_status_text(ctx.source.chat_id, f"{phrase} [{tool_name}]")
             elif event_type == "tool.completed":
                 # Between tools the model is genuinely "thinking" again — revert to the static default.
                 adapter.set_status_text(ctx.source.chat_id, None)

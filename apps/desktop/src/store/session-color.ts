@@ -39,7 +39,29 @@ export function setSessionColorOverride(durableId: string, color: null | string)
 //
 // Precedence in one place: an explicit per-session override wins over the
 // inherited project color. Agent-set color (#66565 layer 3) slots in here too.
-function resolveSessionColor(
+//
+// Exported for callers that render from SUBSCRIBED values (see sessionColorFor):
+// a component that hands in the atoms' values repaints when they change, which
+// reading them with .get() mid-render does not reliably do.
+export function sessionColorFrom(
+  session: null | SessionInfo | undefined,
+  inputs: {
+    colorById: Record<string, string>
+    overrides: Record<string, string>
+    owners: ReadonlyMap<string, string>
+    projects: ProjectInfo[]
+  }
+): string | undefined {
+  if (!session) return undefined
+
+  const { colorById, overrides, owners, projects } = inputs
+
+  return colorById[session.id] ?? resolveInheritedColor(session, projects, overrides, owners) ?? undefined
+}
+
+// The map's own build path: an override, else the project tint. Never the map
+// itself — this is what produces it.
+function resolveInheritedColor(
   session: SessionInfo,
   projects: ProjectInfo[],
   overrides: Record<string, string>,
@@ -54,7 +76,7 @@ export const $sessionColorById = computed(
     const map: Record<string, string> = {}
 
     for (const session of sessions) {
-      const color = resolveSessionColor(session, projects, overrides, owners)
+      const color = resolveInheritedColor(session, projects, overrides, owners)
 
       if (color) {
         map[session.id] = color
@@ -75,8 +97,10 @@ export function sessionColorFor(session: null | SessionInfo | undefined): string
     return undefined
   }
 
-  return (
-    $sessionColorById.get()[session.id] ??
-    resolveSessionColor(session, $projects.get(), $sessionColorOverrides.get(), $projectOwnerBySessionId.get())
-  )
+  return sessionColorFrom(session, {
+    colorById: $sessionColorById.get(),
+    overrides: $sessionColorOverrides.get(),
+    owners: $projectOwnerBySessionId.get(),
+    projects: $projects.get()
+  })
 }

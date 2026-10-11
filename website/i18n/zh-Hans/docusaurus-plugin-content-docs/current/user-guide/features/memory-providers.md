@@ -6,7 +6,7 @@ description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hinds
 
 # Memory Providers
 
-Hermes Agent 内置 9 个外部记忆提供者插件，为 Agent 提供跨会话的持久化知识，超越内置的 MEMORY.md 和 USER.md。同一时间只能激活**一个**外部提供者——内置记忆始终与其并行工作。
+Hermes Agent 内置 9 个绑定的外部记忆提供者插件，另加社区维护、通过 pip 单独安装的 PLUR 提供者——共支持十个，为 Agent 提供跨会话的持久化知识，超越内置的 MEMORY.md 和 USER.md。同一时间只能激活**一个**外部提供者——内置记忆始终与其并行工作。
 
 ## 快速开始
 

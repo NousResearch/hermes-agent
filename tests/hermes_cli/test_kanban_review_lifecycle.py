@@ -483,6 +483,74 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_active_pr_guard_allows_only_explicit_exact_pr_review_continuations(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ready reviewer continuation must name the same PR and another author.
+
+    This narrowly admits a separately assigned exact-head review continuation;
+    ordinary implementation cards, generic review prose, a mismatched target,
+    and a comment from the continuation assignee remain duplicate-work guarded.
+    """
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    pr_url = "https://github.com/example/repo/pull/29"
+    with kbc.connect() as conn:
+        continuation_id = kb.create_task(
+            conn,
+            title="independent exact-head review",
+            body="Perform an independent non-implementer exact-head review.",
+            completion_contract=pr_url,
+            assignee="vaidya",
+        )
+        kb.add_comment(
+            conn, continuation_id, author="anika",
+            body=f"Opened {pr_url}; ready for independent review.",
+        )
+
+        ordinary_id = kb.create_task(
+            conn, title="ordinary implementation", assignee="builder",
+        )
+        kb.add_comment(conn, ordinary_id, author="anika", body=f"Opened {pr_url}.")
+
+        mismatch_id = kb.create_task(
+            conn,
+            title="independent exact-head review",
+            body=("Perform an independent exact-head review of "
+                  "https://github.com/example/repo/pull/30."),
+            assignee="vaidya",
+        )
+        kb.add_comment(conn, mismatch_id, author="anika", body=f"Opened {pr_url}.")
+
+        same_assignee_id = kb.create_task(
+            conn,
+            title="independent exact-head review",
+            body=f"Perform an independent exact-head review of {pr_url}.",
+            assignee="vaidya",
+        )
+        kb.add_comment(conn, same_assignee_id, author="vaidya", body=f"Opened {pr_url}.")
+
+        generic_id = kb.create_task(
+            conn,
+            title="review the PR",
+            body=f"Please review {pr_url} before merging.",
+            assignee="vaidya",
+        )
+        kb.add_comment(conn, generic_id, author="anika", body=f"Opened {pr_url}.")
+
+        assert kbd.check_respawn_guard(conn, continuation_id) is None
+        for guarded_id in (ordinary_id, mismatch_id, same_assignee_id, generic_id):
+            assert kbd.check_respawn_guard(conn, guarded_id) == "active_pr"
+
+        result = kbd.dispatch_once(conn, dry_run=True)
+        spawned_ids = [task[0] for task in result.spawned]
+        guarded = dict(result.respawn_guarded)
+        assert continuation_id in spawned_ids
+        for guarded_id in (ordinary_id, mismatch_id, same_assignee_id, generic_id):
+            assert guarded.get(guarded_id) == "active_pr"
+
+
 def _backdate_comments(conn, tid, seconds=60):
     """Second-granularity timestamps: make the PR comment older than the
     handoff that follows it in the same test."""

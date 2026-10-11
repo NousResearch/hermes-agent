@@ -245,6 +245,11 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "single-query behavior) instead of seeding an interactive "
         "session. Implied on non-TTY stdio and by -Q/--quiet."))
     add("--image", help="Optional local image path to attach to a single query")
+    from hermes_cli.cli_cache_scope import normalize_cache_scope
+
+    add("--cache-scope", metavar="NAME", type=normalize_cache_scope, help=(
+        "Opt-in prompt-cache routing shared by fresh single-query runs in this profile and "
+        "working directory. Does not share history or memory; incompatible with resume/TUI."))
     inherited(chat_parser, "-m", "--model", default=SUPPRESS,
               help="Model to use (e.g., anthropic/claude-sonnet-4)")
     add("-t", "--toolsets", default=SUPPRESS, help="Comma-separated toolsets to enable")

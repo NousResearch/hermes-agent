@@ -586,6 +586,34 @@ def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
 
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
 
+# Invisible Unicode format characters (zero-width space/joiners, word joiner, soft hyphen,
+# BiDi embeddings/overrides/isolates, BOM, TAG characters). Dropped INSIDE a key NAME
+# (``PASS\u200bWORD=hunter2``) they hide the keyword from every assignment pass while the
+# value stays in cleartext; the value side is already covered by _mask_control_split_tokens.
+# No ASCII controls here: a newline between two identifiers is a line break, not a split key.
+_INVISIBLE_FORMAT_CHARS = (
+    r"\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\U000e0000-\U000e007f")
+_INVISIBLE_FORMAT_RE = re.compile(rf"[{_INVISIBLE_FORMAT_CHARS}]")
+# An identifier run holding at least one invisible char, immediately followed by the ``=`` /
+# ``:`` of an assignment (an optional closing quote covers JSON / Python-repr keys).
+_INVISIBLE_SPLIT_KEY_RE = re.compile(
+    rf"(?<![A-Za-z0-9_])([A-Za-z0-9_.\-]*(?:[{_INVISIBLE_FORMAT_CHARS}]+[A-Za-z0-9_.\-]+)+)"
+    rf"(?=['\"]?\s*[=:])")
+
+
+def _join_invisible_split_keys(text: str) -> str:
+    """Rejoin assignment key names split by invisible format characters so the keyword gates see
+    ``PASSWORD``, not ``PASS\u200bWORD``. Only keys that then carry a secret keyword are touched,
+    so ordinary text keeps every byte."""
+    if not _INVISIBLE_FORMAT_RE.search(text):
+        return text
+
+    def _sub(m: re.Match) -> str:
+        joined = _INVISIBLE_FORMAT_RE.sub("", m.group(1))
+        return joined if _key_has_secret_keyword(joined) else m.group(0)
+
+    return _INVISIBLE_SPLIT_KEY_RE.sub(_sub, text)
+
 # Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
 # provider-shaped instead of applying a generic high-entropy dotted-token rule:
 # the ID is exactly 32 lowercase hex chars and the credential suffix is a run of
@@ -824,6 +852,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     that read a secret-bearing file would hold a head/tail mask shaped like a real but
     truncated key and could write it back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
+    text = _join_invisible_split_keys(text)
     if "=" in text:
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)

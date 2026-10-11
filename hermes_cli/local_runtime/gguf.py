@@ -21,6 +21,8 @@ SPLIT_PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 _PART_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
 # Same tensor selection as context_policy's per-block FFN -ot override.
 _FFN_WEIGHT = re.compile(r"blk\.(\d+)\.ffn_.*\.weight")
+EXPERT_FFN_PATTERN = r"blk\.\d+\.ffn_.*_exps\.weight"
+_EXPERT_FFN_WEIGHT = re.compile(EXPERT_FFN_PATTERN)
 
 # Tensors llama.cpp leaves in the file and reads row by row on demand instead of loading them
 # (create_tensor's TENSOR_READ_LAZY, marked per architecture in the engine's model code). Under the
@@ -67,6 +69,28 @@ _SAMPLING_INI_KEY = {"temp": "temp", "temperature": "temp", "top_p": "top-p",
 
 
 @dataclass
+class _TensorBytes:
+    """One tensor-table pass, with placement-specific totals."""
+    total: int = 0
+    embd: int = 0
+    ffn: dict[int, int] = field(default_factory=dict)
+    lazy: dict[str, int] = field(default_factory=dict)
+    experts: int = 0
+
+    def add(self, name: str, nbytes: int) -> None:
+        self.total += nbytes
+        if name == "token_embd.weight":
+            self.embd = nbytes
+        elif match := _FFN_WEIGHT.fullmatch(name):
+            block = int(match.group(1))
+            self.ffn[block] = self.ffn.get(block, 0) + nbytes
+        elif name in _LAZY_READ_CANDIDATES:
+            self.lazy[name] = nbytes
+        if _EXPERT_FFN_WEIGHT.fullmatch(name):
+            self.experts += nbytes
+
+
+@dataclass
 class GGUFHeader:
     path: str
     version: int
@@ -80,6 +104,8 @@ class GGUFHeader:
     # Sizes of the tensors some architecture reads lazily, by name. ``lazy_bytes`` applies this
     # model's architecture and the size threshold.
     lazy_candidate_bytes: dict[str, int] = field(default_factory=dict)
+
+    expert_weight_bytes: int = 0  # only tensors selected by the MoE -ot pattern
 
     # ── typed accessors ──────────────────────────────────────
 
@@ -255,10 +281,7 @@ def _read_part(path: Path) -> GGUFHeader:
             (vtype,) = read(f, "<I")
             metadata[key] = read_value(f, vtype)
 
-        tensor_bytes = 0
-        embd_bytes = 0
-        ffn_block_bytes: dict[int, int] = {}
-        lazy_candidate_bytes: dict[str, int] = {}
+        sizes = _TensorBytes()
         for _ in range(n_tensors):
             name = read_str(f)
             (n_dims,) = read(f, "<I")
@@ -273,19 +296,12 @@ def _read_part(path: Path) -> GGUFHeader:
             for d in dims:
                 elems *= d
             nbytes = (elems // block_elems) * block_bytes
-            tensor_bytes += nbytes
-            if name == "token_embd.weight":
-                embd_bytes = nbytes
-            elif m := _FFN_WEIGHT.match(name):
-                block = int(m.group(1))
-                ffn_block_bytes[block] = ffn_block_bytes.get(block, 0) + nbytes
-            elif name in _LAZY_READ_CANDIDATES:
-                lazy_candidate_bytes[name] = nbytes
+            sizes.add(name, nbytes)
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
-                      n_tensors=n_tensors, tensor_bytes=tensor_bytes,
-                      embd_table_bytes=embd_bytes, ffn_block_bytes=ffn_block_bytes,
-                      lazy_candidate_bytes=lazy_candidate_bytes)
+                      n_tensors=n_tensors, tensor_bytes=sizes.total,
+                      embd_table_bytes=sizes.embd, ffn_block_bytes=sizes.ffn,
+                      lazy_candidate_bytes=sizes.lazy, expert_weight_bytes=sizes.experts)
 
 
 def read_gguf_header(path: str | Path) -> GGUFHeader:
@@ -329,5 +345,6 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
         tensor_bytes=sum(h.tensor_bytes for h in readable),
         embd_table_bytes=sum(h.embd_table_bytes for h in readable),
         ffn_block_bytes=ffn_block_bytes,
+        expert_weight_bytes=sum(h.expert_weight_bytes for h in readable),
         lazy_candidate_bytes={name: nbytes for h in readable
                               for name, nbytes in h.lazy_candidate_bytes.items()})

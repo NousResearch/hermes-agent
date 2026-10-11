@@ -86,6 +86,8 @@ class ModelProfile:
     # window_compute_bytes, the microbatch and the context count); zero prices none.
     window_compute_per_token: int = 0
 
+    expert_weight_bytes: int = 0  # actual MoE expert FFNs moved to CPU by -ot
+
     @property
     def window_compute_bytes(self) -> int:
         return _WINDOW_COMPUTE_BYTES.get(self.architecture, 0)
@@ -170,7 +172,8 @@ def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
         embd_table_bytes=header.embd_table_bytes,
         n_ctx_train=header.n_ctx_train, layers=layers, swa_window=header.sliding_window,
         moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab,
-        ffn_block_bytes=dict(header.ffn_block_bytes), lazy_bytes=header.lazy_bytes)
+        ffn_block_bytes=dict(header.ffn_block_bytes), lazy_bytes=header.lazy_bytes,
+        expert_weight_bytes=header.expert_weight_bytes)
 
 
 def kv_dtype_factor(flash_attention: bool) -> float:

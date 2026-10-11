@@ -845,8 +845,10 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
 #: decides by a value or an absence that, in such a file, is the user's own choice. v13 is left
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
-#: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
+#: provenance the config stamp says nothing about. v47 is in: like v46 it anchors on an exact
+#: legacy value, and that value (256000) was only ever written by the briefly-shipped default
+#: (#115986) — in an unversioned file it is a template/targeted-writer copy, not a user pick.
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 47, 50})
 
 
 def run_migrations(

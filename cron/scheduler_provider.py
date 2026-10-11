@@ -391,8 +391,10 @@ def resolve_cron_scheduler() -> CronScheduler:
     try:
         from hermes_cli.config import cfg_get, load_config
         name = (cfg_get(load_config(), "cron", "provider", default="") or "").strip()
-    except Exception:
-        pass
+    except Exception as exc:
+        # Same contract as every other fallback below: never drop a configured provider silently.
+        logger.warning("Could not read cron.provider from config (%s: %s); using built-in ticker",
+                       type(exc).__name__, exc, exc_info=True)
 
     if not name or name in ("builtin", "in-process", "inprocess"):
         return InProcessCronScheduler()

@@ -164,7 +164,6 @@ class TestBasePlatformTopicSessions:
 
         async def denied_handler(event):
             event.metadata[PROCESSING_OUTCOME_METADATA_KEY] = ProcessingOutcome.FAILURE
-            return None
 
         async def hold_typing(_chat_id, interval=2.0, metadata=None):
             await asyncio.Event().wait()

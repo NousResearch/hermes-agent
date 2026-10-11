@@ -1,0 +1,185 @@
+---
+name: hermes-companion
+description: Companion iPhone app for place, health, and post inbox.
+version: 1.2.0
+author: danielmain
+license: MIT
+platforms: [macos]
+metadata:
+  hermes:
+    tags: [Location, Health, iPhone, iCloud, Apple]
+    category: health
+    config:
+      - key: hermes-companion.places_file
+        description: JSON file of named places with latitude, longitude, and radius
+        default: "~/.hermes/hermes-companion/places.json"
+        prompt: Places file path
+      - key: hermes-companion.icloud_dir
+        description: iCloud Documents directory where the iPhone writes latest_location.json and latest_health.json
+        default: "~/Library/Mobile Documents/iCloud~com~hermes~HermesCompanion/Documents"
+        prompt: iCloud container Documents path
+---
+
+# Hermes Companion
+
+Read the user's live place, motion, sleep, workout, and recovery. Send and receive asynchronous letters in Hermes Post / Inbox. The script prints facts. How to answer is in Language.
+
+## Requires the iPhone app
+
+This skill works only with the Hermes Companion iOS app installed on the user's iPhone. The app and this skill are documented at [hermescompanion.funktional.dev](https://hermescompanion.funktional.dev). Source: [github.com/danielmain/hermes-companion](https://github.com/danielmain/hermes-companion). The app writes `latest_location.json` and `latest_health.json` into the user's private iCloud container. This skill reads the copies macOS has already synced. It does not call a relay, open a port, or produce a coordinate on its own.
+
+Until that app is installed, Location is set to Always, and iCloud has synced those two files, the script reports that no file exists. Say that the Hermes Companion iPhone app is required and has not synced yet. Do not invent a place, a motion state, or a health number.
+
+## When to Use
+
+- The user asks where they are, whether they are home, or what they are doing physically.
+- A reply depends on being still, walking, driving, at the gym, or in transit.
+- The user asks about sleep, a workout, steps, heart rate, recovery, or post-workout food.
+- A check-in would be wrong without knowing if they are mid-workout or still at a known place.
+- The user asks to check Hermes Post, their inbox, letters, or memos from their iPhone.
+- Replying to an asynchronous letter/memo or posting a message to the user's iPhone inbox.
+
+Do not use this skill for a generic map, a route, or weather. Do not invent a place or a health number when the script has no file.
+
+## Prerequisites
+
+- The Hermes Companion iPhone app. Product page: [hermescompanion.funktional.dev](https://hermescompanion.funktional.dev). Source: [github.com/danielmain/hermes-companion](https://github.com/danielmain/hermes-companion). The skill has no data source other than that app.
+- macOS, signed into the same Apple ID as the iPhone.
+- Location set to Always, Motion & Fitness allowed, and Health access allowed.
+- iCloud Drive has finished downloading `latest_location.json` and `latest_health.json`.
+
+If the skill config block names `hermes-companion.places_file` or `hermes-companion.icloud_dir`, pass those paths as `--places` and `--icloud-dir`. Otherwise the script uses its defaults, including an existing Hermes profile `state/places.json` when exactly one profile has that file. Places added in the iOS app (`Places` tab) synchronize directly into the iCloud container (`Documents/places.json`) and are automatically merged with any profile places.
+
+## How to Run
+
+Run the bundled script with the `terminal` tool. `${HERMES_SKILL_DIR}` is the skill directory.
+
+```bash
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --timeline
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --health
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --context
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --json
+```
+
+Known places (can also be managed directly in the iOS app):
+
+```bash
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --list
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --add --name "Home" --category home --lat LAT --lon LON --radius 120
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --remove home
+```
+
+Categories: `home`, `work`, `gym`, `cafe`, `outdoors`, `general`.
+
+Save a place only when the user asks, using the coordinates from the latest script output.
+
+Hermes Post / Inbox (asynchronous letters and memos synchronized privately via iCloud):
+
+```bash
+# Check inbox for letters or filter those awaiting agent response
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --inbox
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --inbox --pending
+
+# Read full chronological letters in a thread
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --thread <thread_id>
+
+# Post an agent reply letter to a thread
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --reply <thread_id> --message "..."
+
+# Create a new post/letter from the agent
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-post --subject "..." --message "..."
+```
+
+### Multi-Profile Agent Registration
+
+When Hermes runs with multiple profiles (e.g., `work`, `personal`), each profile automatically registers into `Documents/profiles.json` upon running any companion command. The iOS client reads `profiles.json` so the user can select which profile to address before sending a letter.
+
+```bash
+# Run under a specific profile and filter letters for it
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --inbox --profile work --pending
+
+# Create a letter addressed to a specific agent profile
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-post --to-profile work --subject "..." --message "..."
+```
+
+### Background dispatch daemon
+
+`--install-service` installs and loads the macOS LaunchAgent `ai.hermes.companion-inbox`: a resident `companion.py --daemon` process that sweeps the thread container every 5 seconds and answers letters without being asked. `KeepAlive` plus `--daemon` is what makes the latency acceptable — a transient sweep exits in milliseconds and launchd throttles a job that does that, which is why a letter could sit for minutes.
+
+```bash
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --install-service    # install or upgrade the agent
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --service-status     # launchctl state
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --dispatch-pending   # one sweep in the foreground
+```
+
+Structured, timestamped logs land in `~/.hermes/logs/companion-inbox.error.log` and `companion-inbox.log`. Each answered letter logs its own latency: `answered thread '<id>' in Ns (letter was <age> old when the sweep started)`. That age is the phone side; if it reads minutes, the letter was late before the Mac ever saw it (compare the file's `mtime` against its `ctime`, see below). A letter the agent cannot answer is marked `status: failed` with `last_error`, `failed_at` and `dispatch_retries`; the iOS inbox shows that banner and its Retry resets the thread to `pending_agent`.
+
+## Quick Reference
+
+| Question | Command | Fields to trust |
+| --- | --- | --- |
+| Where are they? | `companion.py` | `place_name`, `place_category`, `still_there` |
+| Visits today & history | `companion.py --timeline` | `timeline_events`, arrival/departures, dwell times, gaps |
+| Moving right now? | `companion.py` | `motion_activity`, `motion_fresh`, `is_moving_now` |
+| How long in this place? | `companion.py` | `dwell_time`, `arrived_at`, `minutes_since_last_move` |
+| Sleep, workout, recovery | `companion.py --health` | `sleep_duration`, `sleep_quality`, `workout_type`, `recovery_status` |
+| Both | `companion.py --context` | the two blocks together |
+| Check Hermes Post / Inbox | `companion.py --inbox --pending` | `thread_count`, `thread_id`, `subject`, `status` |
+| Read/reply to thread | `companion.py --thread ID` / `--reply ID` | chronological messages, `body`, `updated_at` |
+
+`movement_reason` is why the phone accepted the last write: `moved`, `distance`, or `no_motion_reading`. `absent` means an older file from before that field existed.
+
+## Language
+
+This file is English because the model reads it. The user never sees it.
+
+- Reply in the user's language, in the agent's own voice. Spanish, German, and every other language use these same fields.
+- Keep a place name exactly as the user saved it (`Casa`, `Home`, `Arbeit`).
+- `In Transit` and `Unlisted place` are codes. Translate them.
+- Translate category, motion, sleep-quality, and recovery codes (`home`, `walking`, `automotive`, `excellent`, `fatigued`). A `workout_type` that is already a name in the user's language stays as written.
+- `minutes_since_last_move`, durations, and heart-rate numbers stay numeric.
+- Do not quote the script. Ignore `suggested_greeting`, `context_summary`, `suggested_openers`, `sleep_insight`, `workout_insight`, `nutrition_reminder`, `sleep.summary`, and `workout.summary` if a raw file still contains them.
+
+## Procedure
+
+1. Run `companion.py` for place and motion, `--timeline` for today's visits/movements, `--health` for body metrics, or `--context` when the answer needs both. Completion: the command prints a `place_name:`, `timeline_events:`, or `recovery_status:` line, or an explicit "no file yet" line. On "no file yet", tell the user the Hermes Companion iPhone app has to be installed and synced, then stop.
+2. Treat `place_name` as where they are now. If `still_there` is `yes`, say they are still there. If `still_there` starts with `unconfirmed`, tell the user they were last seen there but telemetry has been silent (e.g. phone backgrounded or no recent ping), rather than asserting they are definitely still there.
+3. Use `--timeline` when the user asks where they have been, when they left, how long they stayed at a place, or what trips they took today.
+4. Treat `motion_activity` when `motion_fresh` is `yes` as what the body is doing this minute. Walking at a saved place with an old GPS age is still that place, walking around, not lost and not in transit.
+5. Treat a fresh `recorded_at` as an accepted move. It does not say they arrived, left, or came back. Do not announce an arrival unless they said so.
+6. For health, use only lines present in this run. `age_seconds` is when that snapshot was saved. Steps and calories are from that time. Sleep is for the morning, or a short night mentioned in the evening. Do not recap last night's hours in the afternoon. A workout in progress gets one short line. A workout finished within about 90 minutes can include how it felt and protein or water as care. Recovery `fatigued` is the only case for urging rest.
+7. If `place_name` is from an Apple Maps placemark (category `apple_maps`) or is `Unlisted place`, you can refer to it naturally. You may ask the user if they'd like to remember it as a custom place (e.g., Home, Work, Gym).
+8. For Hermes Post / Inbox:
+   - Check pending letters awaiting agent attention: `companion.py --inbox --pending` (add `--profile <name>` to filter for the active profile).
+   - Read full thread chronology: `companion.py --thread <thread_id>`.
+   - Post an agent reply letter back to the user's inbox: `companion.py --reply <thread_id> --message "..."`.
+   - Compose a new letter from the agent: `companion.py --new-post --to-profile <name> --subject "..." --message "..."`.
+   - Style: Compose thoughtful, clear letters or memos matching the agent's persona.
+
+## Place and Motion Rules
+
+The phone rewrites `latest_location.json` only when a move clears the persist gate:
+
+- Fresh walking, running, cycling, or driving: at least the distance filter (default 30 m). Reason `moved`.
+- Fresh stationary: only past 150 m (reason `distance`), or GPS speed above 1 m/s and still past the distance filter (reason `moved`). A shorter jump is indoor drift and is not written.
+- No fresh motion sample: the distance filter alone. Reason `no_motion_reading`.
+
+CoreMotion is refreshed on its own. Trust `is_moving_now` plus `motion_activity` for moving versus staying. Trust `place` for which place. Automotive motion is in transit even inside a saved radius. Walking, running, or cycling inside a saved radius stays at that place.
+
+Field notes live in `references/files.md`. Load that file only when a raw key is unclear.
+
+## Pitfalls
+
+- "No file yet" means the Hermes Companion iPhone app is missing, not yet allowed to run, or iCloud has not downloaded its files. Say that. Do not reuse a place from an earlier conversation as if it were a fresh reading.
+- The simulator has no CoreMotion. `motion_activity: unknown` and `motion_fresh: no` are expected there.
+- Motion & Fitness must be allowed or `motion_activity` stays `unknown`.
+- Coordinates are for saving a place or when the user asks for them. Do not recite them in a normal reply.
+- Ignore `battery_level`, `battery_state`, and `speed` if an older file still has them. Battery percentage and speed are omitted from data and are not part of this app or skill.
+- Two Macs on the same Apple ID share the container. Read the local file; do not fetch it from the network.
+- The iPhone app reverse-geocodes via Apple Maps (CLGeocoder) and saves `placemark_name`. User-saved places in `places.json` always take precedence. If neither is available, it reports `Unlisted place`.
+- Profiles: Running any companion command automatically registers or refreshes the active Hermes profile in `profiles.json` so the iPhone user can address letters to it.
+
+## Verification
+
+Run `python3 ${HERMES_SKILL_DIR}/scripts/companion.py` again. The `place_name:` line matches the previous reading when they have not moved, and `source:` is a file under the iCloud container. For a code change, run `python3 ${HERMES_SKILL_DIR}/scripts/test_companion.py` and confirm `ok`.

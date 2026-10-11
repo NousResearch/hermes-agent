@@ -170,6 +170,19 @@ class TestSupportsFilter:
             assert not unsupported, \
                 f"{mid} payload has unsupported keys: {unsupported}"
 
+    def test_seedream_flash_edit_and_t2i_stay_inside_the_2k_window(self, image_tool):
+        """Seedream 5.0 Flash rejects requests outside 1024²–2048² total pixels and its edit
+        endpoint takes ``image_urls``; every aspect must land inside the window on both paths."""
+        mid = "bytedance/seedream/v5/flash/text-to-image"
+        for aspect in ("landscape", "square", "portrait"):
+            t2i = image_tool._build_fal_payload(mid, "p", aspect, seed=1)
+            edit = image_tool._build_fal_edit_payload(mid, "p", ["https://x/a.png"], aspect)
+            for payload in (t2i, edit):
+                size = payload["image_size"]
+                assert 1024 ** 2 <= size["width"] * size["height"] <= 2048 ** 2, (aspect, size)
+            assert "seed" not in t2i and edit["image_urls"] == ["https://x/a.png"]
+        assert image_tool.FAL_MODELS[mid]["edit_endpoint"] == "bytedance/seedream/v5/flash/edit"
+
 
 
 

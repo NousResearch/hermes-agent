@@ -245,6 +245,52 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
     return lo
 
 
+def _enclosing_link_start(text: str, pos: int) -> Optional[int]:
+    """Start index of the ``[label](url)`` span enclosing ``pos``, else ``None``.
+
+    Only unescaped brackets/parens count: Telegram MarkdownV2 escapes ``\\[``,
+    ``\\]`` inside labels and ``\\)`` inside URLs, and other platforms' plain
+    text may carry literal brackets. Unclosed or malformed spans are literal
+    text and never match.
+    """
+    lb = text.rfind("[", 0, pos)
+    while lb != -1:
+        if lb > 0 and text[lb - 1] == "\\":
+            lb = text.rfind("[", 0, lb)
+            continue
+        # The label's closing ']'.
+        rb = lb + 1
+        while True:
+            rb = text.find("]", rb)
+            if rb == -1:
+                break
+            if text[rb - 1] == "\\":
+                rb += 1
+                continue
+            break
+        if rb == -1 or text[rb + 1:rb + 2] != "(":
+            # Not a link (unclosed, or no '(' after ']'); try an earlier '['.
+            lb = text.rfind("[", 0, lb)
+            continue
+        # The URL's closing ')'.
+        cp = rb + 2
+        while True:
+            close = text.find(")", cp)
+            if close == -1:
+                break
+            if text[close - 1] == "\\":
+                cp = close + 1
+                continue
+            break
+        if close == -1:
+            lb = text.rfind("[", 0, lb)
+            continue
+        # The nearest '[' resolves to a complete link: pos is either inside
+        # its span or past it; no earlier '[' can enclose pos.
+        return lb if pos <= close else None
+    return None
+
+
 def _prefix_within_utf16_limit(s: str, limit: int) -> str:
     """Longest prefix of *s* with UTF-16 length ≤ *limit*; never splits a surrogate pair."""
     return s[:_custom_unit_to_cp(s, limit, utf16_len)]
@@ -4920,6 +4966,15 @@ class BasePlatformAdapter(ABC):
                         candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
+            # Don't split inside a Markdown link: a broken [label](url) renders as
+            # raw text (Telegram MarkdownV2) or an unclickable fragment elsewhere.
+            candidate = remaining[:split_at]
+            link_start = _enclosing_link_start(remaining, split_at)
+            if link_start is not None:
+                safe_split = max(
+                    candidate.rfind(" ", 0, link_start), candidate.rfind("\n", 0, link_start))
+                if safe_split > _cp_limit // 4:
+                    split_at = safe_split
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
             full_chunk = prefix + chunk_body

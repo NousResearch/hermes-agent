@@ -1124,6 +1124,84 @@ class TestTruncateMessage:
         chunks = adapter.truncate_message("Hello world", max_length=100)
         assert chunks == ["Hello world"]
 
+    # --- Markdown link spans (issue: Telegram chunking split a [label](url)) ---
+
+    @staticmethod
+    def _assert_no_split_links(chunks):
+        """Every complete ``[label](url)`` in the source survives inside one chunk."""
+        import re as _re
+        joined = "".join(chunks)
+        for m in _re.finditer(r"\[[^\]]*\]\([^()]*\)", joined):
+            assert any(m.group(0) in c for c in chunks), (
+                f"link split across chunks: {m.group(0)!r}")
+
+    def test_split_backs_off_before_markdown_link(self):
+        # A paragraph followed by a link: the natural split lands on a space
+        # inside the label, so without the guard the link is torn in two.
+        adapter = self._adapter()
+        link = "[Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)"
+        msg = ("word " * 95).rstrip() + " " + link
+        chunks = adapter.truncate_message(msg, max_length=200)
+        assert len(chunks) >= 2
+        assert any(link in c for c in chunks)
+        self._assert_no_split_links(chunks)
+
+    def test_split_inside_link_url_backs_off(self):
+        # Label fits the budget but the URL crosses it: still one piece.
+        adapter = self._adapter()
+        link = "[x](https://example.invalid/" + "a" * 80 + ")"
+        msg = ("y " * 60) + link
+        assert len(link) < 150 - 10  # must fit one chunk for the guard to save it
+        chunks = adapter.truncate_message(msg, max_length=150)
+        assert any(link in c for c in chunks)
+        self._assert_no_split_links(chunks)
+
+    def test_escaped_brackets_and_parens_are_not_link_syntax(self):
+        # Telegram MarkdownV2 escapes literal brackets and URL parens: \[ \] \)
+        # must not read as link structure, and the real link still stays whole.
+        adapter = self._adapter()
+        link = "[ref](https://example.invalid/a\\)b)"
+        msg = "see \\[section\\] " + ("z " * 60) + link
+        chunks = adapter.truncate_message(msg, max_length=150)
+        assert any(link in c for c in chunks)
+
+    def test_unclosed_bracket_is_literal_text(self):
+        # A '[' that never becomes [label](url) is plain text; splitting next
+        # to it is fine and must not stall or throw.
+        adapter = self._adapter()
+        msg = "draft [wip " + ("q " * 80)
+        chunks = self._truncate_with_timeout(msg, 120)
+        assert len(chunks) >= 2
+
+    def test_link_longer_than_budget_still_splits(self):
+        # A link that cannot fit one chunk is split anyway - overshooting beats
+        # a hang; the guard must never stall the loop.
+        adapter = self._adapter()
+        link = "[label](https://example.invalid/" + "b" * 400 + ")"
+        msg = "intro " + link
+        chunks = self._truncate_with_timeout(msg, 100)
+        assert len(chunks) >= 2
+
+    def test_telegram_issue_fixture_link_survives_utf16_chunking(self):
+        # The report's exact shape: prose sized to the 4096 MarkdownV2 UTF-16
+        # edge, then a link. format_message output must chunk without tearing
+        # the link.
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import utf16_len
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        tg = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+        link = "[Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)"
+        prose = "This synthetic statement is supported by a retained source. " * 90
+        best = 0
+        for i, ch in enumerate(prose):
+            if ch == " " and utf16_len(tg.format_message(prose[:i])) <= 4040:
+                best = i
+        formatted = tg.format_message(prose[:best] + link)
+        assert utf16_len(formatted) > 4096  # the fixture genuinely needs two chunks
+        chunks = tg.truncate_message(formatted, 4096, len_fn=utf16_len)
+        assert any(tg.format_message(link) in c for c in chunks)
+
     def test_exact_length_single_chunk(self):
         adapter = self._adapter()
         msg = "x" * 100

@@ -3782,6 +3782,11 @@ export interface Translations extends NoticeTranslations {
     collapseAll: string
     showIgnored: string
     hideIgnored: string
+    sessionFileTip: string
+    showSessionFiles: string
+    showAllFiles: string
+    noSessionFilesTitle: string
+    noSessionFilesBody: string
     previewUnavailable: string
     couldNotPreview: (path: string) => string
     noProjectTitle: string

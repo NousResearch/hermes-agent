@@ -89,6 +89,12 @@ _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
 _SPILL_CAP = {5_000_000}
 _PARENT_PROCESS_HANDLE = os.environ.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", "")
 _PARENT_DEATH_FD = os.environ.pop("HERMES_KERNEL_PARENT_DEATH_FD", "")
+# The runtime site-packages arrives through PYTHONPATH, which does not run .pth files.
+# Run them as the launcher does, or editable plugins are listed but cannot be imported.
+_RUNTIME_SITE = os.environ.pop("HERMES_KERNEL_RUNTIME_SITE", "")
+if _RUNTIME_SITE:
+    import site
+    site.addsitedir(_RUNTIME_SITE)
 
 
 def _start_parent_death_pipe_watchdog():

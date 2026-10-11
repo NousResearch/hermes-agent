@@ -584,10 +584,11 @@ class MCPServerTransportMixin:
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP (or SSE) transport."""
-        _core._ensure_mcp_sdk()
-        if not _core._MCP_HTTP_AVAILABLE:
+        if not _core._ensure_mcp_http():
+            # Name the import's own error: a transient failure is not an outdated package.
+            cause = f" ({_core._MCP_IMPORT_ERROR})" if _core._MCP_IMPORT_ERROR else ""
             raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
-                              "mcp.client.streamable_http is not available. "
+                              f"mcp.client.streamable_http is not available{cause}. "
                               "Upgrade the mcp package to get HTTP support.")
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — their names are captured BEFORE client-generated headers are merged in.

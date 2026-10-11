@@ -1185,7 +1185,12 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
 
 
 def _refresh_windows_gateway_launchers() -> None:
-    """Regenerate installed Windows gateway launcher scripts after update; best-effort, never fails the update.
+    """Refresh only launchers owned by a successfully inspected canonical task.
+
+    Custom, unreadable and older noncanonical actions are retained. Startup-only
+    installs with no provable task action intentionally receive no automatic
+    refresh here. Explicit installation/repair owns task policy upgrades and
+    Startup-entry migration; update never re-registers existing task definitions.
 
     Launchers are written once at install, so old installs kept launching via ``pythonw.exe`` (``sys.stderr is
     None`` death). The task's /TR points at a stable path, so rewriting in place retargets it without UAC.
@@ -1201,18 +1206,18 @@ def _refresh_windows_gateway_launchers() -> None:
         return
     with _best_effort('Could not refresh Windows gateway launchers after update: %s'):
         from hermes_cli import gateway_windows
-        if gateway_windows.is_installed():
-            gateway_windows._write_task_script()
-            print("  ✓ Refreshed Windows gateway launcher scripts")
-            # Installs from before #80569 can carry a Startup entry beside the task: both fire at logon.
-            done, warnings = gateway_windows.reconcile_autostart_launchers()
-            for message in done:
-                print(f"  ✓ {message}")
-            for message in warnings:
-                print(f"  ⚠ {message}")
-            if gateway_windows.is_task_registered():
-                # A task registered by an older build never picks up template hardening otherwise (#113670).
-                gateway_windows.reconcile_scheduled_task(gateway_windows.get_task_name())
+        # A boolean /Query failure cannot distinguish absence from denied or
+        # timed-out inspection. Require a readable, canonical task action
+        # directly; unknown states (including Startup-only installs without
+        # provable task ownership) retain their persistence files unchanged.
+        task_name = gateway_windows.get_task_name()
+        if not gateway_windows.scheduled_task_uses_managed_action(task_name):
+            print("  ⚠ Kept Windows persistence unchanged: task action is custom or unverified")
+            return
+        gateway_windows._write_task_script()
+        print("  ✓ Refreshed managed Windows gateway launcher scripts")
+        # Never re-register task definitions or clean Startup entries during
+        # update. Explicit install/repair owns persistence policy changes.
 
 
 def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:

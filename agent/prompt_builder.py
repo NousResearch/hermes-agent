@@ -765,6 +765,17 @@ PLATFORM_HINTS = {
         "window.hermes.send(\"prompt\")) sends that prompt as a hidden user turn — answer it by updating the widget's "
         "file, not with prose."
     ),
+    "hermex": (
+        # Hermex (the iOS client) Bot Mode over ``hermes serve``: its chat parses MEDIA: tags into
+        # artifact rows and downloads them through the authenticated /api/fs/download route. It is
+        # NOT the Electron desktop — no ::preview widgets, no desktop_ui toolset.
+        "You are chatting inside Hermex, the iOS app for Hermes. Markdown renders (bold, italic, "
+        "code blocks, lists, links). Deliver files by writing MEDIA:/absolute/path/to/file — the "
+        "path must exist and be readable on this server: images render inline, other files appear "
+        "as downloadable attachments. Remote image URLs render via ![alt](url); local files ONLY "
+        "via MEDIA:. The app has no inline HTML widgets or desktop panes — deliver charts and "
+        "mockups as files."
+    ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text only — no markdown, no "
         "formatting. SMS messages are limited to ~1600 characters, so be brief and direct."

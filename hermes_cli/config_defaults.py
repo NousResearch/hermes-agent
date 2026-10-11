@@ -2551,6 +2551,7 @@ DEFAULT_CONFIG = {
         # registers (or repairs) the task at install time — needed to drive Windows over SSH,
         # where Session 0 has no interactive desktop (see the computer-use guide).
         "autostart": False,
+        # Use cua-driver's native Wayland backend for Wayland-only windows; restart the gateway after changing it.
         "native_wayland": False,
         # Cap driver screenshot longest edge (pixels) via set_config at session start; shrinks SOM
         # multimodal payloads. 0 disables.

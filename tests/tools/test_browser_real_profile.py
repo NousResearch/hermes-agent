@@ -273,6 +273,7 @@ class TestRealProfileCdpLaunch:
             bt_real_profile._real_profile_cdp()
         # The chrome launch itself is headless (no window, no focus steal).
         assert "--headless=new" in captured["chrome_argv"]
+        assert "--disable-renderer-backgrounding" in captured["chrome_argv"]  # #135435
         # agent-browser attaches, it does not launch.
         assert "--headless" not in captured["argv"]
         assert "--profile" not in captured["argv"]

@@ -357,6 +357,7 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
+    bridge_caller_token = _set_desktop_bridge_caller_for_session(session)
     tokens = _set_session_context(session["session_key"])
     try:
         # /new is a full conversation boundary: session-scoped runtime overrides (/model,
@@ -370,6 +371,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
             context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
     finally:
         _clear_session_context(tokens)
+        _reset_desktop_bridge_caller(bridge_caller_token)
     session.update(
         agent=new_agent, config_model_seen=_config_model_target(), attached_images=[],
         queued_prompt=None,

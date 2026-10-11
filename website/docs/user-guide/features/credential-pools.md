@@ -134,7 +134,7 @@ Each `hermes auth add openai-codex` login becomes its own pool entry, but only *
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
 | `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status (applies to running sessions too: a live gateway or chat picks the reset up on its next request instead of writing its stale cooldown back) |
 | `hermes auth reset <provider> <target>` | Clear the cooldown on one credential by index, id, or label |
-| `hermes auth refresh <provider> [target]` | Refresh one OAuth credential's tokens and return it to rotation (proves the grant is alive; the next request re-checks quota) |
+| `hermes auth refresh <provider> [target]` | Refresh one OAuth credential's tokens and clear its credential-wide exhaustion status. Model cooldowns remain until expiry or an explicit `auth reset`; active model cooldowns and the targeted reset command are printed after refresh. Token refresh proves the grant is alive, not that quota or model entitlement is restored. |
 
 For Nous, `auth refresh` supports only the login's `device_code` singleton.
 Independent Nous pool accounts are rejected before refresh; their tokens and

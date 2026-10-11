@@ -270,6 +270,19 @@ describe('ClarifyTool keyboard navigation', () => {
     expect(other.closest('label')?.getAttribute('data-highlighted')).toBe('true')
   })
 
+  it('tabs from Other to Confirm and continue before Skip', () => {
+    renderLiveClarify()
+
+    // jsdom does not walk Tab itself; with no custom tabIndex in the card the
+    // native tab order *is* DOM order, so assert the order the walk follows.
+    const other = screen.getByPlaceholderText(/Other/)
+    const confirm = screen.getByRole('button', { name: /Confirm and continue/ })
+    const skip = screen.getByRole('button', { name: 'Skip' })
+
+    expect(other.compareDocumentPosition(confirm) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(confirm.compareDocumentPosition(skip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('selects by number and confirms the answer with Enter', async () => {
     const { request } = renderLiveClarify()
 

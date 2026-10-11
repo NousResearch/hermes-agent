@@ -422,10 +422,20 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
     endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
-    None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
-    with a user-facing message."""
+    None values, child inherits everything. ``request_overrides`` is honored on every branch. ``opusplan`` (a
+    ``delegation.model`` of that name, or an unset one under an opusplan session) resolves to the provider's exec
+    model first. Raises ValueError with a user-facing message."""
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
+    # opusplan: the exec model of the (delegation or parent) provider replaces an unset / "opusplan"
+    # delegation.model, then every branch below treats it as an ordinary pinned model.
+    from hermes_cli.opusplan import OpusplanError, delegation_model
+    try:
+        exec_model = delegation_model(values["model"], values["provider"], values["base_url"], parent_agent)
+    except OpusplanError as exc:
+        raise ValueError(str(exc)) from exc
+    if exec_model:
+        values["model"] = exec_model
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
 

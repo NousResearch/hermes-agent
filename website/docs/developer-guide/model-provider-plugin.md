@@ -279,7 +279,7 @@ External-process profiles may implement `setup_status(**kwargs)` returning `{ava
 
 For interruptible non-HTTP requests, implement a class-declared `cancel(self)` method. Hermes calls it from the interrupting thread after marking the request client unusable. It must return promptly and safely stop its own transport, including cancellation racing process startup; it must not close file descriptors owned by the request thread. The request owner still calls `close()` for cleanup. Clients without this method retain the existing socket-shutdown cancellation path.
 
-Declare `model_aliases` (`{"sonnet": "claude-sonnet-5[1m]"}`) for a catalog models.dev does not know: bare `/model <alias>` and `/model <id-prefix>` resolve inside the process provider first, and `validate_requested_model` accepts a declared id without probing `process://`.
+Declare `model_aliases` (`{"sonnet": "claude-sonnet-5[1m]"}`) for a catalog models.dev does not know: bare `/model <alias>` and `/model <id-prefix>` resolve inside the process provider first, and `validate_requested_model` accepts a declared id without probing `process://`. If the aliases include both `opus` and `sonnet`, they double as the provider's [`opusplan`](../user-guide/configuring-models.md#opusplan-plan-on-the-big-model-delegate-to-the-cheap-one) pair (plan = `opus`, exec = `sonnet`) with no user config; a `providers.<name>.opusplan` block overrides them.
 
 Explicit external-process delegation retains the selected provider and its protocol when resolving the child command; an executable override alone does not change an external-process provider into ACP.
 

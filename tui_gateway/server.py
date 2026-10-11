@@ -1549,11 +1549,13 @@ def _env_model_seed() -> str:
 def _resolve_model() -> str:
     if env := _env_model_seed():
         return env
-    m = _load_cfg().get("model", "")
+    cfg = _load_cfg()
+    m = cfg.get("model", "")
+    from hermes_cli.opusplan import ROLE_PLAN, resolve_model_in_config
     if isinstance(m, dict):
-        return str(m.get("default", "") or "").strip()
+        return str(resolve_model_in_config(str(m.get("default", "") or "").strip(), ROLE_PLAN, cfg))
     if isinstance(m, str) and m:
-        return m.strip()
+        return str(resolve_model_in_config(m.strip(), ROLE_PLAN, cfg))
     # No env seed / config preference: the cost-safe silent default (cache-only read), never an unpicked flagship.
     with contextlib.suppress(Exception):
         from hermes_cli.models import get_preferred_silent_default_model
@@ -1704,7 +1706,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         # Same dict-shaped override live /model switches use, so a DB-restored session keeps custom endpoint
         # metadata across resume and rebuilds (/new). Raw api_key is never persisted/restored.
         overrides["model_override"] = {
-            "model": model, "provider": provider or None, "base_url": base_url or None, "api_mode": api_mode or None}
+            "model": model, "provider": provider or None, "base_url": base_url or None, "api_mode": api_mode or None,
+            "opusplan": model_config.get("opusplan") is True}
     if provider:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
@@ -1719,6 +1722,11 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
+    mode = getattr(agent, "opusplan_active", None)
+    if isinstance(mode, bool):
+        config["opusplan"] = mode
+    else:
+        config.pop("opusplan", None)
     agent = session_runtime_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
@@ -2397,7 +2405,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
             pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
     info: dict = {
-        "model": model,
+        "model": "opusplan" if not pending_model and getattr(agent, "opusplan_active", False) else model,
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
         "service_tier": service_tier,
@@ -2575,7 +2583,17 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             requested_provider = provider_override
         resolve_kwargs = {"requested": requested_provider, "target_model": model or None}
         overrides = {}
+    from hermes_cli.opusplan import ROLE_PLAN, is_opusplan, resolve_startup_model
+    if isinstance(model_override, dict):
+        mode = model_override.get("opusplan") is True or is_opusplan(model)
+    elif isinstance(model_override, str) and model_override:
+        mode = is_opusplan(model_override)
+    else:
+        mode = is_opusplan(_env_model_seed() or _config_model_target()[0])
+    model, _ = resolve_startup_model(model, ROLE_PLAN, requested_provider, cfg=_load_cfg())
+    resolve_kwargs["target_model"] = model or None
     resolution = _resolve_runtime_with_fallback(resolve_kwargs)
+    resolution.runtime["_opusplan_active"] = mode and not resolution.used_fallback
     if resolution.used_fallback:
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
@@ -2677,6 +2695,7 @@ def _make_agent(
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)
+    opusplan_active = runtime.pop("_opusplan_active", False)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
@@ -2712,6 +2731,7 @@ def _make_agent(
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    agent.opusplan_active = opusplan_active
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice

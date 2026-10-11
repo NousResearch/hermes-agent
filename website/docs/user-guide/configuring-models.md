@@ -346,6 +346,47 @@ Inside any `hermes chat` session:
 A one-turn switch breaks the provider's prompt-cache prefix twice (switching out and back). In a long session on a cached-prefix provider (Anthropic, OpenAI), the next turn re-pays full input cost — `--once` wins for short sessions or cheap→expensive escalation, but a quick side question inside a long expensive session can cost more than it saves.
 :::
 
+### `opusplan`: plan on the big model, delegate to the cheap one
+
+`opusplan` is a provider-aware **planner + delegated-worker orchestration preset**, not Claude Code's literal Plan-mode lifecycle. The parent stays on the plan model; it does not automatically switch to exec after planning. Delegation happens only when the agent calls `delegate_task`.
+
+Select the `opusplan` row in the Desktop or in-session CLI model picker for a provider with a declared pair, or use `/model opusplan --session` or `hermes chat --model opusplan`. No global default change is required. The session stores the mode separately from the resolved model ID so switching and resuming preserve it; selecting an ordinary model disables it. `model.default: opusplan` remains an optional profile-wide choice.
+
+While `opusplan` is selected, the main conversation runs on the provider's **plan** model and `delegate_task` children default to its **exec** model. Independent cron jobs and kanban tasks retain their own route and are not globally forced onto exec by an interactive session. A cron job explicitly configured with `opusplan` is a separate parent on the plan model.
+
+Hermes finds a provider's plan/exec pair in this order, and never guesses:
+
+1. **Your config.** Each entry under `providers:` takes an optional `opusplan` block, keyed by the provider's own name. This is the route for custom and local endpoints, which have no built-in opus/sonnet notion.
+2. **The provider plugin's aliases.** If the plugin defines both `opus` and `sonnet` model aliases (as the Claude subscription plugins do), those are used with no extra config.
+3. **Otherwise it fails.** The error names the provider and tells you to add an `opusplan` block for it under `providers:`.
+
+Worked example with an internal LiteLLM router and two local open-weight models:
+
+```yaml
+# ~/.hermes/config.yaml
+model:
+  default: opusplan
+  provider: ecc-router
+providers:
+  ecc-router:
+    base_url: http://192.168.10.13:4000/v1
+    api_key: ${ECC_ROUTER_KEY}
+    opusplan:
+      plan: GLM-5.3-Flash-850K      # main conversation
+      exec: Qwen3.8FlashNext        # delegated children only
+```
+
+With that config the chat runs `GLM-5.3-Flash-850K`, and a `delegate_task` child runs `Qwen3.8FlashNext` on the same router, without setting `delegation.model`. Both `plan` and `exec` are required; a block with only one is an error.
+
+This local example is a generic plan/exec split, **not genuine Claude Opus/Sonnet**. For Claude models, use an approved provider that actually serves them and declares its own pair/aliases. Hermes does not substitute local models or relay subscription credentials.
+
+Notes:
+
+- `/model opusplan` switches the live session to the plan model and turns on the split for that session. Picking any other model with `/model` ends the split, so subagents go back to inheriting. `--global` writes the keyword (`model.default: opusplan`), not the resolved model id, so the split survives a restart. `--provider <name>` uses that provider's pair.
+- An explicit `delegation.model` always wins over the exec model. `delegation.model: opusplan` forces the exec model even when the main model is something else. A direct `delegation.base_url` endpoint is never second-guessed. See [Delegation](features/delegation.md#opusplan-plan-on-the-big-model-delegate-to-the-cheap-one).
+- Auxiliary tasks that follow the main model (compression, vision, and so on) use the plan model.
+- Switching to or from `opusplan` mid-conversation changes the model, which resets the prompt cache like any other `/model` switch.
+
 ### Custom aliases
 
 Define your own short names for models you reach for often, then use `/model <alias>` in a running session or `hermes chat --model <alias>` at startup. There are two equivalent formats — pick whichever fits your workflow.

@@ -191,7 +191,10 @@ def build_write_denied_paths(home: str) -> set[str]:
     # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
     # deliberately NOT here: #45947 freed those control files on purpose
     # ("true containment belongs in Docker/remote backends and OS permissions,
-    # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
+    # not an expanding hardcoded denylist"). auth.json / auth.lock /
+    # webhook_subscriptions.json stay read-denied (_CREDENTIAL_FILE_NAMES),
+    # not write-denied; config.yaml stays readable — writes to the active
+    # profile's config are gated by tools/file_tools_write_guards.py.
     hermes_files = (
         ".env", ".anthropic_oauth.json",
         os.path.join("auth", "google_oauth.json"),
@@ -245,7 +248,10 @@ def build_write_approval_paths(home: str) -> set[str]:
 # mcp-tokens/, pairing/, vault/ (key + ciphertext side by side) and
 # browser-profile/ (copied cookies / Login Data) hold credential material.
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
-# deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
+# deliberately NOT here (#45947): auth.json / webhook_subscriptions.json are
+# read-denied (_CREDENTIAL_FILE_NAMES) but user-editable on request; config.yaml
+# is readable, with the active profile's config write-gated by
+# tools/file_tools_write_guards.py.
 _HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
 
 

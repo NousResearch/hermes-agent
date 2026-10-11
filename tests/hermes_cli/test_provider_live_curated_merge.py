@@ -14,6 +14,8 @@ Guards two contracts:
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_cli.models import (
     _LIVE_FIRST_PICKER_PROVIDERS,
     provider_model_ids,
@@ -124,6 +126,28 @@ class TestGenericProviderLiveCuratedMerge:
 
         assert "x-preview-f-free" not in result
         assert {"kimi-k3", "gpt-5.6-sol", "claude-opus-5"} <= set(result)
+
+    @pytest.mark.parametrize("provider", ["alibaba-token-plan", "alibaba-token-plan-cn"])
+    def test_alibaba_token_plan_merge_does_not_resurrect_delisted_model(self, provider):
+        """#119481: the known dated ID must not reappear from the shared curated floor.
+
+        This protects the specific catalog correction, preserving the existing
+        merge policy and every currently listed live model.
+        """
+        live = ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus"]
+
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids(provider)
+
+        assert "qwen3.8-max-0902" not in result
+        assert set(live) <= set(result)
+
 
     def test_opencode_zen_offline_catalog_drops_retired_model(self):
         """#115496 without a key: no live fetch, so provider_model_ids serves the curated floor merged

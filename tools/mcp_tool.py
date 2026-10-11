@@ -136,6 +136,21 @@ def _import_sdk_names(module: str, names: tuple, missing_msg: Optional[str] = No
     return True
 
 
+def _bind_stdio_server_parameters() -> bool:
+    """Bind ``StdioServerParameters`` into this module's globals.
+
+    ``mcp 2.0.0`` split the protocol types out into a separate ``mcp_types`` package and
+    rebuilt ``mcp/__init__.py`` on top of it. On some 2.0 builds the top-level re-export is
+    fragile: importing ``mcp`` can succeed while ``mcp.StdioServerParameters`` still trips
+    an intermediate import, so the bundled ``_import_sdk_names(\"mcp\", (...))`` call loses the
+    whole family and every later ``_core.StdioServerParameters`` access raises AttributeError
+    (the module-level ``__getattr__`` then re-raises it). Fall back to the defining submodule,
+    which is stable across 1.x and 2.x. Returns False only when neither path yields it."""
+    if _import_sdk_names("mcp", ("StdioServerParameters",)):
+        return True
+    return _import_sdk_names("mcp.client.stdio", ("StdioServerParameters",))
+
+
 def _ensure_mcp_sdk() -> bool:
     """Import the optional ``mcp`` SDK on first use; return availability. Idempotent and
     thread-safe; honors a test-patched ``_MCP_AVAILABLE=False`` (no import) and pre-installed
@@ -151,7 +166,8 @@ def _ensure_mcp_sdk() -> bool:
     with _MCP_SDK_IMPORT_LOCK:
         if _MCP_SDK_IMPORT_ATTEMPTED or ClientSession is not None:
             return _MCP_AVAILABLE
-        if (_import_sdk_names("mcp", ("ClientSession", "StdioServerParameters"))
+        if (_import_sdk_names("mcp", ("ClientSession",))
+                and _bind_stdio_server_parameters()
                 and _import_sdk_names("mcp.client.stdio", ("stdio_client",))):
             _MCP_AVAILABLE = True
             # mcp >= 1.24 ships streamable_http_client; 2.0 dropped the deprecated

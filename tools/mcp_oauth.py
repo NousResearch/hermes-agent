@@ -676,6 +676,12 @@ def _make_callback_handler() -> tuple[type, dict]:
     result: dict[str, Any] = {"auth_code": None, "state": None, "error": None, "iss": None}
 
     class _Handler(BaseHTTPRequestHandler):
+        # Browsers open a speculative second connection next to the one carrying the redirect and leave
+        # it idle for about a minute (Chrome). The server handles one connection at a time and the waiter's
+        # shutdown() waits for it, so without a read timeout that idle socket held the code for ~60 s:
+        # past a 60 s code lifetime the exchange failed with invalid_grant.
+        timeout = 2
+
         def do_GET(self) -> None:
             parsed = _parse_redirect_query(urlparse(self.path).query)
             status = 200

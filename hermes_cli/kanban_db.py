@@ -1211,6 +1211,10 @@ def create_task(
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_cli.kanban_db_controls import validate_controls
+
+    validate_controls(dict(goal_mode=goal_mode, goal_max_turns=goal_max_turns,
+                           max_retries=max_retries, max_runtime_seconds=max_runtime_seconds))
 
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
@@ -3068,76 +3072,19 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    **execution_controls: Any,
 ) -> bool:
     """Edit task fields, optionally backfilling a completed task's result."""
-    changed_fields = [
-        field for field, value in (("title", title), ("body", body), ("priority", priority))
-        if value is not None
-    ]
-    with write_txn(conn):
-        status = _task_status(conn, task_id)
-        if status is None or (result is not None and status != "done"):
-            return False
-        assignments = []
-        params = []
-        for field, value in (("title", title), ("body", body), ("priority", priority)):
-            if value is not None:
-                assignments.append(f"{field} = ?")
-                params.append(value)
-        if result is not None:
-            assignments.append("result = ?")
-            params.append(result)
-            changed_fields.append("result")
-        if not assignments:
-            return False
-        conn.execute(
-            f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
-            (*params, task_id),
-        )
-        if priority is not None:
-            _append_event(conn, task_id, "reprioritized", {"priority": priority})
-        if result is None:
-            non_priority_fields = [field for field in changed_fields if field != "priority"]
-            if non_priority_fields:
-                _append_event(conn, task_id, "edited", {"fields": non_priority_fields})
-        else:
-            handoff_summary = summary if summary is not None else result
-            changed_fields.append("summary")
-            if metadata is not None:
-                changed_fields.append("metadata")
-            run = conn.execute(
-            """
-            SELECT id FROM task_runs
-             WHERE task_id = ?
-               AND outcome = 'completed'
-             ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
-             LIMIT 1
-            """,
-            (task_id,),
-        ).fetchone()
-            if run is None:
-                run_id = _synthesize_ended_run(
-                    conn, task_id, outcome="completed", summary=handoff_summary, metadata=metadata,
-                )
-            else:
-                run_id = int(run["id"])
-                conn.execute("UPDATE task_runs SET summary = ? WHERE id = ?", (handoff_summary, run_id))
-                if metadata is not None:
-                    conn.execute(
-                        "UPDATE task_runs SET metadata = ? WHERE id = ?",
-                        (json.dumps(metadata, ensure_ascii=False), run_id),
-                    )
-            _append_event(
-                conn, task_id, "edited",
-                {
-                    "fields": ["result", "summary"] + (["metadata"] if metadata is not None else []),
-                    "result_len": len(result) if result else 0,
-                    "summary": _first_line(handoff_summary, 400) or None,
-                },
-                run_id=run_id,
-            )
-    notify_task_updated(conn, task_id, changed_fields, board=board)
-    return True
+    if execution_controls:
+        from hermes_cli.kanban_db_controls import edit_execution_controls
+
+        if any(value is not None for value in (title, body, priority, result, summary, metadata)):
+            raise ValueError("execution controls cannot be combined with other edits")
+        return edit_execution_controls(conn, task_id, execution_controls, board=board)
+    from hermes_cli.kanban_db_edit import edit_task_fields
+
+    return edit_task_fields(conn, task_id, title=title, body=body, priority=priority,
+                            result=result, summary=summary, metadata=metadata, board=board)
 
 
 def block_task(

@@ -361,6 +361,47 @@ def test_ws_transport_replies_with_error_for_unserializable_response(caplog):
     assert caplog.text.count("frame serialization failed") == 2
 
 
+def test_ws_transport_replies_with_error_for_non_finite_response(caplog):
+    """#132800: a non-finite float (YAML 1.1 resolves an unquoted id like ``20260101_120000_1e0400``
+    to ``inf``) must not leave the transport as a bare ``Infinity`` token — that is not JSON, so a
+    strict client drops the frame and the whole profiles.list fails to load. It becomes the same
+    JSON-RPC error frame an unserializable payload gets, and the transport stays open."""
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            sent.append(line)
+
+    bad = {"jsonrpc": "2.0", "id": "profiles", "result": {"ui_meta": {"chat": float("inf")}}}
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        transport = ws_mod.WSTransport(FakeWS(), loop, peer="non-finite-test")
+        assert transport.write(bad) is True
+        assert transport.write({"jsonrpc": "2.0", "id": "next", "result": {}}) is True
+        assert transport.closed is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+    # Every emitted line must parse under strict JSON — no bare Infinity/NaN token anywhere.
+    for line in sent:
+        assert json.loads(line, parse_constant=_reject_constant)
+    assert [json.loads(line).get("id") for line in sent] == ["profiles", "next"]
+    failed = json.loads(sent[0])
+    assert failed["error"]["code"] == -32603
+    assert failed["error"]["message"].startswith("response serialization error")
+    assert "not JSON compliant" in failed["error"]["message"]
+    assert caplog.text.count("frame serialization failed") == 1
+
+
+def _reject_constant(token):
+    raise AssertionError(f"non-finite constant reached the wire: {token}")
+
+
 def test_ws_transport_preserves_cross_batch_order():
     async def scenario():
         entered = []

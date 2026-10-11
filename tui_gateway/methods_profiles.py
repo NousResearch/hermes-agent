@@ -264,8 +264,12 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
                   _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}}
         if isinstance(ui_meta, dict) and ui_meta:
             # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
-            # coerce YAML-only scalars to their ISO string at the boundary (#92506).
-            fields["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
+            # coerce YAML-only scalars to their ISO string at the boundary (#92506). YAML 1.1 also
+            # resolves unquoted ids like ``20260101_120000_1e0400`` to ``inf``; JSON has no non-finite
+            # spelling, so the round-trip maps one to ``null`` instead of a bare ``Infinity`` token
+            # that strict clients reject (#132800).
+            fields["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json),
+                                           parse_constant=lambda _token: None)
         return fields
 
     # Second parse of this profile.yaml in the same request (``read_profile_meta`` already read it

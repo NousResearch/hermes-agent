@@ -109,3 +109,6 @@ def test_tunnel_cut_to_the_git_host_fails_fast_and_changes_nothing(inst):
         edge.close()
     assert r.secs < 60, f"a cut tunnel took {r.secs:.0f}s to fail\n" + r.report(inst)
     S.assert_nothing_changed(inst, before, r, "tunnel cut to the git host")
+    assert "github.com" in edge.proxy.hosts("eof"), "the update failed before reaching the cut tunnel\n" + r.report(inst)
+    assert "fetch" in r.out.lower() or "github.com" in r.out, (
+        "the failure does not say the git fetch failed\n" + r.report(inst))

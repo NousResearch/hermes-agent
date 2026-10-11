@@ -299,7 +299,7 @@ import requests, json
 # Print summary to stdout — agent analyzes and reports
 ```
 
-The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` resolves the limit through a three-layer chain:
+The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` resolves the limit through a four-layer chain:
 
 1. **Module-level override** — `_SCRIPT_TIMEOUT` (for tests/monkeypatching). Only used when it differs from the default.
 2. **Environment variable** — `HERMES_CRON_SCRIPT_TIMEOUT`

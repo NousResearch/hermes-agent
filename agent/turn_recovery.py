@@ -145,9 +145,9 @@ def _repair_transport_credentials(agent: Any) -> bool:
 
 
 def _recover_unicode_encode_error(
-    agent: Any, api_error: Exception, messages: List[Dict[str, Any]], api_messages: Any,
+    agent: Any, api_error: Exception, messages: list[dict[str, Any]], api_messages: Any,
     api_kwargs: Any, active_system_prompt: Any,
-) -> Tuple[bool, Any]:
+) -> tuple[bool, Any]:
     """UnicodeEncodeError recovery: lone surrogates (clipboard paste) first, then an ASCII
     codec under a non-UTF-8 locale. Sanitizes in place; bounded by the caller's
     ``_unicode_sanitization_passes < 2`` guard (surrogate strip, then ASCII-only)."""
@@ -233,9 +233,9 @@ def _strip_request_images_and_retry(agent: Any, api_messages: Any) -> bool:
 
 
 def recover_before_classification(
-    agent: Any, api_error: Exception, *, messages: List[Dict[str, Any]], api_messages: Any,
+    agent: Any, api_error: Exception, *, messages: list[dict[str, Any]], api_messages: Any,
     api_kwargs: Any, active_system_prompt: Any,
-) -> Tuple[bool, Any]:
+) -> tuple[bool, Any]:
     """Recovery branches that run BEFORE ``classify_api_error``: UnicodeEncodeError
     sanitization, Anthropic fast mode with no capacity (drop ``speed`` for that model),
     provider image-content rejection (record the (provider, model);
@@ -460,7 +460,7 @@ def reset_codex_reasoning_replay(agent: Any) -> None:
 
 
 def _recover_stale_codex_reasoning(
-    agent: Any, _retry: TurnRetryState, messages: List[Dict[str, Any]], api_messages: Any,
+    agent: Any, _retry: TurnRetryState, messages: list[dict[str, Any]], api_messages: Any,
 ) -> bool:
     """Stale ``codex_reasoning_items`` blob rejected by the provider: strip cached items (mutates
     persisted ``messages``) and retry once. The first rejection keeps replay on, since blobs the
@@ -502,7 +502,7 @@ def _recover_stale_codex_reasoning(
 
 def _recover_format_errors(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState,
-    messages: List[Dict[str, Any]], api_messages: Any,
+    messages: list[dict[str, Any]], api_messages: Any,
 ) -> bool:
     """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
     replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
@@ -640,21 +640,46 @@ def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState) -
     return False
 
 
+def _clamp_to_affordable_budget(agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState) -> bool:
+    """A credit-limited 402 (OpenRouter: "...requested up to 65536 tokens, but can only afford
+    56272") means the account has credit and the output cap was too large: retry ONCE with the
+    cap lowered to the affordable budget instead of abandoning the provider as billing (#49769).
+    Same budget parse as the auxiliary client's retry. The 402 itself says the request's cap
+    exceeded the budget (which may be a boosted continuation cap above ``agent.max_tokens``),
+    so a second credit-limited 402 on this call is genuine exhaustion."""
+    if classified.reason != FailoverReason.billing or _retry.affordable_402_clamp_attempted:
+        return False
+    from agent.auxiliary_client import _affordable_max_tokens_from_error
+
+    affordable = _affordable_max_tokens_from_error(api_error)
+    if affordable is None:
+        return False
+    _retry.affordable_402_clamp_attempted = True
+    agent._ephemeral_max_output_tokens = affordable
+    _vlines(agent, f"💳 Credit balance covers fewer output tokens — retrying with max_tokens={affordable:,}...")
+    logger.info("%sCredit-limited 402: retrying once with max_tokens=%d", agent.log_prefix, affordable)
+    return True
+
+
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
-    status_code: Optional[int], error_context: Any, messages: List[Dict[str, Any]],
+    status_code: Optional[int], error_context: Any, messages: list[dict[str, Any]],
     api_messages: Any,
-) -> Tuple[bool, bool]:
+) -> tuple[bool, bool]:
     """One-shot recovery chain that runs AFTER ``classify_api_error`` and before the
     generic retry path. Order is load-bearing (each branch may ``return`` early):
-    Nous paid-entitlement refresh → Codex stale-reasoning strip on 401 ``token_expired`` →
-    credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
+    welcome-tier repair → credit-limited 402 output-cap clamp → Nous paid-entitlement refresh →
+    Codex stale-reasoning strip on 401 ``token_expired`` → credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
     strip → Anthropic OAuth 1M-beta disable → per-provider 401 credential refresh →
     format-recovery strips.
     Returns ``(retry_now, recovered_with_pool)``; the latter feeds the Nous rate-limit guard."""
     from agent.conversation_loop import _is_nous_inference_route
 
-    if _recover_welcome_tier(agent, classified, _retry):
+    # The credit-limited 402 clamp runs before pool rotation, which would bench a credential
+    # that still has credit.
+    if _recover_welcome_tier(agent, classified, _retry) or _clamp_to_affordable_budget(
+        agent, api_error, classified, _retry
+    ):
         return True, False
 
     # 401 ``token_expired`` while the transcript still carries ``codex_reasoning_items`` is a
@@ -794,7 +819,7 @@ def recover_after_classification(
     return False, recovered_with_pool
 
 
-def _failed_turn_result(final_response: str, messages: Any, api_call_count: int, error: str) -> Dict[str, Any]:
+def _failed_turn_result(final_response: str, messages: Any, api_call_count: int, error: str) -> dict[str, Any]:
     """Base failed-turn result dict shared by the two terminal paths."""
     return {
         "final_response": final_response, "messages": messages, "api_calls": api_call_count,
@@ -846,7 +871,7 @@ def limit_reset_epoch(agent: Any, api_error: Exception) -> Optional[float]:
         return None
 
 
-def _stamp_limit_reset(result: Dict[str, Any], agent: Any, api_error: Exception) -> None:
+def _stamp_limit_reset(result: dict[str, Any], agent: Any, api_error: Exception) -> None:
     """``failure_resets_at`` for structured clients (Desktop card: "Limit resets at HH:mm") and the
     same sentence appended to the chat text every plain surface (CLI/TUI/gateway) renders (#98852)."""
     resets_at = limit_reset_epoch(agent, api_error)
@@ -960,7 +985,7 @@ def _welcome_surface_kind(classified: Any) -> str:
     return "route" if route else ""
 
 
-def _stamp_free_tier(result: Dict[str, Any], kind: str, message: str) -> Dict[str, Any]:
+def _stamp_free_tier(result: dict[str, Any], kind: str, message: str) -> dict[str, Any]:
     """Structured free-tier failure block: ``error_surface`` keys its code on ``kind`` and a client
     shows ``message`` (the chat sentence) as the card body instead of its own generic copy."""
     result["free_tier"] = {"kind": kind or "refused", "message": message}
@@ -1004,10 +1029,10 @@ def _missing_vendor_prefix_suggestion(api_error: Exception, provider: Any, model
 
 def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
-    api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]], conversation_history: Any,
+    api_kwargs: Any, api_messages: Any, messages: list[dict[str, Any]], conversation_history: Any,
     api_call_count: int, approx_tokens: int, provider: Any, base_url: Any, model: Any,
     delivered: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Terminal path for a non-retryable 4xx once fallback is exhausted: debug dump, flush
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
     for likely context-overflow 400s so the failure does not grow the session), build result."""
@@ -1139,10 +1164,10 @@ _STREAM_DROP_MARKERS = (
 
 def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, attempts: int, is_rate_limited: bool,
-    error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
+    error_msg: str, api_kwargs: Any, api_messages: Any, messages: list[dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
     base_url: Any, model: Any, delivered: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Terminal path once retries, transport recovery and fallback all failed: flush the
     trace, emit the billing / rate-limit / generic status, print stream-drop or thinking-timeout
     guidance (the latter wins), persist, build the result with ``failure_reason`` /
@@ -1282,7 +1307,7 @@ def log_api_error_attempt(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int,
     status_code: Optional[int], elapsed_time: float, api_messages: Any, approx_tokens: int,
     retryable: bool = True,
-) -> Tuple[str, str, Any, Any, Any]:
+) -> tuple[str, str, Any, Any, Any]:
     """Log one failed API attempt (warning + buffered retry trace, OpenRouter "no tool
     endpoints" hint, bare-404 missing-vendor-prefix hint); the buffer only surfaces if every
     retry+fallback exhausts. Returns ``(error_type, error_msg, provider, base_url, model)``.
@@ -1342,9 +1367,9 @@ def log_api_error_attempt(
 
 
 def abort_turn_on_interrupt(
-    agent: Any, messages: List[Dict[str, Any]], conversation_history: Any, api_call_count: int, *,
+    agent: Any, messages: list[dict[str, Any]], conversation_history: Any, api_call_count: int, *,
     abort_message: str, interrupt_text: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Announce ``abort_message``, close any open tool sequence with ``interrupt_text``,
     persist, clear the interrupt and return the ``interrupted`` result dict."""
     _vlines(agent, f"⚡ {abort_message}")
@@ -1365,9 +1390,9 @@ def abort_turn_on_interrupt(
 
 def interruptible_backoff_sleep(
     agent: Any, wait_time: float, _retry: Optional[TurnRetryState], *,
-    messages: List[Dict[str, Any]], conversation_history: Any, api_call_count: int,
+    messages: list[dict[str, Any]], conversation_history: Any, api_call_count: int,
     abort_message: str, interrupt_text: str, activity_label: str,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Sleep ``wait_time`` in 200 ms slices so interrupts are honoured promptly, touching
     activity every ~30 s so the gateway's inactivity monitor knows we are alive.
 
@@ -1499,7 +1524,7 @@ def free_tier_cooldown_ends_turn(agent: Any, api_error: Exception, base_url: Any
     return cooldown is not None and cooldown > LIVE_RETRY_WAIT_CAP_S
 
 
-def _codex_soft_failure_error(response: Any) -> Dict[str, Any]:
+def _codex_soft_failure_error(response: Any) -> dict[str, Any]:
     """``response.error`` of a Codex ``failed``/``cancelled`` Response as ``{"code", "message"}``
     (the SDK types it as ``ResponseError``; the raw-SSE assembler keeps the dict); ``{}`` when absent."""
     error_obj = getattr(response, "error", None)
@@ -1518,12 +1543,12 @@ class _CodexSoftFailure(Exception):
     """A Codex HTTP-200 ``status=failed`` Response reshaped so ``classify_api_error`` and
     ``extract_api_error_context`` read ``response.error`` exactly like an SDK error body."""
 
-    def __init__(self, error: Dict[str, Any]) -> None:
+    def __init__(self, error: dict[str, Any]) -> None:
         super().__init__(error.get("message") or "")
         self.body = {"error": error}
 
 
-def classify_codex_soft_failure(agent: Any, response: Any) -> Tuple[Any, Dict[str, Any]]:
+def classify_codex_soft_failure(agent: Any, response: Any) -> tuple[Any, dict[str, Any]]:
     """``(classified, error_context)`` for a Codex ``failed``/``cancelled`` Response, or
     ``(None, {})`` when it is not one. The SDK never raises on these HTTP-200 soft failures,
     so this is the only place their quota/billing/auth semantics reach the credential pool."""
@@ -1539,7 +1564,7 @@ def classify_codex_soft_failure(agent: Any, response: Any) -> Tuple[Any, Dict[st
     return classified, agent._extract_api_error_context(exc)
 
 
-def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]:
+def validate_response_shape(agent: Any, response: Any) -> tuple[bool, list[str]]:
     """Validate the raw provider response via the transport; ``(response_invalid,
     error_details)``. A Codex ``failed``/``cancelled`` status (e.g. quota exhaustion) is
     invalid so the fallback chain triggers; an empty Codex ``output`` with non-empty
@@ -1591,7 +1616,7 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
     return True, [detail]
 
 
-def describe_invalid_response(agent: Any, response: Any, api_duration: float) -> Tuple[str, str, str]:
+def describe_invalid_response(agent: Any, response: Any, api_duration: float) -> tuple[str, str, str]:
     """Diagnostics for an empty/malformed response: ``(error_msg, provider_name,
     failure_hint)``. The hint is derived from the provider error code (524/504/429/
     5xx) and the response time, instead of always assuming rate limiting."""
@@ -1658,9 +1683,9 @@ class ClassifiedErrorVerdict:
     handling). The remaining fields are loop locals the router rebound or computed."""
 
     action: str
-    result: Optional[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
     status_code: Optional[int]
-    messages: List[Dict[str, Any]]
+    messages: list[dict[str, Any]]
     active_system_prompt: Any
     conversation_history: Any
     retry_count: int
@@ -1727,7 +1752,7 @@ def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_fail
     return "⚠️ Rate limited — switching to fallback provider..."
 
 
-def activate_codex_app_server_fallback(agent: Any, result: Dict[str, Any]) -> bool:
+def activate_codex_app_server_fallback(agent: Any, result: dict[str, Any]) -> bool:
     """The codex app-server runtime reports a failed turn as ``result["error"]`` text instead of
     raising, so the generic classify -> ``fallback_providers`` chain never saw it (#71633).
     Classify that text; on a billing / rate-limit verdict activate the configured fallback and
@@ -1785,7 +1810,7 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
 def route_classified_error(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *, error_msg: str,
     error_context: Any, recovered_with_pool: bool, base_url: Any, model: Any,
-    messages: List[Dict[str, Any]], api_messages: Any, system_message: Any,
+    messages: list[dict[str, Any]], api_messages: Any, system_message: Any,
     active_system_prompt: Any, conversation_history: Any, retry_count: int, max_retries: int,
     compression_attempts: int, max_compression_attempts: int, api_call_count: int,
     effective_task_id: Any,
@@ -1806,7 +1831,7 @@ def route_classified_error(
     _is_zai_coding_overload = False
     status_code = getattr(api_error, "status_code", None)
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ClassifiedErrorVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ClassifiedErrorVerdict:
         return ClassifiedErrorVerdict(
             action=action, result=result, status_code=status_code, messages=messages,
             active_system_prompt=active_system_prompt, conversation_history=conversation_history,
@@ -1868,7 +1893,7 @@ def route_classified_error(
                 # from the engine's overflow guard (upstream PR #77169 review).
                 messages, system_message,
                 approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
-                task_id=effective_task_id, trigger="overflow",
+                task_id=effective_task_id, trigger="overflow", overflow_reason=classified.reason.value,
             )
             conversation_history = conversation_history_after_compression(agent, messages, conversation_history)
             if len(messages) < original_len or old_ctx > _LONG_CONTEXT_TIER_CAP:

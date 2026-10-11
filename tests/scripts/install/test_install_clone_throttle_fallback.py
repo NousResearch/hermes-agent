@@ -40,7 +40,7 @@ git() {{
 }}
 stage_repository
 '''
-    result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
     calls = attempts.read_text(encoding="utf-8-sig").splitlines()
     assert len(calls) > 1
     assert "--no-checkout" in calls[-1]
@@ -61,7 +61,7 @@ def _run_repository_stage(installer: str, tmp_path: Path, install: Path, origin_
                HERMES_INSTALL_DIR=install.as_posix(), HERMES_REPO_URL=origin_url)
     if installer == "sh":
         script = f"source {shlex.quote((ROOT / 'scripts/install.sh').as_posix())} --manifest\nstage_repository\n"
-        return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=False)
     if os.name != "nt":
         # pwsh on POSIX cannot run the Windows-only pinned Git: seed its PM store slot with host git.
         version = json.loads((ROOT / "pm" / "lock.json").read_text(encoding="utf-8-sig"))["packages"]["git"]["version"]
@@ -73,7 +73,7 @@ def _run_repository_stage(installer: str, tmp_path: Path, install: Path, origin_
     return subprocess.run([POWERSHELL, "-NoProfile", "-File", str(ROOT / "scripts" / "install.ps1"),
                            "-Stage", "repository", "-NonInteractive", "-InstallDir", str(install),
                            "-HermesHome", str(tmp_path / "home")],
-                          env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240)
+                          env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240, check=False)
 
 
 @pytest.mark.live_system_guard_bypass

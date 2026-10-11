@@ -80,3 +80,26 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/run_tests.sh tests/tools/test_process_registry_windows_live.py
+
+      - name: Turn Windows long paths off for later steps (#130242)
+        # The runner image turns LongPathsEnabled on; 0 is the Windows default
+        # most users have. A process reads the value when it starts, so only
+        # later steps see it. Keep this step after every lane that expects the
+        # image's setting. It does not depend on those lanes passing.
+        id: long_paths_off
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          reg add 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem' /v LongPathsEnabled /t REG_DWORD /d 0 /f
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem').LongPathsEnabled
+
+      - name: Run PM long-path live E2E with long paths off (#130242)
+        # The test first asserts RtlAreLongPathsEnabled() is false in its own
+        # process, so this step cannot pass if the step above did not take.
+        # ``-m`` replaces pyproject's addopts, which deselect ``integration``.
+        if: ${{ !cancelled() && steps.long_paths_off.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          bash scripts/run_tests.sh tests/pm/test_long_paths_windows_live.py -- -m "platforms and integration" -v

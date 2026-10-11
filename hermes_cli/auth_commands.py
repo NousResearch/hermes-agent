@@ -18,6 +18,7 @@ from agent.credential_pool import (
     STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _codex_principal_identity,
     _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
+from agent.credential_pool_admin import CredentialNotSavedError
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.auth_plugin_providers import (
@@ -187,7 +188,7 @@ def _format_exhausted_status(entry) -> str:
     exhausted_until = _exhausted_until(entry)
     if exhausted_until is None:
         return head
-    remaining = max(0, int(math.ceil(exhausted_until - time.time())))
+    remaining = max(0, math.ceil(exhausted_until - time.time()))
     if remaining <= 0:
         return f"{head} (ready to retry)"
     minutes, seconds = divmod(remaining, 60)
@@ -405,6 +406,8 @@ def auth_add_command(args) -> None:
     except auth_mod.AuthError as exc:
         # A denied / mismatched / timed-out OAuth login is a user-facing outcome, not a crash.
         raise SystemExit(f"Login failed: {auth_mod.format_auth_error(exc)}") from exc
+    except CredentialNotSavedError as exc:
+        raise SystemExit(str(exc)) from exc
     if wanted_priority is not None:
         placed_pool = load_pool(provider)
         moved = placed_pool.move_entry(entry.id, int(wanted_priority))
@@ -488,7 +491,7 @@ def auth_priority_command(args) -> None:
     index, matched, error = pool.resolve_target(getattr(args, "target", None))
     if matched is None or index is None:
         raise SystemExit(f"{error} Provider: {provider}.")
-    requested = int(getattr(args, "priority"))
+    requested = int(args.priority)
     moved = pool.move_entry(matched.id, requested)
     if moved is None:
         raise SystemExit(f'No credential matching "{getattr(args, "target", None)}" for provider {provider}.')
@@ -662,12 +665,20 @@ def auth_refresh_command(args) -> None:
               f"status still: {status}")
 
 
+def _moved_auth_hint(action: str, provider: str) -> str:
+    """``hermes auth status|logout spotify`` after Spotify left core for its plugin's own command."""
+    from hermes_cli.left_core_migration import moved_command_hint
+    return moved_command_hint("hermes auth", provider, action)
+
+
 def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
-        raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
+        raise SystemExit("Provider is required. Example: `hermes auth status nous`.")
     if dispatch_plugin_auth("status", args, provider):
         return
+    if moved := _moved_auth_hint("status", provider):
+        raise SystemExit(moved)
     if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
         load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
     status = auth_mod.get_auth_status(provider)
@@ -697,18 +708,9 @@ def auth_logout_command(args) -> None:
     raw_provider = getattr(args, "provider", None)
     if dispatch_plugin_auth("logout", args, _normalize_provider(raw_provider or "")):
         return
+    if moved := _moved_auth_hint("logout", _normalize_provider(raw_provider or "")):
+        raise SystemExit(moved)
     auth_mod.logout_command(SimpleNamespace(provider=raw_provider))
-
-
-def auth_spotify_command(args) -> None:
-    action = str(getattr(args, "spotify_action", "") or "login").strip().lower()
-    if action in {"", "login"}:
-        auth_mod.login_spotify_command(args)
-        return
-    handler = {"status": auth_status_command, "logout": auth_logout_command}.get(action)
-    if handler is None:
-        raise SystemExit(f"Unknown Spotify auth action: {action}")
-    handler(SimpleNamespace(provider="spotify"))
 
 
 def _print_bedrock_status() -> None:
@@ -898,8 +900,7 @@ def auth_upgrade_command(args) -> None:
 _AUTH_ACTIONS = {
     "add": auth_add_command, "list": auth_list_command, "remove": auth_remove_command,
     "reset": auth_reset_command, "priority": auth_priority_command, "refresh": auth_refresh_command, "status": auth_status_command,
-    "logout": auth_logout_command, "upgrade": auth_upgrade_command,
-    "spotify": auth_spotify_command}
+    "logout": auth_logout_command, "upgrade": auth_upgrade_command}
 
 
 def auth_command(args) -> None:

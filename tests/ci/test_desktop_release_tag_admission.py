@@ -191,6 +191,7 @@ def _run_admission(clone: Path, tag: str, claim_tag: str) -> subprocess.Complete
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
 
 
@@ -280,7 +281,7 @@ def test_downloadable_native_builds_refuse_to_ship_unsigned(tmp_path: Path):
             env.update({name: "" for name in names})
             env.update(values)
             return subprocess.run(["bash", "-euo", "pipefail", "-c", step["run"]], env=env,
-                                  capture_output=True, text=True, timeout=60)
+                                  capture_output=True, text=True, timeout=60, check=False)
 
         proc = run()
         assert proc.returncode != 0 and "::error::" in proc.stdout and "AZURE_SIGN_ENDPOINT" in proc.stdout

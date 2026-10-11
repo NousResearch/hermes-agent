@@ -17,7 +17,7 @@ These tests pin the due-scan grace gate:
 """
 
 import pytest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 from cron.jobs import (
     get_due_jobs,
@@ -26,7 +26,7 @@ from cron.jobs import (
     trigger_job,
 )
 
-FIXED_NOW = datetime(2026, 6, 22, 12, 0, 0, tzinfo=timezone.utc)
+FIXED_NOW = datetime(2026, 6, 22, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture()

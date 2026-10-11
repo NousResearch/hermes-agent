@@ -17,7 +17,7 @@ from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
 
-_mcp_stderr_log_fh: Dict[str, Any] = {}  # profile home key -> handle
+_mcp_stderr_log_fh: dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
 
 
@@ -87,7 +87,7 @@ class _StderrTee:
         if rest := pending + decoder.decode(b"", final=True):
             self._write_lines([rest])
 
-    def _write_lines(self, lines: List[str]) -> None:
+    def _write_lines(self, lines: list[str]) -> None:
         if not lines:
             return
         try:
@@ -403,7 +403,7 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
 
     spec = str(rest[0])
     # Scoped names keep their leading '@', so only an '@' AFTER the scope is a version separator.
-    if "@" in (spec[1:] if spec.startswith("@") else spec):
+    if "@" in (spec.removeprefix("@")):
         return None
     if not spec or spec.startswith("-"):
         return None
@@ -472,20 +472,22 @@ def _require_rendered_remote(server_name: str, config: dict) -> dict:
     unresolved = sorted({m.group(1) for value in values for m in _ENV_VAR_PATTERN.finditer(str(value))})
     if unresolved:
         refs = ", ".join(f"${{{ref}}}" for ref in unresolved)
-        raise ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
-                         ".env or secret source")
+        unset = ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
+                           ".env or secret source")
+        unset.failure_class = "missing_credentials"  # type: ignore[attr-defined]
+        raise unset
     return config
 
 
 # (server_name, dotted key path) pairs already warned about: config loads repeat per discovery pass.
-_whitespace_warned: Set[Tuple[str, str]] = set()
+_whitespace_warned: set[tuple[str, str]] = set()
 
 
-def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
+def _warn_hidden_whitespace(server_name: str, config: dict) -> list[str]:
     """Warn once per (server, key path) about string values with leading/trailing whitespace (a
     pasted newline causes opaque auth failures). Advisory only: values are never mutated (could be
     intentional) nor logged (often secrets). Returns flagged paths."""
-    flagged: List[str] = []
+    flagged: list[str] = []
 
     def _walk(value: Any, path: str) -> None:
         if isinstance(value, str) and value != value.strip():
@@ -507,7 +509,7 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
     return flagged
 
 
-def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
+def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
     """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
     try:
         from hermes_cli.mcp_security import validate_mcp_server_entry
@@ -523,7 +525,7 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     return safe_servers
 
 
-def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
+def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
     """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises."""
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
@@ -538,7 +540,7 @@ def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 
 
-def _load_mcp_config() -> Dict[str, dict]:
+def _load_mcp_config() -> dict[str, dict]:
     """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated."""
     try:
         from hermes_cli.config import load_config
@@ -551,7 +553,7 @@ def _load_mcp_config() -> Dict[str, dict]:
             load_hermes_dotenv()
         except Exception:
             pass
-        safe_servers: Dict[str, dict] = {}
+        safe_servers: dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers if isinstance(servers, dict) else {}).items():
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):

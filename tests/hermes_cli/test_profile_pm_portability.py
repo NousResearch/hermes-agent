@@ -20,7 +20,7 @@ def transfer_home(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway, "ensure_gateway_service", lambda **kwargs: False)
     monkeypatch.setattr(gateway, "_is_service_running", lambda: False)
     monkeypatch.setattr(profiles, "check_alias_collision", lambda name: "test has no aliases")
-    monkeypatch.setattr(backup, "_collect_memory_provider_external_paths", lambda: [])
+    monkeypatch.setattr(backup, "_collect_memory_provider_external_paths", list)
     return home
 
 

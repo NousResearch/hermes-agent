@@ -20,6 +20,7 @@ import gateway.drain_control as dc
 from gateway.run import GatewayRunner
 from gateway.platforms.event import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from datetime import UTC
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +137,7 @@ class TestMarkerMaxAge:
         body = dc.read_drain_request()
         assert body is not None
         body["requested_at"] = (
-            datetime.now(timezone.utc)
+            datetime.now(UTC)
             - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
         ).isoformat()
         dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
@@ -169,7 +170,7 @@ class TestMarkerMaxAge:
         from datetime import datetime, timedelta, timezone
 
         stale_naive = (
-            datetime.now(timezone.utc)
+            datetime.now(UTC)
             - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
         ).replace(tzinfo=None)
         payload = {
@@ -192,7 +193,7 @@ class TestMarkerMaxAge:
             body = dc.read_drain_request()
             assert body is not None
             body["requested_at"] = (
-                datetime.now(timezone.utc)
+                datetime.now(UTC)
                 - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + offset_seconds)
             ).isoformat()
             dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
@@ -221,7 +222,7 @@ class TestMarkerMaxAge:
         body = dc.read_drain_request()
         assert body is not None
         body["requested_at"] = (
-            datetime.now(timezone.utc)
+            datetime.now(UTC)
             - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
         ).isoformat()
         dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")

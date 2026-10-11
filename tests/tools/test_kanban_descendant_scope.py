@@ -69,7 +69,7 @@ def test_terminal_descendants_cannot_mutate_even_after_task_is_removed(tmp_path,
     ]
     for env in child_envs:
         proc = subprocess.run([sys.executable, str(script)], env=env, cwd=tmp_path,
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45)
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45, check=False)
         assert proc.returncode == 0, proc.stderr
         outputs.append(proc.stdout)
     for output in outputs:
@@ -93,6 +93,7 @@ def test_worker_cli_cannot_use_foreign_task_to_drop_run_scope(tmp_path, monkeypa
         [sys.executable, "-m", "hermes_cli.main", "kanban", "complete", foreign, "--result", "no"],
         cwd=ROOT, env=dict(os.environ), stdin=subprocess.DEVNULL,
         capture_output=True, text=True, timeout=45,
+        check=False,
     )
     assert proc.returncode != 0 and "worker is scoped to task" in proc.stderr, (proc.stdout, proc.stderr)
     assert kb.get_task(conn, foreign).status == "running"
@@ -102,7 +103,7 @@ def test_worker_cli_cannot_use_foreign_task_to_drop_run_scope(tmp_path, monkeypa
     for arguments in (["attach", foreign, str(attachment)], ["unblock", foreign]):
         proc = subprocess.run([sys.executable, "-m", "hermes_cli.main", "kanban", *arguments],
                               cwd=ROOT, env=dict(os.environ), stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=45)
+                              capture_output=True, text=True, timeout=45, check=False)
         assert proc.returncode != 0, (arguments, proc.stdout, proc.stderr)
     assert not kb.list_attachments(conn, foreign)
     assert json.loads(kanban_tools._handle_complete({"task_id": own, "summary": "parent"}))["ok"]

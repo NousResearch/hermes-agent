@@ -12,12 +12,17 @@
  * through the plugin host loader (next phase); this is that seam.
  */
 
+import type { ReadableAtom } from 'nanostores'
+
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
+import { $petActive } from '@/store/pet'
+import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
+import { $pluginRecords } from './plugins-store'
 import { registry } from './registry'
 import { type PluginSettingsPage, settingsPageContribution } from './settings-pages'
 
@@ -27,6 +32,7 @@ import type { Contribution } from './types'
 export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
+export type { PetMessageTone, PetSayOptions } from '@/store/pet-plugin-messages'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
  *  the host's job, so those fields are off-limits here. */
@@ -68,6 +74,24 @@ export interface PluginOs {
   pickOpenPath: (options?: PluginFileDialogOptions) => Promise<null | string>
   /** Write text to the system clipboard. Resolves false when unavailable. */
   writeClipboard: (text: string) => Promise<boolean>
+}
+
+/** The pet door: short lines in the core pet's speech bubble, attributed to
+ *  this plugin, instead of locating the pet in the app DOM and drawing over
+ *  it. The host renders them in the in-window pet and the pop-out overlay;
+ *  they show only while the user has a pet visible. */
+export interface PluginPet {
+  /** Show one plain-text line (no HTML; control characters stripped, capped
+   *  at 120 chars) with this plugin's name as a small label. Lasts `ttlMs`
+   *  (default 6 s, clamped 1–30 s); the same `id` replaces in place. Core
+   *  error / waiting-on-you states keep priority over it. Rate-limited per
+   *  plugin. Returns a disposer that removes the line early. */
+  say: (text: string, options?: PetSayOptions) => () => void
+  /** Remove one line by `id`, or every line this plugin has up. */
+  clear: (id?: string) => void
+  /** True while a pet is installed and shown (in-window or popped out). A
+   *  plugin can fall back to its own chip or pane while this is false. */
+  visible: ReadableAtom<boolean>
 }
 
 export interface PluginFileDialogOptions {
@@ -125,6 +149,10 @@ export interface PluginContext {
    *  manager, clipboard — attributed to this plugin, result-shaped (never
    *  throws for a missing capability). */
   os: PluginOs
+  /** The pet door: lines in the core pet's speech bubble, attributed to this
+   *  plugin and cleared when it unloads. Feature-detect on older hosts:
+   *  `ctx.pet?.say(...)`. */
+  pet: PluginPet
   /** Plugin-scoped persistence. */
   storage: PluginStorage
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
@@ -222,6 +250,26 @@ function createPluginOs(pluginId: string): PluginOs {
   }
 }
 
+// Lines are attributed by the inventory name the loader published before
+// register() ran; the id is the fallback. Every line this plugin still has up
+// is cleared with it on unload/disable (tracked on first use).
+function createPluginPet(pluginId: string, track: (dispose: () => void) => () => void): PluginPet {
+  let tracked = false
+
+  return {
+    clear: id => clearPetMessages(pluginId, id),
+    say: (text, options) => {
+      if (!tracked) {
+        tracked = true
+        track(() => clearPetMessages(pluginId))
+      }
+
+      return sayPetMessage(pluginId, $pluginRecords.get()[pluginId]?.name ?? pluginId, text, options)
+    },
+    visible: $petActive
+  }
+}
+
 /** Timers and DOM listeners a plugin takes out through `ctx`, retired as ONE
  *  tracked disposer. A fired timeout drops out of the set on its own, so a
  *  long-lived plugin firing many one-shots does not accumulate cleanups. */
@@ -300,6 +348,7 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
     os: createPluginOs(pluginId),
+    pet: createPluginPet(pluginId, track),
     storage: createPluginStorage(pluginId),
     i18n: createPluginI18n(pluginId, track)
   }

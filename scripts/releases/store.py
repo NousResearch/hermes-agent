@@ -91,7 +91,7 @@ class StoreError(RuntimeError):
 
 
 def _cli_run(argv: list[str]) -> str:
-    result = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    result = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     if result.returncode != 0:
         raise StoreError(f"{' '.join(argv)} failed: {result.stderr.strip()}")
     return result.stdout

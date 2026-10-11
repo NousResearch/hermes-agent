@@ -53,6 +53,7 @@ export const zhHantSettings = {
       gatewayManagedUpdatesUnavailable: '遠端更新需要支援受管理 SSH 更新的桌面版本。',
       gatewayManagedUpdatesEmpty: '請在已儲存的連線中新增 SSH 連線，即可在此管理更新。',
       keyboardShortcuts: '按鍵繫結',
+      sendBehavior: '傳送行為',
       hudGesture: 'HUD 手勢',
       screenCapture: '螢幕擷取',
       notificationAlerts: '桌面通知',
@@ -418,6 +419,9 @@ export const zhHantSettings = {
         showReasoning: '推理區塊'
       },
       desktop: {
+        composer: {
+          enterSends: '按 Enter 傳送'
+        },
         repoScanEnabled: '自動探索程式碼儲存庫',
         repoScanRoots: '程式碼儲存庫掃描根目錄',
         repoScanExcludePaths: '排除的程式碼儲存庫路徑'
@@ -594,6 +598,10 @@ export const zhHantSettings = {
         showReasoning: '後端提供推理內容時顯示該區塊。'
       },
       desktop: {
+        composer: {
+          enterSends:
+            '關閉後切換為多行優先輸入：Enter 換行，Ctrl/Cmd+Enter 傳送或加入佇列，Shift+Enter 在執行中修正指令。'
+        },
         repoScanEnabled: '掃描本機資料夾，並在「專案」中顯示 Git 程式碼儲存庫。',
         repoScanRoots: '要掃描的資料夾。留空時掃描主目錄。',
         repoScanExcludePaths: '探索程式碼儲存庫時略過這些資料夾及其子目錄。'

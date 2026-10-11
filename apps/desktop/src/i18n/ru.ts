@@ -464,6 +464,7 @@ export const ruOverrides = {
       gatewayManagedUpdatesUnavailable: 'Нужна версия приложения с поддержкой управляемых обновлений SSH.',
       gatewayManagedUpdatesEmpty: 'Добавьте SSH в сохранённые подключения, чтобы управлять его обновлениями здесь.',
       keyboardShortcuts: 'Назначения клавиш',
+      sendBehavior: 'Поведение отправки',
       hudGesture: 'Жест HUD',
       screenCapture: 'Захват экрана',
       notificationAlerts: 'Системные уведомления',
@@ -741,6 +742,9 @@ export const ruOverrides = {
         showReasoning: 'Блоки рассуждений'
       },
       desktop: {
+        composer: {
+          enterSends: 'Отправлять по Enter'
+        },
         repoScanEnabled: 'Автоматическое обнаружение репозиториев',
         repoScanRoots: 'Корни обнаружения репозиториев',
         repoScanExcludePaths: 'Исключаемые пути репозиториев'
@@ -912,6 +916,10 @@ export const ruOverrides = {
         showReasoning: 'Показывать блоки рассуждений, когда бэкенд их предоставляет.'
       },
       desktop: {
+        composer: {
+          enterSends:
+            'Выключите для многострочного ввода: Enter вставляет перенос строки, Ctrl/Cmd+Enter отправляет или ставит в очередь, Shift+Enter корректирует выполняющийся ход.'
+        },
         repoScanEnabled: 'Сканировать локальные папки на Git-репозитории, чтобы показывать их в Проектах.',
         repoScanRoots: 'Папки для сканирования. Оставьте пустым, чтобы сканировать домашний каталог.',
         repoScanExcludePaths: 'Папки и их вложенные, которые нужно пропускать при обнаружении репозиториев.'

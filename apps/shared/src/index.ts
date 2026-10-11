@@ -49,6 +49,39 @@ export {
   toHex
 } from './color'
 export {
+  activeSendGestures,
+  clampDoubleEnterMs,
+  clampHoldMs,
+  clampIdleSendMs,
+  clampSendGraceMs,
+  clampTypingIdleMs,
+  COMPOSER_SEND_GESTURES,
+  composerConfigFromPrefs,
+  composerPrefsFromConfig,
+  type ComposerSendGesture,
+  type ComposerSendPrefs,
+  DOUBLE_ENTER_DEFAULT_MS,
+  DOUBLE_ENTER_MAX_MS,
+  DOUBLE_ENTER_MIN_MS,
+  HOLD_DEFAULT_MS,
+  HOLD_MAX_MS,
+  HOLD_MIN_MS,
+  IDLE_SEND_DEFAULT_MS,
+  IDLE_SEND_MAX_MS,
+  IDLE_SEND_MIN_MS,
+  normalizeComposerSendPrefs,
+  resetClampWarnings,
+  SEND_GRACE_DEFAULT_MS,
+  SEND_GRACE_DEFAULT_REASONS,
+  SEND_GRACE_MAX_MS,
+  SEND_GRACE_MIN_MS,
+  SEND_GRACE_REASONS,
+  type SendGraceReason,
+  TYPING_IDLE_DEFAULT_MS,
+  TYPING_IDLE_MAX_MS,
+  TYPING_IDLE_MIN_MS
+} from './composer-send'
+export {
   createCronTriggerController,
   type CronTriggerController,
   type CronTriggerRunResult

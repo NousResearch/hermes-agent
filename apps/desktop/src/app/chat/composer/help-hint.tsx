@@ -1,18 +1,21 @@
+import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
+import { composerSendKeys, primarySendRow } from '@/lib/keybinds/actions'
+import { $composerSendPrefs } from '@/store/composer-prefs'
 
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMAND_KEYS = ['/help', '/clear', '/resume', '/details', '/copy', '/quit']
 
-/** Stable ids → i18n `hotkeyDescs` keys. Combos resolve mod labels per OS. */
+/** Stable ids → i18n `hotkeyDescs` keys. Combos resolve mod labels per OS.
+ *  The send row is appended per send mode (it has no single fixed combo). */
 const COMPOSER_HOTKEY_ROWS = [
   { id: 'composer.mention', combos: ['@'] },
   { id: 'composer.slash', combos: ['/'] },
   { id: 'composer.help', combos: ['?'] },
-  { id: 'composer.sendNewline', combos: ['enter', 'shift+enter'] },
   { id: 'composer.sendQueued', combos: ['mod+shift+k'] },
   { id: 'keybinds.openPanel', combos: ['mod+/'] },
   { id: 'composer.cancel', combos: ['escape'] },
@@ -22,6 +25,9 @@ const COMPOSER_HOTKEY_ROWS = [
 export function HelpHint() {
   const { t } = useI18n()
   const c = t.composer
+  const sendPrefs = useStore($composerSendPrefs)
+
+  const sendRow = { id: primarySendRow(sendPrefs).id, combos: composerSendKeys(sendPrefs) }
 
   return (
     <div className={COMPLETION_DRAWER_CLASS} data-slot="composer-completion-drawer" data-state="open" role="dialog">
@@ -31,10 +37,9 @@ export function HelpHint() {
         ))}
       </Section>
 
-      <Section title={c.hotkeys}>
+      <Section title={c.hotkeys}>        <HotkeyRow combos={[...sendRow.combos]} description={c.hotkeyDescs[sendRow.id] ?? ''} key={sendRow.id} />
         {COMPOSER_HOTKEY_ROWS.map(row => (
-          <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? ''} key={row.id} />
-        ))}
+          <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? ''} key={row.id} />        ))}
       </Section>
 
       <p className="px-2.5 py-1 text-xs text-muted-foreground/80">

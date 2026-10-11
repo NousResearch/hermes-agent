@@ -601,6 +601,52 @@ export interface Translations extends NoticeTranslations {
     conflictWith: (label: string) => string
     categories: Record<string, string>
     actions: Record<string, string>
+    composerSend: {
+      title: string
+      description: string
+      gateLabel: string
+      gateDescription: string
+      newlineLabel: string
+      newlineDescription: string
+      gesturesTitle: string
+      gesturesDisabled: string
+      gestureDoubleTap: string
+      gesturePause: string
+      gestureHold: string
+      gestureIdle: string
+      gestureDoubleTapDesc: string
+      gesturePauseDesc: string
+      gestureHoldDesc: string
+      gestureIdleDesc: string
+      doubleTapTitle: string
+      doubleTapDescription: string
+      doubleTapUnit: string
+      holdMsTitle: string
+      holdMsDescription: string
+      holdMsUnit: string
+      idleMsTitle: string
+      idleMsDescription: string
+      idleMsUnit: string
+      typingIdleTitle: string
+      typingIdleDescription: string
+      typingIdleUnit: string
+      graceTitle: string
+      graceDescription: string
+      gracePopoverHint: string
+      gracePressHint: string
+      gracePressCommit: string
+      graceReasonEnter: string
+      graceReasonDoubleTap: string
+      graceReasonPause: string
+      graceReasonHold: string
+      graceNone: string
+      graceAll: string
+      graceSome: (count: string, total: string) => string
+      graceMsTitle: string
+      graceMsDescription: string
+      graceMsUnit: string
+      fileHint: (path: string) => string
+    }
   }
 
   // Find-in-page bar (⌘F). `close` reuses common.close.
@@ -2985,6 +3031,14 @@ export interface Translations extends NoticeTranslations {
     placeholderStarting: string
     placeholderReconnecting: string
     placeholderFollowUp: string
+    placeholderSendNewline: string
+    placeholderSendDoubleTap: string
+    placeholderSendChord: (chord: string) => string
+    placeholderSendEnterSends: string
+    placeholderSendHold: string
+    placeholderSendIdle: string
+    placeholderSendPause: string
+    sendHold: string
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]
     startVoice: string

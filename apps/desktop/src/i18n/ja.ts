@@ -396,6 +396,7 @@ export const jaOverrides = {
       gatewayManagedUpdatesUnavailable: 'リモート更新には、管理対象 SSH の更新に対応したデスクトップ版が必要です。',
       gatewayManagedUpdatesEmpty: '保存済みの接続に SSH 接続を追加すると、ここで更新を管理できます。',
       keyboardShortcuts: 'キー割り当て',
+      sendBehavior: '送信の動作',
       hudGesture: 'HUDジェスチャー',
       screenCapture: '画面キャプチャ',
       notificationAlerts: 'デスクトップ通知',
@@ -760,6 +761,9 @@ export const jaOverrides = {
         showReasoning: '推論ブロック'
       },
       desktop: {
+        composer: {
+          enterSends: 'Enter キーで送信'
+        },
         repoScanEnabled: 'リポジトリの自動検出',
         repoScanRoots: 'リポジトリの検索ルート',
         repoScanExcludePaths: '除外するリポジトリパス'
@@ -925,6 +929,10 @@ export const jaOverrides = {
         showReasoning: 'バックエンドが推論内容を提供したときに表示します。'
       },
       desktop: {
+        composer: {
+          enterSends:
+            'オフにすると、Enter で改行、Command/Ctrl+Enter で送信またはキュー追加、実行中は Shift+Enter で指示を修正します。'
+        },
         repoScanEnabled: 'ローカルフォルダを検索して Git リポジトリをプロジェクトに表示します。',
         repoScanRoots: '検索するフォルダです。空の場合はホームディレクトリを検索します。',
         repoScanExcludePaths: 'リポジトリ検出時に除外するフォルダとその配下です。'

@@ -2620,6 +2620,39 @@ DEFAULT_CONFIG = {
         # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
         # theme's face. The terminal pane is terminal.font_family.
         "font_family": "",
+        # Composer send behaviour (Settings → Keyboard Shortcuts → Send behavior).
+        # `enter_sends` is the gate: False means a lone Enter never commits,
+        # whatever the gestures below are set to. Those gestures are additional
+        # ways to commit and overlap freely; each window is in milliseconds and
+        # is clamped to the bounds in apps/shared/src/composer-send.ts, so a
+        # value typed here by hand behaves exactly like one moved by a slider.
+        "composer": {
+            # The guard is opted INTO: Enter keeps sending until this is false,
+            # the only default that cannot surprise someone who never opens the
+            # setting. The rest of the block is the profile a user gets the moment
+            # they switch it on: an inert press, plus the two gestures a person
+            # performs on purpose (double tap and hold). The send the app guesses
+            # from a typing pause, and the auto-send, both stay off.
+            "enter_sends": True,
+            "enter_newline": False,
+            "send_on_double_tap": True,
+            "send_on_hold": True,
+            "send_on_pause": False,
+            "send_on_idle": False,
+            "double_enter_ms": 400,
+            "hold_ms": 350,
+            "idle_send_ms": 2500,
+            "typing_idle_ms": 1000,
+            # Which sends wait for the grace window, so Esc can take them back.
+            # Empty = nothing waits. `pause` alone is the default: it is the one
+            # send the app works out on the user's behalf.
+            "send_grace_for": ["pause"],
+            "send_grace_ms": 900,
+            # A press while a send is waiting commits it on the spot, instead of
+            # restarting its window. Gestures keep their own rules: this covers
+            # only a press that is not part of a double tap or a hold.
+            "commit_on_press": True,
+        },
         # Git repo discovery for the Projects sidebar. Empty roots are a safe
         # no-op; users must explicitly configure roots for filesystem scanning.
         # Session-derived projects remain available.

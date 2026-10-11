@@ -3484,6 +3484,25 @@ explainer:
     and_more: "  • … 외 {count}개 더"
     the_model: "모델"
 tips:
+  busy_gateway:
+    queue: 💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages stop the current task immediately, or `/busy status` to check. This notice won't appear again.
+    steer: 💡 First-time tip — I steered your message into the current run; it will arrive after the next tool call instead of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy status` to check. This notice won't appear again.
+    redirect: 💡 First-time tip — I redirected the current run using your message. Completed work stays in context, and `/stop` still cancels the task. Send `/busy queue` to wait for a separate turn, or `/busy status` to check. This notice won't appear again.
+    interrupt: 💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue follow-ups for after the current task instead, `/busy steer` to inject them mid-run without interrupting, or `/busy status` to check. This notice won't appear again.
+  busy_cli:
+    queue: (tip) Your message was queued for the next turn. Use /busy interrupt to make Enter stop the current run instead, or /busy steer to inject mid-run. This tip only shows once.
+    steer: (tip) Your message was steered into the current run; it arrives after the next tool call. Use /busy interrupt or /busy queue to change this. This tip only shows once.
+    redirect: (tip) Your correction redirected the current run without discarding completed work. Use /stop to cancel or /busy queue to wait for a separate turn. This tip only shows once.
+    interrupt: (tip) Your message interrupted the current run. Use /busy queue to queue messages for the next turn instead, or /busy steer to inject mid-run. This tip only shows once.
+  tool_progress_gateway: 💡 First-time tip — that tool took a while and I'm streaming every step. If the progress messages feel noisy, send `/verbose` to cycle modes (all → new → off). This notice won't appear again.
+  tool_progress_cli: (tip) That tool ran for a while. Use /verbose to cycle tool-progress display modes (all -> new -> off -> verbose). This tip only shows once.
+  openclaw_residue_cli: 'A legacy OpenClaw directory was detected at ~/.openclaw/.
+
+    To port your config, memory, and skills over to Hermes, run `hermes claw migrate`.
+
+    If you''ve already migrated and want to archive the old directory, run `hermes claw cleanup` (renames it to ~/.openclaw.pre-migration — OpenClaw will stop working after this).
+
+    This tip only shows once.'
   t001: "/bg <prompt>는 현재 세션을 그대로 두고 별도 세션에서 작업을 실행해요. /btw <question>은 대화를 끊지 않고 이 대화에 관한 부수적인 질문에 답해요."
   t002: "/branch는 현재 세션을 분기해서 진행 상황을 잃지 않고 다른 방향을 탐색할 수 있게 해요."
   t003: "/compress는 대화가 길어졌을 때 컨텍스트를 수동으로 압축해요."

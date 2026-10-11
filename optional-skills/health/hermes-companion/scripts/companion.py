@@ -1484,13 +1484,15 @@ def trigger_icloud_download(path: Path) -> None:
 
 # In-memory performance cache for parsed thread metadata
 _DISPATCH_THREAD_CACHE: Dict[str, Tuple[float, DispatchThreadMeta]] = {}
+_DISPATCH_MESSAGE_CACHE: Dict[str, Dict[str, DispatchMessageRecord]] = {}
 _LAST_SYNC_MARKER_STATE: Dict[str, Tuple[float, Optional[str]]] = {}
 _LAST_SWEEP_REPORT: Dict[str, SweepReport] = {}
 
 
 def reset_dispatch_cache() -> None:
-    """Clear in-memory caches for dispatch threads and sync markers (used in tests)."""
+    """Clear in-memory caches for dispatch threads, messages, and sync markers (used in tests)."""
     _DISPATCH_THREAD_CACHE.clear()
+    _DISPATCH_MESSAGE_CACHE.clear()
     _LAST_SYNC_MARKER_STATE.clear()
     _LAST_SWEEP_REPORT.clear()
 
@@ -1520,9 +1522,11 @@ def scan_dispatch_threads(threads_dir: Path) -> ThreadScan:
                 continue
             meta_file = entry / "meta.json"
             icloud_meta = entry / ".meta.json.icloud"
+            has_placeholder = False
             if safe_is_file(icloud_meta) and not safe_is_file(meta_file):
                 trigger_icloud_download(icloud_meta)
                 needs_cooldown = True
+                has_placeholder = True
 
             cache_key = str(meta_file.resolve())
             if safe_is_file(meta_file):
@@ -1548,6 +1552,11 @@ def scan_dispatch_threads(threads_dir: Path) -> ThreadScan:
                 except Exception:
                     pass
             else:
+                if has_placeholder and cache_key in _DISPATCH_THREAD_CACHE:
+                    # Graceful cache fallback: retain thread during CloudDocs background download
+                    _, cached_meta = _DISPATCH_THREAD_CACHE[cache_key]
+                    results.append(cached_meta)
+                    continue
                 _DISPATCH_THREAD_CACHE.pop(cache_key, None)
 
             read = read_json_checked(meta_file)
@@ -1572,8 +1581,12 @@ def scan_dispatch_threads(threads_dir: Path) -> ThreadScan:
                     pass
                 results.append(meta_dict)
             elif read.reason != "missing":
-                _DISPATCH_THREAD_CACHE.pop(cache_key, None)
-                unreadable.append(entry.name)
+                if cache_key in _DISPATCH_THREAD_CACHE:
+                    # Graceful cache fallback: retain thread during dataless sync
+                    _, cached_meta = _DISPATCH_THREAD_CACHE[cache_key]
+                    results.append(cached_meta)
+                else:
+                    unreadable.append(entry.name)
                 if log_skip_throttled(
                     f"meta:{meta_file}",
                     "WARN",
@@ -1645,18 +1658,38 @@ def list_thread_messages(threads_dir: Path, thread_id: str) -> List[DispatchMess
         files = sorted(msgs_dir.glob("*.json"))
     except (OSError, Exception):
         return []
+    seen_ids: Set[str] = set()
+    found_placeholders = False
     messages: List[DispatchMessageRecord] = []
     for file in files:
         read = read_json_checked(file)
         if read.data:
-            messages.append(cast(DispatchMessageRecord, read.data))
+            rec = cast(DispatchMessageRecord, read.data)
+            msg_id = str(rec.get("id", ""))
+            if msg_id:
+                seen_ids.add(msg_id)
+            messages.append(rec)
         elif read.reason != "missing":
+            found_placeholders = True
             if log_skip_throttled(
                 f"message:{file}",
                 "WARN",
                 f"letter file {file.name} in thread '{thread_id}' is {read.reason}; asked iCloud for it and skipped it",
             ):
                 trigger_icloud_download(file)
+
+    if thread_id in _DISPATCH_MESSAGE_CACHE and (has_placeholders or found_placeholders):
+        cached_msgs = _DISPATCH_MESSAGE_CACHE[thread_id]
+        for mid, mrec in cached_msgs.items():
+            if mid not in seen_ids:
+                seen_ids.add(mid)
+                messages.append(mrec)
+
+    if messages:
+        _DISPATCH_MESSAGE_CACHE[thread_id] = {
+            str(m.get("id", "")): m for m in messages if m.get("id")
+        }
+
     return sorted(messages, key=lambda m: str(m.get("timestamp", "")))
 
 
@@ -2059,6 +2092,7 @@ def delete_dispatch_thread(
 
     _DISPATCH_THREAD_CACHE.pop(str((source / "meta.json").resolve()), None)
     _DISPATCH_THREAD_CACHE.pop(str((arch_source / "meta.json").resolve()), None)
+    _DISPATCH_MESSAGE_CACHE.pop(thread_id, None)
 
     if deleted:
         moment = now or utcnow()

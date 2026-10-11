@@ -834,6 +834,56 @@ def test_delete_dispatch_thread() -> None:
         check("delete nonexistent thread returns False", del_nonexistent is False)
 
 
+def test_icloud_placeholder_cache_fallback() -> None:
+    companion.reset_dispatch_cache()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        threads_dir = tmp_path / "threads"
+        threads_dir.mkdir(parents=True, exist_ok=True)
+
+        moment = datetime(2026, 10, 11, 10, 0, 0, tzinfo=timezone.utc)
+        thread = companion.create_dispatch_thread(
+            threads_dir,
+            "Placeholder Fallback Test",
+            "Initial letter body",
+            target_profile="default",
+            sender="user",
+            now=moment,
+        )
+        tid = thread["thread_id"]
+
+        # Initial scan caches thread
+        scan1 = companion.scan_dispatch_threads(threads_dir)
+        check("initial scan finds thread", len(scan1["threads"]) == 1)
+
+        # Initial message read caches messages
+        msgs1 = companion.list_thread_messages(threads_dir, tid)
+        check("initial read finds message", len(msgs1) == 1)
+
+        # Simulate iCloud eviction: rename meta.json -> .meta.json.icloud
+        meta_file = threads_dir / tid / "meta.json"
+        icloud_meta = threads_dir / tid / ".meta.json.icloud"
+        meta_file.rename(icloud_meta)
+
+        # Scan should gracefully retain cached meta and not mark unreadable
+        scan2 = companion.scan_dispatch_threads(threads_dir)
+        check("placeholder fallback retains cached thread", len(scan2["threads"]) == 1)
+        check("placeholder fallback thread id matches", scan2["threads"][0]["thread_id"] == tid)
+        check("placeholder fallback does not report unreadable", len(scan2["unreadable"]) == 0)
+
+        # Simulate message eviction: rename message file -> .<filename>.icloud
+        msg_files = list((threads_dir / tid / "messages").glob("*.json"))
+        check("found message file to evict", len(msg_files) == 1)
+        orig_msg_file = msg_files[0]
+        evicted_msg_file = orig_msg_file.parent / f".{orig_msg_file.name}.icloud"
+        orig_msg_file.rename(evicted_msg_file)
+
+        # Message read should gracefully retain cached message
+        msgs2 = companion.list_thread_messages(threads_dir, tid)
+        check("message placeholder fallback retains cached message", len(msgs2) == 1)
+        check("message placeholder fallback id matches", msgs2[0]["id"] == msgs1[0]["id"])
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -866,6 +916,7 @@ def main() -> int:
     test_sync_marker_gated_sweeps_and_cache()
     test_archived_threads_segregation_and_migration()
     test_delete_dispatch_thread()
+    test_icloud_placeholder_cache_fallback()
     print("ok")
     return 0
 

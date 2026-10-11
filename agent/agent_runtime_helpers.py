@@ -2650,8 +2650,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
-            if skip_tool_execution_middleware:
-                dispatch_kwargs["skip_tool_execution_middleware"] = True
+            # This helper or its managed caller owns middleware; approval must stay final.
+            dispatch_kwargs["skip_tool_execution_middleware"] = True
             import model_tools
             return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
     if skip_tool_execution_middleware:

@@ -100,8 +100,9 @@ cache break — keep it the only one. Full detail:
   compression — resolves through `agent/auxiliary_client.py::_resolve_auto_route`; each task can pin
   its own `provider/model/base_url/reasoning_effort` under `auxiliary:` in config.yaml.
   Every physical attempt funnels through `_relay_sync_completion` / `_relay_async_completion` /
-  `_relay_sync_stream`, where `agent/auxiliary_hooks.py` emits `pre_auxiliary_call` /
-  `post_auxiliary_call` (observer-only, fail-open, `aux_task` set); the main-loop
+  `_relay_sync_stream`, where `agent/auxiliary_middleware.py` applies `llm_request` /
+  `llm_execution` with `task` set, then `agent/auxiliary_hooks.py` emits `pre_auxiliary_call` /
+  `post_auxiliary_call` (observer-only, fail-open, `task` / `aux_task` set); the main-loop
   `pre/post_api_request` events must NOT fire for aux calls (#79733).
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
   against a temp `HERMES_HOME`, not mocks (root rubric).

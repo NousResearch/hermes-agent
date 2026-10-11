@@ -101,6 +101,8 @@ class _AuxCallHooks:
         self.base: dict[str, Any] = dict(_parent_turn_identity())
         self.base.update(
             aux_task=aux_task,
+            task=aux_task,
+            middleware_trace=list(metadata.get("middleware_trace") or []),
             api_request_id=str(metadata.get("api_request_id") or ""),
             retry_count=int(metadata.get("retry_count") or 0),
             api_call_count=int(metadata.get("retry_count") or 0) + 1,

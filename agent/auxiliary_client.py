@@ -2643,12 +2643,12 @@ def _relay_sync_completion(
         return _run_protected_sync_provider_call(callback, kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
-    from agent.auxiliary_hooks import run_with_aux_hooks
+    from agent.auxiliary_middleware import run_auxiliary_attempt
     model_name = str(kwargs.get("model") or fallback_model)
     try:
-        return run_with_aux_hooks(
-            lambda: relay_llm.execute_current(
-                kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
+        return run_auxiliary_attempt(
+            lambda request: relay_llm.execute_current(
+                request, lambda request: _run_protected_sync_provider_call(callback, request),
                 name=provider_name, model_name=model_name, metadata=metadata,
                 defer_logical_completion=True,
             ),
@@ -2674,12 +2674,12 @@ async def _relay_async_completion(
         return await callback(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
-    from agent.auxiliary_hooks import arun_with_aux_hooks
+    from agent.auxiliary_middleware import arun_auxiliary_attempt
     model_name = str(kwargs.get("model") or fallback_model)
     try:
-        return await arun_with_aux_hooks(
-            lambda: relay_llm.execute_current_async(
-                kwargs, callback, name=provider_name, model_name=model_name,
+        return await arun_auxiliary_attempt(
+            lambda request: relay_llm.execute_current_async(
+                request, callback, name=provider_name, model_name=model_name,
                 metadata=metadata, defer_logical_completion=True,
             ),
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
@@ -2704,11 +2704,11 @@ def _relay_sync_stream(
         return create(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
-    from agent.auxiliary_hooks import run_with_aux_hooks
+    from agent.auxiliary_middleware import run_auxiliary_attempt
     model_name = str(kwargs.get("model") or fallback_model)
-    return run_with_aux_hooks(
-        lambda: relay_llm.stream_current(
-            kwargs, create, name=provider_name, model_name=model_name, finalizer=dict,
+    return run_auxiliary_attempt(
+        lambda request: relay_llm.stream_current(
+            request, create, name=provider_name, model_name=model_name, finalizer=dict,
             metadata=metadata, completed_response_predicate=lambda value: hasattr(value, "choices"),
         ),
         aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,

@@ -102,6 +102,30 @@ Responses API `input`, model settings, tool definitions, stream options, and
 provider-specific options. Execution middleware receives the same effective
 request plus `next_call`.
 
+### Auxiliary LLM calls
+
+`call_llm` and `async_call_llm` apply the same `llm_request` and
+`llm_execution` chain to each provider attempt, including retries, fallback
+routes, and synchronous streaming. The context includes `task` (for example,
+`title_generation`, `compression`, or `background_review`) and `aux_task`,
+together with the parent turn identity when available. `api_request_id` stays
+stable across attempts; `api_call_count` starts at one and increases for each
+attempt. Request rewrites do not modify the caller's conversation history.
+
+Auxiliary attempts emit `pre_auxiliary_call` and `post_auxiliary_call` with
+`task`, `aux_task`, the effective request, and `middleware_trace`. Main-turn
+`pre_api_request` / `post_api_request` observers keep their existing scope.
+An execution middleware may return a cached response without dispatching to
+the provider; streaming calls must return an iterator of provider chunks.
+
+Execution middleware remains synchronous: `next_call()` returns the actual
+response, including when wrapping `async_call_llm`. For async auxiliary calls,
+Hermes runs the synchronous execution chain in a worker with the caller's
+ContextVars, while provider work stays on the owning event loop. Cancelling the
+auxiliary call cancels outstanding provider work and prevents a delayed
+`next_call()` from dispatching after cancellation. The existing single-use and
+fail-open execution contract also applies to this path.
+
 ### Tool Calls
 
 For each tool call, Hermes applies middleware in this order:

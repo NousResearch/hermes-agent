@@ -291,6 +291,12 @@ Same arguments and result types as their sync counterparts. Use
 these from gateway adapters, async hooks, or any plugin code
 already running on an asyncio loop.
 
+Chat calls made through `ctx.llm` use the shared auxiliary middleware chain.
+Enabled `llm_request` and `llm_execution` policies can shape or wrap those
+requests, with the selected auxiliary `task` in their context. See
+[Auxiliary LLM calls](./middleware.md#auxiliary-llm-calls) for observer events,
+retry identities, and the async execution contract.
+
 ### Task-routed auxiliary calls
 
 Pass `task=` to any of the four call shapes when a plugin needs its

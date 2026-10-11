@@ -815,7 +815,7 @@ Pin skills so they are fully loaded at the start of every new session, on every 
 skills:
   auto_load:
     - my-workflow
-    - github-pr-workflow
+    - github
 ```
 
 Resolved once per session when the system prompt is first built (so the prompt stays cache-stable; edits apply to the next session). Missing or disabled skills warn and are skipped; `--ignore-rules` / `HERMES_IGNORE_RULES=1` suppresses the list. Profile-scoped. See [CLI — persistent auto-load](./cli.md#persistent-auto-load-via-config).

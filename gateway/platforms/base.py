@@ -20,6 +20,10 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from gateway.platforms.base_pending_merge import merge_pending_message_event
+from gateway.platforms.base_text_debounce import BaseTextDebounceMixin, TextDebounceState
+from gateway.platforms.base_text_batching import BaseTextBatchingMixin
+
 from utils import normalize_proxy_url
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
@@ -416,7 +420,6 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
     return _should_bypass_proxy(hostname, no_proxy_value=no_proxy_value)
 
 
-import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
@@ -428,7 +431,16 @@ from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
+from gateway.platforms.base_pending import (
+    PendingWithdrawalMixin,
+    merge_recorded,
+    _PendingDispatchReservation,
+    pending_dispatch_scope,
+    release_pending_dispatch,
+    reserve_pending_dispatch,
+    pending_dispatch_needs_snapshot,
+)
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
@@ -1627,22 +1639,8 @@ async def cache_media_bytes_async(
     )
 
 
-@dataclass
-class TextDebounceState:
-    event: MessageEvent
-    task: asyncio.Task | None
-    first_ts: float
-    last_ts: float
-
-    def cancel_timer(self, *, unless: asyncio.Task | None = None) -> None:
-        """Cancel the pending flush timer (if live and not ``unless``)."""
-        if self.task is not None and self.task is not unless and not self.task.done():
-            self.task.cancel()
 
 
-def _append_text(existing: Optional[str], new: Optional[str]) -> str:
-    """``existing\\nnew`` when both non-empty; the non-empty one otherwise."""
-    return f"{existing}\n{new}" if existing else new
 
 
 @dataclass
@@ -1800,53 +1798,7 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
-def merge_pending_message_event(pending_messages: dict[str, MessageEvent], session_key: str,
-                                event: MessageEvent, *, merge_text: bool = False) -> None:
-    """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
-    turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
-    replace."""
-    existing = pending_messages.get(session_key)
-    if existing:
-        existing_type = getattr(existing, "message_type", None)
-        existing_is_photo = existing_type == MessageType.PHOTO
-        incoming_is_photo = event.message_type == MessageType.PHOTO
-        both_photo = existing_is_photo and incoming_is_photo
-        incoming_has_media = bool(event.media_urls)
 
-        def _padded_inline_flags(msg: MessageEvent) -> list[Optional[bool]]:
-            flags = list(getattr(msg, "media_text_inlined", []) or [])
-            return flags + [None] * (len(msg.media_urls) - len(flags))
-        incoming_inline_flags: list[Optional[bool]] = []
-        if incoming_has_media:
-            existing.media_text_inlined = _padded_inline_flags(existing)
-            incoming_inline_flags = _padded_inline_flags(event)
-        # A photo burst always absorbs; otherwise merge only when media is involved on either
-        # side. Captions merge in every absorbing case.
-        if both_photo or existing.media_urls or incoming_has_media:
-            if both_photo or incoming_has_media:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-                existing.media_text_inlined.extend(incoming_inline_flags)
-            if event.text:
-                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-            existing.absorb_reply_expected(event)
-            if existing_is_photo or incoming_is_photo:
-                existing.message_type = MessageType.PHOTO
-            elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
-                existing.message_type = event.message_type
-            # Drop the *derived* STT cache (event changed); the echo ledger must survive or
-            # notes echo twice.
-            for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts"):
-                if hasattr(existing, attr):
-                    delattr(existing, attr)
-            return
-        both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
-        if merge_text and both_text:
-            if event.text:
-                existing.text = _append_text(existing.text, event.text)
-            existing.absorb_reply_expected(event)
-            return
-    pending_messages[session_key] = event
 
 
 # Transient *connection* failures worth retrying. Plain/read/write "timeout" excluded on purpose:
@@ -1914,7 +1866,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(PendingWithdrawalMixin, BaseTextBatchingMixin, BaseTextDebounceMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -2565,77 +2517,6 @@ class BasePlatformAdapter(ABC):
             source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
             profile=self._session_key_profile(source))
-
-    def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text batching (subclasses may override)."""
-        return self._event_session_key(event)
-
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event (merging into a pending one) and restart the flush timer."""
-        if self._drop_unresolved(event):
-            return
-        key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
-        if existing is None:
-            existing = self._pending_text_batches[key] = event
-        else:
-            if event.text:
-                existing.text = _append_text(existing.text, event.text)
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-            existing.absorb_reply_expected(event)
-        existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
-        prior_task = self._pending_text_batch_tasks.get(key)
-        if prior_task and not prior_task.done():
-            prior_task.cancel()
-        self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
-
-    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
-        """Quiet period before ``pending`` is dispatched; near-split chunks wait longer."""
-        last_len = getattr(pending, "_last_chunk_len", 0) if pending is not None else 0
-        return self._text_batch_split_delay_seconds if last_len >= self._SPLIT_THRESHOLD else self._text_batch_delay_seconds
-
-    def _pop_text_batch(self, key: str) -> Optional[MessageEvent]:
-        """Remove and return the pending batch for ``key`` (adapters with side tables override)."""
-        return self._pending_text_batches.pop(key, None)
-
-    async def _dispatch_text_batch(self, event: MessageEvent) -> None:
-        """Hand a flushed batch to the pipeline (adapters with per-chat guards override)."""
-        await self.handle_message(event)
-
-    async def _flush_text_batch_now(self, key: str) -> None:
-        """Dispatch the pending batch for ``key`` immediately (no quiet period)."""
-        event = self._pop_text_batch(key)
-        if event is not None:
-            await self._dispatch_text_batch(event)
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period, then dispatch the batch for ``key``.
-
-        Two races share this body. (1) ``_enqueue_text_event`` cancels the prior flush task
-        on each new chunk; when ``Task.cancel()`` lands after ``sleep()`` already completed,
-        CancelledError is delivered at the *next* await — after a superseded task would have
-        popped the event, so the successor finds nothing and the message is lost. The identity
-        check therefore runs synchronously between the sleep and the pop. (2) A cancel that
-        lands while the dispatch is in flight would abort the agent turn (#12444), so the
-        dispatch is shielded and the outer CancelledError swallowed."""
-        current_task = asyncio.current_task()
-        try:
-            await asyncio.sleep(self._text_batch_delay_for(self._pending_text_batches.get(key)))
-            owner = self._pending_text_batch_tasks.get(key)
-            if owner is not None and owner is not current_task:
-                return
-            event = self._pop_text_batch(key)
-            if event is None:
-                return
-            logger.info("[%s] Flushing text batch %s (%d chars)", self.name, key, len(event.text or ""))
-            await asyncio.shield(self._dispatch_text_batch(event))
-        except asyncio.CancelledError:
-            pass
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
 
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session
@@ -3528,6 +3409,25 @@ class BasePlatformAdapter(ABC):
     _OK_EMOJI: Optional[str] = None
     _FAIL_EMOJI: Optional[str] = None
 
+    async def prepare_turn_context(
+        self, event: MessageEvent, *, origin: Optional[SessionSource],
+        acknowledged_state: Optional[Dict[str, Any]], first_turn: bool,
+    ) -> Optional[TurnContextUpdate]:
+        """Report context for this turn: changes to the chat since the conversation last
+        acknowledged its state, and earlier messages that a new session has not seen.
+
+        The gateway calls this while it prepares every inbound turn. ``origin`` is the session's
+        origin source, or ``None`` before the session exists. ``acknowledged_state`` is the
+        ``channel_state`` saved with the most recent user transcript row that has one.
+        ``first_turn`` is true when the session transcript is empty. Return ``None`` to add no note
+        and leave the saved state unchanged.
+
+        For an adapter that overrides this hook, the session-context prompt keeps the chat name,
+        topic and user name from the session origin, so a rename does not rewrite the system prompt
+        of a running conversation. An override must therefore report name and topic changes in its
+        note."""
+        return None
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
@@ -3808,112 +3708,13 @@ class BasePlatformAdapter(ABC):
             return existing_text
         return f"{existing_text}\n\n{new_text}".strip()
 
-    def _text_debounce_store(self) -> dict[str, TextDebounceState]:
-        return _lazy_attr(self, "_text_debounce", dict)
 
-    def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
-        """Return True for normal text eligible for queue-mode debounce."""
-        result = (
-            getattr(self, "_busy_text_mode", "interrupt") == "queue"
-            and event.message_type == MessageType.TEXT and not getattr(event, "internal", False)
-            and not event.is_command() and bool((event.text or "").strip()))
-        if result:
-            logger.debug("[%s] Queue-text debounce candidate accepted: session=%s text_len=%d",
-                         self.name, getattr(event, "session_key", "?"), len(event.text or ""))
-        return result
 
-    def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
-        """Return True when two text debounce events came from the same sender."""
 
-        def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
-            source = getattr(candidate, "source", None)
-            if source is None:
-                return None
-            platform = _platform_name(getattr(source, "platform", None))
-            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
-            if sender:
-                return (platform, str(sender))
-            if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
-                return (platform, "dm", str(source.chat_id))
-            return None
-        existing_sender = _identity(existing)
-        return existing_sender is not None and existing_sender == _identity(event)
 
-    def _text_debounce_delay(self, session_key: str) -> float:
-        """Return bounded busy-text debounce delay for ``session_key``."""
-        state = self._text_debounce_store().get(session_key)
-        if state is None:
-            return 0.0
-        deadline = min(state.last_ts + self._busy_text_debounce_seconds,
-                       state.first_ts + self._busy_text_hard_cap_seconds)
-        return max(0.0, deadline - time.monotonic())
 
-    async def _queue_text_debounce(self, session_key: str, event: MessageEvent) -> None:
-        """Buffer normal queue-mode busy text and schedule a bounded flush."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-            # Preserve sender attribution: flush the buffer as the next turn, new sender starts
-            # fresh.
-            await self._flush_text_debounce_now(session_key)
-            state = store.get(session_key)
-            if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-                existing_pending = self._pending_messages.get(session_key)
-                if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
-                return
-        now = time.monotonic()
-        if state is None:
-            state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
-            store[session_key] = state
-        else:
-            if event.text:
-                state.event.text = _append_text(state.event.text, event.text)
-            state.event.absorb_reply_expected(event)
-            latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
-            if latest_message_id is not None:
-                state.event.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
-                state.event.reply_to_message_id = str(latest_anchor)
-            state.last_ts = now
-        state.cancel_timer()
-        delay = self._text_debounce_delay(session_key)
-        state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
 
-    async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
-        """Timer task that flushes the debounced text buffer."""
-        try:
-            await asyncio.sleep(delay)
-            await self._flush_text_debounce_now(session_key)
-        except asyncio.CancelledError:
-            return
-        finally:
-            current = asyncio.current_task()
-            state = self._text_debounce_store().get(session_key)
-            if state is not None and state.task is current:
-                state.task = None
 
-    async def _flush_text_debounce_now(self, session_key: str) -> bool:
-        """Force-flush one debounced busy-text burst into the pending slot."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is None:
-            return False
-        state.cancel_timer(unless=asyncio.current_task())
-        state.task = None
-        pending = self._pending_messages.get(session_key)
-        if pending is not None and not self._can_merge_text_debounce_events(pending, state.event):
-            return False
-        store.pop(session_key, None)
-        merge_pending_message_event(self._pending_messages, session_key, state.event, merge_text=True)
-        return True
-
-    def _discard_text_debounce(self, session_key: str) -> None:
-        """Cancel and drop pending text debounce state for control commands."""
-        state = self._text_debounce_store().pop(session_key, None)
-        if state is not None:
-            state.cancel_timer()
 
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
     # reconciliation is deterministic across completion, /stop /new /reset, and stale-lock heal.
@@ -3944,6 +3745,7 @@ class BasePlatformAdapter(ABC):
         self._requeue_counts.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
+        getattr(self, "_pending_dispatch_reservations", {}).pop(session_key, None)
         return True
 
     def _start_session_processing(self, event: MessageEvent, session_key: str, *,
@@ -3972,7 +3774,21 @@ class BasePlatformAdapter(ABC):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
+            reserved = getattr(self, "_pending_dispatch_reservations", {}).get(session_key)
+            if reserved is not None:
+                task.add_done_callback(lambda _: self._finish_pending_dispatch(session_key, reserved))
         return True
+
+    def _finish_pending_dispatch(
+        self, session_key: str, reserved: _PendingDispatchReservation
+    ) -> None:
+        preserve = reserved.preserve_on_completion
+        reserved.preserve_on_completion = False
+        if preserve and pending_dispatch_needs_snapshot(self, reserved):
+            restore = getattr(self.gateway_runner, "_restore_pending_dispatch", None)
+            if callable(restore):
+                restore(session_key, reserved.event, self)
+        release_pending_dispatch(self, session_key, reserved.event)
 
     async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
                                         discard_pending: bool = True) -> None:
@@ -3980,6 +3796,10 @@ class BasePlatformAdapter(ABC):
         reset-like commands finish atomically; the await is bounded (5s) so a wedged finally can't
         stall."""
         self._requeue_counts.pop(session_key, None)
+        reservations = getattr(self, "_pending_dispatch_reservations", {})
+        reserved = reservations.get(session_key)
+        if reserved is not None:
+            reserved.preserve_on_completion = not discard_pending
         task = self._session_tasks.pop(session_key, None)
         if task is not None and not task.done():
             logger.debug("[%s] Cancelling active processing for session %s", self.name, session_key)
@@ -3996,6 +3816,8 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 logger.debug("[%s] Session cancellation raised while unwinding %s", self.name,
                              session_key, exc_info=True)
+        if reserved is not None and (task is None or task.done()):
+            self._finish_pending_dispatch(session_key, reserved)
         if discard_pending:
             self._pending_messages.pop(session_key, None)
             self._discard_text_debounce(session_key)
@@ -4010,6 +3832,7 @@ class BasePlatformAdapter(ABC):
         pending_event = self._pending_messages.pop(session_key, None)
         self._release_session_guard(session_key, guard=command_guard)
         if pending_event is not None:
+            self._stage_next_queued_event(session_key, pending_event)
             self._start_session_processing(pending_event, session_key)
 
     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
@@ -4158,6 +3981,7 @@ class BasePlatformAdapter(ABC):
                 for owner in owners:
                     orphan = owner.get_pending_message(session_key)
                     if orphan is not None:
+                        owner._stage_next_queued_event(session_key, orphan)
                         owner._start_session_processing(orphan, session_key)
                         break
                 if orphan is None and not handled:
@@ -4179,7 +4003,15 @@ class BasePlatformAdapter(ABC):
             logger.debug("[%s] New text message while session %s is active — "
                          "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,
                          session_key, self._busy_text_debounce_seconds)
-            await self._queue_text_debounce(session_key, event)
+            event._gateway_accepted = await self._queue_text_debounce(session_key, event)
+            if not event._gateway_accepted:
+                notify = getattr(self.gateway_runner, "_send_pending_queue_refusal", None)
+                if callable(notify):
+                    await notify(event, self)
+                else:
+                    await self._send_with_retry(
+                        chat_id=event.source.chat_id, content=t("gateway.queue.full"),
+                        reply_to=event.message_id, metadata=_thread_metadata_for_event(event))
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
@@ -4555,6 +4387,7 @@ class BasePlatformAdapter(ABC):
                 logger.debug(
                     "[%s] Late-arrival pending message during cleanup — spawning drain task",
                     self.name)
+                self._stage_next_queued_event(session_key, late_pending)
                 self._spawn_drain_task(late_pending, session_key)
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
@@ -4576,7 +4409,8 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
-            response = await self._message_handler(event)
+            with pending_dispatch_scope(self, session_key, event):
+                response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4644,6 +4478,8 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            if asyncio.current_task() in self._expected_cancelled_tasks:
+                return
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
@@ -4652,6 +4488,7 @@ class BasePlatformAdapter(ABC):
                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
                 if not delay:  # a backed-off event stays queued until the drain task wakes
                     self._pending_messages.pop(session_key)
+                    self._stage_next_queued_event(session_key, pending_event)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
@@ -4671,6 +4508,7 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            release_pending_dispatch(self, session_key, event)
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
@@ -4682,7 +4520,10 @@ class BasePlatformAdapter(ABC):
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
-            self._finish_session_task(session_key, interrupt_event)
+            if asyncio.current_task() in self._expected_cancelled_tasks:
+                self._cleanup_finished_session_task(session_key, interrupt_event)
+            else:
+                self._finish_session_task(session_key, interrupt_event)
 
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot
@@ -4744,7 +4585,16 @@ class BasePlatformAdapter(ABC):
             if pending_event is None:  # consumed elsewhere during the back-off
                 self._cleanup_finished_session_task(session_key, guard)
                 return
+            self._stage_next_queued_event(session_key, pending_event)
         await self._process_message_background(pending_event, session_key)
+
+    def _stage_next_queued_event(self, session_key: str, started: MessageEvent) -> None:
+        """Stage the next FIFO event before dispatching the removed pending head."""
+        promote = getattr(self.gateway_runner, "_promote_queued_event", None)
+        if callable(promote):
+            reserve_pending_dispatch(self, session_key, started)
+            promote(session_key, self, started)
+
 
     def _clear_session_guard(self, session_key: str) -> None:
         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""
@@ -4774,9 +4624,14 @@ class BasePlatformAdapter(ABC):
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
         stragglers are untracked and left to unwind."""
+        pending_reservations: dict[str, list[_PendingDispatchReservation]] = {}
         # Re-drain (max 5 rounds): a message arriving mid-gather spawns a task clear() would
         # untrack.
         for _ in range(5):
+            for key, reserved in getattr(self, "_pending_dispatch_reservations", {}).items():
+                recorded = pending_reservations.setdefault(key, [])
+                if not any(previous is reserved for previous in recorded):
+                    recorded.append(reserved)
             tasks = [task for task in self._background_tasks if not task.done()]
             if not tasks:
                 break
@@ -4792,14 +4647,22 @@ class BasePlatformAdapter(ABC):
                                "releasing tracking and letting them unwind in the background",
                                self.name, sum(not t.done() for t in tasks))
                 break
-        with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
-            from gateway.shutdown_flush import flush_pending_to_file
-            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+        from gateway.shutdown_pending import flush_adapter_pending
+        persisted = flush_adapter_pending(self, pending_reservations)
+        for key in persisted:
+            self._pending_messages.pop(key, None)
+            state = self._text_debounce_store().pop(key, None)
+            if state is not None:
+                state.cancel_timer()
+            getattr(self, "_pending_dispatch_reservations", {}).pop(key, None)
+        for key, records in pending_reservations.items():
+            for reserved in records:
+                if key not in persisted and pending_dispatch_needs_snapshot(self, reserved):
+                    self._pending_dispatch_reservations.setdefault(key, reserved)
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
-                       self._pending_messages, self._active_sessions, self._requeue_counts,
-                       self._text_debounce_store()):
+                       self._active_sessions, self._requeue_counts):
             bucket.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:
@@ -4817,6 +4680,7 @@ class BasePlatformAdapter(ABC):
         user_id_alt: Optional[str] = None, chat_id_alt: Optional[str] = None, is_bot: bool = False,
         scope_id: Optional[str] = None, guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
+        source_permalink: Optional[str] = None,
         role_authorized: bool = False, auto_thread_created: bool = False,
         auto_thread_initial_name: Optional[str] = None) -> SessionSource:
         """Build a SessionSource; with ``gateway.profile_routes`` configured the matching
@@ -4830,7 +4694,7 @@ class BasePlatformAdapter(ABC):
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
-            message_id=_opt(message_id))
+            message_id=_opt(message_id), source_permalink=_opt(source_permalink))
         # Profile from configured routes, else the owning profile of a dedicated secondary bot (so no
         # later ``source.profile``-less fallback can re-route the message through the default bot's routes).
         owner_profile = getattr(self, "_owner_profile", None)

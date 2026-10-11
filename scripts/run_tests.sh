@@ -134,6 +134,10 @@ _pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
 #     subprocess rebuild the 5GB image from a cold builder cache instead
 #     (~4 min per worker per run, and the rebuilt image lacked the
 #     HERMES_GIT_SHA build-arg the workflow bakes in).
+#   * HERMES_TEST_MATRIX_GATEWAY_IMAGE specifies a prebuilt Linux gateway
+#     image for tests/integration/matrix_live, so its fixture skips the build.
+#     matrix-live.yml builds the image before the tests, so the build does not
+#     count towards the per-file timeout.
 #   * HERMES_E2E_REQUIRE_TUI turns a missing Ink TUI build into a failure in
 #     tests/e2e/core/terminal instead of a skip (set by the e2e CI job).
 #   * CI / GITHUB_ACTIONS tell suites they run on a disposable runner (e.g.
@@ -151,14 +155,19 @@ _pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
 # SSL_CERT_FILE/DIR are trust-store locations: the pinned interpreter's
 # OpenSSL has no compiled-in bundle path on NixOS, so network tests (PM
 # downloads, channel reads) need the host's pointer to verify TLS.
+# DOCKER_HOST, DOCKER_CONTEXT and DOCKER_CONFIG select the Docker daemon as
+# they do for the docker CLI, so Testcontainers suites can reach a daemon that
+# is available only through a CLI context. The Matrix live fixtures read the
+# endpoint from DOCKER_CONFIG and then replace it with a configuration that
+# has no registry credentials.
 # Keep this an explicit allowlist (no HERMES_TEST_* glob) so the "no
 # credential can leak" property stays auditable at a glance.
 TEST_ENV=()
-for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
+for _test_var in HERMES_TEST_IMAGE HERMES_TEST_MATRIX_GATEWAY_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
   HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE \
   SSL_CERT_FILE SSL_CERT_DIR HERMES_GATEWAY_LOCK_DIR HERMES_E2E_REQUIRE_TUI CI GITHUB_ACTIONS \
   HERMES_E2E_WINDOWS_INSTALL HERMES_E2E_MACHINE_ROOT HERMES_E2E_PROFILES_ROOT HERMES_E2E_ARTIFACTS \
-  HERMES_E2E_STRICT_ACCEPTANCE; do
+  HERMES_E2E_STRICT_ACCEPTANCE DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG; do
   if [ -n "${!_test_var:-}" ]; then
     TEST_ENV+=("$_test_var=${!_test_var}")
   fi

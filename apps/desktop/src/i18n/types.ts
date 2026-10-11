@@ -2305,6 +2305,8 @@ export interface Translations extends NoticeTranslations {
     noUsage: (period: number) => string
     retry: string
     dailyTokens: string
+    cacheHitRate: string
+    cacheHitRateVolume: string
     input: string
     output: string
     noDailyActivity: string

@@ -478,6 +478,23 @@ def test_a_row_from_another_identity_generation_is_held_not_reclaimed(board):
     assert kbd.detect_crashed_workers._last_crash_sweep_abort is None
 
 
+def test_a_held_sweep_alerts_without_claiming_a_refusal(board):
+    """A hold is not a refusal: the acting card must not read "REFUSED: >= 0 runs"."""
+    conn = board
+    dead = _dead_pid()
+    _claimed_running(conn, pid=dead, started_at=_incomparable_fingerprint())
+
+    kbd.detect_crashed_workers(conn)
+
+    actors = conn.execute(
+        "SELECT title FROM tasks WHERE idempotency_key LIKE 'mass-crash:%'",
+    ).fetchall()
+    assert len(actors) == 1, "a held row still pages the design authority"
+    title = actors[0]["title"]
+    assert "HOLDING" in title
+    assert "REFUSED" not in title
+
+
 def test_the_reclaim_reports_the_refusal_on_the_dispatch_result(board, monkeypatch):
     """The tick itself carries the refusal, so a caller never has to read the log."""
     conn = board
@@ -507,13 +524,55 @@ def test_the_tick_stamps_the_deployed_generation_once(board, tmp_path):
     assert stamp["version"] == guard.GENERATION_STAMP_VERSION
 
 
-def test_the_tick_alerts_when_the_deployed_generation_moves(board, tmp_path, monkeypatch):
-    """A regression is detected in ONE tick -- the whole point of R6."""
+def _foreign_shape() -> str:
+    """An identity shape THIS process's writer does NOT produce -- a genuinely moved reference.
+
+    Never hardcode one: the executing tree may already produce it (measured 2026-10-11: the live
+    line's writer shape IS ``boot-witness/3``), which is exactly how this check went
+    green-but-blind the moment the witness bytes landed.
+    """
+    writer = _writer_shape()
+    for candidate in (
+        "epoch-cs/2", "boot-witness/2", "boot-witness/3", "boot-witness/4", "composed/2",
+    ):
+        if candidate != writer:
+            return candidate
+    raise AssertionError("no foreign shape available; the writer vocabulary moved")
+
+
+def _foreign_witness_symbols() -> list[str]:
+    """A recorded witness set the executing module does NOT cover, derived the same way.
+
+    Records what the tree HAS plus one symbol it does not, so the loss is real whether or not the
+    witness bytes have landed yet.
+    """
+    present = sorted(guard.witness_symbols_present(kbd))
+    absent = [name for name in sorted(guard.WITNESS_SYMBOLS) if name not in present]
+    return present + (absent[:1] or ["worker_liveness_v0"])
+
+
+@pytest.mark.parametrize(
+    "witness_present", [True, False], ids=["witness-bytes-present", "witness-bytes-absent"],
+)
+def test_the_tick_alerts_when_the_deployed_generation_moves(
+    board, tmp_path, monkeypatch, witness_present,
+):
+    """A regression is detected in ONE tick -- the whole point of R6.
+
+    Parameterised over the witness-bytes state: the fixture must be RED without the R6 mechanism
+    and GREEN with it in BOTH trees, because hardcoding a "foreign" generation the executing tree
+    itself produces is how this test goes green-but-blind.
+    """
     conn = board
+    if not witness_present:
+        # The pre-witness tree: the executing module carries none of the witness symbols.
+        monkeypatch.setattr(guard, "witness_symbols_present", lambda module: [])
     kbd._dispatch_once_locked(conn, ttl_seconds=None, stale_timeout_seconds=0)
     stamp = guard.read_generation_stamp()
-    stamp["shape"] = "boot-witness/3"          # the reference moves under the tick
-    stamp["witness_symbols"] = ["_worker_liveness"]
+    if stamp is None:
+        pytest.fail("the tick recorded no identity generation: the R6 leg is absent")
+    stamp["shape"] = _foreign_shape()                        # the reference moves under the tick
+    stamp["witness_symbols"] = _foreign_witness_symbols()    # ... and it recorded bytes we lost
     guard.write_generation_stamp(stamp)
 
     result = kbd._dispatch_once_locked(conn, ttl_seconds=None, stale_timeout_seconds=0)

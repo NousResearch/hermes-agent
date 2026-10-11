@@ -200,6 +200,11 @@ MASS_CRASH_ACTOR_ASSIGNEE = "platform-stl"
 MASS_CRASH_ACTOR_TITLE = (
     "[guard] reclaim sweep REFUSED: >= {count} runs would close `crashed` in one tick"
 )
+#: A HOLD is not a refusal: nothing was refused, so the count is 0 and saying "REFUSED: >= 0 runs"
+#: would be nonsense on the board. The hold is reported in its own words (R6/R2).
+MASS_CRASH_HELD_ACTOR_TITLE = (
+    "[guard] reclaim sweep HOLDING {held} row(s): identity generations not comparable"
+)
 MASS_CRASH_ACTOR_EVENT = "mass_crash_sweep_actor_filed"
 MASS_CRASH_ACTOR_IDEMPOTENCY_PREFIX = "mass-crash:"
 
@@ -545,8 +550,10 @@ def alert_sweep_guard(
         conn,
         prefix=MASS_CRASH_ACTOR_IDEMPOTENCY_PREFIX,
         signature=actor_signature,
-        title=MASS_CRASH_ACTOR_TITLE.format(
-            count=verdict.count, threshold=verdict.threshold,
+        title=(
+            MASS_CRASH_ACTOR_TITLE.format(count=verdict.count, threshold=verdict.threshold)
+            if verdict.abort
+            else MASS_CRASH_HELD_ACTOR_TITLE.format(held=len(assessment.held))
         ),
         body=refusal_body(assessment, board=board, tree=tree),
         event=MASS_CRASH_ACTOR_EVENT,

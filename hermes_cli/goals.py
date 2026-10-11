@@ -69,9 +69,7 @@ CONTINUATION_PROMPT_TEMPLATE = (
 # not to break, scope, and when to stop — so it targets the verification surface.
 CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
-    "Goal: {goal}\n\n"
-    "Completion contract:\n"
-    "{contract_block}\n\n"
+    "{body}\n\n"
     "Continue working toward the outcome above. Take the next concrete step. "
     "Stay within the stated boundaries and do not violate the constraints. "
     "Before claiming the goal is done, satisfy the Verification criterion and "
@@ -83,9 +81,7 @@ CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE = (
 # With /subgoal criteria: surfaced verbatim to the agent and to the judge.
 CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
-    "Goal: {goal}\n\n"
-    "Additional criteria the user added mid-loop:\n"
-    "{subgoals_block}\n\n"
+    "{body}\n\n"
     "Continue working toward the goal AND all additional criteria. Take "
     "the next concrete step. If you believe the goal and every "
     "additional criterion are complete, state so explicitly and stop. "
@@ -336,6 +332,59 @@ def parse_contract(text: str) -> tuple[str, GoalContract]:
 
 def _render_extra_criteria(subgoals: list[str]) -> str:
     return "\n".join(f"- Extra criterion {i}: {text}" for i, text in enumerate(subgoals, start=1))
+
+
+def _goal_body_block(s: "GoalState") -> str:
+    """Goal headline + completion contract + subgoals, with NO continuation instruction.
+
+    Shared by :meth:`GoalManager.next_continuation_prompt` (which wraps it in an imperative
+    continuation template) and :func:`render_preserved_goal_block` (the compaction fold), so the
+    contract fields the judge enforces — Verification, Constraints, Stop condition — render
+    identically whether the goal reaches the model as a between-turn continuation or as a block
+    preserved across a mid-turn compaction (#133643).
+    """
+    if s.has_contract():
+        contract_block = s.contract.render_block()
+        if s.subgoals:
+            contract_block = f"{contract_block}\n{_render_extra_criteria(s.subgoals)}"
+        return f"Goal: {s.goal}\n\nCompletion contract:\n{contract_block}"
+    if s.subgoals:
+        return f"Goal: {s.goal}\n\nAdditional criteria the user added mid-loop:\n{s.render_subgoals_block()}"
+    return f"Goal: {s.goal}"
+
+
+# Header for the goal block re-folded at a compaction boundary. Deliberately distinct from the
+# between-turn continuation prompt and non-imperative: this block reminds the model what its standing
+# goal and completion contract ARE, not to keep working (the judge decides continuation).
+GOAL_PRESERVED_HEADER = "[Your standing /goal was preserved across context compression]"
+
+
+def goal_is_parked(state: Optional["GoalState"]) -> bool:
+    """A wait barrier is armed (judge ``wait`` verdict or ``/goal wait``): the loop is parked, so a
+    compaction fold must not present the goal as a standing continuation (#133643)."""
+    return bool(
+        state is not None
+        and (
+            state.waiting_on_pid
+            or state.waiting_on_session
+            or state.waiting_until
+            or state.waiting_on_delegations
+        )
+    )
+
+
+def render_preserved_goal_block(state: Optional["GoalState"]) -> Optional[str]:
+    """The active goal + contract block to re-add at a compaction boundary, or None.
+
+    None when there is nothing to carry: no goal, a goal the judge finished/paused/cleared, or a
+    parked (waiting) one. The todo list already survives every compaction (``_fold_todo_snapshot``);
+    the goal lives in ``state_meta`` and otherwise reaches the model only as a between-turn user
+    message or through the summary's lossy free-text ``## Goal`` section, which routinely paraphrases
+    away Verification, Constraints and Stop condition (#133643).
+    """
+    if state is None or state.status != "active" or goal_is_parked(state):
+        return None
+    return f"{GOAL_PRESERVED_HEADER}\n{_goal_body_block(state)}"
 
 
 # ── Quality gates ─────────────────────────────────────────────────────
@@ -1567,14 +1616,12 @@ class GoalManager:
         s = self._state
         if not s or s.status != "active":
             return None
+        body = _goal_body_block(s)
         # Contract first (it carries the verification surface); subgoals fold in as extra criteria.
         if s.has_contract():
-            contract_block = s.contract.render_block()
-            if s.subgoals:
-                contract_block = f"{contract_block}\n{_render_extra_criteria(s.subgoals)}"
-            return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(goal=s.goal, contract_block=contract_block)
+            return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(body=body)
         if s.subgoals:
-            return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(goal=s.goal, subgoals_block=s.render_subgoals_block())
+            return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(body=body)
         return CONTINUATION_PROMPT_TEMPLATE.format(goal=s.goal)
 
     def render_contract(self) -> str:
@@ -1773,4 +1820,7 @@ __all__ = [
     "run_gate",
     "run_kanban_goal_loop",
     "save_goal",
+    "GOAL_PRESERVED_HEADER",
+    "goal_is_parked",
+    "render_preserved_goal_block",
 ]

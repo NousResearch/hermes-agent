@@ -2206,7 +2206,7 @@ def conversation_history_after_compression(
 _SYNTHETIC_USER_PREFIXES = (
     "[System: Your previous response was truncated", "[System: The previous response was cut off",
     "[System: Your previous tool call", "[Your active task list was preserved across context compression]",
-    "[IMPORTANT: Background process ",
+    "[Your standing /goal was preserved across context compression]", "[IMPORTANT: Background process ",
 )
 
 
@@ -2222,8 +2222,8 @@ def _message_text(message: Any) -> str:
 
 
 _SYNTHETIC_USER_FLAGS = (
-    "_todo_snapshot_synthetic", "_empty_recovery_synthetic", "_verification_stop_synthetic", "_pre_verify_synthetic",
-    "_dropped_toolcall_nudge",
+    "_todo_snapshot_synthetic", "_goal_snapshot_synthetic", "_empty_recovery_synthetic", "_verification_stop_synthetic",
+    "_pre_verify_synthetic", "_dropped_toolcall_nudge",
 )
 
 
@@ -4313,7 +4313,7 @@ def compress_context(
                 "Compression: engine folded away the just-delivered assistant reply; reinserted it into the "
                 "active set (session=%s).", agent.session_id or "none",
             )
-        _fold_todo_snapshot(agent, compressed)
+        from agent.conversation_compression_goal_fold import fold_state_snapshots; fold_state_snapshots(agent, compressed)
         compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(

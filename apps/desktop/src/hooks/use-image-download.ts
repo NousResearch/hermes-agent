@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { mediaName } from '@/lib/media'
+import { isWindowsAbsolutePath } from '@/lib/path-compare'
 import { notify, notifyError } from '@/store/notifications'
 
 const MIME_EXTENSIONS: Record<string, string> = {
@@ -19,8 +21,14 @@ export function imageFilename(src?: string): string {
     return 'image'
   }
 
+  if (isWindowsAbsolutePath(src)) {
+    return mediaName(src)
+  }
+
   try {
-    return new URL(src, window.location.href).pathname.split('/').filter(Boolean).pop() || 'image'
+    const url = new URL(src, window.location.href)
+
+    return url.pathname.split('/').filter(Boolean).pop() ? mediaName(url.href) : 'image'
   } catch {
     return src.split(/[\\/]/).filter(Boolean).pop() || 'image'
   }

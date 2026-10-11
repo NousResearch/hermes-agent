@@ -322,6 +322,24 @@ function resolveRemoteSshDashboardProfile(configuredRemoteProfile, poolOrProfile
   return requested
 }
 
+/** The remote profile a REGISTRY-scoped (connection, profile) backend runs as.
+ *  A pool key's profile segment names the remote profile that scope serves, so
+ *  it wins over the connection's configured `remoteProfile` — the configured
+ *  value pins only the connection's default scope (an explicit alias such as
+ *  'writer_2', or 'default' for the remote root home). Letting the configured
+ *  value override a named scope spawned every scope's serve in that one home,
+ *  so opening another profile's listed sessions 404'd (#134809). */
+function registryScopeRemoteProfile(configuredRemoteProfile, profileKey) {
+  const configured = String(configuredRemoteProfile || '').trim()
+  const key = String(profileKey || '').trim() || 'default'
+
+  if (key !== 'default' && key !== configured) {
+    return key
+  }
+
+  return configured || (key === 'default' ? '' : key)
+}
+
 // Coerce a remote auth mode to one of the two supported values ('token' default).
 function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
@@ -1204,6 +1222,7 @@ export {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  registryScopeRemoteProfile,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,

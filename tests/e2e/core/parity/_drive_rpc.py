@@ -40,7 +40,7 @@ READY_TIMEOUT = 120.0
 class RpcClient:
     """Minimal JSON-RPC 2.0 client over a line/frame transport (``send`` + ``recv`` callables)."""
 
-    def __init__(self, send: Callable[[str], None], frames: "queue.Queue[str | None]") -> None:
+    def __init__(self, send: Callable[[str], None], frames: queue.Queue[str | None]) -> None:
         self._send = send
         self._frames = frames
         self._next_id = 0
@@ -110,11 +110,11 @@ def run_turn(rpc: RpcClient, prompt: str, create_params: dict[str, Any]) -> str:
 class StreamCapture:
     """Every stdout line (in order) plus the stderr text of a child, pumped on threads."""
 
-    stdout_lines: "queue.Queue[str | None]" = field(default_factory=queue.Queue)
+    stdout_lines: queue.Queue[str | None] = field(default_factory=queue.Queue)
     stdout_seen: list[str] = field(default_factory=list)
     stderr_chunks: list[str] = field(default_factory=list)
 
-    def start(self, proc: subprocess.Popen) -> "StreamCapture":
+    def start(self, proc: subprocess.Popen) -> StreamCapture:
         def out() -> None:
             assert proc.stdout is not None
             for line in proc.stdout:

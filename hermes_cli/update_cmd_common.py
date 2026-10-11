@@ -8,7 +8,7 @@ from contextlib import contextmanager
 logger = logging.getLogger("hermes_cli.update_cmd")
 
 
-def _record_stop(reason: str, *, without_receipt: "str | None" = None) -> None:
+def _record_stop(reason: str, *, without_receipt: str | None = None) -> None:
     """Name the exit about to stop this update as one closed token (see update_receipt.record_stop_reason).
 
     ``without_receipt`` (``refused``/``failed``) is for an exit that fires before the receipt

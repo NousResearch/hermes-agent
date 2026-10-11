@@ -16,7 +16,7 @@ from agent.session_activity import ActivityProvenance
 logger = logging.getLogger("run_agent")
 
 
-def _activity_lock(obj) -> "threading.Lock":
+def _activity_lock(obj) -> threading.Lock:
     """Lazy per-instance ``_turn_liveness_activity_lock`` (so ``__new__``/SimpleNamespace doubles work)."""
     _lock = getattr(obj, "_turn_liveness_activity_lock", None)
     if _lock is None:
@@ -28,7 +28,7 @@ def _activity_lock(obj) -> "threading.Lock":
 class ActivityTrackingMixin:
     """Liveness timestamps/labels and rate-limited session activity persistence."""
 
-    def _liveness_activity_lock(self) -> "threading.Lock":
+    def _liveness_activity_lock(self) -> threading.Lock:
         """Shared lock for the activity clock and its generation counter.
 
         ``_touch_activity`` stamps under it and the liveness watchdog samples/commits under it, so a stall

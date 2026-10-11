@@ -240,7 +240,7 @@ class GatewayControlServer:
                 None, self.handle_request_line, raw.rstrip(b"\n"))
             writer.write(response)
             await writer.drain()
-        except (asyncio.TimeoutError, ConnectionError, OSError):
+        except (TimeoutError, ConnectionError, OSError):
             pass
         except Exception:
             logger.debug("Control socket connection handler error", exc_info=True)

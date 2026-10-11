@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 # Bootstrap the repo root onto sys.path so this script can import the
@@ -22,11 +22,11 @@ from pathlib import Path
 # is import-light: only os/sys + version constants).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hermes_cli.update_channel import (  # noqa: E402
+from hermes_cli.update_channel import (
     _CANARY_TAG_RE, STABLE_TAG_RE, canary_tag_for_date, canary_timestamp,
     is_canary_tag,
 )
-from scripts.releases.authors import resolve_author  # noqa: E402
+from scripts.releases.authors import resolve_author
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -37,6 +37,7 @@ def git(*args, cwd=None):
         ["git"] + list(args),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"git {' '.join(args)} failed: {result.stderr}", file=sys.stderr)
@@ -51,6 +52,7 @@ def git_result(*args, cwd=None):
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
 
 
@@ -92,6 +94,7 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"  ✗ Could not start the release pipeline: {result.stderr.strip()}")
@@ -110,6 +113,7 @@ def _default_branch(gh_repo: str | None) -> str | None:
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         return None
@@ -432,6 +436,7 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
     view = subprocess.run(
         ["gh", "release", "view", tag, "--repo", repository, "--json", "tagName,isDraft,isPrerelease,url"],
         cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+        check=False,
     )
     # A draft is served at an untagged-* URL, never releases/tag/<tag>; gh's
     # answer is the only working link to it.
@@ -444,6 +449,7 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
         create.extend(["--notes-file", str(notes_file)] if notes_file else ["--generate-notes"])
         created = subprocess.run(
             create, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+            check=False,
         )
         if created.returncode != 0:
             raise ValueError(created.stderr.strip() or "Canary draft could not be recovered")
@@ -488,7 +494,7 @@ def cmd_canary(args) -> None:
     canary — the skip-if-no-new-commits gate lives HERE, not in workflow
     YAML.
     """
-    date_utc = args.date or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    date_utc = args.date or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     push_remote = resolve_push_remote(args.remote)
     gh_repo = remote_github_repo(push_remote)
     if not gh_repo:
@@ -576,7 +582,7 @@ def prune_old_canaries(args) -> None:
     """
     push_remote = resolve_push_remote(args.remote)
     gh_repo = remote_github_repo(push_remote)
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y%m%d")
+    cutoff = (datetime.now(UTC) - timedelta(days=14)).strftime("%Y%m%d")
 
     tags = git("tag", "--list", "v*+canary.*", "--sort=-creatordate")
     doomed = []
@@ -597,6 +603,7 @@ def prune_old_canaries(args) -> None:
         result = subprocess.run(
             gh_cmd, capture_output=True, text=True, encoding="utf-8",
             errors="replace", cwd=str(REPO_ROOT),
+            check=False,
         )
         if result.returncode == 0:
             print(f"✓ Deleted {tag}")

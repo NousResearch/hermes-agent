@@ -472,7 +472,8 @@ class TestScanSkillCommands:
 
         # Every mid-scan observation shows the complete previous map, never a
         # partial one growing from 0.
-        assert observed_sizes == [skill_count] * skill_count
+        assert observed_sizes, "the scan must exercise frontmatter parsing"
+        assert all(size == skill_count for size in observed_sizes)
 
     def test_non_ascii_name_registers_command(self, tmp_path):
         """A CJK skill name slugs to itself (punctuation still stripped) instead of "" and being

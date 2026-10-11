@@ -36,6 +36,7 @@ const ensureGatewayAgent = vi.fn(
 const openGatewayAgent = vi.fn(async (_connectionId: string, _profile: string): Promise<void> => undefined)
 const refreshActiveProfile = vi.fn(async () => undefined)
 const requestFreshSession = vi.fn()
+const wasJustProfileSwitched = vi.fn((): boolean => false)
 const beforeConnectionSwitch = vi.fn()
 const wipeSessionListsForGatewaySwitch = vi.fn(() => $activeSessionId.set(null))
 
@@ -81,7 +82,8 @@ vi.mock('@/store/profile', () => ({
   normalizeProfileKey: (name: null | string | undefined) => (name ?? '').trim() || 'default',
   openGatewayAgent,
   refreshActiveProfile,
-  requestFreshSession
+  requestFreshSession,
+  wasJustProfileSwitched
 }))
 
 const {
@@ -119,6 +121,7 @@ beforeEach(() => {
   $newChatProfile.set(null)
   $showAllProfiles.set(false)
   ensureGatewayAgent.mockReset()
+  wasJustProfileSwitched.mockReturnValue(false)
   // Mirrors the real door: the commit hook runs right before the activation
   // publishes, and a declined hook publishes nothing.
   ensureGatewayAgent.mockImplementation(async (connectionId, profile, options) => {
@@ -208,6 +211,29 @@ describe('connection registry cache', () => {
     await initializeConnectionsRegistry()
 
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
+  })
+
+  it('#132185: a profile-switch reload keeps the local source instead of re-restoring the registry primary (VPS)', async () => {
+    // The real sequence: user switched gateway to This device, then switched
+    // profiles — hermes:profile:set tears down the primary and reloads. At
+    // boot the freshly spawned LOCAL backend publishes an unqualified local
+    // descriptor while the registry still has launchMode=primary and a REMOTE
+    // primary; base code calls replaceUnqualifiedLocal on it and dials the
+    // VPS, yanking the user back. With the switch stamp consumed, the reload
+    // keeps the local source the user is actually on.
+    wasJustProfileSwitched.mockReturnValueOnce(true)
+    list.mockResolvedValueOnce({
+      ...registry,
+      lastUsed: 'local',
+      launchMode: 'primary',
+      primary: 'homelab'
+    })
+    $connection.set({ mode: 'local' })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+    expect(setLastUsed).not.toHaveBeenCalled()
   })
 
   it('selects the registry primary on boot when an update left an unqualified local descriptor', async () => {

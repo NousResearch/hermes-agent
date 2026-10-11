@@ -233,6 +233,14 @@ def record_response_usage(
     if cost_result.amount_usd is not None:
         _cost_delta = float(cost_result.amount_usd)
         agent.session_estimated_cost_usd += _cost_delta
+    # Subscription-included routes report $0 spend but carry the native list-price
+    # equivalent: keep the subscription-allowance gauge as a separate running total,
+    # never summed into session_estimated_cost_usd.
+    _list_price_delta = None
+    _list_price = getattr(cost_result, "list_price_usd", None)
+    if _list_price is not None:
+        _list_price_delta = float(_list_price)
+        agent.session_list_price_usd = getattr(agent, "session_list_price_usd", 0.0) + _list_price_delta
     if _moa_ref_cost is not None:
         try:
             _moa_cost = float(_moa_ref_cost)
@@ -263,6 +271,7 @@ def record_response_usage(
                 cache_write_tokens=canonical_usage.cache_write_tokens,
                 reasoning_tokens=canonical_usage.reasoning_tokens,
                 estimated_cost_usd=_cost_delta,
+                list_price_equiv_usd=_list_price_delta,
                 cost_status=cost_result.status,
                 cost_source=cost_result.source,
                 billing_provider=agent.provider,

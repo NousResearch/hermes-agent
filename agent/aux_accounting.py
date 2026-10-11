@@ -75,10 +75,16 @@ def record_aux_usage(
             return
         model = str(getattr(response, "model", "") or "") or "unknown"
         estimated_cost = None
+        list_price = None
         try:
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
             if cost.amount_usd is not None:
                 estimated_cost = float(cost.amount_usd)
+            # Subscription-included aux routes: $0 out-of-pocket, native list price
+            # kept apart from spend.
+            _native_list_price = getattr(cost, "list_price_usd", None)
+            if _native_list_price is not None:
+                list_price = float(_native_list_price)
         except Exception:
             logger.debug("Aux usage cost estimation failed", exc_info=True)
         session_db.record_auxiliary_usage(
@@ -86,6 +92,7 @@ def record_aux_usage(
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens, cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens, estimated_cost_usd=estimated_cost,
+            list_price_equiv_usd=list_price,
         )
     except Exception:
         logger.debug("Aux usage recording failed (non-fatal)", exc_info=True)

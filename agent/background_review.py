@@ -762,6 +762,7 @@ def _snapshot_review_usage(review_agent: Any) -> dict[str, Any]:
         **{key: getattr(review_agent, key, None) for key in ("model", "provider", "base_url")},
         **{key: int(getattr(review_agent, f"session_{key}", 0) or 0) for key in _USAGE_COUNTERS},
         "estimated_cost_usd": getattr(review_agent, "session_estimated_cost_usd", None),
+        "list_price_equiv_usd": getattr(review_agent, "session_list_price_usd", None),
     }
 
 
@@ -780,6 +781,7 @@ def _record_review_usage_to_parent(parent_agent: Any, usage: dict[str, Any]) -> 
             session_id, task="background_review", model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
             estimated_cost_usd=usage.get("estimated_cost_usd"),
+            list_price_equiv_usd=usage.get("list_price_equiv_usd"),
             api_call_count=counts.pop("api_calls"), **counts,
         )
     except Exception as e:

@@ -58,7 +58,7 @@ def format_cost_label(amount: Decimal) -> str:
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
 CostSource = Literal[
     "provider_cost_api", "provider_generation_api", "provider_models_api", "official_docs_snapshot",
-    "user_override", "custom_contract", "none",
+    "user_override", "custom_contract", "subscription_included", "none",
 ]
 
 
@@ -131,6 +131,11 @@ class CostResult:
     fetched_at: Optional[datetime] = None
     pricing_version: Optional[str] = None
     notes: tuple[str, ...] = ()
+    # Subscription routes (Claude Max via DirectSDK) bill $0 out-of-pocket but native
+    # reports the LIST-PRICE equivalent of the usage. Kept separate so spend consumers
+    # summing amount_usd/estimated_cost_usd stay truthful, while the
+    # subscription-allowance gauge survives.
+    list_price_usd: Optional[Decimal] = None
 
 
 _UTC_NOW = lambda: datetime.now(UTC)

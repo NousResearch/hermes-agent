@@ -124,6 +124,10 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
           }
 
           setCurrentReasoningEffort(reasoning)
+          // auto/cold are bounded policies, not static tiers: the fast WINDOW
+          // opens per the backend's clock, so the composer's boolean `fast`
+          // (what session.create rides as the priority pin) must stay off —
+          // only the exact tier rides, and create_overrides applies the policy.
           setCurrentFastMode(tier === 'priority' || tier === 'ultrafast')
           setCurrentServiceTier(tier)
         }

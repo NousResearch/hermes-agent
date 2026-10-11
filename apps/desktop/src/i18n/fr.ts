@@ -5,6 +5,7 @@ import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
+import { frModelOptions } from './fr_model_options'
 import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frProjects } from './fr_projects'
@@ -2012,6 +2013,8 @@ export const frOverrides = {
       reasoningOff: 'Désactivé',
       speed: 'Vitesse',
       speedStandard: 'Standard',
+      speedAuto: 'Auto',
+      speedCold: 'Froid',
       defaultsFailed: "Échec de l'enregistrement des modèles par défaut",
       loadFailed: 'Impossible de charger les modèles',
       restartRequired:
@@ -4628,25 +4631,7 @@ export const frOverrides = {
     paneControls: 'Contrôles de panneau',
     appControls: "Contrôles d'application",
     modelMenu: frModelMenu,
-    modelOptions: {
-      noOptions: 'Aucune option pour ce modèle',
-      options: 'Options',
-      thinking: 'Réflexion',
-      fast: 'Rapide',
-      ultrafast: 'Ultrafast',
-      useStandardSpeed: 'Utiliser la vitesse standard',
-      effort: 'Effort',
-      minimal: 'Minimal',
-      low: 'Faible',
-      medium: 'Moyen',
-      high: 'Élevé',
-      xhigh: 'Très élevé',
-      max: 'Max',
-      ultra: 'Ultra',
-      sendsOnRoute: (level: string) => `envoie ${level} sur cette route`,
-      updateFailed: "Échec de la mise à jour de l'option du modèle",
-      fastFailed: 'Échec de la mise à jour du mode rapide'
-    },
+    modelOptions: frModelOptions,
     gatewayMenu: {
       gateway: 'Gateway',
       connected: 'Connecté',

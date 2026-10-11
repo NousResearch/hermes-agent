@@ -330,10 +330,56 @@ describe('ModelSettings', () => {
     renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
-    const fastSwitch = await screen.findByRole('switch')
-    fireEvent.click(fastSwitch)
+    // The speed default is now a policy SELECT (Standard/Fast/Auto/Cold, …),
+    // not a fast on/off switch: a switch can only write fast/normal and
+    // destroyed a saved bounded policy (#132275).
+    const speedSelect = await screen.findByRole('combobox', { name: 'Speed' })
+    fireEvent.click(speedSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'Fast' }))
 
     await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { service_tier: 'fast' } }))
+  })
+
+  it('writes the exact bounded policy word (auto) as the sparse service_tier patch (#132275)', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      agent: { reasoning_effort: 'medium', service_tier: 'normal' },
+      auxiliary: { curator: { provider: 'auto', model: '', reasoning_effort: 'high' } }
+    })
+    renderModelSettings()
+    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Speed' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Auto' }))
+
+    // 'auto' rides VERBATIM: the backend (agent/fast_mode.py) parses it as the
+    // bounded per-turn fast window; writing 'fast' here would silently swap
+    // the policy for an always-on pin.
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { service_tier: 'auto' } }))
+  })
+
+  it('shows a saved bounded policy (auto) as Auto, not Standard (#132275)', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      agent: { reasoning_effort: 'medium', service_tier: 'auto' }
+    })
+    renderModelSettings()
+    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+
+    const speedSelect = await screen.findByRole('combobox', { name: 'Speed' })
+    // The trigger shows the saved policy word, so the user sees what runs.
+    expect(speedSelect.textContent).toBe('Auto')
+  })
+
+  it('shows an unknown saved speed word verbatim instead of Standard, and does not rewrite it (#132275)', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      agent: { reasoning_effort: 'medium', service_tier: 'flex' }
+    })
+    renderModelSettings()
+    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+
+    const speedSelect = await screen.findByRole('combobox', { name: 'Speed' })
+    expect(speedSelect.textContent).toBe('flex')
+    // The page never rewrites a value it did not save.
+    expect(saveHermesConfig).not.toHaveBeenCalled()
   })
 
   it('hides the reasoning/speed defaults when the main model reports no capabilities', async () => {

@@ -738,6 +738,8 @@ export const arSettings = {
       reasoningOff: 'إيقاف',
       speed: 'السرعة',
       speedStandard: 'قياسية',
+      speedAuto: 'تلقائي',
+      speedCold: 'بارد',
       defaultsFailed: 'فشل حفظ افتراضيات النموذج',
       loadFailed: 'تعذر تحميل النماذج',
       restartRequired: 'بعد التحديث ما زال هذا الخلفية يشغّل كودا قديما. أعد تشغيله لتحميل الكود الجديد.',

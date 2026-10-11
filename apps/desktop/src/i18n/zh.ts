@@ -5,6 +5,7 @@ import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
+import { zhModelOptions } from './zh_model_options'
 import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
@@ -1686,6 +1687,8 @@ export const zhOverrides = {
       reasoningOff: '关闭',
       speed: '速度',
       speedStandard: '标准',
+      speedAuto: '自动',
+      speedCold: '冷启动',
       defaultsFailed: '保存模型默认值失败',
       loadFailed: '无法加载模型',
       restartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。',
@@ -4035,25 +4038,7 @@ export const zhOverrides = {
     paneControls: '面板控件',
     appControls: '应用控件',
     modelMenu: zhModelMenu,
-    modelOptions: {
-      noOptions: '此模型没有可用选项',
-      options: '选项',
-      thinking: '思考',
-      fast: '快速',
-      ultrafast: 'Ultrafast',
-      useStandardSpeed: '使用标准速度',
-      effort: '推理强度',
-      minimal: '最小',
-      low: '低',
-      medium: '中',
-      high: '高',
-      xhigh: '极高',
-      max: '最高',
-      ultra: '超高',
-      sendsOnRoute: (level: string) => `此路由实际发送 ${level}`,
-      updateFailed: '模型选项更新失败',
-      fastFailed: '快速模式更新失败'
-    },
+    modelOptions: zhModelOptions,
     gatewayMenu: {
       gateway: '网关',
       connected: '已连接',

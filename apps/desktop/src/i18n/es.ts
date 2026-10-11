@@ -5,6 +5,7 @@ import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
+import { esModelOptions } from './es_model_options'
 import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
 import { esProjects } from './es_projects'
@@ -2002,6 +2003,8 @@ export const esOverrides = {
       reasoningOff: 'Desactivado',
       speed: 'Velocidad',
       speedStandard: 'Estándar',
+      speedAuto: 'Automática',
+      speedCold: 'Fría',
       defaultsFailed: 'No se pudieron guardar los valores predeterminados del modelo',
       loadFailed: 'No se pudieron cargar los modelos',
       restartRequired:
@@ -4613,25 +4616,7 @@ export const esOverrides = {
     paneControls: 'Controles de panel',
     appControls: 'Controles de app',
     modelMenu: esModelMenu,
-    modelOptions: {
-      noOptions: 'No hay opciones para este modelo',
-      options: 'Opciones',
-      thinking: 'Razonamiento',
-      fast: 'Rápido',
-      ultrafast: 'Ultrafast',
-      useStandardSpeed: 'Usar velocidad estándar',
-      effort: 'Esfuerzo',
-      minimal: 'Mínimo',
-      low: 'Bajo',
-      medium: 'Medio',
-      high: 'Alto',
-      xhigh: 'Extra alto',
-      max: 'Máximo',
-      ultra: 'Ultra',
-      sendsOnRoute: (level: string) => `envía ${level} en esta ruta`,
-      updateFailed: 'No se pudo actualizar la opción del modelo',
-      fastFailed: 'No se pudo actualizar el modo rápido'
-    },
+    modelOptions: esModelOptions,
     gatewayMenu: {
       gateway: 'Gateway',
       connected: 'Conectado',

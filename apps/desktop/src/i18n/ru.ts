@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
 import { ruModelMenu } from './ru_model_menu'
+import { ruModelOptions } from './ru_model_options'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
@@ -1416,6 +1417,8 @@ export const ruOverrides = {
       reasoningOff: 'Выкл',
       speed: 'Скорость',
       speedStandard: 'Стандартная',
+      speedAuto: 'Авто',
+      speedCold: 'Холодная',
       defaultsFailed: 'Не удалось сохранить модель по умолчанию',
       auxiliaryTitle: 'Вспомогательные модели',
       resetAllToMain: 'Сбросить всё на основную',
@@ -3343,25 +3346,7 @@ export const ruOverrides = {
     paneControls: 'Управление панелями',
     appControls: 'Управление приложением',
     modelMenu: ruModelMenu,
-    modelOptions: {
-      noOptions: 'Для этой модели нет опций',
-      options: 'Опции',
-      thinking: 'Размышление',
-      fast: 'Быстрая',
-      ultrafast: 'Ultrafast',
-      useStandardSpeed: 'Использовать стандартную скорость',
-      effort: 'Усилия',
-      minimal: 'Минимально',
-      low: 'Низкое',
-      medium: 'Среднее',
-      high: 'Высокое',
-      xhigh: 'Очень высокое',
-      max: 'Максимум',
-      ultra: 'Ультра',
-      sendsOnRoute: (level: string) => `на этом маршруте отправляется ${level}`,
-      updateFailed: 'Не удалось обновить опцию модели',
-      fastFailed: 'Не удалось обновить быстрый режим'
-    },
+    modelOptions: ruModelOptions,
     gatewayMenu: {
       gateway: 'Шлюз',
       connected: 'Подключён',

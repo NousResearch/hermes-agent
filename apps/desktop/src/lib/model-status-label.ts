@@ -224,30 +224,84 @@ export function modelVariantTag(model: string): string {
  *  "name · variant" at a glance. The reasoning level is NOT here: it has its
  *  own pill (`ReasoningPill`), so a long model name can no longer push the
  *  effort out of the truncating span. Fast shows when the speed=fast param is
- *  on OR the active model is a `…-fast` variant — never both. */
+ *  on OR the active model is a `…-fast` variant — never both. A bounded
+ *  auto/cold policy shows its own word even while its window is closed (#132275). */
 export function formatModelPillLabel(model: string, options?: { fastMode?: boolean; serviceTier?: string }): string {
   const name = modelDisplayParts(model).name
+  const policyWord = speedPolicyWord(options?.serviceTier)
 
   const tag = model.trim()
-    ? options?.serviceTier === 'ultrafast'
+    ? policyWord === 'ultrafast'
       ? 'Ultrafast'
-      : options?.fastMode
-        ? 'Fast'
-        : modelVariantTag(model)
+      : policyWord === 'auto' || policyWord === 'cold'
+        ? policyWord === 'auto'
+          ? 'Auto'
+          : 'Cold'
+        : options?.fastMode
+          ? 'Fast'
+          : modelVariantTag(model)
     : ''
 
   return tag ? `${name} · ${tag}` : name
 }
 
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
+// Bounded fast policies (`agent/fast_mode.py`): every user turn (auto) or only a
+// cold session's first turn (cold) opens a fast window. The backend parses and
+// runs both; the composer must pass them through EXACTLY — collapsing them to
+// 'normal' mis-displays a saved policy and a round-trip write destroys it (#132275).
+const BOUNDED_TIERS = new Set(['auto', 'cold'])
 
-/** `agent.service_tier` is whatever the user wrote (`flex`, `scale`, `auto`, …);
- *  the composer only speaks the three exact tiers `session.create` accepts.
- *  Unset stays unset (the profile default rides). */
+/** `agent.service_tier` is whatever the user wrote (`flex`, `scale`, …); the
+ *  composer speaks the exact modes `session.create`/`config.set` accept:
+ *  normal, the always-on tiers (priority/ultrafast) and the bounded policies
+ *  (auto/cold). Unset stays unset (the profile default rides). */
 export function composerServiceTier(value: unknown): string {
   const tier = String(value ?? '')
     .trim()
     .toLowerCase()
 
-  return !tier ? '' : tier === 'ultrafast' ? 'ultrafast' : FAST_TIERS.has(tier) ? 'priority' : 'normal'
+  if (!tier) {
+    return ''
+  }
+
+  if (tier === 'ultrafast' || BOUNDED_TIERS.has(tier)) {
+    return tier
+  }
+
+  return FAST_TIERS.has(tier) ? 'priority' : 'normal'
+}
+
+/** The canonical speed-policy word a surface should show/transport for a
+ *  session's exact `service_tier`: legacy `priority` reads as the policy
+ *  `fast`, and the bounded policies (auto/cold) stay themselves. The session's
+ *  boolean `fast` (a window is open RIGHT NOW) is never the policy (#132275). */
+export function speedPolicyWord(serviceTier: string | undefined): 'auto' | 'cold' | 'fast' | 'normal' | 'ultrafast' {
+  // 'fast' is what applySpeedPolicy/applyModelPreset stamp into the session
+  // store for an always-on fast pick; 'priority' is the wire word an older
+  // session.info or legacy preset still carries. Both are the policy `fast`.
+  return serviceTier === 'priority' || serviceTier === 'fast'
+    ? 'fast'
+    : serviceTier === 'ultrafast' || serviceTier === 'auto' || serviceTier === 'cold'
+      ? serviceTier
+      : 'normal'
+}
+
+/** Gate a remembered speed policy to what the model's route actually offers:
+ *  ultrafast needs the model's ultrafast; priority/auto/cold ride the fast
+ *  param and need its fast. Downgrade is to normal, never a silent swap to
+ *  another accelerated mode (#132275). */
+export function applySpeedPolicy(
+  tier: string,
+  caps: { fast: boolean; ultrafast: boolean }
+): 'auto' | 'cold' | 'fast' | 'normal' | 'ultrafast' {
+  if (tier === 'ultrafast') {
+    return caps.ultrafast ? 'ultrafast' : 'normal'
+  }
+
+  if (tier === 'priority' || tier === 'fast' || tier === 'auto' || tier === 'cold') {
+    return caps.fast ? speedPolicyWord(tier) : 'normal'
+  }
+
+  return 'normal'
 }

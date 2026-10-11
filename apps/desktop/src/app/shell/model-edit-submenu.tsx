@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
+import { speedPolicyWord } from '@/lib/model-status-label'
 import { isThinkingEnabled, reasoningEffortClamp, resolveReasoningEffort } from '@/lib/reasoning-effort'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
@@ -157,6 +158,14 @@ export function ModelOptionsContent({
   const ultrafastOn = serviceTier === 'ultrafast'
   const fastOn = fastControl.kind === 'none' ? false : fastControl.on && !ultrafastOn
 
+  // The exact saved policy for a param route: legacy priority reads as Fast,
+  // unset/normal as Standard, and the bounded policies (auto/cold — a fast
+  // window per user turn / only a cold session's first turn) as themselves.
+  // The radio shows the POLICY; the session's boolean `fast` (window open
+  // right now) is not the policy and must never stand in for it (#132275).
+  const paramSpeed = fastControl.kind === 'param' && fastControl.canEnable !== false
+  const speedPolicy = speedPolicyWord(serviceTier)
+
   return !hasFast && !ultrafastSupported && !reasoning ? (
     <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
   ) : (
@@ -183,13 +192,41 @@ export function ModelOptionsContent({
         >
           {copy.useStandardSpeed}
         </DropdownMenuItem>
+      ) : paramSpeed ? (
+        // Param routes pick an explicit speed POLICY (Standard/Fast/Auto/Cold,
+        // Ultrafast where offered) instead of an on/off switch: a switch can
+        // only write fast/normal, which destroyed a saved bounded policy
+        // (#132275). The owning controller transports the exact word through
+        // config.set key `fast` with the session id.
+        <>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.speedPolicy}</DropdownMenuLabel>
+          <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ serviceTier: value })} value={speedPolicy}>
+            <DropdownMenuRadioItem className={dropdownMenuRow} onSelect={event => event.preventDefault()} value="normal">
+              {copy.useStandardSpeed}
+            </DropdownMenuRadioItem>
+            <DropdownMenuRadioItem className={dropdownMenuRow} onSelect={event => event.preventDefault()} value="fast">
+              {copy.fast}
+            </DropdownMenuRadioItem>
+            <DropdownMenuRadioItem className={dropdownMenuRow} onSelect={event => event.preventDefault()} value="auto">
+              {copy.auto}
+            </DropdownMenuRadioItem>
+            <DropdownMenuRadioItem className={dropdownMenuRow} onSelect={event => event.preventDefault()} value="cold">
+              {copy.cold}
+            </DropdownMenuRadioItem>
+            {ultrafastSupported ? (
+              <DropdownMenuRadioItem className={dropdownMenuRow} onSelect={event => event.preventDefault()} value="ultrafast">
+                {copy.ultrafast}
+              </DropdownMenuRadioItem>
+            ) : null}
+          </DropdownMenuRadioGroup>
+        </>
       ) : hasFast ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.fast}
           <Switch aria-label={copy.fast} checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
         </DropdownMenuItem>
       ) : null}
-      {ultrafastSupported ? (
+      {ultrafastSupported && !paramSpeed ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.ultrafast}
           <Switch

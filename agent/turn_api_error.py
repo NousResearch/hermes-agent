@@ -79,6 +79,12 @@ def handle_api_error(
     if agent.thinking_callback:
         agent.thinking_callback("")
 
+    from agent.managed_local_runtime import refresh_managed_endpoint
+    if getattr(_retry, "managed_endpoint_retry_attempted", False) is not True:
+        if refresh_managed_endpoint(agent, api_error):
+            _retry.managed_endpoint_retry_attempted = True
+            return _verdict("continue")
+
     _recovered, active_system_prompt = recover_before_classification(
         agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,
         active_system_prompt=active_system_prompt,

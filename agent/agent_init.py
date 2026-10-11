@@ -2280,6 +2280,8 @@ def _snapshot_primary_runtime(agent):
         "compressor_context_length": _cc.context_length,
         "compressor_threshold_tokens": _cc.threshold_tokens,
     }
+    from agent.managed_local_runtime import remember_managed_endpoint
+    remember_managed_endpoint(agent)
     if agent.api_mode == "anthropic_messages":
         agent._primary_runtime.update({
             "anthropic_api_key": agent._anthropic_api_key,

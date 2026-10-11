@@ -1070,6 +1070,8 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
+    from agent.managed_local_runtime import refresh_managed_endpoint
+    refresh_managed_endpoint(agent)
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 

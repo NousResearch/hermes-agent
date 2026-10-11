@@ -137,7 +137,49 @@ Two theming rules that hold even without loading the reference: **you apply skin
 
 Run additional Hermes processes as fully independent subprocesses — separate sessions, tools, and environments.
 
-### When to Use This vs delegate_task
+### ★★★ Deleting a "builtin" skill is permanent
+
+`builtin` in `hermes skills list` does **not** mean the file lives in the install
+directory: bundled skills are synced into `~/.hermes/skills/`, and `tools/skills_sync.py`
+records their origin hashes in `.bundled_manifest`. A skill that is listed in the manifest
+but **absent on disk is skipped and never re-copied** (`tools/skills_sync.py:401`), so
+deleting the local copy deletes the skill for real -- it also stops counting as `builtin`
+(`hermes_cli/skills_hub.py:810`). One production instance saw its builtin count drop from
+35 to 2 and several skills vanished.
+
+**To adopt a newer upstream version, use the reset path -- never delete the local file:**
+
+```bash
+# OK: re-copy the shipped version through the sync layer
+hermes skills reset <name> --restore
+# NO: never delete files under ~/.hermes/skills, and do not overwrite them with a raw cp
+```
+
+Do **not** `cp` the install-dir file over the local one: the copy then differs from the
+manifest's origin hash, so `_update_existing_skill` (`tools/skills_sync.py:333-336`) pins
+it as user-modified forever and upstream updates stop being detected.
+
+**Back up before upgrading:** `cp -r ~/.hermes/skills <backup-dir>/skills_<timestamp>/`
+**Verify after upgrading:** `hermes skills list | tail -2` -- the enabled count must not change.
+
+### Before `hermes update`: back up local modifications
+
+`hermes update` replaces the install tree. If the running install carries local
+patches, record and re-apply them instead of losing them silently:
+
+```bash
+cd /usr/local/lib/hermes-agent
+git diff > <backup-dir>/hermes_local_patches_$(date +%Y%m%dT%H%M%S).patch
+git stash push -m "local-fixes" <paths-you-modified...>
+hermes update
+git stash pop                 # replay local fixes
+git diff --stat               # confirm the expected hunks are back
+python3 -m py_compile <modified-files...>
+```
+
+If the patches touch the gateway, restart it afterwards -- a reload is not enough.
+
+## When to Use This vs delegate_task
 
 | | `delegate_task` | Spawning `hermes` process |
 |-|-----------------|--------------------------|

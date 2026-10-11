@@ -352,8 +352,13 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
     return base + suffix
 
 
-def _validate_file_path(file_path: str) -> Optional[str]:
-    """Validate a write_file/remove_file path: under an allowed subdir, no escape."""
+def _validate_file_path(file_path: str, skill_name: Optional[str] = None) -> Optional[str]:
+    """Validate a write_file/remove_file path: under an allowed subdir, no escape.
+
+    ``skill_name`` widens the allow-list with that skill's own extra subdirectories
+    (``steps/``, ``checks/``, …) so a custom support dir accepted on the read side is
+    also writable. Without it the strict four stay the only writable locations.
+    """
     from tools.path_security import has_traversal_component
     if not file_path:
         return "file_path is required."
@@ -364,7 +369,12 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     # SKILL.md lives at the skill root; accept 'SKILL.md' and '<skill>/SKILL.md'.
     if parts and parts[-1] == "SKILL.md" and len(parts) in (1, 2):
         return None
-    if not parts or parts[0] not in ALLOWED_SUBDIRS:
+    if not parts:
+        return "file_path is required."
+    if parts[0] not in ALLOWED_SUBDIRS:
+        # A skill's own directory, discovered by name, is writable beside the four.
+        if parts[0] in _writable_skill_subdirs(skill_name):
+            return None
         allowed = ", ".join(sorted(ALLOWED_SUBDIRS))
         return f"File must be under one of: {allowed}. Got: '{file_path}'"
     if len(parts) < 2:
@@ -372,12 +382,35 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     return None
 
 
-def _resolve_supporting_file(skill_dir: Path, file_path: str):
+def _writable_skill_subdirs(skill_name: Optional[str]) -> frozenset:
+    """The named skill's own support directories beyond ``ALLOWED_SUBDIRS``.
+
+    Only directories that actually exist for that skill are returned, so a
+    ``file_path`` can never invent an allow-listed location; a lookup failure
+    keeps the strict four.
+    """
+    if not skill_name:
+        return frozenset()
+    try:
+        existing = _find_skill(skill_name)
+    except OSError:  # unreadable skills tree: keep the strict four, never widen on failure
+        logger.debug("skill subdir discovery failed for %s", skill_name, exc_info=True)
+        return frozenset()
+    skill_dir = (existing or {}).get("path")
+    if not skill_dir:
+        return frozenset()
+    try:
+        return frozenset(c.name for c in Path(skill_dir).iterdir() if c.is_dir()) - ALLOWED_SUBDIRS
+    except OSError:
+        return frozenset()
+
+
+def _resolve_supporting_file(skill_dir: Path, file_path: str, skill_name: Optional[str] = None):
     """Validate ``file_path`` and resolve it inside ``skill_dir``
     -> ``(target, None)`` | ``(None, error_dict)``."""
     from tools.path_security import validate_within_dir
     target = skill_dir / (file_path or "")
-    err = _validate_file_path(file_path) or validate_within_dir(target, skill_dir)
+    err = _validate_file_path(file_path, skill_name) or validate_within_dir(target, skill_dir)
     return (None, _err(err)) if err else (target, None)
 
 
@@ -519,7 +552,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
         return guard
     target_label = file_path or "SKILL.md"
     if file_path:
-        target, err = _resolve_supporting_file(skill_dir, file_path)
+        target, err = _resolve_supporting_file(skill_dir, file_path, name)
         if err:
             return err
     else:
@@ -600,8 +633,6 @@ def _rmdir_if_empty(parent: Path, stop: Path) -> None:
 
 def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
-    if err := _validate_file_path(file_path):
-        return _err(err)
     if not file_content and file_content != "":
         return _err("file_content is required.")
     if (content_bytes := len(file_content.encode("utf-8"))) > MAX_SKILL_FILE_BYTES:
@@ -612,7 +643,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     skill_dir, guard = _locate_for_write(name, "write_file", " Create it first with action='create'.")
     if guard:
         return guard
-    target, err = _resolve_supporting_file(skill_dir, file_path)
+    # Validated with the skill name so the skill's own support subdirectories count.
+    if err := _validate_file_path(file_path, name):
+        return _err(err)
+    target, err = _resolve_supporting_file(skill_dir, file_path, name)
     if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
         return guard
     result = {"success": True, "message": f"File '{file_path}' written to skill '{name}'.", "path": str(target)}
@@ -625,16 +659,17 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
 
 def _remove_file(name: str, file_path: str) -> dict[str, Any]:
     """Remove a supporting file from any skill directory."""
-    if err := _validate_file_path(file_path):
-        return _err(err)
     skill_dir, guard = _locate_for_write(name, "remove_file")
     if guard:
         return guard
-    target, err = _resolve_supporting_file(skill_dir, file_path)
+    # Validated with the skill name so the skill's own support subdirectories count.
+    if err := _validate_file_path(file_path, name):
+        return _err(err)
+    target, err = _resolve_supporting_file(skill_dir, file_path, name)
     if err:
         return err
     if not target.exists():  # list what IS there so the model can pick the right path
-        available = [str(f.relative_to(skill_dir)) for subdir in ALLOWED_SUBDIRS
+        available = [str(f.relative_to(skill_dir)) for subdir in sorted(ALLOWED_SUBDIRS | _writable_skill_subdirs(name))
                      if (skill_dir / subdir).exists() for f in (skill_dir / subdir).rglob("*") if f.is_file()]
         return _err(f"File '{file_path}' not found in skill '{name}'.", available_files=available or None)
     if read_guard := _background_review_read_before_write_guard(name, target, "remove_file", file_path):

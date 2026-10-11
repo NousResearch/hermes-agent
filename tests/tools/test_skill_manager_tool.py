@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import tempfile
 import threading
 from contextlib import contextmanager
 from contextvars import copy_context
@@ -152,6 +153,35 @@ class TestValidateFilePath:
     def test_other_root_md_still_rejected(self):
         # Only SKILL.md gets the root-level exception, not arbitrary files.
         assert _validate_file_path("README.md") is not None
+
+    def test_own_skill_subdir_accepted(self):
+        # A directory the skill itself created is writable alongside the four.
+        with tempfile.TemporaryDirectory() as home:
+            steps = Path(home) / "my-skill" / "steps"
+            steps.mkdir(parents=True)
+            with patch("tools.skill_manager_tool._find_skill",
+                       return_value={"path": str(Path(home) / "my-skill")}):
+                assert _validate_file_path("steps/one.md", "my-skill") is None
+
+    def test_unknown_subdir_still_rejected(self):
+        # No subdir of that name on disk -> still refused (the gate is not a wildcard).
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "my-skill").mkdir(parents=True)
+            with patch("tools.skill_manager_tool._find_skill",
+                       return_value={"path": str(Path(home) / "my-skill")}):
+                assert _validate_file_path("nope/one.md", "my-skill") is not None
+
+    def test_own_subdir_traversal_still_rejected(self):
+        # Widening must not let a traversal through the custom dir.
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "my-skill" / "steps").mkdir(parents=True)
+            with patch("tools.skill_manager_tool._find_skill",
+                       return_value={"path": str(Path(home) / "my-skill")}):
+                assert _validate_file_path("steps/../../etc/passwd", "my-skill") is not None
+
+    def test_no_skill_name_keeps_strict_four(self):
+        # Callers without a skill name (schema-level checks) keep the original contract.
+        assert _validate_file_path("steps/one.md") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +592,30 @@ class TestWriteFile:
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "references" / "api.md").exists()
 
+    def test_write_into_own_subdir(self, tmp_path):
+        # The skill's own directory (already discovered on the read side) is writable.
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            (tmp_path / "my-skill" / "steps").mkdir(exist_ok=True)
+            result = _write_file("my-skill", "steps/one.md", "Step one.")
+        assert result["success"] is True
+        assert (tmp_path / "my-skill" / "steps" / "one.md").exists()
+
+    def test_write_unknown_subdir_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "nope/one.md", "content")
+        assert result["success"] is False
+        assert not (tmp_path / "my-skill" / "nope").exists()
+
+    def test_subdir_traversal_write_blocked(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            (tmp_path / "my-skill" / "steps").mkdir(exist_ok=True)
+            result = _write_file("my-skill", "steps/../../escaped.md", "malicious")
+        assert result["success"] is False
+        assert not (tmp_path / "escaped.md").exists()
+
     def test_write_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"
         outside_dir.mkdir()
@@ -590,6 +644,15 @@ class TestRemoveFile:
             result = _remove_file("my-skill", "references/api.md")
         assert result["success"] is True
         assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_remove_from_own_subdir(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            (tmp_path / "my-skill" / "steps").mkdir(exist_ok=True)
+            _write_file("my-skill", "steps/one.md", "content")
+            result = _remove_file("my-skill", "steps/one.md")
+        assert result["success"] is True
+        assert not (tmp_path / "my-skill" / "steps" / "one.md").exists()
 
     def test_remove_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"

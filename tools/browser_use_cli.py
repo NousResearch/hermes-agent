@@ -143,32 +143,16 @@ class _CodeUrlVerdict(NamedTuple):
 
 
 def _code_url_verdict(code: str) -> _CodeUrlVerdict:
-    """One pass over the code's URL literals: the blocking error, if any, and whether the call must
-    be served by the LOCAL hybrid sidecar.
-
-    Both answers come from a SINGLE evaluation per URL, deliberately. The routing predicate resolves
-    DNS (``_hybrid_routes_locally`` -> ``_url_is_private`` -> ``socket.getaddrinfo``) and is not
-    memoised, so evaluating it separately per decision lets a host whose answer changes between the
-    two lookups split them: the first lookup looks private, which relaxes the private-address floor,
-    and the second looks public, which clears the local route — and the call then executes against
-    the CLOUD provider with that private URL in it. That is the leak this check exists to prevent.
-    Carry the verdict; never re-derive it.
-
-    A private/LAN URL that hybrid routing will hand to a LOCAL Chromium sidecar is allowed here,
-    because the cloud provider never sees it — the same verdict ``browser_navigate`` reaches via
-    ``_navigation_session_key``, which likewise derives its relaxation from the session key
-    (``_is_local_sidecar_key``) rather than re-running the predicate. ``browser_exec`` must route the
-    call to that sidecar to match (see ``_route_backend(force_local_sidecar=...)``): the endpoint is
-    resolved once per call, so allowing the URL while still pointing at the cloud provider would
-    leak the LAN address to it.
-    """
+    """One pass over the code's URL literals: the blocking error, if any, and whether the call must run on
+    the hybrid LOCAL sidecar. Each URL's routing predicate is evaluated ONCE and feeds both answers: it
+    resolves DNS unmemoised, so a rebinding host evaluated twice could relax the private-address floor and
+    still route to the cloud provider."""
     from tools.browser_tool import _hybrid_routes_locally, evaluate_url_safety
     local_sidecar = False
     for url in _URL_RE.findall(code or ""):
-        routes_local = _hybrid_routes_locally(url)  # evaluated exactly once per URL...
-        if routes_local:
-            local_sidecar = True
-        err = evaluate_url_safety(url, auto_local=routes_local)  # ...and reused here
+        routes_local = _hybrid_routes_locally(url)
+        local_sidecar = local_sidecar or routes_local
+        err = evaluate_url_safety(url, auto_local=routes_local)
         if err:
             return _CodeUrlVerdict(err.get("error", "Blocked: unsafe URL"), local_sidecar)
     return _CodeUrlVerdict(None, local_sidecar)
@@ -369,14 +353,25 @@ def _served_profile_tag() -> str:
     return "" if get_hermes_home_override() is None else hermes_home_key()
 
 
-def _backend_cache_key(task_id: Optional[str], session_name: str = "") -> str:
-    """Session-cache key for a backend browser: named sessions get their own; served profiles get their own."""
+def _backend_cache_key(task_id: Optional[str], session_name: str = "", sidecar: bool = False) -> str:
+    """Session-cache key for a backend browser: named sessions get their own; served profiles get their own.
+    ``sidecar`` appends the hybrid ``::local`` suffix, which makes ``_get_session_info`` build local Chromium
+    even when a cloud provider is configured."""
     key = f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
     tag = _served_profile_tag()
-    return f"{key}@{tag}" if tag else key
+    key = f"{key}@{tag}" if tag else key
+    return f"{key}::local" if sidecar else key
 
 
-def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
+def _sidecar_daemon_name(name: str) -> str:
+    """BU_NAME of the harness daemon serving the hybrid local sidecar. The daemon reads BU_CDP_* once at
+    spawn and outlives the call, so sharing the cloud route's daemon would relay a private URL to the
+    cloud browser it is already attached to. User session names cannot start with ``_``."""
+    return f"_local_{name or 'default'}"[:64]
+
+
+def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str = "",
+                            sidecar: bool = False) -> Optional[str]:
     """Point the harness at a Hermes-spawned ``lightpanda serve`` (``browser.engine: lightpanda`` and
     nothing of higher precedence claimed the session). Each cache key gets its own process via the
     legacy ``_get_session_info()`` (cache, reaper, atexit): private browser, own-tab preamble skipped."""
@@ -389,7 +384,7 @@ def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str
         logger.debug("browser engine lookup failed: %s", e)
         return None
     err = _export_session_cdp(
-        env, _get_session_info, _backend_cache_key(task_id, session_name),
+        env, _get_session_info, _backend_cache_key(task_id, session_name, sidecar),
         lambda e: (f"Lightpanda could not be started: {e} Set browser.engine to auto "
                    "to use local Chrome, or switch backends via `hermes tools` → Browser Automation."),
         "Lightpanda session returned no CDP endpoint. Set browser.engine to auto to use local Chrome.",
@@ -425,7 +420,8 @@ def _reach_sandbox_cdp(cdp: str) -> str:
         return cdp
 
 
-def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
+def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_name: str = "",
+                                  sidecar: bool = False) -> Optional[str]:
     """Point the harness at Hermes' packaged Chromium, launched through agent-browser for this cache key —
     the same browser the built-in tools drive. Left alone, the harness discovers the user's INSTALLED
     Chrome on its default profile, which needs the chrome://inspect toggle + an Allow popup per run and
@@ -439,7 +435,7 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("managed chromium resolution unavailable: %s", e)
         return None
-    res = _run_browser_command(_backend_cache_key(task_id, session_name), "get", ["cdp-url"],
+    res = _run_browser_command(_backend_cache_key(task_id, session_name, sidecar), "get", ["cdp-url"],
                                timeout=_get_open_command_timeout(first_open=True))
     cdp = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp:
@@ -452,12 +448,14 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
     return None
 
 
-def _resolve_local_engine_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
-    """Local engine (no provider / override): ``browser.engine: lightpanda`` or the packaged Chromium."""
-    err = _resolve_lightpanda_cdp(env, task_id, session_name)
+def _resolve_local_engine_cdp(env: dict, task_id: Optional[str], session_name: str = "",
+                              sidecar: bool = False) -> Optional[str]:
+    """Local engine (no provider / override, or the hybrid sidecar): ``browser.engine: lightpanda`` or the
+    packaged Chromium."""
+    err = _resolve_lightpanda_cdp(env, task_id, session_name, sidecar)
     if err or _has_cdp_env(env):
         return err
-    return _resolve_managed_chromium_cdp(env, task_id, session_name)
+    return _resolve_managed_chromium_cdp(env, task_id, session_name, sidecar)
 
 
 def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = "",
@@ -472,10 +470,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     the CLI reaches BU cloud natively (BU_AUTOSPAWN). ``session_name`` (BU_NAME) keys the session cache so
     each name gets its OWN browser — what makes named sessions concurrent-safe.
 
-    ``force_local_sidecar`` skips step (3) so a call carrying a private/LAN URL runs on the local
-    engine instead of the cloud provider (hybrid routing; see ``_hybrid_routes_locally``). It is
-    deliberately BELOW the two operator overrides: an explicit ``BU_CDP_*``/cdp_url owns the session,
-    and the local-sidecar decision already declines to fire when a CDP override is set."""
+    ``force_local_sidecar`` skips step (3): the call runs on the local engine under the ``::local`` cache
+    key (hybrid routing; see ``_hybrid_routes_locally``). It sits BELOW the two operator overrides, and the
+    sidecar verdict never fires while a CDP override is set."""
     if _has_cdp_env(env):
         return None
     try:
@@ -489,7 +486,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     if override:
         _set_cdp_env(env, override)
         return None
-    provider = None if force_local_sidecar else _quiet(_get_cloud_provider, None, "Cloud provider lookup failed")
+    if force_local_sidecar:
+        return _resolve_local_engine_cdp(env, task_id, session_name, sidecar=True)
+    provider = _quiet(_get_cloud_provider, None, "Cloud provider lookup failed")
     if provider is None:
         return _resolve_local_engine_cdp(env, task_id, session_name)
 
@@ -571,9 +570,8 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
     sessions compose with the backend: BU_NAME namespaces the harness daemon (IPC socket, log, pid) and on
     provider backends additionally keys its own cloud browser.
 
-    ``force_local_sidecar`` (a call carrying a private/LAN URL) declines the cloud provider so the local
-    engine serves the whole call. It is distinct from ``local``, which means "the user's real-profile
-    browser" and is consent-gated."""
+    ``force_local_sidecar`` (a call carrying a private URL) declines the cloud provider for the hybrid local
+    sidecar; unlike ``local`` (the consent-gated real-profile browser) it never touches the user's profile."""
     rp_err = _resolve_real_profile_cdp(env, force_local=local)
     if rp_err:
         return rp_err
@@ -651,6 +649,8 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
 # endpoint leaves later browser_exec calls in the old browser until these are stopped.
 _driven_daemons: set = set()
 _driven_daemons_lock = threading.Lock()
+# Route cache key -> whether its last browser_exec ran on the hybrid local sidecar.
+_exec_route_is_sidecar: dict[str, bool] = {}
 
 
 def stop_harness_daemons() -> None:
@@ -676,22 +676,15 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
 
-    # ONE pass answers both questions below, and the answer is carried, not re-derived. The routing
-    # predicate resolves DNS and is not memoised, so recomputing it here could disagree with the
-    # pre-flight for a host whose answer changes between lookups (private, then public): the floor
-    # would be relaxed and the call would still be handed to the CLOUD provider with the private URL
-    # in it. `_code_url_verdict` computes each URL's verdict once and returns both decisions,
-    # mirroring how browser_navigate derives its relaxation from the session key
-    # (_is_local_sidecar_key) instead of re-running the predicate.
+    # The verdict is carried into the route, never re-derived: the predicate resolves DNS, so a second
+    # evaluation could relax the floor and still pick the cloud for a rebinding host.
     verdict = _code_url_verdict(code)
     if verdict.blocked:
         return tool_error(verdict.blocked)
-
-    # Hybrid routing: the CDP endpoint is resolved ONCE per call (below), so a private/LAN URL
-    # anywhere in the code means the whole call must run on the local sidecar. Allowing the URL
-    # while still pointing at the cloud provider would hand the LAN address to it — the leak the
-    # check above exists to prevent. Verdict and route move together.
-    local_sidecar = verdict.local_sidecar
+    # One endpoint per call: any private URL sends the whole call to the local sidecar. A call with no URL
+    # literal stays on the route the previous call took (browser_navigate's _last_session_key twin).
+    route_key = _backend_cache_key(task_id, session)
+    local_sidecar = verdict.local_sidecar if _URL_RE.search(code) else _exec_route_is_sidecar.get(route_key, False)
 
     cmd = _find_cli()
     if not cmd:
@@ -707,6 +700,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local), force_local_sidecar=local_sidecar)
     if route_err:
         return tool_error(route_err)
+    if local_sidecar:
+        env["BU_NAME"] = _sidecar_daemon_name(session)
+    _exec_route_is_sidecar[route_key] = local_sidecar
     bot_desktop_browser = bool(env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None))
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see

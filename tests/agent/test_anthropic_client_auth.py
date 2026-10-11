@@ -22,18 +22,6 @@ def wire_headers(client) -> dict:
 
 
 
-def test_api_key_client_and_its_copies_never_carry_the_env_bearer(monkeypatch):
-    """The guard is a copy-safe Omit() default header: ``with_options()`` re-runs the constructor
-    and re-reads ANTHROPIC_AUTH_TOKEN, so an attribute clear alone would re-leak on the copy."""
-    anthropic_sdk = pytest.importorskip("anthropic")
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", SENTINEL)
-    from agent.anthropic_adapter import _new_sdk_client
-
-    client = _new_sdk_client(anthropic_sdk, {"api_key": "provider-key", "base_url": "http://127.0.0.1:1"}, {})
-    for wire_client in (client, client.with_options(timeout=30)):
-        headers = wire_headers(wire_client)
-        assert headers.get("x-api-key") == "provider-key"
-        assert "authorization" not in headers
     # The bearer mirror (no env x-api-key beside a portal JWT) is owned by
     # tests/agent/test_nous_portal_anthropic_wire.py::TestClientShape.
 

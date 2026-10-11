@@ -92,9 +92,10 @@ export function isGroupSlotWaitTimeoutText(text: unknown): boolean {
  *  nothing to act on (a stopped backend, a dead IPC bridge and a provider
  *  refusal all read the same), so an unclassified failure keeps its message. */
 export function groupFailureReason(error: unknown): string {
-  const typed = typeof (error as { data?: { reason?: unknown } })?.data?.reason === 'string'
-    ? String((error as { data: { reason: string } }).data.reason).trim()
-    : ''
+  const typed =
+    typeof (error as { data?: { reason?: unknown } })?.data?.reason === 'string'
+      ? String((error as { data: { reason: string } }).data.reason).trim()
+      : ''
 
   if (typed) {
     return typed
@@ -120,14 +121,17 @@ const GROUP_FAILURE_REDACTIONS: Array<[RegExp, string]> = [
 /** The first non-empty line of a raw error message, trimmed, secret spans
  *  redacted, capped — the room row is a summary, the log keeps the rest. */
 export function groupFailureDetail(message: unknown): string {
-  const line = String(message || '')
-    .split(/\r?\n/)
-    .map(part => part.trim())
-    .find(Boolean) || ''
+  const line =
+    String(message || '')
+      .split(/\r?\n/)
+      .map(part => part.trim())
+      .find(Boolean) || ''
 
   const redacted = GROUP_FAILURE_REDACTIONS.reduce((text, [re, repl]) => text.replace(re, repl), line)
 
-  return redacted.length > GROUP_FAILURE_DETAIL_LIMIT ? `${redacted.slice(0, GROUP_FAILURE_DETAIL_LIMIT - 1)}…` : redacted
+  return redacted.length > GROUP_FAILURE_DETAIL_LIMIT
+    ? `${redacted.slice(0, GROUP_FAILURE_DETAIL_LIMIT - 1)}…`
+    : redacted
 }
 
 /** Human label for one activity event, used by the collapsed summary and

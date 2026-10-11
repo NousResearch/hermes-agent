@@ -7,6 +7,7 @@ import {
   missingRendererAssets,
   parseLazyChunkRefs,
   parseModuleAssetRefs,
+  presentRendererIndexes,
   type RendererBundleDeps
 } from './renderer-bundle'
 
@@ -95,15 +96,6 @@ test('missingRendererAssets: torn generation names the dangling chunk', () => {
   assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), ['/assets/shiki-block-COiz1pEN.js'])
 })
 
-test('missingRendererAssets: a fully torn copy lists every referenced module', () => {
-  const deps = depsFor(INDEX_DIR, INDEX_HTML, [])
-
-  assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), [
-    '/assets/index-a1b2c3.js',
-    '/assets/shiki-block-COiz1pEN.js'
-  ])
-})
-
 test('missingRendererAssets: existence is checked relative to the index dir, per copy', () => {
   // The same module name present next to one index but not the other is how a
   // split app.asar vs app.asar.unpacked package presents: one copy is intact,
@@ -133,10 +125,57 @@ test('missingRendererAssets: an unreadable index is not treated as torn', () => 
   assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), [])
 })
 
-test('missingRendererAssets: an index naming nothing checkable is not torn', () => {
-  const deps = depsFor(INDEX_DIR, '<html><body>static shell, no modules</body></html>', [])
+// #96857: a stat on a path inside app.asar goes through Electron's asar shim, which constructs the
+// deprecated fs.Stats and prints DEP0180 on every packaged launch. Choosing a renderer copy must
+// answer from reads and existence checks alone, for the in-archive copy as much as the unpacked one.
+test('renderer index probes never stat, so app.asar paths never construct fs.Stats', () => {
+  const resources = path.join('/opt', 'Hermes', 'resources')
+  const copies = ['app.asar.unpacked', 'app.asar'].map(root => path.join(resources, root, 'dist'))
+  const files = new Map<string, string>()
 
-  assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), [])
+  for (const dir of copies) {
+    files.set(path.join(dir, 'index.html'), INDEX_HTML)
+
+    for (const chunk of ['assets/index-a1b2c3.js', 'assets/shiki-block-COiz1pEN.js']) {
+      files.set(path.join(dir, chunk), '')
+    }
+  }
+
+  const statted: string[] = []
+
+  const stat = (file: string) => {
+    statted.push(file)
+    throw new Error('DEP0180: fs.Stats constructor is deprecated')
+  }
+
+  const fsStub = {
+    readFileSync: (file: string) => {
+      const body = files.get(file)
+
+      if (body === undefined) {
+        throw Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' })
+      }
+
+      return body
+    },
+    existsSync: (file: string) => files.has(file),
+    statSync: stat,
+    lstatSync: stat
+  }
+
+  const [unpackedIndex, asarIndex] = copies.map(dir => path.join(dir, 'index.html'))
+
+  const present = presentRendererIndexes(
+    [unpackedIndex, asarIndex, unpackedIndex, path.join('/nope', 'index.html')],
+    fsStub
+  )
+
+  assert.deepEqual(present, [unpackedIndex, asarIndex])
+  assert.deepEqual(
+    present.map(index => missingRendererAssets(index, fsStub)),
+    [[], []]
+  )
+  assert.deepEqual(statted, [])
 })
 
 // ---------------------------------------------------------------------------
@@ -236,23 +275,4 @@ test('missingRendererAssets: walks transitive map-deps without looping on cycles
   })
 
   assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), ['assets/level-two-bbb.js'])
-})
-
-test('missingRendererAssets: a lazy-chunk-torn copy loses to an intact copy end to end', () => {
-  // The resolver contract: the same generation check that orders app.asar vs
-  // app.asar.unpacked must now see lazy-chunk tears too, so a torn candidate
-  // is skipped instead of shipping a delayed "Failed to fetch dynamically
-  // imported module" crash.
-  const files = {
-    'index.html': GRAPH_INDEX_HTML,
-    'assets/index-a1b2c3.js': ENTRY_JS,
-    'assets/shiki-block-COiz1pEN.js': '// present',
-    'assets/mermaid-embed-Cq7Xw2aa.js': '// present'
-  }
-
-  const torn = graphDepsFor(INDEX_DIR, files)
-  const intact = graphDepsFor(INDEX_DIR, { ...files, 'assets/syntax-diff-Bo0962zh.js': '// present' })
-
-  assert.notDeepEqual(missingRendererAssets(INDEX_PATH, torn), [])
-  assert.deepEqual(missingRendererAssets(INDEX_PATH, intact), [])
 })

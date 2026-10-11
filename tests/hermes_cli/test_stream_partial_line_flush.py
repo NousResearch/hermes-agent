@@ -56,7 +56,7 @@ class TestLogicalLineStreaming:
         assert cli._stream_buf.startswith("This is a long opening")
 
     def test_partial_tail_mirrored_into_spinner(self, cli_stub):
-        cli, emitted = cli_stub
+        cli, _emitted = cli_stub
         text = "A long paragraph streaming in without any newline " * 4
         for i in range(0, len(text), 16):
             cli._stream_delta(text[i : i + 16])

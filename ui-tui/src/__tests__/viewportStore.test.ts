@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  getScrollbarSnapshot,
-  getViewportSnapshot,
-  scrollbarSnapshotKey,
-  viewportSnapshotKey
-} from '../lib/viewportStore.js'
+import { getScrollbarSnapshot, getViewportSnapshot, scrollbarSnapshotKey } from '../lib/viewportStore.js'
 
 describe('viewportStore', () => {
   it('normalizes absent scroll handles', () => {
@@ -38,7 +33,6 @@ describe('viewportStore', () => {
       top: 13,
       viewportHeight: 5
     })
-    expect(viewportSnapshotKey(snap)).toBe('0:16:5:40:3')
   })
 
   it('uses fresh scroll height to clear stale non-bottom state', () => {

@@ -141,3 +141,32 @@ def test_observer_profile_isolation_and_native_epoch_refresh(tmp_path, monkeypat
     finally:
         reset_hermes_home_override(token)
         probe._reset_cache_for_tests()
+
+
+def test_observer_epoch_retains_model_capability_changes(tmp_path, monkeypatch):
+    """Observer consent and upstream model capabilities share the same epoch."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "profile.yaml").write_text("ui_meta:\n  hermes-bots: {}\n", encoding="utf-8")
+    config = {"agent": {"bot_mode_observer": dict(_VALID)},
+              "model": {"supports_vision": False, "context_length": 32000}}
+    probe._reset_cache_for_tests()
+    try:
+        (home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+        stored = probe.get_bot_mode_protocol_section(home) + "\n" + probe.epoch_line(home)
+        for model in ({"supports_vision": True, "context_length": 32000},
+                      {"supports_vision": True, "context_length": 64000}):
+            config["model"] = model
+            (home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+            assert probe.stored_prompt_capability_stale(stored, home)
+            stored = probe.get_bot_mode_protocol_section(home) + "\n" + probe.epoch_line(home)
+            assert "Human observer" in stored
+            assert not probe.stored_prompt_capability_stale(stored, home)
+        config["agent"]["bot_mode_observer"]["enabled"] = False
+        (home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+        assert probe.stored_prompt_capability_stale(stored, home)
+        assert "Human observer" not in probe.get_bot_mode_protocol_section(home)
+    finally:
+        probe._reset_cache_for_tests()

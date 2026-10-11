@@ -1,0 +1,20 @@
+name: jp-edinet
+repo: https://github.com/TakeshiTGAL/hermes-plugin-edinet
+sha: 1be6d03ff36cd1a1759edb2ab762a910ebd4e4c2
+description: "Japanese filings on the EDINET API v2. Disclosure — talks only to api.edinet-fsa.go.jp over HTTPS, and your EDINET_API_KEY rides in the URL as Subscription-Key. The edinet toolset is on for every platform, including gateways, so anyone a gateway admits can call these tools with your key. With CHATWORK_ALLOWED_USERS unset, everyone in CHATWORK_ROOMS can call them. Turn the toolset off per platform with hermes tools. There is no daily cap. The agent can call the three tools itself. A cron you add stays after uninstall until you remove it in Hermes. This plugin starts no child process and is not a sandbox. Search sends EDINET the filing date, and a download sends the document id and its type. Company name, securities code, EDINET code, and corporate number are filtered on your machine. found: false only means the figure is missing from the consolidated current-year rows the plugin reads, not that the document has no number. A past day's filing list can change. Lists, saved files, and a key fingerprint, not the key, stay at <HERMES_HOME>/plugin-data/jp-edinet per profile after uninstall. Delete that directory to remove them. The plugin relies on Hermes internals for the write check and the data folder. If an update moves those parts, the tools refuse and do not call EDINET. Test files are not loaded at startup."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-edinet#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - edinet_search_filings
+  - edinet_financials
+  - edinet_save_document
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - EDINET_API_KEY

@@ -64,7 +64,7 @@ def _check_disk_usage_warning():
 
 
 def _create_configured_env(
-    config: Dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
+    config: dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
     task_id: str, host_cwd: Optional[str], local_config: Optional[dict] = None,
 ):
     """``_create_environment`` with the ssh/container kwargs shaped from *config*
@@ -230,7 +230,7 @@ def ensure_task_env(task_id: Optional[str] = None):
                 timeout=config["timeout"], task_id=effective_task_id,
                 host_cwd=_resolve_task_host_cwd(config, task_id),
             )
-        except Exception as exc:  # noqa: BLE001 — best-effort bring-up
+        except Exception as exc:
             logger.warning(
                 "Lazy %s environment init failed for task %s: %s",
                 env_type, effective_task_id[:8], exc,
@@ -263,8 +263,11 @@ def is_persistent_env(task_id: str) -> bool:
 
 
 def cleanup_all_environments():
-    """Clean up ALL active environments. Use with caution."""
+    """Clean up ALL active environments (process exit). Use with caution."""
+    from tools.environments.base import kill_live_foreground_processes
     from tools.terminal_tool import _active_environments
+    # A command still running when the host exits would outlive it in its own process group.
+    kill_live_foreground_processes()
     cleaned = 0
     for task_id in list(_active_environments.keys()):
         try:

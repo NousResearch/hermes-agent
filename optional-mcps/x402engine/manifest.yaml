@@ -7,8 +7,8 @@ source: https://github.com/agentc22/x402engine-mcp
 transport:
   type: stdio
   command: npx
-  args: ["-y", "x402engine-mcp@1.1.0"]
-  version: "1.1.0"
+  args: ["-y", "x402engine-mcp@1.1.1"]
+  version: "1.1.1"
   env:
     X402_BASE_URL: "https://x402engine.app"
     X402_PAYMENT_NETWORK: "auto"
@@ -35,7 +35,7 @@ suggest:
     - Fetch crypto prices for a short market summary.
 
 post_install: |
-  Requires Node.js 20 or later and npx. Start a new session to load the tools.
+  Requires Node.js 20.18 or later and npx. Start a new session to load the tools.
   discover_services and service_health are free; paid tools return payment
   requirements until you configure a payer wallet.
 

@@ -25,7 +25,7 @@ This skill is for Coinbase x402-style `PAYMENT-REQUIRED` challenges. For Machine
 
 ## Prerequisites
 
-Requires Node.js 20 or later. Once this catalog entry is merged and present in the installed Hermes version:
+Requires Node.js 20.18 or later. Once this catalog entry is merged and present in the installed Hermes version:
 
 ```bash
 hermes mcp install x402engine

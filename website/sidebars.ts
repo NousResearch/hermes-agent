@@ -388,6 +388,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-mono-color',
                     'user-guide/skills/optional/creative/creative-pixel-art',
                     'user-guide/skills/optional/creative/creative-pretext',
+                    'user-guide/skills/optional/creative/creative-reladraw',
                     'user-guide/skills/optional/creative/creative-simple-english',
                     'user-guide/skills/optional/creative/creative-sketch',
                     'user-guide/skills/optional/creative/creative-social-media-content-calendar',

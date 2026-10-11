@@ -5,6 +5,8 @@ helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are p
 server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
+import threading
+import time
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -335,6 +337,42 @@ def _seed_row(record: dict) -> None:
         logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
 
 
+# ── session-mint storm guard ─────────────────────────────────────────
+# A client stuck in a create→drop cycle is bounded HERE, before any agent or
+# session state exists. The 2026-10-08 incident: one profile minted ~3.4k
+# sessions in an evening, each create eagerly building a full agent + memory
+# provider (~263M provider tokens) with no turn ever run. Past a sustained rate
+# the profile's creates are refused until the window drains.
+_CREATE_STORM_WINDOW_S = 300.0
+_CREATE_STORM_MAX_PER_WINDOW = 60
+_create_storm_windows: dict = {}
+_create_storm_warned: dict = {}
+_create_storm_lock = threading.Lock()
+
+
+def _create_storm_budget_exceeded(profile_key: str) -> bool:
+    """Record this create for ``profile_key`` and report whether the profile is over budget."""
+    now = time.monotonic()
+    cutoff = now - _CREATE_STORM_WINDOW_S
+    with _create_storm_lock:
+        stamps = _create_storm_windows.setdefault(profile_key, [])
+        stamps[:] = [t for t in stamps if t >= cutoff]
+        stamps.append(now)
+        if len(stamps) <= _CREATE_STORM_MAX_PER_WINDOW:
+            return False
+        # One WARNING per window: the incident also emitted ~3k lines of per-session
+        # logging, and that noise is what buried the cause.
+        if now - _create_storm_warned.get(profile_key, 0.0) >= _CREATE_STORM_WINDOW_S:
+            _create_storm_warned[profile_key] = now
+            logger.warning(
+                "session.create storm guard tripped for profile %r: %d creates in the last "
+                "%.0fs (budget %d) — refusing further creates until the window drains",
+                profile_key or "<launch>", len(stamps), _CREATE_STORM_WINDOW_S,
+                _CREATE_STORM_MAX_PER_WINDOW,
+            )
+        return True
+
+
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
@@ -382,6 +420,14 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                 # The session was closed between the original create and the retry —
                 # fall through and create a fresh one under the same key.
                 _idempotency_keys.pop(idem_key, None)
+    # Storm guard (after the idempotency fast-path above, before anything is minted):
+    # a client looping on create would otherwise eagerly build one full agent +
+    # memory provider per session, with no turn ever run.
+    if _create_storm_budget_exceeded(str(profile_home) if profile_home is not None else (profile or "")):
+        return _err(rid, 4035,
+                    "too many sessions created for this profile just now — a client loop "
+                    "looks to be creating sessions faster than anyone can use them; "
+                    "retry in a few minutes")
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.

@@ -64,6 +64,8 @@ def _auth_store_provider_configured(auth_path, registry, strict_profile_scope: b
 
 
 def _registry_provider_configured(registry, strict_profile_scope: bool, get_auth_status) -> bool:
+    from hermes_cli import main as facade
+
     if strict_profile_scope:
         return False
     try:
@@ -72,11 +74,14 @@ def _registry_provider_configured(registry, strict_profile_scope: bool, get_auth
             for provider_id, pconfig in registry.items()
             if pconfig.auth_type == "api_key"
         )
-    except Exception:
+    except Exception as exc:
+        facade.logger.debug("provider auth status sweep failed: %s", type(exc).__name__, exc_info=True)
         return False
 
 
 def _claude_code_configured(has_hermes_config: bool, strict_profile_scope: bool, enabled) -> bool:
+    from hermes_cli import main as facade
+
     if not has_hermes_config or strict_profile_scope or not enabled("anthropic"):
         return False
     try:
@@ -84,7 +89,8 @@ def _claude_code_configured(has_hermes_config: bool, strict_profile_scope: bool,
 
         creds = read_claude_code_credentials()
         return bool(creds and (is_claude_code_token_valid(creds) or creds.get("refreshToken")))
-    except Exception:
+    except Exception as exc:
+        facade.logger.debug("Claude Code credential check failed: %s", type(exc).__name__, exc_info=True)
         return False
 
 
@@ -114,5 +120,5 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
 
         return _is_provider_enabled("nous") and guest_enabled() and has_guest()
     except Exception as exc:
-        facade.logger.debug("free tier check on first run skipped: %s", exc)
+        facade.logger.debug("free tier check on first run skipped: %s", type(exc).__name__, exc_info=True)
         return False

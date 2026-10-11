@@ -80,6 +80,7 @@ def _make_runner():
 def _make_adapter(platform_val="telegram"):
     """Build a minimal adapter mock."""
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter._pending_messages = {}
     adapter._send_with_retry = AsyncMock()
     adapter.config = MagicMock()
@@ -207,7 +208,7 @@ class TestBusySessionAck:
         agent.steer = MagicMock(return_value=True)
         runner._running_agents[sk] = agent
 
-        with patch("gateway.platforms.base.merge_pending_message_event") as mock_merge:
+        with patch("gateway.platforms.base_pending_merge.merge_pending_message_event") as mock_merge:
             await runner._handle_active_session_busy_message(event, sk)
 
         # VERIFY: Agent was steered, NOT interrupted
@@ -237,9 +238,12 @@ class TestBusySessionAck:
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         runner._should_echo_stt_transcripts = MagicMock(return_value=False)
-        runner._enrich_message_with_transcription = AsyncMock(
-            return_value=('"yönü teknik mimariye çevir"', ["yönü teknik mimariye çevir"])
-        )
+        from gateway.run_inbound_voice import VoiceClipTranscript, VoiceTranscription
+
+        runner._transcribe_voice_clips = AsyncMock(return_value=VoiceTranscription(
+            '"yönü teknik mimariye çevir"',
+            (VoiceClipTranscript("/tmp/follow-up.ogg", "yönü teknik mimariye çevir"),),
+        ))
         adapter = _make_adapter()
 
         event = _make_event(text="")
@@ -255,7 +259,7 @@ class TestBusySessionAck:
 
         await runner._handle_active_session_busy_message(event, sk)
 
-        runner._enrich_message_with_transcription.assert_awaited_once_with(
+        runner._transcribe_voice_clips.assert_awaited_once_with(
             "", ["/tmp/follow-up.ogg"]
         )
         agent.steer.assert_called_once()
@@ -488,6 +492,7 @@ class TestLongRunningNotificationOwnership:
         runner._running_agents = {}
         runner._draining = runner._restart_requested = False
         adapter = MagicMock()
+        adapter._pending_dispatch_reservations = {}
         first_send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb-1"))
         adapter.send = first_send
 

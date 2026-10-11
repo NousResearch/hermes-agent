@@ -10,6 +10,7 @@ import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
+from gateway.turn_context import TurnContext
 from gateway.response_filters import (
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
@@ -43,7 +44,7 @@ def _runner(monkeypatch, tmp_path):
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._is_user_authorized = lambda _source: True
-    runner._set_session_env = lambda _context: None
+    runner._set_session_env = lambda _context: []
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
     runner._session_db = MagicMock()
     runner._recover_telegram_topic_thread_id = lambda _source: None
@@ -223,7 +224,7 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
     runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
-    turn_ctx = SimpleNamespace(
+    turn_ctx = TurnContext(
         source=_source(), session_id="sid", session_key="agent:main:telegram:group:-1001:12345",
         run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
         context_prompt=None, result_holder=[None])
@@ -274,7 +275,7 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
 ])
 def test_one_turn_answering_several_messages_is_addressed_if_any_was(opener, absorbed, merged):
     """A merged pending message answers both texts, so an addressed one keeps the fallback."""
-    from gateway.platforms.base import merge_pending_message_event
+    from gateway.platforms.base_pending_merge import merge_pending_message_event
 
     pending = {"k": _event(reply_expected=opener)}
     merge_pending_message_event(pending, "k", _event(reply_expected=absorbed), merge_text=True)

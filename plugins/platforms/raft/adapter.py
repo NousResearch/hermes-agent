@@ -37,7 +37,7 @@ except ImportError:
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult, merge_pending_message_event
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import coerce_port, profile_scoped as _profile_scoped
 
@@ -497,7 +497,7 @@ class RaftAdapter(BasePlatformAdapter):
         session_key = self._event_session_key(event)
         if session_key in self._active_sessions:
             logger.debug("[raft] Wake queued for busy session %s", session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event)
+            await self._handle_message_while_active(event, session_key)
             return
         await super().handle_message(event)
 

@@ -133,7 +133,7 @@ class GatewayBusySessionMixin:
         # else: no adapter — leave the head in place so we don't silently drop it.
         return pending_event
 
-    def _pop_overflow_for(self, overflow: list, adapter: Any) -> Optional["MessageEvent"]:
+    def _pop_overflow_for(self, overflow: list, adapter: Any) -> Optional[MessageEvent]:
         """Pop the oldest overflow event *adapter*'s lane may run. A session group (#79198) queues
         chats from several adapters on one key; each adapter drains only its own, so a follow-up is
         never answered on another chat's adapter."""
@@ -144,7 +144,7 @@ class GatewayBusySessionMixin:
                 return overflow.pop(index)
         return None
 
-    def _crosses_turn_origin(self, event: "MessageEvent", session_key: str) -> bool:
+    def _crosses_turn_origin(self, event: MessageEvent, session_key: str) -> bool:
         """True when a session group (#79198) shares *session_key* and *event* comes from another
         chat than the running turn. Every turn has exactly one origin, so such an event queues as
         its own turn and never steers, interrupts or merges into the running one."""
@@ -158,7 +158,7 @@ class GatewayBusySessionMixin:
         return (source.platform, source.chat_id, source.thread_id) != (
             running.platform, running.chat_id, running.thread_id)
 
-    def _queue_if_crosses_turn_origin(self, event: "MessageEvent", session_key: str) -> bool:
+    def _queue_if_crosses_turn_origin(self, event: MessageEvent, session_key: str) -> bool:
         """Queue *event* as its own turn when it crosses the running turn's origin; True if queued."""
         if not self._crosses_turn_origin(event, session_key):
             return False

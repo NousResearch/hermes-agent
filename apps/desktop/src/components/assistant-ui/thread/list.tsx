@@ -41,7 +41,6 @@ import {
   threadScrollStorageKey,
   threadScrollTargetTop
 } from '@/store/thread-scroll'
-import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
@@ -274,6 +273,9 @@ interface ThreadMessageListProps {
    *  is up). Holds `data-session-switching` for that phase. */
   sessionLoading?: boolean
   scrollProfile?: string
+  /** Web-safe seam for `@/store/windows.isSecondaryWindow()`. The desktop
+   *  shell passes it (ChatView); web omits it and gets primary layout. */
+  secondaryWindow?: boolean
 }
 
 // Group each user message with the assistant turn(s) that follow it so the
@@ -473,7 +475,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   sessionId = null,
   scrollProfile,
   sessionKey,
-  sessionLoading = false
+  sessionLoading = false,
+  secondaryWindow = false
 }) => {
   // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
   // changes only when messages are added/removed/swapped — it keys the error
@@ -724,7 +727,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // hide the titlebar tool cluster + session header, but the OS traffic lights
   // still sit in the top-left, so reserve the titlebar gap above the transcript.
-  const secondaryWindow = isSecondaryWindow()
+  // (Seam: value arrives via `secondaryWindow` prop from the desktop shell.)
   // NB: CSS calc() requires whitespace around the +/- operator. This string is
   // assigned verbatim to the --sticky-human-top inline style below (it does not
   // go through Tailwind, which would auto-space it), so the spaces are load-

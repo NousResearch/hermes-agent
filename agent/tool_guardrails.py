@@ -31,6 +31,13 @@ MUTATING_TOOL_NAMES = frozenset({
     "send_message", "cronjob_manage", "delegate_task", "process_manage",
 })
 
+# Mutating tools that still get loop detection. ``execute_code`` is mutating (it can write files,
+# call tools, mutate kernel state), so it stays in MUTATING_TOOL_NAMES for every other purpose
+# (progress-reset semantics, failure tolerance, no-progress exemption). But a model replaying the
+# SAME cell byte-for-byte is a loop, not work: without this the no-progress branch bailed out early
+# and a flash subagent burned ~140 identical calls unflagged. Only the loop detectors opt in here.
+LOOP_DETECTABLE_MUTATING_TOOLS = frozenset({"execute_code"})
+
 # Pollers: legitimately re-invoked with identical args; the identical-call NOTICE never fires.
 STALL_GUARD_REPEATABLE_TOOLS = frozenset({"process_manage"})
 _STALL_GUARD_REPEATABLE_SUFFIXES = ("_get_result", "_poll")  # generated / MCP poller conventions
@@ -424,7 +431,7 @@ class ToolCallGuardrailController:
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
-        result_hash = _result_hash(result, tool_name)
+        result_hash = _loop_result_hash(tool_name, result)
         previous = self._no_progress.get(signature)
         repeat_count = previous[1] + 1 if previous is not None and previous[0] == result_hash else 1
         self._no_progress[signature] = (result_hash, repeat_count)
@@ -433,7 +440,11 @@ class ToolCallGuardrailController:
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
     def _is_idempotent(self, tool_name: str) -> bool:
-        return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
+        """Whether the no-progress detector applies. Mutating tools are exempt EXCEPT the ones in
+        ``LOOP_DETECTABLE_MUTATING_TOOLS``, whose replays are loops rather than work."""
+        return (
+            tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
+        ) or tool_name in LOOP_DETECTABLE_MUTATING_TOOLS
 
     def observe_call(
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
@@ -448,7 +459,7 @@ class ToolCallGuardrailController:
         """
         is_plain_str = isinstance(result, str)
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
-        result_hash = _result_hash(result, tool_name) if is_plain_str else ""
+        result_hash = _loop_result_hash(tool_name, result) if is_plain_str else ""
 
         if is_plain_str and (signature, result_hash) == (self._identical_streak_sig, self._identical_streak_result_hash):
             self._identical_streak_count += 1
@@ -602,28 +613,41 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
 
 
-# execute_code reports per-call kernel bookkeeping — a running `kernel.execution_count` and wall-clock
-# `duration_seconds` — that changes on every invocation even when the code did the same thing. Hashed
-# as-is, every replay of an identical empty probe looks new and the identical-call streak never forms
-# (a model re-ran one empty execute_code call 147 times unflagged). Only these known locations in
-# execute_code's own result shape are dropped: for any other tool the same key names can be real output.
-def _without_execute_code_metadata(parsed: Any) -> Any:
-    if not isinstance(parsed, dict):
-        return parsed
-    cleaned = {k: v for k, v in parsed.items() if k != "duration_seconds"}
-    kernel = cleaned.get("kernel")
-    if isinstance(kernel, dict):
-        cleaned["kernel"] = {k: v for k, v in kernel.items() if k != "execution_count"}
-    return cleaned
-
-
-def _result_hash(result: str | None, tool_name: str = "") -> str:
+def _result_hash(result: str | None) -> str:
     parsed = safe_json_loads(result or "")
-    if parsed is None:
-        return _sha256(result or "")
-    if tool_name == "execute_code":
-        parsed = _without_execute_code_metadata(parsed)
-    return _sha256(_canonical_json(parsed))
+    return _sha256(_canonical_json(parsed) if parsed is not None else (result or ""))
+
+
+# Keys of the execute_code result that change on EVERY call even when the cell did the same
+# thing: the kernel's execution counter, wall-clock duration, and kernel lifecycle bookkeeping.
+# Hashing them would make every replay look like a fresh result and blind the loop detectors.
+_LOOP_VOLATILE_RESULT_KEYS = frozenset({
+    "execution_count", "duration", "duration_seconds", "duration_ms", "elapsed", "elapsed_seconds",
+    "state_reset", "kernel_id", "cell_id", "tool_calls_made", "reused",
+})
+# Stable payload keys, in preference order: the cell's own output is what the model actually reads.
+_LOOP_STABLE_RESULT_KEYS = ("output", "stdout", "result", "text")
+
+
+def _loop_result_hash(tool_name: str, result: str | None) -> str:
+    """Result hash for loop detection.
+
+    For ``LOOP_DETECTABLE_MUTATING_TOOLS`` the hash covers only the STABLE part of the result
+    (the cell's output), so a replay of the same cell is recognised as identical even though the
+    kernel wrapper (execution_count, duration, state_reset, ...) differs on every call. Every
+    other tool keeps the exact previous behaviour: hash of the whole canonical JSON.
+    """
+    if tool_name not in LOOP_DETECTABLE_MUTATING_TOOLS:
+        return _result_hash(result)
+    raw = result or ""
+    parsed = safe_json_loads(raw)
+    if not isinstance(parsed, Mapping):
+        return _sha256(raw)
+    stable = {k: v for k, v in parsed.items() if k not in _LOOP_VOLATILE_RESULT_KEYS}
+    for key in _LOOP_STABLE_RESULT_KEYS:
+        if key in stable:
+            return _sha256(_canonical_json({key: stable[key]}))
+    return _sha256(_canonical_json(stable))
 
 
 _BOOL_WORDS = {w: True for w in ("1", "true", "yes", "on", "enabled")} | {w: False for w in ("0", "false", "no", "off", "disabled")}

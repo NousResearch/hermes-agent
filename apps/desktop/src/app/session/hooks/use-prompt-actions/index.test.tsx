@@ -89,7 +89,7 @@ describe('durable submit acknowledgement', () => {
     const requestGateway = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
       expect(Object.values(journal.read())).toHaveLength(1)
 
-      return { admission_id: 'server-admission', submission_id: params?.submission_id, session_id: params?.session_id, status: accepted ? 'queued' : 'unknown' } as never
+      return { admission_id: 'server-admission', submission_id: accepted ? params?.submission_id : 'other-input', session_id: params?.session_id, status: 'queued' } as never
     })
 
     try {
@@ -154,7 +154,7 @@ describe('durable submit acknowledgement', () => {
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'slash.exec') {return { type: 'skill', name: 'private-skill', message: 'expanded skill' } as never}
 
-      return { admission_id: params?.submission_id, status: 'unknown' } as never
+      return { admission_id: 'other-input', status: 'queued' } as never
     })
 
     let handle: HarnessHandle | null = null
@@ -176,7 +176,8 @@ describe('durable submit acknowledgement', () => {
     [{ admission_id: 'entry-id', status: 'terminal' }, true],
     [{ admission_id: 'canonical-admission', submission_id: 'entry-id', session_id: RUNTIME_SESSION_ID, status: 'queued' }, true],
     [{ admission_id: 'canonical-admission', submission_id: 'entry-id', session_id: 'wrong-destination', status: 'queued' }, false],
-    [{ admission_id: 'entry-id', status: 'unknown' }, false]
+    // An exact retry of an admission the owner lost mid-turn: admitted, never replayed (Discard resolves it).
+    [{ admission_id: 'entry-id', status: 'unknown' }, true]
   ])('requires the matching authoritative receipt: %j', async (receipt, accepted) => {
     const requestGateway = vi.fn(async () => receipt as never)
     let handle: HarnessHandle | null = null

@@ -1184,7 +1184,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               !legacyAccepted &&
               ((result?.submission_id ?? result?.admission_id) !== submissionId ||
                 (result?.session_id !== undefined && result.session_id !== receiptSessionId) ||
-                !['queued', 'started', 'terminal'].includes(result?.status ?? ''))
+                !['queued', 'started', 'terminal', 'unknown'].includes(result?.status ?? ''))
             ) {
               dropOptimistic(sessionId)
               releaseBusy()
@@ -1203,7 +1203,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               // Queued is also the initial receipt for an idle session's first
               // turn. Keep its input and any start event that raced this ACK;
               // explicit queue-only sends never inserted an optimistic bubble.
-              if (result.status === 'terminal') {
+              // An exact retry of an admission the owner lost mid-turn answers `unknown`: it was
+              // admitted (never replay it) and no turn will run. Keep the bubble; the pending
+              // fanout's lost card offers Discard (prompt.resolve_unknown).
+              if (result.status === 'terminal' || result.status === 'unknown') {
                 // Deduplication does not start a turn or promise another terminal
                 // event. Remove our duplicate bubble, but preserve any live turn
                 // that an owner event established while the receipt was in flight.
@@ -1211,7 +1214,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   receiptSessionId,
                   state => ({
                     ...state,
-                    messages: state.messages.filter(message => message.id !== optimisticId),
+                    messages: result.status === 'unknown' ? state.messages : state.messages.filter(message => message.id !== optimisticId),
                     ...(!state.turnLive &&
                       !state.streamId &&
                       !state.sawAssistantPayload && {

@@ -322,7 +322,7 @@ describe('submission intent destinations', () => {
     expect(expansions).toBe(slash ? 1 : 0)
   })
 
-  it.each(['missing', 'wrong', 'unknown', '4094', 'lost-legacy'])(
+  it.each(['missing', 'wrong', '4094', 'lost-legacy'])(
     'requires a matching receipt or one pre-admission legacy refusal: %s',
     async mode => {
       const { deps, requestGateway } = setup()
@@ -344,7 +344,7 @@ describe('submission intent destinations', () => {
           return { ok: true } as never
         }
 
-        return { admission_id: mode === 'wrong' ? 'wrong-id' : params?.submission_id, status: 'unknown' } as never
+        return { admission_id: 'wrong-id', status: 'queued' } as never
       })
       let hook = renderHook(() => useSubmitPrompt(deps))
       await act(async () => {

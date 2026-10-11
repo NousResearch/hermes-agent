@@ -14,6 +14,8 @@ def run_app_server_work(agent, user_message, *, messages, **wire_options):
     if (isinstance(total, bool) or isinstance(idle, bool) or not isinstance(total, (int, float))
             or not isinstance(idle, (int, float)) or total < 0 or idle <= 0):
         raise ValueError("agent.codex_turn_timeout must be >= 0; agent.codex_idle_timeout must be > 0")
+    from agent.transports.codex_goal_recovery import recovery_delays
+    delays = recovery_delays(options.get("codex_goal_rate_limit_delays", []))
     wire_options.update(turn_timeout=total, idle_timeout=idle)
     sid = getattr(agent, "session_id", None)
     state = load_goal(sid) if sid else None
@@ -60,7 +62,8 @@ def run_app_server_work(agent, user_message, *, messages, **wire_options):
     try:
         return run_native_goal(
             agent._codex_session, user_message, session_id=sid, state=state, on_turn=commit_turn,
-            initial_turn=initial_turn,
+            initial_turn=initial_turn, rate_limit_delays=delays,
+            on_recovery=getattr(agent, "_emit_diagnostic_status", None),
             interrupt_requested=lambda: bool(getattr(agent, "_interrupt_requested", False)), **wire_options,
         )
     except Exception:
@@ -98,3 +101,13 @@ def pause_native_setup_failure(agent, reason):
         return False
     pause_native_goal(sid, state.goal_id, f"Native Goal thread recovery failed; no replacement or budget reset: {reason}")
     return True
+
+
+def public_codex_failure(error):
+    """Bounded chat status; full, redacted wire diagnostics stay in local logs."""
+    import re
+    from agent.redact import redact_sensitive_text
+    text = str(error).split("\ncodex stderr (last ", 1)[0]
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    text = redact_sensitive_text(text, force=True)
+    return text[:600] + ("… (details in local logs)" if len(text) > 600 else "")

@@ -73,7 +73,7 @@ DEFAULT_CONFIG = {
         "storage": "hermes-home",
     },
     "agent": {
-        "codex_turn_timeout": 600, "codex_idle_timeout": 1800,  # 0 total uses idle guard
+        "codex_turn_timeout": 600, "codex_idle_timeout": 1800, "codex_goal_rate_limit_delays": [],  # opt-in recovery
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,

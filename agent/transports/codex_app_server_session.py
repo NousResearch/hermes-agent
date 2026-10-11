@@ -57,6 +57,8 @@ class TurnResult:
     compacted: bool = False
     # Codex likely wedged (turn timeout, dead subprocess, token refresh failure): caller respawns next turn.
     should_retire: bool = False
+    terminal_status: Optional[str] = None
+    terminal_error: Optional[dict] = None
     native_turns: int = 0
     usage_recorded: bool = False
     usage_result: Optional[dict[str, Any]] = None
@@ -385,13 +387,18 @@ class CodexAppServerSession:
         result.error = error
         result.should_retire = True
 
-    def _set_classified_error(self, result: TurnResult, prefix: str, classify_text: str, detail: Any) -> None:
+    def _set_classified_error(self, result: TurnResult, prefix: str, classify_text: str, detail: Any, *, terminal=False) -> None:
         """OAuth failures -> re-auth hint AND retire (token store broken though JSON-RPC is fine); else stderr tail."""
         hint = _classify_oauth_failure(classify_text, stderr=self._stderr_blob(40))
         if hint is not None:
             self._retire(result, hint)
-        else:
+        elif not terminal:
             result.error = self._format_error_with_stderr(prefix, detail)
+        else:
+            # Ambient stderr may be from startup or an earlier turn. Keep it in local
+            # diagnostics, never attach it to an authoritative turn/completed error.
+            logger.warning("Codex terminal failure: %s", self._format_error_with_stderr(prefix, detail))
+            result.error = redact_sensitive_text(f"{prefix}: {detail}", force=True)
 
     def _start_for(self, result: TurnResult) -> bool:
         """ensure_started(); startup failures become a retiring TurnResult.error instead of raw exceptions."""
@@ -569,11 +576,13 @@ class CodexAppServerSession:
                 return aborted
             turn_obj = (note.get("params") or {}).get("turn") or {}
             turn_status = turn_obj.get("status")
+            result.terminal_status = turn_status
+            result.terminal_error = turn_obj.get("error")
             if turn_status == "interrupted":
                 result.interrupted = True
             elif turn_status and turn_status != "completed":
                 err_msg = _format_responses_error(turn_obj.get("error"), str(turn_status))
-                self._set_classified_error(result, f"turn ended status={turn_status}", err_msg, err_msg)
+                self._set_classified_error(result, f"turn ended status={turn_status}", err_msg, err_msg, terminal=True)
             return True
 
         self._drive_turn(

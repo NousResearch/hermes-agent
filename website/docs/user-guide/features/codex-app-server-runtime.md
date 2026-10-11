@@ -619,3 +619,26 @@ Then stop repeatedly reading that issue's raw logs. Related issues may share a c
 Do not compact on every small issue or clear a live thread to save context: compaction has a
 cost and may invalidate prompt caches. Disk history remains intact; compaction does not grant
 additional tokens or reset cumulative Goal usage.
+
+### Bounded recovery from a terminal provider rate limit
+
+Opt in with `agent.codex_goal_rate_limit_delays: [60, 180, 600]` (seconds). The
+default is `[]`, disabled. At most six positive, finite delays up to 3600 seconds
+each are accepted. The ladder is cumulative for one attached run, not reset by
+every successful turn.
+
+Only a **received `turn/completed`, status `failed`, with structured HTTP 429**
+qualifies. Hermes durably commits any partial tool transcript and usage first,
+waits with an interruptible cooldown, checks the unchanged Goal generation,
+objective, thread, creation identity, resource limit and budget, then sends only
+`thread/goal/set {status: active}`. **Codex**, not Hermes, admits the next turn
+from its persisted history. Hermes does not resend the user message, execute a
+recorded command, clear the Goal, replace the thread or grant more tokens. This
+is not exactly-once semantics for arbitrary model-selected future actions.
+
+`/stop`, pause, clear and replacement cancel cooldown/recovery. Explicit quota or
+billing errors, 401/400, budget/usage limits, unresolved transport interruptions,
+timeouts and transcript persistence failures remain fail-closed. Exhausting the
+ladder pauses the Goal and reports failure; provider capacity is not guaranteed.
+Only bounded current-error summaries reach chat; ambient plugin/startup stderr
+is retained in redacted local diagnostics, not presented as the current cause.

@@ -146,7 +146,8 @@ class CodexGoalManager(GoalManager):
             return "No active goal. Set one with /goal <text>."
         view = state.native_goal or {}
         budget = str(state.token_budget) if state.token_budget is not None else "unlimited"
-        suffix = f"; {state.paused_reason}" if state.paused_reason else ""
+        from agent.codex_runtime_goals import public_codex_failure
+        suffix = f"; {public_codex_failure(state.paused_reason)}" if state.paused_reason else ""
         return (f"Codex Goal ({state.status}, {state.turns_used} turns, "
                 f"tokens {view.get('tokensUsed', 0)}/{budget}{suffix}): {state.goal}")
 

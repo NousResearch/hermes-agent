@@ -735,13 +735,15 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
 def _codex_terminal_response(turn) -> str:
     """Keep partial text without allowing a streamed progress message to hide the failure."""
     if turn.error:
-        response = f"Codex app-server task incomplete: {turn.error}"
+        from agent.codex_runtime_goals import public_codex_failure
+        response = f"Codex app-server task incomplete: {public_codex_failure(turn.error)}"
     elif turn.interrupted:
         response = "Codex app-server task interrupted; it did not complete."
     else:
         return turn.final_text
     if turn.final_text:
-        response += f"\n\nLast assistant message (not a completion confirmation):\n{turn.final_text}"
+        from agent.codex_runtime_goals import public_codex_failure
+        response += f"\n\nLast assistant message (not a completion confirmation):\n{public_codex_failure(turn.final_text)}"
     return response
 
 

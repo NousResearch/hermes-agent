@@ -89,27 +89,6 @@ def _iter_exception_graph(error: BaseException) -> Iterator[BaseException]:
         stack.extend(x for x in (getattr(cur, "__cause__", None), getattr(cur, "__context__", None)) if x is not None)
 
 
-async def _shutdown_abandoned_app(app) -> None:
-    """Release a half-built PTB app's httpx transports after an abandoned init: ``app.shutdown()``
-    no-ops when ``_initialized`` was never set, so the request transports are closed directly."""
-    if app is None:
-        return
-    try:
-        await app.shutdown()
-    except Exception:
-        logger.debug("Abandoned Telegram app.shutdown() failed", exc_info=True)
-    bot = getattr(app, "bot", None)
-    for request in (getattr(bot, "_request", None) if bot is not None else None) or ():
-        shutdown = getattr(request, "shutdown", None)
-        if shutdown is None:
-            continue
-        try:
-            result = shutdown()
-            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                await result
-        except Exception:
-            logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
-
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     try:
@@ -182,7 +161,8 @@ from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
-    SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
+    SEED_FALLBACK_IPS, TelegramFallbackTransport, _shutdown_abandoned_app, discover_fallback_ips, parse_fallback_ip_env,
+    tcp_keepalive_socket_options)
 from utils import env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -3003,9 +2983,18 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             _updates_transport_kwargs = dict(_transport_kwargs)
             if _updates_limits is not None:
                 _updates_transport_kwargs["limits"] = _updates_limits
+            # The whole send is bounded by _TEXT_SEND_DEADLINE, but the httpx client's connect timeout
+            # applies per fallback path; several hung paths can sum past the deadline, which then fires
+            # mid-walk as a bare non-retryable TimeoutError (#136412). Cap the path walk's total CONNECT
+            # budget at half the deadline so failover always completes — and the last path's underlying
+            # ConnectTimeout (safely retryable) surfaces instead.
+            # getUpdates is not itself bounded by _TEXT_SEND_DEADLINE, but its transport walks the same
+            # fallback paths: the same cap keeps a several-hung-path walk from stalling the poll loop
+            # for minutes on the OS TCP timeout, so the shared budget is intentional.
+            _connect_budget = _TEXT_SEND_DEADLINE / 2
             request, get_updates_request = _pair(
-                {"transport": TelegramFallbackTransport(fallback_ips, **_transport_kwargs)},
-                {"transport": TelegramFallbackTransport(fallback_ips, **_updates_transport_kwargs)})
+                {"transport": TelegramFallbackTransport(fallback_ips, connect_budget=_connect_budget, **_transport_kwargs)},
+                {"transport": TelegramFallbackTransport(fallback_ips, connect_budget=_connect_budget, **_updates_transport_kwargs)})
         elif proxy_url:
             logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
             request, get_updates_request = _pair(_with_limits(), {"limits": _updates_limits}, proxy=proxy_url)

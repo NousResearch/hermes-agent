@@ -417,6 +417,9 @@ class GatewayACPAgent(acp.Agent):
             raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
         from acp_adapter.content import _content_blocks_to_openai_user_content
         text, attachments = _stage_user_content(_content_blocks_to_openai_user_content(prompt))
+        # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
+        # prompt (slash work included) retires the retained identity, so a later repeat is new work.
+        retained = self._unacked.pop(session_id, None)
         command = _slash_command(text) if not attachments else None
         if command is not None:
             from hermes_cli.gateway_mutations import slash_mutation
@@ -445,9 +448,6 @@ class GatewayACPAgent(acp.Agent):
         if attachments:
             submit['attachments'] = attachments
         retry_key = await asyncio.to_thread(_submit_fingerprint, session_id, text, attachments)
-        # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
-        # prompt retires the retained identity, so a deliberately repeated prompt later is new work.
-        retained = self._unacked.pop(session_id, None)
         input_id = retained[1] if retained is not None and retained[0] == retry_key else uuid.uuid4().hex
         self._submitting.add(session_id)
         try:

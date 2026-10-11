@@ -1928,7 +1928,7 @@ def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
 
 def _run_agent_with_watchdog(
     agent, prompt: str, job: dict, job_id: str, job_name: str, task_id: str, cancel_event,
-    worker_state: Optional[dict] = None,
+    worker_state: Optional[dict] = None, conversation_history: Optional[list[dict]] = None,
 ) -> dict:
     """Run ``agent.run_conversation`` on a worker thread under the inactivity (not wall-clock)
     watchdog: default 600s, override HERMES_CRON_TIMEOUT, 0 = unlimited."""
@@ -1973,8 +1973,11 @@ def _run_agent_with_watchdog(
     _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     # Carry scheduler-scoped ContextVar state (e.g. env passthrough) into the worker thread.
     _cron_context = contextvars.copy_context()
+    _turn_kwargs = {"task_id": task_id}
+    if conversation_history is not None:
+        _turn_kwargs["conversation_history"] = conversation_history
     _cron_future = _cron_pool.submit(
-        _cron_context.run, agent.run_conversation, prompt, task_id=task_id)
+        _cron_context.run, agent.run_conversation, prompt, **_turn_kwargs)
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False
@@ -2281,9 +2284,17 @@ def _prepare_job_prompt(
             return (True, silent_doc, SILENT_MARKER, None), None
 
     try:
+        # Recognize cron ``/goal <text>`` before the normal preamble is added.
+        # The assembled prompt never starts with ``/``, so gateway slash-command
+        # dispatch cannot perform this recognition later in the path.
+        from cron.scheduler_goal import goal_prompt_from_job
+        from cron.scheduler_prompt import _CRON_HINT, _GOAL_CRON_HINT
+        _goal_prompt = goal_prompt_from_job(job)
+        _prompt_job = {**job, "prompt": _goal_prompt} if _goal_prompt else job
         prompt = _build_job_prompt(
-            job, prerun_script=prerun_script, extra_prompt=extra_prompt,
+            _prompt_job, prerun_script=prerun_script, extra_prompt=extra_prompt,
             runtime_data_prompt=monitor_context,
+            cron_hint=_GOAL_CRON_HINT if _goal_prompt else _CRON_HINT,
         )
     except CronPromptInjectionBlocked as block_exc:
         # Injection scanner tripped: refuse this tick and tell the operator WHY.
@@ -2581,10 +2592,49 @@ def run_job(
             session_db=_session_db)
         _audit = _FireAudit(job, job_id, model)
 
-        result = _run_agent_with_watchdog(
-            agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
-            worker_state=_worker_state)
-        final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        from cron.scheduler_goal import (
+            cron_goal_session_id, goal_job_is_cancelled, goal_prompt_from_job, run_goal_turns,
+        )
+
+        goal_prompt = goal_prompt_from_job(job)
+        if goal_prompt:
+            from hermes_cli.goals import GoalManager
+
+            goals_cfg = _cfg.get("goals") if isinstance(_cfg, dict) else None
+            default_max_turns = int((goals_cfg or {}).get("max_turns", 20) or 20)
+            manager = GoalManager(
+                session_id=cron_goal_session_id(job_id), default_max_turns=default_max_turns,
+            )
+
+            goal_history: Optional[list[dict]] = None
+
+            def _run_goal_turn(turn_prompt: str) -> dict:
+                nonlocal goal_history
+                turn_result = _run_agent_with_watchdog(
+                    agent, turn_prompt, job, job_id, job_name, scope.task_id, cancel_event,
+                    worker_state=_worker_state,
+                    conversation_history=goal_history,
+                )
+                messages = turn_result.get("messages")
+                if isinstance(messages, list):
+                    goal_history = messages
+                return turn_result
+
+            def _goal_response(result: dict) -> str:
+                return _final_response_from_result(result, job_id, job_name, AIAgent)
+
+            result, final_response, goal_status = run_goal_turns(
+                manager, goal_prompt, initial_prompt=prompt, run_turn=_run_goal_turn,
+                response_from_result=_goal_response,
+                is_cancelled=lambda: goal_job_is_cancelled(job_id, cancel_event),
+            )
+            if goal_status:
+                final_response = f"{final_response}\n\n{goal_status}".strip()
+        else:
+            result = _run_agent_with_watchdog(
+                agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
+                worker_state=_worker_state)
+            final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
                 and _cron_failure_marker_error(final_response) is None):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the
@@ -3291,14 +3341,25 @@ def _fire_secret_scope():
         _reset_fire_secret_scope(tokens)
 
 
-def _start_owned_run(job: dict, execution_id: str) -> Optional[contextvars.Token]:
+def _start_owned_run(
+    job: dict, execution_id: str, *, exclusive_job: bool = False,
+) -> Optional[contextvars.Token]:
     """Win the run's ``claimed`` → ``running`` CAS and bind its cron identity; ``None`` when the run
     lost ownership first. A restart-safe worker already won it by adopting the row."""
     if os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id:
         record = get_execution(execution_id)
-    elif (record := mark_execution_running(execution_id)) is None:
-        return None
-    return enter_cron_execution(job, execution_id, record or {})
+    else:
+        record = (
+            mark_execution_running(execution_id, exclusive_job=True)
+            if exclusive_job else mark_execution_running(execution_id)
+        )
+        if record is None:
+            return None
+    if record is None:
+        # An external worker adopted this execution before reaching this common body.
+        # Keep the main branch's identity binding behavior even if its ledger row vanished.
+        record = {}
+    return enter_cron_execution(job, execution_id, record)
 
 
 def _run_one_job_body(
@@ -3345,9 +3406,15 @@ def _run_one_job_body(
         # Detached workers transition to running while adopting; in-process paths must win the
         # claimed->running CAS here before any user script or agent side effect may begin.
         # The identity plugins read via ctx.current_cron_execution() is bound only on that win.
-        _identity_token = _start_owned_run(job, execution_id)
+        from cron.scheduler_goal import finish_unstarted_goal_execution, goal_prompt_from_job
+
+        is_goal_job = goal_prompt_from_job(job) is not None
+        _identity_token = _start_owned_run(
+            job, execution_id, exclusive_job=is_goal_job,
+        )
         if _identity_token is None:
             logger.warning("Cron job %s lost execution ownership before start; skipping", job["id"])
+            finish_unstarted_goal_execution(job, execution_id)
             return True
 
         # Bind the firing profile's COMPLETE terminal policy for this fire — agent build, run, delivery
@@ -3893,6 +3960,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         set_secret_scope,
     )
     from cron.executions import adopt_claimed_execution
+    from cron.scheduler_goal import goal_prompt_from_job
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import (
         reset_hermes_home_override,
@@ -3923,7 +3991,12 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         GatewayStartupMixin._register_config_hooks(
             "Cron external worker: config hook registration failed", level=logging.WARNING)
         with use_cron_store(profile_home):
-            if adopt_claimed_execution(execution_id) is None:
+            is_goal_job = goal_prompt_from_job(job) is not None
+            adopted = (
+                adopt_claimed_execution(execution_id, exclusive_job=True)
+                if is_goal_job else adopt_claimed_execution(execution_id)
+            )
+            if adopted is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "
                     "could not be established",

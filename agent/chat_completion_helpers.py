@@ -2110,6 +2110,10 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             bound = bind_route_entry(agent, fb, fb_provider, fb_model)
             if bound is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
+                agent._buffer_diagnostic_status(
+                    f"⚠️ Fallback candidate {fb_model} via {fb_provider} could not be resolved; "
+                    "trying next provider..."
+                )
                 unavailable.add(fb_key)
                 continue
             old_model, old_provider = bound

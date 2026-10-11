@@ -185,7 +185,9 @@ jobs:
         # and must not share interpreter state.
         # tests/e2e/core/upgrade runs in its own job (e2e-upgrade) below.
         run: |
-          mapfile -t files < <(find tests/e2e -name 'test_*.py' -not -path 'tests/e2e/core/upgrade/*' | sort)
+          # mapfile needs bash 4; the while loop is its bash 3.2 (stock macOS) equivalent.
+          files=()
+          while IFS= read -r f; do files+=("$f"); done < <(find tests/e2e -name 'test_*.py' -not -path 'tests/e2e/core/upgrade/*' | sort)
           scripts/run_tests.sh --include-integration "${files[@]}"
         env:
           HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
@@ -347,9 +349,12 @@ jobs:
           set -euo pipefail
           source .venv/bin/activate
           if [ "$SHARD" = core ]; then
-            mapfile -t files < <(find tests/e2e/core/upgrade -maxdepth 1 -name 'test_*.py' | sort)
+            # mapfile needs bash 4; the while loop is its bash 3.2 (stock macOS) equivalent.
+            files=()
+            while IFS= read -r f; do files+=("$f"); done < <(find tests/e2e/core/upgrade -maxdepth 1 -name 'test_*.py' | sort)
           else
-            mapfile -t files < <(find "tests/e2e/core/upgrade/$SHARD" -name 'test_*.py' | sort)
+            files=()
+            while IFS= read -r f; do files+=("$f"); done < <(find "tests/e2e/core/upgrade/$SHARD" -name 'test_*.py' | sort)
           fi
           # A shard that collects nothing is a wiring bug, not a pass.
           [ "${#files[@]}" -gt 0 ] || { echo "no test files for shard $SHARD" >&2; exit 1; }

@@ -79,7 +79,10 @@ def _init_repo(path, first_commit):
     (path / "main.py").write_text("print(1)\n")
     subprocess.run(["git", "add", "-A"], cwd=path, check=True)
     subprocess.run(["git", "commit", "-qm", first_commit], cwd=path, check=True)
-    return path
+    # Resolved: build_coding_workspace_block resolves the workspace root, and on
+    # macOS TMPDIR (/tmp, /var/tmp) is a symlink to /private/... — asserting or
+    # pin-matching against the unresolved path fails there while passing on Linux.
+    return path.resolve()
 
 
 

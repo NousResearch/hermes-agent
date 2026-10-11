@@ -825,7 +825,11 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
 _MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS = 600
 
 # Hard denylist even for "recent" files (credentials, system state, /proc); the cache-dir
-# allowlist still beats it.
+# allowlist still beats it. POSIX system paths only: the sandbox check in media_fetch.py
+# consumes this tuple as-is (PurePosixPath), so it must stay complete even on Windows hosts.
+# The LOCAL-path consumer _media_delivery_denied_paths() skips it on Windows, because
+# Path("/dev").resolve() there yields "<SystemDrive>:\dev" (e.g. C:\DEV) and would deny a
+# whole developer tree.
 _MEDIA_DELIVERY_DENIED_PREFIXES = (
     "/etc", "/proc", "/sys", "/dev", "/root", "/boot", "/var/log", "/var/lib", "/var/run")
 
@@ -939,7 +943,12 @@ def _kanban_board_db_paths() -> list[Path]:
 def _media_delivery_denied_paths() -> list[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
     home = Path(os.path.expanduser("~"))
-    return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
+    # POSIX prefixes are meaningless as local Windows paths: Path("/dev").resolve() yields
+    # "<SystemDrive>:\dev" there, which would deny an entire developer tree (e.g. C:\DEV).
+    # Skip them on Windows; the shared tuple itself stays complete for the sandbox check
+    # in media_fetch.py (_DENIED_PREFIXES).
+    prefixes = () if os.name == "nt" else _MEDIA_DELIVERY_DENIED_PREFIXES
+    return [*map(Path, prefixes),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
             *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
             *_kanban_board_db_paths()]

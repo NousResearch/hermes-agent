@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import { runNativeLogin } from './native-oauth-login'
 
@@ -140,6 +140,45 @@ test('runNativeLogin surfaces a gateway error param', async () => {
   state.hitCallback('error=access_denied&error_description=user_declined')
 
   await assert.rejects(promise, /access_denied/i)
+})
+
+test('runNativeLogin reopens the same authorization URL once when the first browser visit stalls', async () => {
+  vi.useFakeTimers()
+  const { createServer, state } = makeFakeServerFactory()
+  const openedUrls: string[] = []
+  const logs: string[] = []
+
+  try {
+    const promise = runNativeLogin('https://gw.example.com', {
+      openExternal: async url => {
+        openedUrls.push(url)
+      },
+      postJson: async () => ({
+        access_token: 'AT-native',
+        refresh_token: 'RT-native',
+        token_type: 'Bearer',
+        expires_at: 1893456000
+      }),
+      createServer,
+      timeoutMs: 500,
+      reopenAfterMs: 20,
+      rememberLog: line => logs.push(line)
+    })
+
+    await vi.advanceTimersByTimeAsync(20)
+    assert.equal(openedUrls.length, 2)
+    assert.equal(openedUrls[1], openedUrls[0])
+    assert.ok(logs.some(line => line.includes('reopening authorization URL once')))
+
+    const authorize = new URL(openedUrls[0])
+    state.hitCallback(`code=gw-code-2&state=${encodeURIComponent(authorize.searchParams.get('state')!)}`)
+    await promise
+
+    await vi.advanceTimersByTimeAsync(30)
+    assert.equal(openedUrls.length, 2)
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 test('runNativeLogin times out when no callback arrives', async () => {

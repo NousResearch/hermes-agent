@@ -6347,6 +6347,22 @@ async function gatewayAuthProviders(baseUrl, headers = {}) {
   return providers
 }
 
+async function remoteLoginStrategy(baseUrl: string) {
+  let statusBody: unknown = null
+
+  try {
+    statusBody = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
+  } catch {
+    // An unreadable status endpoint must preserve compatibility with legacy
+    // gateways, whose only available sign-in path is the embedded cookie flow.
+  }
+
+  const authRequired = statusBody && authModeFromStatus(statusBody) === 'oauth'
+  const providers = authRequired ? await gatewayAuthProviders(baseUrl) : []
+
+  return resolveLoginStrategy(statusBody, { providers })
+}
+
 // Build the readiness probe for a connection's auth mode. A gated gateway
 // must be probed with the SAME credentials the rest of the connection uses:
 // an anonymous probe 401s forever against a live session, and it can never
@@ -7827,8 +7843,21 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
     return retryCookie401WithLogin(error, options, {
       clearCookies: () => remoteSessionCookies.clear(partition, url),
       login: async () => {
+        const baseUrl = new URL(url).origin
+
+        // A native-capable gateway must be signed into by the explicit
+        // system-browser + loopback flow. Opening the legacy cookie window
+        // here races boot before the sign-in UI can invoke that flow, and its
+        // Authentik executor can stall after accepting the first password.
+        // Throwing keeps the original 401, which surfaces the normal Sign in
+        // action instead of opening the wrong transport automatically.
+        if ((await remoteLoginStrategy(baseUrl)) === 'native') {
+          rememberLog(`[native-oauth] cookie session missing for ${new URL(url).host}; awaiting native sign-in`)
+          throw new Error('Native sign-in required')
+        }
+
         try {
-          await openOauthLoginWindow(new URL(url).origin, { silent: true })
+          await openOauthLoginWindow(baseUrl, { silent: true })
         } catch (reloginError) {
           rememberLog(
             `Remote session re-login after 401 failed for ${new URL(url).host}: ${reloginError?.message || reloginError}`
@@ -16815,19 +16844,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
   const pendingKind = typeof rawOpts?.kind === 'string' ? rawOpts.kind : ''
   const pendingAuthMode = typeof rawOpts?.authMode === 'string' ? rawOpts.authMode : ''
 
-  let statusBody: any = null
-
-  try {
-    statusBody = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
-  } catch {
-    // Can't read status — fall through to the embedded flow, which has its
-    // own error handling and works against any gated gateway.
-  }
-
-  const authRequired = statusBody && authModeFromStatus(statusBody) === 'oauth'
-  const providers = authRequired ? await gatewayAuthProviders(baseUrl) : []
-
-  const strategy = resolveLoginStrategy(statusBody, { providers })
+  const strategy = await remoteLoginStrategy(baseUrl)
 
   // A newer login/logout can finish during the status/provider probes. Do not
   // open a browser or login window for an attempt that no longer owns auth.

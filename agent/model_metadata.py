@@ -1237,7 +1237,6 @@ def get_next_probe_tier(current_length: int) -> Optional[int]:
 
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any.
-
     A message about only an OUTPUT cap ("... model output limit of 16384") never says "context";
     bail out so the generic "limit ... of N" pattern can't cache the output cap as the window."""
     error_lower = error_msg.lower()
@@ -1246,6 +1245,7 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     patterns = (
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
         r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
+        r'(?:available|max) context size\s*\(?\s*(\d{4,})\s*tokens?\)?',  # llama.cpp: "exceeds the available context size (32768 tokens)"; never the leading request count
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',

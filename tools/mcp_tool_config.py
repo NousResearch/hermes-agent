@@ -19,12 +19,101 @@ logger = logging.getLogger("tools.mcp_tool")
 
 _mcp_stderr_log_fh: dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
+_MCP_STDERR_MAX_BYTES = 1024 * 1024
+_MCP_STDERR_BACKUP_COUNT = 2
+
+
+try:  # inter-process rotation lock (profile logs are shared by gateway / Desktop backend / CLI)
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - Windows
+    _fcntl = None
+try:
+    import msvcrt as _msvcrt
+except ImportError:
+    _msvcrt = None
+
+
+class _McpStderrLog:
+    """Secret-redacting, size-bounded MCP stderr log owned by one profile.
+
+    ``logs/mcp-stderr.log`` is shared by every Hermes process on one ``HERMES_HOME``, so the
+    size check, rotation and write run under an exclusive lock on ``mcp-stderr.log.lock``
+    (``flock`` / ``msvcrt.locking``), not just this instance's thread lock. Rotation is
+    copy-then-truncate: the live file keeps its inode, so another process's append-mode handle
+    never ends up writing into a rotated backup (which would grow it past the bound), and no
+    file another process holds open is ever renamed (which Windows refuses)."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.name = str(path)  # file-object parity for callers that read ``.name``
+        self.closed = False
+        self._lock = threading.Lock()
+        self._fh = open(path, "a", encoding="utf-8", errors="replace", buffering=1)
+        try:
+            self._lock_fh = open(f"{path}.lock", "a+b")
+        except OSError:  # pragma: no cover - best effort: keep the in-process lock only
+            self._lock_fh = None
+
+    def _interprocess(self, unlock: bool = False) -> None:
+        fh = self._lock_fh
+        if fh is None:
+            return
+        try:
+            if _fcntl is not None:
+                _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN if unlock else _fcntl.LOCK_EX)
+            elif _msvcrt is not None:  # pragma: no cover - Windows
+                fh.seek(0)
+                _msvcrt.locking(fh.fileno(), _msvcrt.LK_UNLCK if unlock else _msvcrt.LK_LOCK, 1)
+        except OSError:  # pragma: no cover - a lock we cannot take must not drop the line
+            logger.debug("MCP stderr log lock unavailable", exc_info=True)
+
+    def _rotate(self) -> None:
+        """Shift backups, copy the live file to ``.1`` and truncate it in place (caller holds both locks)."""
+        Path(f"{self.path}.{_MCP_STDERR_BACKUP_COUNT}").unlink(missing_ok=True)
+        for generation in range(_MCP_STDERR_BACKUP_COUNT - 1, 0, -1):
+            source = Path(f"{self.path}.{generation}")
+            if source.exists():
+                source.replace(Path(f"{self.path}.{generation + 1}"))
+        shutil.copyfile(self.path, f"{self.path}.1")
+        os.ftruncate(self._fh.fileno(), 0)
+
+    def write(self, text: str) -> int:
+        from agent.redact import redact_sensitive_text
+
+        redacted = redact_sensitive_text(str(text), force=True)
+        encoded = redacted.encode("utf-8", errors="replace")[:_MCP_STDERR_MAX_BYTES]
+        redacted = encoded.decode("utf-8", errors="ignore")
+        with self._lock:
+            self._interprocess()
+            try:
+                # Size of the shared live file as every process sees it (our handle is O_APPEND).
+                size = os.fstat(self._fh.fileno()).st_size
+                if size and size + len(encoded) > _MCP_STDERR_MAX_BYTES:
+                    self._rotate()
+                written = self._fh.write(redacted)
+                self._fh.flush()  # land on disk before another process may rotate
+                return written
+            finally:
+                self._interprocess(unlock=True)
+
+    def flush(self) -> None:
+        with self._lock:
+            self._fh.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            if not self.closed:
+                self.closed = True
+                self._fh.close()
+                if self._lock_fh is not None:
+                    self._lock_fh.close()
 
 
 def _get_mcp_stderr_log() -> Any:
     """Shared append-mode handle for MCP subprocess stderr, cached until shutdown PER PROFILE HOME (a
-    multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's). Must
-    expose a real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
+    multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's).
+    The returned writer redacts and rotates before every disk write; opening failures fall back to
+    ``/dev/null``, then real stderr."""
     from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
     home_key = hermes_home_key()
     with _mcp_stderr_log_lock:
@@ -33,9 +122,8 @@ def _get_mcp_stderr_log() -> Any:
             try:
                 log_dir = get_hermes_home() / "logs"
                 mkdir_under_hermes_home(log_dir)
-                # Line-buffered so output lands promptly; errors="replace" tolerates garbled binary.
-                fh = open(log_dir / "mcp-stderr.log", "a", encoding="utf-8", errors="replace", buffering=1)
-                fh.fileno()  # confirm a real fd before committing
+                # All writes pass through the forced secret redactor and bounded rotator.
+                fh = _McpStderrLog(log_dir / "mcp-stderr.log")
             except Exception as exc:  # pragma: no cover — best-effort fallback
                 logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
                 try:
@@ -64,7 +152,11 @@ def _close_mcp_stderr_logs(*, scope: Optional[str] = None) -> None:
 class _StderrTee:
     """A stdio child's stderr, copied into the shared log one stamped line at a time while the last few KB
     stay readable (raw), so a server that dies at startup can say why on the MCP status surfaces instead of
-    only in the log (#124264). ``sink`` is handed to the child; ``close()`` returns the captured tail."""
+    only in the log (#124264). ``sink`` is handed to the child; ``close()`` returns the captured tail.
+
+    The tail is deliberately kept raw, in memory only: it is never written to disk and its only consumer
+    (``node_abi_error``) matches fixed ``_ABI_MARKERS`` and extracts a module path to build the remedy.
+    Anything that starts surfacing the tail text itself must pass it through ``redact_sensitive_text``."""
 
     _TAIL_BYTES = 16384
 

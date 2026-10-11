@@ -154,9 +154,33 @@ def test_live_native_adapter_without_platform_block_is_not_treated_as_disabled()
         {"id": "j"}, Platform.DISCORD, "discord", {"platform": "discord", "chat_id": "C1"},
         {Platform.DISCORD: adapter}, config)
     assert err is None and resolved[2] is adapter and resolved[1].enabled
-    # an explicitly disabled block still vetoes
+    # An explicitly disabled block fences the live adapter but must retain the registered
+    # standalone sender for outbound-only cron delivery.
     config.platforms = {Platform.DISCORD: PlatformConfig(enabled=False)}
     resolved, err = _resolve_target_transport(
         {"id": "j"}, Platform.DISCORD, "discord", {"platform": "discord", "chat_id": "C1"},
         {Platform.DISCORD: adapter}, config)
-    assert resolved is None and "not configured/enabled" in err
+    assert err is None
+    transport, pconfig, runtime_adapter, _ = resolved
+    assert transport is None and runtime_adapter is None and not pconfig.enabled
+
+
+def test_disabled_native_platform_uses_outbound_standalone_sender():
+    """Disabling native ingress must not drop scheduled outbound delivery when the plugin has a
+    standalone sender."""
+    sent = []
+
+    async def fake_send(platform, pconfig, chat_id, text, **kwargs):
+        sent.append((platform, pconfig.enabled, chat_id, text, kwargs.get("force_standalone")))
+        return {"success": True, "message_id": "m1"}
+
+    config = MagicMock()
+    config.platforms = {Platform.DISCORD: PlatformConfig(enabled=False)}
+    config.get_home_channel = lambda p: None
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("tools.send_message_tool._send_to_platform", fake_send):
+        error = _deliver_result(_job("C1"), "hello", adapters={}, loop=None)
+
+    assert error is None
+    assert sent == [(Platform.DISCORD, False, "C1", "hello", True)]

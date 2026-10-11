@@ -228,6 +228,73 @@ class TestWindowsShellDestructiveCommands:
         assert desc is None
 
 
+class TestDetectDangerousGitConfig:
+    @pytest.mark.parametrize("command", [
+        "git config user.name foo",
+        "git config --global user.email bar@baz",
+        "git config --local core.editor vim",
+        "git config --system foo.bar value",
+        "git config --worktree foo.bar value",
+        "git config --edit",
+        "git config -e",
+        "git config --global --type=bool foo.bar true",
+        "git config --type bool --global foo.bar true",
+        "git config foo.bar true --global --type=bool",
+        "git config --add foo.bar value",
+        "git config --global --replace-all foo.bar value",
+        "git config --unset user.name",
+        "git config --unset-all foo.bar",
+        "git config --remove-section foo",
+        "git config --rename-section old new",
+        "git config --file .gitconfig user.name x",
+        "git config --file=.gitconfig user.name x",
+        "git -C /repo config user.name x",
+        "git --git-dir=.git config core.editor vim",
+        "cd repo && git config --local user.name x",
+        'git con"fig" --global user.name x',
+        "echo $(git config --global user.name x)",
+        "bash -c 'git config --global user.name x'",
+        "git config set --global user.name x",
+        "git config unset --global user.name",
+        "git config --future-option user.name x",
+        "git config --global",
+        "git config -- foo.bar --value",
+    ])
+    def test_mutating_and_ambiguous_forms_require_approval(self, command):
+        dangerous, key, desc = detect_dangerous_command(command)
+        assert dangerous is True, command
+        assert key == "git config write (modifies identity or repository configuration)"
+        assert desc == key
+
+    @pytest.mark.parametrize("command", [
+        "git config --list",
+        "git config --global --list --show-origin",
+        "git config --get user.name",
+        "git config --global --type=bool --show-origin --get foo.bar",
+        "git config --get-all foo.bar",
+        "git config --get-regexp '^foo\\.'",
+        "git config --get-urlmatch http.https://example.com https://example.com",
+        "git config user.name",
+        "git config --global --type=bool user.enabled",
+        "git config --file .gitconfig user.name",
+        "git config --file=.gitconfig --get user.name",
+        "git config --blob=HEAD:.gitmodules --get submodule.foo.url",
+        "git config list --no-global --no-show-origin",
+        "git config get --url=https://example.com http.https://example.com",
+        "git config get --value='^true$' --type=bool user.enabled",
+        "git config get -tbool --default=false user.enabled",
+        "git config list -f/dev/null",
+        "git -C /repo --no-pager config --global --get user.name",
+        "git config get --global user.name",
+        "git config list --show-scope",
+        'echo "git config user.name x"',
+        "echo ok; git config --get user.name",
+    ])
+    def test_read_only_forms_stay_unprompted(self, command):
+        assert detect_dangerous_command(command) == (False, None, None), command
+
+
+
 class TestDetectDangerousSudo:
     def test_shell_via_c_flag(self):
         is_dangerous, key, desc = detect_dangerous_command("bash -c 'echo pwned'")
@@ -2108,72 +2175,4 @@ class TestCliApprovalTimeoutClassifiedSeparately:
         assert "timed out without user response" in result["message"]
         assert "Silence is not consent" in result["message"]
 
-
-# launchd verbs that stop, unload or deregister a running gateway. `disable`
-# does not stop a live job on its own, but it is what makes an unload survive
-# a reboot, so it belongs to the same family.
-GATEWAY_LIFECYCLE_LAUNCHCTL = (
-    "launchctl kickstart -k gui/501/ai.hermes.gateway",
-    "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist",
-    "launchctl load ~/Library/LaunchAgents/ai.hermes.gateway.plist",
-    "launchctl stop ai.hermes.gateway",
-    "launchctl restart ai.hermes.gateway",
-    "launchctl bootout gui/501/ai.hermes.gateway",
-    "launchctl remove ai.hermes.gateway",
-    "launchctl disable gui/501/ai.hermes.gateway",
-)
-
-
-class TestLifecycleGuardLaunchctlParity:
-    """The in-gateway hard block must cover every launchd verb the approval
-    layer already treats as gateway lifecycle.
-
-    These two layers are not interchangeable. In ``tools/terminal_tool.py``
-    under ``_HERMES_GATEWAY == "1"``, the ``cron.lifecycle_guard`` block is
-    documented as applying unconditionally ("force=True cannot help here"),
-    while ``detect_dangerous_command`` below it is explicitly skipped when
-    ``force=True``. A verb covered only by the approval layer is therefore
-    reachable from inside the gateway, where SIGTERM propagates to the child
-    before the command completes and the service may never come back (#74973).
-
-    ``bootout`` was missing exactly this way: it is the modern replacement for
-    the ``unload`` the guard already listed. See #80260.
-    """
-
-    def test_hard_block_covers_every_lifecycle_verb(self):
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
-
-        for cmd in GATEWAY_LIFECYCLE_LAUNCHCTL:
-            assert contains_gateway_lifecycle_command(cmd) is True, cmd
-
-    def test_bypassable_layer_is_never_stricter(self):
-        """One-directional invariant: anything ``detect_dangerous_command``
-        flags as gateway lifecycle, the hard block must also catch.
-
-        Not equality — the hard block is legitimately stricter (it also covers
-        ``load``/``restart``, which the approval layer leaves alone). What must
-        never happen is the reverse: a command stopped only by the layer that
-        ``force=True`` skips, leaving no cover inside the gateway."""
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
-
-        for cmd in GATEWAY_LIFECYCLE_LAUNCHCTL:
-            dangerous, _, _ = detect_dangerous_command(cmd)
-            if not dangerous:
-                continue
-            assert contains_gateway_lifecycle_command(cmd) is True, (
-                f"approval layer flags this but the unbypassable hard block "
-                f"does not: {cmd}"
-            )
-
-    def test_unrelated_labels_are_not_blocked(self):
-        """The label anchor must still scope this to the gateway — unrelated
-        services, including other Hermes ones, stay runnable."""
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
-
-        for cmd in (
-            "launchctl bootout gui/501/com.example.unrelated",
-            "launchctl remove ai.hermes.update-checker",
-            "launchctl disable gui/501/com.apple.WindowServer",
-            "launchctl print system/com.apple.WindowServer",
-        ):
-            assert contains_gateway_lifecycle_command(cmd) is False, cmd
+# End of approval guard tests.

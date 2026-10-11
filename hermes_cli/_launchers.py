@@ -855,9 +855,13 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
     checkout (a second checkout run under a foreign data root -- a rehearsal
     sandbox, a per-task home) still publishes the borrower's own bin, but never
     registers it, or every ``hermes`` on the host would resolve into the
-    borrower's tree.
+    borrower's tree. The same holds for a home that owns its own tree but is
+    not the host's platform-default root (a sandbox or orchestrator home that
+    ``HERMES_HOME`` points at): its tree is disposable from the host's point
+    of view, and a registration no one removes strands every later ``hermes``
+    on a deleted directory (#135037).
     """
-    from hermes_constants import get_default_hermes_root
+    from hermes_constants import _get_platform_default_hermes_home, get_default_hermes_root
 
     directory = get_default_hermes_root() / "bin"
     try:
@@ -871,6 +875,9 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
             return {"ok": False, "error": "source launcher publication failed"}
         if owning_home_root(root) is not None:
             return {"ok": True, "skipped": "borrowed-root",
+                    "written": [Path(path).name for path in written]}
+        if get_default_hermes_root().resolve() != _get_platform_default_hermes_home().resolve():
+            return {"ok": True, "skipped": "foreign-home",
                     "written": [Path(path).name for path in written]}
         return {"ok": True, "path": _register_windows_user_path(directory),
                 "written": [Path(path).name for path in written]}

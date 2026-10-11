@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: ephemeris
+description: Probabilistic time-series forecasts from an ensemble of foundation models.
+source: https://ephemeris.cascade.industries/docs
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Streamable HTTP with a bearer API key (verified
+# live: initialize without a key returns 401 with a Bearer
+# WWW-Authenticate challenge). Tools: forecast, list_models, get_balance,
+# get_usage (https://ephemeris.cascade.industries/llms-full.txt). Keys are
+# self-serve at https://ephemeris.cascade.industries/dashboard/api-keys.
+
+transport:
+  type: http
+  url: https://ephemeris.cascade.industries/api/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_EPHEMERIS_API_KEY
+      prompt: Ephemeris API key (starts with pc_live_; create one at ephemeris.cascade.industries/dashboard/api-keys)
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - ephemeris
+    - forecast
+    - time series forecast
+  hosts:
+    - ephemeris.cascade.industries
+
+post_install: |
+  Restart the session so tools load. Each forecast spends credits from
+  your Ephemeris account; `get_balance` shows what is left and new
+  accounts start with free credits.

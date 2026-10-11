@@ -932,6 +932,33 @@ class TestToolsConfigIncludeMode:
 
 class TestShippedCatalog:
 
+    def test_composio_uses_hosted_oauth_and_curates_remote_execution_tools(self, monkeypatch):
+        from hermes_cli.mcp_catalog import card_install_config, get_entry
+
+        source_catalog = Path(__file__).parents[2] / "optional-mcps"
+        monkeypatch.setattr("hermes_cli.mcp_catalog._catalog_root", lambda: source_catalog)
+
+        entry = get_entry("composio")
+        assert entry is not None
+        assert entry.transport.type == "http"
+        assert entry.transport.url == "https://connect.composio.dev/mcp"
+        assert entry.auth.type == "oauth"
+        assert entry.auth.env == []
+
+        server = card_install_config(entry)
+        assert server["url"] == "https://connect.composio.dev/mcp"
+        assert server["auth"] == "oauth"
+        assert "headers" not in server
+        assert server["tools"]["include"] == [
+            "COMPOSIO_SEARCH_TOOLS",
+            "COMPOSIO_GET_TOOL_SCHEMAS",
+            "COMPOSIO_MULTI_EXECUTE_TOOL",
+            "COMPOSIO_MANAGE_CONNECTIONS",
+            "COMPOSIO_WAIT_FOR_CONNECTIONS",
+        ]
+        assert "COMPOSIO_REMOTE_WORKBENCH" not in server["tools"]["include"]
+        assert "COMPOSIO_REMOTE_BASH_TOOL" not in server["tools"]["include"]
+
     def test_manifest_connector_slugs_are_valid_and_unique(self, monkeypatch):
         from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog
 

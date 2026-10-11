@@ -2,7 +2,7 @@
 // Launch the source desktop against the real backend with an isolated identity.
 // The rehearsal never copies credentials and never registers a protocol handler.
 //
-// Usage: node apps/desktop/scripts/connector-rehearsal.mjs [sandbox-directory]
+// Usage: node apps/desktop/scripts/connector-rehearsal.mjs [sandbox-directory] [--cdp-port <port>]
 // Requires HERMES_DESKTOP_PYTHON and a dev Electron bundle from
 // `node apps/desktop/scripts/bundle-electron-main.mjs --dev`.
 
@@ -16,8 +16,50 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const require = createRequire(import.meta.url)
-const PORTS = Object.freeze({ renderer: 5194, cdp: 9344 })
+const PORTS = Object.freeze({ renderer: 5194 })
 const REHEARSAL_MARKER = '.connector-rehearsal.json'
+
+function normalizeCdpPort(value = 'off') {
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'off') return 'off'
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new Error('CDP port must be "off" or an integer from 1024 to 65535.')
+  }
+  return port
+}
+
+/** Accept one optional sandbox path and an explicit, opt-in CDP port. */
+export function parseRehearsalArgs(args) {
+  let sandbox
+  let cdpPort = 'off'
+  let sawCdpPort = false
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === '--cdp-port') {
+      if (sawCdpPort || args[index + 1] === undefined) {
+        throw new Error('Use --cdp-port <port> once, with a port from 1024 to 65535.')
+      }
+      sawCdpPort = true
+      cdpPort = normalizeCdpPort(args[++index])
+    } else if (arg.startsWith('--')) {
+      throw new Error(`Unknown option: ${arg}`)
+    } else if (sandbox !== undefined) {
+      throw new Error('Provide at most one sandbox-directory path.')
+    } else {
+      sandbox = arg
+    }
+  }
+
+  return { sandbox, cdpPort }
+}
+
+export function rehearsalPortChecks({ rendererPort, cdpPort }) {
+  return [
+    { label: 'Renderer', port: rendererPort },
+    ...(cdpPort === 'off' ? [] : [{ label: 'CDP', port: cdpPort }])
+  ]
+}
 
 /** Keep Windows notifications separate and leave registered consent handlers alone. */
 export function configureRehearsalApp(app, desktop, platform = process.platform) {
@@ -90,7 +132,7 @@ export function prepareRehearsal({
   sourceEnv = process.env,
   platform = process.platform,
   rendererPort = PORTS.renderer,
-  cdpPort = PORTS.cdp
+  cdpPort = 'off'
 }) {
   const paths = platform === 'win32' ? path.win32 : path
   const isolatedSandbox = paths.resolve(sandbox)
@@ -100,6 +142,7 @@ export function prepareRehearsal({
   const userDataDir = paths.join(isolatedSandbox, 'electron')
   const workingDirectory = paths.join(isolatedSandbox, 'work')
   const tempDir = paths.join(isolatedSandbox, 'tmp')
+  const resolvedCdpPort = normalizeCdpPort(cdpPort)
   const appDataDir = platform === 'win32' ? paths.join(isolatedSandbox, 'AppData', 'Roaming') : undefined
   const localAppDataDir = platform === 'win32' ? paths.join(isolatedSandbox, 'AppData', 'Local') : undefined
   const url = `http://127.0.0.1:${rendererPort}`
@@ -119,7 +162,7 @@ export function prepareRehearsal({
     HERMES_DESKTOP_APP_NAME: 'Hermes Connector Rehearsal',
     HERMES_GUEST_ONBOARDING: '1',
     HERMES_DESKTOP_DEV_SERVER: url,
-    HERMES_DESKTOP_CDP_PORT: String(cdpPort)
+    HERMES_DESKTOP_CDP_PORT: String(resolvedCdpPort)
   })
 
   if (platform === 'win32') {
@@ -151,7 +194,7 @@ export function prepareRehearsal({
     appDataDir,
     localAppDataDir,
     rendererPort,
-    cdpPort,
+    cdpPort: resolvedCdpPort,
     url,
     env
   }
@@ -208,8 +251,9 @@ function resolveViteEntry() {
 async function launch() {
   const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const root = path.resolve(desktop, '../..')
-  const sandbox = process.argv[2]
-    ? path.resolve(process.argv[2])
+  const args = parseRehearsalArgs(process.argv.slice(2))
+  const sandbox = args.sandbox
+    ? path.resolve(args.sandbox)
     : path.join(os.tmpdir(), `hermes-connectors-${randomUUID()}`)
   const python = process.env.HERMES_DESKTOP_PYTHON
 
@@ -220,12 +264,9 @@ async function launch() {
     throw new Error('Run node apps/desktop/scripts/bundle-electron-main.mjs --dev first.')
   }
 
-  const rehearsal = prepareRehearsal({ sandbox, desktop, root, python })
+  const rehearsal = prepareRehearsal({ sandbox, desktop, root, python, cdpPort: args.cdpPort })
   assertRehearsalDirectory(rehearsal.sandbox)
-  await assertPortsAvailable([
-    { label: 'Renderer', port: rehearsal.rendererPort },
-    { label: 'CDP', port: rehearsal.cdpPort }
-  ])
+  await assertPortsAvailable(rehearsalPortChecks(rehearsal))
 
   fs.mkdirSync(rehearsal.sandbox, { recursive: true })
   fs.writeFileSync(path.join(rehearsal.sandbox, REHEARSAL_MARKER), JSON.stringify({ schema: 1 }) + '\n')

@@ -9,7 +9,9 @@ import {
   assertPortsAvailable,
   assertRehearsalDirectory,
   configureRehearsalApp,
-  prepareRehearsal
+  parseRehearsalArgs,
+  prepareRehearsal,
+  rehearsalPortChecks
 } from './connector-rehearsal.mjs'
 
 describe('connector rehearsal preparation', () => {
@@ -41,8 +43,8 @@ describe('connector rehearsal preparation', () => {
       fs.rmdirSync(sandbox)
     }
   })
-  it('preserves POSIX launch variable names and values', () => {
-    const prepared = prepareRehearsal({
+  it('preserves POSIX launch variables and keeps CDP off unless explicitly enabled', () => {
+    const base = {
       sandbox: '/tmp/hermes-connectors-test',
       desktop: '/src/hermes/apps/desktop',
       root: '/src/hermes',
@@ -56,7 +58,8 @@ describe('connector rehearsal preparation', () => {
         DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
         OPENAI_API_KEY: 'must-not-pass'
       }
-    })
+    }
+    const prepared = prepareRehearsal({ ...base, cdpPort: parseRehearsalArgs([]).cdpPort })
 
     expect(prepared.env.PATH).toBe('/usr/bin')
     expect(prepared.env.LANG).toBe('en_US.UTF-8')
@@ -64,6 +67,17 @@ describe('connector rehearsal preparation', () => {
     expect(prepared.env.XAUTHORITY).toBe('/tmp/xauthority')
     expect(prepared.env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/run/user/1000/bus')
     expect(prepared.env).not.toHaveProperty('OPENAI_API_KEY')
+    expect(prepared.env.HERMES_DESKTOP_CDP_PORT).toBe('off')
+    expect(rehearsalPortChecks(prepared)).toEqual([{ label: 'Renderer', port: 5194 }])
+
+    const explicitPort = parseRehearsalArgs(['--cdp-port', '9344']).cdpPort
+    const debugRehearsal = prepareRehearsal({ ...base, cdpPort: explicitPort })
+    expect(debugRehearsal.env.HERMES_DESKTOP_CDP_PORT).toBe('9344')
+    expect(rehearsalPortChecks(debugRehearsal)).toEqual([
+      { label: 'Renderer', port: 5194 },
+      { label: 'CDP', port: 9344 }
+    ])
+    expect(() => parseRehearsalArgs(['--cdp-port', '65536'])).toThrow('CDP port must be')
   })
 
   it('isolates Windows paths while retaining required OS variables and dropping auth overrides', () => {
@@ -109,7 +123,7 @@ describe('connector rehearsal preparation', () => {
     expect(prepared.env.HERMES_DESKTOP_USER_DATA_DIR).toBe(winPath.join(sandbox, 'electron'))
     expect(prepared.env.HERMES_DESKTOP_CWD).toBe(winPath.join(sandbox, 'work'))
     expect(prepared.env.HERMES_DESKTOP_APP_NAME).toBe('Hermes Connector Rehearsal')
-    expect(prepared.env.HERMES_DESKTOP_CDP_PORT).toBe('9344')
+    expect(prepared.env.HERMES_DESKTOP_CDP_PORT).toBe('off')
     expect(prepared.url).toBe('http://127.0.0.1:5194')
 
     for (const key of ['OPENAI_API_KEY', 'AWS_ACCESS_KEY_ID', 'NODE_OPTIONS']) {

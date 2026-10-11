@@ -77,12 +77,34 @@ def _session_owner(rid, owner):
     return session, None
 
 
-def _account_gate_closed(rid):
-    from tools.connectors import connectors_available
+def _account_gate_closed(rid, *, status=False):
     from tui_gateway.contracts.connectors import ConnectorErrorReason
+    from tools.connectors.gateway.config import load_config
 
-    if connectors_available():
-        return None
+    try:
+        config_enabled = load_config().enabled
+    except (OSError, ValueError, TypeError):
+        config_enabled = False
+
+    if config_enabled:
+        from tools.connectors import connectors_available
+
+        if connectors_available():
+            return None
+        # Only ask for sign-in after the normal setting/rollout gate closes. This cheap probe
+        # distinguishes no bearer without adding a refresh or mint path to the account RPC.
+        from tools.managed_tool_gateway import peek_nous_access_token
+
+        try:
+            has_access_token = bool(peek_nous_access_token())
+        except (OSError, ValueError, TypeError):
+            has_access_token = True
+        if not has_access_token:
+            return _connector_rpc_error(
+                rid, 4032, ConnectorErrorReason.needs_nous_auth, "Sign in to use connectors."
+            )
+    if status:
+        return _ok(rid, {"available": False, "connectors": []})
     return _connector_rpc_error(rid, 4031, ConnectorErrorReason.connectors_unavailable, "Connectors are not available.")
 
 
@@ -229,8 +251,8 @@ def _connector_rpc(rid, params, action):
         return error
     if request.owner.type == "account":
         with _account_scope(request):
-            if closed := _account_gate_closed(rid):
-                return _ok(rid, {"available": False, "connectors": []}) if action == "status" else closed
+            if closed := _account_gate_closed(rid, status=action == "status"):
+                return closed
             return _account_connector_list(rid) if action == "status" else _account_connector_connect(rid, request)
 
     runtime_token = _current_runtime_session_record.set(session)

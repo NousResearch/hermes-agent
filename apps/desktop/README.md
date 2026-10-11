@@ -109,12 +109,13 @@ node apps/desktop/scripts/bundle-electron-main.mjs --dev
 ```
 
 Set `HERMES_DESKTOP_PYTHON` to the Python executable for this checkout, then run
-`node apps/desktop/scripts/connector-rehearsal.mjs [sandbox-directory]` when you want to open
-the visible development app. Omitting the directory creates a fresh temporary identity;
+`node apps/desktop/scripts/connector-rehearsal.mjs [sandbox-directory] [--cdp-port <port>]` when you want to open
+the visible development app. CDP debugging is off by default; specify a numeric port (for example,
+`--cdp-port 9344`) only for headless testing. Omitting the directory creates a fresh temporary identity;
 passing it again reopens that identity. The launcher isolates Hermes home, shared auth,
 runtime tools, Electron user data, Windows notification identity and working directory, drops inherited credentials,
 skips the installed runtime and leaves the installed protocol handler unchanged. It refuses
-occupied renderer (5194) and debugging (9344) ports. Consent stays on the provider's completion
+an occupied renderer port (5194) and checks a debugging port only when explicitly enabled. Consent stays on the provider's completion
 page while Hermes checks connection status, so it cannot return to another registered app.
 Accounts must be connected separately
 through the supported consent flow; no credentials are copied from an existing installation.

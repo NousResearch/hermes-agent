@@ -1,0 +1,35 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: composio
+description: >-
+  Connect Gmail, Google Calendar and Drive, Zoho, and Resend through Composio's hosted MCP.
+source: https://composio.dev/hermes
+
+# Composio's dedicated Hermes setup page specifies this hosted URL without
+# authentication headers and says OAuth is automatic. Hermes's native MCP
+# OAuth flow owns the browser consent and token storage.
+transport:
+  type: http
+  url: https://connect.composio.dev/mcp
+
+auth:
+  type: oauth
+
+# Composio routes provider actions through a generic execute meta-tool, so
+# Hermes cannot inspect nested app action names for per-action approval.
+# Leave the optional remote code execution tools disabled by default.
+tools:
+  default_enabled:
+    - COMPOSIO_SEARCH_TOOLS
+    - COMPOSIO_GET_TOOL_SCHEMAS
+    - COMPOSIO_MULTI_EXECUTE_TOOL
+    - COMPOSIO_MANAGE_CONNECTIONS
+    - COMPOSIO_WAIT_FOR_CONNECTIONS
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Composio. Connect each app
+  when prompted. Composio executes app actions behind its generic multi-execute tool, so
+  Hermes cannot apply native per-action write checks to the nested provider action. The
+  remote Python workbench and remote Bash tools are excluded by default.

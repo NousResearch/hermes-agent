@@ -1,0 +1,33 @@
+{
+  "description": "Invoke deferred tools. Takes `calls`, an array of {name, arguments} — one entry per invocation; a single call is an array of one. Independent calls may be batched together. Local entries are split into individual tool calls by the agent and follow each tool's concurrency policy. Results are returned in input order. Argument shapes match each tool's schema (see `tool_describe`). Policy, hooks, and approvals run as for directly-listed tools.",
+  "name": "tool_call",
+  "parameters": {
+    "properties": {
+      "calls": {
+        "description": "One or more independent deferred tool invocations.",
+        "items": {
+          "properties": {
+            "arguments": {
+              "description": "Arguments matching the tool schema.",
+              "type": "object"
+            },
+            "name": {
+              "description": "Exact tool name to invoke.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "calls"
+    ],
+    "type": "object"
+  }
+}

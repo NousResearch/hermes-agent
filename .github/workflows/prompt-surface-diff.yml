@@ -1,0 +1,105 @@
+name: Prompt surface diff
+
+# PR comment showing what the change does to the model-facing prompt surface: the system prompt
+# and tools[] array a stock install sends, per surface (cli x 4 model families, cli in a code
+# workspace, desktop, telegram, discord, cron). scripts/ci/prompt_surface.py renders both through
+# the production code into tests/fixtures/prompt_surface/, which is committed:
+#
+#   * tests/ci/test_prompt_surface.py (Tests lane) fails when that snapshot is stale, so any code
+#     change that alters the surface must carry the regenerated snapshot in the same PR;
+#   * this job summarises the snapshot's base->head diff (per-surface token deltas, prompt hunks,
+#     per-tool description/param changes) into the unified CI review comment;
+#   * the protect-main ruleset requires two hermes-agent-core approvals for that directory.
+#
+# Never blocking: the staleness test is the gate and the ruleset is the review requirement.
+# Reads only the two committed snapshots (no PR code runs), so it needs no secrets.
+
+on:
+  workflow_call:
+    outputs:
+      changed:
+        description: Whether the prompt-surface snapshot changed relative to the target branch.
+        value: ${{ jobs.diff.outputs.changed }}
+      review_status:
+        description: JSON array of review status objects for the unified PR comment.
+        value: ${{ jobs.diff.outputs.review_status }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prompt-surface-diff-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diff:
+    name: Prompt surface summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+      review_status: ${{ steps.emit-status.outputs.review_status }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          fetch-depth: 0 # need history for the merge base
+          persist-credentials: false
+
+      - name: Summarise the snapshot diff
+        id: diff
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # Merge base, not the base tip: surface changes that landed on main after the branch
+          # point are not this PR's doing.
+          BASE_SHA=$(git merge-base "origin/${BASE_REF}" HEAD)
+          SNAP=tests/fixtures/prompt_surface
+          mkdir -p "$RUNNER_TEMP/base"
+          if git cat-file -e "${BASE_SHA}:${SNAP}" 2>/dev/null; then
+            git archive "$BASE_SHA" "$SNAP" | tar -x -C "$RUNNER_TEMP/base"
+          fi
+          python3 scripts/ci/prompt_surface.py diff "$RUNNER_TEMP/base/$SNAP" "$SNAP" \
+            --output "$RUNNER_TEMP/prompt-surface.md"
+          if [ -s "$RUNNER_TEMP/prompt-surface.md" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            { echo "## Prompt surface"; echo; cat "$RUNNER_TEMP/prompt-surface.md"; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Emit review_status
+        id: emit-status
+        env:
+          CHANGED: ${{ steps.diff.outputs.changed }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > review-status.json
+          import json, os
+          from pathlib import Path
+          status = []
+          if os.environ["CHANGED"] == "true":
+              detail = Path(os.environ["RUNNER_TEMP"], "prompt-surface.md").read_text(encoding="utf-8")
+              status = [{"source": "prompt-surface", "results": [{
+                  "kind": "action_required",
+                  "title": "Prompt surface changed",
+                  "summary": "This PR changes the system prompt or tool schemas every session sends.",
+                  "detail": detail,
+                  "how_to_fix": "Read the rendered change below (full text under tests/fixtures/prompt_surface/ "
+                                "in the Files tab). Merging needs two hermes-agent-core approvals.",
+              }]}]
+          print("review_status=" + json.dumps(status))
+          PY
+          cat review-status.json >> "$GITHUB_OUTPUT"
+
+      - name: Upload review status artifact
+        if: always() && steps.emit-status.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-prompt-surface
+          path: review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore

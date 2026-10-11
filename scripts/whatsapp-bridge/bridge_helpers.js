@@ -754,3 +754,54 @@ export function installConsoleStamps(target = console) {
 export function writeJsonLine(payload, stream = process.stdout) {
   stream.write(`${JSON.stringify(payload)}\n`);
 }
+
+// -- WhatsApp usernames ---------------------------------------------------
+//
+// A WhatsApp @username lets someone hide their phone number. The account is
+// still reachable: a USync contact query by username (plus the optional PIN
+// its owner set) answers with the account's @lid, which messages go to.
+
+const WHATSAPP_USERNAME_RE = /^@([A-Za-z0-9._]{3,35})$/;
+
+/** The bare username for an `@username` send target, or null for anything else. */
+export function parseWhatsAppUsername(value) {
+  const match = WHATSAPP_USERNAME_RE.exec(String(value ?? '').trim());
+  return match ? match[1] : null;
+}
+
+/** The USync query that resolves `username` (and its PIN, when the owner set one). */
+export function buildUsernameQuery({ USyncQuery, USyncUser }, username, pin) {
+  const user = new USyncUser().withUsername(username);
+  if (pin) user.withUsernameKey(String(pin));
+  return new USyncQuery().withContactProtocol().withLIDProtocol().withUser(user);
+}
+
+/** The @lid a username query found, or null when no account has that username. */
+export function lidFromUsernameResult(result) {
+  for (const entry of result?.list || []) {
+    if (!entry?.contact) continue;
+    if (String(entry.id || '').endsWith('@lid')) return entry.id;
+    if (String(entry.lid || '').endsWith('@lid')) return entry.lid;
+  }
+  return null;
+}
+
+/** Resolve `username` to an @lid with `executeUSyncQuery` (the socket's). */
+export async function resolveWhatsAppUsername(executeUSyncQuery, usync, username, pin) {
+  return lidFromUsernameResult(await executeUSyncQuery(buildUsernameQuery(usync, username, pin)));
+}
+
+/**
+ * Group participants as {id, phone, username, admin}. In a LID-addressed group
+ * `id` is an @lid; the phone number WhatsApp sends alongside (Baileys'
+ * `phoneNumber`) is null when the member hides it, and `username` is their
+ * @username when they set one.
+ */
+export function groupMembersFromMetadata(participants) {
+  return (participants || []).map((p) => ({
+    id: p.id,
+    phone: p.phoneNumber || (String(p.id || '').endsWith('@s.whatsapp.net') ? p.id : null),
+    username: p.username || null,
+    admin: p.admin || null,
+  }));
+}

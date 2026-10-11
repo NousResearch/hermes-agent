@@ -305,6 +305,17 @@ Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables
 
 Replying to (quoting) an earlier message gives the agent the quoted text as context. Quoting an image, voice note, video or document also attaches that file to the turn, so "what is this?" under a quoted image works — whether the attachment came from another person or from the bot itself (a cron-delivered chart, a generated image). WhatsApp only ships a thumbnail stub with a quote, so the file is resolved from the bridge's download cache (inbound media, in-memory for the bridge's lifetime) or from a local index of the bot's own sends (last 1000 messages); quotes of anything older arrive without the attachment.
 
+### Usernames
+
+People who set a WhatsApp username can hide their phone number. Send to them by
+username: `hermes send --to whatsapp:@theirname`, or the same target from the
+`send_message` tool. The bridge asks WhatsApp for the account behind the
+username and sends to its `@lid`. If the owner set a username PIN, the send
+fails with a hint to pass it as `usernamePin` in the bridge request. Group info
+from the bridge's `GET /chat/<group>` lists each member's phone (null when
+hidden) and username under `members`, and `GET /resolve-username/<name>` looks a
+username up without sending anything.
+
 ---
 
 ## Troubleshooting

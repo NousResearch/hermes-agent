@@ -27,6 +27,8 @@ _PHOTON_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")  # mirrors _DM_CHAT_GUID_RE
 # WhatsApp JIDs (@g.us, @s.whatsapp.net, @lid, broadcast/newsletter) and Buzz UUIDs are native targets
 # the adapter accepts verbatim — explicit, never home-channel. A valid email address likewise.
 _WHATSAPP_JID_RE = re.compile(r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$", re.IGNORECASE)
+# WhatsApp @usernames (people who hide their number): the bridge resolves them to the account's @lid.
+_WHATSAPP_USERNAME_RE = re.compile(r"^\s*@[A-Za-z0-9._]{3,35}\s*$")
 _BUZZ_UUID_RE = re.compile(r"^\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*$", re.IGNORECASE)
 _EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$")
 # Exceptions to "<PLATFORM>_HOME_CHANNEL" for error hints (email reads EMAIL_HOME_ADDRESS).
@@ -109,8 +111,9 @@ _PLATFORM_PARSERS = {
     "yuanbao": _parse_yuanbao,
     "ntfy": _parse_nonempty,
     "email": _parse_regex_stripped(_EMAIL_TARGET_RE),
-    # Native WhatsApp JIDs pass through verbatim; E.164 numbers use the phone rule.
-    "whatsapp": _parse_regex_stripped(_WHATSAPP_JID_RE),
+    # Native WhatsApp JIDs and @usernames pass through verbatim; E.164 numbers use the phone rule.
+    "whatsapp": lambda ref: (_parse_regex_stripped(_WHATSAPP_JID_RE)(ref)
+                             or _parse_regex_stripped(_WHATSAPP_USERNAME_RE)(ref)),
     "buzz": _parse_regex_stripped(_BUZZ_UUID_RE),
     "signal": _parse_signal,
     "wecom": _parse_nonempty,

@@ -173,10 +173,14 @@ def _session_db_content_sig(db_path: Path):
             order = " ORDER BY id" if "id" in available else ""
             rows = conn.execute(f"SELECT {', '.join(fields)} FROM sessions{order}")
             digest = hashlib.blake2b(digest_size=16)
+            ids = set()
+            id_index = fields.index("id") if "id" in fields else None
             for row in rows:
+                if id_index is not None:
+                    ids.add(row[id_index])
                 digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
                 digest.update(b"\0")
-            signature = (fields, digest.digest())
+            signature = (fields, digest.digest(), frozenset(ids))
     except Exception:
         # A busy/locked read after a good one keeps the last digest and leaves the cached mtime
         # stale so the next pass re-reads: digest -> mtime -> digest would broadcast twice.
@@ -188,8 +192,26 @@ def _session_db_content_sig(db_path: Path):
             conn.close()
 
     _sessions_db_sig_cache[cache_key] = (mtime, signature)
+    previous = cached[1] if cached is not None else None
+    _broadcast_session_deletions(db_path.parent, previous, signature)
 
     return signature
+
+
+def _broadcast_session_deletions(home: Path, previous, current) -> None:
+    """Only two readable ID snapshots prove deletion; never a missing/locked store.
+
+    Publish independently of the generic refresh floor: Desktop can evict exact
+    IDs without interrupting typing or rehydrating a live transcript.
+    """
+    if not previous or len(previous) != 3 or len(current) != 3:
+        return
+    if "id" not in previous[0] or "id" not in current[0]:
+        return
+    deleted = sorted(previous[2] - current[2])
+    if deleted:
+        profile = home.name if home.parent.name == "profiles" else "default"
+        _broadcast_global_event("sessions.deleted", {"session_ids": deleted, "profile": profile})
 
 
 def _sessions_sig():

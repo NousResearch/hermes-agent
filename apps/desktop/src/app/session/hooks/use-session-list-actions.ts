@@ -112,7 +112,7 @@ function dropTombstoned(sessions: SessionInfo[]): SessionInfo[] {
 // re-admits the row as before.
 function dropRemovalRaced(sessions: SessionInfo[], snapshot: SessionTombstoneGenerationSnapshot): SessionInfo[] {
   const raced = (session: SessionInfo): boolean =>
-    tombstoneRowIds(session).some(id => sessionRemovalIntersected(snapshot, id))
+    tombstoneRowIds(session).some(id => sessionRemovalIntersected(snapshot, id, normalizeProfileKey(session.profile)))
 
   const kept = sessions.filter(session => !raced(session))
 
@@ -292,10 +292,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       setMessagingSessions(prev => [
         ...prev.filter(s => !inPlatform(s)),
-        ...mergeSessionPage(
-          prev.filter(inPlatform),
-          carryForwardFailedProfileSessions(prev.filter(inPlatform), incoming, result.errors),
-          sessionsToKeep()
+        ...dropRemovalRaced(
+          mergeSessionPage(
+            prev.filter(inPlatform),
+            carryForwardFailedProfileSessions(prev.filter(inPlatform), incoming, result.errors),
+            sessionsToKeep()
+          ),
+          removalSnapshot
         )
       ])
 

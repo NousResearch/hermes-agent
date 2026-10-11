@@ -372,9 +372,19 @@ def _run_single_child(
         run.seed_workspace()
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:
+            # The error entry is the child's terminal answer; no schema-retry turn can follow it.
+            # Freeze the clock here so a wedged teardown still lets the stale monitor close the unit (#113222).
+            child._delegate_result_collected = True
             return failure_entry
 
+        # The flag is set only after schema validation: a failed validation issues one more real
+        # child turn (`_validate_child_output_schema`), whose per-chunk activity ticks are the only
+        # "provider is working" signal left (api_call_count is frozen per turn, current_tool is None),
+        # so freezing the clock earlier could force-finalize a slow retry as stalled (#129941 review).
         schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
+        # Terminal answer fixed from here on: everything below is parent-side teardown, and the
+        # ticking clock of a torn-down child must not read as batch progress (#113222).
+        child._delegate_result_collected = True
         _merge_late_steer(result, _subagent_id, child)
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):

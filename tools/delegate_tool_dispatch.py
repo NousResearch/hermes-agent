@@ -315,7 +315,15 @@ def _batch_progress_token(child_agents: list[Any]) -> tuple:
         try:
             summary = c.get_activity_summary()
             tool = summary.get("current_tool")
-            parts.append((summary.get("api_call_count", 0), tool, summary.get("last_activity_ts")))
+            ts = summary.get("last_activity_ts")
+            # A child whose terminal result/error has been collected (await_child returned;
+            # ``_delegate_result_collected``) is in parent-side teardown only. Its clock may keep
+            # ticking, but that is not batch progress: crediting it would refresh the stall
+            # clock forever while a wedged teardown holds the join open (#113222). A
+            # turn-in-flight clock still counts — the #71508/#116001 liveness signal.
+            if getattr(c, "_delegate_result_collected", False):
+                ts = None
+            parts.append((summary.get("api_call_count", 0), tool, ts))
             in_tool = in_tool or bool(tool)
         except Exception:
             parts.append(None)

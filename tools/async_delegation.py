@@ -1096,8 +1096,28 @@ def _stalled_result(delegation_id: str, event_record: dict[str, Any]) -> dict[st
         "stall_phase": "in_tool" if stall_in_tool else "idle" if stall_in_tool is not None else None,
         "stall_grace_seconds": _STALL_GRACE_SECONDS}
     if event_record.get("is_batch"):
-        return {**_batch_crash(error, duration), **stall_meta}
+        result = _batch_crash(error, duration)
+        # Children the join already recorded durably keep their real results — a forced
+        # stall must not overwrite finished work with blanket unknowns (#113222); only the
+        # never-recorded tasks degrade, same shape as owner-death recovery.
+        recorded = _recovered_results(
+            event_record, _durable_result_json(delegation_id), error)
+        if recorded:
+            result["results"] = recorded
+        return {**result, **stall_meta}
     return {**_single_crash(error, duration), "status": "stalled", "exit_reason": "stalled", **stall_meta}
+
+
+def _durable_result_json(delegation_id: str) -> Optional[str]:
+    """The unit's durable partial ``result_json`` (children recorded before the hang), best-effort:
+    a read failure just means the stall result carries no recorded children."""
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            row = conn.execute(
+                "SELECT result_json FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
 
 
 # ── Observability + control ─────────────────────────────────────────────────

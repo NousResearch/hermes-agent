@@ -74,7 +74,8 @@ async def test_profile_timeout_keeps_authority_until_physical_worker_exits(tmp_p
         assert stopped.is_set() and not done.is_set()
         assert registry.for_home(beta) is authority
         assert not unbound
-        assert str(beta) in runner.session_ticket_store.profile_ids
+        # Kept for its live writer, but it refuses all work: no longer published or ticketed.
+        assert str(beta) not in runner.session_ticket_store.profile_ids
         release.set()
         await asyncio.wait_for(task, 5)
         await run_runtime.unserve_profile_runtime(runner, beta)

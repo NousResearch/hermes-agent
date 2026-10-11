@@ -121,7 +121,8 @@ async def authenticate_native_http(request):
             or store.instance_id != descriptor.get('instance_id')
             or any(a.instance_id != store.instance_id for a in authorities)
             or descriptor.get('served_profiles') != [
-                {'profile_id': a.profile_id, 'home': a.profile_id} for a in authorities]):
+                {'profile_id': a.profile_id, 'home': a.profile_id} for a in authorities
+                if not getattr(a, 'retiring', False)]):
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
     try:
         # The ticket names the served profile it was minted for; that home's authority owns it.

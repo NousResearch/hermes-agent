@@ -95,11 +95,16 @@ class SessionAuthorities:
             return self._by_key[self.launch_key]
         return self._by_key.get(hermes_home_key(get_hermes_home()))
 
+    def serving(self) -> list:
+        """Authorities that accept work: not a reserved-but-unbuilt slot, not one retiring (a
+        failed serve or an unserve whose turn outlived Stop keeps its slot but refuses admissions)."""
+        return [a for a in self._by_key.values() if a is not None and not getattr(a, 'retiring', False)]
+
     def served_profiles(self) -> list[dict]:
-        return [{'profile_id': a.profile_id, 'home': a.profile_id} for a in self._by_key.values()]
+        return [{'profile_id': a.profile_id, 'home': a.profile_id} for a in self.serving()]
 
     def profile_ids(self) -> frozenset[str]:
-        return frozenset(a.profile_id for a in self._by_key.values())
+        return frozenset(a.profile_id for a in self.serving())
 
 
 def served_profile_name(home) -> str:

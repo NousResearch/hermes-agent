@@ -258,6 +258,8 @@ async def _retire_profile_authority(authority, timeout=None):
     from gateway.session_runtime_workers import join_authority_work, stop_authority_work
     timeout = TURN_SETTLE_SECONDS if timeout is None else timeout
     authority.retiring = True
+    if getattr(authority.runner, 'session_ticket_store', None) is not None:
+        _publish_served_set(authority.runner)  # discovery and tickets stop naming it now
     stop_authority_work(authority)
     service = getattr(authority, 'hosted_room_service', None)
     rooms = None if service is None else asyncio.ensure_future(asyncio.to_thread(service.stop, timeout=timeout))

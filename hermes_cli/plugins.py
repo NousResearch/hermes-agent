@@ -50,6 +50,7 @@ from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
     _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
 )
+from hermes_cli.plugins_skill_lifecycle import (SKILL_MUTATION_ACTIONS, SKILL_MUTATION_GUARD_HOOKS, SKILL_MUTATION_HOOKS, SKILL_MUTATION_POST_HOOKS, SKILL_MUTATION_PRE_HOOKS, SKILL_MUTATION_SHELL_UNSUPPORTED_HOOKS)
 from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
     DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
     MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
@@ -105,18 +106,6 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
 
 
 _install_plugin_debug_handler()
-
-
-SKILL_MUTATION_ACTIONS = ("create", "edit", "patch", "write_file", "remove_file", "delete")
-SKILL_MUTATION_GUARD_HOOKS = frozenset(
-    f"pre_skill_{action}:guard" for action in SKILL_MUTATION_ACTIONS)
-SKILL_MUTATION_PRE_HOOKS = frozenset(
-    f"pre_skill_{action}" for action in SKILL_MUTATION_ACTIONS)
-SKILL_MUTATION_POST_HOOKS = frozenset(
-    f"post_skill_{action}" for action in SKILL_MUTATION_ACTIONS)
-SKILL_MUTATION_HOOKS = (
-    SKILL_MUTATION_GUARD_HOOKS | SKILL_MUTATION_PRE_HOOKS | SKILL_MUTATION_POST_HOOKS)
-
 
 VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
@@ -213,23 +202,11 @@ VALID_HOOKS: Set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
-    # Skill mutations expose 18 hooks: six early ``:guard`` directives, six
-    # policy-checked ``pre`` directives, and six completion observers. Guard
-    # and pre hooks accept ``block``/``handled``; handled create requires an
-    # absolute reported path, and create also accepts a discoverable-root
-    # ``redirect``. Post hooks fire once for success or failure. Exact
-    # action-specific payloads and timing are in hooks.md.
     *SKILL_MUTATION_HOOKS,
 }
 
-# Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
-# the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {
-    "transform_api_error_classification",
-    *SKILL_MUTATION_GUARD_HOOKS,
-    *SKILL_MUTATION_PRE_HOOKS,
-}
-
+# Hooks whose directive the shell-hook parser cannot represent; refuse them loudly.
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification", *SKILL_MUTATION_SHELL_UNSUPPORTED_HOOKS}
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()
 

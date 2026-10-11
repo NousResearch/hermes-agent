@@ -574,20 +574,43 @@ def _skill_post_hook_payload(action: str, name: str, args: Dict[str, Any],
         "success": bool(result.get("success")),
         "error": None if result.get("success") else str(result.get("error") or "unknown error"),
     }
-    if action == "create":
-        path = result.get("path", "") if result.get("hook_handled") else ""
-        if result.get("success") and not result.get("hook_handled") and result.get("skill_md"):
-            path = str(Path(result["skill_md"]).parent.resolve(strict=False))
-        payload.update(category=args.get("category"), path=str(path or ""))
-    elif action == "edit":
-        payload["path"] = str(result.get("path") or "")
-    elif action == "patch":
-        payload.update(file_path=args.get("file_path"), replace_all=bool(args.get("replace_all")))
-    elif action in {"write_file", "remove_file"}:
-        payload["file_path"] = args.get("file_path")
-    elif action == "delete":
-        payload["absorbed_into"] = args.get("absorbed_into")
+    builder = _SKILL_POST_PAYLOAD_BUILDERS.get(action)
+    if builder is not None:
+        payload.update(builder(args, result))
     return payload
+
+
+def _create_post_payload(args: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    path = result.get("path", "") if result.get("hook_handled") else ""
+    if result.get("success") and not result.get("hook_handled") and result.get("skill_md"):
+        path = str(Path(result["skill_md"]).parent.resolve(strict=False))
+    return {"category": args.get("category"), "path": str(path or "")}
+
+
+def _edit_post_payload(_args: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"path": str(result.get("path") or "")}
+
+
+def _patch_post_payload(args: Dict[str, Any], _result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"file_path": args.get("file_path"), "replace_all": bool(args.get("replace_all"))}
+
+
+def _supporting_file_post_payload(args: Dict[str, Any], _result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"file_path": args.get("file_path")}
+
+
+def _delete_post_payload(args: Dict[str, Any], _result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"absorbed_into": args.get("absorbed_into")}
+
+
+_SKILL_POST_PAYLOAD_BUILDERS = {
+    "create": _create_post_payload,
+    "edit": _edit_post_payload,
+    "patch": _patch_post_payload,
+    "write_file": _supporting_file_post_payload,
+    "remove_file": _supporting_file_post_payload,
+    "delete": _delete_post_payload,
+}
 
 
 def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> Dict[str, Any]:
@@ -713,7 +736,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if read_guard := _background_review_read_before_write_guard(
             name, skill_md, "edit", "SKILL.md"):
         return read_guard
-    old_content = skill_md.read_text(encoding="utf-8")
+    old_content = skill_md.read_text(encoding="utf-8-sig")
     directive = _run_pre_skill_hook(
         "pre_skill_edit", name=name, content=content, old_content=old_content)
     if result := _skill_hook_short_circuit(

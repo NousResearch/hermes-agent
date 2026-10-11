@@ -123,6 +123,21 @@ def invoke_operation(action: str):
     return json.loads(skill_manage(action=action, name="test-skill", **kwargs))
 
 
+def invoke_core_error_operation(action: str):
+    operations = {
+        "create": lambda: invoke_operation("create"),
+        "edit": lambda: invoke_operation("edit"),
+        "patch": lambda: json.loads(skill_manage(
+            action="patch", name="test-skill", old_string="missing", new_string="replacement")),
+        "write_file": lambda: json.loads(skill_manage(
+            action="write_file", name="test-skill", file_path="outside.txt", file_content="x")),
+        "remove_file": lambda: json.loads(skill_manage(
+            action="remove_file", name="test-skill", file_path="references/missing.md")),
+        "delete": lambda: invoke_operation("delete"),
+    }
+    return operations[action]()
+
+
 def public_payload(payload):
     return {key: value for key, value in payload.items() if key != "telemetry_schema_version"}
 
@@ -309,24 +324,12 @@ def test_handled_create_requires_an_absolute_reported_path(tmp_path, directive):
 def test_core_error_emits_one_failed_post_event(tmp_path, action):
     posts = []
     with isolated_skills(tmp_path) as (root, record_success):
-        if action == "create":
-            seed_operation(root, "edit")  # duplicate create
-        elif action not in {"edit", "delete"}:
-            seed_operation(root, action)
+        seed_action = {"create": "edit", "patch": "patch", "write_file": "write_file",
+                       "remove_file": "remove_file"}.get(action)
+        if seed_action is not None:
+            seed_operation(root, seed_action)
         register_hook(f"post_skill_{action}", lambda **kwargs: posts.append(public_payload(kwargs)))
-        if action == "edit":
-            result = invoke_operation("edit")  # missing skill
-        elif action == "patch":
-            result = json.loads(skill_manage(
-                action="patch", name="test-skill", old_string="missing", new_string="replacement"))
-        elif action == "write_file":
-            result = json.loads(skill_manage(
-                action="write_file", name="test-skill", file_path="outside.txt", file_content="x"))
-        elif action == "remove_file":
-            result = json.loads(skill_manage(
-                action="remove_file", name="test-skill", file_path="references/missing.md"))
-        else:
-            result = invoke_operation(action)
+        result = invoke_core_error_operation(action)
 
     assert result["success"] is False
     assert len(posts) == 1

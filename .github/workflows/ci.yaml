@@ -93,19 +93,27 @@ jobs:
         uses: ./.github/actions/detect-changes
         with:
           github-token: ${{ github.token }}
-      - name: Force all lanes on release
-        # Overwrite the classifier outputs with 'true' when inputs.release.
+      - name: Force all lanes on release; E2E only on release or dispatch
+        # Overwrite the classifier outputs with 'true' when inputs.release. The E2E
+        # lanes are forced off unless this is a release run or a manual dispatch
+        # (whose empty diff already turns every lane on): never on a pull request
+        # or a push to main, whatever the diff or labels say.
         id: gate-lanes
         env:
           RELEASE: ${{ inputs.release }}
+          EVENT_NAME: ${{ github.event_name }}
           CLASSIFIED: ${{ toJSON(steps.classify.outputs) }}
         run: |
           python3 - <<'PY'
           import json, os
           values = json.loads(os.environ['CLASSIFIED'])
+          release = os.environ['RELEASE'] == 'true'
+          e2e_allowed = release or os.environ['EVENT_NAME'] == 'workflow_dispatch'
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               for lane, value in values.items():
-                  if os.environ['RELEASE'] == 'true' and value in ('true', 'false'):
+                  if lane.startswith('e2e') and not e2e_allowed:
+                      value = 'false'
+                  elif release and value in ('true', 'false'):
                       value = 'true'
                   if '\n' in value or '\r' in value:
                       continue
@@ -117,12 +125,9 @@ jobs:
   # Skipped workflows (if condition is false) don't spin up runners.
   #
   # The E2E suites (e2e, e2e-upgrade, both Desktop suites, and the two
-  # Windows journeys in tests-os) take most of the larger-runner minutes.
-  # On a pull request each runs only when the diff touches that suite or the
-  # code it guards, or the PR carries the `run-e2e` label
-  # (scripts/ci/classify_changes.py::_E2E_LANES). Every push to main runs
-  # all of them, so a regression the path lists miss turns main red after
-  # the merge.
+  # Windows journeys in tests-os) run ONLY on a release run (inputs.release)
+  # or a manual dispatch; the detect gate forces their lanes off for pull
+  # requests and pushes to main.
   # ─────────────────────────────────────────────────────────────────────
   tests:
     name: Python tests

@@ -179,7 +179,7 @@ def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
     ss.set_multiplex_active(True)
     token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-routed-profile"})
     try:
@@ -199,7 +199,7 @@ def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
     ss.set_multiplex_active(True)
     token = ss.set_secret_scope({})
     try:
@@ -219,7 +219,7 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
     calls = []
     monkeypatch.setattr(
         docker_env,
@@ -268,7 +268,7 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
         encoding="utf-8",
     )
     monkeypatch.setenv("EXPLICIT_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
 
     def _run_fake_docker_exec(cmd, stdin_data=None, **kwargs):
         """Execute the generated docker exec command in a real local bash."""
@@ -378,7 +378,7 @@ def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     env._env = {"MY_KEY": "static_value"}
 
     monkeypatch.setenv("MY_KEY", "dynamic_value")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
 
     args = env._build_init_env_args()
 
@@ -1361,7 +1361,6 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     from tools.terminal_tool_lifecycle import cleanup_vm
 
     env = _make_dummy_env(task_id="session-close-test")
-    container_id = env._container_id
     terminal_tool._active_environments["session-close-test"] = env
 
     cleanup_calls = []
@@ -1453,7 +1452,7 @@ def test_cleanup_on_env_with_no_container_id_does_not_raise(monkeypatch):
 def _now_iso(offset_seconds: int = 0) -> str:
     """Return an RFC3339 timestamp ``offset_seconds`` in the past."""
     import datetime
-    t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=offset_seconds)
+    t = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=offset_seconds)
     # Format like Docker emits — with nanoseconds-style trailing digits.
     return t.isoformat().replace("+00:00", ".123456789Z")
 
@@ -1559,7 +1558,7 @@ def test_container_finished_at_parses_nanosecond_timestamp(monkeypatch):
     result = docker_env._container_finished_at("/usr/bin/docker", "test-cid")
     assert result is not None, "must parse RFC3339 with nanoseconds"
     import datetime
-    assert result.tzinfo == datetime.timezone.utc
+    assert result.tzinfo == datetime.UTC
     assert result.year == 2026 and result.month == 5 and result.day == 28
 
 
@@ -1607,11 +1606,11 @@ def test_credential_mount_skipped_when_source_is_directory(monkeypatch, tmp_path
     )
     monkeypatch.setattr(
         "tools.credential_files.get_skills_directory_mount",
-        lambda: [],
+        list,
     )
     monkeypatch.setattr(
         "tools.credential_files.get_cache_directory_mounts",
-        lambda: [],
+        list,
     )
 
     with caplog.at_level(logging.WARNING):
@@ -1641,11 +1640,11 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
     )
     monkeypatch.setattr(
         "tools.credential_files.get_skills_directory_mount",
-        lambda: [],
+        list,
     )
     monkeypatch.setattr(
         "tools.credential_files.get_cache_directory_mounts",
-        lambda: [],
+        list,
     )
 
     with caplog.at_level(logging.WARNING):
@@ -1846,7 +1845,7 @@ def test_forwarded_secret_values_never_in_argv(monkeypatch):
     secret = "s3cr3t-gitlab-token-value"
     env = _make_execute_only_env(["GITLAB_TOKEN"])
     monkeypatch.setenv("GITLAB_TOKEN", secret)
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
 
     # init path
     init_args = env._build_init_env_args()

@@ -151,7 +151,7 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
             "oneshot=True, provider='custom', model='test-model', api_key='local-test-only', "
             f"base_url={url!r}, toolsets='terminal', max_turns=3, ignore_rules=True)",
         ], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, encoding="utf-8", timeout=60)
+            capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
     finally:
         release.touch()
         server.shutdown()

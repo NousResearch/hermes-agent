@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 # fcntl is Unix-only; Windows uses msvcrt
 try:
@@ -561,11 +561,11 @@ def _is_cron_silence_response(text: str) -> bool:
 # Keyed by profile home: one host gateway multiplexes every profile, and ``max_parallel_jobs`` is a
 # per-profile config key — a single process-global pool is sized by whichever profile ticked first
 # and then imposes that limit on all the others.
-_parallel_pools: Dict[str, concurrent.futures.ThreadPoolExecutor] = {}
-_parallel_pool_max_workers: Dict[str, Optional[int]] = {}
+_parallel_pools: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
+_parallel_pool_max_workers: dict[str, Optional[int]] = {}
 
 
-def _inflight_key(job_id: str, home: Optional[Union[Path, str]] = None) -> tuple:
+def _inflight_key(job_id: str, home: Optional[Path | str] = None) -> tuple:
     """``(home key, job id)`` — the identity of one in-flight cron run.
 
     ONE gateway process ticks every profile, so a job id alone is not unique: two profiles
@@ -579,7 +579,7 @@ def _inflight_key(job_id: str, home: Optional[Union[Path, str]] = None) -> tuple
 # Home key -> the real home Path that produced it. ``hermes_home_key`` normcases (it lower-cases on
 # Windows), so ``Path(key[0])`` is a case-folded path that matches nothing else on disk; bookkeeping
 # that needs the profile home reads it here instead of reconstructing it from the key.
-_inflight_home_paths: Dict[str, Path] = {}
+_inflight_home_paths: dict[str, Path] = {}
 
 
 def _remember_inflight_home(home: Path) -> Path:
@@ -659,7 +659,7 @@ class _CombinedCancelEvent:
     ``lost_ownership`` + per-transport events). Workers only call is_set()/set(), so no pump thread.
     """
 
-    def __init__(self, *events: Optional["_CancelEventLike"]) -> None:
+    def __init__(self, *events: Optional[_CancelEventLike]) -> None:
         self._events = [event for event in events if event is not None]
 
     def is_set(self) -> bool:
@@ -670,7 +670,7 @@ class _CombinedCancelEvent:
             event.set()
 
 
-def get_running_job_ids() -> "frozenset[str]":
+def get_running_job_ids() -> frozenset[str]:
     """Thread-safe snapshot of executing job IDs (dispatch until ``_process_job`` returns). Read by
     the gateway shutdown drain, otherwise blind to cron work (runs outside ``_running_agents``).
 
@@ -697,7 +697,7 @@ def get_running_job_details() -> list[dict]:
         ]
 
 
-def get_wedged_job_ids() -> "frozenset[str]":
+def get_wedged_job_ids() -> frozenset[str]:
     """In-flight job IDs older than their stale-inflight allowance (``max(2 * interval,
     cron.inflight_max_minutes)``) — the scheduler's own definition of a claim that can no longer be
     making progress. ``sweep_stale_inflight`` cannot release these while the worker thread is still
@@ -707,7 +707,7 @@ def get_wedged_job_ids() -> "frozenset[str]":
     return frozenset(key[1] for key in _wedged_inflight_keys())
 
 
-def _wedged_inflight_keys() -> "frozenset[tuple]":
+def _wedged_inflight_keys() -> frozenset[tuple]:
     """In-flight keys behind :func:`get_wedged_job_ids`, before the projection to bare job IDs."""
     now = time.time()
     with _running_lock:
@@ -771,7 +771,7 @@ def get_restart_wait_cron_counts() -> dict:
     }
 
 
-def is_job_running(job_id: str, home: Optional[Union[Path, str]] = None) -> bool:
+def is_job_running(job_id: str, home: Optional[Path | str] = None) -> bool:
     """True when THIS process has an in-flight run of ``job_id`` FOR ``home`` (default: the active
     cron scope's home).
 
@@ -834,7 +834,7 @@ def try_register_running_job(job_id: str, *, owner=None, future=_FUTURE_PENDING)
 
 
 def release_running_job(
-    job_id: str, home: Optional[Union[Path, str]] = None, *, owner=None,
+    job_id: str, home: Optional[Path | str] = None, *, owner=None,
 ) -> None:
     """Remove the registration unless an explicit ``owner`` has been replaced.
 
@@ -1257,7 +1257,7 @@ def _usage_audit_path() -> Path:
 
 def _utcnow_iso_ms() -> str:
     """RFC3339 UTC timestamp with millisecond precision and 'Z' suffix."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
@@ -2606,7 +2606,7 @@ def run_job(
         return True, output, final_response, None
 
     except Exception as e:
-        error_msg = f"{type(e).__name__}: {str(e)}"
+        error_msg = f"{type(e).__name__}: {e!s}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         # Cowork-style unreachable-model re-run (cron/unreachable_retry.py): flag failures where
         # the model was never reached (transient network/DNS, zero API calls) so the bookkeeping
@@ -3243,7 +3243,7 @@ def _deliver_crash_failure(
 
 
 
-def _install_fire_secret_scope() -> "tuple[contextvars.Token, Optional[contextvars.Token]]":
+def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvars.Token]]:
     """Install the firing profile's secret scope for the span ``_run_one_job_body`` runs, delivery
     included, and return the tokens ``_reset_fire_secret_scope`` needs.
 
@@ -3270,7 +3270,7 @@ def _install_fire_secret_scope() -> "tuple[contextvars.Token, Optional[contextva
     return scope_token, context_token
 
 
-def _reset_fire_secret_scope(tokens: "tuple[contextvars.Token, Optional[contextvars.Token]]") -> None:
+def _reset_fire_secret_scope(tokens: tuple[contextvars.Token, Optional[contextvars.Token]]) -> None:
     """Undo ``_install_fire_secret_scope`` — the context first, so multiplex semantics never
     outlive the scope they depend on."""
     from agent.secret_scope import reset_multiplex_context, reset_secret_scope
@@ -3291,7 +3291,7 @@ def _fire_secret_scope():
         _reset_fire_secret_scope(tokens)
 
 
-def _start_owned_run(job: dict, execution_id: str) -> "Optional[contextvars.Token]":
+def _start_owned_run(job: dict, execution_id: str) -> Optional[contextvars.Token]:
     """Win the run's ``claimed`` → ``running`` CAS and bind its cron identity; ``None`` when the run
     lost ownership first. A restart-safe worker already won it by adopting the row."""
     if os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id:
@@ -3450,7 +3450,7 @@ def _run_one_job_body(
 
         return _finish_completed_run(d, fire_owner, execution_id)
 
-    except BaseException as e:  # noqa: BLE001 — deliberate: see below
+    except BaseException as e:
         # BaseException, not Exception: CancelledError/KeyboardInterrupt/SystemExit propagate here.
         # Without mark_job_run(False) a finite one-shot is wedged: claim_dispatch consumed
         # repeat.completed but last_run_at is never written. Record first, then re-raise
@@ -4042,7 +4042,7 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
 # ticks every profile each cycle, and a process-global slot would let the
 # first profile starve all the others.
 _DEAD_OWNER_REAP_INTERVAL_SECONDS = 300.0
-_last_dead_owner_reap_at: Dict[str, float] = {}
+_last_dead_owner_reap_at: dict[str, float] = {}
 
 # Worktree prune throttle: the cron tick is the only reliably periodic process on gateway boxes.
 _WORKTREE_MAINTENANCE_INTERVAL_SECONDS = 6 * 3600.0
@@ -4050,7 +4050,7 @@ _last_worktree_maintenance_at: Optional[float] = None
 _worktree_maintenance_lock = threading.Lock()
 
 
-def _worktree_maintenance_repos() -> List[str]:
+def _worktree_maintenance_repos() -> list[str]:
     """Repos whose ``.worktrees/`` to keep pruned: the hermes checkout plus job workdir repo roots,
     filtered to those that actually have a ``.worktrees/`` dir."""
     repos: set = set()
@@ -4072,7 +4072,7 @@ def _worktree_maintenance_repos() -> List[str]:
                 probe = subprocess.run(
                     ["git", "rev-parse", "--show-toplevel"],
                     capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=5, cwd=workdir)
+                    errors="replace", timeout=5, cwd=workdir, check=False)
                 if probe.returncode == 0 and probe.stdout.strip():
                     repos.add(probe.stdout.strip())
             except Exception:
@@ -4385,26 +4385,26 @@ def _sweep_mcp_orphans_when_all_done(futures: list) -> None:
         _f.add_done_callback(_on_done)
 
 
-from cron.scheduler_tick import tick  # noqa: E402
+from cron.scheduler_tick import tick
 
 
 # ---------------------------------------------------------------------------
 # Split modules. Imported at the bottom (import cycle: they late-bind ``cron.scheduler`` as
 # ``_sched``). Only names this module itself calls; everything else lives in the split module.
 # ---------------------------------------------------------------------------
-from cron.scheduler_delivery import (  # noqa: E402
+from cron.scheduler_delivery import (
     _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
     _resolve_delivery_targets,
 )
-from cron.scheduler_script import (  # noqa: E402
+from cron.scheduler_script import (
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
 )
-from cron.scheduler_prompt import (  # noqa: E402
+from cron.scheduler_prompt import (
     _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
     _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
     _parse_wake_gate,
 )
-from cron.scheduler_preflight import (  # noqa: E402
+from cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,
     _empty_requested_mcp_toolsets, _is_transient_provider_resolve_error, _preflight_job_config,
 )

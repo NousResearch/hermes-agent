@@ -99,7 +99,7 @@ class StdioTransport:
     """Writes JSON frames to a stream (usually ``sys.stdout``) resolved via a callable, so runtime
     monkey-patches of the stream keep working."""
 
-    __slots__ = ("_stream_getter", "_lock")
+    __slots__ = ("_lock", "_stream_getter")
 
     def __init__(self, stream_getter: Callable[[], Any], lock: threading.Lock) -> None:
         self._stream_getter = stream_getter
@@ -290,7 +290,7 @@ class TeeTransport:
 
     __slots__ = ("_primary", "_secondaries")
 
-    def __init__(self, primary: "Transport", *secondaries: "Transport") -> None:
+    def __init__(self, primary: Transport, *secondaries: Transport) -> None:
         self._primary = primary
         self._secondaries = secondaries
 

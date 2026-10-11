@@ -147,6 +147,7 @@ def test_iron_proxy_swaps_authorization_header_end_to_end(hermes_home, monkeypat
             ],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0, f"curl failed: {result.stderr}"
         # Some iron-proxy versions return 200 with no body; only the swap matters.
@@ -254,6 +255,7 @@ def test_iron_proxy_swaps_x_api_key_header_end_to_end(hermes_home, monkeypatch):
             ],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0, f"curl failed: {result.stderr}"
         captured = _CaptureXApiKeyHandler.captured_key
@@ -353,6 +355,7 @@ def test_iron_proxy_management_reload_end_to_end(hermes_home, monkeypatch):
                 f"http://127.0.0.1:{upstream_port}/",
             ],
             capture_output=True, text=True,
+            check=False,
         )
         assert result.returncode == 0, f"curl failed: {result.stderr}"
         captured = _CaptureHandler.captured_auth

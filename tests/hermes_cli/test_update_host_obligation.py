@@ -61,7 +61,7 @@ def _arm(profile_runtime: str) -> None:
 def no_live_fleet(monkeypatch):
     """No fleet matrix rows: the obligation can never be discharged by evidence in these tests."""
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: SHA)
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda: [])
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", list)
 
 
 def test_obligation_armed_by_one_profile_is_owed_by_every_other(two_profiles, no_live_fleet, monkeypatch):
@@ -243,7 +243,7 @@ def test_one_installs_completed_restart_never_erases_another_installs_debt(tmp_p
         code = (f"import sys\nsys.path.insert(0, {str(roots[install])!r})\n"
                 "from hermes_cli.update_host_obligation import *\n" + body)
         child = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", code], env=env, capture_output=True,
-                               text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=60)
+                               text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=60, check=False)
         assert child.returncode == 0, child.stdout + child.stderr
         return child.stdout.strip()
 

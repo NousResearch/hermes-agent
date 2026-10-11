@@ -1089,7 +1089,7 @@ kind = "observability"
 enabled = true
 
 [components.config]
-version = 3
+version = 4
 
 [components.config.atof]
 enabled = true
@@ -1155,7 +1155,7 @@ kind = "observability"
 enabled = true
 
 [components.config]
-version = 3
+version = 4
 
 [components.config.atof]
 enabled = true
@@ -1248,7 +1248,7 @@ kind = "observability"
 enabled = true
 
 [components.config]
-version = 3
+version = 4
 
 [components.config.atof]
 enabled = true

@@ -74,7 +74,7 @@ def test_document_obligations(skill, required, forbidden):
     for text in required:
         assert text in body, text
     for pattern in forbidden:
-        assert not re.search(pattern, body, re.I), pattern
+        assert not re.search(pattern, body, re.IGNORECASE), pattern
     if skill == SOCIAL:
         assert "handed-off, not published" in body or "handed-off slots" in body
 
@@ -85,7 +85,7 @@ def test_document_obligations(skill, required, forbidden):
 ])
 def test_procedure_steps_have_completion_criteria(relative):
     body = (REPO / relative).read_text(encoding="utf-8")
-    steps = re.findall(r"^### \d+\..*?(?=^### \d+\.|^## |\Z)", body, re.M | re.S)
+    steps = re.findall(r"^### \d+\..*?(?=^### \d+\.|^## |\Z)", body, re.MULTILINE | re.DOTALL)
     assert steps, relative
     for step in steps:
         assert "Done when" in step, step[:80]

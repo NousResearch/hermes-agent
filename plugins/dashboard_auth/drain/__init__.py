@@ -150,7 +150,7 @@ def register(ctx) -> None:
         from hermes_cli.dashboard_auth.token_auth import register_token_route
 
         register_token_route(DRAIN_ROUTE_PATH)
-    except Exception as exc:  # noqa: BLE001 — seam import must not crash plugin load
+    except Exception as exc:
         logger.warning("dashboard-auth-drain: could not register token route %s: %s", DRAIN_ROUTE_PATH, exc)
     logger.info(
         "dashboard-auth-drain: registered drain service-credential provider (scope=%s, route=%s)",

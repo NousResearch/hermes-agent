@@ -155,7 +155,7 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
             except (ValueError, KeyError):
                 continue
     for rep in range(reps):
-        for name in TASKS:
+        for name, task in TASKS.items():
             if only and name not in only:
                 continue
             run_id = f"{name}-r{rep}"
@@ -194,14 +194,14 @@ mode = "overwrite"
                 "HERMES_HOME": str(HOME),
                 "HERMES_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
             })
-            q = TASKS[name].replace("{WORK}", str(work))
+            q = task.replace("{WORK}", str(work))
             t0 = time.time()
             try:
                 p = subprocess.run(
                     [sys.executable, "-m", "hermes_cli.main", "chat", "--query", q,
                      "--quiet", "--max-turns", "30", "--accept-hooks", "--model", model],
                     cwd=work, env=env, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=600)
+                    encoding="utf-8", errors="replace", timeout=600, check=False)
                 out = (p.stdout or "").strip()
                 rc = p.returncode
             except subprocess.TimeoutExpired:
@@ -288,7 +288,7 @@ def report(models):
                 if not rows:
                     continue
                 n = len(rows)
-                mean = lambda k: sum(r.get(k, 0) for r in rows) / n  # noqa: E731
+                mean = lambda k: sum(r.get(k, 0) for r in rows) / n
                 okp = 100 * sum(r["ok"] for r in rows) / n
                 print(f"{task:20s} | {arm:8s} | {n:2d} {okp:3.0f}% "
                       f"{mean('llm'):5.1f} {mean('tools'):5.1f} {mean('errs'):5.1f} "

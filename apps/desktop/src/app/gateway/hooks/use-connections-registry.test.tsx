@@ -4,9 +4,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useConnectionsRegistry } from './use-connections-registry'
 
+const { activeConnectionId, getOnChanged, setOnChanged } = vi.hoisted(() => {
+  let active = 'deleted' as string | null
+  const activeConnectionId = { get: () => active, set: (value: string | null) => (active = value) }
+  let onChanged: ((payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) => void) | undefined
+  return {
+    activeConnectionId,
+    getOnChanged: () => onChanged,
+    setOnChanged: (value: typeof onChanged) => (onChanged = value)
+  }
+})
+
 vi.mock('@/store/connections', () => ({
+  $activeConnectionId: activeConnectionId,
+  forgetConnection: vi.fn(),
   initializeConnectionsRegistry: vi.fn(async () => null),
-  refreshConnectionsRegistry: vi.fn(async () => null)
+  refreshConnectionsRegistry: vi.fn(async () => null),
+  selectConnection: vi.fn(async () => undefined)
 }))
 vi.mock('@/store/boot', () => ({ $desktopBoot: atom({ running: true }) }))
 vi.mock('@/store/windows', () => ({
@@ -23,6 +37,8 @@ const initialize = vi.mocked(connections.initializeConnectionsRegistry)
 beforeEach(() => {
   vi.clearAllMocks()
   refresh.mockResolvedValue(null)
+  setOnChanged(undefined)
+  activeConnectionId.set('deleted')
   $desktopBoot.set({ ...$desktopBoot.get(), running: true })
   vi.mocked(windows.isAuxiliaryWindow).mockReturnValue(false)
   vi.mocked(windows.isPeerInstanceWindow).mockReturnValue(false)
@@ -55,6 +71,80 @@ describe('window-owned connection registry', () => {
       expect(initialize).not.toHaveBeenCalled()
     }
   )
+
+  it('re-homes the active window after the main process removes its connection', async () => {
+    const surviving = { primary: 'local', connections: [{ id: 'local' }] }
+    refresh.mockResolvedValue(surviving as never)
+    window.hermesDesktop = {
+      connections: {
+        onChanged: (callback: (payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) => void) => {
+          setOnChanged(callback)
+          return () => undefined
+        }
+      }
+    } as never
+
+    renderHook(useConnectionsRegistry)
+    await act(async () => getOnChanged()?.({ connectionId: 'deleted', reason: 'removed' }))
+
+    expect(connections.forgetConnection).toHaveBeenCalledWith('deleted')
+    await waitFor(() => expect(connections.selectConnection).toHaveBeenCalledWith('local'))
+  })
+
+  it('refills retries after recovery and rehomes a failed removal read on retry', async () => {
+    vi.useFakeTimers()
+    window.hermesDesktop = {
+      connections: {
+        onChanged: (callback: never) => {
+          setOnChanged(callback)
+          return () => undefined
+        }
+      }
+    } as never
+    refresh.mockRejectedValue(new Error('first outage'))
+    renderHook(useConnectionsRegistry)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    expect(refresh).toHaveBeenCalledTimes(3)
+    refresh.mockResolvedValue(null)
+    await act(async () => getOnChanged()?.({ connectionId: 'x', reason: 'saved' }))
+    refresh.mockRejectedValue(new Error('second outage'))
+    await act(async () => getOnChanged()?.({ connectionId: 'deleted', reason: 'removed' }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    refresh.mockResolvedValue({ primary: 'local', connections: [{ id: 'local' }] } as never)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(refresh).toHaveBeenCalledTimes(7)
+    expect(connections.selectConnection).toHaveBeenCalledWith('local')
+  })
+
+  it('does not rehome after unmount while the removal read is pending', async () => {
+    window.hermesDesktop = {
+      connections: {
+        onChanged: (callback: never) => {
+          setOnChanged(callback)
+          return () => undefined
+        }
+      }
+    } as never
+    const view = renderHook(useConnectionsRegistry)
+    await act(async () => undefined)
+    let resolve!: (value: never) => void
+    refresh.mockImplementationOnce(
+      () =>
+        new Promise(r => {
+          resolve = r
+        })
+    )
+    act(() => getOnChanged()?.({ connectionId: 'deleted', reason: 'removed' }))
+    view.unmount()
+    await act(async () => resolve({ primary: 'local', connections: [] } as never))
+    expect(connections.selectConnection).not.toHaveBeenCalled()
+  })
 
   it('bounds failed reads and recovers on focus without polling a healthy registry', async () => {
     vi.useFakeTimers()

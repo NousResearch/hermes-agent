@@ -276,6 +276,59 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_cron_trim_renders_only_whitelist(self, monkeypatch, tmp_path):
+        """E2E: with cron_trim=True + a whitelist, only whitelisted skills render."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills"
+        # two categories, each with a whitelisted + a non-whitelisted skill
+        (skills_dir / "seo" / "seo-audit").mkdir(parents=True)
+        (skills_dir / "seo" / "seo-audit" / "SKILL.md").write_text("---\ndescription: Run an SEO audit\n---\n")
+        (skills_dir / "seo" / "seo-plan").mkdir(parents=True)
+        (skills_dir / "seo" / "seo-plan" / "SKILL.md").write_text("---\ndescription: Plan an SEO strategy\n---\n")
+        (skills_dir / "stock" / "stock-analysis").mkdir(parents=True)
+        (skills_dir / "stock" / "stock-analysis" / "SKILL.md").write_text("---\ndescription: Deep stock dive\n---\n")
+        (skills_dir / "stock" / "stock-screen").mkdir(parents=True)
+        (skills_dir / "stock" / "stock-screen" / "SKILL.md").write_text("---\ndescription: Screen stocks\n---\n")
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"cron_whitelist": ["seo-audit", "stock-analysis"], "cron_whitelist_only": True}},
+        )
+        out = build_skills_system_prompt(
+            available_tools={"skill_view"},
+            available_toolsets={"skills"},
+            cron_trim=True,
+        )
+        # whitelisted skills present, rendered as `name: [category-tag]` (description trimmed)
+        assert "seo-audit" in out
+        assert "stock-analysis" in out
+        assert "seo-audit: [seo]" in out or "seo-audit" in out
+        # full sub-descriptions are dropped (the whole point: ~3-5K tokens not 176K)
+        assert "Run an SEO audit" not in out
+        assert "Deep stock dive" not in out
+        # non-whitelisted skills are trimmed entirely (cron_whitelist_only=True)
+        assert "seo-plan" not in out
+        assert "stock-screen" not in out
+        assert "Plan an SEO strategy" not in out
+        assert "Screen stocks" not in out
+
+    def test_human_chat_keeps_full_index(self, monkeypatch, tmp_path):
+        """E2E: WITHOUT cron_trim, the full sub-description index is rendered
+        (human chat keeps skill discovery — no silent feature drop)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "seo" / "seo-audit").mkdir(parents=True)
+        (skills_dir / "seo" / "seo-audit" / "SKILL.md").write_text("---\ndescription: Run an SEO audit\n---\n")
+
+        # human chat: cron_trim is None
+        out = build_skills_system_prompt(
+            available_tools={"skill_view"},
+            available_toolsets={"skills"},
+            cron_trim=None,
+        )
+        # full description survives for discovery
+        assert "Run an SEO audit" in out
+
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path

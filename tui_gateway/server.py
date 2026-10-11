@@ -201,6 +201,21 @@ _LONG_HANDLERS = frozenset({
 _rpc_pool_workers = max(2, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))
 _pool = concurrent.futures.ThreadPoolExecutor(max_workers=_rpc_pool_workers, thread_name_prefix="tui-rpc")
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
+# Saturation guard for LONG handlers (#132546): a stuck worker cannot be killed, and once every
+# worker is stuck, queued LONG handlers wait out the client's 30s timeout with no diagnosis. The
+# semaphore reserves one slot per in-flight LONG handler (submitted-or-running); when none is
+# free, dispatch fails fast with a retryable busy error instead of enqueueing behind the stuck
+# workers. Fast handlers run inline and never touch this.
+_rpc_pool_slots = threading.Semaphore(_rpc_pool_workers)
+
+
+def _acquire_rpc_pool_slot() -> bool:
+    """Reserve a LONG-handler pool slot; False when all workers are already in flight."""
+    return _rpc_pool_slots.acquire(blocking=False)
+
+
+def _release_rpc_pool_slot() -> None:
+    _rpc_pool_slots.release()
 
 # Exact in-memory session record executing on the current turn thread — unlike a public session id,
 # this object identity cannot be supplied by RPC.

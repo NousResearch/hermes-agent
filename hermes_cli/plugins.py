@@ -1968,6 +1968,26 @@ def clear_thread_tool_whitelist() -> None:
     _thread_tool_whitelist.allowed = None
 
 
+_thread_detached_tool_hooks = threading.local()
+
+
+def set_thread_detached_tool_hooks() -> None:
+    """Mark THIS thread as a detached fork (background review): its tool calls are internal
+    machinery sharing the parent's session_id and must not publish ``pre_tool_call``/
+    ``post_tool_call`` under it (#133603) — the tool-hook mirror of the ``_persist_disabled``
+    guards on the session/LLM hooks (#107062). The thread whitelist above still applies."""
+    _thread_detached_tool_hooks.suppressed = True
+
+
+def clear_thread_detached_tool_hooks() -> None:
+    _thread_detached_tool_hooks.suppressed = False
+
+
+def thread_tool_hooks_detached() -> bool:
+    """True inside a thread marked by :func:`set_thread_detached_tool_hooks`."""
+    return bool(getattr(_thread_detached_tool_hooks, "suppressed", False))
+
+
 def _get_pre_tool_call_directive_details(
     tool_name: str, args: Optional[dict[str, Any]], task_id: str = "", session_id: str = "",
     tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",
@@ -1983,6 +2003,10 @@ def _get_pre_tool_call_directive_details(
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
         return _PreToolCallDirective(action="block", message=fmt.format(tool_name=tool_name))
+    # Detached forks keep the whitelist fence above but publish nothing further: their hooks
+    # would fire under the parent's session_id with no closing event (#133603).
+    if thread_tool_hooks_detached():
+        return _PreToolCallDirective()
     from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
     hook_results = invoke_lifecycle_hook(
         "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},

@@ -1149,7 +1149,12 @@ def _run_review_fork(
         agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
     st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
-    from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
+    from hermes_cli.plugins import (
+        clear_thread_detached_tool_hooks,
+        clear_thread_tool_whitelist,
+        set_thread_detached_tool_hooks,
+        set_thread_tool_whitelist,
+    )
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
     extra_list = ", ".join(sorted(configured_extra_tools))
     deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
@@ -1167,6 +1172,10 @@ def _run_review_fork(
             + memory_phrase_deny + "." + deny_extra + " Do not retry {tool_name}."
         ),
     )
+    # The fork shares the parent's session_id: without this, its tool calls publish
+    # pre/post_tool_call under that id with no closing event, leaving status consumers stuck
+    # on "working" after the parent turn finished (#133603). The whitelist fence above stays.
+    set_thread_detached_tool_hooks()
     with suppress(Exception):
         from tools.skill_manager_guards import _reset_background_review_read_marks
 
@@ -1184,6 +1193,7 @@ def _run_review_fork(
             )
     finally:
         clear_thread_tool_whitelist()
+        clear_thread_detached_tool_hooks()
         # Attribute usage to the PARENT session. Snapshot BEFORE unregister/close so counters
         # survive teardown, and in this finally so a fork that consumed tokens then raised is
         # still attributed. The recorder never raises.

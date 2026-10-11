@@ -684,6 +684,15 @@ def _emit_post_tool_call_hook(
     fields are derived from the result only past that gate when status is None."""
     if _post_tool_call_hook_suppressed.get():
         return
+    # A detached fork (background review) shares the parent's session_id; its post_tool_call
+    # would flip status consumers back to "working" after the parent turn already finished
+    # (#133603), mirroring the _persist_disabled guards on the LLM hooks (#107062).
+    try:
+        from hermes_cli.plugins import thread_tool_hooks_detached
+        if thread_tool_hooks_detached():
+            return
+    except Exception:
+        pass
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if not has_hook("post_tool_call"):

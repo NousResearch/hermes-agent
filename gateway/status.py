@@ -955,7 +955,17 @@ def _pid_exists(pid: int) -> bool:
             if probe_zombie and psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
                 return False
         except getattr(psutil, "NoSuchProcess", ()):
-            return False
+            # NoSuchProcess from the status read is ambiguous, not a death sentence: under
+            # hidepid=2 / ProtectProc=invisible another user's LIVE process has no readable
+            # /proc/<pid>, so psutil reports it exactly like a dead one (#135102). This
+            # branch is POSIX-only (probe_zombie is False on Windows, so status() above is
+            # never called there), but psutil.pid_exists() is NOT a valid second opinion:
+            # on Linux its /proc/<pid>/status read also fails under hidepid and it falls
+            # back to ``pid in os.listdir("/proc")``, which omits hidden pids — still
+            # False. The stdlib probe's os.kill(pid, 0) is the only answer that reads
+            # EPERM as alive (a really-dead pid still fails it with ESRCH), and its own
+            # zombie pre-check keeps defunct pids reported dead.
+            return pid_exists_stdlib(pid)
         except Exception:
             pass
         return bool(psutil.pid_exists(pid))

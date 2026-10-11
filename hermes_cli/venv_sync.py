@@ -615,7 +615,11 @@ def relaunch_command(
     else:
         # distlib .exe launchers are executable zip files with __main__, not
         # importable modules named '__main__'. run_path handles both shapes.
-        body = f"runpy.run_path({str(Path(argv[0]).absolute())!r}, run_name='__main__')"
+        # Both -I and run_path skip the entry script's directory, while plain
+        # `python script.py` puts it at sys.path[0]; sibling imports depend on it.
+        script = Path(argv[0]).absolute()
+        prefix += f"sys.path.insert(0, {str(script.parent)!r}); "
+        body = f"runpy.run_path({str(script)!r}, run_name='__main__')"
     return [str(python), *options, "-I", "-c", prefix + body]
 
 

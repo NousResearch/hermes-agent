@@ -381,6 +381,30 @@ def test_relaunch_runs_zip_launchers_and_preserves_interpreter_options(tmp_path)
     assert json.loads(result.stdout) == [["arg with spaces"], True, 1]
 
 
+def test_relaunch_puts_the_entry_scripts_directory_on_sys_path(tmp_path):
+    """Plain ``python script.py`` puts the script's directory at sys.path[0]; the
+    shim re-enters with -I and run_path, both of which skip it, so a script that
+    imports a sibling module dies with ModuleNotFoundError."""
+    root = tmp_path / "source"
+    root.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "sibling_only.py").write_text("value = 'from script dir'\n")
+    script = project / "entry.py"
+    script.write_text(
+        "import json, sys, sibling_only\n"
+        "print(json.dumps([sibling_only.value, sys.path[0]]))\n"
+    )
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), root, [str(script)], [sys.executable, str(script)], None,
+    )
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stderr
+    value, path_zero = json.loads(result.stdout)
+    assert value == "from script dir"
+    assert Path(path_zero) == project
+
+
 def test_live_old_update_blocks_launch_sync(tmp_path, monkeypatch):
     import pm
     root = tmp_path / "checkout"

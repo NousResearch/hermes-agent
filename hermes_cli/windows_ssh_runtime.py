@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import importlib
 import json
@@ -253,14 +255,38 @@ def read_token(path_value: str) -> str:
     return token
 
 
-def _read_json_stdin() -> dict[str, Any]:
-    raw = sys.stdin.buffer.read(_MAX_JSON + 1)
+def _decode_json_payload(raw: bytes) -> dict[str, Any]:
     if len(raw) > _MAX_JSON:
         raise ValueError("runtime payload is too large")
     parsed = json.loads(raw)
     if not isinstance(parsed, dict):
         raise ValueError("runtime payload must be an object")
     return parsed
+
+
+def _read_json_stdin() -> dict[str, Any]:
+    return _decode_json_payload(sys.stdin.buffer.read(_MAX_JSON + 1))
+
+
+def _read_payload(argv: list[str]) -> dict[str, Any]:
+    """Read the spawn payload from ``--payload-b64`` when given, else from stdin.
+
+    Desktop streams its PowerShell spawn script on the SSH session's stdin,
+    because cmd.exe (Windows OpenSSH's default shell) rejects the
+    ``-EncodedCommand`` form of it for exceeding the 8191-character command-line
+    limit. PowerShell drains that stream before it invokes this helper, so a
+    helper that read stdin would see an empty payload. The payload therefore
+    rides argv as base64 on that path; plain local invocations keep using stdin.
+    """
+    if argv and argv[0] == "--payload-b64":
+        if len(argv) != 2:
+            raise ValueError("--payload-b64 takes exactly one value")
+        try:
+            raw = base64.b64decode(argv[1], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(f"--payload-b64 is not valid base64: {exc}") from exc
+        return _decode_json_payload(raw)
+    return _read_json_stdin()
 
 
 def read_lock(ownership_id: str) -> dict[str, Any] | None:
@@ -456,7 +482,7 @@ _OPERATIONS: dict[str, tuple[int | None, Any]] = {
     "remove-token": (2, lambda o, n: {"removed": remove_artifact(_token_path(o, n))}),
     "read-log": (2, _read_log),
     "remove-log": (2, lambda o, n: {"removed": remove_artifact(_log_path(o, n))}),
-    "spawn": (None, lambda *_: spawn_backend(_read_json_stdin())),
+    "spawn": (None, lambda *args: spawn_backend(_read_payload(list(args)))),
     "inspect": (1, inspect_hermes),
     "process-state": (4, lambda p, c, h, n: process_state(int(p), int(c), h, n)),
     "terminate": (4, lambda p, c, h, n: {"terminated": terminate_owned(int(p), int(c), h, n)})}

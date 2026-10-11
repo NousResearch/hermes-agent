@@ -311,8 +311,16 @@ async function helper(ssh, runtime, operation, args = [], stdinData?) {
   return parsed
 }
 
-function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
+function atomicWindowsSpawnScript(runtime, reservation: any = {}, payloadB64 = '') {
   const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', 'spawn']
+
+  // The payload rides argv as base64: this script reaches PowerShell on stdin,
+  // and PowerShell drains that stream before it invokes the helper, so a helper
+  // reading stdin would see an empty payload.
+  if (payloadB64) {
+    argv.push('--payload-b64', payloadB64)
+  }
+
   const helper = operation => [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation]
 
   const script = [
@@ -358,11 +366,21 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
     .filter(line => line !== '')
     .join(';')
 
-  return powerShellCommand(script)
+  return script
 }
 
-async function atomicWindowsSpawn(ssh, runtime, stdinData, reservation: any = {}) {
-  const output = await ssh.exec(atomicWindowsSpawnCommand(runtime, reservation), { stdinData })
+// cmd.exe — Windows OpenSSH's default shell — rejects command lines of 8192+
+// chars with "The command line is too long.". This script's `-EncodedCommand`
+// form measured 16,262 chars at real identifier widths, so the script travels on
+// stdin the way the probes do (#98515) and argv stays a fixed ~190-char wrapper.
+function atomicWindowsSpawnCommand() {
+  return powerShellStdinCommand()
+}
+
+async function atomicWindowsSpawn(ssh, runtime, payload, reservation: any = {}) {
+  const payloadB64 = Buffer.from(String(payload || ''), 'utf8').toString('base64')
+  const script = atomicWindowsSpawnScript(runtime, reservation, payloadB64)
+  const output = await ssh.exec(atomicWindowsSpawnCommand(), { stdinData: `${encodedPowerShell(script)}\r\n` })
 
   const lines = stripPowerShellNoise(output)
 
@@ -836,7 +854,9 @@ function buildWindowsInteractiveCommand(remoteCwd = '') {
 
 export {
   assertWindowsRemoteInstallUpdateClear,
+  atomicWindowsSpawn,
   atomicWindowsSpawnCommand,
+  atomicWindowsSpawnScript,
   buildWindowsInteractiveCommand,
   connectWindowsRemote,
   detectRemotePlatform,

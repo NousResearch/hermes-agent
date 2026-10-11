@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Build the Hermes Skills Index — a centralized JSON catalog of all skills.
 
 This script crawls every skill source (skills.sh, GitHub taps, official,
@@ -22,30 +22,26 @@ import sys
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 # Allow importing from repo root
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-# Ensure HERMES_HOME is set (needed by tools/skills_hub.py imports)
+# Ensure HERMES_HOME is set (needed by tools/skills_hub*.py imports)
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
-from tools.skills_hub import (
-    GitHubAuth,
-    GitHubSource,
-    SkillsShSource,
-    OptionalSkillSource,
-    WellKnownSkillSource,
-    ClawHubSource,
-    LobeHubSource,
-    BrowseShSource,
-    SkillMeta,
-)
+from tools.skills_hub_clawhub import ClawHubSource
+from tools.skills_hub_github import GitHubAuth, GitHubSource
+from tools.skills_hub_models import SkillMeta
+from tools.skills_hub_official import OptionalSkillSource
+from tools.skills_hub_skillssh import SkillsShSource
+from tools.skills_hub_sources import BrowseShSource, LobeHubSource, WellKnownSkillSource
 import httpx
 
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
 INDEX_VERSION = 1
+CLAWHUB_ENRICH_BUDGET_SECONDS = 480
 
 
 def _meta_to_dict(meta: SkillMeta) -> dict:
@@ -261,8 +257,10 @@ def main():
 
     all_skills: list[dict] = []
 
-    # Crawl skills.sh
+    # Crawl skills.sh, then resolve its repo paths right away: the CI App token lives 1 h and
+    # the ClawHub walk below runs longer, so resolving after it 401'd every tree (0/20000).
     all_skills.extend(crawl_skills_sh(skills_sh_source))
+    all_skills = batch_resolve_paths(all_skills, auth)
 
     # Crawl other sources in parallel.
     # Per-source soft caps — sources stop returning when they run out, so these
@@ -292,9 +290,6 @@ def main():
             except Exception as e:
                 print(f"  Error: {e}", file=sys.stderr)
 
-    # Batch resolve GitHub paths for skills.sh entries
-    all_skills = batch_resolve_paths(all_skills, auth)
-
     # Enrich ClawHub skills with owner handles. The listing API does not
     # include owner info, so we fetch each skill's detail page concurrently.
     # This is needed to build valid "View source" URLs on the Skills Hub page:
@@ -321,7 +316,10 @@ def main():
         print(f"  Enriching {len(clawhub_metas)} ClawHub skills with owner handles...",
               flush=True)
         enrich_start = time.time()
-        enriched = sources["clawhub"].enrich_owners(clawhub_metas, max_workers=30)
+        # Best-effort: ~2s per detail call means the full catalog would take >1h;
+        # the un-enriched remainder ships without an owner link (see enrich_owners).
+        enriched = sources["clawhub"].enrich_owners(
+            clawhub_metas, max_workers=30, budget_seconds=CLAWHUB_ENRICH_BUDGET_SECONDS)
         # Write enriched owner back into the index dicts.
         meta_by_id = {m.identifier: m for m in clawhub_metas}
         for s in clawhub_skills:
@@ -442,7 +440,7 @@ def main():
     # Healthy — only now write the index out for the docs build to consume.
     index = {
         "version": INDEX_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "skill_count": len(deduped),
         "skills": deduped,
     }

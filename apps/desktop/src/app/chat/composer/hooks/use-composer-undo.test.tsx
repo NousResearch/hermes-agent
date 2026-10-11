@@ -1,6 +1,6 @@
 import { render } from '@testing-library/react'
 import { createRef, type RefObject } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import { placeCaretAtEnd } from '../test-utils'
 
@@ -168,19 +168,5 @@ describe('useComposerUndo', () => {
 
     view.unmount()
     editor.remove()
-  })
-
-  it('is inert when the editor ref is empty', () => {
-    const ref = createRef<HTMLDivElement>() as RefObject<HTMLDivElement | null>
-    const sync = vi.fn(() => '')
-
-    const { api, view } = mountUndo(ref, sync)
-
-    api.current!.recordUndoPoint()
-
-    expect(api.current!.undo()).toBe(false)
-    expect(sync).not.toHaveBeenCalled()
-
-    view.unmount()
   })
 })

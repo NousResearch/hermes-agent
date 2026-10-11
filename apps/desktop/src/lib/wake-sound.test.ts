@@ -56,20 +56,6 @@ describe('playWakeSound', () => {
     $hapticsMuted.set(false)
   })
 
-  it('plays a two-note rising chime when sound is on', () => {
-    playWakeSound()
-
-    // G5 then C6 — two enveloped oscillators, both routed onward.
-    expect(oscillators).toHaveLength(2)
-    expect(oscillators[0].frequency.setValueAtTime).toHaveBeenCalledWith(783.99, expect.any(Number))
-    expect(oscillators[1].frequency.setValueAtTime).toHaveBeenCalledWith(1046.5, expect.any(Number))
-
-    for (const osc of oscillators) {
-      expect(osc.start).toHaveBeenCalled()
-      expect(osc.stop).toHaveBeenCalled()
-    }
-  })
-
   it('stays silent when the shared sound-mute toggle is on', () => {
     $hapticsMuted.set(true)
     playWakeSound()

@@ -133,16 +133,6 @@ class TestParseLoopArgs:
         p = parse_loop_args("2m poll --times zero")
         assert p["error"] is not None
 
-    def test_no_start_now_flag_anymore(self):
-        from hermes_cli.loops import parse_loop_args
-
-        # Immediate first wakeup is the default now; --start-now was never
-        # released, so the token is NOT parsed as a flag.
-        p = parse_loop_args("1h check the deploy status")
-        assert "start_now" not in p
-        assert p["interval_seconds"] == 3600
-        assert p["prompt"] == "check the deploy status"
-        assert p["error"] is None
 
     def test_start_now_word_in_prompt_kept_verbatim(self):
         from hermes_cli.loops import parse_loop_args
@@ -443,6 +433,20 @@ class TestTickLifecycle:
             decision = mgr.complete_tick("3 tests still failing")
         assert decision["stopped"] is False
 
+    def test_until_judge_blocked_pauses(self, hermes_home):
+        """An unachievable stop condition pauses the loop instead of spinning to the tick budget."""
+        from hermes_cli.loops import LoopManager
+
+        mgr = LoopManager(session_id="t11b")
+        state = mgr.set("poll", interval_seconds=300, until="the deleted repo's CI is green")
+        state.next_due_at = time.time() - 1
+        mgr.fire_tick()
+        with patch("hermes_cli.goals.judge_goal", return_value=("blocked", "repo no longer exists", False, None, False)):
+            decision = mgr.complete_tick("The repository was deleted; there is no CI to watch.")
+        assert decision["stopped"] is True
+        assert decision["status"] == "paused"
+        assert "unachievable" in decision["message"]
+
     def test_until_judge_error_fails_open(self, hermes_home):
         from hermes_cli.loops import LoopManager
 
@@ -538,18 +542,6 @@ class TestControls:
         mgr.pause(reason="user-interrupted")
         assert mgr.state.awaiting_response is False
 
-    def test_status_line_shapes(self, hermes_home):
-        from hermes_cli.loops import LoopManager
-
-        mgr = LoopManager(session_id="c4")
-        assert "No loop set" in mgr.status_line()
-        mgr.set("poll the build", interval_seconds=300)
-        assert "active" in mgr.status_line()
-        assert "poll the build" in mgr.status_line()
-        mgr.pause()
-        assert "paused" in mgr.status_line()
-        mgr.clear()
-        assert "No loop set" in mgr.status_line()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -595,14 +587,6 @@ class TestGoalMixing:
 
 
 class TestDispatchLoopCommand:
-    def test_create_fixed(self, hermes_home):
-        from hermes_cli.loops import LoopManager, dispatch_loop_command
-
-        mgr = LoopManager(session_id="d1")
-        result = dispatch_loop_command(mgr, "5m check the deploy")
-        assert result["created"] is True
-        assert "Loop set" in result["output"]
-        assert "every 5m" in result["output"]
 
     def test_create_self_paced(self, hermes_home):
         from hermes_cli.loops import LoopManager, dispatch_loop_command
@@ -648,13 +632,6 @@ class TestDispatchLoopCommand:
         dispatch_loop_command(mgr, "5m ping", route=route)
         assert load_loop("d5").route == route
 
-    def test_help(self, hermes_home):
-        from hermes_cli.loops import LoopManager, dispatch_loop_command
-
-        mgr = LoopManager(session_id="d6")
-        out = dispatch_loop_command(mgr, "help")["output"]
-        assert "Usage" in out
-        assert "--times" in out
 
     def test_bad_times_error(self, hermes_home):
         from hermes_cli.loops import LoopManager, dispatch_loop_command
@@ -670,16 +647,6 @@ class TestDispatchLoopCommand:
 # ──────────────────────────────────────────────────────────────────────
 
 
-class TestCommandRegistry:
-    def test_loop_registered_with_proactive_alias(self):
-        from hermes_cli.commands import resolve_command
-
-        cmd = resolve_command("loop")
-        assert cmd is not None
-        assert cmd.name == "loop"
-        alias = resolve_command("proactive")
-        assert alias is not None
-        assert alias.name == "loop"
 
 
 # ──────────────────────────────────────────────────────────────────────

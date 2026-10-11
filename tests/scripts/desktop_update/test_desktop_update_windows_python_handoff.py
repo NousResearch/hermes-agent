@@ -22,7 +22,7 @@ def main():
     with Path(os.environ['HANDOFF_CALLS']).open('a') as stream:
         stream.write(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd()}) + '\\n')
     print('Desktop build failed')  # no warning-driven second build on PM
-    if sys.argv[1:] == ['gateway', 'start', '--all']:
+    if sys.argv[1:] == ['gateway', 'start']:
         return int(os.environ.get('GATEWAY_EXIT', '0'))
     if os.environ.get('HANDOFF_HANG'):
         # Print, then park silently: the shape the hand-off's idle watchdog kills.
@@ -64,11 +64,12 @@ def test_pm_handoff_reports_update_and_gateway_results(
     expected = [{'argv': ['update', '--yes'] + ([] if no_gateway else ['--gateway'])
                  + ['--branch', 'main', '--keep-stash'], 'cwd': str(install)}]
     if code == 0 and not no_gateway:
-        expected.append({'argv': ['gateway', 'start', '--all'], 'cwd': str(install)})
+        expected.append({'argv': ['gateway', 'start'], 'cwd': str(install)})
     assert [json.loads(line) for line in calls.read_text(encoding='utf-8-sig').splitlines()] == expected
     receipt = json.loads((home / '.hermes-update-result.json').read_text(encoding='utf-8-sig'))
     assert receipt['ok'] == (code == 0)
-    assert receipt.get('manual', False) == (code == 0 and not no_gateway and gateway_code != 0)
+    # The fixture publishes no live state: even a zero-exit launch is not readiness.
+    assert receipt.get('manual', False) == (code == 0 and not no_gateway)
     assert not (home / '.hermes-update-in-progress').exists()
 
 

@@ -1737,20 +1737,21 @@ class TestProfilesToServe:
 
     @pytest.mark.parametrize("failure_at", ["stat", "read", "decode"])
     def test_standalone_io_failure_is_bounded_and_recovers(self, profile_env, monkeypatch, caplog, failure_at):
-        from hermes_cli import config
-
         create_profile("solo", no_alias=True)
         home = get_profile_dir("solo")
         cfg = home / "config.yaml"
         cfg.write_text("gateway:\n  standalone: true\n", encoding="utf-8")
         real_stat = Path.stat
+        real_open = Path.open
 
         def denied(path, *args, **kwargs):
             if path == cfg:
                 raise PermissionError("denied")
             return real_stat(path, *args, **kwargs)
 
-        def unreadable(*args, **kwargs):
+        def unreadable(path, *args, **kwargs):
+            if path != cfg:
+                return real_open(path, *args, **kwargs)
             if failure_at == "decode":
                 raise UnicodeError("decode failed")
             raise PermissionError("denied")
@@ -1759,7 +1760,8 @@ class TestProfilesToServe:
             if failure_at == "stat":
                 m.setattr(Path, "stat", denied)
             else:
-                m.setattr(config, "read_user_config_raw", unreadable)
+                # Inject at the filesystem boundary, not a heavy config import.
+                m.setattr(Path, "open", unreadable)
             assert profiles.profile_is_standalone(home) is False
             assert profiles.profile_is_standalone(home) is False
         assert len([r for r in caplog.records if "Cannot read gateway.standalone" in r.message]) == 1

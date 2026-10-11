@@ -35,13 +35,31 @@ class WebsitePolicyError(Exception):
 
 
 def _normalize_rule(rule: Any) -> Optional[str]:
-    """Reduce a rule (bare host, URL, or ``host/path``) to a lowercase host; None for blanks/comments."""
+    """Reduce a rule (bare host, URL, or ``host/path``) to a lowercase host; None for blanks/comments.
+
+    A URL rule reduces from ``hostname`` (host only), matching how the request host is normalized;
+    ``netloc`` would keep the optional userinfo and port, producing a pattern no real host equals.
+    A schemeless rule that still carries a port or userinfo is dropped with a warning rather than
+    becoming a silently inert pattern. IPv6 literals keep their colons (not a port)"""
     if not isinstance(rule, str) or not (value := rule.strip().lower()) or value.startswith("#"):
         return None
     if "://" in value:
         parsed = urlparse(value)
-        value = parsed.netloc or parsed.path
-    return value.split("/", 1)[0].strip().rstrip(".").removeprefix("www.") or None
+        value = parsed.hostname or parsed.netloc or parsed.path
+    normalized = value.split("/", 1)[0].strip().rstrip(".").removeprefix("www.")
+    if not normalized:
+        return None
+    try:
+        has_port = urlparse(f"//{normalized}").port is not None
+    except ValueError:  # bare IPv6 literal: the colons are the address, not a port
+        has_port = False
+    if has_port or "@" in normalized:
+        logger.warning(
+            "website_blocklist rule %r has a port or userinfo and cannot be matched; use a bare host",
+            rule,
+        )
+        return None
+    return normalized
 
 
 def _iter_blocklist_file_rules(path: Path) -> list[str]:

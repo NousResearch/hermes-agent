@@ -387,3 +387,47 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     adapter.send.assert_not_awaited()
 
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_has_bot", [False, True])
+async def test_routed_restart_notice_keeps_receiving_bot(tmp_path, monkeypatch, runtime_has_bot):
+    from gateway.session_identity import resolve_identity
+    from tests.gateway.restart_test_helpers import RestartTestAdapter
+
+    home = tmp_path / ".hermes"
+    for name in ("alpha", "beta", "shared"):
+        profile_home = home / "profiles" / name
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text("{}\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(gateway_run, "_hermes_home", home)
+    runner, primary = make_restart_runner()
+    runner.config.multiplex_profiles = True
+    runner._primary_profile_name = "default"
+    runner.request_restart = MagicMock(return_value=True)
+    bots = {name: RestartTestAdapter() for name in ("alpha", "beta", "shared")}
+    for name, bot in bots.items():
+        bot.set_owner_profile(name)
+    runner._profile_adapters = {name: {Platform.TELEGRAM: bots[name]} for name in ("alpha", "beta")}
+    runner._profile_adapters["shared"] = {Platform.TELEGRAM: bots["shared"]} if runtime_has_bot else {}
+
+    bots["default"] = primary
+    expected = {name: 0 for name in bots}
+    for name in ("default", "alpha", "beta", "alpha", "default"):
+        bot = bots[name]
+        source = bot.build_source(chat_id="42", chat_type="dm", user_id="42")
+        source.profile = "shared"
+        identity = resolve_identity(source, runner=runner, adapter=bot, transport_profile=name)
+        assert identity.runtime_home == home / "profiles" / "shared"
+        event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=source, message_id="m1")
+        before = len(bot.sent)
+        await runner._handle_restart_command(event)
+        assert await runner._send_restart_notification() == ("telegram", "42", None)
+        assert len(bot.sent) == before + 1
+        expected[name] += 1
+        assert {key: len(value.sent) for key, value in bots.items()} == expected
+    assert len(bots["alpha"].sent) == 2
+    assert len(bots["beta"].sent) == 1
+    assert len(primary.sent) == 2

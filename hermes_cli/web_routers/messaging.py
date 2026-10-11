@@ -580,17 +580,21 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
 
 
 @router.post("/api/messaging/whatsapp/onboarding/start")
-async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
+async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart, profile: Optional[str] = None):
     mode = _normalize_whatsapp_onboarding_mode(body.mode)
     allowed_users = _normalize_whatsapp_allowed_users(body.allowed_users)
 
-    with _config_profile_scope(body.profile):
+    # The dashboard scopes this call via ?profile= (the JSON body carries no
+    # profile); without honoring it a secondary profile's setup would pair
+    # against the default profile's session, same contract as apply below.
+    effective_profile = body.profile or profile
+    with _config_profile_scope(effective_profile):
         session_path = _whatsapp_session_path()
         expires_at_ts = time.time() + _WHATSAPP_ONBOARDING_TTL_SECONDS
         fields = dict(
             proc=None, mode=mode, allowed_users=allowed_users, session_path=str(session_path),
             expires_at=datetime.fromtimestamp(expires_at_ts, UTC).isoformat().replace("+00:00", "Z"),
-            expires_at_ts=expires_at_ts, profile=body.profile,
+            expires_at_ts=expires_at_ts, profile=effective_profile,
         )
         already_linked = (session_path / "creds.json").exists()
         if already_linked:  # creds on disk: report connected without pairing

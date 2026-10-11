@@ -355,3 +355,79 @@ def test_credential_write_on_default_profile_is_not_hot_served(client, isolated_
                       json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}})
     assert resp.status_code == 200
     assert resp.json()["hot_served"] is False
+
+
+class TestWhatsAppOnboardingStartProfileScope:
+    """The dashboard scopes the WhatsApp QR start via ``?profile=`` (the JSON body
+    carries no profile), so the start handler must honor the query param like
+    apply does — otherwise a secondary profile's setup checks the default
+    profile's session and reports it connected without ever showing a QR."""
+
+    def _link_session(self, home, phone: str) -> None:
+        from pathlib import Path
+
+        assert isinstance(home, Path)
+        session = home / "platforms" / "whatsapp" / "session"
+        session.mkdir(parents=True, exist_ok=True)
+        (session / "creds.json").write_text(
+            f'{{"me":{{"id":"{phone}:1@s.whatsapp.net","name":"Linked Bot"}}}}',
+            encoding="utf-8",
+        )
+
+    def _start(self, client, params):
+        return client.post(
+            "/api/messaging/whatsapp/onboarding/start",
+            params=params,
+            json={"mode": "bot", "allowed_users": ""},
+        )
+
+    def test_start_with_query_param_reads_that_profiles_session(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_routers.messaging as rt_messaging
+        from hermes_cli.web_server_messaging import _whatsapp_onboarding_sessions
+
+        monkeypatch.setattr(
+            rt_messaging,
+            "_run_whatsapp_pairing",
+            lambda *args: pytest.fail(
+                "a linked profile must not spawn a pairing process"
+            ),
+        )
+        _whatsapp_onboarding_sessions.clear()
+        self._link_session(isolated_profiles["worker_alpha"], "15559990000")
+
+        resp = self._start(client, {"profile": "worker_alpha"})
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["status"] == "connected"
+        assert payload["account_phone"] == "15559990000"
+        assert (
+            _whatsapp_onboarding_sessions[payload["pairing_id"]].profile
+            == "worker_alpha"
+        )
+        _whatsapp_onboarding_sessions.clear()
+
+    def test_start_on_secondary_ignores_the_default_profiles_session(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_routers.messaging as rt_messaging
+        from hermes_cli.web_server_messaging import _whatsapp_onboarding_sessions
+
+        spawned = []
+        monkeypatch.setattr(
+            rt_messaging, "_run_whatsapp_pairing", lambda *args: spawned.append(args)
+        )
+        _whatsapp_onboarding_sessions.clear()
+        # Only the DEFAULT profile is linked; the secondary must pair its own.
+        self._link_session(isolated_profiles["default"], "15550000001")
+
+        resp = self._start(client, {"profile": "worker_alpha"})
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["status"] != "connected"
+        assert payload.get("account_phone") is None
+        assert spawned, "an unlinked secondary profile must start a fresh pairing"
+        _whatsapp_onboarding_sessions.clear()

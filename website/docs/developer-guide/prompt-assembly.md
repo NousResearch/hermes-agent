@@ -326,6 +326,23 @@ In other words:
 - if you want reusable operating procedures, add or modify skills
 - if you want to change how Hermes assembles prompts for everyone, change Python and treat it as a code contribution
 
+## Reviewing changes to the prompt surface
+
+The **prompt surface** is what a stock install sends before the first user message: the system prompt and the `tools[]` array. A one-line code change can rewrite either without the diff showing it. A guidance constant can move tiers, a toolset can gain a tool, or a schema rewriter can edit a description. So the rendered surface is committed and reviewed like code:
+
+- `scripts/ci/prompt_surface.py render` builds the surface through the production assembly code (`build_system_prompt_parts` and the agent's own `tools[]`) and writes it to `tests/fixtures/prompt_surface/`. It renders nine surfaces: `cli` with four model families (the model name gates guidance and the patch dialect), `cli` inside a code workspace, `desktop`, `telegram`, `discord` and `cron`. The render uses a fresh home. The clock, host OS, network, tool availability and machine paths are pinned, so a laptop and CI produce the same bytes. Every registered tool counts as available, so credential-gated schemas get reviewed too.
+- `tests/ci/test_prompt_surface.py` fails when the committed snapshot is stale. A PR that changes the surface carries the regenerated snapshot, and reviewers read the real prompt text and schemas in the Files tab.
+- The **Prompt surface diff** CI job posts a per-surface summary to the PR review comment: token deltas, prompt hunks, and added or removed tools and parameters.
+- Changes under `tests/fixtures/prompt_surface/` need **two approvals from hermes-agent-core** before they can merge.
+
+Regenerate after any change that moves the surface:
+
+```bash
+scripts/run-in-hermes-env python scripts/ci/prompt_surface.py render
+```
+
+User-side customization (`SOUL.md`, context files, skills you install, `platform_hints`, `agent.*` guidance toggles) never touches the snapshot. The render uses stock defaults and only bundled skills.
+
 ## Why prompt assembly is split this way
 
 The architecture is intentionally optimized to:

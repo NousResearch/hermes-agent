@@ -1,0 +1,21 @@
+{
+  "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+  "name": "browser_vision",
+  "parameters": {
+    "properties": {
+      "annotate": {
+        "default": false,
+        "description": "If true, overlay numbered [N] labels on interactive elements. Each [N] maps to ref @eN for subsequent browser commands. Useful for QA and spatial reasoning about page layout.",
+        "type": "boolean"
+      },
+      "question": {
+        "description": "What you want to know about the page visually. Be specific about what you're looking for.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "question"
+    ],
+    "type": "object"
+  }
+}

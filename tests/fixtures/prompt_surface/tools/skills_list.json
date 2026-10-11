@@ -1,0 +1,14 @@
+{
+  "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+  "name": "skills_list",
+  "parameters": {
+    "properties": {
+      "category": {
+        "description": "Optional category filter to narrow results",
+        "type": "string"
+      }
+    },
+    "required": [],
+    "type": "object"
+  }
+}

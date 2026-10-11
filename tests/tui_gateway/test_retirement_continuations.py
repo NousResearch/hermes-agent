@@ -66,7 +66,7 @@ def test_prompt_worker_stays_busy_after_running_flag_until_finalizers_finish(tmp
     monkeypatch.setattr(server, "_emit_settled_session_info", finish)
     monkeypatch.setitem(server._sessions, "s", session)
     try:
-        assert server._run_prompt_submit("r", "s", session, "hello") is True
+        assert server._run_prompt_submit("r", "s", session, "hello", turn_claim=server._claim_session_turn(session)) is True
         assert finishing.wait(10)
         assert session["running"] is False
         assert fence.prepare() == {"ok": False, "idle": False}

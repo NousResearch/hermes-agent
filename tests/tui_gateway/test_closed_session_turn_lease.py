@@ -96,7 +96,13 @@ def test_close_while_first_prompt_waits_for_build_leaves_no_lease(turn_env):
     } == {"leases": [], "reopen_refusal": None, "running": False, "turns_run": []}
 
 
-def test_close_landing_while_turn_claims_lease_leaves_no_lease(turn_env, monkeypatch):
+@pytest.mark.parametrize(
+    ("claim_site", "stop_first", "submit_outcome"),
+    [("turn", False, "streaming"), ("turn", True, "streaming"), ("submit", False, 4007)],
+)
+def test_close_landing_while_turn_claims_lease_leaves_no_lease(
+    turn_env, monkeypatch, claim_site, stop_first, submit_outcome
+):
     """The close finalizes between the turn's closing check and its lease claim."""
     ready = threading.Event()
     ready.set()
@@ -104,27 +110,37 @@ def test_close_landing_while_turn_claims_lease_leaves_no_lease(turn_env, monkeyp
     session = _session(agent=_built_agent(turns_run), agent_ready=ready)
     turn_env.append(session)
     server._sessions[SID] = session
-    claim = server._ensure_active_session_slot
+    hooked = "_ensure_active_session_slot" if claim_site == "turn" else "_claim_active_session_slot"
+    claim = getattr(server, hooked)
+    submitting_thread = threading.current_thread()
     at_claim: dict = {}
 
-    def _claim_after_close(sid, claiming):
-        if threading.current_thread() is claiming.get("_run_thread") and not claiming.get("_closing"):
+    def _claim_after_close(*args, **kwargs):
+        on_turn_thread = threading.current_thread() is not submitting_thread
+        if on_turn_thread == (claim_site == "turn") and not at_claim:
+            if stop_first:
+                assert _rpc("session.interrupt")["result"] == {"status": "interrupted"}
             at_claim["closed"] = _rpc("session.close")["result"]["closed"]
             at_claim["leases"] = _registry_session_ids()
-        return claim(sid, claiming)
+        return claim(*args, **kwargs)
 
-    monkeypatch.setattr(server, "_ensure_active_session_slot", _claim_after_close)
+    monkeypatch.setattr(server, hooked, _claim_after_close)
 
     submitted = _rpc("prompt.submit", text="hello")
-    assert submitted["result"]["status"] == "streaming", submitted
-    _join_turn(session)
+    if run_thread := session.get("_run_thread"):
+        run_thread.join(timeout=10)
+        assert not run_thread.is_alive()
 
-    monkeypatch.setattr(server, "_ensure_active_session_slot", claim)
-    assert at_claim == {"closed": True, "leases": []}
+    monkeypatch.setattr(server, hooked, claim)
     assert {
+        "submit": submitted.get("result", {}).get("status") or submitted["error"]["code"],
+        "at_claim": at_claim,
         "leases": _registry_session_ids(), "reopen_refusal": _reopen_refusal(),
         "running": session["running"], "turns_run": turns_run,
-    } == {"leases": [], "reopen_refusal": None, "running": False, "turns_run": []}
+    } == {
+        "submit": submit_outcome, "at_claim": {"closed": True, "leases": []},
+        "leases": [], "reopen_refusal": None, "running": False, "turns_run": [],
+    }
 
 
 def test_closing_refusal_keeps_a_lease_the_session_already_held(turn_env):
@@ -136,7 +152,44 @@ def test_closing_refusal_keeps_a_lease_the_session_already_held(turn_env):
     held = session["active_session_lease"]
     session["_closing"] = True
 
-    assert server._admit_prompt_turn(SID, session, "hello", None, None, None, None) is None
+    with session["history_lock"]:
+        turn_claim = server._claim_session_turn(session)
+    assert server._admit_prompt_turn(
+        SID, session, "hello", None, None, None, None, turn_claim=turn_claim) is None
 
     assert session.get("active_session_lease") is held
     assert _registry_session_ids() == ["closing-session-key"]
+
+
+def test_closing_claim_does_not_take_over_a_detached_runtimes_lease(turn_env, monkeypatch):
+    """Another runtime of the same chat has lost its client, so a claim for this chat may normally take its
+    lease over. A claim that the close interrupts must leave that lease with its holder."""
+    holder = _session(agent=_built_agent([]), transport=server._detached_ws_transport)
+    turn_env.append(holder)
+    server._sessions["holder-sid"] = holder
+    ensure_slot = getattr(server, "_ensure_active_session_slot")
+    assert ensure_slot("holder-sid", holder) is None
+    held = holder["active_session_lease"]
+
+    session = _session()
+    turn_env.append(session)
+    server._sessions[SID] = session
+    claim = getattr(server, "_claim_active_session_slot")
+
+    def _close_then_claim(*args, **kwargs):
+        assert _rpc("session.close")["result"]["closed"] is True
+        return claim(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_claim_active_session_slot", _close_then_claim)
+    refusal = ensure_slot(SID, session)
+    monkeypatch.setattr(server, "_claim_active_session_slot", claim)
+
+    server._sessions.pop("holder-sid", None)
+    assert {
+        "refused": refusal is not None, "holder_lease": holder.get("active_session_lease"),
+        "holder_taken_over": holder.get("_lease_taken_over", False),
+        "closing_lease": session.get("active_session_lease"), "leases": _registry_session_ids(),
+    } == {
+        "refused": True, "holder_lease": held, "holder_taken_over": False,
+        "closing_lease": None, "leases": ["closing-session-key"],
+    }

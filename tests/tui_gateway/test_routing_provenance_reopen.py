@@ -106,7 +106,7 @@ def test_a_registered_stale_close_is_cleared_before_the_turn_and_rotation_publis
     agent = _Agent("row-1", db)
     session = server._sessions["ui-106459-1"] = _session(agent)
 
-    assert server._run_prompt_submit("rid", "ui-106459-1", session, "go") is True
+    assert server._run_prompt_submit("rid", "ui-106459-1", session, "go", turn_claim=server._claim_session_turn(session)) is True
 
     assert agent.turns == ["go"]
     assert agent.stamp_seen_by_turn == [None], "the stamp must be cleared before the worker starts"
@@ -131,7 +131,7 @@ def test_only_an_explicit_close_on_a_still_registered_session_is_cleared(turn_en
     if claimed_for_teardown:
         assert server._pop_session_by_id("ui-106459-2") is session
 
-    started = server._run_prompt_submit("rid", "ui-106459-2", session, "go")
+    started = server._run_prompt_submit("rid", "ui-106459-2", session, "go", turn_claim=server._claim_session_turn(session))
 
     assert started is not claimed_for_teardown
     assert db.get_session("row-2")["end_reason"] == reason

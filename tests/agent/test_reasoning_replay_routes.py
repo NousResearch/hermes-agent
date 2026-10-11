@@ -119,3 +119,33 @@ def test_named_field_rejection_strips_once_per_model_and_never_loops(tmp_path):
     # A sibling model on the same gateway keeps every carrier.
     sibling = reasoning_replay_route("chat_completions", "nous", "moonshotai/kimi-k3", lane.base_url)
     assert "reasoning_details" in sibling.carriers
+
+
+def test_route_shaping_keeps_private_native_carrier_for_the_transport():
+    """A resumed Gemini/Copilot row carries its signature only as a private reasoning_details record;
+    route shaping must leave it for ``shape_wire_carriers`` even on routes that never read the array."""
+    from agent.message_sanitization import apply_reasoning_content_policy, reasoning_replay_route
+    from agent.reasoning_carriers import CARRIER_TYPE, shape_wire_carriers
+
+    base = "https://generativelanguage.googleapis.com/v1beta/openai"
+    record = {"type": CARRIER_TYPE, "extra_content": {"google": {"thought_signature": "SIG"}}}
+    row = {"role": "assistant", "content": "391", "reasoning_details": [{"type": "reasoning.text", "text": "t"}, record]}
+    route = reasoning_replay_route("chat_completions", "gemini", "gemini-3.5-pro", base)
+    api = dict(row)
+    apply_reasoning_content_policy(row, api, route.pad, route.carriers)
+    wire = shape_wire_carriers([api], model="gemini-3.5-pro", base_url=base)[0]
+    assert wire["extra_content"] == record["extra_content"]
+    assert "reasoning_details" not in wire
+
+
+def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route():
+    from types import SimpleNamespace
+    from agent.message_sanitization import record_reasoning_field_rejection
+
+    agent = SimpleNamespace(provider="deepseek", model="deepseek-v4-flash", base_url="https://api.deepseek.com/v1",
+                            api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)
+    sent = [{"role": "assistant", "content": "", "reasoning_content": " ", "tool_calls": [{"id": "c"}]}]
+    for body in ("reasoning_content is not allowed to be empty",
+                 "Extra inputs are not permitted, field: 'messages[1].reasoning_content'"):
+        assert record_reasoning_field_rejection(agent, body, sent) == frozenset()
+    assert agent._reasoning_rejecting_routes == {}

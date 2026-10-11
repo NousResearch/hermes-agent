@@ -646,6 +646,8 @@ _REASONING_ECHO_RULES: tuple = (
     ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (), ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
     ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",), ("api.deepseek.com",)),
     ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",), ("api.xiaomimimo.com", "xiaomimimo.com")),
+    # Portal stealth model that 400s on a tool-call turn without reasoning_content (f86276d2ebc).
+    ("missingno", frozenset(), frozenset(), ("stealth/missingno",), ()),
 )
 _REASONING_ECHO_RULE_BY_FAMILY = {rule[0]: rule for rule in _REASONING_ECHO_RULES}
 
@@ -872,7 +874,12 @@ def apply_reasoning_content_policy(
     else:
         api_msg.pop(R, None)
     if carriers is not None and RD not in carriers:
-        api_msg.pop(RD, None)
+        # Private ``*.native_assistant`` records (Gemini/Copilot carriers) survive: the transport lifts
+        # them onto the route that reads them and filters them from every other wire.
+        private = [d for d in api_msg.pop(RD, None) or () if isinstance(d, dict)
+                   and str(d.get("type") or "").endswith(".native_assistant")]
+        if private:
+            api_msg[RD] = private
 
 
 def _reasoning_shape(msg: dict) -> tuple:
@@ -904,7 +911,7 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carrier
 _UNKNOWN_FIELD_PHRASES = (
     "extra inputs are not permitted", "is unsupported", "no such field", "unknown field",
     "unrecognized request argument", "unrecognized field", "unknown parameter", "unexpected field",
-    "additional properties", "unknown key", "not allowed",
+    "additional propert", "unknown key",
 )
 _NAMED_FIELD_RES = {
     RC: re.compile(r"(?<![\w])reasoning_content(?![\w])"),
@@ -975,7 +982,13 @@ def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages:
     (provider, host, model) for the rest of the session. A repeat rejection of an already
     recorded key returns empty, so recovery can never loop. History is never touched.
     """
+    if getattr(agent, "api_mode", "chat_completions") != "chat_completions":
+        return frozenset()
     fields = rejected_reasoning_fields(error_body, sent_messages)
+    if needs_reasoning_echo(getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", "")):
+        # Must-echo routes 400 on any tool turn WITHOUT reasoning_content; a body naming it is a
+        # value complaint ("must not be empty"), never a schema that lacks the field.
+        fields -= {RC}
     if not fields:
         return frozenset()
     new = fields - rejected_reasoning_carriers(agent)

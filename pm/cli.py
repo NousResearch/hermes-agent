@@ -433,6 +433,10 @@ def cmd_doctor(args) -> int:
         if reason is not None:
             print(f"- {name}: n/a on {target} ({reason})")
             continue
+        if getattr(package, "pin_only", False):
+            # External consumers verify these pins; PM never realizes local bytes.
+            print(f"- {name}: pin only (verification belongs to its external consumer)")
+            continue
         facts, store = _installed_location(package, lockfile, target) or (_facts(), _store())
         fact = facts.get(name)
         soft = package.optional or package.internal

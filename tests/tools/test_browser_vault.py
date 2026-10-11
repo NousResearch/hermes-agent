@@ -30,6 +30,7 @@ from agent.vault_login_classifier import (
     LoginControl,
     build_fill_js,
     classify_login_control,
+    classify_otp_controls,
     select_password_fill,
 )
 from agent.vault_store import (
@@ -201,6 +202,24 @@ class TestClassifier:
 
     def test_unmatched_returns_none(self):
         assert classify_login_control(_ctrl(label="Search the docs")) is None
+
+    def test_anonymous_six_box_otp_widget_is_classified(self):
+        controls = [_ctrl(index=i, form_index=0, max_length=1) for i in range(6)]
+        classified = classify_otp_controls(controls)
+        assert [(c.control.index, c.token) for c in classified] == [
+            (i, "one-time-code") for i in range(6)
+        ]
+
+    def test_anonymous_six_box_without_maxlength_is_classified(self):
+        controls = [_ctrl(index=i, form_index=0, max_length=None) for i in range(6)]
+        assert len(classify_otp_controls(controls)) == 6
+
+    def test_anonymous_six_box_with_none_metadata_is_classified(self):
+        controls = [
+            _ctrl(index=i, form_index=0, autocomplete=None, name=None, label=None, max_length=None)
+            for i in range(6)
+        ]
+        assert len(classify_otp_controls(controls)) == 6
 
     def test_select_password_fill_picks_best_password(self):
         user = ClassifiedLoginControl(_ctrl(index=0, form_index=0, autocomplete="username"), 100, "username")

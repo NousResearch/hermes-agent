@@ -381,6 +381,7 @@ Registered on the `hermes-discord` platform toolset (gateway only). Uses the sam
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `discord` | Read and participate in a Discord server. Actions include `search_members`, `fetch_messages`, `send_message`, `react`, `fetch_channel`, `list_channels`, and more. | `DISCORD_BOT_TOKEN` |
+| `discord_voice` | Join, leave, or check the bot's voice connection from a Discord turn. `join` joins the voice channel the requester is in and binds it to the current text chat (from a DM it uses `DISCORD_HOME_CHANNEL`); `leave` hangs up and turns voice replies off; `status` reports the connection, members and bound chat. Runs the same code paths as `/voice join` and `/voice leave`. Only for gateway-authorized users in a live Discord turn, never cron. | `DISCORD_BOT_TOKEN` + voice dependencies |
 
 ## `discord_admin` toolset
 

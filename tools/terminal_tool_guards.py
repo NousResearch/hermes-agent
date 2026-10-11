@@ -11,6 +11,7 @@ keeps resolving.
 
 import json
 import logging
+import platform
 import re
 import shlex
 import stat
@@ -69,6 +70,15 @@ _SHELL_LEVEL_BACKGROUND_RE = re.compile(
 )
 _INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
 _TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
+
+# Git Bash/MSYS can terminate its Windows parent when a Bash command executes
+# this redirection (#119018). Match only a redirect following ``bash -c`` so
+# ordinary mentions of /dev/tcp (and inert text printed by another command)
+# remain available to the terminal tool.
+_BASH_DEV_TCP_REDIRECT_RE = re.compile(
+    r"\bbash(?:\.exe)?\b(?:\s+--?[A-Za-z-]+)*\s+-c\b.*?>\s*/dev/tcp/[^\s'\";|&]+",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _strip_quotes(command: str) -> str:
@@ -139,6 +149,23 @@ def _foreground_background_guidance(command: str) -> str | None:
         return None
     unquoted = _strip_quotes(command)
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
+
+
+def bash_dev_tcp_redirect_block(command: str) -> str | None:
+    """Refuse the Windows-host crash trigger before a shell is spawned.
+
+    The rejection is deliberately a terminal ``blocked`` result, rather than
+    an exception escaping the tool worker: a handled result completes the turn
+    and therefore cannot leave an interrupted-turn marker for auto-continue.
+    """
+    if platform.system() != "Windows" or not _BASH_DEV_TCP_REDIRECT_RE.search(command):
+        return None
+    return _blocked_json(
+        "Blocked: this Bash /dev/tcp redirect is a known Windows/MSYS host-process "
+        "crash trigger and was not run. Use a native port probe or run the check from "
+        "a separate shell outside Hermes; this rejection is non-retryable.",
+        "blocked",
+    )
 
 
 def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes: int) -> Optional[str]:

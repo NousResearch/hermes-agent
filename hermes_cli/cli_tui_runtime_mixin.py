@@ -103,6 +103,9 @@ class CLITuiRuntimeMixin:
                 if self.handle_bang_shell(user_input):
                     return
                 if _looks_like_slash_command(user_input):
+                    # Only typed slash commands may expand before dispatch. Pasted data
+                    # must not become a bang command or an automatic attachment.
+                    user_input = self._expand_paste_references(user_input)
                     user_input = self._tui_run_slash_input(user_input)
                     if user_input is None:
                         return

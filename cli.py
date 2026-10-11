@@ -1174,6 +1174,10 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     def process_command(self, command: str, *, redispatch: bool = False) -> bool:
         """Dispatch a slash command; returns False to exit the REPL. ``redispatch`` marks an internal
         re-entry (quick-command alias, prefix expansion) so the user's command is counted once."""
+        # Slash-command arguments can contain the same collapsed long-paste references as chat
+        # input. Expand them before dispatch so handlers (and skill commands) receive the content,
+        # rather than a path that may not exist in a remote terminal backend.
+        command = self._expand_paste_references(command)
         cmd_lower = command.lower().strip()  # lowercase only for matching; args keep their case
         cmd_original = command.strip()
 

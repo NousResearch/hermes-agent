@@ -951,6 +951,11 @@ class CLIModalMixin:
         the next unanswered; ``meta`` ({"kind": "choice"|"other"|"multi", ...}) lets a re-visit
         restore the cursor / prefill an "Other" edit. All answered → resolve the queue, tear down."""
         entry = state["questions"][state["active"]]
+        # Clarify answers bypass the normal chat-input path, so expand collapsed long pastes
+        # before returning them to the agent (especially important for remote terminal backends).
+        answer = self._expand_paste_references(answer) if isinstance(answer, str) else answer
+        if meta and isinstance(meta.get("other_text"), str):
+            meta = {**meta, "other_text": self._expand_paste_references(meta["other_text"])}
         state["answers"][entry["qid"]] = answer
         state.setdefault("answer_meta", {})[entry["qid"]] = meta or {"kind": "choice"}
         self._persist_prompt_summary("?", t("cli.clarify.label"), entry["question"], "" if answer is None else str(answer))

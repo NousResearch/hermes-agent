@@ -78,13 +78,20 @@ class GatewayGoalCommandsMixin:
         try:
             adapter, quick_key = self._adapter_and_key_for(event)
             if text and adapter and quick_key:
-                turn = MessageEvent(
-                    text=text,
-                    message_type=MessageType.TEXT,
-                    source=event.source,
-                    message_id=event.message_id if kickoff else None,
-                    channel_prompt=event.channel_prompt if kickoff else None,
-                )
+                if kickoff:
+                    # The triggering message stays authoritative: keep its id and channel prompt.
+                    turn = MessageEvent(
+                        text=text,
+                        message_type=MessageType.TEXT,
+                        source=event.source,
+                        message_id=event.message_id,
+                        channel_prompt=event.channel_prompt,
+                    )
+                else:
+                    # Resume continuation: not a reply to the command, so build it through the
+                    # shared synthetic-event builder — non-internal, preserving the session's
+                    # pinned prompt identity, with the command source's routing provenance copied.
+                    turn = self._synthetic_prompt_event(event.source, text)
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:
             logger.debug("goal %s failed: %s", label, exc)

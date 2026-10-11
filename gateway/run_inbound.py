@@ -1,6 +1,6 @@
-"""Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner.
+"""Inbound message pipeline for GatewayRunner.
 
-Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
+Split out of ``gateway/run.py``; bound via the MRO.
 ``gateway.run`` internals are imported lazily inside method bodies (import cycle),
 so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 """
@@ -183,10 +183,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
 
-        # Identity FIRST. Most adapters canonicalize at their own ingress; internal/voice paths
-        # construct SessionSource directly, so this is the shared fail-closed gate. Strict boolean
-        # marker: require the literal True so duck-typed test/internal sources with dynamic
-        # attributes are not mistaken for a rejection.
+        # Identity FIRST. Most adapters canonicalize at their own ingress; internal/voice paths construct SessionSource directly, so this is the shared fail-closed gate. Strict boolean marker: require the literal True so duck-typed test/internal sources with dynamic attributes are not mistaken for a rejection.
         if getattr(_config, "multiplex_profiles", False):
             self._canonicalize(source)
         if getattr(source, "profile_route_rejected", False) is True:
@@ -581,13 +578,35 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         self._drop_turn_slot(_quick_key, run_generation=_generation_at_interrupt)
 
     def _hm_merge_pending_for_source(
-        self, source: SessionSource, _quick_key: str, event: MessageEvent, *, merge_text: bool = False
-    ) -> None:
-        """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
-        from gateway.platforms.base import merge_pending_message_event
+        self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
+    ) -> bool:
+        """Merge *event* into the adapter's pending slot; refuse across differing prompt identities.
+
+        Returns True when the event was merged or admitted as its own turn, False when
+        neither owner claimed it (the refusal re-routes through bounded FIFO admission).
+        """
+        from gateway.platforms.base import merge_pending_message_event, prompt_identity_conflict
         adapter = self._delivery_adapter_for(source)
-        if adapter:
-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        if not adapter:
+            return False
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        existing = pending_slot.get(_quick_key) if isinstance(pending_slot, dict) else None
+        if prompt_identity_conflict(existing, event):
+            logger.debug(
+                "Refusing to coalesce a differing-identity follow-up into the pending slot for "
+                "session %s — admitting it as its own turn", _quick_key,
+            )
+            return self._queue_or_replace_pending_event(_quick_key, event)
+        merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        return True
+
+    def _hm_warn_refusal(self, _quick_key: str, label: str) -> None:
+        """Warn on a refused merge (differing-identity follow-up, queue at cap)."""
+        logger.warning(
+            "Dropped a differing-identity %s for session %s — admission refused "
+            "(queue at cap or no delivery adapter); it was never queued",
+            label, _quick_key,
+        )
 
     async def _hm_busy_slash_or_photo(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
@@ -617,7 +636,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         # photo-only follow-up; adapter-level batching absorbs them.
         if event.message_type == MessageType.PHOTO:
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-            self._hm_merge_pending_for_source(source, _quick_key, event)
+            if not self._hm_merge_pending_for_source(source, _quick_key, event):
+                self._hm_warn_refusal(_quick_key, "photo follow-up")
             return True, None
         return False, None
 
@@ -638,7 +658,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             time.time() - _started_at, _quick_key,
         )
         if effective_busy_input_mode != "queue":
-            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
+            if not self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True):
+                self._hm_warn_refusal(_quick_key, "Telegram grace follow-up")
         else:
             adapter = self._delivery_adapter_for(source)
             if adapter:
@@ -711,7 +732,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply(t("gateway.stop.force_stopped_pending"))
-            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
+            if not self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True):
+                self._hm_warn_refusal(_quick_key, "follow-up")  # picked up after start
             return None
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
@@ -1055,11 +1077,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         # User-defined quick commands (bypass agent loop, no LLM call)
         qcmd = self._hm_quick_commands().get(command) if command else None
         if qcmd is not None:
-            # Quick commands are slash capabilities too — and type:exec ones run a shell command in
-            # the gateway process. They are never in the registry, so the early gate never fires for
-            # them; apply the same admin/user policy to the raw typed name here.
-            # The early gate above only fires for registry-known commands, so quick commands (never in the
-            # registry) would otherwise reach this dispatch sink unchecked. (#44727)
+            # Quick commands are slash capabilities too — and type:exec ones run a shell command in the gateway process. They are never in the registry, so the early gate never fires for them; apply the same admin/user policy to the raw typed name here.
             _denied = self._check_slash_access(source, command)
             if _denied is not None:
                 return True, _denied, command
@@ -1083,12 +1101,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
-                    # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
-                    # sits before it, so a handler reading get_session_env() would see an empty or a
-                    # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
-                    # so session_key is derived from source. Sync handlers run on the gateway pool
-                    # (contextvars carried), never the loop thread: blocking I/O there starves the
-                    # liveness watchdog and the process exits 75 mid-handler (#105279).
+                    # Plugin agents: HERMES_SESSION_* is bound by _set_session_env on the agent-turn path, so a handler here sees an empty/foreign session (#108698). No session_entry exists yet, so session_key is derived from source. Sync handlers run on the gateway pool (contextvars carried), never the loop thread: blocking I/O there starves the liveness watchdog (#105279).
                     _plugin_context = build_session_context(source, self.config)
                     _plugin_context.session_key = self._session_key_for_source(source)
                     user_args = event.get_command_args().strip()
@@ -1257,13 +1270,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         oldest orphan runs as THIS turn and the incoming event is parked behind the chain. Skipped
         for control commands and internal events."""
         try:
-            # ── FIFO orphan rescue (#99882) ──────────────────────────────── If this session went idle with
-            # a populated overflow (queued during a busy window whose post-turn drain never promoted — e.g.
-            # a compression-demoted follow-up after the compression window ended through an exit that
-            # skipped the promotion site), those events were silently orphaned. We are starting the next
-            # turn for this session NOW: re-stage the orphans in FIFO order and enqueue the incoming event
-            # behind them, so arrival order (#28503) holds: oldest orphan runs as this turn, the rest drain
-            # in order, the new message last.
+            # FIFO orphan rescue (#99882): re-stage orphans from the overflow in FIFO order before the new message.
             _orphan_adapter = self._delivery_adapter_for(source)
             if _orphan_adapter is None or getattr(event, "internal", False) or event.get_command():
                 return event, source, is_internal
@@ -1293,14 +1300,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if not is_internal:
             from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
             record_gateway_slash_command(event)
-        # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
-        # not on the adapter's raw inbound: profile routing, the ignored-channel
-        # guard, plugin hooks and user authorization all reject events above,
-        # and a rejected event must not be able to clear a refusal belonging to
-        # an active turn. This is also the single entry point every lane shares
-        # — Discord interaction passthrough builds its own MessageEvent and
-        # calls handle_message directly, so a teardown on the relay's inbound
-        # handler left those turns muted.
+        # TERMINAL-DECLINE LATCH TEARDOWN: placed AFTER admission so a rejected event cannot clear an active turn; this is the single entry point every lane shares (Discord interaction passthrough builds its own MessageEvent and calls handle_message directly).
 
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:

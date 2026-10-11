@@ -372,11 +372,19 @@ class GatewayBusySessionMixin:
         "notification_category",
     )
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        from gateway.platforms.base import merge_pending_message_event
+    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> bool:
+        """Admit *event* for a later turn: merge it into an occupied head slot, or append it to the
+        bounded FIFO. Returns True when the event is ACCEPTED (it owns a queued slot), False when
+        admission refused it (no delivery adapter, or the queue is at cap).
+
+        The bool is the receipt the merge-boundary guard needs: a refused merge must be able to
+        learn that nothing claimed the turn without trusting ``_gateway_accepted``, which may be
+        left over from an earlier merge onto a different event.
+        """
+        from gateway.platforms.base import merge_pending_message_event, prompt_identity_conflict
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
-            return
+            return False
         # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
         # be silently OVERWRITTEN). Photo bursts still merge into the head slot (album semantics).
         pending_slot = getattr(adapter, "_pending_messages", None)
@@ -407,22 +415,27 @@ class GatewayBusySessionMixin:
             same_security_context
             and MessageType.PHOTO in merge_types
             and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
+            # A preserving synthetic head must not absorb a human turn here either:
+            # same_security_context compares ``internal``, which is False on BOTH sides for
+            # a non-internal synthetic continuation, so it cannot discriminate identity.
+            and not prompt_identity_conflict(existing, event)
         ):
             merge_pending_message_event(
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
             event._gateway_accepted = True
-            return
+            return True
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key, self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            return False
 
         self._enqueue_fifo(session_key, event, adapter)
+        return True
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Steerable text for a busy follow-up, transcribing voice-message media first.

@@ -469,3 +469,27 @@ def test_boot_recovery_runs_before_resume_turns_and_queued_inbound(monkeypatch):
     asyncio.run(gateway_run.GatewayRunner._start_finish_wiring(runner, 0))
 
     assert order == ["recover", "resume", "drain inbound"]
+
+
+def test_shutdown_spool_replays_in_acceptance_order_not_filename_order(
+    flush_dir, monkeypatch,
+):
+    """Adapter teardown spools the older pending head first and the newer debounced
+    buffer second, both inside the same one-second ``ts`` (#126167 review F2).
+    Recovery must replay them in the order they were accepted, not by their random
+    ``pending-<uuid>.json`` filenames: the shared per-process spool ``seq`` breaks
+    the same-second tie.
+    """
+    from gateway.shutdown_flush import flush_pending_to_file
+
+    wrote_pending = flush_pending_to_file(
+        {"sess-1": SimpleNamespace(text="older-pending")}, reason="adapter_shutdown")
+    wrote_debounced = flush_pending_to_file(
+        {"sess-1": SimpleNamespace(text="newer-debounced")}, reason="adapter_shutdown")
+    assert wrote_pending == 1 and wrote_debounced == 1
+
+    # Recovery replays in _order_flush_files order (recover_pending_spool consumes that list
+    # unchanged), so the ordered glob IS the replay order for a session.
+    ordered = _order_flush_files(flush_dir.glob("*.json"))
+    texts = [json.loads(p.read_text(encoding="utf-8-sig"))["data"]["text"] for p in ordered]
+    assert texts == ["older-pending", "newer-debounced"]

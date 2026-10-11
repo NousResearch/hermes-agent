@@ -75,11 +75,19 @@ def _write_payload(flush_dir: Path, payload: dict[str, Any]) -> Path:
 
 
 def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **extra: Any) -> bool:
-    """Serialise and write one pending value; return True when a payload was written."""
+    """Serialise and write one pending value; return True when a payload was written.
+
+    Every payload gets an explicit ``seq`` (callers with their own ordering key, like the
+    overflow flush, override it). Recovery orders on ``(ts, seq, name)`` and ``ts`` has
+    one-second resolution, so without ``seq`` two payloads written in the same second sort
+    by their random UUID filename — the adapter shutdown spool (older pending head, then
+    the newer debounced buffer) could replay newest-first (#126167 review F2).
+    """
     try:
         serialised = _serialise_value(value)
         if serialised is None:
             return False
+        extra.setdefault("seq", next(_TRANSCRIPT_SPOOL_SEQ))
         _write_payload(flush_dir, {"session_key": session_key, **extra, "data": serialised})
         return True
     except Exception as exc:
@@ -105,7 +113,9 @@ def flush_overflow_to_file(overflow_by_session: dict[str, Any], *, reason: str =
 
     The adapter slot holds the queue head and ``SessionState.conversation.queued_events`` the
     tail; both must survive restart. Each event is its own payload in the slot-flush shape so
-    ``recover_pending_to_db`` replays them unchanged; ``seq`` preserves arrival order per session.
+    ``recover_pending_to_db`` replays them unchanged; ``seq`` comes from the same per-process
+    counter as every other spool owner, so the tail orders after the slot head written in the
+    same second instead of restarting at zero (#126167 review F3).
     """
     if not overflow_by_session:
         return 0
@@ -113,10 +123,10 @@ def flush_overflow_to_file(overflow_by_session: dict[str, Any], *, reason: str =
     for session_key, events in list(overflow_by_session.items()):
         if not session_key or not events:
             continue
-        for seq, value in enumerate(list(events)):
+        for value in list(events):
             if value is not None:
                 flushed += _flush_value(flush_dir, "overflow", session_key, value, reason=reason,
-                                        ts=ts, seq=seq)
+                                        ts=ts)
     if flushed:
         logger.info("Flushed %d queued overflow message(s) to %s (reason=%s)", flushed, flush_dir,
                     reason)
@@ -246,7 +256,7 @@ def _spool_sort_key(payload: dict[str, Any], name: str) -> tuple:
     pass both sort on it, so they replay a session's files in the same order."""
     # seq is per process (_TRANSCRIPT_SPOOL_SEQ) and ts has one-second resolution, so files two
     # processes spool in the same second can interleave; within one process the order is exact.
-    # Slot heads have no seq and overflow tails start at zero, so a missing seq sorts as -1.
+    # Every writer stamps seq; a missing one is a legacy slot head, sorted before its tail via -1.
     return _sort_number(payload.get("ts")), _sort_number(payload.get("seq", -1)), name
 
 

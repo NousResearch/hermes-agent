@@ -1800,6 +1800,21 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+def prompt_identity_conflict(existing: Any, event: MessageEvent) -> bool:
+    """True when *event* may NOT coalesce into *existing*: their prompt identities differ.
+
+    A non-internal synthetic carries the session's PINNED prompt identity, so absorbing a human
+    turn into it would run that turn under the synthetic's pins and ``message_id=None`` reply
+    anchor instead of recording its own (#126167). ``preserve_prompt_pins`` is read on its own,
+    never through ``event_preserves_prompt_pins``: ``internal`` must not change what a merge
+    refusal decides, because it alone gates authorization and the emergency stop.
+    """
+    if existing is None:
+        return False
+    return bool(getattr(existing, "preserve_prompt_pins", False)) != bool(
+        getattr(event, "preserve_prompt_pins", False))
+
+
 def merge_pending_message_event(pending_messages: dict[str, MessageEvent], session_key: str,
                                 event: MessageEvent, *, merge_text: bool = False) -> None:
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
@@ -1914,7 +1929,9 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+from gateway.platforms.base_text_debounce import TextDebounceMixin
+
+class BasePlatformAdapter(TextDebounceMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -3808,112 +3825,31 @@ class BasePlatformAdapter(ABC):
             return existing_text
         return f"{existing_text}\n\n{new_text}".strip()
 
-    def _text_debounce_store(self) -> dict[str, TextDebounceState]:
-        return _lazy_attr(self, "_text_debounce", dict)
+    def _spool_on_shutdown(self, kind: str, turns: Dict[str, Any]) -> int:
+        """Spool *turns* to the existing shutdown spool on the way out; return turns written.
 
-    def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
-        """Return True for normal text eligible for queue-mode debounce."""
-        result = (
-            getattr(self, "_busy_text_mode", "interrupt") == "queue"
-            and event.message_type == MessageType.TEXT and not getattr(event, "internal", False)
-            and not event.is_command() and bool((event.text or "").strip()))
-        if result:
-            logger.debug("[%s] Queue-text debounce candidate accepted: session=%s text_len=%d",
-                         self.name, getattr(event, "session_key", "?"), len(event.text or ""))
-        return result
-
-    def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
-        """Return True when two text debounce events came from the same sender."""
-
-        def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
-            source = getattr(candidate, "source", None)
-            if source is None:
-                return None
-            platform = _platform_name(getattr(source, "platform", None))
-            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
-            if sender:
-                return (platform, str(sender))
-            if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
-                return (platform, "dm", str(source.chat_id))
-            return None
-        existing_sender = _identity(existing)
-        return existing_sender is not None and existing_sender == _identity(event)
-
-    def _text_debounce_delay(self, session_key: str) -> float:
-        """Return bounded busy-text debounce delay for ``session_key``."""
-        state = self._text_debounce_store().get(session_key)
-        if state is None:
-            return 0.0
-        deadline = min(state.last_ts + self._busy_text_debounce_seconds,
-                       state.first_ts + self._busy_text_hard_cap_seconds)
-        return max(0.0, deadline - time.monotonic())
-
-    async def _queue_text_debounce(self, session_key: str, event: MessageEvent) -> None:
-        """Buffer normal queue-mode busy text and schedule a bounded flush."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-            # Preserve sender attribution: flush the buffer as the next turn, new sender starts
-            # fresh.
-            await self._flush_text_debounce_now(session_key)
-            state = store.get(session_key)
-            if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-                existing_pending = self._pending_messages.get(session_key)
-                if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
-                return
-        now = time.monotonic()
-        if state is None:
-            state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
-            store[session_key] = state
-        else:
-            if event.text:
-                state.event.text = _append_text(state.event.text, event.text)
-            state.event.absorb_reply_expected(event)
-            latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
-            if latest_message_id is not None:
-                state.event.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
-                state.event.reply_to_message_id = str(latest_anchor)
-            state.last_ts = now
-        state.cancel_timer()
-        delay = self._text_debounce_delay(session_key)
-        state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
-
-    async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
-        """Timer task that flushes the debounced text buffer."""
+        A spool failure must not abort teardown (the remaining buckets still have to be cleared),
+        but a silent drop is indistinguishable from success, so it is reported at WARNING. Only
+        the exception CLASS is logged: the message can carry a filesystem path or event text. A
+        short write is reported the same way, because ``flush_pending_to_file`` degrades a
+        per-value serialisation error to a skip and a turn with no durable copy is lost.
+        """
+        if not turns:
+            return 0
+        from gateway.shutdown_flush import flush_pending_to_file
+        expected = sum(1 for value in turns.values() if value is not None)
         try:
-            await asyncio.sleep(delay)
-            await self._flush_text_debounce_now(session_key)
-        except asyncio.CancelledError:
-            return
-        finally:
-            current = asyncio.current_task()
-            state = self._text_debounce_store().get(session_key)
-            if state is not None and state.task is current:
-                state.task = None
-
-    async def _flush_text_debounce_now(self, session_key: str) -> bool:
-        """Force-flush one debounced busy-text burst into the pending slot."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is None:
-            return False
-        state.cancel_timer(unless=asyncio.current_task())
-        state.task = None
-        pending = self._pending_messages.get(session_key)
-        if pending is not None and not self._can_merge_text_debounce_events(pending, state.event):
-            return False
-        store.pop(session_key, None)
-        merge_pending_message_event(self._pending_messages, session_key, state.event, merge_text=True)
-        return True
-
-    def _discard_text_debounce(self, session_key: str) -> None:
-        """Cancel and drop pending text debounce state for control commands."""
-        state = self._text_debounce_store().pop(session_key, None)
-        if state is not None:
-            state.cancel_timer()
+            written = flush_pending_to_file(turns, reason="adapter_shutdown")
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning(
+                "[%s] Shutdown spool of %d %s turn(s) failed (%s) — those turns are lost; "
+                "memory was their only copy", self.name, expected, kind, type(exc).__name__)
+            return 0
+        if written < expected:
+            logger.warning(
+                "[%s] Shutdown spool wrote %d of %d %s turn(s) — the rest are lost; memory was "
+                "their only copy", self.name, written, expected, kind)
+        return written
 
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
     # reconciliation is deterministic across completion, /stop /new /reset, and stale-lock heal.
@@ -4172,8 +4108,7 @@ class BasePlatformAdapter(ABC):
         # Photo bursts/albums: queue without interrupting; they run after the current task.
         if event.message_type == MessageType.PHOTO:
             logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event)
-            event._gateway_accepted = True
+            self._merge_or_refuse_fallback_pending(session_key, event, merge_text=False)
             return
         if self._is_queue_text_debounce_candidate(event):
             logger.debug("[%s] New text message while session %s is active — "
@@ -4183,9 +4118,46 @@ class BasePlatformAdapter(ABC):
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event,
-                                        merge_text=event.message_type == MessageType.TEXT)
-            event._gateway_accepted = True
+            self._merge_or_refuse_fallback_pending(
+                session_key, event, merge_text=event.message_type == MessageType.TEXT)
+
+    def _report_refused_fallback_pending(self, session_key: str, event: MessageEvent) -> None:
+        """Breadcrumb for a follow-up refused at the adapter fallback merge.
+
+        With no runner FIFO there is no admission owner, so a differing-identity turn is
+        left unaccepted and nothing retries it. This is the same at-cap drop policy the busy
+        queue already applies to a fresh arrival, so log it at the same level rather than
+        letting a human turn disappear on a debug line.
+        """
+        logger.warning(
+            "[%s] Dropped a differing-identity follow-up for session %s — it cannot join the "
+            "pending turn's pinned prompt identity and no runner FIFO will admit it separately",
+            self.name, session_key,
+        )
+
+    def _merge_or_refuse_fallback_pending(self, session_key: str, event: MessageEvent, *,
+                                          merge_text: bool) -> bool:
+        """Adapter-only (no runner FIFO) merge into the pending slot, REFUSING a merge across
+        differing prompt identities.
+
+        This path bypasses ``_can_merge_text_debounce_events``, so without the explicit refusal a
+        same-sender human turn would be silently coalesced into a ``preserve_prompt_pins`` synthetic
+        head and run under its pins. With no runner FIFO there is no admission owner and no caller
+        retries: a refusal is a drop, reported by the caller's warning. Returns True when the event
+        was merged into the slot, False when it was refused.
+        """
+        existing = self._pending_messages.get(session_key)
+        if existing is not None and prompt_identity_conflict(existing, event):
+            logger.debug(
+                "[%s] Refusing to coalesce a differing-identity follow-up into the pending slot for "
+                "session %s — no runner FIFO to admit it as its own turn",
+                self.name, session_key,
+            )
+            self._report_refused_fallback_pending(session_key, event)
+            return False
+        merge_pending_message_event(self._pending_messages, session_key, event, merge_text=merge_text)
+        event._gateway_accepted = True
+        return True
 
     def _get_human_delay(self) -> float:
         """Random human-like pacing delay (s) from this adapter's ``human_delay`` config range
@@ -4792,11 +4764,19 @@ class BasePlatformAdapter(ABC):
                                "releasing tracking and letting them unwind in the background",
                                self.name, sum(not t.done() for t in tasks))
                 break
-        with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
-            from gateway.shutdown_flush import flush_pending_to_file
-            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+        # Freeze the debounce timers FIRST: a buffered turn and the pending slot must not migrate
+        # into each other across the awaits below, or one turn can be spooled twice (pending +
+        # debounce) or lost between the two spools. A refused merge leaves its turn buffered here
+        # rather than dropping it, so this buffer is accepted work and is spooled in the pending
+        # payload shape ``recover_pending_to_db`` already replays.
         for state in self._text_debounce_store().values():
             state.cancel_timer()
+        buffered = {session_key: state.event for session_key, state in self._text_debounce_store().items()
+                    if state is not None and state.event is not None}
+        # Bounded cleanup: a spool failure is reported, never raised, so the buckets below are
+        # still cleared instead of stranding every turn in memory for the life of the process.
+        self._spool_on_shutdown("pending", dict(self._pending_messages))
+        self._spool_on_shutdown("debounced", buffered)
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
                        self._pending_messages, self._active_sessions, self._requeue_counts,
                        self._text_debounce_store()):

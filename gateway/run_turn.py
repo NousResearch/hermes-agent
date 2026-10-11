@@ -24,7 +24,7 @@ from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, event_preserves_prompt_pins
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
@@ -2063,10 +2063,11 @@ class GatewayTurnMixin:
 
         # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
         # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
-        if event.internal and session_key:
+        _preserve_pins = event_preserves_prompt_pins(event)
+        if _preserve_pins and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = self._pinned_session_context_prompt(
-            context, _redact_pii, session_key, internal=event.internal,
+            context, _redact_pii, session_key, preserve_pin=_preserve_pins,
         )
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
@@ -2186,11 +2187,12 @@ class GatewayTurnMixin:
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
-            # Internal events reuse the last human turn's channel inputs (see _pinned_channel_inputs).
+            # Preserving events reuse the last human turn's channel inputs (see _pinned_channel_inputs).
+            _preserve_pins = event_preserves_prompt_pins(event)
             _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
-                session_key, event.channel_prompt, source, internal=event.internal,
+                session_key, event.channel_prompt, source, preserve_pin=_preserve_pins,
             )
-            if not event.internal:
+            if not _preserve_pins:
                 # Persist the coherent context+channel pair before execution: a crash during the
                 # human turn may be followed by an internal startup-resume on the next process.
                 await self._persist_prompt_pins(session_key, _run_start_session_id)
@@ -3636,6 +3638,16 @@ class GatewayTurnMixin:
         )
         pending_event = None
         pending = None
+        if self._draining:
+            # #126167 review F4: a restart/shutdown is waiting for this turn, and teardown
+            # snapshots the pending/overflow buckets for durable recovery. Dequeueing here
+            # would pop the session's accepted work and discard it below, before the
+            # spool can see it. Leave every bucket intact and run no follow-up.
+            logger.info(
+                "Leaving queued follow-ups intact for session %s during gateway %s",
+                session_key or "?", self._status_action_label(),
+            )
+            return pending_event, pending
         if result and adapter and session_key:
             pending_event = _dequeue_pending_event(adapter, session_key)
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
@@ -3695,13 +3707,11 @@ class GatewayTurnMixin:
                 )
             elif pending and not pending_event:
                 from gateway.platforms.base import MessageEvent
-                # A deferred steer continues the active channel context, just like an
-                # eventless follow-up. Reuse its pins without marking the user as internal.
-                steer_prompt, steer_source = self._pinned_channel_inputs(
-                    session_key, None, source, internal=True,
-                )
+                # A deferred steer continues the active channel context, just like an eventless
+                # follow-up: mark it preserving so the drain reuses the session's pins, without
+                # pre-resolving them here or marking the user as internal.
                 steer_event = MessageEvent(
-                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
+                    text=leftover_steer, source=source, preserve_prompt_pins=True,
                 )
                 if session_key:
                     self._enqueue_fifo(session_key, steer_event, adapter)
@@ -3837,7 +3847,15 @@ class GatewayTurnMixin:
             )
             adapter = self._delivery_adapter_for(source)
             if adapter and pending_event:
-                merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                # ``pending_event`` is already ACCEPTED work (drain-popped), so it must reach the
+                # queue unmerged — merging would destroy the staged occupant or run this turn under a
+                # differing prompt identity (#126167). The FIFO has no cap on accepted work.
+                from gateway.platforms.base import prompt_identity_conflict
+                occupant = adapter._pending_messages.get(session_key)
+                if prompt_identity_conflict(occupant, pending_event):
+                    self._enqueue_fifo(session_key, pending_event, adapter)
+                else:
+                    merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
             elif adapter and hasattr(adapter, 'queue_message'):
                 adapter.queue_message(session_key, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
@@ -3886,9 +3904,10 @@ class GatewayTurnMixin:
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt, next_source = self._pinned_channel_inputs(
-                next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
+                next_session_key, pending_event.channel_prompt, next_source,
+                preserve_pin=event_preserves_prompt_pins(pending_event),
             )
-            if not pending_event.internal:
+            if not event_preserves_prompt_pins(pending_event):
                 # A drained human turn re-pins its channel inputs; make them durable like a first turn.
                 await self._persist_prompt_pins(next_session_key, session_id)
             next_message_type = getattr(pending_event, "message_type", None)
@@ -3912,26 +3931,17 @@ class GatewayTurnMixin:
             with suppress(Exception):
                 await _clear_adapter.send_typing(source.chat_id, metadata=_status_thread_metadata)
 
-        # Re-baseline the cached agent's message_count before recursing, else the coherence guard
-        # rebuilds on OUR OWN flushed rows (the outer handler re-baselines only after the chain).
-        # Re-baseline the cached agent's message_count snapshot before recursing into the in-band queued
-        # (/queue) follow-up turn. The first turn has completed and flushed its own user + assistant rows to
-        # the SessionDB, so the cross-process coherence guard (#45966) — which this recursive _run_agent
-        # call re-enters — would otherwise see the grown on-disk count against the stale build-time snapshot
-        # and rebuild the agent on THIS process's OWN writes, destroying the prompt-cache prefix #46237 was
-        # merged to preserve. The existing re-baseline in _handle_message_with_agent only runs after the
-        # whole _run_agent chain unwinds — too late for the in-band follow-up. Use the same (session_key,
-        # session_id) the recursive call runs under so the snapshot matches exactly what the follow-up's
-        # guard will consult. Fail-safe in helper.
+        # Re-baseline the cached agent's message_count before recursing into the in-band queued
+        # follow-up: the cross-process coherence guard (#45966) would otherwise see this turn's own
+        # flushed rows against the stale build-time snapshot and rebuild the agent, destroying the
+        # prompt-cache prefix (#46237). The outer handler re-baselines only after the chain unwinds.
         # Acknowledge the follow-up the way an idle-session message is: this in-band drain is the only
-        # place a queued/interrupting message ever runs, so base.py's hook site is never entered for it.
-        # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
-        # different profile's adapter, and only that instance holds the per-message reaction state.
+        # place a queued/interrupting message ever runs. Resolve the adapter from the follow-up's OWN
+        # source — a multiplexed gateway can route it to a different profile's adapter.
         from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
         _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
         await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
-        # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
-        # (the helper's own ``except Exception`` does not catch cancellation).
+        # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker.
         try:
             await self._refresh_agent_cache_message_count(session_key, session_id)
 

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearSingleFlightSessionResumeState,
   registerRecoveredRuntime,
+  setSessionResumeProfileCountOverride,
   singleFlightSessionResume,
   takeRecoveredRuntime
 } from './single-flight-resume'
@@ -10,10 +11,128 @@ import { resumeStoredRuntimeSession, SessionRecoveryAborted, withSessionNotFound
 
 afterEach(() => {
   clearSingleFlightSessionResumeState()
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
 describe('singleFlightSessionResume', () => {
+  it('allows a valid resume to settle inside the ordinary gateway request budget', async () => {
+    vi.useFakeTimers()
+    setSessionResumeProfileCountOverride(() => 1)
+
+    const flight = singleFlightSessionResume(
+      'stored-slow',
+      () => new Promise<string>(resolve => setTimeout(() => resolve('runtime-slow'), 25_000))
+    )
+
+    await vi.advanceTimersByTimeAsync(25_000)
+
+    await expect(flight).resolves.toBe('runtime-slow')
+  })
+
+  it('sizes the settlement ceiling from the multi-profile probe ladder, not a single-profile budget', async () => {
+    vi.useFakeTimers()
+    // Two configured profiles: one 30s probe window each plus the 30s resume
+    // RPC (the budget closed PR 96523 derived) — a resume still inside that
+    // ladder must NOT be aborted the way a single-profile 35s ceiling would.
+    setSessionResumeProfileCountOverride(() => 2)
+
+    const settleAt = 2 * 30_000 + 29_000
+
+    const flight = singleFlightSessionResume(
+      'stored-multi-profile',
+      () => new Promise<string>(resolve => setTimeout(() => resolve('runtime-late'), settleAt))
+    )
+
+    await vi.advanceTimersByTimeAsync(settleAt)
+
+    await expect(flight).resolves.toBe('runtime-late')
+  })
+
+  it('a never-settling resume rejects at the derived deadline instead of wedging the slot forever', async () => {
+    vi.useFakeTimers()
+    setSessionResumeProfileCountOverride(() => 1)
+
+    const flight = singleFlightSessionResume('stored-wedged', () => new Promise<never>(() => undefined))
+
+    flight.catch(() => undefined)
+
+    // 1 profile => probe window (30s) + RPC window (30s).
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    await expect(flight).rejects.toThrow('Timed out resuming session stored-wedged')
+
+    // The slot was released: the next caller starts a FRESH attempt.
+    const second = singleFlightSessionResume('stored-wedged', async () => ({ session_id: 'rt-fresh' }))
+
+    await expect(second).resolves.toEqual({ session_id: 'rt-fresh' })
+  })
+
+  it('adopts a straggler that lands after the deadline into the recovered-runtime cache', async () => {
+    vi.useFakeTimers()
+    setSessionResumeProfileCountOverride(() => 1)
+
+    let settleStraggler: ((value: { session_id: string }) => void) | null = null
+
+    const flight = singleFlightSessionResume(
+      'stored-straggler',
+      () => new Promise<{ session_id: string }>(resolve => (settleStraggler = resolve))
+    )
+
+    flight.catch(() => undefined)
+
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    await expect(flight).rejects.toThrow('Timed out resuming session stored-straggler')
+
+    // Nothing cached yet: the straggler has not landed.
+    expect(takeRecoveredRuntime('stored-straggler')).toBeUndefined()
+
+    // The gateway finished the resume after the client gave up — the runtime
+    // it minted is real, and must be adopted rather than orphaned (#96522).
+    settleStraggler!({ session_id: 'rt-straggler' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(takeRecoveredRuntime('stored-straggler')).toBe('rt-straggler')
+  })
+
+  it('does NOT cache a straggler when a newer flight already owns the stored id', async () => {
+    vi.useFakeTimers()
+    setSessionResumeProfileCountOverride(() => 1)
+
+    let settleFirst: ((value: { session_id: string }) => void) | null = null
+    let settleSecond: ((value: { session_id: string }) => void) | null = null
+
+    const first = singleFlightSessionResume(
+      'stored-superseded',
+      () => new Promise<{ session_id: string }>(resolve => (settleFirst = resolve))
+    )
+
+    first.catch(() => undefined)
+
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    await expect(first).rejects.toThrow('Timed out resuming session stored-superseded')
+
+    // A retry owns the slot and is STILL RUNNING when the first attempt's
+    // straggler lands: the retry's caller will adopt its own result, so the
+    // old straggler must not overwrite it in the cache.
+    const second = singleFlightSessionResume(
+      'stored-superseded',
+      () => new Promise<{ session_id: string }>(resolve => (settleSecond = resolve))
+    )
+
+    second.catch(() => undefined)
+
+    settleFirst!({ session_id: 'rt-first-straggler' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(takeRecoveredRuntime('stored-superseded')).toBeUndefined()
+
+    settleSecond!({ session_id: 'rt-second' })
+    await expect(second).resolves.toEqual({ session_id: 'rt-second' })
+  })
+
   it('two concurrent resume callers for the same stored id produce ONE session.resume RPC', async () => {
     const requestGateway = vi.fn(async (method: string) => {
       expect(method).toBe('session.resume')

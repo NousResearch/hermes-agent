@@ -13,7 +13,58 @@
  * `session_id`); joiners receive whatever the winning call returns.
  */
 
+import { withTimeout } from '@/lib/with-timeout'
+
 const _inFlightResumeByStoredSessionId = new Map<string, Promise<unknown>>()
+
+// Every session.resume entry point converges on this module-level flight, and
+// the `run()` body is NOT just the RPC: it awaits resolveSessionProfile first
+// (use-prompt-actions/utils.ts, resolve-target-session.ts, submit.ts), whose
+// resolveStoredSession ladder probes the active profile and then every other
+// configured profile sequentially — one bounded 30s getSession each (Electron
+// DEFAULT_FETCH_TIMEOUT_MS, hardening.ts) — before the 30s session.resume RPC
+// (DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS, api/client.ts). A deadline sized to a
+// single-profile resume (PR 95926's original 35s) therefore aborts a
+// slow-but-legitimate multi-profile recovery. Derive the ceiling from that
+// ladder instead: one 30s window per configured profile, plus one for the RPC.
+// The profile count is read per-flight (not at module load) through a lazy
+// import: @/store/profile is statically entangled with @/store/session and
+// this module's callers, so a static import would close a cycle.
+const RESUME_PROBE_WINDOW_MS = 30_000
+
+let _profileCountOverride: (() => number) | null = null
+
+/** Test seam: pin the profile count the ceiling is derived from. */
+export function setSessionResumeProfileCountOverride(count: (() => number) | null): void {
+  _profileCountOverride = count
+}
+
+async function sessionResumeSettlementTimeoutMs(): Promise<number> {
+  let count: number
+
+  if (_profileCountOverride) {
+    count = _profileCountOverride()
+  } else {
+    try {
+      const { $profiles } = await import('@/store/profile')
+
+      count = $profiles.get().length
+    } catch {
+      // Profile store unavailable (isolated unit-test setups): assume the
+      // single-profile shape — one probe window plus the RPC.
+      count = 1
+    }
+  }
+
+  return RESUME_PROBE_WINDOW_MS * (Math.max(1, count) + 1)
+}
+
+/** The live id a settled `session.resume`-shaped outcome carries, if any. */
+function sessionResumeOutcomeSessionId(outcome: unknown): string | undefined {
+  const id = (outcome as { session_id?: unknown } | null | undefined)?.session_id
+
+  return typeof id === 'string' && id ? id : undefined
+}
 
 export function singleFlightSessionResume<T>(storedSessionId: string, run: () => Promise<T>): Promise<T> {
   const existing = _inFlightResumeByStoredSessionId.get(storedSessionId)
@@ -25,8 +76,57 @@ export function singleFlightSessionResume<T>(storedSessionId: string, run: () =>
   // Promise.resolve().then(run) tolerates run() being synchronous, returning a
   // bare value, or throwing synchronously (test doubles and legacy callers do
   // all three) — a raw run().finally() would crash on a non-promise return.
-  const flight = Promise.resolve()
-    .then(run)
+  const work = Promise.resolve().then(run)
+
+  // Outcome of the (uncancellable) work, inspected only by the straggler
+  // handler after a timeout: a straggler that landed a session_id minted a
+  // REAL runtime on the gateway (#96522 — _claim_or_reuse_live registers the
+  // record before returning); a straggler that rejected minted nothing.
+  let workOutcome: { ok: true; value: unknown } | { ok: false } | null = null
+
+  work.then(
+    value => {
+      workOutcome = { ok: true, value }
+    },
+    () => {
+      workOutcome = { ok: false }
+    }
+  )
+
+  // The ceiling is derived per-flight (profile count), so the deadline wraps
+  // the work only once the budget is known. Until then the flight is already
+  // discoverable below, so a concurrent caller joins THIS attempt rather than
+  // starting a second one while the import resolves.
+  const flight = sessionResumeSettlementTimeoutMs()
+    .then(timeoutMs =>
+      withTimeout(work, timeoutMs, `Timed out resuming session ${storedSessionId}`, () => {
+        work.then(() => {
+          if (workOutcome?.ok !== true) {
+            return
+          }
+
+          const lateId = sessionResumeOutcomeSessionId(workOutcome.value)
+
+          if (!lateId) {
+            return
+          }
+
+          // A NEWER flight owns the stored id: its caller adopts its own
+          // result, so caching the old straggler would be a stale adoption.
+          // An evicted slot (this flight settled and no successor started)
+          // still adopts — the runtime is real and otherwise orphaned.
+          const currentFlight = _inFlightResumeByStoredSessionId.get(storedSessionId)
+
+          if (currentFlight !== undefined && currentFlight !== flight) {
+            return
+          }
+
+          // Same contract as a drift-abort: record it so the next resume-shaped
+          // action reuses the runtime instead of minting another orphan.
+          registerRecoveredRuntime(storedSessionId, lateId)
+        })
+      })
+    )
     .finally(() => {
       if (_inFlightResumeByStoredSessionId.get(storedSessionId) === flight) {
         _inFlightResumeByStoredSessionId.delete(storedSessionId)
@@ -79,4 +179,5 @@ export function takeRecoveredRuntime(storedSessionId: string, deadRuntimeId?: nu
 export function clearSingleFlightSessionResumeState(): void {
   _inFlightResumeByStoredSessionId.clear()
   _recoveredRuntimeByStoredSessionId.clear()
+  _profileCountOverride = null
 }

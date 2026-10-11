@@ -617,6 +617,54 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
         for ident in ("a/one", "one"):
             assert "disabled" in json.loads(skill_view(ident))["error"]
 
+    def test_one_skill_linked_into_two_same_tier_roots_is_listed_once(self, tmp_path, monkeypatch):
+        """Skill installers link one SKILL.md into several agent dirs (.agents/skills and .hermes/skills,
+        or two external_dirs). skill_view dedups by resolved path and loads it; every other surface must
+        list it too, not drop it as an ambiguous same-tier duplicate."""
+        import json
+
+        from agent import prompt_builder as pb, skill_utils
+        from tools.skills_tool import skill_view, skills_list
+        local, ext_a, ext_b = tmp_path / "local", tmp_path / "ext_a", tmp_path / "ext_b"
+        local.mkdir()
+        _make_skill(ext_a, "pr-review", body="REVIEW BODY")
+        ext_b.mkdir()
+        try:
+            os.symlink(ext_a / "pr-review", ext_b / "pr-review", target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+        monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", local)
+        monkeypatch.setattr(skills_tool_module, "_SKILLS_CACHE", {})
+        monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [ext_a, ext_b])
+        monkeypatch.setattr(pb, "get_skills_dir", lambda: local)
+        monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *a, **k: set())
+        monkeypatch.setattr(pb, "_skills_prompt_snapshot_path", lambda: tmp_path / "snap.json")
+        pb.clear_skills_system_prompt_cache()
+
+        assert "REVIEW BODY" in json.loads(skill_view("pr-review"))["content"]
+        assert [s["name"] for s in json.loads(skills_list())["skills"]] == ["pr-review"]
+        assert sorted(scan_skill_commands()) == ["/pr-review"]
+        prompt = pb.build_skills_system_prompt()
+        assert "- pr-review: Description for pr-review." in prompt and "rename one" not in prompt
+
+    def test_same_root_link_still_loses_to_the_shallower_real_path(self, tmp_path):
+        """Inside one root, a deeper link to a skill keeps losing to the real, shallower copy (the same-root
+        rank rule), whatever order the scan lists them in."""
+        from agent.skill_utils import resolve_skill_catalog
+        root = tmp_path / "ext"
+        _make_skill(root, "one")
+        (root / "cat").mkdir()
+        try:
+            os.symlink(root / "one", root / "cat" / "one", target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+        entries = [{"name": "one", "tier": 3, "root": root, "path": root / rel / "SKILL.md"}
+                   for rel in ("cat/one", "one")]
+
+        status = {e["relative_path"]: (e["status"], e["load_name"]) for e in resolve_skill_catalog(entries)}
+
+        assert status == {"cat/one": ("shadowed", None), "one": ("unique", "one")}
+
 
 class TestBuildSkillInvocationMessage:
 

@@ -1807,6 +1807,7 @@ def cmd_chat(args):
         "run_budget": getattr(args, "run_budget", None),
         "output_format": getattr(args, "output_format", "text"),
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
+        "no_restore_cwd": getattr(args, "no_restore_cwd", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),
         **{k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH},

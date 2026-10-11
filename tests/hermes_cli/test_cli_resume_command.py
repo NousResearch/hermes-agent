@@ -1,6 +1,8 @@
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from cli import HermesCLI
 
 
@@ -94,6 +96,8 @@ class TestCliResumeRestoresCwd:
 
     def _resumable_cli(self, session_meta):
         cli_obj = _make_cli()
+        # Startup flags must not suppress a later interactive /resume.
+        cli_obj._startup_no_restore_cwd = True
         cli_obj._session_db.get_session.return_value = session_meta
         cli_obj._session_db.get_resume_conversations.return_value = [
             {"role": "user", "content": "hello"},
@@ -119,6 +123,108 @@ class TestCliResumeRestoresCwd:
             assert os.environ.get("TERMINAL_CWD") == recorded
 
         mock_chdir.assert_called_once_with(recorded)
+
+
+class TestStartupResumeCwdPolicy:
+    def _resumable_cli(self, session_meta):
+        cli_obj = _make_cli()
+        cli_obj._startup_no_restore_cwd = True
+        cli_obj._session_db.get_session.return_value = session_meta
+        cli_obj._session_db.get_resume_conversations.return_value = (
+            [{"role": "user", "content": "hello"}],
+            [{"role": "user", "content": "hello"}],
+        )
+        cli_obj._session_db.resolve_resume_session_id.return_value = session_meta["id"]
+        return cli_obj
+
+    def _startup_cli(self, workspace_a, no_restore_cwd, loader):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "session-a"
+        cli_obj._resumed = True
+        cli_obj._startup_no_restore_cwd = no_restore_cwd
+        cli_obj._resume_history_error = None
+        cli_obj.tool_progress_mode = "off"  # late loader keeps machine-readable stdout clean
+        cli_obj._console_print = MagicMock()
+        cli_obj._restore_session_yolo = MagicMock()
+        cli_obj._restore_session_model = MagicMock()
+        cli_obj._reopen_session = MagicMock()
+        cli_obj._session_db.get_session.return_value = {
+            "id": "session-a", "title": "A", "cwd": str(workspace_a),
+        }
+        messages = [{"role": "user", "content": "hello"}]
+        cli_obj._session_db.get_resume_conversations.return_value = (messages, messages)
+        cli_obj._session_db.get_messages_as_conversation.return_value = messages
+        cli_obj._session_db.resolve_resume_session_id.return_value = "session-a"
+        if loader == "early":
+            cli_obj._preload_resumed_session()
+        else:
+            cli_obj._load_resumed_history_late()
+        return cli_obj
+
+    @pytest.mark.parametrize("loader", ["early", "late"])
+    def test_startup_no_restore_preserves_workspace_and_terminal_cwd(
+        self, loader, tmp_path, monkeypatch
+    ):
+        from pathlib import Path
+
+        workspace_a = tmp_path / "workspace-a"
+        workspace_b = tmp_path / "workspace-b"
+        workspace_a.mkdir()
+        workspace_b.mkdir()
+        monkeypatch.chdir(workspace_b)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace_b))
+
+        self._startup_cli(workspace_a, no_restore_cwd=True, loader=loader)
+
+        assert Path.cwd().resolve() == workspace_b.resolve()
+        assert Path(os.environ["TERMINAL_CWD"]).resolve() == workspace_b.resolve()
+
+    def test_default_startup_resume_restores_session_workspace(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        workspace_a = tmp_path / "workspace-a"
+        workspace_b = tmp_path / "workspace-b"
+        workspace_a.mkdir()
+        workspace_b.mkdir()
+        monkeypatch.chdir(workspace_b)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace_b))
+
+        self._startup_cli(workspace_a, no_restore_cwd=False, loader="early")
+
+        assert Path.cwd().resolve() == workspace_a.resolve()
+        assert Path(os.environ["TERMINAL_CWD"]).resolve() == workspace_a.resolve()
+
+    def test_startup_no_restore_flag_reaches_classic_cli(self):
+        from types import SimpleNamespace
+        import hermes_cli.main as main_mod
+
+        captured = {}
+        args = SimpleNamespace(
+            model=None, toolsets=None, query=None, image=None, resume="session-a",
+            no_restore_cwd=True, safe_mode=False, output_format="text", yolo=False,
+            ignore_rules=False, ignore_user_config=False, oneshot_exit=False,
+            run_budget=None, compact=False, reasoning=None,
+        )
+        with (
+            patch.object(main_mod, "_apply_safe_mode"),
+            patch.object(main_mod, "_apply_user_config_bypass"),
+            patch.object(main_mod, "_guard_noninteractive_user_config"),
+            patch.object(main_mod, "_resolve_use_tui", return_value=False),
+            patch.object(main_mod, "_resolve_chat_session_args"),
+            patch.object(main_mod, "_warn_retired_xai_models"),
+            patch.object(main_mod, "_has_any_provider_configured", return_value=True),
+            patch.object(main_mod, "_start_chat_background_prefetch"),
+            patch.object(main_mod, "_pin_kanban_board_env"),
+            patch.object(main_mod, "_read_query_file"),
+            patch.object(main_mod, "_confirm_startup_expensive_model_override"),
+            patch("hermes_cli.free_tier_bootstrap.run_bootstrap"),
+            patch("hermes_cli.observability.shared_metrics_consent.offer_consent_before_chat"),
+            patch("hermes_cli.observability.shared_metrics_process.begin_process"),
+            patch("cli.main", side_effect=lambda **kwargs: captured.update(kwargs)),
+        ):
+            main_mod.cmd_chat(args)
+
+        assert captured["no_restore_cwd"] is True
 
 
     def test_sessions_command_restores_recorded_cwd(self, tmp_path):

@@ -58,10 +58,21 @@ def _exclude_newer_exempt(metadata):
     return {canonicalize_name(name) for name in metadata["tool"]["uv"]["exclude-newer-package"]}
 
 
+def _is_exact_pin(spec):
+    # ``==1.2.*`` shares the operator but still floats, so it keeps the quarantine.
+    return spec.operator == "==" and not spec.version.endswith(".*")
+
+
 def _exact_pins(specs):
     for requirement in map(Requirement, specs):
-        if any(spec.operator == "==" for spec in requirement.specifier):
+        if any(_is_exact_pin(spec) for spec in requirement.specifier):
             yield requirement
+
+
+def test_exact_pins_skip_wildcard_equality():
+    pins = {req.name for req in _exact_pins(
+        ["exact==1.2.3", "prefix==1.2.*", "ranged>=1,<2", "mixed>=1,==1.4.0"])}
+    assert pins == {"exact", "mixed"}
 
 
 def test_exact_pinned_deps_exempt_from_exclude_newer():

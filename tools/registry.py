@@ -195,6 +195,9 @@ class ToolEntry:
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
+    # True: unioned into every toolset carrying the full core tool set (CLI, cron, every messaging
+    # platform) at resolve time, so a plugin needn't patch toolsets._HERMES_CORE_TOOLS.
+    include_in_messaging_toolsets: bool = False
 
 
 class _PluginOverridePolicy:
@@ -523,6 +526,10 @@ class ToolRegistry:
     def get_tool_names_for_toolset(self, toolset: str) -> list[str]:
         return sorted(e.name for e in self._grouped(self._snapshot_entries()).get(toolset, []))
 
+    def get_messaging_optin_tool_names(self) -> list[str]:
+        """Sorted names of tools registered with ``include_in_messaging_toolsets=True``."""
+        return sorted(e.name for e in self._snapshot_entries() if e.include_in_messaging_toolsets)
+
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
         """Register an explicit alias for a canonical toolset name."""
         with self._lock:
@@ -668,10 +675,12 @@ class ToolRegistry:
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
         dynamic_schema_overrides: Callable | None = None, override: bool = False,
-        scope: Optional[str] = None):
+        scope: Optional[str] = None, include_in_messaging_toolsets: bool = False):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
-        browser backend); without it, cross-toolset shadowing is rejected."""
+        browser backend); without it, cross-toolset shadowing is rejected.
+        ``include_in_messaging_toolsets=True`` exposes the tool wherever the full core tool set is
+        (CLI, cron, every messaging platform) without hardcoding it in ``_HERMES_CORE_TOOLS``."""
         # Reject malformed schemas at registration, not at request time: a non-dict
         # ``parameters`` (e.g. a list) serializes into every provider request and 400s the
         # whole turn far from the offending plugin. Failing here names the culprit instead.
@@ -733,7 +742,8 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
-                dynamic_schema_overrides=dynamic_schema_overrides)
+                dynamic_schema_overrides=dynamic_schema_overrides,
+                include_in_messaging_toolsets=include_in_messaging_toolsets)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,

@@ -75,6 +75,19 @@ describe('delegateRowsFromCall', () => {
   it('still lists a background dispatch whose goals only survive in the result', () => {
     expect(delegateRowsFromCall({}, { status: 'dispatched', goals: ['A', 'B'] }).map(r => r.goal)).toEqual(['A', 'B'])
   })
+
+  it('carries the delegation id a settled result or dispatch handle names onto every row', () => {
+    const settled = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }] },
+      { delegation_id: 'deleg_abc', results: [{ status: 'ok', summary: 'done' }] }
+    )
+
+    const dispatched = delegateRowsFromCall({}, { status: 'dispatched', delegation_id: 'deleg_abc', goals: ['A'] })
+
+    expect(settled.map(r => r.delegationId)).toEqual(['deleg_abc'])
+    expect(dispatched.map(r => r.delegationId)).toEqual(['deleg_abc'])
+    expect(delegateRowsFromCall({ tasks: [{ goal: 'A' }] }, undefined)[0]!.delegationId).toBeUndefined()
+  })
 })
 
 describe('mergeDelegateRows', () => {
@@ -148,5 +161,82 @@ describe('mergeDelegateRows', () => {
     )
 
     expect(merged.map(r => r.model)).toEqual(['m0', 'm1'])
+  })
+
+  // #136532: two delegations sharing a goal string used to re-adopt each
+  // other's workers — a settled card re-painted with a newer call's live child.
+  it('joins by the delegation id first, so a repeated goal never crosses calls', () => {
+    const settledCard = delegateRowsFromCall(
+      { tasks: [{ goal: 'Harden the scanner' }] },
+      { delegation_id: 'deleg_old', results: [{ status: 'ok', summary: 'done' }] }
+    )
+
+    const liveCard = delegateRowsFromCall(
+      { tasks: [{ goal: 'Harden the scanner' }] },
+      { delegation_id: 'deleg_new', status: 'dispatched' },
+      'call-2'
+    )
+
+    const live = [
+      subagent({
+        id: 'sa-old',
+        delegationId: 'deleg_old',
+        goal: 'Harden the scanner',
+        status: 'completed',
+        model: 'old-model'
+      }),
+      subagent({
+        id: 'sa-new',
+        delegationId: 'deleg_new',
+        goal: 'Harden the scanner',
+        status: 'running',
+        model: 'new-model'
+      })
+    ]
+
+    const mergedSettled = mergeDelegateRows(settledCard, live, 'call-1')
+    const mergedLive = mergeDelegateRows(liveCard, live, 'call-2')
+
+    expect(mergedSettled[0]).toMatchObject({ model: 'old-model', status: 'completed' })
+    expect(mergedLive[0]).toMatchObject({ model: 'new-model', status: 'running' })
+  })
+
+  it('counts a unit split of one delegation (id -1, -2 …) as the same call', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }] },
+      { delegation_id: 'deleg_x', results: [{ status: 'ok' }, { status: 'ok' }] }
+    )
+
+    const merged = mergeDelegateRows(
+      rows,
+      [
+        subagent({ id: 'u1', delegationId: 'deleg_x-1', taskIndex: 0, model: 'm0' }),
+        subagent({ id: 'u2', delegationId: 'deleg_x-2', taskIndex: 1, model: 'm1' })
+      ],
+      'call-1'
+    )
+
+    expect(merged.map(r => r.model)).toEqual(['m0', 'm1'])
+  })
+
+  it('never claims a live child whose delegation id belongs to another call', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }] },
+      { delegation_id: 'deleg_mine', results: [{ status: 'ok' }, { status: 'ok' }] }
+    )
+
+    // Both children carry a foreign delegation id and unmatchable goals, so
+    // neither join may adopt them; the rows keep their settled result state.
+    const merged = mergeDelegateRows(
+      rows,
+      [
+        subagent({ id: 'f1', delegationId: 'deleg_other', goal: 'X', taskIndex: 0, model: 'foreign' }),
+        subagent({ id: 'f2', delegationId: 'deleg_other', goal: 'Y', taskIndex: 1, model: 'foreign' })
+      ],
+      'call-1'
+    )
+
+    expect(merged.map(r => r.model)).toEqual([undefined, undefined])
+    expect(merged.map(r => r.status)).toEqual(['completed', 'completed'])
   })
 })

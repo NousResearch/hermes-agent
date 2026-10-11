@@ -426,6 +426,34 @@ class TestRejectionNeverReachesPersistedHistory:
         assert strip_images_for_rejecting_model(agent, api_messages) is False
         assert str(api_messages).count("data:image/png") == 2
 
+    def test_image_url_format_rejection_does_not_mark_the_model_image_rejecting(self):
+        """'image_url'. expected says that the specific URL representation was rejected
+        (e.g. data:image/...), not that the model is incapable of vision.
+        The attempt is stripped and retried, but the model stays unmarked so a later request
+        with a good image still reaches it."""
+        import copy
+
+        class _FormatErr(Exception):
+            status_code = 400
+            body = "Invalid parameter: 'messages[0].content[1].image_url'. Expected a valid URL, but got 'data:image/png;base64,...'"
+
+        from agent.turn_recovery import recover_before_classification
+
+        agent, history = self._agent(), self._history()
+        before, wire = copy.deepcopy(history), copy.deepcopy(history)
+        retry, _ = recover_before_classification(
+            agent, _FormatErr(), messages=history, api_messages=wire,
+            api_kwargs={}, active_system_prompt="sys",
+        )
+
+        assert retry is True
+        assert "image_url" not in str(wire), "the retry payload should be text-only"
+        assert history == before
+        assert agent._image_rejecting_models == set()
+        api_messages = self._history()
+        assert strip_images_for_rejecting_model(agent, api_messages) is False
+        assert str(api_messages).count("data:image/png") == 2
+
 
 def test_iteration_summary_strips_images_for_rejecting_model(tmp_path, monkeypatch):
     """The max-iterations summary hand-builds api_messages and bypasses build_api_request, so

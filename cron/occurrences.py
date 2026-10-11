@@ -19,6 +19,26 @@ def scheduled_instant(value):
         return None
 
 
+def _record_skip_incident(job, instant, row) -> None:
+    """Durable trace for a consumed due slot (#134858): the WARNING from the dedup gate is easy
+    to miss and lives in a log stream the operator may not read; an incident shows up in
+    ``hermes cron incidents`` and names the execution that consumed the occurrence. Best effort
+    by design — a broken incident store must never change the gate's answer."""
+    try:
+        from cron.incidents import upsert_incident
+
+        upsert_incident(
+            str(job.get("id")),
+            f"Skipped scheduled occurrence {instant}: already completed by execution "
+            f"{row['id']} (finished {row['finished_at'] or row['claimed_at']})",
+            job_name=job.get("name"),
+            failure_type="skipped_occurrence",
+        )
+    except Exception:
+        logger.warning(
+            "Could not record skip incident for job %s", job.get("id"), exc_info=True)
+
+
 def completed_occurrence(job, instant):
     """Unknown/failed/pruned attempts cannot prove completion: keep them eligible."""
     from cron.constants import FIRE_CLAIM_SKEW_SECONDS
@@ -41,8 +61,10 @@ def completed_occurrence(job, instant):
             # Legacy or malformed timestamps remain proof; only positively identified poison
             # rows — completions recorded before their claimed occurrence — are ignored.
             if completed_at is None or datetime.fromisoformat(completed_at) >= earliest_real:
+                _record_skip_incident(job, instant, row)
                 # Both dedup gates (due scan and fire claim) consume the slot on True without a
-                # run or a ledger row, so this line is the only trace the skip leaves (#111414).
+                # run or an executions row; the WARNING above plus the incident recorded beside
+                # it are the skip's only durable traces (#111414, #134858).
                 logger.warning(
                     "Job '%s' (%s): scheduled occurrence %s was already completed by execution "
                     "%s (finished %s); skipping the due slot without a new run",

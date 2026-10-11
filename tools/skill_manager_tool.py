@@ -33,6 +33,7 @@ from tools.skill_manager_guards import (
     _validate_delete_target, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
+from tools.skill_size_budget import attach_skill_size_warning, skill_write_budget_refusal
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
@@ -401,6 +402,8 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
+    if refusal := skill_write_budget_refusal(name, skill_dir, target, content, original):
+        return refusal
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
@@ -488,7 +491,7 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
                 f"skill_manage(action='write_file', name='{name}', file_path='references/example.md', "
                 "file_content='...')"}
     _attach_lint_findings(_add_description_prompt_preview(result, content), skill_md)
-    return result
+    return attach_skill_size_warning(result, name, skill_dir, skill_md, content)
 
 
 def _edit_skill(name: str, content: str) -> dict[str, Any]:
@@ -502,6 +505,7 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
     result = {
         "success": True, "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(skill_dir), "_change": {"description": _description_preview(content)}}
+    attach_skill_size_warning(result, name, skill_dir, skill_dir / "SKILL.md", content)
     return _add_description_prompt_preview(result, content)
 
 
@@ -553,7 +557,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
     # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.
     if not file_path:
         _attach_lint_findings(result, target, before=content)
-    return result
+    return attach_skill_size_warning(result, name, skill_dir, target, new_content)
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, Any]:
@@ -620,7 +624,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     # that crosses the line so the review fork sees it in the same turn.
     if file_path.startswith("references/") and (skill_dir / "SKILL.md").exists():
         _attach_lint_findings(result, skill_dir / "SKILL.md")
-    return result
+    return attach_skill_size_warning(result, name, skill_dir, target, file_content)
 
 
 def _remove_file(name: str, file_path: str) -> dict[str, Any]:
@@ -831,7 +835,8 @@ def _skill_manage_description() -> str:
         "when <trigger>. <one-line behavior>.' Write lessons, not logs: "
         "imperative rule + why, no PR numbers/dates/incident narration, one "
         "rule per lesson, references/ named by topic (extend before adding). "
-        "skill_view() shows format conventions."
+        "Configured SKILL.md growth budgets return current_chars/requested_delta/cap; "
+        "move overflow detail to references/. skill_view() shows format conventions."
     )
 
 

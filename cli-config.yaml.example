@@ -1150,6 +1150,12 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Optional lower growth budget for the main SKILL.md (Unicode chars, including frontmatter).
+  # null/0 = off; already-over-budget skills may still shrink or keep the same length.
+  max_skill_md_chars: null
+  # Warn in successful tool results and review footers at/above this size.
+  size_warn_chars: null
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

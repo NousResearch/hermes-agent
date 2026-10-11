@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from agent.i18n import t
+from agent.background_review_skill_sizes import skill_size_warning_lines
 from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
@@ -729,7 +730,10 @@ def summarize_background_review_actions(
         # ``success``/``_change``.
         if not isinstance(data, dict) or not data.get("success"):
             continue
-        actions.extend(_action_lines(data, call_details.get(tcid) or {}, verbose))
+        detail = call_details.get(tcid) or {}
+        actions.extend(_action_lines(data, detail, verbose))
+        if detail.get("tool") == "skill_manage":
+            actions.extend(skill_size_warning_lines(data))
     return actions
 
 

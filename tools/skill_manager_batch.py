@@ -213,7 +213,7 @@ def _rollback(snapshots, find_skill, results):
     return ("; ".join(notes) if notes else "all touched skills rolled back"), bool(notes)
 
 
-_ADVISORY_KEYS = ("lint_warnings", "lint_hint")
+_ADVISORY_KEYS = ("lint_warnings", "lint_hint", "size_warning")
 
 
 def _skill_manage_batch(operations, default_name: str | None = None, task_id: str | None = None,

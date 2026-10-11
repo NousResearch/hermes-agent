@@ -1495,7 +1495,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         )
         setsid_bin = shutil.which("setsid")
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
-        subprocess.Popen(
+        subprocess.Popen(  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,
         )

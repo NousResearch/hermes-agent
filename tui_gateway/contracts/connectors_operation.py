@@ -135,6 +135,8 @@ class ConnectionOperationTarget(Payload):
     connect_url: str | None = None
     # The vendor account a managed mint created or observed; never the desktop transport's id.
     connection_id: str | None = None
+    # The name of the one hosted account this row connects or repairs.
+    alias: str | None = None
     attempt: str | None = None
     # Present only on an MCP install that is waiting for credentials.
     required_env: list[ConnectionTargetEnvField] | None = None

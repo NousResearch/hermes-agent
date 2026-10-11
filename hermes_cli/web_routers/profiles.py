@@ -31,7 +31,7 @@ from fastapi import APIRouter, HTTPException, Query
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
-from hermes_cli.profiles import ProfileIdentitySettlementPending
+from hermes_cli.profiles import ProfileBusyError, ProfileIdentitySettlementPending
 from hermes_cli.web_server_config import (
     _apply_main_model_assignment, _normalize_main_model_assignment, _validated_main_model_selection,
 )
@@ -187,6 +187,9 @@ def _profile_errors(log_msg: str, *args, not_found=(FileNotFoundError,),
         raise HTTPException(status_code=404, detail=str(e))
     except bad_request as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except ProfileBusyError as e:
+        # Another create/rename of the same slug is mid-flight: a retryable conflict, not a 500.
+        raise HTTPException(status_code=409, detail=str(e))
     except ProfileIdentitySettlementPending:
         raise
     except Exception as e:

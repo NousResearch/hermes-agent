@@ -187,7 +187,7 @@ def _print_channel_clone_notice(name: str, source_label: str, clone_channels: bo
 
 def _profile_create(args):
     from hermes_cli.profiles import (
-        _get_wrapper_dir, _is_wrapper_dir_in_path, check_alias_collision, create_profile,
+        ProfileBusyError, _get_wrapper_dir, _is_wrapper_dir_in_path, check_alias_collision, create_profile,
         create_wrapper_script, get_active_profile_name, seed_profile_skills,
     )
     name = args.profile_name
@@ -207,7 +207,7 @@ def _profile_create(args):
             no_alias=no_alias, no_skills=no_skills, description=getattr(args, "description", None),
             clone_channels=clone_channels, sync_imports=sync_imports,
         )
-    except (ValueError, FileExistsError, FileNotFoundError) as e:
+    except (ValueError, FileExistsError, FileNotFoundError, ProfileBusyError) as e:
         _die(f"Error: {e}")
     print(f"\nProfile '{name}' created at {profile_dir}")
     if cloned:
@@ -435,13 +435,13 @@ def _profile_alias(args):
 
 
 def _profile_rename(args):
-    from hermes_cli.profiles import normalize_profile_name, rename_profile
+    from hermes_cli.profiles import ProfileBusyError, normalize_profile_name, rename_profile
     try:
         new_dir = rename_profile(args.old_name, args.new_name)
         if normalize_profile_name(args.old_name) != "default":
             print(f"\nProfile renamed: {args.old_name} → {args.new_name}")
             print(f"Path: {new_dir}\n")
-    except (ValueError, FileExistsError, FileNotFoundError) as e:
+    except (ValueError, FileExistsError, FileNotFoundError, ProfileBusyError) as e:
         _die(f"Error: {e}")
 
 

@@ -27,6 +27,8 @@ logger = logging.getLogger("hermes_state")
 # Either would silently break everything on state.db/kanban.db, so fall back to DELETE (readers block on writes).
 # "not authorized": some FUSE mounts block the WAL pragma outright.
 _WAL_INCOMPAT_MARKERS = ("locking protocol", "not authorized", "disk i/o error")
+_WAL_SETUP_MAX_ATTEMPTS = 3
+_WAL_SETUP_RETRY_DELAY_S = 1.0
 # SQLite's default journal_size_limit is -1 (unlimited); see _apply_wal_size_limit.
 _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
 
@@ -318,6 +320,17 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
     return _enable_wal(conn, db_label, require_wal, current_mode)
 
 
+def _set_wal_with_busy_retry(conn: sqlite3.Connection):
+    """Retry transient contention without treating it as filesystem incompatibility."""
+    for attempt in range(_WAL_SETUP_MAX_ATTEMPTS):
+        try:
+            return conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_lock_error(exc) or attempt == _WAL_SETUP_MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_WAL_SETUP_RETRY_DELAY_S)
+
+
 def _enable_wal(conn: sqlite3.Connection, db_label: str, require_wal: bool, current_mode: Optional[str]) -> str:
     """Flip a non-WAL, non-vulnerable connection to WAL, or fall back to DELETE."""
     # Decide BEFORE the flip whether it overwrites a mode somebody chose (probe and page_count are only readable
@@ -333,7 +346,7 @@ def _enable_wal(conn: sqlite3.Connection, db_label: str, require_wal: bool, curr
     try:
         # ``PRAGMA journal_mode=WAL`` RETURNS the resulting mode: macOS NFS, SMB/CIFS and the AgentFS overlay
         # refuse WITHOUT raising. Trust the row, not the absence of an exception.
-        mode = _mode_from_row(conn.execute("PRAGMA journal_mode=WAL").fetchone())
+        mode = _mode_from_row(_set_wal_with_busy_retry(conn))
         if mode == "wal":
             return _wal_activated()
         silent_exc = WalUnsupportedError(f"journal_mode=WAL refused without raising (still {mode!r})")

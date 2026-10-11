@@ -22,14 +22,15 @@ files on `main`.
    non-prerelease GitHub draft on it, and dispatch `Stable Release` on that exact
    ref. The attempt number comes from the existing attempt refs of that version.
    The claim message binds its commit, attempt number, autopublish policy,
-   `skipBundles` and `skipTests` flags, and
+   `skipBundles`, `skipTests`, `includeMacosIntel` and `includeTermux` flags, and
    one monotonically allocated epoch. That epoch is the release date and native
    packaging clock for every matrix leg and retry. One outstanding attempt, of
    any version, blocks a new `release`.
 3. Admit the exact remote annotated tag-object SHA, peeled commit, `GITHUB_REF`,
    `GITHUB_SHA`, checked-out `HEAD`, and ancestry on `origin/main`.
-4. Run the whole source, Docker, Nix, PM bundle, install/update, Termux, Windows,
-   signed-package, and native-upgrade acceptance graph.
+4. Run the whole source, Docker, Nix, PM bundle, install/update, Windows,
+   signed-package, and native-upgrade acceptance graph (plus macOS Intel and
+   Termux when the claim opted into them).
 5. Push immutable versioned Docker and R2 artifacts from the tested bytes. The
    Docker image is pushed as soon as its own tests pass, tagged by the attempt
    ref. Do not move `stable` or `latest` aliases yet and do not rebuild for
@@ -148,6 +149,38 @@ and the protected R2 advance) refuses a manifest whose smoke results disagree
 with the claim's `skipTests` flag. Use it only for an emergency fix, and cut a
 normal release after it.
 
+### macOS Intel and Termux are opt-in
+
+A stable release does not build the macOS Intel (`darwin-x64`) desktop bundle
+or the Termux (Android aarch64) APT package unless the claim asks for them.
+Intel macOS is not supported on `main`, and its `macos-15-intel` bundle leg
+alone takes well over an hour. Both remain buildable:
+
+```sh
+python scripts/release.py release --commit "$(git rev-parse origin/main)" \
+  --include-macos-intel --include-termux --remote origin
+```
+
+| | default | `--include-macos-intel` | `--include-termux` |
+|---|---|---|---|
+| `candidates-darwin-x64`, `transitions-darwin-x64`, `macos-packaged-x64` | skipped | run | skipped |
+| `candidates-termux`, `termux-checks` | skipped | skipped | run |
+
+Like the skip flags, `--include-macos-intel` and `--include-termux` are written
+into the claim (`includeMacosIntel`, `includeTermux`) and `admit` emits them as
+`include-macos-intel` and `include-termux`. A claim without those keys, which
+includes every claim cut before they existed, reads them as `false`. The gate
+requires an opted-out job to report `skipped`, and `--skip-bundles` /
+`--skip-tests` still remove these jobs when the platform is opted in.
+
+When a platform is left out, its rows are absent from the candidate manifest,
+the release body's downloads table and the downloads page, and its channel
+stays on the previous release that built it: the macOS feed then lists only the
+arm64 leg, the protected R2 head carries three native packages, and the APT
+indexes are not rewritten. A release that opts macOS Intel back in after one
+that left it out has no published Intel baseline, so its Intel upgrade arm is
+skipped like a first release.
+
 The claim push is the atomic version lock. Two callers may derive the same next
 version, but only one push wins; the loser reports the winning tagger, time, and
 commit. A rejected or abandoned claim remains spent. To publish or abandon:
@@ -248,7 +281,8 @@ retain no downloadable job artifacts.
 The desktop workflow takes a `jobs` input with the groups `darwin-arm64`,
 `darwin-x64`, `win32-arm64`, `win32-x64`, `win32-bundle`, `linux-x64`,
 `linux-arm64`, and `termux`. Stable calls it once per group, except the linux
-groups, which wait for a real Linux build. Each Mac arch and the Windows bundle
+groups, which wait for a real Linux build, and the opt-in `darwin-x64` and
+`termux` groups, which it calls only when the claim includes them. Each Mac arch and the Windows bundle
 stage a receipt, and each install arm starts from its own receipt as soon as
 its own bytes are staged. `acceptance` is the one join that blocks publication.
 

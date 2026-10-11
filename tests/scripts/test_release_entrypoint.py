@@ -112,6 +112,9 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         "schema": 1,
         "skipBundles": True,
         "skipTests": False,
+        # macOS Intel and Termux are opt-in, and off unless asked for.
+        "includeMacosIntel": False,
+        "includeTermux": False,
         "version": "0.21.5",
     }
     create = calls[0]

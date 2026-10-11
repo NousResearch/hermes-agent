@@ -194,13 +194,16 @@ def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: s
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             execute, autopublish: bool = False, no_changelog: bool = False,
             skip_bundles: bool = False, skip_tests: bool = False,
+            include_macos_intel: bool = False, include_termux: bool = False,
             published: tuple[str, str | None] = (SEED, None),
             run_wait: float = 0, sleep=time.sleep) -> dict:
     """Claim the next attempt of the derived version, cut its draft, and start the gate.
 
     ``published`` is the stable channel's ``(version, commit)``; the commit is
-    None before the first publication. ``skip_bundles`` and ``skip_tests`` are
-    written into the claim, which is the one record every later job reads.
+    None before the first publication. ``skip_bundles``, ``skip_tests``,
+    ``include_macos_intel`` and ``include_termux`` are written into the claim,
+    which is the one record every later job reads. macOS Intel and Termux are
+    not built unless their include flag is set.
     ``run_wait`` is how many seconds to keep looking for the dispatched run;
     GitHub lists it a moment after the dispatch returns.
     """
@@ -246,6 +249,8 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         "autopublish": autopublish,
         "skipBundles": skip_bundles,
         "skipTests": skip_tests,
+        "includeMacosIntel": include_macos_intel,
+        "includeTermux": include_termux,
         "claimEpoch": claim_epoch,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.check_output(
@@ -299,7 +304,8 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     return {"version": version, "tag": tag, "commit": commit, "url": url, "repository": repository,
             "final_url": f"https://github.com/{repository}/releases/tag/v{version}",
             "run_url": run_url, "autopublish": autopublish,
-            "skip_bundles": skip_bundles, "skip_tests": skip_tests}
+            "skip_bundles": skip_bundles, "skip_tests": skip_tests,
+            "include_macos_intel": include_macos_intel, "include_termux": include_termux}
 
 
 RUN_POLL_SECONDS = 2
@@ -470,6 +476,14 @@ def next_steps(result: dict, *, bold: bool = False) -> str:
     if result["skip_bundles"]:
         lines.append("Bundles are skipped. Only the tag, the GitHub release and the Docker image "
                      "ship; the desktop, Termux and Store channels stay on the previous release.")
+    else:
+        left_out = [(name, flag) for name, flag, on in (
+            ("macOS Intel", "--include-macos-intel", result.get("include_macos_intel")),
+            ("Termux", "--include-termux", result.get("include_termux"))) if not on]
+        if left_out:
+            lines.append(f"Not built: {' and '.join(name for name, _ in left_out)} (opt in with "
+                         f"{' / '.join(flag for _, flag in left_out)}). "
+                         "Those channels stay on their previous release.")
     if result["skip_tests"]:
         warning = "Tests are skipped, since you passed --skip-tests"
         lines.append(f"\033[1m{warning}\033[0m" if bold else warning)
@@ -506,6 +520,7 @@ def cmd_release(args) -> None:
         commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
         execute=execute, autopublish=args.autopublish, no_changelog=args.no_changelog,
         skip_bundles=args.skip_bundles, skip_tests=args.skip_tests,
+        include_macos_intel=args.include_macos_intel, include_termux=args.include_termux,
         published=published_stable_identity(repository), run_wait=RUN_WAIT_SECONDS,
     )
     print(next_steps(result, bold=sys.stdout.isatty() and "NO_COLOR" not in os.environ))

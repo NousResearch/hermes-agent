@@ -464,6 +464,15 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
             channel_releases.match_accepted_packages(manifest, wrong)
         with pytest.raises(ChannelError, match="every native"):
             channel_releases.match_accepted_packages(dict(manifest, packages=manifest["packages"][:1]), accepted)
+        # A release that did not opt into macOS Intel accepts three desktop packages.
+        def no_intel(rows, key):
+            return [row for row in rows if (row[key], row["arch"]) not in (("darwin", "x64"), ("macos", "x64"))]
+        lean = dict(accepted, packages=no_intel(accepted["packages"], "platform"))
+        assert channel_releases.native_legs(lean) == ("darwin-arm64", "win32-arm64", "win32-x64", "windows-universal")
+        assert channel_releases.native_legs(accepted) == channel_releases.NATIVE_LEGS
+        channel_releases.match_accepted_packages(dict(manifest, packages=no_intel(manifest["packages"], "platform")), lean)
+        with pytest.raises(ChannelError, match="every native"):
+            channel_releases.match_accepted_packages(manifest, lean)
         # Exercise the real controller, HTTP receipt downloader, immutable feeds,
         # manifest and final CAS; only GitHub admission and generated product facts
         # are fixture inputs (no native signature acceptance is claimed here).

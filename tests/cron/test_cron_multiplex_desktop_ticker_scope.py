@@ -107,6 +107,94 @@ def test_multiplex_ticker_profile_gate_skips_rejected_profile(tmp_path):
     assert (orphan / "cron" / "ticker_last_success").exists()
 
 
+def test_multiplex_ticker_recheck_gate_under_tick_for_each_profile(tmp_path):
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    own_gateway = tmp_path / "own-gateway"
+    orphan = tmp_path / "orphan"
+    for home in (own_gateway, orphan):
+        (home / "cron").mkdir(parents=True)
+
+    stop = threading.Event()
+    gate_calls = {"own-gateway": 0, "orphan": 0}
+    rechecks: list[tuple[str, bool | None]] = []
+    tick_counts = {str(own_gateway): 0, str(orphan): 0}
+
+    def profile_gate(name, _home):
+        gate_calls[name] += 1
+        return name != "own-gateway" or gate_calls[name] % 2 == 1
+
+    def _tick(*args, **kwargs):
+        home = str(get_hermes_home())
+        gate = kwargs.get("can_dispatch")
+        rechecks.append((home, gate() if gate is not None else None))
+        tick_counts[home] += 1
+        if all(count >= 2 for count in tick_counts.values()):
+            stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("own-gateway", own_gateway), ("orphan", orphan)],
+                "profile_gate": profile_gate,
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    own_gateway_checks = [
+        allowed for home, allowed in rechecks if home == str(own_gateway)
+    ]
+    orphan_checks = [allowed for home, allowed in rechecks if home == str(orphan)]
+    assert len(own_gateway_checks) >= 2
+    assert len(orphan_checks) >= 2
+    assert all(allowed is False for allowed in own_gateway_checks)
+    assert all(allowed is True for allowed in orphan_checks)
+
+    passthrough_stop = threading.Event()
+    received_gates = []
+
+    def passthrough():
+        return True
+
+    def _capture_gate(*args, **kwargs):
+        received_gates.append(kwargs.get("can_dispatch"))
+        passthrough_stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_capture_gate):
+        passthrough_thread = threading.Thread(
+            target=provider.start,
+            args=(passthrough_stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("orphan", orphan)],
+                "can_dispatch": passthrough,
+                "profile_gate": None,
+            },
+            daemon=True,
+        )
+        passthrough_thread.start()
+        passthrough_thread.join(timeout=5)
+        passthrough_stop.set()
+        passthrough_thread.join(timeout=5)
+
+    assert not passthrough_thread.is_alive()
+    assert len(received_gates) == 1
+    assert received_gates[0] is passthrough
+
+
 @pytest.mark.parametrize("profile_count", [1, 2])
 def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, profile_count):
     """Desktop yields to each live gateway, including a single-profile install."""

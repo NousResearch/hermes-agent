@@ -8,6 +8,8 @@ after the agent finishes its current task — not silently dropped.
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
+
 
 from gateway.run import _dequeue_pending_event
 from gateway.platforms.base import (
@@ -188,10 +190,10 @@ class TestBusyInputModeQueueFifo:
         runner.adapters = {Platform.TELEGRAM: adapter}
         return runner, adapter
 
-    def _text_event(self, text: str) -> MessageEvent:
+    def _text_event(self, text: str, user_id: str = "u1") -> MessageEvent:
         # profile=None: a MagicMock auto-attribute reads as a truthy stamped
         # profile and trips fail-closed adapter resolution (AGENTS.md #17).
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None, user_id=user_id, user_id_alt=None)
         return MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
@@ -220,8 +222,10 @@ class TestBusyInputModeQueueFifo:
 
 
 
-    def _media_event(self, path: str, mime: str, message_type: MessageType, text: str = "") -> MessageEvent:
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+    def _media_event(
+        self, path: str, mime: str, message_type: MessageType, text: str = "", user_id: str = "u1",
+    ) -> MessageEvent:
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None, user_id=user_id, user_id_alt=None)
         return MessageEvent(
             text=text, message_type=message_type, source=source,
             media_urls=[path], media_types=[mime], message_id=f"m-{path}",

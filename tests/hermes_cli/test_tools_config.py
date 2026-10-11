@@ -1079,7 +1079,7 @@ class TestMessagingOptInPlatformPath:
         # is current at import time. Importing under the patch would register
         # every builtin into the throwaway registry and lose them for the
         # rest of the process.
-        import model_tools  # noqa: F401
+        import model_tools
         from tools.registry import ToolRegistry
 
         reg = ToolRegistry()

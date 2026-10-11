@@ -42,10 +42,32 @@ _IS_WINDOWS = sys.platform == "win32"
 # Runner-side cap on captured python-level output; the host re-applies its own MAX_STDOUT cap.
 _RUNNER_CAPTURE_BYTES = 1_000_000
 
-# Shared by both generated runners (which define _CAPTURE_LIMIT first): exec one request in the
-# persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the per-call path.
+# Shared by both generated runners (which define _CAPTURE_LIMIT and _RETAIN_LIMIT first): exec one
+# request in the persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the
+# per-call path.
 RUNNER_CELL_SOURCE = '''\
 GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
+
+
+class _RetainedText(io.TextIOBase):
+    """Cell stdout/stderr that keeps the first _RETAIN_LIMIT chars and drops the rest: a print
+    loop must not grow the kernel without bound when only the head and the spill are ever read."""
+
+    def __init__(self):
+        self._buf, self._room = io.StringIO(), _RETAIN_LIMIT
+
+    def writable(self):
+        return True
+
+    def write(self, s):
+        if not isinstance(s, str):
+            raise TypeError("write() argument must be str, not " + type(s).__name__)
+        if self._room > 0:
+            self._room -= self._buf.write(s[:self._room])
+        return len(s)
+
+    def getvalue(self):
+        return self._buf.getvalue()
 
 
 def _clip(text):
@@ -53,8 +75,8 @@ def _clip(text):
 
 
 def run_cell(request, execution_count):
-    """Exec one cell; returns (response payload, FULL stdout text)."""
-    out, err = io.StringIO(), io.StringIO()
+    """Exec one cell; returns (response payload, retained stdout text for the spill)."""
+    out, err = _RetainedText(), _RetainedText()
     status, trace = "ok", ""
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -87,6 +109,8 @@ _SENTINEL = os.environ["HERMES_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {_RUNNER_CAPTURE_BYTES}
 _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
 _SPILL_CAP = {5_000_000}
+# One char past the larger consumer, so _clip and _spill still see that the cell overflowed them.
+_RETAIN_LIMIT = max(_CAPTURE_LIMIT, _SPILL_CAP) + 1
 _PARENT_PROCESS_HANDLE = os.environ.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", "")
 _PARENT_DEATH_FD = os.environ.pop("HERMES_KERNEL_PARENT_DEATH_FD", "")
 

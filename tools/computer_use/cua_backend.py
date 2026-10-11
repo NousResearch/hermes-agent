@@ -410,8 +410,11 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # working; drivers advertising neither (`additionalProperties: false`) must never see the property.
         idx = args.get("element_index")
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
-        if token and (self._session.supports_input_property(name, "element_token")
-                      or self._session.supports_capability("accessibility.element_tokens", tool=name)):
+        # A token is the compatibility bridge for drivers that reject a bare
+        # element_index.  Older cua-driver versions do not advertise the
+        # capability, but still accept element_token, so capability gating
+        # would turn a valid snapshot reference into the rejected bare form.
+        if token:
             args["element_token"] = token
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)

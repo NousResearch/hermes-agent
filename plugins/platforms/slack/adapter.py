@@ -142,9 +142,11 @@ def _slack_response_payload(response: Any) -> dict[str, Any]:
 
 _SLACK_SPECIAL_MENTION_RE = re.compile(r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE)
 
-# Thread-root images delivered on a mid-thread cold start; other messages' files
-# are text markers only (the root is usually the artifact the mention is about).
-_THREAD_ROOT_IMAGE_MAX = 4
+# Thread images delivered on a mid-thread cold start (root first, then replies in order);
+# every message's files also appear as text markers. The root leads because it is usually
+# the artifact the mention is about; reply images follow so a cold-start mention can see
+# screenshots posted mid-thread (#134486).
+_THREAD_IMAGE_MAX = 4
 
 
 def _slack_file_marker(file_obj: dict[str, Any]) -> str:
@@ -4339,15 +4341,16 @@ class SlackAdapter(BasePlatformAdapter):
         #   command away from character zero, so downstream command routing can misclassify it as
         #   conversational text. ``channel_context`` is prepended only after command dispatch.
         channel_context = None
-        # Thread-root images recovered on the cold-start hydrate: when the bot is mentioned mid-thread for
+        # Thread images recovered on the cold-start hydrate: when the bot is mentioned mid-thread for
         # the first time, the thread root is very often the artifact the mention is about ("@bot what's in
-        # this chart?" replying under an image post) — deliver its images with this first turn. One-time by
-        # construction: the cold-start path is guarded by _has_active_session_for_thread, so subsequent
-        # turns in the same session never re-deliver (adapted from #69185).
-        thread_root_media_urls: list[str] = []
-        thread_root_media_types: list[str] = []
+        # this chart?" replying under an image post) — deliver its images with this first turn, then reply
+        # images in posting order up to the cap (#134486). One-time by construction: the cold-start path
+        # is guarded by _has_active_session_for_thread, so subsequent turns in the same session never
+        # re-deliver (adapted from #69185).
+        thread_media_urls: list[str] = []
+        thread_media_types: list[str] = []
         if not is_thread_reply:
-            return channel_context, thread_root_media_urls, thread_root_media_types
+            return channel_context, thread_media_urls, thread_media_types
         has_active_thread_session = self._has_active_session_for_thread(
             channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id,
             chat_type="dm" if is_dm else "group")
@@ -4365,8 +4368,8 @@ class SlackAdapter(BasePlatformAdapter):
         if not has_active_thread_session:
             await _fetch()
             (
-                thread_root_media_urls, thread_root_media_types,
-            ) = await self._collect_thread_root_images(
+                thread_media_urls, thread_media_types,
+            ) = await self._collect_thread_images(
                 channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id)
         elif is_mentioned:
             await _fetch(after_ts=self._get_thread_watermark(**watermark_args), force_refresh=True)
@@ -4381,13 +4384,13 @@ class SlackAdapter(BasePlatformAdapter):
                 channel_id, event_thread_ts, user_id, team_id)
             if rehydration_key in self._thread_rehydration_checked:
                 self._set_thread_watermark(watermark_ts=ts, **watermark_args)
-                return channel_context, thread_root_media_urls, thread_root_media_types
+                return channel_context, thread_media_urls, thread_media_types
             watermark_ts = self._get_thread_watermark(**watermark_args)
             if watermark_ts:
                 await _fetch(after_ts=watermark_ts, force_refresh=True)
         self._set_thread_watermark(watermark_ts=ts, **watermark_args)
         self._mark_thread_rehydration_checked(channel_id, event_thread_ts, user_id, team_id)
-        return channel_context, thread_root_media_urls, thread_root_media_types
+        return channel_context, thread_media_urls, thread_media_types
 
     @staticmethod
     def _media_message_type(media_types: list[str]) -> MessageType:
@@ -4653,14 +4656,14 @@ class SlackAdapter(BasePlatformAdapter):
                 team_id)
         # Thread history stays out of ``text``: prepending would push a command off char zero.
         (
-            channel_context, thread_root_media_urls, thread_root_media_types,
+            channel_context, thread_media_urls, thread_media_types,
         ) = await self._hydrate_thread_context(
             channel_id=channel_id, event_thread_ts=event_thread_ts, ts=ts, user_id=user_id,
             team_id=team_id, is_thread_reply=is_thread_reply, is_mentioned=is_mentioned,
             is_dm=is_dm)
-        # Thread-root media is delivered ahead of the trigger message's own files.
+        # Thread media is delivered ahead of the trigger message's own files.
         media_urls, media_types, media_text_inlined, text = await self._collect_inbound_media(
-            event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
+            event, channel_id, team_id, text, thread_media_urls, thread_media_types)
         msg_event = await self._build_message_event(
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
@@ -4847,14 +4850,14 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _collect_inbound_media(
         self, event: dict, channel_id: str, team_id: str, text: str,
-        thread_root_media_urls: list[str], thread_root_media_types: list[str],
+        thread_media_urls: list[str], thread_media_types: list[str],
     ) -> tuple[list[str], list[str], list[bool], str]:
         """Download/cache ``event["files"]`` → ``(media_urls, media_types, media_text_inlined, text)``;
         root images lead. Small text-like docs are injected into ``text`` (gated on ext/MIME, not blind
         UTF-8 decode — PDF/zip headers decode) and flagged True in ``media_text_inlined``. Failures are
         prepended as an attachment notice."""
-        media_urls = list(thread_root_media_urls)
-        media_types = list(thread_root_media_types)
+        media_urls = list(thread_media_urls)
+        media_types = list(thread_media_types)
         media_text_inlined: list[bool] = [False] * len(media_urls)
         notices: list[str] = []
         for f in event.get("files", []):
@@ -5777,7 +5780,7 @@ class SlackAdapter(BasePlatformAdapter):
             if new_urls:
                 extras.append("URLs: " + ", ".join(new_urls))
         # File markers: thread context is text-only, so otherwise "the chart above" refers to
-        # nothing (thread-root images are delivered separately, _collect_thread_root_images).
+        # nothing (thread images are delivered separately, _collect_thread_images).
         files = msg.get("files") if isinstance(msg.get("files"), list) else []
         markers = [_slack_file_marker(f) for f in files if isinstance(f, dict)]
         if markers:
@@ -5997,45 +6000,52 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
 
-    async def _collect_thread_root_images(
+    async def _collect_thread_images(
         self, channel_id: str, thread_ts: str, team_id: str = "") -> tuple[list[str], list[str]]:
-        """Thread-root ``image/*`` files → (paths, mimetypes); cold-start only (once per session),
-        read from the cache filled by :meth:`_fetch_thread_context`. Best-effort: text markers
-        already announce the image, so failures never produce an error turn."""
+        """``image/*`` files from the thread's recovered messages (root first, then replies in
+        order) → (paths, mimetypes); cold-start only (once per session), read from the cache
+        filled by :meth:`_fetch_thread_context`. Best-effort: text markers already announce
+        each file, so failures never produce an error turn."""
         media_urls: list[str] = []
         media_types: list[str] = []
         try:
             cached = self._thread_context_cache.get(
                 self._thread_cache_key(channel_id, thread_ts, team_id))
-            root = self._thread_root_message(cached.messages, thread_ts) if cached else None
-            files = root.get("files") if root else None
-            if not isinstance(files, list):
-                return media_urls, media_types
-            for f in files:
-                if len(media_urls) >= _THREAD_ROOT_IMAGE_MAX:
+            messages = list(cached.messages or []) if cached else []
+            root = self._thread_root_message(messages, thread_ts)
+            if root is not None:
+                messages = [root] + [m for m in messages if m is not root]
+            for msg in messages:
+                if len(media_urls) >= _THREAD_IMAGE_MAX:
                     break
-                if not isinstance(f, dict):
+                files = msg.get("files")
+                if not isinstance(files, list):
                     continue
-                # Slack Connect stubs carry no URL fields until files.info (quiet: no notices).
-                if f.get("file_access") == "check_file_info":
-                    f = await self._resolve_file_stub(f, channel_id, team_id, None)
-                    if f is None:
+                for f in files:
+                    if len(media_urls) >= _THREAD_IMAGE_MAX:
+                        break
+                    if not isinstance(f, dict):
                         continue
-                mimetype = str(f.get("mimetype") or "")
-                url = f.get("url_private_download") or f.get("url_private", "")
-                if not mimetype.startswith("image/") or not url:
-                    continue
-                try:
-                    cached_path, media_type, _ = await self._cache_slack_file(
-                        "image", f, url, mimetype, team_id)
-                    media_urls.append(cached_path)
-                    media_types.append(media_type)
-                except Exception as exc:
-                    logger.warning(
-                        "[Slack] Failed to cache thread-root image %s: %s",
-                        f.get("id") or f.get("name") or "unknown", exc)
+                    # Slack Connect stubs carry no URL fields until files.info (quiet: no notices).
+                    if f.get("file_access") == "check_file_info":
+                        f = await self._resolve_file_stub(f, channel_id, team_id, None)
+                        if f is None:
+                            continue
+                    mimetype = str(f.get("mimetype") or "")
+                    url = f.get("url_private_download") or f.get("url_private", "")
+                    if not mimetype.startswith("image/") or not url:
+                        continue
+                    try:
+                        cached_path, media_type, _ = await self._cache_slack_file(
+                            "image", f, url, mimetype, team_id)
+                        media_urls.append(cached_path)
+                        media_types.append(media_type)
+                    except Exception as exc:
+                        logger.warning(
+                            "[Slack] Failed to cache thread image %s: %s",
+                            f.get("id") or f.get("name") or "unknown", exc)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("[Slack] Thread-root image recovery failed: %s", exc)
+            logger.debug("[Slack] Thread image recovery failed: %s", exc)
         return media_urls, media_types
 
     def _slash_channel_gated(self, channel_id: str) -> bool:

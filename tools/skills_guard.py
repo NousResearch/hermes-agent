@@ -518,6 +518,20 @@ _ACTION_ON_LINE_RE = re.compile(
     r'\b(?:cat|less|more|head|tail|cp|mv|rm|scp|rsync|curl|wget|tee|chmod|chown|ssh|sudo|install|source|eval|exec'
     r'|system|popen|run|check_output|copyfile|copy2|sendfile)\b|\.(?:read|write|open|unlink|copy|append)\w*\s*\('
     r'|\bopen\s*\(|readFileSync|writeFileSync|appendFileSync|>>', re.IGNORECASE)
+# Sandbox mount *target* (#132440): `/etc/passwd` as DEST of bwrap `--ro-bind SRC DEST`, docker
+# `-v SRC:DEST`, or `--mount …,target=DEST` replaces what the guest sees; it does not read the host
+# file. Same-line action verbs still keep the finding critical via `_ACTION_ON_LINE_RE`.
+_MOUNT_TARGET_PASSWD_RE = re.compile(
+    r'(?:'
+    r'--(?:ro-)?bind(?:-try)?\b[^\n]{0,240}/etc/(?:passwd|shadow)\b'
+    r'|[-]v\s+[^\n]{0,240}?/etc/(?:passwd|shadow)\b'
+    r'|(?:target|dst|destination)\s*=\s*/etc/(?:passwd|shadow)\b'
+    r')',
+    re.IGNORECASE,
+)
+# `docker run` / `podman run` contain the word `run`, which is also an action verb for
+# subprocess.run — strip the container-launch form before deciding the line acts on the path.
+_CONTAINER_RUN_RE = re.compile(r'\b(?:docker|podman|nerdctl)\s+run\b', re.IGNORECASE)
 _QUOTED_SPAN_RE = re.compile(r"""'[^'\n]*'|"[^"\n]*\"""")
 
 
@@ -545,6 +559,16 @@ def _demote_inert_path_reference(pid: str, severity: str, description: str, line
         return "low", f"{description} (in a comment; informational)"
     if _DENYLIST_OWNER_RE.match(owner_line) and not _ACTION_ON_LINE_RE.search(line):
         return "high", f"{description} (in a denylist literal; confirm before installing)"
+    # Mount-target false positive (#132440): search the statement owner too so a multi-line
+    # ``["--ro-bind", src, "/etc/passwd"]`` argv list demotes when the path sits on a continuation.
+    if (
+        pid == "system_passwd_access"
+        and not _ACTION_ON_LINE_RE.search(_CONTAINER_RUN_RE.sub(" ", line))
+        and _MOUNT_TARGET_PASSWD_RE.search(
+            line if owner_line == line else f"{owner_line}\n{line}"
+        )
+    ):
+        return "high", f"{description} (sandbox mount target; confirm before installing)"
     return severity, description
 
 

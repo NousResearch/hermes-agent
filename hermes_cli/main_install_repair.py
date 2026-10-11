@@ -315,8 +315,8 @@ def _load_console_script_names() -> list[str]:
 
 
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:
-    from hermes_cli.main import _is_termux_startup_environment
-    return _is_termux_startup_environment(env)
+    from hermes_cli._startup_fast import is_termux_startup_environment
+    return is_termux_startup_environment(env)
 
 
 def _is_windows_npm_path(npm_path: str) -> bool:

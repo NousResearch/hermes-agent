@@ -910,17 +910,6 @@ from hermes_cli.main_tui_launch import (
 )
 
 
-def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
-    """Import-safe Termux check for cold-start-sensitive CLI paths."""
-    check = env or os.environ
-    prefix = str(check.get("PREFIX", ""))
-    return bool(
-        check.get("TERMUX_VERSION")
-        or "com.termux/files/usr" in prefix
-        or prefix.startswith("/data/data/com.termux/")
-    )
-
-
 def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
     """Look up a ref in .git/packed-refs without spawning git.
 
@@ -1006,7 +995,7 @@ def _termux_bundled_skills_stamp_path() -> Path:
 
 
 def _termux_bundled_skills_sync_needed() -> bool:
-    if not _is_termux_startup_environment():
+    if not _startup_fast.is_termux_startup_environment():
         return True
     if os.environ.get("HERMES_TERMUX_FORCE_SKILLS_SYNC") == "1":
         return True
@@ -1018,7 +1007,7 @@ def _termux_bundled_skills_sync_needed() -> bool:
 
 
 def _mark_termux_bundled_skills_synced() -> None:
-    if not _is_termux_startup_environment():
+    if not _startup_fast.is_termux_startup_environment():
         return
     try:
         stamp = _termux_bundled_skills_stamp_path()
@@ -1035,7 +1024,7 @@ def _sync_bundled_skills_for_startup() -> bool:
     storage. The git/ref stamp keeps post-update correctness: a changed
     checkout revision forces one real sync, then later starts skip it.
     """
-    if _is_termux_startup_environment() and not _termux_bundled_skills_sync_needed():
+    if _startup_fast.is_termux_startup_environment() and not _termux_bundled_skills_sync_needed():
         return False
 
     from tools.skills_sync import sync_skills
@@ -1046,7 +1035,7 @@ def _sync_bundled_skills_for_startup() -> bool:
 
 
 def _termux_should_prefetch_update_check() -> bool:
-    if not _is_termux_startup_environment():
+    if not _startup_fast.is_termux_startup_environment():
         return True
     return os.environ.get("HERMES_TERMUX_PREFETCH_UPDATES") == "1"
 
@@ -3210,7 +3199,7 @@ def _try_fast_chat_launch() -> bool:
 
 def _try_termux_fast_cli_launch() -> bool:
     """Run obvious Termux non-TUI chat/oneshot/version paths on a light parser."""
-    if not _is_termux_startup_environment():
+    if not _startup_fast.is_termux_startup_environment():
         return False
     if os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
         return False
@@ -3269,7 +3258,7 @@ def _try_termux_fast_tui_launch() -> bool:
     `hermes --tui` is the hot path on phones and the TUI immediately execs
     Node, so the full parser's command-module imports are pure waste there.
     """
-    if not _is_termux_startup_environment():
+    if not _startup_fast.is_termux_startup_environment():
         return False
 
     if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:

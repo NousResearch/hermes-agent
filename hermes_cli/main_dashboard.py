@@ -250,15 +250,34 @@ def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) 
 
 
 # launchd plist directories that can supervise a ``hermes dashboard`` / ``hermes serve`` backend on
-# macOS, with the launchctl domain their jobs load into (LaunchAgents: ``gui/<uid>`` or ``user/<uid>``,
-# probed per label like the gateway helpers; LaunchDaemons: ``system``). Both LaunchAgents dirs are
-# per-user domains, so they share the ``agent`` kind.
+# macOS. User-owned LaunchAgents may use an arbitrary label; system-managed locations are shared with
+# security and device-management software, so only Hermes-owned filename families are candidates there.
+_LAUNCHD_SYSTEM_PLIST_KINDS = frozenset({"daemon", "system-agent", "system-daemon"})
+_HERMES_SYSTEM_PLIST_PREFIXES = (
+    "ai.hermes.",
+    "com.nousresearch.hermes",
+    "io.nousresearch.hermes-agent.",
+)
+
+
 def _launchd_plist_dirs() -> list[tuple[str, Path]]:
     return [
         ("agent", Path.home() / "Library" / "LaunchAgents"),
-        ("agent", Path("/Library/LaunchAgents")),
-        ("daemon", Path("/Library/LaunchDaemons")),
+        ("system-agent", Path("/Library/LaunchAgents")),
+        ("system-daemon", Path("/Library/LaunchDaemons")),
     ]
+
+
+def _launchd_plist_is_in_scope(kind: str, plist_path: Path) -> bool:
+    """Whether the discovery scan may open *plist_path*.
+
+    System LaunchAgents and LaunchDaemons are managed namespaces. Limit reads there to
+    Hermes-owned filename families; a custom user LaunchAgent remains discoverable by its
+    declared ``ProgramArguments`` because it lives in the invoking user's namespace.
+    """
+    return kind not in _LAUNCHD_SYSTEM_PLIST_KINDS or plist_path.name.startswith(
+        _HERMES_SYSTEM_PLIST_PREFIXES
+    )
 
 
 def _loaded_launchd_backend_jobs(
@@ -283,6 +302,8 @@ def _loaded_launchd_backend_jobs(
         except OSError:
             continue
         for plist_path in plists:
+            if not _launchd_plist_is_in_scope(kind, plist_path):
+                continue
             try:
                 with open(plist_path, "rb") as f:
                     data = plistlib.load(f)
@@ -301,7 +322,7 @@ def _loaded_launchd_backend_jobs(
             argv = [str(a) for a in args]
             if _parse_dashboard_runtime(shlex.join(argv)) is None:
                 continue
-            domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
+            domains = ("system",) if kind in {"daemon", "system-daemon"} else (f"gui/{uid}", f"user/{uid}")
             for domain in domains:
                 try:
                     loaded, live_pid = _launchd_print_service_pid(domain, label)

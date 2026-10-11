@@ -547,6 +547,23 @@ describe('DesktopInstallOverlay first-run setup', () => {
     expect(screen.queryByText('Hermes needs a one-time install')).toBeNull()
   })
 
+  it('shows a cancelled install as cancelled, not as a failure, and retries through resetBootstrap', async () => {
+    const desktop = installDesktopMock(
+      bootstrapState({ cancelled: true, error: null, active: false })
+    )
+
+    render(<DesktopInstallOverlay />)
+
+    expect(await screen.findByText('Installation cancelled')).toBeTruthy()
+    // The failure banner must not appear for a user-driven cancel.
+    expect(screen.queryByText('Installation failed')).toBeNull()
+    expect(screen.queryByText('Full transcript saved to')).toBeNull()
+
+    fireEvent.click(screen.getByText('Reload and retry'))
+
+    await waitFor(() => expect(desktop.resetBootstrap).toHaveBeenCalled())
+  })
+
   it('dismisses a cancelled/failed install via the footer Close button, without reloading or resetting bootstrap', async () => {
     const desktop = installDesktopMock(bootstrapState({ error: 'cancelled by user' }))
 

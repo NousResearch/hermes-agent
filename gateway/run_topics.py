@@ -484,6 +484,23 @@ class GatewayTopicThreadsMixin:
             "Telegram topic title rename",
         )
 
+    def _schedule_slack_assistant_thread_title(self, source: SessionSource, session_id: str, title: str) -> None:
+        """Schedule a generated title for a Slack Assistant DM thread."""
+        if not title or getattr(source.platform, "value", source.platform) != "slack" or source.chat_type != "dm" or not source.thread_id:
+            return
+        self._schedule_rename_from_title_thread(
+            source,
+            lambda copied: self._rename_slack_assistant_thread(copied, title),
+            "Slack Assistant thread title rename",
+        )
+
+    async def _rename_slack_assistant_thread(self, source: SessionSource, title: str) -> None:
+        adapter = self._delivery_adapter_for(source)
+        setter = getattr(adapter, "_set_assistant_thread_title", None) if adapter else None
+        if callable(setter):
+            await setter(str(source.chat_id), str(source.thread_id), title,
+                         team_id=str(source.scope_id or ""), semantic=True)
+
     def _telegram_topic_auto_rename_disabled(self, source: SessionSource) -> bool:
         """``gateway.platforms.telegram.extra.disable_topic_auto_rename``; default False (auto-rename on)."""
         config = getattr(self, "config", None)

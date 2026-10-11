@@ -9,6 +9,7 @@ ten minutes, so the throwaway can be the one that survives.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import types
 import weakref
@@ -24,7 +25,8 @@ from gateway.run_turn_runner import TurnRunner
 def _attach(lane):
     """Attach the title callback for *lane* and return (callback, renames)."""
     renames: list = []
-    source = types.SimpleNamespace(platform=Platform.DISCORD, chat_id="chan-1")
+    source = types.SimpleNamespace(platform=Platform.SLACK if lane == "slack" else Platform.DISCORD,
+                                   chat_id="chan-1", chat_type="dm", thread_id="thread-1")
 
     runner = types.SimpleNamespace(
         _is_telegram_topic_lane=lambda src: lane == "telegram",
@@ -35,6 +37,9 @@ def _attach(lane):
             lambda src, sid, title: renames.append(title)
         ),
         _schedule_discord_semantic_thread_rename=(
+            lambda src, sid, title: renames.append(title)
+        ),
+        _schedule_slack_assistant_thread_title=(
             lambda src, sid, title: renames.append(title)
         ),
     )
@@ -49,15 +54,54 @@ def _attach(lane):
     return agent._on_session_title, renames
 
 
-@pytest.mark.parametrize("lane", ["telegram", "discord"])
+@pytest.mark.parametrize("lane", ["telegram", "discord", "slack"])
 def test_the_rename_waits_for_the_model_title(lane):
     callback, renames = _attach(lane)
 
     callback("fix the flaky auth test in log", "derived")
+    callback("My manual session name", "user")
     assert renames == []
 
     callback("Fix flaky auth test", "llm")
     assert renames == ["Fix flaky auth test"]
+
+
+@pytest.mark.anyio
+async def test_slack_title_scheduling_uses_the_receiving_adapter_and_workspace():
+    calls = []
+    delivered = asyncio.Event()
+
+    class Adapter:
+        async def _set_assistant_thread_title(self, channel, thread, title, *, team_id, semantic):
+            calls.append((channel, thread, title, team_id, semantic))
+            delivered.set()
+
+    receiving = Adapter()
+    other = Adapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = types.SimpleNamespace(multiplex_profiles=True)
+    runner.adapters = {Platform.SLACK: receiving}
+    runner._profile_adapters = {"routed": {Platform.SLACK: other}}
+    source = SessionSource(platform=Platform.SLACK, chat_id="D123", chat_type="dm",
+                           thread_id="171234.0001", scope_id="T1", profile="routed")
+    source._transport_adapter_ref = weakref.ref(receiving)
+    runner._schedule_slack_assistant_thread_title(source, "session-1", "Fleet thread title settings")
+    await asyncio.wait_for(delivered.wait(), timeout=2)
+    assert calls == [("D123", "171234.0001", "Fleet thread title settings", "T1", True)]
+
+
+@pytest.mark.parametrize("platform,chat_type,thread_id", [
+    (Platform.SLACK, "group", "171234.0001"),
+    (Platform.SLACK, "dm", None),
+    (Platform.TELEGRAM, "dm", "171234.0001"),
+])
+def test_slack_title_scheduling_refuses_other_surfaces(platform, chat_type, thread_id):
+    scheduled = []
+    runner = object.__new__(GatewayRunner)
+    runner._schedule_rename_from_title_thread = lambda *args: scheduled.append(args)
+    source = SessionSource(platform=platform, chat_id="chat", chat_type=chat_type, thread_id=thread_id)
+    runner._schedule_slack_assistant_thread_title(source, "session-1", "Semantic title")
+    assert scheduled == []
 
 
 def _thread_source(thread_id="thread-1", **fields):

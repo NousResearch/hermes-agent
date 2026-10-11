@@ -152,7 +152,10 @@ def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
 def test_invalid_response_stamps_reason_from_embedded_provider_code():
     """An HTTP-200 body carrying a 429 is rate limiting for the UI, not 'unknown'."""
     agent = _Agent()
-    response = SimpleNamespace(error=SimpleNamespace(code=429, metadata={"provider_name": "Acme"}), choices=[])
+    provider_message = "Provider account quota exceeded"
+    response = SimpleNamespace(
+        error=SimpleNamespace(code=429, message=provider_message, metadata={"provider_name": "Acme"}), choices=[],
+    )
     verdict = retry_invalid_response(
         agent, response=response, error_details=["no choices"],
         _retry=SimpleNamespace(restart_with_redirected_messages=False), thinking_spinner=None,
@@ -164,6 +167,8 @@ def test_invalid_response_stamps_reason_from_embedded_provider_code():
     result = verdict.result
     assert result["failure_reason"] == "rate_limit"
     assert "Acme" in result["final_response"]
+    assert provider_message in result["final_response"]
+    assert provider_message in result["error"]
 
 
 def test_outer_loop_error_copy_has_no_apology_and_routes_to_gateway_layer():

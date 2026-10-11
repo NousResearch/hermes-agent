@@ -61,7 +61,8 @@ def _derived_version(
 def _run_git(repo_dir: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir)
+            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -230,6 +231,7 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
             text=True, encoding="utf-8", errors="replace",
             timeout=3,
             cwd=str(repo_dir),
+            check=False,
         )
         dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
     except (OSError, subprocess.SubprocessError):

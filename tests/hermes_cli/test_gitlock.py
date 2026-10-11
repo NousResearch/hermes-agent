@@ -315,14 +315,14 @@ def test_a_checkout_the_first_cut_configured_folds_again(partial_clone: Path) ->
 
     assert len(_packs(partial_clone)) == 1
     left = subprocess.run(["git", "config", "--local", "--get-regexp", r"^(maintenance\.auto|gc\.auto)$"],
-                          cwd=partial_clone, capture_output=True, text=True).stdout
+                          cwd=partial_clone, capture_output=True, text=True, check=False).stdout
     assert left == ""
 
 
 def test_non_partial_checkout_is_left_alone(repo: Path) -> None:
     settle_partial_clone_maintenance(repo)
     keys = subprocess.run(["git", "config", "--local", "--get-regexp", "maintenance|writecommitgraph"], cwd=repo,
-                          capture_output=True, text=True).stdout
+                          capture_output=True, text=True, check=False).stdout
     assert keys == "", "a full clone keeps git's stock maintenance"
 
 

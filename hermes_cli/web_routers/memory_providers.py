@@ -419,7 +419,7 @@ def _memory_provider_payload(name: str, provider: Any) -> dict[str, Any]:
     }
 
 
-def _coerce_schema_number(field: dict[str, Any], raw: Any) -> "int | float":
+def _coerce_schema_number(field: dict[str, Any], raw: Any) -> int | float:
     value = raw if raw is not None and raw != "" else _field_default(field)
     try:
         if isinstance(value, bool) or not math.isfinite(result := float(value)):

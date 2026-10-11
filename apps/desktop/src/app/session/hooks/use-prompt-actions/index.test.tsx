@@ -1,7 +1,6 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
-import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getLatestSessionMessages, getSession } from '@/hermes'
@@ -11,6 +10,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
@@ -33,11 +33,9 @@ import { dropSessionState, publishSessionState } from '@/store/session-states'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import type { SessionInfo } from '@/types/hermes'
 
+import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID } from './prompt-actions-harness'
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
-import type { SubmitTextOptions } from './utils'
-
-import { uploadComposerAttachment, usePromptActions } from '.'
 
 // Suites in this file reuse the same stored-id constants. The module-level
 // single-flight resume map (and drift-recovery cache) would otherwise leak a
@@ -70,7 +68,6 @@ vi.mock('@/store/gateway', async importOriginal => ({
 // that mismatch is the bug: the REST renameSession endpoint resolves against
 // the stored sessions table and 404s on a runtime id. session.title accepts
 // the runtime id directly.
-const RUNTIME_SESSION_ID = 'rt-abc123'
 // Every typed command also fires this (fire-and-forget); these tests assert the command's own traffic.
 const SLASH_METRIC = 'shared_metrics.slash_command'
 
@@ -91,173 +88,6 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
     tool_call_count: 0,
     ...overrides
   }
-}
-
-// Wrap render() in act() so the Harness's useEffect (onReady callback +
-// internal state from usePromptActions) flushes synchronously instead of
-// spilling async state updates outside act().
-async function actRender(ui: React.ReactElement) {
-  let result: ReturnType<typeof render>
-  await act(async () => {
-    result = render(ui)
-  })
-
-  return result!
-}
-
-interface HarnessHandle {
-  activeSessionIdRef: MutableRefObject<string | null>
-  cancelRun: () => Promise<void>
-  editMessage: (edited: Parameters<ReturnType<typeof usePromptActions>['editMessage']>[0]) => Promise<void>
-  reloadFromMessage: (parentId: null | string) => Promise<void>
-  restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
-  redirectPrompt: (text: string) => Promise<boolean>
-  /** @deprecated Use `redirectPrompt`. */
-  steerPrompt: (text: string) => Promise<boolean>
-  submitTextRaw: (text: string, options?: SubmitTextOptions) => Promise<boolean>
-  submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean>
-}
-
-function Harness({
-  activeSessionIdRef: activeSessionIdRefProp,
-  busyRef,
-  getRoutedStoredSessionId,
-  getRuntimeIdForStoredSession,
-  getRouteToken,
-  onUpdateState,
-  onReady,
-  onSeedState,
-  openMemoryGraph,
-  refreshSessions,
-  requestGateway,
-  resumeStoredSession,
-  runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefProp,
-  seedMessages,
-  seedStreamId,
-  seedTurnStartedAt,
-  selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
-  storedSessionId,
-  activeSessionId,
-  createBackendSessionForSend
-}: {
-  activeSessionIdRef?: MutableRefObject<string | null>
-  busyRef?: MutableRefObject<boolean>
-  getRoutedStoredSessionId?: () => null | string
-  getRuntimeIdForStoredSession?: (storedSessionId: string) => null | string
-  getRouteToken?: () => string
-  onUpdateState?: (
-    sessionId: string,
-    storedSessionId: null | string | undefined,
-    state: Record<string, unknown>
-  ) => void
-  onReady: (handle: HarnessHandle) => void
-  onSeedState?: (state: Record<string, unknown>) => void
-  openMemoryGraph?: () => void
-  refreshSessions: () => Promise<void>
-  requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
-  resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
-  runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
-  seedMessages?: unknown[]
-  seedStreamId?: null | string
-  seedTurnStartedAt?: null | number
-  selectedStoredSessionIdRef?: MutableRefObject<string | null>
-  storedSessionId?: null | string
-  activeSessionId?: null | string
-  createBackendSessionForSend?: (preview?: null | string) => Promise<null | string>
-}) {
-  const localActiveSessionIdRef = useRef<string | null>(
-    activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
-  )
-
-  const activeSessionIdRef = activeSessionIdRefProp ?? localActiveSessionIdRef
-
-  const selectedStoredSessionIdRef: MutableRefObject<string | null> = selectedStoredSessionIdRefProp ?? {
-    current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
-  }
-
-  const defaultStoredSessionId = storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
-  const defaultRuntimeSessionId = activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
-
-  const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = runtimeIdByStoredSessionIdRefProp ?? {
-    current:
-      defaultStoredSessionId && defaultRuntimeSessionId
-        ? new Map([[defaultStoredSessionId, defaultRuntimeSessionId]])
-        : new Map()
-  }
-
-  const localBusyRef = busyRef ?? { current: false }
-
-  const stateRef = useRef({
-    messages: seedMessages ?? [],
-    busy: false,
-    awaitingResponse: false,
-    interrupted: true,
-    streamId: seedStreamId ?? null,
-    turnStartedAt: seedTurnStartedAt ?? null,
-    interimBoundaryPending: false
-  } as never)
-
-  const actions = usePromptActions({
-    activeSessionId: activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId,
-    activeSessionIdRef,
-    branchCurrentSession: async () => true,
-    busyRef: localBusyRef,
-    createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
-    getRoutedStoredSessionId: getRoutedStoredSessionId ?? (() => null),
-    getRuntimeIdForStoredSession: getRuntimeIdForStoredSession ?? (() => null),
-    getRouteToken: getRouteToken ?? (() => 'token'),
-    handleSkinCommand: () => '',
-    openMemoryGraph: openMemoryGraph ?? (() => undefined),
-    refreshSessions,
-    requestGateway,
-    resumeStoredSession: resumeStoredSession ?? (() => undefined),
-    runtimeIdByStoredSessionIdRef,
-    selectedStoredSessionIdRef,
-    startFreshSessionDraft: () => undefined,
-    sttEnabled: false,
-    updateSessionState: (sessionId, updater, storedSessionId) => {
-      // Seed with interrupted:true so we can prove a fresh submit clears it.
-      const next = updater(stateRef.current) as unknown as Record<string, unknown>
-      stateRef.current = next as never
-      onSeedState?.(next)
-      onUpdateState?.(sessionId, storedSessionId, next)
-
-      return next as never
-    }
-  })
-
-  useEffect(() => {
-    onReady({
-      activeSessionIdRef,
-      cancelRun: (...args: Parameters<typeof actions.cancelRun>) =>
-        act(async () => actions.cancelRun(...args)) as Promise<void>,
-      editMessage: (...args: Parameters<typeof actions.editMessage>) =>
-        act(async () => actions.editMessage(...args)) as Promise<void>,
-      reloadFromMessage: (...args: Parameters<typeof actions.reloadFromMessage>) =>
-        act(async () => actions.reloadFromMessage(...args)) as Promise<void>,
-      restoreToMessage: (...args: Parameters<typeof actions.restoreToMessage>) =>
-        act(async () => actions.restoreToMessage(...args)) as Promise<void>,
-      redirectPrompt: (...args: Parameters<typeof actions.redirectPrompt>) =>
-        act(async () => actions.redirectPrompt(...args)) as Promise<boolean>,
-      steerPrompt: (...args: Parameters<typeof actions.steerPrompt>) =>
-        act(async () => actions.steerPrompt(...args)) as Promise<boolean>,
-      submitTextRaw: actions.submitText,
-      submitText: (...args: Parameters<typeof actions.submitText>) =>
-        act(async () => actions.submitText(...args)) as Promise<boolean>
-    })
-  }, [
-    actions.cancelRun,
-    actions.editMessage,
-    actions.reloadFromMessage,
-    actions.restoreToMessage,
-    actions.redirectPrompt,
-    actions.steerPrompt,
-    actions.submitText,
-    activeSessionIdRef,
-    onReady
-  ])
-
-  return null
 }
 
 describe('usePromptActions /title', () => {
@@ -3084,7 +2914,8 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
-        confirm_empty_truncate: true
+        confirm_empty_truncate: true,
+        confirm_deep_truncate: true
       },
       1_800_000
     )
@@ -3153,7 +2984,8 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
-        confirm_empty_truncate: true
+        confirm_empty_truncate: true,
+        confirm_deep_truncate: true
       },
       1_800_000
     )
@@ -3200,7 +3032,8 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
-        confirm_empty_truncate: true
+        confirm_empty_truncate: true,
+        confirm_deep_truncate: true
       },
       1_800_000
     )
@@ -3390,46 +3223,6 @@ describe('usePromptActions file attachment sync', () => {
       method: 'prompt.submit',
       params: { session_id: RUNTIME_SESSION_ID, text: '@file:.hermes/desktop-attachments/report.txt\n\nsummarize' }
     })
-  })
-
-  it('uses image.attach_bytes for a Windows image when the local backend cwd is POSIX', async () => {
-    const readFileDataUrl = vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=')
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { readFileDataUrl }
-    })
-
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'image.attach_bytes') {
-        return { attached: true, path: '/root/tmp/photo.jpg' } as never
-      }
-
-      return {} as never
-    })
-
-    const uploaded = await uploadComposerAttachment(
-      {
-        id: 'image:photo.jpg',
-        kind: 'image',
-        label: 'photo.jpg',
-        path: 'C:\\Users\\alice\\Pictures\\photo.jpg'
-      },
-      {
-        backendCwd: '/root',
-        remote: false,
-        requestGateway,
-        sessionId: RUNTIME_SESSION_ID
-      }
-    )
-
-    expect(readFileDataUrl).toHaveBeenCalledWith('C:\\Users\\alice\\Pictures\\photo.jpg')
-    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
-      content_base64: 'aGVsbG8=',
-      filename: 'photo.jpg',
-      session_id: RUNTIME_SESSION_ID
-    })
-    expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
-    expect(uploaded.path).toBe('/root/tmp/photo.jpg')
   })
 
   it('merges image staging into the current occurrence without dropping its thumbnail', async () => {
@@ -6060,6 +5853,10 @@ describe('usePromptActions stale-closure session routing', () => {
 
     expect(updated).toContain(RUNTIME_SESSION_B)
     expect(updated).not.toContain(RUNTIME_SESSION_ID)
+    // A tail edit archives no later user turn, so it asks nothing and sends no deep confirm.
+    expect(gatewayCalls(requestGateway).find(([m]) => m === 'prompt.submit')?.[1]).not.toHaveProperty(
+      'confirm_deep_truncate'
+    )
 
     for (const [, params] of gatewayCalls(requestGateway)) {
       if (params && 'session_id' in params) {
@@ -6166,9 +5963,11 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
     setMessages(seed as never)
 
     let latest: Record<string, unknown> | undefined
+    const submits: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string) => {
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
+        submits.push(params ?? {})
         throw new JsonRpcGatewayError('target user message is no longer in session history', {
           code: 4018,
           data: {
@@ -6199,7 +5998,27 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
       />
     )
 
+    // Regenerating u1 archives the later u2 turn: it asks first; a decline sends nothing (#133716).
+    let answer = false
+    let asked = 0
+
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        asked += 1
+        settleConfirm(answer)
+      }
+    })
+
     await handle!.reloadFromMessage('u1')
+    expect(asked).toBe(1)
+    expect(submits).toEqual([])
+
+    answer = true
+    await handle!.reloadFromMessage('u1')
+    stopConfirming()
+    expect(asked).toBe(2)
+    expect(submits).toHaveLength(1)
+    expect(submits[0]).toMatchObject({ confirm_deep_truncate: true })
 
     const rolledBack = latest?.messages as Array<{ hidden?: boolean; id: string }> | undefined
 

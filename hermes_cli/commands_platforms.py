@@ -232,7 +232,7 @@ def _iter_gateway_skills(platform: str):
 
 def _collect_gateway_skill_entries(
     platform: str, max_slots: int | None, reserved_names: set[str], desc_limit: int = 100,
-    sanitize_name: "Callable[[str], str] | None" = None,
+    sanitize_name: Callable[[str], str] | None = None,
 ) -> tuple[list[tuple[str, str, str, str]], int]:
     """Collect plugin + skill entries for a gateway platform.
 

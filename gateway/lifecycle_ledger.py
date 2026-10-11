@@ -17,7 +17,7 @@ import os
 import sqlite3
 import time
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -42,7 +42,7 @@ def get_lifecycle_sentinel_path(home: Optional[Path] = None) -> Path:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _proc_fields(path: str, wanted: dict[str, str]) -> dict[str, int]:

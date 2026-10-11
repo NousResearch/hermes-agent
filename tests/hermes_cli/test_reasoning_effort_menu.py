@@ -37,7 +37,7 @@ def test_current_reasoning_effort_reads_dict_form():
 def test_hermes_model_offers_reasoning_whenever_a_pick_is_saved(tmp_path, monkeypatch):
     """Same model ID on a new provider, or a re-pick of the current model, still gets the effort
     step (like chat /model); a flow that saves nothing does not."""
-    import hermes_cli.main as main
+    from hermes_cli import main
     from hermes_cli.auth import _save_model_choice
     from hermes_cli.config import load_config, save_config
 

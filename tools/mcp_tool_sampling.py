@@ -222,7 +222,7 @@ class SamplingHandler:
         sync_call = self._build_llm_call(params, resolved_model)  # outside the try: its errors propagate, not _fail
         try:
             response = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=self.timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return self._fail(f"Sampling LLM call timed out after {self.timeout}s for server '{self.server_name}'")
         except Exception as exc:
             return self._fail(f"Sampling LLM call failed: {_sanitize_error(_exc_str(exc))}")
@@ -314,7 +314,7 @@ class ElicitationHandler:
         try:  # off-thread: inline, the sync consent flow would freeze the MCP loop and every RPC on it
             answer = await asyncio.wait_for(
                 asyncio.to_thread(invoke_consent), timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("MCP server '%s' elicitation timed out after %ds", self.server_name, int(self.timeout))
             return self._result("cancel", "errors")
         except Exception as exc:

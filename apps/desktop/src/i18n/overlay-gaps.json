@@ -1500,7 +1500,6 @@
   "settings.localModels.ram": ["ar","ru"],
   "settings.localModels.recommended": ["ar","ru"],
   "settings.localModels.recommendedReason.best-quality-resident": ["ar","ru"],
-  "settings.localModels.recommendedReason.fastest-resident": ["ar","ru"],
   "settings.localModels.recommendedReason.product-default": ["ar","ru"],
   "settings.localModels.recommendedReason.speed-gated-quality": ["ar","ru"],
   "settings.localModels.runtimeInstalled": ["ar","ru"],

@@ -39,7 +39,7 @@ class ConsoleCommand:
     path: tuple[str, ...]
     usage: str
     summary: str
-    handler: Callable[["HermesConsoleEngine", list[str]], str]
+    handler: Callable[[HermesConsoleEngine, list[str]], str]
     mutating: bool = False
     confirmation: str = ""
 
@@ -334,7 +334,7 @@ _SEND_SURFACE = _CliSurface("adder", "hermes_cli.send_cmd", "register_send_subpa
 
 
 def _register_command_family(
-    engine: "HermesConsoleEngine", root: str, surface: _CliSurface, paths: str) -> None:
+    engine: HermesConsoleEngine, root: str, surface: _CliSurface, paths: str) -> None:
     summaries = _surface_summaries(surface, root)
     namespace_update = _apply_confirmed_defaults if surface.kind in _CONFIRMED_KINDS else None
     for child_path, mutating in _paths(paths):
@@ -440,7 +440,7 @@ class HermesConsoleEngine:
 
     def register(
         self, path: Iterable[str], usage: str, summary: str,
-        handler: Callable[["HermesConsoleEngine", list[str]], str], *,
+        handler: Callable[[HermesConsoleEngine, list[str]], str], *,
         mutating: bool = False, confirmation: str = "") -> None:
         key = tuple(path)
         self.commands[key] = ConsoleCommand(key, usage, summary, handler, mutating, confirmation)

@@ -997,6 +997,10 @@ memory:
   
   # User profile: preferences, communication style, expectations
   user_profile_enabled: true
+
+  # External prefetch only: opt in to head/tail previews using hooks.output_spill.
+  # Defaults to keeping the full provider-ranked recall. Restart to apply changes.
+  prefetch_spill_enabled: false
   
   # Character limits (~2.75 chars per token, model-independent)
   memory_char_limit: 2200   # ~800 tokens

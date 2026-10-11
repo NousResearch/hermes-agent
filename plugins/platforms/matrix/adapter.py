@@ -87,7 +87,7 @@ _MATRIX_VOICE_WAVEFORM_BINS = 30
 
 def _run_media_tool(cmd: list, *, timeout: int, text: bool = False):
     """Run ffmpeg/ffprobe with captured output and no stdin."""
-    return subprocess.run(cmd, capture_output=True, text=text, timeout=timeout, stdin=subprocess.DEVNULL)
+    return subprocess.run(cmd, capture_output=True, text=text, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
 
 
 def _matrix_voice_metadata_for_file(path: Path) -> dict[str, Any]:
@@ -2354,7 +2354,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 joined = await asyncio.wait_for(self._join_room_by_id(room_id), timeout=45.0)
                 if joined and is_direct and inviter:
                     await self._record_dm_room(room_id, inviter)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Matrix: timed out joining invite %s", room_id)
             finally:
                 self._invite_join_tasks.pop(room_id, None)
@@ -3137,7 +3137,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             for payload in _standalone_payloads(message):
                 try:
                     result = await asyncio.wait_for(_do_send(payload), timeout=30)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     return send_error("Matrix API timeout (30s)")
                 if not result.get("success"):
                     return result

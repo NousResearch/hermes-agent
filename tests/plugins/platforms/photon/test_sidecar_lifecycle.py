@@ -36,7 +36,7 @@ class _ProbeClient:
     def __init__(self, *a: Any, **k: Any) -> None:
         pass
 
-    async def __aenter__(self) -> "_ProbeClient":
+    async def __aenter__(self) -> _ProbeClient:
         return self
 
     async def __aexit__(self, *a: object) -> bool:

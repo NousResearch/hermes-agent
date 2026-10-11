@@ -53,7 +53,7 @@ class BranchRecord:
 def _run(cmd: list, timeout: int, cwd: Optional[str] = None,
          env: Optional[dict] = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout, cwd=cwd, env=env, stdin=subprocess.DEVNULL)
+                          timeout=timeout, cwd=cwd, env=env, stdin=subprocess.DEVNULL, check=False)
 
 
 @dataclass

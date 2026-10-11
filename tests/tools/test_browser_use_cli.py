@@ -13,6 +13,7 @@ Covers the three seams the integration relies on:
 """
 import json
 import os
+import socket
 import stat
 import subprocess
 import sys
@@ -481,6 +482,18 @@ class TestBackendCdpResolution:
         monkeypatch.setattr(bt_session, "_get_session_info", boom)
         err = bu_cli._resolve_backend_cdp(self._env(), "t1")
         assert err and "api down" in err
+
+    def test_provider_fallback_to_local_drives_packaged_chromium(self, monkeypatch, _fake_managed_chromium):
+        """A cloud failure the session layer already fell back from (429, quota) must drive the local
+        Chromium it chose, not fail the call as 'no CDP endpoint'."""
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(bt_session, "_get_session_info", lambda task_id: {
+            "cdp_url": None, "features": {"local": True}, "fallback_from_cloud": True, "fallback_reason": "429"})
+        env = self._env()
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "ws://127.0.0.1:47000/devtools/browser/t1"
+        assert _fake_managed_chromium == [("t1", "get", ("cdp-url",))]
 
     def test_provider_without_cdp_returns_error(self, monkeypatch):
 
@@ -1227,3 +1240,77 @@ class TestTimeoutProcessGroupKill:
         monkeypatch.setattr(bu_cli, "_kill_cli_process_group", lambda proc: None)
         with pytest.raises(subprocess.TimeoutExpired):
             bu_cli._run_cli_killing_process_group(["x"], "code", {}, 5)
+
+
+class TestExecHybridPrivateUrlRouting:
+    """With a cloud provider configured and ``browser.auto_local_for_private_urls`` on, a browser_exec
+    call carrying a private URL runs on the hybrid LOCAL sidecar or is refused; it never reaches the
+    cloud browser (one CDP endpoint per call)."""
+
+    LAN = "http://192.168.0.1:9120/login"
+
+    @pytest.fixture(autouse=True)
+    def _cloud_with_hybrid(self, monkeypatch, tmp_path, _fake_managed_chromium):
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(bt_cloud, "_auto_local_for_private_urls", lambda: True)
+        monkeypatch.setattr(bu_cli, "_exec_route_is_sidecar", {}, raising=False)
+        monkeypatch.setattr(bu_cli, "_driven_daemons", set())
+        self.cloud_keys = []
+        monkeypatch.setattr(bt_session, "_get_session_info",
+                            lambda key: self.cloud_keys.append(key) or {"cdp_url": "wss://cloud.example/x"})
+        cli = _fake_cli(tmp_path, 'cat >/dev/null; printf "%s" "${BU_NAME:-default}"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        self.local_keys = _fake_managed_chromium
+
+    @staticmethod
+    def _dns(monkeypatch, first_ip, later_ip):
+        """A rebinding host: ``first_ip`` for the first lookup, ``later_ip`` for every later one."""
+        lookups = []
+
+        def fake_getaddrinfo(host, *a, **kw):
+            lookups.append(host)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (first_ip if len(lookups) == 1 else later_ip, 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    @pytest.mark.parametrize("case, code, refusal", [
+        ("lan", f'new_tab("{LAN}")', None),
+        ("mixed", f'new_tab("https://example.com/x")\nnew_tab("{LAN}")', None),
+        ("rebind-private-then-public", 'new_tab("http://rebind.example/login")', None),
+        ("imds", 'new_tab("http://169.254.169.254/latest/meta-data/")', "cloud metadata"),
+        ("hybrid-off", f'new_tab("{LAN}")', "private or internal"),
+        ("rebind-public-then-private", 'new_tab("http://flip.example/x")', "private or internal"),
+    ])
+    def test_private_url_runs_on_local_sidecar_or_is_refused(self, monkeypatch, case, code, refusal):
+        if case.startswith("rebind-private"):
+            self._dns(monkeypatch, "192.168.1.5", "93.184.216.34")
+        elif case.startswith("rebind-public"):
+            self._dns(monkeypatch, "93.184.216.34", "192.168.1.5")
+        elif case == "hybrid-off":
+            monkeypatch.setattr(bt_cloud, "_auto_local_for_private_urls", lambda: False)
+
+        result = json.loads(bu_cli.browser_exec(code, task_id="t"))
+
+        assert self.cloud_keys == [], "a call carrying a private URL reached the cloud provider"
+        if refusal:
+            assert refusal in result.get("error", ""), result
+            assert self.local_keys == []
+        else:
+            assert result["success"] is True, result
+            assert [k for k, *_ in self.local_keys] == ["t::local"]
+            assert result["output"] == "_local_default"
+
+    def test_sidecar_route_has_its_own_daemon_and_sticks_for_url_less_calls(self):
+        """The harness daemon reads BU_CDP_* once at spawn, so the sidecar must not share the cloud
+        route's daemon; a follow-up with no URL literal keeps driving the page the last call opened."""
+        steps = [('new_tab("https://example.com/")', "default"),
+                 (f'new_tab("{self.LAN}")', "_local_default"),
+                 ('print(js("document.title"))', "_local_default")]
+
+        daemons = [json.loads(bu_cli.browser_exec(code, task_id="t"))["output"] for code, _ in steps]
+
+        assert daemons == [want for _, want in steps]
+        assert self.cloud_keys == ["t"]
+        assert [k for k, *_ in self.local_keys] == ["t::local", "t::local"]

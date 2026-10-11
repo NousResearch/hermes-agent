@@ -243,7 +243,6 @@ class TestRealProfileCdpLaunch:
         """
         import tools.browser_tool as bt
         self._reset()
-        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
         captured = {}
 
         def fake_agent_browser_spawn(argv, env, socket_dir, tag):
@@ -1053,7 +1052,7 @@ class TestWindowsLockedProfileCopy:
                  "from hermes_cli.browser_connect import _copy_auth_file; "
                  "import sys; print(_copy_auth_file(sys.argv[1], sys.argv[2]))",
                  str(src), str(dst)],
-                capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
+                capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL, check=False)
             assert result.returncode == 0, result.stderr
             assert result.stdout.strip() == bc._AUTH_DB_LOCKED
         finally:

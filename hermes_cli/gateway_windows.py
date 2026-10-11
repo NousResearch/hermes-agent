@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
@@ -195,6 +195,7 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
         proc = subprocess.run(
             [schtasks, *args], capture_output=True, text=False,
             timeout=_SCHTASKS_TIMEOUT_S, creationflags=windows_hide_flags(),
+            check=False,
         )
         return (
             proc.returncode,
@@ -866,7 +867,7 @@ def _start_or_report_running(running_pids: list[int] | None = None) -> None:
     if running_pids:
         _report_already_running(running_pids)
     else:
-        pid = _spawn_detached()
+        _spawn_detached()
         _report_gateway_start("direct spawn")
 
 
@@ -1085,7 +1086,7 @@ def _write_start_attestation(pids: list[int], via: str, home: Path | None = None
         from hermes_cli.process_identity import _process_create_time
 
         payload = {
-            "pids": [int(p) for p in pids], "via": via, "ts": datetime.now(timezone.utc).isoformat(),
+            "pids": [int(p) for p in pids], "via": via, "ts": datetime.now(UTC).isoformat(),
             "generation": uuid.uuid4().hex,
         }
         # Bind each PID to its incarnation (#110020 review): the ledger sentinel is matched by PID
@@ -1123,7 +1124,7 @@ def _attestation_within_horizon(data: object) -> bool:
         if ts is None:
             return False
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
         age = time.time() - ts.timestamp()
         return -_ATTESTATION_CLOCK_SLACK_S <= age <= START_ATTESTATION_MAX_AGE_S
     except Exception:
@@ -1570,8 +1571,8 @@ def _probe_state_file(state_path: Path) -> None:
         age_str = ""
         if updated_at:
             try:
-                updated_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-                age_seconds = int((datetime.now(timezone.utc) - updated_dt).total_seconds())
+                updated_dt = datetime.fromisoformat(updated_at)
+                age_seconds = int((datetime.now(UTC) - updated_dt).total_seconds())
                 age_str = f" (updated {age_seconds}s ago)"
             except Exception:
                 pass
@@ -1688,7 +1689,7 @@ def start() -> None:
 
     # Manual starts use the same console-less direct spawn as restart() and install --start-now;
     # Scheduled Task / Startup entries are only login persistence.
-    pid = _spawn_detached()
+    _spawn_detached()
     _report_gateway_start("direct spawn")
 
 

@@ -68,7 +68,7 @@ def assets_dir() -> Path:
     return models_dir() / "assets"
 
 
-def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]":
+def staged_in(models_dir: Path, *, require_complete: bool = True) -> list[Path]:
     """Servable GGUFs in a directory: single files, plus split GGUFs once by their first part.
     With ``require_complete`` a split counts only when EVERY part is on disk — a mid-download split
     is not servable and must not surface anywhere as a model."""
@@ -89,7 +89,7 @@ def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]
     return out
 
 
-def adopt_legacy_models() -> "list[Path]":
+def adopt_legacy_models() -> list[Path]:
     """Move GGUFs left in the old per-profile ``<profile home>/models`` layout (and its assets/)
     into the machine-scoped dirs, so everything downstream keeps reading one directory.
 
@@ -133,12 +133,12 @@ def adopt_legacy_models() -> "list[Path]":
     return moved
 
 
-def staged_models() -> "list[Path]":
+def staged_models() -> list[Path]:
     """Servable staged models (continuation parts, incomplete splits and assets/ never count)."""
     return staged_in(models_dir())
 
 
-def staged_model_ids() -> "list[str]":
+def staged_model_ids() -> list[str]:
     return [model_id_from_stem(p.stem) for p in staged_models()]
 
 
@@ -399,7 +399,7 @@ def _cross_process_boot_lock(timeout_s: float = 130.0):
         os.close(fd)
 
 
-def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
+def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     """Idempotent boot of the managed runtime. Returns the supervisor (or None when
     disabled/unavailable). Never raises into a session start — failures log and return None; chat
     falls back to configured providers."""

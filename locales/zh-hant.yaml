@@ -1147,6 +1147,16 @@ platform:
         description: "針對目前對話提出附帶問題"
         arg_question: "要在不中斷的情況下回答的附帶問題"
         followup: "附帶問題已送出～"
+      loop:
+        arg_prompt: "每次要執行的內容（文字或斜線指令）"
+        arg_every: "執行間隔，例如 30s、5m、1h30m。留空則由 Hermes 自行調整節奏"
+        arg_times: "執行這麼多次後停止（0 = 不限）"
+        arg_until: "條件成立時停止，例如「CI 通過」"
+        arg_action: "管理目前的迴圈，而不是新建一個"
+        error_action_with_fields: "請選擇一個動作，或填寫新的迴圈，不能兩者都填。"
+        error_missing_prompt: "新的迴圈需要提示。"
+        error_bad_interval: "「{every}」不是間隔。請加上單位，例如 30s、5m、2h 或 1h30m。"
+        error_flag_in_text: "提示與停止條件不能包含 --times 或 --until，請改用對應欄位。"
       skill:
         description: "執行 Hermes 技能"
         arg_name: "要執行的技能"

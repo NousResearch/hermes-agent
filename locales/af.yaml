@@ -1147,6 +1147,16 @@ platform:
         description: "Vra 'n newevraag oor die huidige gesprek"
         arg_question: "Die newevraag om te beantwoord sonder om te onderbreek"
         followup: "Newevraag gestuur~"
+      loop:
+        arg_prompt: "Wat elke keer moet loop (teks of 'n skuinsstreep-opdrag)"
+        arg_every: "Hoe gereeld, bv. 30s, 5m, 1h30m. Laat leeg sodat Hermes self die pas bepaal"
+        arg_times: "Stop na soveel lopies (0 = geen limiet)"
+        arg_until: "Stop wanneer dit waar is, bv. \"CI is groen\""
+        arg_action: "Bestuur die huidige lus in plaas daarvan om een te begin"
+        error_action_with_fields: "Kies 'n aksie OF vul 'n nuwe lus in, nie albei nie."
+        error_missing_prompt: "'n Nuwe lus het 'n prompt nodig."
+        error_bad_interval: "\"{every}\" is nie 'n interval nie. Gebruik 'n eenheid, bv. 30s, 5m, 2h of 1h30m."
+        error_flag_in_text: "Prompt- en stoptoestandteks mag nie --times of --until bevat nie; gebruik eerder die velde."
       skill:
         description: "Voer 'n Hermes-vaardigheid uit"
         arg_name: "Watter vaardigheid om uit te voer"

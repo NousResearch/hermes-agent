@@ -1147,6 +1147,16 @@ platform:
         description: "Eine Nebenfrage zur aktuellen Konversation stellen"
         arg_question: "Die Nebenfrage, die ohne Unterbrechung beantwortet werden soll"
         followup: "Nebenfrage abgeschickt~"
+      loop:
+        arg_prompt: "Was jedes Mal ausgeführt wird (Text oder ein Slash-Befehl)"
+        arg_every: "Wie oft, z. B. 30s, 5m, 1h30m. Leer lassen, damit Hermes das Tempo selbst wählt"
+        arg_times: "Nach so vielen Läufen stoppen (0 = kein Limit)"
+        arg_until: "Stoppen, wenn dies zutrifft, z. B. \"CI ist grün\""
+        arg_action: "Die aktuelle Schleife verwalten statt eine neue zu starten"
+        error_action_with_fields: "Wähle eine Aktion ODER fülle eine neue Schleife aus, nicht beides."
+        error_missing_prompt: "Eine neue Schleife braucht einen Prompt."
+        error_bad_interval: "\"{every}\" ist kein Intervall. Nutze eine Einheit, z. B. 30s, 5m, 2h oder 1h30m."
+        error_flag_in_text: "Prompt und Stoppbedingung dürfen kein --times oder --until enthalten; nutze stattdessen die Felder."
       skill:
         description: "Einen Hermes-Skill ausführen"
         arg_name: "Welcher Skill ausgeführt werden soll"

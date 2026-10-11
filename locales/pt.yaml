@@ -1147,6 +1147,16 @@ platform:
         description: "Fazer uma pergunta paralela sobre a conversa atual"
         arg_question: "A pergunta paralela a responder sem interromper"
         followup: "Pergunta paralela despachada~"
+      loop:
+        arg_prompt: "O que executar a cada vez (texto ou um comando de barra)"
+        arg_every: "Com que frequência, ex. 30s, 5m, 1h30m. Vazio para o Hermes definir o ritmo"
+        arg_times: "Parar após este número de execuções (0 = sem limite)"
+        arg_until: "Parar quando isto for verdade, ex. \"o CI está verde\""
+        arg_action: "Gerir o loop atual em vez de iniciar um"
+        error_action_with_fields: "Escolha uma ação OU preencha um novo loop, não ambos."
+        error_missing_prompt: "Um novo loop precisa de um prompt."
+        error_bad_interval: "\"{every}\" não é um intervalo. Use uma unidade, ex. 30s, 5m, 2h ou 1h30m."
+        error_flag_in_text: "O prompt e a condição de paragem não podem conter --times ou --until; use os campos."
       skill:
         description: "Executar uma skill do Hermes"
         arg_name: "Qual skill executar"

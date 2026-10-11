@@ -1147,6 +1147,16 @@ platform:
         description: "Geçerli konuşma hakkında yan bir soru sor"
         arg_question: "Konuşmayı kesmeden yanıtlanacak yan soru"
         followup: "Yan soru gönderildi~"
+      loop:
+        arg_prompt: "Her seferinde ne çalıştırılacak (metin veya eğik çizgi komutu)"
+        arg_every: "Ne sıklıkla, örn. 30s, 5m, 1h30m. Boş bırakırsan Hermes hızı kendisi ayarlar"
+        arg_times: "Bu kadar çalıştırmadan sonra dur (0 = sınırsız)"
+        arg_until: "Bu doğru olduğunda dur, örn. \"CI yeşil\""
+        arg_action: "Yeni başlatmak yerine mevcut döngüyü yönet"
+        error_action_with_fields: "Bir eylem seç YA DA yeni bir döngü doldur, ikisini birden değil."
+        error_missing_prompt: "Yeni bir döngü için istem gerekir."
+        error_bad_interval: "\"{every}\" bir aralık değil. Birim kullan, örn. 30s, 5m, 2h veya 1h30m."
+        error_flag_in_text: "İstem ve durma koşulu metni --times veya --until içeremez; bunun yerine alanları kullan."
       skill:
         description: "Bir Hermes skill'i çalıştır"
         arg_name: "Çalıştırılacak skill"

@@ -1147,6 +1147,16 @@ platform:
         description: "Fai una domanda a margine sulla conversazione attuale"
         arg_question: "La domanda a margine a cui rispondere senza interrompere"
         followup: "Domanda a margine inviata~"
+      loop:
+        arg_prompt: "Cosa eseguire ogni volta (testo o un comando slash)"
+        arg_every: "Ogni quanto, es. 30s, 5m, 1h30m. Lascia vuoto per far scegliere il ritmo a Hermes"
+        arg_times: "Fermati dopo questo numero di esecuzioni (0 = nessun limite)"
+        arg_until: "Fermati quando questo è vero, es. \"la CI è verde\""
+        arg_action: "Gestisci il ciclo attuale invece di avviarne uno"
+        error_action_with_fields: "Scegli un'azione OPPURE compila un nuovo ciclo, non entrambi."
+        error_missing_prompt: "Un nuovo ciclo richiede un prompt."
+        error_bad_interval: "\"{every}\" non è un intervallo. Usa un'unità, es. 30s, 5m, 2h o 1h30m."
+        error_flag_in_text: "Il prompt e la condizione di arresto non possono contenere --times o --until; usa i campi."
       skill:
         description: "Esegui una skill Hermes"
         arg_name: "Quale skill eseguire"

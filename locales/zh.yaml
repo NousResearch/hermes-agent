@@ -1147,6 +1147,16 @@ platform:
         description: "就当前对话提一个附带问题"
         arg_question: "要在不中断的情况下回答的附带问题"
         followup: "附带问题已发出~"
+      loop:
+        arg_prompt: "每次要运行的内容（文本或斜杠命令）"
+        arg_every: "运行间隔，例如 30s、5m、1h30m。留空则由 Hermes 自行调整节奏"
+        arg_times: "运行这么多次后停止（0 = 不限）"
+        arg_until: "条件成立时停止，例如“CI 通过”"
+        arg_action: "管理当前循环，而不是新建一个"
+        error_action_with_fields: "请选择一个操作，或填写新的循环，不能同时填写。"
+        error_missing_prompt: "新的循环需要提示词。"
+        error_bad_interval: "“{every}”不是间隔。请加上单位，例如 30s、5m、2h 或 1h30m。"
+        error_flag_in_text: "提示词和停止条件不能包含 --times 或 --until，请改用对应字段。"
       skill:
         description: "运行一个 Hermes 技能"
         arg_name: "要运行的技能"

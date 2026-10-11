@@ -1147,6 +1147,16 @@ platform:
         description: "Hacer una pregunta aparte sobre la conversación actual"
         arg_question: "La pregunta aparte que se responderá sin interrumpir"
         followup: "Pregunta aparte enviada~"
+      loop:
+        arg_prompt: "Qué ejecutar cada vez (texto o un comando de barra)"
+        arg_every: "Con qué frecuencia, p. ej. 30s, 5m, 1h30m. Vacío para que Hermes marque el ritmo"
+        arg_times: "Parar tras este número de ejecuciones (0 = sin límite)"
+        arg_until: "Parar cuando esto sea cierto, p. ej. \"CI está en verde\""
+        arg_action: "Gestionar el bucle actual en lugar de iniciar uno"
+        error_action_with_fields: "Elige una acción O rellena un bucle nuevo, no ambos."
+        error_missing_prompt: "Un bucle nuevo necesita un prompt."
+        error_bad_interval: "\"{every}\" no es un intervalo. Usa una unidad, p. ej. 30s, 5m, 2h o 1h30m."
+        error_flag_in_text: "El prompt y la condición de parada no pueden contener --times ni --until; usa los campos."
       skill:
         description: "Ejecutar una skill de Hermes"
         arg_name: "Qué skill ejecutar"

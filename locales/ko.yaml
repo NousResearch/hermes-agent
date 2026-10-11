@@ -1147,6 +1147,16 @@ platform:
         description: "현재 대화에 대한 부수적인 질문하기"
         arg_question: "중단 없이 답변받을 부수적인 질문"
         followup: "부수 질문을 보냈어요~"
+      loop:
+        arg_prompt: "매번 실행할 내용 (텍스트 또는 슬래시 명령)"
+        arg_every: "실행 간격, 예: 30s, 5m, 1h30m. 비워 두면 Hermes가 속도를 정합니다"
+        arg_times: "이 횟수만큼 실행한 뒤 중지 (0 = 제한 없음)"
+        arg_until: "이 조건이 참이면 중지, 예: \"CI 통과\""
+        arg_action: "새 루프를 시작하지 않고 현재 루프를 관리"
+        error_action_with_fields: "작업을 선택하거나 새 루프를 입력하세요. 둘 다는 안 됩니다."
+        error_missing_prompt: "새 루프에는 프롬프트가 필요합니다."
+        error_bad_interval: "\"{every}\"는 간격이 아닙니다. 30s, 5m, 2h, 1h30m처럼 단위를 붙이세요."
+        error_flag_in_text: "프롬프트와 중지 조건에는 --times 또는 --until을 넣을 수 없습니다. 각 필드를 사용하세요."
       skill:
         description: "Hermes 스킬 실행"
         arg_name: "실행할 스킬"

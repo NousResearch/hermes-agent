@@ -1147,6 +1147,16 @@ platform:
         description: "現在の会話についてちょっとした質問をします"
         arg_question: "中断せずに答えてもらう質問"
         followup: "質問を送信しました~"
+      loop:
+        arg_prompt: "毎回実行する内容（テキストまたはスラッシュコマンド）"
+        arg_every: "実行間隔（例: 30s、5m、1h30m）。空欄にすると Hermes が間隔を自動調整"
+        arg_times: "この回数実行したら停止（0 = 無制限）"
+        arg_until: "この条件が満たされたら停止（例: 「CI が成功」）"
+        arg_action: "新しく開始せず、現在のループを操作"
+        error_action_with_fields: "アクションを選ぶか新しいループを入力してください。両方は指定できません。"
+        error_missing_prompt: "新しいループにはプロンプトが必要です。"
+        error_bad_interval: "「{every}」は間隔ではありません。30s、5m、2h、1h30m のように単位を付けてください。"
+        error_flag_in_text: "プロンプトと停止条件に --times や --until は使えません。代わりに各フィールドを使ってください。"
       skill:
         description: "Hermes のスキルを実行します"
         arg_name: "実行するスキル"

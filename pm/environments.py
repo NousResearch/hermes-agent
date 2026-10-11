@@ -402,6 +402,35 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     return None
 
 
+def pinned_python_version(project_root: Path) -> tuple[int, int] | None:
+    """The interpreter minor PM pins for *project_root* (its lock's ``python`` row), or ``None``.
+
+    The venv's own version (``venv_python_version``) is what a user-built venv ACTUALLY holds;
+    this is what PM's pinned toolchain DEMANDS. A mismatch between the two is the
+    wrong-interpreter venv class (#85356): the venv imports fine until a C extension
+    (``_ssl``) built for the pinned minor fails with ``os error 32`` or an import error,
+    which reads as a broken install instead of a wrong Python.
+
+    The pin is PM's own ``pm/lock.json`` row (the same source ``Venv.expected_stamp`` hashes),
+    read through the PM package this process imported — *project_root* stays in the
+    signature so callers can reason about an arbitrary install without env indirection.
+    """
+    try:
+        from pm.lock import Lockfile
+        from pm.paths import lockfile_path
+
+        version = Lockfile(lockfile_path()).version("python")
+        if not version:
+            return None
+        major, _, rest = version.strip().partition(".")
+        minor, _, _ = rest.partition(".")
+        if major.isdigit() and minor.isdigit():
+            return int(major), int(minor)
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return None
+
+
 def site_packages(venv: Path) -> Path:
     import sys
 

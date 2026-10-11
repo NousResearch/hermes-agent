@@ -753,6 +753,21 @@ const GLASS_SUPPORTED = glassSupportedOn(process.platform, os.release())
 const TRANSLUCENCY_SUPPORTED = translucencySupportedOn(process.platform)
 const APP_ROOT = app.getAppPath()
 
+// #85356: ELECTRON_RUN_AS_NODE=1 inherited from the launching shell makes the
+// same binary run in pure Node mode — every `electron` export (`BrowserWindow`)
+// vanishes and the main process dies with an undiagnosable SyntaxError. This
+// file would never run in that mode, so this line is for the packaged-app log
+// tail of a NORMAL launch whose CHILDREN (spawned .exe helpers, updater
+// hand-off scripts) inherit the variable: name the escape hatch once, up front,
+// so a support reader can connect a stray env var to the crash class.
+if (process.env.ELECTRON_RUN_AS_NODE) {
+  console.warn(
+    '[hermes] ELECTRON_RUN_AS_NODE=1 is set in this environment; any Hermes ' +
+      'child that inherits it runs as plain Node and loses Electron APIs ' +
+      '(BrowserWindow) — unset it before launching Hermes Desktop.'
+  )
+}
+
 // Device-local preference: block F12 from opening DevTools.
 // Set dynamically via IPC from the renderer Settings → Advanced.
 let f12Blocked = false

@@ -268,6 +268,8 @@ hermes peer stop spark run_abc123
 
 `hermes peer dm` delivers into the remote agent's canonical Bot Chat over the peer's existing API server, runs one agent turn there, and prints the reply on stdout — the exact cross-machine twin of the local `hermes -p <bot> chat` command.
 
+When an updated peer reports that its agent turn failed, `peer dm` exits 1 rather than treating the failure as a reply. Text mode prints the failure to stderr; `--json` retains the reply and adds `failed`, `error`, and `failure_reason` on stdout. Both the sending CLI and receiving gateway need this support: older gateways do not expose the typed failure verdict, and the CLI does not guess from reply text. The API completion remains HTTP 200 for compatibility.
+
 Use `peer dm` only for short queries and receipts because it holds one HTTP
 connection until the turn finishes. If the peer takes the message but the turn outlasts that
 connection, the message is already in the peer's Bot Chat and the turn keeps running there, so the

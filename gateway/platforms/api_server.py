@@ -3594,7 +3594,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # pre-API compaction shrink the transcript first, and auth/quota/config/model never re-run. The
         # store is read again first: the failed attempt's turn-start persist left the DM as the
         # transcript's unanswered tail row, and the re-run resumes that row instead of appending a
-        # second copy of it. A turn that fails again reaches the peer client exactly as before.
+        # second copy of it. A turn that fails again keeps its completion content and exposes
+        # its failure verdict so peer clients can distinguish it from an answered turn.
         if result_retry_action(result) != RETRY_NONE:
             history = await self._conversation_history_for_session(session_id)
             result, usage = await self._run_agent(
@@ -3608,7 +3609,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             {"object": "hermes.session.chat.completion",
              "session_id": effective_session_id or session_id,
              "message": {"role": "assistant", "content": final_response}, "usage": usage,
-             "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage)},
+             "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage),
+             # Keep the completion and HTTP status compatible while exposing the final
+             # attempt's verdict. Delivery succeeded; the peer's agent turn may not have.
+             **({"failed": True, "error": result.get("error"),
+                 "failure_reason": result.get("failure_reason")}
+                if is_dict and result.get("failed") else {})},
             headers=headers)
 
     @_admit_api_agent_request

@@ -206,6 +206,7 @@ gateway:
     header: "📖 **Hermes Komutları**\n"
     skill_header: "\n⚡ **Skill Komutları** ({count} aktif):"
     more_use_commands: "\n... ve {count} tane daha. Tam sayfalı liste için `/commands` kullanın."
+    filtered_by: "\n'{query}' ile filtrelendi. Tam liste için `/help` çalıştırın."
   insights:
     invalid_days: "Geçersiz --days değeri: {value}"
     error: "Analiz oluşturulurken hata: {error}"

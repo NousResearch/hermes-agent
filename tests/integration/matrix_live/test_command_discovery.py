@@ -1,0 +1,187 @@
+"""A Matrix client discovers commands through the real gateway without a model turn."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import time
+from pathlib import Path
+
+import pytest
+from nio import RoomMessageText, RoomSendResponse, SyncResponse
+
+from agent.i18n import t
+from gateway.config import Platform
+from hermes_cli.commands import gateway_help_lines
+from hermes_cli.slash_exec import CommandContext, execute_command
+from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
+from tests.gateway.test_matrix_command_discovery import _expected_reply
+from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
+
+
+_SKILLS = {
+    f"discovery-{index:02d}": f"Discovery task {index:02d}" for index in range(12)
+}
+_SKILLS.update({
+    "discovery-00": r"Use \\`echo /help` here. Use ``literal ```/help` literal`` here.",
+    "discovery-01": "Use ``literal `/help` literal`` here.\n\n    `/help`\n\n\t`/help`\n\nContinue discovering commands.",
+    "discovery-02": "Example:\n```/help```\nContinue discovering commands.",
+    "discovery-03": "Example:\n   ```/help```\nContinue discovering commands.",
+    "discovery-04": "Use ``literal\n`/help`\nliteral`` here.",
+    "discovery-05": "Example:\n ```text\n`/help`\n ```\nContinue discovering commands.",
+    "discovery-06": "Example:\n```text\n`/help`\n```\nContinue discovering commands.",
+    "discovery-07": "Example:\n~~~text\n`/help`\n~~~\nContinue discovering commands.",
+    "discovery-08": "Example:\n````text\n```\n`/help`\n`````\n````\nContinue discovering commands.",
+    "discovery-09": "Example:\r\n~~~text\r\n`/help`\r\n~~~\r\nContinue discovering commands.",
+    "discovery-10": "Example:\n~~~text\t\n`/help`\n~~~\t\nContinue discovering commands.",
+})
+_COMMAND_SPAN = re.compile(r"`([!/][A-Za-z][A-Za-z0-9_-]*)(?: [^`]*)?`")
+
+
+@pytest.fixture
+def gateway_home(tmp_path: Path) -> Path:
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".no-bundled-skills").touch()
+    for command, description in _SKILLS.items():
+        directory = home / "skills" / command
+        directory.mkdir(parents=True)
+        (directory / "SKILL.md").write_text(
+            f"---\nname: {command}\ndescription: {json.dumps(description)}\n---\n\nResearch.\n",
+            encoding="utf-8",
+        )
+    return home
+
+
+def test_client_discovers_native_commands_without_model_turn(
+    gateway: LiveGateway,
+    gateway_home: Path,
+    live_room: LiveRoom,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.skill_commands import get_skill_commands
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(gateway_home))
+    monkeypatch.chdir(gateway_home)
+    skills = get_skill_commands()
+    assert {
+        command: skills[command]["description"]
+        for command in (f"/{key}" for key in _SKILLS)
+    } == {f"/{command}": description for command, description in _SKILLS.items()}
+    skill_tokens = {f"!{command[1:]}" for command in skills}
+    builtins = {
+        command.replace("/", "!", 1)
+        for line in gateway_help_lines()
+        for command in _COMMAND_SPAN.findall(line)
+    }
+    descriptions = re.compile(
+        "(" + "|".join(re.escape(value) for value in _SKILLS.values()) + ")"
+    )
+
+    def expected_reply(command: str) -> str:
+        name, _, args = _normalize_matrix_bang_command(command)[1:].partition(" ")
+        canonical = execute_command(
+            name, CommandContext(surface="gateway", args=args)
+        ).text
+        return "".join(
+            part if index % 2 else _expected_reply(part, Platform.MATRIX, skills)
+            for index, part in enumerate(descriptions.split(canonical))
+        )
+
+    def commands_in(body: str) -> set[str]:
+        for command, description in _SKILLS.items():
+            body = body.replace(f"`!{command}` — {description}", f"`!{command}`")
+        commands = set(_COMMAND_SPAN.findall(body))
+        assert all(command.startswith("!") for command in commands), body
+        assert {
+            command: _normalize_matrix_bang_command(command) for command in commands
+        } == {command: f"/{command[1:]}" for command in commands}
+        return commands
+
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        try:
+            response = await client.sync(timeout=0)
+            assert isinstance(response, SyncResponse), response
+
+            async def reply_to(command: str) -> str:
+                sent = await client.room_send(
+                    live_room.room_id,
+                    "m.room.message",
+                    {"msgtype": "m.text", "body": command},
+                )
+                assert isinstance(sent, RoomSendResponse), sent
+                deadline = time.monotonic() + 15
+                while (remaining := deadline - time.monotonic()) > 0:
+                    try:
+                        response = await asyncio.wait_for(
+                            client.sync(timeout=250), timeout=remaining
+                        )
+                    except asyncio.TimeoutError:
+                        break
+                    assert isinstance(response, SyncResponse), response
+                    joined = response.rooms.join.get(live_room.room_id)
+                    if not joined:
+                        continue
+                    replies = [
+                        event
+                        for event in joined.timeline.events
+                        if isinstance(event, RoomMessageText)
+                        and event.sender == live_room.bot.user_id
+                    ]
+                    if replies:
+                        assert len(replies) == 1, replies
+                        assert gateway.model.requests == []
+                        reply = replies[0]
+                        expected = expected_reply(command).strip()
+                        assert (reply.body, reply.formatted_body) == (
+                            expected,
+                            object.__new__(MatrixAdapter)._markdown_to_html(expected),
+                        )
+                        return reply.body
+                pytest.fail(
+                    f"No reply to {command} after 15 seconds. Gateway logs:\n"
+                    + gateway.container
+                    .get_wrapped_container()
+                    .logs()
+                    .decode(errors="replace")[-6000:]
+                )
+
+            help_body = await reply_to("!help")
+            assert commands_in(help_body) == builtins | {
+                f"!{command[1:]}" for command in sorted(skills)[:10]
+            }
+
+            body = await reply_to("!commands")
+            directory = commands_in(body)
+            page = 1
+            while next_pages := {
+                int(value)
+                for value in re.findall(r"`!commands (\d+)`", body)
+                if int(value) > page
+            }:
+                page = min(next_pages)
+                assert page <= len(builtins) + len(skills)
+                body = await reply_to(f"!commands {page}")
+                directory.update(commands_in(body))
+            assert directory == builtins | skill_tokens
+
+            skills_body = await reply_to("!help skills")
+            assert commands_in(skills_body) == skill_tokens
+            assert (
+                skills_body
+                == "\n".join([
+                    t("gateway.help.skill_header", count=len(skills)),
+                    *[
+                        f"`!{command[1:]}` — {info.get('description', '').strip()}"
+                        for command, info in sorted(skills.items())
+                    ],
+                ]).strip()
+            )
+            assert gateway.model.requests == []
+        finally:
+            await client.close()
+
+    asyncio.run(exchange())

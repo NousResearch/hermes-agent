@@ -206,6 +206,7 @@ gateway:
     header: "📖 **Hermes コマンド**\n"
     skill_header: "\n⚡ **スキルコマンド** ({count} 件アクティブ):"
     more_use_commands: "\n... 他に {count} 件。完全なページ分けリストは `/commands` で確認してください。"
+    filtered_by: "\n'{query}' で絞り込み中。全一覧は `/help` を実行してください。"
   insights:
     invalid_days: "--days の値が無効です: {value}"
     error: "インサイトの生成中にエラーが発生しました: {error}"

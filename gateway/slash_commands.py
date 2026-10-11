@@ -223,8 +223,8 @@ class GatewaySlashCommandsMixin(
         return self._delivery_adapter_for(event.source), self._session_key_for_source(event.source)
 
     def _telegramized_command_reply(self, event: MessageEvent, text: str) -> str:
-        from gateway.run import _telegramize_command_mentions
-        return _telegramize_command_mentions(text, getattr(getattr(event, "source", None), "platform", None))
+        from gateway.run_command_replies import _platformize_command_mentions
+        return _platformize_command_mentions(text, getattr(getattr(event, "source", None), "platform", None))
 
     def _checkpoint_manager(self):
         """A CheckpointManager from gateway config, or None when checkpoints are disabled."""
@@ -591,22 +591,26 @@ class GatewaySlashCommandsMixin(
         return _execute("version").text
 
     def _catalog_options(self, event: MessageEvent) -> dict:
-        """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
-        the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
-        never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
+        """Executor options for /help and /commands. ``platform`` selects the
+        ``skills.platform_disabled`` list, because these handlers run without a session platform
+        bound. ``allowed_commands`` is set when the caller is a gated non-admin: the slash-access
+        floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog never advertises
+        commands ``_check_slash_access`` would refuse."""
         from gateway.slash_access import policy_for_runner_source
         source = event.source
+        options = {"platform": source.platform.value} if source else {}
         # Partially-constructed runners (``GatewayRunner.__new__`` in tests) have no ``config``;
         # policy_for_source treats None as ungated.
         policy = policy_for_runner_source(self, source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
-            return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
-        return {}
+            options["allowed_commands"] = {"help", "whoami", *policy.user_allowed_commands}
+        return options
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
         return self._telegramized_command_reply(
-            event, _execute("help", options=self._catalog_options(event)).text)
+            event, _execute("help", args=event.get_command_args(),
+                            options=self._catalog_options(event)).text)
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         # Page size is a surface parameter (Telegram messages are shorter).

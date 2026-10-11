@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import contextlib
 import io
+from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from hermes_constants import get_hermes_home
 
-NOTE = "slash command /handoff unavailable — name taken by built-in; use /skill handoff"
+NOTE = "slash command /handoff unavailable: a built-in command uses that name"
+CLI_NOTE = f"{NOTE}; to load it, start a session with hermes -s handoff"
 
 
 def _write_skill(name: str) -> None:
@@ -34,7 +37,7 @@ def test_built_in_name_collision_is_visible_on_every_listing_surface(monkeypatch
     sink = io.StringIO()
     do_list(console=Console(file=sink, force_terminal=False, color_system=None, width=200))
     skills_table = sink.getvalue()
-    assert NOTE in skills_table
+    assert CLI_NOTE in skills_table
     assert "tidy-notes" in skills_table and skills_table.count("unavailable") == 1
 
     class _Cli(CLIInfoMixin):
@@ -46,8 +49,11 @@ def test_built_in_name_collision_is_visible_on_every_listing_surface(monkeypatch
     help_out = io.StringIO()
     with contextlib.redirect_stdout(help_out):
         _Cli().show_help("skills")
-    assert NOTE in help_out.getvalue()
-    assert "/tidy-notes" in help_out.getvalue() and "/handoff" not in help_out.getvalue().replace(NOTE, "")
+    assert CLI_NOTE in help_out.getvalue()
+    assert (
+        "/tidy-notes" in help_out.getvalue()
+        and "/handoff" not in help_out.getvalue().replace(CLI_NOTE, "")
+    )
 
     catalog = server._methods["commands.catalog"](1, {})["result"]
     assert catalog["warning"] == NOTE
@@ -56,7 +62,101 @@ def test_built_in_name_collision_is_visible_on_every_listing_surface(monkeypatch
     from hermes_cli.slash_exec import CommandContext, _exec_commands
 
     gateway_commands = _exec_commands(CommandContext(args="", options={"page_size": 500})).text
-    assert f"⚠ {NOTE}" in gateway_commands and "`/tidy-notes`" in gateway_commands
+    assert (
+        f"⚠ {NOTE}" in gateway_commands.splitlines()
+        and "`/tidy-notes`" in gateway_commands
+    )
+
+
+@pytest.mark.parametrize(
+    ("profile", "sticky", "advised_profile"),
+    [
+        (None, None, None),
+        ("work", None, "work"),
+        (None, "work", "default"),
+    ],
+)
+def test_cli_note_advises_a_launch_command_that_loads_the_skill(
+    profile, sticky, advised_profile, tmp_path, monkeypatch
+):
+    """The CLI surfaces' advice, run from a fresh shell through ``hermes``'s own profile selection
+    (``-p`` or the sticky ``active_profile``), preloads the colliding skill from the profile that
+    showed the note. The skill exists only in that profile's home."""
+    import shlex
+    import sys
+
+    import cli
+    import hermes_cli.main as hermes_main
+    import tools.skills_tool as skills_tool
+    from agent.skill_commands import (
+        build_preloaded_skills_prompt,
+        cli_skill_command_collision_note,
+    )
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.profiles import create_profile, set_active_profile
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    profile_home = create_profile("work", no_alias=True, no_skills=True)
+    if sticky:
+        set_active_profile(sticky)
+    if profile:
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    _write_skill("handoff")
+    note = cli_skill_command_collision_note("handoff")
+    assert note is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    argv = shlex.split(note.partition(" hermes ")[2])
+    advised = hermes_main._scan_profile_flag(argv)[0]
+    monkeypatch.setattr(sys, "argv", ["hermes", *argv])
+    monkeypatch.setattr(hermes_main, "_explicit_cli_profile", None)
+    hermes_main._apply_profile_override()
+    parser, _subparsers, _chat = build_top_level_parser()
+    args = parser.parse_args(sys.argv[1:])
+
+    monkeypatch.setattr(skills_tool, "_SKILLS_CACHE", {})
+    _prompt, loaded, missing = build_preloaded_skills_prompt(
+        cli._parse_skills_argument(args.skills)
+    )
+    assert (advised, loaded, missing) == (advised_profile, ["handoff"], [])
+
+
+def test_skills_table_offers_no_launch_for_a_disabled_colliding_skill(monkeypatch):
+    """``hermes -s`` refuses a disabled skill, so the table must not suggest it for one."""
+    import tools.skills_tool as skills_tool
+    from hermes_cli.skills_hub import do_list
+
+    _write_skill("handoff")
+    (get_hermes_home() / "config.yaml").write_text(
+        "skills:\n  disabled: [handoff]\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(skills_tool, "_SKILLS_CACHE", {})
+
+    sink = io.StringIO()
+    do_list(
+        console=Console(file=sink, force_terminal=False, color_system=None, width=200)
+    )
+    assert NOTE in sink.getvalue() and "hermes -s" not in sink.getvalue()
+
+
+def test_gated_commands_listing_omits_collision_notes(monkeypatch):
+    """A gated non-admin's ``/commands`` hides skill commands, so a colliding skill changes nothing in it."""
+    import tools.skills_tool as skills_tool
+    from hermes_cli.slash_exec import CommandContext, _exec_commands
+
+    ctx = CommandContext(
+        args="", options={"page_size": 500, "allowed_commands": {"help", "whoami"}}
+    )
+    _write_skill("tidy-notes")
+    monkeypatch.setattr(skills_tool, "_SKILLS_CACHE", {})
+    without_collision = _exec_commands(ctx).text
+
+    _write_skill("handoff")
+    skills_tool._SKILLS_CACHE.clear()
+    assert _exec_commands(ctx).text == without_collision
 
 
 def test_catalog_discovery_failure_warning_outranks_the_collision_note(monkeypatch):

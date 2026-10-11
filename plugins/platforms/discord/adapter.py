@@ -1586,6 +1586,10 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 await adapter_self._on_platform_message_delete(message)
 
             @self._client.event
+            async def on_raw_reaction_add(payload):
+                await adapter_self._on_platform_reaction_add(payload)
+
+            @self._client.event
             async def on_thread_create(thread):
                 await adapter_self._on_platform_thread_create(thread)
 
@@ -1922,6 +1926,60 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             }
         message = after if after is not None else before
         await self._emit_platform_event("message_edited", lambda: self._message_event_parts(message, _extra))
+
+    def _reaction_event_parts(self, payload):
+        """``on_raw_reaction_add`` -> ``reaction`` parts, Telegram-shaped payload (emojis,
+        custom_emoji_ids, chat_id, message_id, thread_id). The bot's own reactions drop;
+        missing ids drop (fail closed)."""
+        user_id = getattr(payload, "user_id", None)
+        channel_id = getattr(payload, "channel_id", None)
+        message_id = getattr(payload, "message_id", None)
+        if user_id is None or channel_id is None or message_id is None:
+            return None
+        bot_id = getattr(getattr(getattr(self, "_client", None), "user", None), "id", None)
+        if bot_id is not None and user_id == bot_id:
+            return None
+        member = getattr(payload, "member", None)
+        if member is not None and getattr(member, "bot", False):
+            return None
+        client = getattr(self, "_client", None)
+        channel = None
+        get_channel = getattr(client, "get_channel", None)
+        if callable(get_channel):
+            try:
+                channel = get_channel(channel_id)
+            except Exception:
+                channel = None
+        thread_id, chat_id = self._thread_id_and_chat_for_channel(channel)
+        chat_id = chat_id or str(channel_id)
+        emoji = getattr(payload, "emoji", None)
+        emojis, custom_emoji_ids = [], []
+        if emoji is not None:
+            custom_id = getattr(emoji, "id", None)
+            if custom_id is not None:
+                custom_emoji_ids.append(str(custom_id)[:128])
+            else:
+                name = getattr(emoji, "name", None) or str(emoji)
+                if name:
+                    emojis.append(str(name)[:64])
+        guild_id = getattr(payload, "guild_id", None)
+        author_id = getattr(payload, "message_author_id", None)
+        event_payload = {
+            "emojis": emojis, "custom_emoji_ids": custom_emoji_ids,
+            "chat_id": str(chat_id)[:128], "message_id": str(message_id)[:128],
+            "thread_id": thread_id[:128] if thread_id else None,
+            "message_author_id": str(author_id)[:128] if author_id is not None else None,
+        }
+        return event_payload, dict(
+            chat_id=str(chat_id), user_id=str(user_id),
+            user_name=getattr(member, "display_name", None) if member is not None else None,
+            thread_id=thread_id, guild_id=str(guild_id) if guild_id is not None else None,
+            message_id=str(message_id),
+        )
+
+    async def _on_platform_reaction_add(self, payload) -> None:
+        """Normalize ``on_raw_reaction_add`` into event_type ``reaction`` (raw = works on uncached messages)."""
+        await self._emit_platform_event("reaction", lambda: self._reaction_event_parts(payload))
 
     async def _on_platform_message_delete(self, message) -> None:
         """Normalize ``on_message_delete`` into ``message_deleted``. Discord omits the

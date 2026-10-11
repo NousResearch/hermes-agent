@@ -5,6 +5,7 @@ Stdlib only. ``extract_text`` stays tolerant of v0.3 peers."""
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import threading
@@ -152,6 +153,55 @@ def _json_or_str(data: Any) -> str:
         return str(data)
 
 
+def _normalize_file_part(part: dict[str, Any]) -> dict[str, Any]:
+    """Return a flat file-part view across v1.0 and legacy shapes."""
+    file_obj = part.get("file") if isinstance(part.get("file"), dict) else None
+    flat: dict[str, Any] = dict(part)
+    if isinstance(file_obj, dict):
+        if not flat.get("filename"):
+            flat["filename"] = file_obj.get("name") or file_obj.get("filename") or ""
+        if not flat.get("mediaType"):
+            flat["mediaType"] = file_obj.get("mimeType") or file_obj.get("mediaType") or ""
+        if not flat.get("url"):
+            flat["url"] = file_obj.get("fileWithUri") or file_obj.get("url") or ""
+        if not flat.get("raw"):
+            flat["raw"] = file_obj.get("bytes") or file_obj.get("raw") or ""
+    return flat
+
+
+def _decode_base64_data(raw: Any) -> bytes:
+    if not isinstance(raw, str) or not raw:
+        return b""
+    try:
+        return base64.b64decode(raw, validate=True)
+    except Exception:
+        try:
+            return base64.b64decode(raw)
+        except Exception:
+            return b""
+
+
+def extract_inline_media(message_or_params: dict) -> list[dict[str, Any]]:
+    """Extract inline/URL file parts for gateway attachment delivery."""
+    msg = message_or_params.get("message", message_or_params)
+    media: list[dict[str, Any]] = []
+    for part in msg.get("parts", []) if isinstance(msg, dict) else []:
+        if not isinstance(part, dict):
+            continue
+        normalized = _normalize_file_part(part)
+        media_type = str(normalized.get("mediaType") or normalized.get("mimeType") or "application/octet-stream")
+        filename = str(normalized.get("filename") or normalized.get("name") or "")
+        if isinstance(url := normalized.get("url"), str) and url:
+            media.append({"source": "url", "url": url, "filename": filename, "media_type": media_type})
+            continue
+        raw = normalized.get("raw")
+        if isinstance(raw, str) and raw:
+            decoded = _decode_base64_data(raw)
+            if decoded:
+                media.append({"source": "inline", "bytes": decoded, "filename": filename, "media_type": media_type})
+    return media
+
+
 def extract_text(message_or_params: dict) -> str:
     """Concatenated text from an A2A Message / Task-result / params payload. v1.0, v0.3
     (``kind``) and pre-0.3 (``type``) Parts all carry ``text``; file Parts render as
@@ -163,14 +213,15 @@ def extract_text(message_or_params: dict) -> str:
             continue
         if isinstance(txt := part.get("text"), str):
             chunks.append(txt)
-        elif isinstance(url := part.get("url"), str) and url:
-            chunks.append(_file_note(part.get("filename") or part.get("name") or "", url,
-                                     part.get("mediaType") or part.get("mimeType") or ""))
-        elif isinstance(v03 := part.get("file"), dict) and isinstance(v03.get("fileWithUri"), str):
-            chunks.append(_file_note(v03.get("name") or "", v03["fileWithUri"], v03.get("mimeType") or ""))
-        elif isinstance(part.get("raw"), str):
-            chunks.append(_file_note(part.get("filename") or "", f"{len(part['raw'])} bytes base64-encoded",
-                                     part.get("mediaType") or ""))
+            continue
+        normalized = _normalize_file_part(part)
+        if isinstance(url := normalized.get("url"), str) and url:
+            chunks.append(_file_note(normalized.get("filename") or normalized.get("name") or "", url,
+                                     normalized.get("mediaType") or normalized.get("mimeType") or ""))
+        elif isinstance(normalized.get("raw"), str) and normalized.get("raw"):
+            chunks.append(_file_note(normalized.get("filename") or normalized.get("name") or "",
+                                     f"{len(normalized['raw'])} bytes base64-encoded",
+                                     normalized.get("mediaType") or normalized.get("mimeType") or ""))
         elif (data := part.get("data")) is not None:
             chunks.append(f"[data ({part.get('mediaType') or 'application/json'})]\n{_json_or_str(data)}")
     return "\n".join(chunks).strip()

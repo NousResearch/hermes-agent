@@ -12,7 +12,8 @@ import argparse
 import json
 
 import pytest
-import yaml
+
+import hermes_yaml as yaml  # the repo's YAML stack (ruamel); PyYAML is not a dependency
 
 from hermes_cli.moa_cmd import cmd_moa
 from hermes_cli.subcommands.moa import build_moa_parser

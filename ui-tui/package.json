@@ -27,7 +27,7 @@
     "ink-text-input": "6.0.0",
     "nanostores": "1.4.2",
     "react": "19.2.7",
-    "undici": "6.28.0",
+    "undici": "6.29.0",
     "unicode-animations": "1.0.3"
   },
   "overrides": {

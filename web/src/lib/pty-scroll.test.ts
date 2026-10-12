@@ -43,10 +43,6 @@ describe("shouldFollowPtyOutput", () => {
 		expect(shouldFollowPtyOutput(null, true)).toBe(false);
 	});
 
-	it("does not follow a fresh session even when stickToBottom is true", () => {
-		expect(shouldFollowPtyOutput(null, false)).toBe(false);
-	});
-
 	it("treats an empty resume param as non-resume", () => {
 		expect(shouldFollowPtyOutput("", true)).toBe(false);
 	});

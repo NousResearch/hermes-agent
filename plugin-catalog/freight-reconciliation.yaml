@@ -1,0 +1,22 @@
+name: freight-reconciliation
+repo: https://github.com/harrylabsj/hermes-plugin-freight-reconciliation
+sha: 160ed80ddf6333e48f176f299322aaf9ed2414b0
+description: 'Payer-side freight reconciliation: import carrier bills and trip ledgers into a
+  deterministic local core (SQLite, WAL, no cloud), re-calculate against contracted rates and
+  produce evidence-linked difference lists for human review — 14 MCP tools over uvx stdio
+  (engine pinned to the immutable commit e8cd259c, release v0.4.1), with 3 bilingual workflow skills bundled. Portable Agent Plugins v1
+  package (mcp.json + skills/); needs uv on PATH. Never approves payments, sends messages or
+  writes back to ERP/TMS; final confirmations route through a local admin page the model cannot
+  reach. Disclosure — the optional freight-admin page listens on 127.0.0.1 and is where a human
+  confirms mappings, rules, matches and exports; nothing leaves the machine.'
+maintainer: harrylabsj
+tier: community
+category: tools
+docs_url: https://github.com/harrylabsj/hermes-plugin-freight-reconciliation
+version: "0.4.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

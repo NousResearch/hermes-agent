@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 import hermes_state
+import hermes_state_guard
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -137,7 +138,7 @@ class TestPytestProcessRecognition:
         ],
     )
     def test_recognises_pytest_invocations(self, cmdline):
-        assert hermes_state._process_looks_like_pytest(self._FakeProc(cmdline))
+        assert hermes_state_guard._process_looks_like_pytest(self._FakeProc(cmdline))
 
     @pytest.mark.parametrize(
         "cmdline",
@@ -150,11 +151,11 @@ class TestPytestProcessRecognition:
         ],
     )
     def test_ignores_non_pytest_invocations(self, cmdline):
-        assert not hermes_state._process_looks_like_pytest(self._FakeProc(cmdline))
+        assert not hermes_state_guard._process_looks_like_pytest(self._FakeProc(cmdline))
 
     def test_unreadable_process_is_not_pytest(self):
         class _Denied:
             def cmdline(self):
                 raise PermissionError("access denied")
 
-        assert not hermes_state._process_looks_like_pytest(_Denied())
+        assert not hermes_state_guard._process_looks_like_pytest(_Denied())

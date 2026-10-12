@@ -35,7 +35,7 @@ def _docker_available() -> bool:
         return False
 
 
-def pytest_collection_modifyitems(config, items):  # noqa: D401 - pytest hook
+def pytest_collection_modifyitems(config, items):
     """Apply docker-suite policy: timeout bump + skip on missing docker."""
     docker_ok = _docker_available()
     skip_docker = pytest.mark.skip(

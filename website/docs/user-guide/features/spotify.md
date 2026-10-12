@@ -1,48 +1,44 @@
 # Spotify
 
-Hermes can control Spotify directly — playback, queue, search, playlists, saved tracks/albums, and listening history — using Spotify's official Web API with PKCE OAuth. Tokens are stored in `~/.hermes/auth.json` and refreshed automatically on 401; you only log in once per machine (refresh tokens expire after ~6 months; re-run `hermes auth spotify` when they do).
+Hermes can control Spotify — playback, queue, search, playlists, saved tracks/albums, and listening history — through the official **`spotify` plugin** from the [plugin catalog](./plugins.md). It uses Spotify's Web API with PKCE OAuth. The plugin is maintained by Nous Research in [NousResearch/hermes-spotify](https://github.com/NousResearch/hermes-spotify) and is not part of Hermes core. Tokens are stored in `~/.hermes/auth.json` and refreshed automatically on 401; you only log in once per machine (refresh tokens expire after ~6 months; re-run `hermes spotify login` when they do).
 
-Unlike Hermes' built-in OAuth integrations (Google, GitHub Copilot, Codex), Spotify requires every user to register their own lightweight developer app. Spotify does not let third parties ship a public OAuth app that anyone can use. It takes about two minutes and `hermes auth spotify` walks you through it.
+Unlike Hermes' built-in OAuth integrations, Spotify requires every user to register their own lightweight developer app. Spotify does not let third parties ship a public OAuth app that anyone can use. It takes about two minutes and `hermes spotify login` walks you through it.
+
+## Install
+
+```bash
+hermes plugins install spotify
+```
+
+Plugins are installed per profile. To use Spotify in another profile, install it there too (`hermes -p <profile> plugins install spotify`).
+
+:::info Upgrading from a release that bundled Spotify
+Nothing to do. Every profile that was already using Spotify (a Spotify login in its `auth.json`, or the `spotify` toolset listed in `platform_toolsets`) gets the plugin installed automatically from the catalog by `hermes update`, or the first time the profile starts if that step could not run (this honours `security.allow_lazy_installs`). Your login, the `spotify` toolset and the tool names carry over unchanged. The one visible change: `hermes auth spotify` is now `hermes spotify login` (and `hermes auth status spotify` / `hermes auth logout spotify` are `hermes spotify status` / `hermes spotify logout`); the old spelling prints the new one. If you later remove the plugin (`hermes plugins remove spotify`), it stays removed.
+:::
 
 ## Prerequisites
 
 - A Spotify account. **Free** works for search, playlist, library, and activity tools. **Premium** is required for playback control (play, pause, skip, seek, volume, queue add, transfer).
-- Hermes Agent installed and running.
+- Hermes Agent installed and running, with the `spotify` plugin installed.
 - For playback tools: an **active Spotify Connect device** — the Spotify app must be open on at least one device (phone, desktop, web player, speaker) so the Web API has something to control. If nothing is active you'll get a `403 Forbidden` with a "no active device" message; open Spotify on any device and retry.
 
 ## Setup
 
-### One-shot: `hermes tools` or first-run setup
+### 1. Enable the toolset
 
-The fastest path. Run:
-
-```bash
-hermes tools
-```
-
-Scroll to `🎵 Spotify`, press space to toggle it on, then `s` to save. The same toggle is also available during the first-run `hermes setup` / `hermes setup tools` flow. Spotify stays opt-in, so enabling it there runs the same provider-aware configuration as `hermes tools`.
-
-Hermes drops you straight into the OAuth flow — if you don't have a Spotify app yet, it walks you through creating one inline. Once you finish, the toolset is enabled AND authenticated in one pass.
-
-If you prefer to do the steps separately (or you're re-authing later), use the two-step flow below.
-
-### Two-step flow
-
-#### 1. Enable the toolset
+The plugin's `spotify` toolset is opt-in, so users who don't want it don't ship extra tool schemas on every API call. Turn it on in `hermes tools` (toggle `🔌 Spotify`, then save) or with:
 
 ```bash
-hermes tools
+hermes tools enable spotify
 ```
 
-Toggle `🎵 Spotify` on, save, and when the inline wizard opens, dismiss it (Ctrl+C). The toolset stays on; only the auth step is deferred.
-
-#### 2. Run the login wizard
+### 2. Log in
 
 ```bash
-hermes auth spotify
+hermes spotify login
 ```
 
-The 7 Spotify tools only appear in the agent's toolset after step 1 — they're off by default so users who don't want them don't ship extra tool schemas on every API call.
+The 7 Spotify tools only reach the agent once you're logged in.
 
 If no `HERMES_SPOTIFY_CLIENT_ID` is set, Hermes walks you through the app registration inline:
 
@@ -81,10 +77,10 @@ For jump-box / bastion setups and other gotchas (mosh, tmux, port conflicts), se
 ## Verify
 
 ```bash
-hermes auth status spotify
+hermes spotify status
 ```
 
-Shows whether tokens are present and when the access token expires. Refresh is automatic: when any Spotify API call returns 401, the client exchanges the refresh token and retries once. Refresh tokens persist across Hermes restarts, so you only re-auth if you revoke the app in your Spotify account settings or run `hermes auth logout spotify`.
+Shows whether tokens are present and when the access token expires. Refresh is automatic: when any Spotify API call returns 401, the client exchanges the refresh token and retries once. Refresh tokens persist across Hermes restarts, so you only re-auth if you revoke the app in your Spotify account settings or run `hermes spotify logout`.
 
 ## Using it
 
@@ -222,7 +218,7 @@ Full cron reference: [Cron Jobs](./cron).
 ## Sign out
 
 ```bash
-hermes auth logout spotify
+hermes spotify logout
 ```
 
 Removes tokens from `~/.hermes/auth.json`. To also clear the app config, delete `HERMES_SPOTIFY_CLIENT_ID` (and `HERMES_SPOTIFY_REDIRECT_URI` if you set it) from `~/.hermes/.env`, or run the wizard again.
@@ -241,7 +237,7 @@ To revoke the app on Spotify's side, visit [Apps connected to your account](http
 
 **`429 Too Many Requests`** — Spotify's rate limit. Hermes returns a friendly error; wait a minute and retry. If this persists, you're probably running a tight loop in a script — Spotify's quota resets roughly every 30 seconds.
 
-**`401 Unauthorized` keeps coming back** — Your refresh token was revoked (usually because you removed the app from your account, or the app was deleted). Run `hermes auth spotify` again.
+**`401 Unauthorized` keeps coming back** — Your refresh token was revoked (usually because you removed the app from your account, or the app was deleted). Run `hermes spotify login` again.
 
 **Wizard doesn't open the browser** — If you're over SSH or in a container without a display, Hermes detects it and skips the auto-open. Copy the dashboard URL it prints and open it manually.
 
@@ -250,7 +246,7 @@ To revoke the app on Spotify's side, visit [Apps connected to your account](http
 By default Hermes requests the scopes needed for every shipped tool. Override if you want to restrict access:
 
 ```bash
-hermes auth spotify --scope "user-read-playback-state user-modify-playback-state playlist-read-private"
+hermes spotify login --scope "user-read-playback-state user-modify-playback-state playlist-read-private"
 ```
 
 Scope reference: [Spotify Web API scopes](https://developer.spotify.com/documentation/web-api/concepts/scopes). If you request fewer scopes than a tool needs, that tool's calls will fail with 403.
@@ -258,7 +254,7 @@ Scope reference: [Spotify Web API scopes](https://developer.spotify.com/document
 ## Advanced: custom client ID / redirect URI
 
 ```bash
-hermes auth spotify --client-id <id> --redirect-uri http://localhost:3000/callback
+hermes spotify login --client-id <id> --redirect-uri http://localhost:3000/callback
 ```
 
 Or set them permanently in `~/.hermes/.env`:

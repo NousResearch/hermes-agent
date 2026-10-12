@@ -4,7 +4,7 @@ Spawns one subprocess per (version, scenario) cell — pinned to either
 origin/main (legacy in-tree providers + class-instantiation lookup) or
 this PR's worktree (plugin-based registry) via `sys.path[0]`. Each
 subprocess clears all browser-related env vars + writes a config.yaml,
-loads `tools.browser_tool._get_cloud_provider()`, and emits a reduced
+loads `tools.browser_tool_cloud._get_cloud_provider()`, and emits a reduced
 "shape tuple" {is_local, provider_name, is_available} as JSON.
 
 The parent process diffs the shapes per scenario. A diff means the
@@ -74,24 +74,24 @@ for name in list(sys.modules):
     if name.startswith("tools.") or name.startswith("agent.") or name.startswith("plugins."):
         sys.modules.pop(name, None)
 
-from tools.browser_tool import _get_cloud_provider, _is_local_mode
+from tools.browser_tool_cloud import _get_cloud_provider, _is_local_mode
 
 provider = _get_cloud_provider()
 
-# Pull the human-readable backend name via the API that exists on BOTH
-# legacy (origin/main: CloudBrowserProvider.provider_name()) and the new
-# ABC (BrowserProvider exposes provider_name() as a backward-compat alias
-# returning display_name). Both shapes resolve to the same string —
-# 'Browserbase' / 'Browser Use' / 'Firecrawl' — so we can compare safely.
+# Pull the human-readable backend name: legacy (origin/main: CloudBrowserProvider.provider_name())
+# or the new ABC (BrowserProvider.display_name / is_available()). Both shapes resolve to the same
+# string — 'Browserbase' / 'Browser Use' / 'Firecrawl' — so we can compare safely.
 provider_name = None
 is_available = None
 if provider is not None:
-    pn = getattr(provider, "provider_name", None)
+    pn = getattr(provider, "display_name", None)
+    if pn is None:
+        pn = getattr(provider, "provider_name", None)
     if callable(pn):
         provider_name = pn()
     elif isinstance(pn, str):
         provider_name = pn
-    is_conf = getattr(provider, "is_configured", None)
+    is_conf = getattr(provider, "is_available", None) or getattr(provider, "is_configured", None)
     if callable(is_conf):
         is_available = bool(is_conf())
 

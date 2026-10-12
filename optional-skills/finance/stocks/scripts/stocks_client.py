@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from http.cookiejar import CookieJar
 
 # ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ def ts_to_date(ts) -> str | None:
     if ts is None:
         return None
     try:
-        return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(int(ts), tz=UTC).strftime("%Y-%m-%d")
     except (OSError, ValueError, TypeError):
         return None
 

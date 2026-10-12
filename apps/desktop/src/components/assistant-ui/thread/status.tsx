@@ -8,16 +8,22 @@ import { toolPresentVerb } from '@/components/assistant-ui/tool/run-summary'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
+import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { StatusPulse } from '@/components/ui/status-pulse'
+import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $backgroundResume } from '@/store/background-delegation'
+import { sessionBackgroundResume } from '@/store/background-delegation'
 import { sessionCompacting } from '@/store/compaction'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { sessionAwaitingInput } from '@/store/prompts'
-import { sessionProviderWait } from '@/store/provider-wait'
+import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
+import { $showReasoning } from '@/store/reasoning-disclosure'
+import { $currentModel, $currentProvider } from '@/store/session'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
+import type { LocalModelLoadProgress } from '@/types/hermes'
 
 // A status line is scaffolding like any other — "Editing" while the model
 // drafts a call is the same kind of line as "Explored 3 files" once it has run,
@@ -49,6 +55,105 @@ const COMPACTION_LABEL = 'Summarizing thread'
 
 const HintText: FC<{ children: ReactNode }> = ({ children }) => (
   <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 flex-1 truncate')}>{children}</span>
+)
+
+// Provider slug of the managed local server (inventory.py's _local_runtime_row).
+const LOCAL_PROVIDER_SLUG = 'llamacpp'
+
+/** Renderer-side load synthesis: poll the local-models status while a turn
+ * is busy with NO progress frame from the backend. The backend's wait loop
+ * only narrates the MAIN chat request — a model load triggered while the
+ * gateway is still initializing, or one consumed by a parallel auxiliary
+ * call (title generation autoloads the same model), never gets a frame,
+ * and the load looked like nothing was happening. The status route reads
+ * the same SSE snapshot, so this bar carries the identical percent. */
+function useLocalModelLoad(active: boolean): (LocalModelLoadProgress & { model: string }) | null {
+  const model = useStore($currentModel)
+  const provider = useStore($currentProvider)
+  const [progress, setProgress] = useState<(LocalModelLoadProgress & { model: string }) | null>(null)
+
+  // Behind the --local launch flag, and only while the managed local server
+  // is the current provider: a remote model never waits on a local load, so
+  // busy turns on it must not poll.
+  const enabled = $localModelsEnabled.get() && provider === LOCAL_PROVIDER_SLUG
+
+  useEffect(() => {
+    if (!enabled || !active || !model) {
+      setProgress(null)
+
+      return
+    }
+
+    let cancelled = false
+    let timer: number | undefined
+
+    const tick = async () => {
+      try {
+        const status = await getLocalModelsStatus()
+        const entry = status.loading?.[model]
+
+        if (!cancelled) {
+          setProgress(entry ? { ...entry, model } : null)
+        }
+      } catch {
+        if (!cancelled) {
+          setProgress(null)
+        }
+      }
+
+      if (!cancelled) {
+        timer = window.setTimeout(() => void tick(), 1_500)
+      }
+    }
+
+    void tick()
+
+    return () => {
+      cancelled = true
+
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+      }
+    }
+  }, [enabled, active, model])
+
+  return progress
+}
+
+/** Wait hint with a real progress bar for managed-local model loads and
+ * prompt processing. The percents come from llama-server itself (per-tensor
+ * load callback / live prefill counter, via the gateway's wait frames), so a
+ * determinate bar is honest — a 40s cold load or a long prefill reads as
+ * visible progress instead of an alarming stall. */
+const WaitHint: FC<{ hint: string }> = ({ hint }) => {
+  const { t } = useI18n()
+  const load = parseModelLoadWait(hint)
+
+  if (!load) {
+    return <HintText>{hint}</HintText>
+  }
+
+  const label =
+    load.kind === 'load' ? t.assistant.thread.loadingLocalModel(load.model) : t.assistant.thread.processingPrompt
+
+  return <ProgressHint label={label} percent={load.percent} />
+}
+
+const ProgressHint: FC<{ label: string; percent: null | number }> = ({ label, percent }) => (
+  <span className="flex min-w-0 flex-1 items-center gap-2">
+    <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 shrink truncate')}>{label}</span>
+    {percent !== null && (
+      <>
+        <span className="h-1 w-24 shrink-0 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+          <span
+            className="block h-full rounded-full bg-primary transition-[width] duration-500"
+            style={{ width: `${Math.max(2, percent)}%` }}
+          />
+        </span>
+        <span className={cn(SCAFFOLD_LABEL_CLASS, 'shrink-0 tabular-nums')}>{percent}%</span>
+      </>
+    )}
+  </span>
 )
 
 /** These indicators render inside whichever transcript mounted them, so every
@@ -147,6 +252,10 @@ export const ResponseLoadingIndicator: FC = () => {
   const { compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
   const elapsed = useElapsedSeconds(true, undefined, turnStartedAt)
   const hint = useStatusHint(compacting, drafting, providerWait)
+  // Renderer-synthesized load bar: covers loads the backend's wait loop
+  // can't narrate (gateway still initializing, or an auxiliary call — not
+  // the main request — triggered the autoload). A real wait frame wins.
+  const localLoad = useLocalModelLoad(!hint)
 
   return (
     <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
@@ -155,39 +264,91 @@ export const ResponseLoadingIndicator: FC = () => {
         className="dither inline-block size-3 rounded-[2px] text-midground/80"
         kind="opacity"
       />
-      {hint && <HintText>{hint}</HintText>}
-      <ActivityTimerText seconds={elapsed} />
+      {hint ? (
+        <WaitHint hint={hint} />
+      ) : localLoad ? (
+        <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
+      ) : null}
+      <ActivityTimerText aria-hidden={true} seconds={elapsed} />
     </StatusRow>
   )
 }
 
-// Parked-background affordance: a top-level delegate_task runs in the
-// background, so the parent turn ends and the app goes idle while the subagent
-// keeps working and its result re-enters as a fresh turn later. Instead of a
-// spinner (reads as "stuck"), reuse the same compact, centered system-note
-// chrome as the steer / slash-status lines (SystemMessage above) so it sits in
-// the thread like every other meta line. Idle-only (gated upstream). Null when
-// nothing is parked.
+// The parent is idle while its delegated children work. Name that wait rather
+// than echoing the child's CLI thinking spinner as if this thread were running.
 export const BackgroundResumeNotice: FC = () => {
   const { t } = useI18n()
-  const resume = useStore($backgroundResume)
+  const view = useSessionView()
+  const sessionId = useStore(view.$runtimeId)
+  const busy = useStore(view.$busy)
+  const resume = useStore(useMemo(() => sessionBackgroundResume(sessionId), [sessionId]))
 
-  if (!resume) {
+  if (busy || !resume) {
     return null
   }
 
-  const label = resume.activity ?? t.assistant.thread.resumeWhenBackgroundDone(resume.count)
+  const label = t.assistant.thread.resumeWhenBackgroundDone(resume.count)
 
   return (
-    <div
-      aria-live="polite"
-      className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/55"
-      data-slot="aui_background-resume"
-      role="status"
+    <StatusRow className="pl-(--message-text-indent)" data-slot="aui_background-resume" label={label}>
+      <Codicon name="sync" size="0.875rem" />
+      <span className={cn(SCAFFOLD_LABEL_CLASS, 'min-w-0 truncate')}>{label}</span>
+    </StatusRow>
+  )
+}
+
+// Hands a turn back from the user, re-arming the quiet mark: see the call site.
+function useHandBackQuiet(
+  awaitingInput: boolean,
+  turnStartedAt: number | undefined,
+  setQuietSince: (since: number) => void
+) {
+  const [handBack, setHandBack] = useState({ awaitingInput, turnStartedAt })
+
+  if (handBack.awaitingInput !== awaitingInput || handBack.turnStartedAt !== turnStartedAt) {
+    setHandBack({ awaitingInput, turnStartedAt })
+
+    if (turnStartedAt !== undefined && turnStartedAt !== handBack.turnStartedAt) {
+      setQuietSince(turnStartedAt)
+    } else if (handBack.awaitingInput && !awaitingInput) {
+      setQuietSince(Date.now())
+    }
+  }
+}
+
+interface TurnActivityRowProps {
+  active: boolean
+  elapsed: number
+  hint: string
+  localLoad: ReturnType<typeof useLocalModelLoad>
+}
+
+const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, localLoad }) => {
+  const { t } = useI18n()
+
+  return (
+    <StatusRow
+      className={cn(!active && 'sr-only')}
+      data-slot="aui_turn-activity"
+      data-state={active ? 'active' : 'idle'}
+      label={active ? hint || 'Hermes is working' : ''}
     >
-      <Codicon className="text-muted-foreground/55" name="sync" size="0.75rem" />
-      <span className="shimmer min-w-0 truncate">{label}</span>
-    </div>
+      {active && (
+        <>
+          <StatusPulse
+            aria-hidden="true"
+            className="dither inline-block size-3 rounded-[2px] text-midground/80"
+            kind="opacity"
+          />
+          {hint ? (
+            <WaitHint hint={hint} />
+          ) : localLoad ? (
+            <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
+          ) : null}
+          <ActivityTimerText aria-hidden={true} seconds={elapsed} />
+        </>
+      )}
+    </StatusRow>
   )
 }
 
@@ -206,8 +367,12 @@ export const BackgroundResumeNotice: FC = () => {
 // Subscribes to the activity signal ITSELF (rather than taking it as a prop)
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
-export const TurnActivityIndicator: FC = () => {
-  const activity = useAuiState(s => activitySignature(s.message.content))
+export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = false }) => {
+  // Same rule the reasoning disclosure renders by (message-parts.tsx).
+  const showReasoning = useStore($showReasoning)
+  const guidedChat = useOnboardingChatActive()
+  const reasoningShown = showReasoning && !guidedChat
+  const activity = useAuiState(s => activitySignature(s.message.content, reasoningShown))
 
   // Timestamp of the last visible progress, held from the moment the quiet
   // spell qualifies. Holding the timestamp (not a boolean) is what lets the
@@ -223,9 +388,15 @@ export const TurnActivityIndicator: FC = () => {
   // (`todo`, reactions) render nothing, so they narrate nothing.
   const toolNarrating = useAuiState(s => toolNarratesWait(s.message.content))
 
-  // Streaming counts as working too, and it leads busy by a flush on the first
-  // turn of a fresh chat — so the row can't wait for the store to catch up.
+  // Streaming can lead busy by one view flush on the first turn of a fresh
+  // chat. Honor that lead only while this session still has an armed turn
+  // clock: a pending bubble can outlive the backend's busy=false settle and
+  // must not keep its tail timer running after the turn ends.
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const working = busy || (messageRunning && turnStartedAt !== undefined)
+
+  // Renderer-synthesized load bar (see ResponseLoadingIndicator).
+  const localLoad = useLocalModelLoad(working && !hint && !toolNarrating)
 
   useEffect(() => {
     setQuietSince(undefined)
@@ -235,13 +406,22 @@ export const TurnActivityIndicator: FC = () => {
     return () => window.clearTimeout(id)
   }, [activity])
 
+  // The user handing the turn back is progress too: a hidden setup prompt
+  // starts a fresh turn under the card it answers, and an answered question
+  // card resumes the turn it paused. Neither is a gap between two quick calls,
+  // so the wait after it shows at once, timed from that moment, the way a
+  // normal send's row does.
+  useHandBackQuiet(awaitingInput, turnStartedAt, setQuietSince)
+
   // Every second the app claims to be working belongs to something. A named
   // wait says what it is straight away; an unnamed gap has to go quiet for
   // TURN_QUIET_S first, or a run of quick calls would strobe a row between
   // each one. The two exemptions are waits already accounted for elsewhere: a
   // question the user is answering, and a tool call carrying its own timer.
-  const working = busy || messageRunning
-  const active = working && !awaitingInput && !toolNarrating && (Boolean(hint) || quietSince !== undefined)
+  // A live local-model load is a named wait too — it must not wait out the
+  // quiet window (the load IS the story from second one).
+  const active =
+    working && !awaitingInput && !toolNarrating && (Boolean(hint) || localLoad !== null || quietSince !== undefined)
 
   // Compaction owns the whole turn, so it keeps counting from the turn's start;
   // anything else counts from the moment the turn last produced something — the
@@ -252,19 +432,27 @@ export const TurnActivityIndicator: FC = () => {
     compacting ? turnStartedAt : (quietSince ?? drafting?.since ?? turnStartedAt)
   )
 
-  if (!active) {
+  // Once the row has been shown, keep its live region mounted across
+  // quiet/working flips: remounting a role="status" node makes screen readers
+  // re-announce it on every gap (#46225). While idle it is visually hidden
+  // (sr-only, not display:none, so it stays in the accessibility tree) and
+  // empty and unlabelled — the pulse and timer only mount while active, so an idle window
+  // holds no pulse beat.
+  const [everActive, setEverActive] = useState(false)
+
+  if (active && !everActive) {
+    setEverActive(true)
+  }
+
+  // A reply that has only thought so far, with the thinking not drawn, has
+  // still put nothing on screen: it keeps the pre-first-token row.
+  if (thinking && !reasoningShown) {
+    return <ResponseLoadingIndicator />
+  }
+
+  if (!active && !everActive) {
     return null
   }
 
-  return (
-    <StatusRow data-slot="aui_turn-activity" label={hint || 'Hermes is working'}>
-      <StatusPulse
-        aria-hidden="true"
-        className="dither inline-block size-3 rounded-[2px] text-midground/80"
-        kind="opacity"
-      />
-      {hint && <HintText>{hint}</HintText>}
-      <ActivityTimerText seconds={elapsed} />
-    </StatusRow>
-  )
+  return <TurnActivityRow active={active} elapsed={elapsed} hint={hint} localLoad={localLoad} />
 }

@@ -1,0 +1,16 @@
+name: minecraft-platform
+repo: https://github.com/kyssta-exe/hermes-minecraft-gateway
+sha: 8ff37a626439caecb9ceb724b5da7718eb77a8b1
+description: Minecraft gateway adapter for Hermes Agent. Spawns a Mineflayer bot that joins a Minecraft
+  server, wanders around, and relays chat messages between players and the Hermes agent. Supports offline
+  and Microsoft-authenticated accounts.
+maintainer: kyssta-exe
+tier: community
+category: platform
+docs_url: https://github.com/kyssta-exe/hermes-minecraft-gateway#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - name

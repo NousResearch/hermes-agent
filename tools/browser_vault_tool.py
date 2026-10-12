@@ -116,8 +116,9 @@ def _ensure_supervisor(task_id: str):
         return None
 
 
-def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
+def _eval_js_secret(task_id: str, expression: str, frame_id: Optional[str] = None) -> dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
+    ``frame_id`` targets one out-of-process iframe's session instead of the page.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
     ``eval`` path, because that places the expression — and therefore the
@@ -155,7 +156,7 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
         except _bd_lease.HumanHasControl as exc:
             return {"success": False, "error_type": "human_has_control", "error": str(exc)}
 
-    sup = supervisor.evaluate_runtime(expression)
+    sup = supervisor.evaluate_runtime(expression, frame_id=frame_id) if frame_id else supervisor.evaluate_runtime(expression)
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {
@@ -191,10 +192,25 @@ def _current_page_origin(task_id: str) -> Optional[str]:
         return None
 
 
+# Hosted card-field providers. A payment item saved for a merchant origin may also be written into one of
+# these providers' iframes, but only when that iframe is embedded DIRECTLY in the merchant page (its sole
+# ancestor origin is the item's bound origin), re-checked inside the iframe in the same script as the write.
+# Card numbers/CVCs on most checkouts live in such iframes (PCI scope reduction), out of reach of the
+# top-level fill. Stripe is verified live; Braintree and Adyen use the same direct-child embedding.
+PAYMENT_FRAME_ORIGINS = frozenset({
+    "https://js.stripe.com",
+    "https://assets.braintreegateway.com",
+    "https://checkoutshopper-live.adyen.com",
+    "https://checkoutshopper-test.adyen.com",
+})
+
+_PAYMENT_FRAME_SELECTOR = ", ".join(f'iframe[src^="{o}/"]' for o in sorted(PAYMENT_FRAME_ORIGINS))
+
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
 _TAB_PROBES = {
     "login": "!!document.querySelector('input[type=password]')",
-    "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
+    "payment": ("!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], "
+                f"[name*=cvc i], [name*=cvv i], {_PAYMENT_FRAME_SELECTOR}')"),
     "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
 }
 
@@ -211,6 +227,55 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         return None
     focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
     return (origin or focused.get("url")) if focused.get("ok") else None
+
+
+def _frame_eval(task_id: str, frame_id: str, expression: str) -> dict[str, Any]:
+    """Evaluate NON-SECRET JS inside one out-of-process iframe (supervisor only)."""
+    supervisor = _ensure_supervisor(task_id)  # None when no supervisor can attach
+    if supervisor is None:
+        return {"success": False, "error": "supervisor required"}
+    res = supervisor.evaluate_runtime(expression, frame_id=frame_id)
+    return {"success": bool(res.get("ok")), "result": res.get("result"), "error": res.get("error")}
+
+
+_FRAME_CONTEXT_JS = "JSON.stringify({origin: location.origin, ancestors: Array.from(location.ancestorOrigins || [])})"
+
+
+def _payment_frames(task_id: str, page_origin: str) -> list[tuple[str, str]]:
+    """``(frame_id, frame_origin)`` for each known card-field provider iframe embedded directly in the
+    focused page on ``page_origin``. Ownership comes from the page's own DOM; the iframe's origin and
+    ancestry are read from inside the iframe. Empty when there is no supervisor or no such iframe."""
+    from agent.vault_store import VaultError, normalize_origin
+
+    supervisor = _ensure_supervisor(task_id)  # None when no supervisor can attach
+    if supervisor is None:
+        return []
+    listed = supervisor.page_child_oopifs()
+    if not listed.get("ok"):
+        return []
+    out = []
+    for frame in listed.get("frames") or []:
+        url = str(frame.get("url") or "")
+        try:
+            if url.startswith("http") and normalize_origin(url) not in PAYMENT_FRAME_ORIGINS:
+                continue
+        except (VaultError, ValueError):
+            continue
+        ctx = _frame_eval(task_id, frame["frame_id"], _FRAME_CONTEXT_JS)
+        parsed = _parse_json_result(ctx.get("result")) if ctx.get("success") else None
+        if isinstance(parsed, dict) and parsed.get("origin") in PAYMENT_FRAME_ORIGINS \
+                and parsed.get("ancestors") == [page_origin]:
+            out.append((frame["frame_id"], str(parsed["origin"])))
+    return out
+
+
+def _guard_frame_ancestry(expression: str, page_origin: str) -> str:
+    """Wrap a fill script so it writes nothing unless the iframe is still a direct child of ``page_origin``
+    (checked inside the iframe, synchronously before the write)."""
+    return ("(() => { const a = Array.from(location.ancestorOrigins || []); "
+            f"if (a.length !== 1 || a[0] !== {json.dumps(page_origin)}) "
+            "return JSON.stringify({refused: 'origin_changed', found: a.join(' < ')}); "
+            "return " + expression + "; })()")
 
 
 # ---------------------------------------------------------------------------
@@ -407,17 +472,13 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     """
     from agent.redact import register_vault_redaction_value
     from agent.vault_login_classifier import (
-        ClassifiedLoginControl,
-        LoginControl,
-        build_fill_js,
         build_inspection_js,
         classify_checkout_control,
         classify_login_control,
-        select_checkout_fills,
         select_password_fill,
     )
     from agent.vault_backends import UnlockRequired, backend_for_handle
-    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
+    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS
 
     effective_task_id = task_id or "default"
     backend = backend_for_handle(handle)
@@ -492,28 +553,27 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return json.dumps({"success": False, "error": "Page input inspection returned no usable controls."})
 
     classify = classify_login_control if meta.kind == "login" else classify_checkout_control
-    classified: list[ClassifiedLoginControl] = []
-    for raw in raw_controls:
-        if not isinstance(raw, dict):
-            continue
-        result = classify(LoginControl.from_dict(raw))
-        if result is not None:
-            classified.append(result)
-    if not classified:
+    classified = _classify_controls(raw_controls, classify)
+
+    # Hosted card fields (Stripe Elements & co.) live in a provider iframe the top-level script can't reach.
+    frame_targets = _inspect_payment_frames(effective_task_id, page_origin, classify) if meta.kind == "payment" else []
+    if not classified and not frame_targets:
         return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────
+    frame_fills: list[_FrameFill] = []
     try:
         if meta.kind == "login":
             secret = {"password": backend.resolve_password(handle)}
             fills = select_password_fill(classified, secret["password"])
         else:
             secret = backend.resolve_secret(handle)
-            fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
+            field_tokens = PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS
+            fills, frame_fills = _select_checkout_fills_with_frames(classified, frame_targets, secret, field_tokens)
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
                            "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
-    if not fills:
+    if not fills and not frame_fills:
         return json.dumps(
             {"success": False, "error": f"No fillable {meta.kind} field matched the saved item on this page."}
         )
@@ -525,39 +585,10 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
         register_vault_redaction_value(value)
 
-    try:
-        fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
-        )
-    except Exception as exc:
-        # Strip any secret material from exception text before surfacing.
-        return json.dumps(
-            {"success": False, "error": scrub_secret_from_text(str(exc), secret)}
-        )
-    if not fill_result.get("success"):
-        err = scrub_secret_from_text(str(fill_result.get("error") or "fill failed"), secret)
-        out = {"success": False, "error": err}
-        if fill_result.get("error_type"):
-            out["error_type"] = fill_result["error_type"]
-        return json.dumps(out)
-
-    parsed = _parse_json_result(fill_result.get("result"))
-    if isinstance(parsed, str):
-        parsed = _parse_json_result(parsed)
-    if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
-        return json.dumps(
-            {
-                "success": False,
-                "error_type": "origin_changed",
-                "error": (
-                    "Refused: the page navigated away from the bound origin "
-                    f"({page_origin}) before the fill could run "
-                    f"(now on {parsed.get('found') or 'unknown'}). "
-                    "Nothing was written."
-                ),
-            }
-        )
-    filled = parsed.get("filled", 0) if isinstance(parsed, dict) else 0
+    writes = _fill_writes(fills, frame_fills, page_origin, nonce)
+    filled, refusal = _run_fill_writes(effective_task_id, writes, secret, page_origin)
+    if refusal is not None:
+        return json.dumps(refusal)
 
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
@@ -565,8 +596,118 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault_enter_code with this handle"
                        + (" (a code will be generated automatically)." if meta.has_otp else "."))
     if meta.kind != "login":
-        out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
+        # which controls were targeted, never the values
+        out["fields"] = sorted([f["token"] for f in fills] + [f["token"] for *_, sel in frame_fills for f in sel])
+        if frame_fills:
+            out["frames"] = sorted({frame_origin for _, frame_origin, _, _ in frame_fills})
     return json.dumps(out)
+
+
+def _classify_controls(raw_controls: list, classify) -> list:
+    from agent.vault_login_classifier import LoginControl
+
+    out = []
+    for raw in raw_controls:
+        if isinstance(raw, dict):
+            result = classify(LoginControl.from_dict(raw))
+            if result is not None:
+                out.append(result)
+    return out
+
+
+# (frame_id, frame_origin, nonce, classified controls) and (frame_id, frame_origin, nonce, selected fills).
+_FrameTarget = tuple[str, str, str, list]
+_FrameFill = tuple[str, str, str, list[dict[str, Any]]]
+
+
+def _inspect_payment_frames(task_id: str, page_origin: str, classify) -> list[_FrameTarget]:
+    """Inspect each known card-field provider iframe embedded directly in the page, each with its own nonce."""
+    from agent.vault_login_classifier import build_inspection_js
+
+    targets = []
+    for frame_id, frame_origin in _payment_frames(task_id, page_origin):
+        frame_nonce = secrets.token_hex(8)
+        res = _frame_eval(task_id, frame_id, build_inspection_js(frame_nonce))
+        raw = _parse_json_result(res.get("result")) if res.get("success") else None
+        if isinstance(raw, str):
+            raw = _parse_json_result(raw)
+        classified = _classify_controls(raw if isinstance(raw, list) else [], classify)
+        if classified:
+            targets.append((frame_id, frame_origin, frame_nonce, classified))
+    return targets
+
+
+def _select_checkout_fills_with_frames(classified: list, frame_targets: list[_FrameTarget], secret: dict,
+                                       field_tokens) -> tuple[list[dict[str, Any]], list[_FrameFill]]:
+    """Page fills and per-iframe fills. A token a provider iframe takes is never also written into the page."""
+    from agent.vault_login_classifier import select_checkout_fills
+
+    frame_fills = []
+    for frame_id, frame_origin, frame_nonce, frame_classified in frame_targets:
+        selected = select_checkout_fills(frame_classified, secret, field_tokens)
+        if selected:
+            frame_fills.append((frame_id, frame_origin, frame_nonce, selected))
+    covered = {f["token"] for *_, selected in frame_fills for f in selected}
+    if "cc-exp" in covered:
+        covered |= {"cc-exp-month", "cc-exp-year"}
+    fills = [f for f in select_checkout_fills(classified, secret, field_tokens) if f["token"] not in covered]
+    return fills, frame_fills
+
+
+def _fill_writes(fills: list, frame_fills: list[_FrameFill], page_origin: str,
+                 nonce: str) -> list[tuple[str, Optional[str], str]]:
+    """``(expression, frame_id, origin the write is bound to)``: the page itself first, then provider iframes."""
+    from agent.vault_login_classifier import build_fill_js
+
+    writes: list[tuple[str, Optional[str], str]] = []
+    if fills:
+        writes.append((build_fill_js(fills, expected_origin=page_origin, nonce=nonce), None, page_origin))
+    for frame_id, frame_origin, frame_nonce, selected in frame_fills:
+        expression = build_fill_js(selected, expected_origin=frame_origin, nonce=frame_nonce)
+        writes.append((_guard_frame_ancestry(expression, page_origin), frame_id, frame_origin))
+    return writes
+
+
+def _origin_changed_refusal(found: Any, frame_bound: Optional[str], page_origin: str, filled: int) -> dict:
+    where = (f"the bound origin ({page_origin})" if frame_bound is None
+             else f"the {frame_bound} card frame embedded directly in {page_origin}")
+    return {
+        "success": False,
+        "error_type": "origin_changed",
+        "filled_fields": filled,
+        "error": (
+            f"Refused: the page moved away from {where} before the fill could run "
+            f"(now on {found or 'unknown'}). "
+            + ("Nothing was written." if not filled else "Fields written before this point stay filled.")
+        ),
+    }
+
+
+def _run_fill_writes(task_id: str, writes: list[tuple[str, Optional[str], str]], secret: dict,
+                     page_origin: str) -> tuple[int, Optional[dict]]:
+    """Run each write in order. Returns ``(filled, None)``, or ``(filled so far, refusal)`` at the first failure."""
+    from agent.vault_store import scrub_secret_from_text
+
+    filled = 0
+    for expression, frame_id, bound in writes:
+        try:
+            fill_result = (_eval_js_secret(task_id, expression, frame_id=frame_id) if frame_id
+                           else _eval_js_secret(task_id, expression))
+        except Exception as exc:  # health: allow BLE001 -- the expression holds the secret, so no traceback is logged; the text is scrubbed into a refusal
+            return filled, {"success": False, "error": scrub_secret_from_text(str(exc), secret), "filled_fields": filled}
+        if not fill_result.get("success"):
+            out = {"success": False, "filled_fields": filled,
+                   "error": scrub_secret_from_text(str(fill_result.get("error") or "fill failed"), secret)}
+            if fill_result.get("error_type"):
+                out["error_type"] = fill_result["error_type"]
+            return filled, out
+        parsed = _parse_json_result(fill_result.get("result"))
+        if isinstance(parsed, str):
+            parsed = _parse_json_result(parsed)
+        if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
+            return filled, _origin_changed_refusal(parsed.get("found"), bound if frame_id else None, page_origin, filled)
+        filled += int(parsed.get("filled", 0)) if isinstance(parsed, dict) else 0
+    return filled, None
 
 
 def _confirm_payment_fill(label: str, origin: str) -> bool:

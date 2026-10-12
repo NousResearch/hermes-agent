@@ -211,11 +211,13 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         return {"ok": True, "dialog": dialog.to_dict()}
 
     def evaluate_runtime(self, expression: str, *, return_by_value: bool = True,
-                         await_promise: bool = True, timeout: float = 10.0) -> dict[str, Any]:
+                         await_promise: bool = True, timeout: float = 10.0,
+                         frame_id: Optional[str] = None) -> dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
         Returns ``{"ok": True, "result", "result_type"}`` or ``{"ok": False, "error"}``.
         ``return_by_value=True`` JSON-serializes the result (DevTools-console
-        semantics); non-serializable objects come back as a description string."""
+        semantics); non-serializable objects come back as a description string.
+        ``frame_id`` routes the evaluation to that out-of-process iframe's own session."""
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
@@ -225,6 +227,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return _fail("supervisor is not active")
         if not session_id:
             return _fail("supervisor has no attached page session")
+        if frame_id:
+            with self._state_lock:
+                frame = self._frames.get(frame_id)
+                session_id = frame.cdp_session_id if frame and frame.is_oopif else None
+            if not session_id:
+                return _fail("iframe session is no longer attached")
 
         def _run_eval(by_value: bool) -> dict[str, Any]:
             # userGesture: clipboard / fullscreen APIs need user activation.
@@ -312,6 +320,51 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         try:
             return _schedule(_focus(), loop, timeout=timeout + 1)
         except Exception as exc:
+            return _err(exc)
+
+    def page_child_oopifs(self, *, timeout: float = 10.0) -> dict[str, Any]:
+        """Out-of-process iframes embedded DIRECTLY in the focused page's top document.
+
+        Ownership comes from the page's own DOM (each ``<iframe>`` element's ``frameId``), never from
+        the browser-wide frame registry, so an iframe that belongs to another tab is never returned.
+        Returns ``{"ok": True, "frames": [{"frame_id", "url"}]}`` (only frames with a live child
+        session) or ``{"ok": False, "error"}``."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return _fail("supervisor loop is not running")
+        with self._state_lock:
+            sid = self._page_session_id
+        if not sid:
+            return _fail("supervisor has no attached page session")
+
+        async def _list() -> dict[str, Any]:
+            root = (await self._cdp("DOM.getDocument", {"depth": 0}, session_id=sid,
+                                    timeout=timeout))["result"]["root"]["nodeId"]
+            nodes = (await self._cdp("DOM.querySelectorAll", {"nodeId": root, "selector": "iframe"},
+                                     session_id=sid, timeout=timeout))["result"]["nodeIds"]
+            frames = []
+            for node in nodes[:40]:
+                desc = (await self._cdp("DOM.describeNode", {"nodeId": node}, session_id=sid,
+                                        timeout=timeout))["result"]["node"]
+                fid = desc.get("frameId")
+                if not fid:
+                    continue
+                # Auto-attachment of a child target can lag the parent's DOM.
+                for _ in range(10):
+                    with self._state_lock:
+                        frame = self._frames.get(fid)
+                        child = frame if frame and frame.is_oopif and frame.cdp_session_id else None
+                    if child:
+                        frames.append({"frame_id": fid, "url": child.url})
+                        break
+                    if frame and not frame.is_oopif:
+                        break  # same-process iframe: no session of its own
+                    await asyncio.sleep(0.05)
+            return {"ok": True, "frames": frames}
+
+        try:
+            return _schedule(_list(), loop, timeout=timeout + 2)
+        except (RuntimeError, TimeoutError, KeyError, TypeError) as exc:  # loop gone, CDP error/timeout, odd reply
             return _err(exc)
 
     # ── Supervisor loop internals ────────────────────────────────────────────

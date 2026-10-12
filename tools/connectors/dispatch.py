@@ -20,7 +20,7 @@ def dispatch_connector_call(name, arguments, tool_call_id):
 
 def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                              middleware_trace, enabled_toolsets, disabled_toolsets):
-    from model_tools import handle_function_call
+    from model_tools import handle_function_call, suppress_post_tool_call_hook
     from tools.interrupt import is_interrupted
 
     if len(calls) > MAX_CALLS_PER_DISPATCH:
@@ -39,13 +39,16 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                 code="INTERRUPTED"))
             break
         # Each entry must run its own policy and middleware.
-        payload = handle_function_call(
-            plan.name, plan.arguments, **asdict(ids), user_task=user_task,
-            enabled_tools=enabled_tools, tool_request_middleware_trace=list(middleware_trace),
-            skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
-            skip_tool_execution_middleware=False,
-            enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        )
+        # Entry observers and transforms belong here, even when the outer
+        # executor suppresses the wrapper's inner post_tool_call.
+        with suppress_post_tool_call_hook(False):
+            payload = handle_function_call(
+                plan.name, plan.arguments, **asdict(ids), user_task=user_task,
+                enabled_tools=enabled_tools, tool_request_middleware_trace=list(middleware_trace),
+                skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
+                skip_tool_execution_middleware=False,
+                enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            )
         try:
             value = json.loads(payload) if isinstance(payload, str) else payload
         except ValueError:

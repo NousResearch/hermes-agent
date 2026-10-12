@@ -28,12 +28,23 @@ from utils import file_signature
 logger = logging.getLogger(__name__)
 
 _post_tool_call_hook_suppressed: ContextVar[bool] = ContextVar("post_tool_call_hook_suppressed", default=False)
+_deferred_tool_result_transforms: ContextVar[Optional[list]] = ContextVar("deferred_tool_result_transforms", default=None)
 
 
 @contextmanager
-def suppress_post_tool_call_hook():
-    """Let an outer executor own the terminal post-tool event."""
-    token = _post_tool_call_hook_suppressed.set(True)
+def collect_deferred_tool_result_transforms(transforms):
+    """Collect only transforms that successful registry dispatch would have run."""
+    token = _deferred_tool_result_transforms.set(transforms)
+    try:
+        yield
+    finally:
+        _deferred_tool_result_transforms.reset(token)
+
+
+@contextmanager
+def suppress_post_tool_call_hook(suppress: bool = True):
+    """Let an outer executor own the terminal post, or restore entry ownership."""
+    token = _post_tool_call_hook_suppressed.set(suppress)
     try:
         yield
     finally:
@@ -870,7 +881,8 @@ def handle_function_call(
     function_name: str, function_args: dict[str, Any], task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None, session_id: Optional[str] = None, turn_id: Optional[str] = None,
     api_request_id: Optional[str] = None, user_task: Optional[str] = None, enabled_tools: Optional[list[str]] = None,
-    skip_pre_tool_call_hook: bool = False, skip_tool_request_middleware: bool = False,
+    skip_pre_tool_call_hook: bool = False, skip_transform_tool_result_hook: bool = False,
+    skip_tool_request_middleware: bool = False,
     skip_tool_execution_middleware: bool = False, tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
     enabled_toolsets: Optional[list[str]] = None, disabled_toolsets: Optional[list[str]] = None,
 ) -> str:
@@ -881,6 +893,9 @@ def handle_function_call(
     ``_last_resolved_tool_names``). skip_pre_tool_call_hook: caller already fired
     it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
     bridge catalog to this session's grant (None = unrestricted).
+    skip_transform_tool_result_hook defers successful transforms to an active
+    collector, or suppresses them when no collector is bound. Early returns
+    never register a transform; connector batches retain per-entry hooks.
     """
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -913,7 +928,9 @@ def handle_function_call(
             ), duration_ms=_elapsed_ms(start))
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,
-            skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,
+            skip_pre_tool_call_hook=skip_pre_tool_call_hook,
+            skip_transform_tool_result_hook=skip_transform_tool_result_hook,
+            skip_tool_request_middleware=skip_tool_request_middleware,
             skip_tool_execution_middleware=skip_tool_execution_middleware, tool_request_middleware_trace=list(trace),
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         )
@@ -953,6 +970,13 @@ def handle_function_call(
                                enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware)
         duration_ms = _elapsed_ms(start)
         _emit(result, duration_ms=duration_ms)
+        if skip_transform_tool_result_hook:
+            deferred = _deferred_tool_result_transforms.get()
+            if deferred is not None:
+                deferred.append(lambda final_result: _apply_transform_tool_result_hook(
+                    function_name, function_args, final_result, duration_ms, ids,
+                ))
+            return result
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
 
     except Exception as e:

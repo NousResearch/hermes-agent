@@ -120,16 +120,24 @@ class CLIProcessNotificationsMixin:
             offered += 1
         return offered
 
+    @staticmethod
+    def _announce_steered_delegation_results(notifications) -> None:
+        from cli import _ACCENT, _RST, _cprint
+        for notification in notifications:
+            preview = notification.display_text[:80] + ("..." if len(notification.display_text) > 80 else "")
+            _cprint(f"  {_ACCENT}{t('cli.tui.steered', preview=preview)}{_RST}")
+
+    def _announce_delegation_results_carried_so_far(self, agent) -> None:
+        """Echo results as they land in the running turn, so the notice never trails the reply."""
+        from agent.background_results import take_delivered
+        self._announce_steered_delegation_results(take_delivered(agent))
+
     def _requeue_undelivered_delegation_results(self, agent) -> None:
         """After the run: results no tool batch carried (the turn ended without another tool call,
         or was stopped) become the ordinary next turn, exactly as ``queue`` mode would deliver them."""
         from agent.background_results import take_outcome
         delivered, undelivered = take_outcome(agent)
-        if delivered:
-            from cli import _ACCENT, _RST, _cprint
-            for notification in delivered:
-                preview = notification.display_text[:80] + ("..." if len(notification.display_text) > 80 else "")
-                _cprint(f"  {_ACCENT}{t('cli.tui.steered', preview=preview)}{_RST}")
+        self._announce_steered_delegation_results(delivered)
         for notification, _text in undelivered:
             self._pending_input.put(notification)
 

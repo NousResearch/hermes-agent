@@ -1655,13 +1655,15 @@ _OPENCODE_FREE_EXCLUDED_MODELS = frozenset(
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
 
-    Live results are merged with the curated list so models the live endpoint omits still appear:
+    Authoritative profiles use live IDs exclusively, falling back only when discovery fails.
+    Other profiles merge live results with the curated list so omitted models still appear:
     curated-first by default so the newest curated models lead when the live API lags;
     ``_LIVE_FIRST_PICKER_PROVIDERS`` (OpenCode Zen/Go, authoritative live API) live-first so stale
     curated entries stop polluting the top. Plugin providers without a static entry use the
     profile's ``fallback_models`` as the curated list (Fireworks lists an image model first).
     """
     from providers import get_provider_profile
+    from hermes_cli.models_profile_catalog import merge_profile_catalog, probe_profile_catalog
 
     profile = get_provider_profile(normalized)
     if not profile:
@@ -1683,34 +1685,6 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         return list(profile.fallback_models) or None
     api_key, base_url = _api_key_credentials(normalized)
     return probe_profile_catalog(normalized, profile, api_key, base_url or profile.base_url or None)
-
-
-def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base_url: Optional[str]) -> Optional[list[str]]:
-    """``profile.fetch_models`` gated on a key (no key → no doomed probe) and merged with the curated
-    list; a raising catalog override degrades like a None return — fallback_models, not an empty picker."""
-    live = None
-    if api_key:
-        try:
-            live = profile.fetch_models(api_key=api_key, base_url=base_url)
-        except Exception:
-            live = None
-    return merge_profile_catalog(normalized, profile, live)
-
-
-def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -> Optional[list[str]]:
-    """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
-    first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
-    picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
-    if not live:
-        rows = CuratedFallbackModels(profile.fallback_models) if profile.fallback_models else None
-    else:
-        curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
-        if not curated:
-            rows = live
-        else:
-            primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
-            rows = _merge_unique(primary, secondary, key=_model_dedup_key)
-    return _drop_delisted_opencode_models(normalized, rows)
 
 
 def _drop_delisted_opencode_models(normalized: str, rows: Optional[list[str]]) -> Optional[list[str]]:

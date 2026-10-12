@@ -89,10 +89,12 @@ def test_prime_configured_proxy_preserves_generic_catalog(monkeypatch):
 
 
 def test_prime_catalog_outage_uses_profile_fallback(monkeypatch):
+    from agent import models_dev
     from hermes_cli.models import provider_model_ids
 
     profile = get_provider_profile("prime")
     monkeypatch.setenv("PRIME_API_KEY", "prime-test-key")
+    monkeypatch.setattr(models_dev, "fetch_models_dev", lambda **_: {})
     opener = MagicMock(side_effect=URLError("catalog unavailable"))
     monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", opener)
     assert profile.fallback_models

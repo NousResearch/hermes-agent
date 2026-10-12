@@ -627,7 +627,7 @@ model:
   default: "deepseek/deepseek-v4.1-flash"
 ```
 
-Aliases: `prime-inference`, `primeintellect`, `pinference`. Model IDs retain their vendor prefix, so `/model prime:deepseek/deepseek-v4.1-flash` selects the same route. Hermes discovers models from `/models`, lists models with advertised tool calling and text input/output, and keeps curated tool-calling models as an offline fallback. Auxiliary tasks default to `deepseek/deepseek-v4.1-flash`.
+Aliases: `prime-inference`, `primeintellect`, `pinference`. Model IDs retain their vendor prefix, so `/model prime:deepseek/deepseek-v4.1-flash` selects the same route. Setup and the model picker discover hosted and gateway models from `https://api.pinference.ai/api/v1/models`, listing models with advertised tool calling and text input/output. Successful discovery determines the offered list; cached models.dev entries and curated tool-calling models are used only when discovery fails. Auxiliary tasks default to `deepseek/deepseek-v4.1-flash`.
 
 ### Actual Computer
 

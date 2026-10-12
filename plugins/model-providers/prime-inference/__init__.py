@@ -30,6 +30,8 @@ class PrimeProfile(ProviderProfile):
         try:
             with open_credentialed_url(request, timeout=timeout) as response:
                 data = json.loads(response.read().decode())
+            if not isinstance(data.get("data"), list):
+                raise ValueError("Prime model catalog must contain a data list")
             models = []
             for model in data.get("data", []):
                 modalities = (model.get("specs") or {}).get("modalities") or {}
@@ -55,6 +57,7 @@ prime = PrimeProfile(
     env_vars=("PRIME_API_KEY",),
     base_url="https://api.pinference.ai/api/v1",
     auth_type="api_key",
+    authoritative_model_catalog=True,
     default_aux_model="deepseek/deepseek-v4.1-flash",
     fallback_models=(
         "deepseek/deepseek-v4.1-flash",

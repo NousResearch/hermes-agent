@@ -874,7 +874,7 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
     credential_pool = None
     try:
         _pool = load_pool(provider)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- best-effort like _resolve_from_pool: an unreadable pool keeps the bare env-key runtime
         _pool = None
     if (_pool is not None and _pool.has_credentials()
             and credential_pool_matches_provider(_pool, provider, base_url=base_url)):

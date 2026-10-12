@@ -1,0 +1,36 @@
+name: ttsbuddy
+title: TTS Buddy
+repo: https://github.com/ngelik/ttsbuddy-cli
+sha: f28b697f3dabf652f30f64ac632b5ba0bd6d8dbc
+subdir: plugins/hermes-ttsbuddy
+description: >-
+  Native TTS Buddy speech provider using the existing TTS Buddy CLI, with offline
+  voice selection, MP3 generation, Hermes voice-message conversion and exact-job
+  recovery. Disclosure: launches the user-installed ttsbuddy executable with an
+  argument array and speech text on stdin; the CLI sends text and voice settings
+  to TTS Buddy, downloads hosted audio and consumes the selected account's quota.
+  Requests declare agent execution context. Credentials use Hermes's active
+  profile secret scope or an explicitly selected CLI configuration directory;
+  in the latter mode the CLI reads and may update its own saved login and job
+  state, while the plugin never opens credential files. Writes verified audio
+  to the requested local destination and uses temporary files/configuration for
+  profile-secret calls. No plugin self-updater, automatic software installation,
+  login, plan purchase or separate telemetry is added. Requires the CLI on the
+  Hermes host and ffmpeg for Hermes's optional Opus conversion.
+maintainer: ngelik
+tier: community
+category: voice
+requires_hermes: ">=0.21.7"
+docs_url: https://www.ttsbuddy.com/docs/developers/hermes-plugin
+version: "0.1.0"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Use fresh unique output filenames/stems: successful Hermes delivery and same-stem Opus conversion can replace files outside the provider's no-clobber checks."
+  - "MP3 source audio only; no PCM streaming. A local timeout does not cancel an accepted hosted job; use ttsbuddy_recover with the exact job ID."
+capabilities:
+  provides_tools:
+    - ttsbuddy_recover
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

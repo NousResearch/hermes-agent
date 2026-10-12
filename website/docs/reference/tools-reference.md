@@ -207,7 +207,9 @@ Enabled only when a profile's own config names it (`platform_toolsets.cli`). Onl
 
 ## `peer_messaging` toolset
 
-Inspired by Muse Code's inter-session messaging. Off by default — enable via `hermes tools` → Peer Messaging or `tools.<platform>.enabled` in `config.yaml`.
+Inspired by Muse Code's inter-session messaging. Discovery and sending are off by default — enable via `hermes tools` → Peer Messaging. Receiving is independent of that selection: an enabled sender can message another session in the same Hermes home, and the recipient checks its mailbox on its next activity even without these tools enabled. Idle sessions are not automatically started.
+
+Messages retain the sending session's attribution and use the existing user-role steering transport. Peer-written text does not grant new human permission or override the user's instructions. Delivery is best-effort: a successful send means queued, not read or completed. The mailbox is consumed into memory before transcript persistence, so a receiver crash in that interval can lose the message. This primitive does not provide acknowledgment, retry, or exactly-once execution.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
@@ -410,5 +412,4 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
 

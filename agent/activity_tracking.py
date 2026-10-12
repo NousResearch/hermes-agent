@@ -90,7 +90,6 @@ class ActivityTrackingMixin:
             # in progress" moments ago, so deferring this write to the next 60s window leaves the durable
             # row advertising a compression that has already ended — and no later writer corrects it once
             # the turn is over or the host is gone (the permanently "stuck" chat, #72039 follow-up).
-
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()
 

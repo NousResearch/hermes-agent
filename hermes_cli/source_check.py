@@ -110,6 +110,40 @@ def _github_compare_behind(current_rev: str, target_rev: str, repository: str = 
     return ahead if isinstance(ahead, int) and not isinstance(ahead, bool) and ahead >= 0 else None
 
 
+def _latest_release_sha(repository: str = OFFICIAL_REPOSITORY) -> Optional[str]:
+    """Commit SHA of the latest GitHub release's tag, or None.
+
+    ``target_commitish`` may name a branch, so the tag object is peeled
+    through ``/git/ref/tags`` and ``/git/tags`` when needed. Passive: the
+    GitHub API only, never ``git fetch``.
+    """
+    payload = _quiet(lambda: json.loads(_request(
+        f"https://api.github.com/repos/{repository}/releases/latest")))
+    if not isinstance(payload, dict):
+        return None
+    tag = payload.get("tag_name")
+    if not isinstance(tag, str) or not tag:
+        return None
+    if _is_full_sha(payload.get("target_commitish")):
+        return payload["target_commitish"]
+    ref = _quiet(lambda: json.loads(_request(
+        f"https://api.github.com/repos/{repository}/git/ref/tags/{tag}")))
+    if not isinstance(ref, dict) or not isinstance(ref.get("object"), dict):
+        return None
+    obj = ref["object"]
+    sha = obj.get("sha")
+    if not _is_full_sha(sha):
+        return None
+    if obj.get("type") != "tag":
+        return sha  # lightweight tag — the ref object already names the commit
+    peeled = _quiet(lambda: json.loads(_request(
+        f"https://api.github.com/repos/{repository}/git/tags/{sha}")))
+    if not isinstance(peeled, dict) or not isinstance(peeled.get("object"), dict):
+        return None
+    commit = peeled["object"].get("sha")
+    return commit if _is_full_sha(commit) else None
+
+
 def _request(url: str, accept: str = "application/vnd.github+json") -> str:
     """GET an api.github.com resource with the credential ladder in hermes_cli.github_api.
 
@@ -298,6 +332,27 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only:
     return source_target
 
 
+def _check_release_tag(result: dict, co: _Checkout) -> bool:
+    """Resolve a tag-pinned checkout against the latest GitHub release.
+
+    HEAD exactly on a tag is "at" a release, not ``N commits behind`` a
+    branch tip. Returns True when the release comparison decided ``result``;
+    False when HEAD is not exactly at a tag or release info is unavailable
+    (the caller then falls back to the branch-tip comparison).
+    """
+    tag = _git_stdout(["describe", "--tags", "--exact-match", "HEAD"], cwd=co.root, git=co.git)
+    if not tag:
+        return False
+    release_sha = _latest_release_sha(co.repository or OFFICIAL_REPOSITORY)
+    if not _is_full_sha(release_sha):
+        return False
+    result.pop("branch", None)
+    result["tag"] = tag
+    behind = 0 if co.head == release_sha else UPDATE_AVAILABLE_NO_COUNT
+    result.update(targetSha=release_sha, behind=behind, updateAvailable=behind != 0)
+    return True
+
+
 def _branch_remote(co: _Checkout, selected_branch: str) -> str:
     official_ssh = (co.repository and co.repository.lower() == OFFICIAL_REPOSITORY.lower()
                     and co.origin.lower().startswith(("git@", "ssh://")))
@@ -434,6 +489,16 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
             # The record supplies a default, not permission to leave the user's branch.
             selected_branch = configured_branch or _checked_out_branch(co.current_branch, source_target.branch)
     if "error" not in result and (source_target is None or source_target.branch is not None):
+        # A checkout sitting exactly on a release tag is "at" a release, not
+        # ``N commits behind`` a branch tip: counting HEAD against origin/main
+        # reports a permanent misleading warning for every tag-pinned editable
+        # install. Compare against the latest GitHub release instead. Only the
+        # default branch-follow path uses this; an explicit ``branch`` asks
+        # about that branch, and a channel target with a pinned commit is
+        # already compared against that commit by _resolve_channel.
+        if branch is None and _check_release_tag(result, co):
+            _write_cache(cache_file, identity, now, result)
+            return {**result, "dirty": co.dirty, "currentBranch": co.current_branch}
         # Only a Desktop-configured branch the caller did not override is healed.
         heal = branch_config_path and not branch and configured_branch == selected_branch
         _check_branch(result, co, selected_branch,

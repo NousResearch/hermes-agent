@@ -561,8 +561,15 @@ def _is_cron_silence_response(text: str) -> bool:
 # Keyed by profile home: one host gateway multiplexes every profile, and ``max_parallel_jobs`` is a
 # per-profile config key — a single process-global pool is sized by whichever profile ticked first
 # and then imposes that limit on all the others.
-_parallel_pools: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
-_parallel_pool_max_workers: dict[str, Optional[int]] = {}
+#
+# Within a home there is one pool per LANE, because the job's MODE — not the profile's limit —
+# decides whether it consumes the model. A ``no_agent`` job runs its script and returns (0.3 s
+# measured, no AIAgent, no tokens); an agent job can hold its worker for hours on a local model.
+# One shared FIFO worker let a 9 h 40 m agent run delay a 0.3 s script job for 9 h 40 m.
+PARALLEL_LANE_AGENT = "agent"
+PARALLEL_LANE_NO_AGENT = "no-agent"
+_parallel_pools: dict[str, dict[str, concurrent.futures.ThreadPoolExecutor]] = {}
+_parallel_pool_max_workers: dict[str, dict[str, Optional[int]]] = {}
 
 
 def _inflight_key(job_id: str, home: Optional[Path | str] = None) -> tuple:
@@ -1207,22 +1214,33 @@ def _cron_inactivity_seconds() -> float:
         return 600.0
 
 
-def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
-    """Return (or create) the persistent parallel pool for the ACTIVE profile.
+def _get_parallel_pool(
+    max_workers: Optional[int], lane: str = PARALLEL_LANE_AGENT
+) -> concurrent.futures.ThreadPoolExecutor:
+    """Return (or create) the persistent parallel pool for one LANE of the ACTIVE profile.
 
     Pools are per profile home because ``cron.max_parallel_jobs`` is a per-profile config key:
     a single process-global pool is created by whichever profile the multiplexing gateway ticks
     first and then silently imposes that profile's limit on every other profile.
+
+    Pools are ALSO per lane (``PARALLEL_LANE_*``): one worker must not make a job that needs no
+    model wait on a job that may hold its worker for hours. Each lane is sized by the same
+    ``max_workers``, so the config key keeps its meaning per lane; in-flight de-duplication is
+    unaffected because ``_inflight_key`` is per (home, job id), not per pool.
     """
     home = hermes_home_key(_remember_inflight_home(_get_hermes_home()))
-    pool = _parallel_pools.get(home)
-    if pool is None or _parallel_pool_max_workers.get(home) != max_workers:
+    lanes = _parallel_pools.get(home)
+    if lanes is None:
+        lanes = _parallel_pools[home] = {}
+    pool = lanes.get(lane)
+    if pool is None or _parallel_pool_max_workers.get(home, {}).get(lane) != max_workers:
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=False)
+        _prefix = "cron-parallel" if lane == PARALLEL_LANE_AGENT else f"cron-parallel-{lane}"
         pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="cron-parallel")
-        _parallel_pools[home] = pool
-        _parallel_pool_max_workers[home] = max_workers
+            max_workers=max_workers, thread_name_prefix=_prefix)
+        lanes[lane] = pool
+        _parallel_pool_max_workers.setdefault(home, {})[lane] = max_workers
     return pool
 
 
@@ -1235,16 +1253,17 @@ def discard_parallel_pools(home_keys) -> None:
     ticker is never blocked; queued work still drains before the executor dies.
     """
     for key in list(home_keys):
-        pool = _parallel_pools.pop(key, None)
+        lanes = _parallel_pools.pop(key, None)
         _parallel_pool_max_workers.pop(key, None)
-        if pool is not None:
+        for pool in (lanes or {}).values():
             pool.shutdown(wait=False, cancel_futures=False)
 
 
 def _shutdown_parallel_pool() -> None:
     """Shut down every profile's persistent pool on process exit."""
-    for pool in list(_parallel_pools.values()):
-        pool.shutdown(wait=True, cancel_futures=False)
+    for lanes in list(_parallel_pools.values()):
+        for pool in lanes.values():
+            pool.shutdown(wait=True, cancel_futures=False)
     _parallel_pools.clear()
     _parallel_pool_max_workers.clear()
 

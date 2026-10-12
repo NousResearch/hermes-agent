@@ -1,18 +1,19 @@
 name: waypoint
 repo: https://github.com/mochiNJ/hermes-waypoint
-sha: 9ce51b21c88de55982a81d88cd59b066fff8feb2
-description: "Session status for Hermes Desktop: a thin bar next to every sidebar session with four states — Working (remembers your next step), Waiting on someone (who/what plus a follow-up reminder), Done (outcome plus a fresh-start handoff) and untracked. Adds a Status Board page (columns, follow-ups due, stale sessions, archive all done), triage of untracked sessions, a resume banner above the composer, a status-bar counter, a daily summary, palette commands and English/Arabic (RTL). SDK-only: session-row slots, a route, sidebar nav, status bar, composer banner, palette. Disclosure — no network calls and nothing is sent to the model; statuses and notes are stored in the desktop plugin storage keyed by the durable session id; reads session titles via session.list; archives a session via session.archive only when you press Archive (undo offered); posts in-app and native OS notifications for due reminders; writes a composer draft only when you press Insert or Start fresh session."
+sha: 730e4e60b8b612032b7e0390269a8cd866fac463
+description: "Session status for Hermes Desktop: a thin bar next to every sidebar session with four states — Working (remembers your next step), Waiting on someone (who/what plus a follow-up reminder), Done (outcome plus a fresh-start handoff) and untracked. Suggests 3 next steps per session (instant quick ideas from the chat, plus opt-in AI ideas from the auxiliary model) with one-click Ask. Adds a Status Board page (columns, follow-ups due, stale sessions, archive all done), triage of untracked sessions, a resume banner above the composer, a status-bar counter, a daily summary, palette commands and English/Arabic (RTL). SDK-only: session-row slots, a route, sidebar nav, status bar, composer banner, palette. Disclosure — no network calls of its own; AI next-step suggestions are OFF by default, and when the user enables them the plugin sends the last ~12 messages (trimmed, at most ~7,000 characters) of the focused session plus its title and the user's notes to the user's Hermes auxiliary model via llm.oneshot (task title_generation, never the session's main model); reads session history via session.history for the focused session; statuses and notes are stored in the desktop plugin storage keyed by the durable session id; reads session titles via session.list; archives a session via session.archive only when you press Archive (undo offered); posts in-app and native OS notifications for due reminders; writes a composer draft only when you press Insert or Start fresh session."
 maintainer: mochiNJ
 tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/mochiNJ/hermes-waypoint
-version: "2.0.0"
+version: "2.1.0"
 screenshots:
-  - https://raw.githubusercontent.com/mochiNJ/hermes-waypoint/9ce51b21c88de55982a81d88cd59b066fff8feb2/media/card-waiting.png
-  - https://raw.githubusercontent.com/mochiNJ/hermes-waypoint/9ce51b21c88de55982a81d88cd59b066fff8feb2/media/board.png
-  - https://raw.githubusercontent.com/mochiNJ/hermes-waypoint/9ce51b21c88de55982a81d88cd59b066fff8feb2/media/card-done.png
-  - https://raw.githubusercontent.com/mochiNJ/hermes-waypoint/9ce51b21c88de55982a81d88cd59b066fff8feb2/media/banner.png
+  - https://raw.githubusercontent.com/mochiNJ/hermes-waypoint/730e4e60b8b612032b7e0390269a8cd866fac463/media/suggestions.png
+  - https://raw.githubusercontent.com/mochiNJ/hermes-waypoint/730e4e60b8b612032b7e0390269a8cd866fac463/media/card-waiting.png
+  - https://raw.githubusercontent.com/mochiNJ/hermes-waypoint/730e4e60b8b612032b7e0390269a8cd866fac463/media/board.png
+  - https://raw.githubusercontent.com/mochiNJ/hermes-waypoint/730e4e60b8b612032b7e0390269a8cd866fac463/media/card-done.png
+  - https://raw.githubusercontent.com/mochiNJ/hermes-waypoint/730e4e60b8b612032b7e0390269a8cd866fac463/media/banner.png
 platforms: []
 capabilities:
   provides_tools: []

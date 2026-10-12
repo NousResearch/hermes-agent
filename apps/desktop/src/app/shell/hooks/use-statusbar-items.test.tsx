@@ -168,7 +168,9 @@ describe('statusbar workspace menu — change working directory', () => {
     item?.onSelect?.()
 
     await vi.waitFor(() => expect(changeSessionCwd).toHaveBeenCalledWith('/opt/data/profiles/austin', undefined))
-    expect(selectDesktopPaths).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: '/opt/data', directories: true }))
+    expect(selectDesktopPaths).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultPath: '/opt/data', directories: true })
+    )
   })
 
   it("targets a focused tile's own runtime, and is absent for a cold tile or another gateway's tile", async () => {

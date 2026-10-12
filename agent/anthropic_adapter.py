@@ -1,8 +1,8 @@
 """Anthropic Messages API adapter: client construction + the Messages call for Hermes's
-OpenAI-style internals. Auth: API keys (``sk-ant-api*``, ``sk-ant-usr*``) -> x-api-key; OAuth
-setup-tokens (``sk-ant-oat*``) and Claude Code credentials -> Bearer + beta header. Endpoint
-predicates, payload conversion and credentials live in ``agent/anthropic_{endpoints,message_convert,
-credentials}.py``; import them from there."""
+OpenAI-style internals. Auth: Console API keys (``sk-ant-api*``/``-usr*``/``-svc*``/``-admin*``) ->
+x-api-key; OAuth setup-tokens (``sk-ant-oat*``) and Claude Code credentials -> Bearer + beta header.
+Endpoint predicates, payload conversion and credentials live in ``agent/anthropic_{endpoints,
+message_convert,credentials}.py``; import them from there."""
 
 from pm import install_hint
 import logging

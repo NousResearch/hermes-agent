@@ -322,6 +322,10 @@ export type LinuxGpuDeathPath = 'no-sandbox' | 'disable-gpu' | null
  *   relaunch died again: that second death proves the sandbox was not the
  *   (only) problem, so the next bounded step is `--disable-gpu`.
  * - null when the death matches neither ladder or both are spent/already on.
+ * - null while a quit is already proceeding: shutdown teardown kills the
+ *   zygote and the network service before the GPU child, so its resulting
+ *   launch-failed/crashed says nothing about the GPU (#134888 feedback: a
+ *   systemd stop must not arm the software-fallback marker).
  *
  * Pure so tests never boot Electron; the caller owns the relaunch flags.
  */
@@ -332,8 +336,10 @@ export function linuxGpuChildDeathPath(options: {
   alreadySoftware?: boolean
   sandboxRelaunchAttempted?: boolean
   softwareRelaunchAttempted?: boolean
+  /** A quit is really proceeding (the caller's before-quit latch is set). */
+  quitting?: boolean
 }): LinuxGpuDeathPath {
-  if ((options.platform ?? process.platform) !== 'linux') {
+  if ((options.platform ?? process.platform) !== 'linux' || options.quitting) {
     return null
   }
 

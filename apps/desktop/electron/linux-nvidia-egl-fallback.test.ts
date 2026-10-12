@@ -185,6 +185,18 @@ describe('shouldRelaunchForNvidiaGpuDeath', () => {
     expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details, fallbackActive: true })).toBe(false)
   })
 
+  it('ignores deaths that arrive once a quit is already proceeding (#134888 systemd stop)', () => {
+    // Shutdown teardown kills the zygote before the GPU child, so its
+    // launch-failed/killed on a healthy host must not arm the SwiftShader
+    // marker.
+    expect(
+      shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'launch-failed' }, quitting: true })
+    ).toBe(false)
+    expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'killed' }, quitting: true })).toBe(
+      false
+    )
+  })
+
   it('ignores non-GPU deaths, clean exits, and other platforms', () => {
     expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'renderer', reason: 'crashed' } })).toBe(false)
     expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'clean-exit' } })).toBe(false)

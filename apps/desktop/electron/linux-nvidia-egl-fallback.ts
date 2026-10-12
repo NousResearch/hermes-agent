@@ -295,21 +295,31 @@ export interface NvidiaGpuDeathOptions {
   fallbackActive: boolean
   /** This process already attempted the one-shot relaunch. */
   relaunchAttempted: boolean
+  /**
+   * A quit is really proceeding (before-quit latched). A shutdown tears down
+   * the zygote and the network service before the GPU child, so the GPU child
+   * then reports launch-failed/crashed on a perfectly healthy host (#134888
+   * feedback: a systemd stop must not arm the SwiftShader marker).
+   */
+  quitting?: boolean
 }
 
 /**
  * Whether a `child-process-gone` event witnesses the #40077 GPU death and
  * should trigger the one-shot SwiftShader relaunch. `killed` counts: the
  * #40077 GPU process exited with exit_code=15, Chromium's health-check
- * SIGTERM, not a crash reason.
+ * SIGTERM, not a crash reason. Deaths that arrive while a quit is already
+ * proceeding are ignored: shutdown teardown kills the zygote first, and the
+ * GPU child's resulting launch-failed/crashed says nothing about the GPU.
  */
 export function shouldRelaunchForNvidiaGpuDeath({
   platform = process.platform,
   details,
   fallbackActive,
-  relaunchAttempted
+  relaunchAttempted,
+  quitting = false
 }: NvidiaGpuDeathOptions): boolean {
-  if (platform !== 'linux' || fallbackActive || relaunchAttempted) {
+  if (platform !== 'linux' || quitting || fallbackActive || relaunchAttempted) {
     return false
   }
 

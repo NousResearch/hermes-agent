@@ -270,6 +270,20 @@ describe('linuxGpuChildDeathPath', () => {
     expect(linuxGpuChildDeathPath({ platform: 'linux' })).toBeNull()
   })
 
+  it('ignores deaths that arrive once a quit is already proceeding (#134888 systemd stop)', () => {
+    // Shutdown teardown kills the zygote and network service before the GPU
+    // child, so its launch-failed on a healthy host must not arm either
+    // ladder's sticky marker.
+    expect(
+      linuxGpuChildDeathPath({
+        platform: 'linux',
+        details: { type: 'GPU', reason: 'launch-failed', exitCode: 1002 },
+        quitting: true
+      })
+    ).toBeNull()
+    expect(linuxGpuChildDeathPath({ platform: 'linux', details: SIGTERM_DEATH, quitting: true })).toBeNull()
+  })
+
   it('requires the full SIGTERM signature for the sandbox path, not just exit 143', () => {
     expect(
       linuxGpuChildDeathPath({

@@ -598,6 +598,15 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         _evt_cmd = event.get_command()
         _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
+        if _cmd_def_inner is None and _evt_cmd:
+            from hermes_cli.plugins import get_plugin_command_handler
+            from hermes_cli.session_commands import is_session_command
+            plugin_handler = get_plugin_command_handler(_evt_cmd.replace("_", "-"))
+            if is_session_command(plugin_handler):
+                denied = self._check_slash_access(source, plugin_handler.name)
+                return True, denied if denied is not None else t(
+                    "gateway.busy.slash_rejected", command=plugin_handler.name)
+
         if _cmd_def_inner:
             # /status and /context are intentionally pre-gate so users always see session state.
             if _cmd_def_inner.name == "status":
@@ -1076,33 +1085,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 return True, t("gateway.quick_command.no_target", command=command), command
             command = new_command  # Fall through to normal command dispatch below
 
-        # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
-        # underscored autocomplete form matches plugin commands registered with hyphens.
-        if command:
-            try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
-                    # sits before it, so a handler reading get_session_env() would see an empty or a
-                    # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
-                    # so session_key is derived from source. Sync handlers run on the gateway pool
-                    # (contextvars carried), never the loop thread: blocking I/O there starves the
-                    # liveness watchdog and the process exits 75 mid-handler (#105279).
-                    _plugin_context = build_session_context(source, self.config)
-                    _plugin_context.session_key = self._session_key_for_source(source)
-                    user_args = event.get_command_args().strip()
-                    with self._session_env_scope(_plugin_context):
-                        if asyncio.iscoroutinefunction(plugin_handler):
-                            result = await plugin_handler(user_args)
-                        else:
-                            result = await self._run_in_executor_with_context(plugin_handler, user_args)
-                            if asyncio.iscoroutine(result):
-                                result = await result
-                    return True, str(result) if result else None, command
-            except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e)
-        return False, None, command
+        from gateway.run_session_commands import dispatch_gateway_plugin_command
+        return await dispatch_gateway_plugin_command(self, event, source, command)
 
     def _hm_bundle_slash_rewrite(
         self, event: MessageEvent, source: SessionSource, _quick_key: str, command: str

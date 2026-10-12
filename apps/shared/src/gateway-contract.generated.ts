@@ -3772,6 +3772,9 @@ export interface CommandResolveResult {
   canonical: string
   description: string
   category: string
+  args_hint?: string | null
+  subcommands?: string[]
+  busy_policy?: string | null
 }
 export interface CommandDispatchParams {
   name: string

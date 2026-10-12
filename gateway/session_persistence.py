@@ -221,6 +221,33 @@ class SessionPersistenceMixin:
         self._ensure_loaded_locked()
         return self._entries.get(session_key)
 
+    def _peek_session_id_readonly_locked(self, session_key: str) -> Optional[str]:
+        """Read routing without loading, repairing, pruning, or creating user state."""
+        entry = self._entries.get(session_key)
+        if entry is not None or self._loaded:
+            return entry.session_id if entry else None
+        pinned = self._pinned_db()
+        if pinned is not _DB_UNPINNED:
+            rows = pinned.load_gateway_routing_entries(scope=self._routing_scope()) if pinned else {}
+        else:
+            home = getattr(self, "_routing_home", None)
+            path = Path(home) / "state.db" if home else None
+            rows = {}
+            if path is not None and path.exists():
+                from hermes_state import SessionDB
+                with contextlib.closing(SessionDB(db_path=path, read_only=True)) as db:
+                    rows = db.load_gateway_routing_entries(scope=self._routing_scope())
+        if session_key in rows:
+            entry = self._routing_entry_from_json(session_key, rows[session_key])
+            return entry.session_id if entry else None
+        legacy = self.sessions_dir / "sessions.json"
+        if not legacy.exists():
+            return None
+        from gateway.session import SessionEntry
+        data = json.loads(legacy.read_text(encoding="utf-8-sig"))
+        value = data.get(session_key) if isinstance(data, dict) else None
+        return SessionEntry.from_dict(value).session_id if isinstance(value, dict) else None
+
     def _routing_scope(self) -> str:
         """Namespace for this store's gateway_routing rows: the resolved sessions_dir, so stores
         with different dirs never share entries."""

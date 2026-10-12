@@ -2008,8 +2008,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     agent.compression_enabled = cs.enabled
     agent.compression_in_place = cs.in_place
     _cc = agent.context_compressor
-    # Micro-compaction has no pre-compress checkpoint hook; suppress it while the gate is
-    # armed (mirrors native_compaction.py).
+    # Suppress micro-compaction while checkpoint-required is armed; it lacks a checkpoint hook.
     if cs.checkpoint_required and cs.micro_compact:
         logger.warning(
             "compression.checkpoint_required is enabled: post-turn "
@@ -2018,13 +2017,14 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         )
         cs.micro_compact = False
     for _attr, _value in (
-        ("_micro_compact_enabled", cs.micro_compact),
-        ("_micro_compact_every_n_turns", cs.micro_compact_every_n_turns),
+        ("_micro_compact_enabled", cs.micro_compact), ("_micro_compact_every_n_turns", cs.micro_compact_every_n_turns),
         ("_micro_compact_defrag_threshold_tokens", cs.micro_compact_defrag_tokens),
     ):
         if hasattr(_cc, _attr):
             setattr(_cc, _attr, _value)
     agent.compression_checkpoint_required = cs.checkpoint_required
+    from agent.session_policies import hydrate_session_policies
+    hydrate_session_policies(agent, session_db=session_db)
     from agent.conversation_compression import _warn_checkpoint_required_without_capable_provider
     _warn_checkpoint_required_without_capable_provider(agent)
     agent.codex_app_server_auto_compaction = cs.codex_app_server_auto

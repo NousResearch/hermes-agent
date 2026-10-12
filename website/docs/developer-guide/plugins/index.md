@@ -2087,6 +2087,8 @@ Rules:
 - Providers return live driver sessions, so they load in-process only. Under
   `plugins.isolation: host`, a user provider is refused and the call reports that it could not be loaded.
 
+For durable session policies and host-authorized state commands, see [Session command plugins](../session-command-plugin.md).
+
 ## Non-Python extension surfaces
 
 Hermes also accepts extensions that aren't Python plugins at all. These are shown in the [Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each); the sections below sketch each authoring style briefly.

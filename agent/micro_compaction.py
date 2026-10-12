@@ -39,6 +39,13 @@ def _is_micro_marker(entry: Any) -> bool:
 class MicroCompactionMixin:
     """Rolling micro-compaction; host must be a ``ContextCompressor``."""
 
+    def set_session_option(self, name: str, value: bool) -> bool:
+        """Apply a supported runtime option without resetting rolling state."""
+        if name != "micro_compact_enabled":
+            return False
+        self._micro_compact_enabled = value is True
+        return True
+
     def _resolve_compact_cursor(self, messages: list[dict[str, Any]], head_end: int, tail_start: int) -> int:
         """Index of the first message not yet absorbed into the rolling summary: the in-memory
         cursor when valid, else just past the last summary marker."""

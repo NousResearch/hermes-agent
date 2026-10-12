@@ -238,6 +238,9 @@ class CommandResolveResult(Result):
     canonical: str
     description: str
     category: str
+    args_hint: str | None = None
+    subcommands: list[str] = Field(default_factory=list)
+    busy_policy: str | None = None
 
 
 method("command.resolve", params=CommandResolveParams, result=CommandResolveResult,

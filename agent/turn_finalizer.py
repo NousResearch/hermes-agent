@@ -287,6 +287,8 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
 def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) -> None:
     """Post-turn micro-compaction: absorb the oldest uncompacted exchange into the
     rolling summary before persist, amortizing compression across turns."""
+    from agent.session_policies import refresh_session_policies, context_option_supported
+    refresh_session_policies(agent)
     try:
         _compressor = getattr(agent, "context_compressor", None)
         # Strict `is True` + callable gates: plugin context engines and MagicMock
@@ -296,6 +298,7 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
         # call on a throwaway transcript and could compact the CANONICAL session rows.
         if (
             _compressor
+            and context_option_supported(agent, "micro_compact_enabled")
             and getattr(_compressor, '_micro_compact_enabled', False) is True
             and callable(getattr(_compressor, '_micro_compact', None))
             and final_response

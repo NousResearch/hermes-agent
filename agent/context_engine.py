@@ -72,6 +72,14 @@ class ContextEngine(ABC):
     # maintenance); warnings, errors and manual /compress still surface.
     emit_automatic_compaction_status: bool = True
 
+    def set_session_option(self, name: str, value: bool) -> bool:
+        """Apply an optional boolean runtime capability without resetting session state.
+
+        Unknown capabilities return False. Built-in rolling compaction recognizes
+        ``micro_compact_enabled``; older engines safely retain their own policy.
+        """
+        return False
+
     @abstractmethod
     def update_from_response(self, usage: dict[str, Any]) -> None:
         """Update tracked token usage after every LLM call.

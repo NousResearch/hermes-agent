@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 
 import contextlib
+from dataclasses import dataclass
+from typing import NamedTuple
 
 from .method_ctx import bind_module
 
@@ -60,6 +62,64 @@ _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. 
 _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "idle_timeout", "lru_evict", "tui_shutdown"})
 
 
+class _PluginSessionControlTarget(NamedTuple):
+    """Frozen identity/routing snapshot for one live plugin session command invocation."""
+
+    sid: str
+    session: dict
+    session_key: str
+    agent: Any
+    agent_session_id: str
+    profile_home: str | None
+    profile_root: str
+    generation: int
+    token: object
+
+
+class _CompressionReanchorIdentity(NamedTuple):
+    """Exact identity reserved while a deferred compression re-anchor runs."""
+
+    sid: str
+    session: dict
+    generation: int
+    agent: Any
+    new_session_id: str
+    control_token: object
+    marker: dict
+    old_session_key: str
+    profile_home: str | None
+
+
+@dataclass(frozen=True)
+class _PluginSessionControlReleaseResult:
+    """Structured result for releasing one live plugin session command control lease."""
+
+    success: bool
+    warning: str = ""
+    reanchored: bool = False
+
+    def __bool__(self) -> bool:
+        return self.success
+
+
+_SESSION_CONTROL_BUSY = object()
+_PLUGIN_SESSION_TURN_BUSY = object()
+_PLUGIN_SESSION_TURN_BUSY_MESSAGE = (
+    "session busy — session commands can't run mid-turn; interrupt the current turn first"
+)
+_PLUGIN_SESSION_CONTROL_BUSY_MESSAGE = "session busy — a session control command is already in progress"
+_MANUAL_COMPRESSION_TURN_BUSY_MESSAGE = (
+    "session busy — /interrupt the current turn before /compress"
+)
+_DEFERRED_COMPRESSION_ROTATION_KEY = "_deferred_compression_rotation"
+_MANUAL_COMPRESSION_CONTROL_KEY = "_manual_compression_control"
+_PLUGIN_SESSION_CONTROL_STATE_KEY = "_plugin_session_control_state"
+_COMPRESSION_SYNC_UNCHANGED = "unchanged"
+_COMPRESSION_SYNC_APPLIED = "applied"
+_COMPRESSION_SYNC_DEFERRED = "deferred"
+_COMPRESSION_SYNC_FAILED = "failed"
+_COMPRESSION_SYNC_IDENTITY_CHANGED = "identity_changed"
+_PLUGIN_SESSION_OVERRIDE_UNKNOWN = object()
 def _lease_metadata(live_session_id: str) -> dict:
     """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``; the delivery flag is
     what Bot Chat gates live delivery on (session_notifications)."""
@@ -85,6 +145,89 @@ def _claim_active_session_slot(
         return (None, _SESSION_OWNERSHIP_UNAVAILABLE)
 
 
+def _active_session_slot_lock(session: dict) -> threading.Lock:
+    """Serialize lazy active-session lease acquisition without holding history_lock over I/O."""
+    history_lock = session.get("history_lock")
+    if history_lock is None:
+        return session.setdefault("_active_session_slot_lock", threading.Lock())
+    with history_lock:
+        lock = session.get("_active_session_slot_lock")
+        if lock is None:
+            lock = threading.Lock()
+            session["_active_session_slot_lock"] = lock
+        return lock
+
+
+def _release_unowned_active_session_lease(lease, *, sid: str) -> bool:
+    """Release a lease that lost the race before it could be installed on its session."""
+    if lease is None:
+        return True
+    try:
+        lease.release()
+    except BaseException as exc:
+        logger.debug('release unowned active session lease failed', exc_info=True)
+        logger.warning(
+            "active-session lease cleanup failed before prompt ownership was installed: sid=%s error=%s",
+            sid,
+            exc,
+        )
+        return False
+    return True
+
+
+def _claim_active_session_slot_for_prompt(
+    sid: str, session: dict
+) -> tuple[str | None, Any | None]:
+    """Claim a prompt's active-session slot and return only a lease installed by this call."""
+    with _active_session_slot_lock(session):
+        history_lock = session.get("history_lock")
+        if history_lock is not None:
+            with history_lock:
+                if (
+                    session.get("active_session_lease") is not None
+                    or session.get("_closing")
+                    or session.get("_finalized")
+                ):
+                    return None, None
+        elif (
+            session.get("active_session_lease") is not None
+            or session.get("_closing")
+            or session.get("_finalized")
+        ):
+            return None, None
+
+        lease, limit_message = _claim_active_session_slot(
+            str(session.get("session_key") or ""),
+            live_session_id=sid,
+            surface=_session_source(session),
+            profile_home=session.get("profile_home"),
+        )
+        if limit_message is not None:
+            from hermes_cli.active_sessions import SESSION_NOT_OWNED
+            if (getattr(limit_message, "reason", None) == SESSION_NOT_OWNED
+                    and _take_over_detached_runtime_lease(sid, session, str(session.get("session_key") or ""))):
+                return None, session.get("active_session_lease")
+            return limit_message, None
+        if lease is None:
+            return None, None
+
+        installed = False
+        # The external claim is intentionally outside _sessions_lock. Revalidate the exact registry identity
+        # before attaching so a concurrent pop/close cannot leave a lease on a detached session.
+        with _sessions_lock:
+            if _sessions.get(sid) is session:
+                with (history_lock or contextlib.nullcontext()):
+                    if (
+                        session.get("active_session_lease") is None
+                        and not session.get("_closing")
+                        and not session.get("_finalized")
+                    ):
+                        session["active_session_lease"] = lease
+                        installed = True
+        if not installed:
+            _release_unowned_active_session_lease(lease, sid=sid)
+            return None, None
+        return None, lease
 def _install_borrowed_lease(sid: str, session: dict, frame: dict) -> None:
     """Adopt the parent's registry slot as an INERT token on a compute-host child.
 
@@ -200,19 +343,124 @@ def _lease_retry(attempts: int, fn) -> Exception | None:
     return last_error
 
 
-def _release_active_session_slot(session: dict | None) -> bool:
-    """Release the session's lease (liveness-tracked leases get 3 tries); True when released."""
-    lease = session.get("active_session_lease") if session else None
+def _release_active_session_lease(lease) -> bool:
+    """Release one lease with the hosted-runtime retry policy."""
     if lease is None:
         return True
-    if (err := _lease_retry(3 if getattr(lease, "track_liveness", False) else 1, lambda: lease.release())) is not None:
-        logger.warning("Failed to release active session slot", exc_info=err)
+    attempts = 3 if getattr(lease, "track_liveness", False) else 1
+    for attempt in range(attempts):
+        try:
+            lease.release()
+            break
+        except Exception:
+            if attempt + 1 >= attempts:
+                logger.warning("Failed to release active session slot", exc_info=True)
+                return False
+            time.sleep(0.05 * (attempt + 1))
+    return bool(getattr(lease, "released", True) or not getattr(lease, "enabled", True))
+
+
+def _release_active_session_slot(
+    session: dict | None,
+    *,
+    sid: str | None = None,
+    expected_lease=None,
+    expected_lease_token=None,
+    reject_active: bool = False,
+) -> bool:
+    """Release a lease, optionally requiring exact prompt ownership and an idle session."""
+    if not session:
+        return True
+    if expected_lease is None:
+        lease = session.get("active_session_lease")
+        try:
+            released = _release_active_session_lease(lease)
+        except BaseException as exc:
+            logger.debug('release active session slot failed', exc_info=True)
+            logger.warning("Failed to release active session slot: %s", exc)
+            return False
+        if released and session.get("active_session_lease") is lease:
+            session.pop("active_session_lease", None)
+        return released
+
+    history_lock = session.get("history_lock")
+    if history_lock is None:
         return False
-    if not (getattr(lease, "released", True) or not getattr(lease, "enabled", True)):
+    try:
+        with history_lock:
+            current = session.get("active_session_lease")
+            token_matches = (
+                expected_lease_token is None
+                or getattr(current, "lease_id", None) == expected_lease_token
+            )
+            if current is not expected_lease or not token_matches:
+                return False
+            if reject_active and session.get("running"):
+                return False
+            session_key = str(session.get("session_key") or "")
+
+        # Registry and child-run checks stay outside history_lock; cleanup must
+        # never deadlock a prompt/control transition.
+        if reject_active and _child_run_active(session_key, session.get("profile_home")):
+            return False
+        if sid is not None:
+            with _sessions_lock:
+                if _sessions.get(sid) is not session:
+                    return False
+
+        with history_lock:
+            current = session.get("active_session_lease")
+            token_matches = (
+                expected_lease_token is None
+                or getattr(current, "lease_id", None) == expected_lease_token
+            )
+            if current is not expected_lease or not token_matches:
+                return False
+            if reject_active and session.get("running"):
+                return False
+            session.pop("active_session_lease", None)
+
+        try:
+            released = _release_active_session_lease(expected_lease)
+        except BaseException as exc:
+            logger.debug('release active session slot failed', exc_info=True)
+            released = False
+            logger.warning(
+                "Failed to release prompt active-session lease: sid=%s error=%s", sid, exc
+            )
+        if not released:
+            # Preserve the exact lease for teardown/orphan reconciliation retry.
+            with history_lock:
+                if session.get("active_session_lease") is None:
+                    session["active_session_lease"] = expected_lease
+            return False
+        return True
+    except BaseException as exc:
+        logger.debug('release active session slot failed', exc_info=True)
+        logger.warning(
+            "Prompt active-session lease validation failed: sid=%s error=%s", sid, exc
+        )
         return False
-    if session.get("active_session_lease") is lease:
-        session.pop("active_session_lease", None)
-    return True
+
+
+def _release_prompt_active_session_slot(
+    sid: str, session: dict, lease, *, lease_token=None
+) -> bool:
+    """Best-effort exact cleanup for a prompt rejected by live control."""
+    if lease is None:
+        return True
+    try:
+        return _release_active_session_slot(
+            session,
+            sid=sid,
+            expected_lease=lease,
+            expected_lease_token=lease_token,
+            reject_active=True,
+        )
+    except BaseException as exc:
+        logger.debug('release prompt active session slot failed', exc_info=True)
+        logger.warning("Prompt active-session lease cleanup failed: sid=%s error=%s", sid, exc)
+        return False
 
 
 def _release_hosted_room_turn_slot(session: dict) -> None:
@@ -305,6 +553,351 @@ def _transfer_active_session_slot(sid: str, session: dict, *, new_session_id: st
         logger.debug("Failed to release stale active session slot", exc_info=err)
     session["active_session_lease"] = new_lease
     return True
+
+
+def _session_plugin_config_loader_for_profile(profile_home: str | None):
+    """Return a readonly session command config loader bound to one profile path."""
+    from hermes_cli.session_commands import load_session_command_config
+
+    profile_home = str(profile_home or "").strip()
+    if not profile_home:
+        return load_session_command_config
+
+    def load_profile_config():
+        token = set_hermes_home_override(profile_home)
+        try:
+            return load_session_command_config()
+        finally:
+            reset_hermes_home_override(token)
+
+    return load_profile_config
+
+
+def _session_plugin_config_loader(session: dict):
+    """Return the readonly session command policy config loader for this session."""
+    return _session_plugin_config_loader_for_profile(session.get("profile_home"))
+
+
+def _claim_live_plugin_session_control(sid: str, session: dict | None):
+    """Atomically claim an idle authorized session, including an agentless draft."""
+    if session is None:
+        return None, "Session command error: session not found; refusing to mutate"
+    history_lock = session.get("history_lock")
+    if history_lock is None:
+        return None, _SESSION_CONTROL_BUSY
+
+    key_hint = str(session.get("session_key") or "")
+    profile_hint = session.get("profile_home")
+    profile_root = str(Path(profile_hint or get_hermes_home()).resolve())
+    child_active = _child_run_active(key_hint, profile_hint)
+    with _sessions_lock, history_lock:
+        if _sessions.get(sid) is not session:
+            return None, "Session command error: session changed; refusing to mutate"
+        session_key = str(session.get("session_key") or "")
+        if session_key != key_hint or session.get("profile_home") != profile_hint:
+            return None, _SESSION_CONTROL_BUSY
+        active = bool(session.get("running")) or child_active
+        if active:
+            return None, _PLUGIN_SESSION_TURN_BUSY
+        if session.get("_session_control_inflight") is not None:
+            return None, _SESSION_CONTROL_BUSY
+        ready = session.get("agent_ready")
+        if session.get("agent_build_started") and ready is not None and not ready.is_set():
+            return None, _SESSION_CONTROL_BUSY
+
+        agent = session.get("agent")
+        agent_key = str(getattr(agent, "session_id", "") or "")
+        if not session_key.strip() or (agent is not None and not agent_key.strip()):
+            return (
+                None,
+                "Session command error: live session identity is incomplete; refusing to mutate",
+            )
+        if agent is not None and session_key != agent_key:
+            return (
+                None,
+                "Session command error: live session identity mismatch; refusing to mutate",
+            )
+
+        token = object()
+        target = _PluginSessionControlTarget(
+            sid=str(sid or ""),
+            session=session,
+            session_key=session_key,
+            agent=agent,
+            agent_session_id=agent_key,
+            profile_home=(
+                str(session.get("profile_home"))
+                if session.get("profile_home") is not None
+                else None
+            ),
+            profile_root=profile_root,
+            generation=int(session.get("session_generation", 0) or 0),
+            token=token,
+        )
+        session["_session_control_inflight"] = token
+        session[_PLUGIN_SESSION_CONTROL_STATE_KEY] = {}
+        return target, None
+
+
+def _claim_manual_compression_control(session: dict):
+    """Reserve the exact session before any direct manual compression work."""
+    history_lock = session.get("history_lock")
+    if history_lock is None:
+        return None, _SESSION_CONTROL_BUSY
+    with history_lock:
+        active = bool(session.get("running"))
+        session_key = str(session.get("session_key") or "")
+        if not active:
+            active = _child_run_active(session_key, session.get("profile_home"))
+        if active:
+            return None, _PLUGIN_SESSION_TURN_BUSY
+        if session.get("_session_control_inflight") is not None:
+            return None, _SESSION_CONTROL_BUSY
+        token = object()
+        session["_session_control_inflight"] = token
+        session[_MANUAL_COMPRESSION_CONTROL_KEY] = token
+        return token, None
+
+
+def _manual_compression_busy_text(claim_error) -> str:
+    if claim_error is _PLUGIN_SESSION_TURN_BUSY:
+        return _MANUAL_COMPRESSION_TURN_BUSY_MESSAGE
+    return _PLUGIN_SESSION_CONTROL_BUSY_MESSAGE
+
+
+def _marker_matches_plugin_session_target(marker: dict | None, target: _PluginSessionControlTarget) -> bool:
+    if not isinstance(marker, dict) or marker.get("control_token") is not target.token:
+        return False
+    try:
+        return int(marker.get("generation", -1)) == target.generation
+    except (TypeError, ValueError):
+        return False
+
+
+def _plugin_session_rotation_override_warning(
+    target: _PluginSessionControlTarget,
+    marker: dict,
+    state: dict | None,
+) -> str | None:
+    """Verify every committed policy write against the exact continuation and live cache."""
+    writes = state.get("writes") if isinstance(state, dict) else None
+    if not isinstance(writes, dict) or not writes:
+        return None
+    new_session_id = str(marker.get("agent_session_id") or "")
+    if not new_session_id:
+        return (
+            "Session command warning: forced compression rotation produced no "
+            "current session id; retry session command on the current session"
+        )
+    try:
+        from hermes_state import SessionDB
+
+        with _session_db({"profile_home": target.profile_root}) as db:
+            row = db.get_session(new_session_id) if db is not None else None
+            if row is None:
+                return (
+                    "Session command warning: session command changed only the old row "
+                    "because compression rotated the session; retry session command on the current session"
+                )
+            actual = {key: SessionDB.session_policy_override(row, key) for key in writes}
+    except Exception as exc:
+        logger.exception("Plugin session continuation policy verification failed: session_id=%s continuation=%s",
+                         target.sid, new_session_id)
+        return (
+            "Session command warning: could not verify the current continuation "
+            f"override after rotation ({exc}); retry session command on the current session"
+        )
+    if any(actual[key] is not requested for key, requested in writes.items()):
+        return (
+            "Session command warning: session command changed only the old row because "
+            "compression rotated the session; retry session command on the current session"
+        )
+    live_overrides = getattr(target.agent, "_session_policy_overrides", {})
+    if not isinstance(live_overrides, dict) or any(
+        live_overrides.get(key, _PLUGIN_SESSION_OVERRIDE_UNKNOWN) is not requested
+        for key, requested in writes.items()
+    ):
+        return (
+            "Session command warning: the current Agent policy did not retain "
+            "the requested override after rotation; retry session command on the current session"
+        )
+    return None
+
+
+def _release_live_plugin_session_control(
+    target: _PluginSessionControlTarget,
+) -> _PluginSessionControlReleaseResult:
+    """Release one live plugin session command claim, retaining it through re-anchor I/O."""
+    session = target.session
+    marker = None
+    state = None
+    reanchor_token = None
+    expected_reanchor = None
+
+    def _identity_warning() -> _PluginSessionControlReleaseResult:
+        return _PluginSessionControlReleaseResult(
+            False,
+            "Session command warning: live session changed (identity changed) during "
+            "deferred re-anchor; refusing to mutate the replacement",
+        )
+
+    def _canonical_state() -> bool:
+        with _sessions_lock:
+            return (
+                _sessions.get(target.sid) is session
+                and session.get("_session_control_inflight") is target.token
+                and session.get("_deferred_compression_rotation") is None
+                and session.get("session_key") == str(marker.get("agent_session_id") or "")
+                and session.get("agent") is target.agent
+                and str(getattr(target.agent, "session_id", "") or "")
+                == str(marker.get("agent_session_id") or "")
+                and int(session.get("session_generation", 0) or 0) >= target.generation + 1
+            )
+
+    try:
+        with session["history_lock"]:
+            lease_matches = (
+                session.get("_session_control_inflight") is target.token
+                and session.get("agent") is target.agent
+                and int(session.get("session_generation", 0) or 0) == target.generation
+                and (
+                    str(session.get("profile_home"))
+                    if session.get("profile_home") is not None
+                    else None
+                )
+                == target.profile_home
+            )
+            if not lease_matches:
+                return _PluginSessionControlReleaseResult(
+                    False,
+                    "Session command warning: live session changed before the "
+                    "completion could clear its control lease",
+                )
+            candidate = session.get(_DEFERRED_COMPRESSION_ROTATION_KEY)
+            if _marker_matches_plugin_session_target(candidate, target):
+                marker = candidate
+                reanchor_token = target.token
+                new_session_id = str(marker.get("agent_session_id") or "")
+                if not new_session_id or str(
+                    getattr(target.agent, "session_id", "") or ""
+                ) != new_session_id:
+                    return _identity_warning()
+                expected_reanchor = _CompressionReanchorIdentity(
+                    sid=target.sid,
+                    session=session,
+                    generation=target.generation,
+                    agent=target.agent,
+                    new_session_id=new_session_id,
+                    control_token=target.token,
+                    marker=marker,
+                    old_session_key=target.session_key,
+                    profile_home=target.profile_home,
+                )
+            state = session.get(_PLUGIN_SESSION_CONTROL_STATE_KEY)
+            if marker is None:
+                session.pop("_session_control_inflight", None)
+
+        with _sessions_lock:
+            registry_same = _sessions.get(target.sid) is session
+        if not registry_same:
+            return _identity_warning()
+
+        if marker is None:
+            with session["history_lock"]:
+                unchanged = (
+                    session.get("session_key") == target.session_key
+                    and session.get("agent") is target.agent
+                    and str(getattr(target.agent, "session_id", "") or "")
+                    == target.agent_session_id
+                    and int(session.get("session_generation", 0) or 0)
+                    == target.generation
+                )
+                if session.get(_PLUGIN_SESSION_CONTROL_STATE_KEY) is state:
+                    session.pop(_PLUGIN_SESSION_CONTROL_STATE_KEY, None)
+            if unchanged:
+                return _PluginSessionControlReleaseResult(True)
+            return _PluginSessionControlReleaseResult(
+                False,
+                "Session command warning: live session changed while session command "
+                "was running; refusing to report a new target mutation",
+            )
+
+        try:
+            sync_status = _sync_session_key_after_compress(
+                target.sid,
+                session,
+                control_token=reanchor_token,
+                expected_reanchor=expected_reanchor,
+            )
+        except BaseException as exc:
+            logger.exception("Deferred plugin session command re-anchor failed: session_id=%s", target.sid)
+            return _PluginSessionControlReleaseResult(
+                False,
+                "Session command warning: deferred compression rotation remains "
+                f"pending after release ({exc}); retry session command on the current session",
+            )
+        if sync_status == _COMPRESSION_SYNC_IDENTITY_CHANGED:
+            return _identity_warning()
+        if sync_status not in {_COMPRESSION_SYNC_APPLIED, _COMPRESSION_SYNC_UNCHANGED}:
+            return _PluginSessionControlReleaseResult(
+                False,
+                "Session command warning: deferred compression rotation remains "
+                "pending after release; retry session command on the current session",
+            )
+
+        if not _canonical_state():
+            return _identity_warning()
+
+        warning = _plugin_session_rotation_override_warning(target, marker, state)
+        if not _canonical_state():
+            return _identity_warning()
+        with _sessions_lock:
+            if session.get(_PLUGIN_SESSION_CONTROL_STATE_KEY) is state:
+                session.pop(_PLUGIN_SESSION_CONTROL_STATE_KEY, None)
+        if warning:
+            return _PluginSessionControlReleaseResult(
+                False,
+                warning,
+                reanchored=True,
+            )
+        return _PluginSessionControlReleaseResult(True, reanchored=True)
+    except BaseException as exc:
+        logger.exception("Plugin session control release failed: session_id=%s", target.sid)
+        return _PluginSessionControlReleaseResult(
+            False,
+            "Session command warning: could not complete live-control release "
+            f"({exc}); retry session command on the current session",
+        )
+    finally:
+        if reanchor_token is not None:
+            try:
+                with session["history_lock"]:
+                    if session.get("_session_control_inflight") is reanchor_token:
+                        session.pop("_session_control_inflight", None)
+            except BaseException:
+                logger.exception("Plugin session re-anchor token cleanup failed: session_id=%s", target.sid)
+
+
+def _try_claim_session_control(session: dict):
+    """Reserve one session-wide control transition without holding I/O locks."""
+    with session["history_lock"]:
+        if session.get("_session_control_inflight") is not None:
+            return None
+        token = object()
+        session["_session_control_inflight"] = token
+        return token
+
+
+def _release_session_control(session: dict, token) -> None:
+    """Release a non-plugin transition reservation, best effort."""
+    try:
+        with session["history_lock"]:
+            if session.get("_session_control_inflight") is token:
+                session.pop("_session_control_inflight", None)
+            if session.get(_MANUAL_COMPRESSION_CONTROL_KEY) is token:
+                session.pop(_MANUAL_COMPRESSION_CONTROL_KEY, None)
+    except BaseException:
+        logger.debug('release session control failed', exc_info=True)
 
 
 # Sources this backend must never end in state.db: the messaging gateway owns those sessions and the TUI is only
@@ -549,25 +1142,35 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
 _closed_session_activity: dict[str, float] = {}
 
 
-def _pop_session_by_id(sid: str) -> dict | None:
+def _pop_session_by_id(sid: str, *, respect_control: bool = True):
     """Atomically detach one live session from the registry — the ownership claim for teardown (a concurrent
     close/reaper no-ops). Separate from ``_teardown_session``: slow finalization must not run under the resume lock."""
     with _sessions_lock:
+        session = _sessions.get(sid)
+        if session is None:
+            return None
+        if respect_control:
+            history_lock = session.get("history_lock")
+            if history_lock is not None:
+                with history_lock:
+                    if session.get("_session_control_inflight") is not None:
+                        return _SESSION_CONTROL_BUSY
+                    session["_session_control_inflight"] = object()
+        from hermes_constants import get_hermes_home
+
+        home = str(Path(session.get("profile_home") or get_hermes_home()).resolve())
+        last_active = time.time() if session.get("running") else float(session.get("last_active") or 0)
+        _closed_session_activity[home] = max(_closed_session_activity.get(home, 0), last_active)
+        session["_closing"] = True
         session = _sessions.pop(sid, None)
         if session is not None:
-            from hermes_constants import get_hermes_home
-
-            home = str(Path(session.get("profile_home") or get_hermes_home()).resolve())
-            last_active = time.time() if session.get("running") else float(session.get("last_active") or 0)
-            _closed_session_activity[home] = max(_closed_session_activity.get(home, 0), last_active)
-            session["_closing"] = True
             session["_sid"] = sid  # out of _sessions now, so teardown can't recover the live id by scanning
     return session
 
 
 def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_close") -> bool:
     """Finish a close after the caller has atomically detached the session."""
-    if session is None:
+    if session is None or session is _SESSION_CONTROL_BUSY:
         return False
     run_thread = session.get("_run_thread")
     if end_reason != "tui_shutdown" and run_thread is not None and run_thread is not threading.current_thread():
@@ -671,6 +1274,8 @@ def _close_session_by_id(
         if predicate is not None and (current is None or not predicate(current)):
             return False
         session = _pop_session_by_id(sid)
+    if session is _SESSION_CONTROL_BUSY:
+        return False
     return _teardown_popped_session(session, end_reason=end_reason)
 
 
@@ -943,6 +1548,9 @@ def _schedule_ws_orphan_reap(
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
                 session = _pop_session_by_id(sid)
+                if session is _SESSION_CONTROL_BUSY:
+                    reschedule_delay = _WS_ORPHAN_INTERRUPT_REAP_POLL_S
+                    session = None
             elif not current.get("_client_gone_interrupt_requested") and _ws_orphan_turn_activity_is_fresh(current):
                 # Client-absent but producing: keep running detached (the sentinel buffers emits), re-check each grace.
                 logger.debug("client_gone sid=%s action=defer (turn activity fresh; stale threshold %.0fs)",
@@ -1059,4 +1667,18 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
 
 def register(server) -> None:
     """Publish this module's helpers onto ``server``, rebound to its globals."""
-    bind_module(globals(), server, skip=("_",))
+    # Generated NamedTuple/dataclass methods close over module-private helpers;
+    # keep the classes intact instead of rebinding those generated methods.
+    server._PluginSessionControlTarget = _PluginSessionControlTarget
+    server._CompressionReanchorIdentity = _CompressionReanchorIdentity
+    server._PluginSessionControlReleaseResult = _PluginSessionControlReleaseResult
+    bind_module(
+        globals(),
+        server,
+        skip=(
+            "_",
+            "_PluginSessionControlTarget",
+            "_CompressionReanchorIdentity",
+            "_PluginSessionControlReleaseResult",
+        ),
+    )

@@ -15180,8 +15180,8 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
         session["history"] = [{"role": "user", "content": "summary"}]
         return (1, {"total": 0})
 
-    def _fake_sync(_sid, _session):
-        seen["sync"] = True
+    def _fake_sync(_sid, _session, *, control_token=None):
+        seen["sync"] = control_token is not None and _session.get("_session_control_inflight") is control_token
 
     monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
     monkeypatch.setattr(server, "_sync_session_key_after_compress", _fake_sync)

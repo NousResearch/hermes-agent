@@ -237,42 +237,6 @@ def _end_current_session(cli, reason: str) -> None:
         cli._session_db.end_session(cli.session_id, reason)
 
 
-def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reason: str) -> None:
-    """Point an already-built agent at ``session_id`` after a /resume or /branch switch: reset
-    per-session state, re-anchor the DB flush index, and notify memory providers with
-    reset=False (their state stays valid and just targets the new id; parent keeps lineage)."""
-    if not cli.agent:
-        return
-    cli.agent.session_id = session_id
-    cli.agent.reset_session_state()
-    if hasattr(cli.agent, "_last_flushed_db_idx"):
-        cli.agent._last_flushed_db_idx = len(cli.conversation_history)
-    if hasattr(cli.agent, "_todo_store"):
-        with suppress(Exception):
-            from tools.todo_tool import TodoStore
-            cli.agent._todo_store = TodoStore()
-    if hasattr(cli.agent, "_invalidate_system_prompt"):
-        cli.agent._invalidate_system_prompt()
-    with suppress(Exception):
-        _mm = getattr(cli.agent, "_memory_manager", None)
-        # Notify memory providers that session_id rotated to a fresh conversation. reset=True signals
-        # providers to flush accumulated per-session state (_session_turns, _turn_counter, _document_id).
-        # Fires BEFORE the plugin on_session_reset hook (shell hooks only see the new id; Python providers
-        # see the transition). See #6672. When the old session has history, end-of-session extraction
-        # (LLM-bound, seconds) and this switch are queued as ONE task on the memory manager's serialized
-        # worker — end strictly before switch, without blocking /new (#16454). With no history there is
-        # nothing to extract; switch inline as before.
-        # Notify memory providers that session_id rotated to a resumed session. reset=False — the provider's
-        # accumulated state is still valid; it just needs to target the new session_id for subsequent
-        # writes. See #6672.
-        # Notify memory providers that session_id forked to a new branch. reset=False — the branched session
-        # carries the transcript forward, so provider state tracks the lineage. parent_session_id links the
-        # branch back to the original. See #6672.
-        if _mm is not None:
-            _mm.on_session_switch(
-                session_id, parent_session_id=parent_session_id or "", reset=False, reason=reason)
-
-
 def _without_session_meta(messages) -> list:
     return [m for m in (messages or []) if m.get("role") != "session_meta"]
 
@@ -1018,6 +982,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         self._resume_display_history = _without_session_meta(display_history)
         with suppress(Exception):  # re-open the target session so it's not marked as ended
             self._session_db.reopen_session(target_id)
+        from hermes_cli.cli_session_commands import _sync_agent_to_session
         _sync_agent_to_session(self, target_id, parent_session_id=old_session_id, reason="resume")
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         from agent.context_compressor import is_user_originated_turn
@@ -1138,6 +1103,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _sync_process_session_id(new_session_id)
         if self.agent:
             self.agent.session_start = now
+        from hermes_cli.cli_session_commands import _sync_agent_to_session
         _sync_agent_to_session(self, new_session_id, parent_session_id=parent_session_id, reason="branch")
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
         _cp("  " + _tn("branch.branched", msg_count, title=branch_title),

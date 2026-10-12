@@ -433,6 +433,9 @@ class _Catalog:
         self.pairs: list[list[str]] = []
         self.canon: dict[str, str] = {}
         self.commands: dict[str, dict[str, str | None]] = {}
+        self.sub: dict[str, list[str]] = {
+            k: list(v) for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()
+        }
         self.cat_map: dict[str, list[list[str]]] = {}  # insertion order = category order
 
     def add(self, key: str, desc: str, cat: str) -> None:
@@ -484,6 +487,8 @@ def _catalog_plugin_commands(cat: _Catalog) -> None:
         if mode not in {"options", "text", "mixed"}:
             mode = "text" if str(info.get("args_hint") or "").strip() else None
         cat.commands[key] = {"argument_mode": mode, "desktop": None}
+        if subcommands := info.get("subcommands"):
+            cat.sub[key] = list(subcommands)
 
 
 def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
@@ -530,7 +535,7 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             warning = f"skill discovery unavailable: {e}"
     return _ok(rid, {
-        "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
+        "pairs": cat.pairs, "sub": cat.sub,
         "canon": cat.canon,
         "commands": cat.commands,
         "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
@@ -561,7 +566,14 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     r = _tools_mod("hermes_cli.commands").resolve_command(params.get("name", ""))
     if r:
-        return _ok(rid, {"canonical": r.name, "description": r.describe(), "category": r.category})
+        return _ok(rid, {
+            "canonical": r.name,
+            "description": r.describe(),
+            "category": r.category,
+            "args_hint": r.args_hint,
+            "subcommands": list(r.subcommands),
+            "busy_policy": r.busy_policy,
+        })
     return _err(rid, 4011, f"unknown command: {params.get('name')}")
 
 
@@ -592,13 +604,22 @@ def _plugin_command_handler(name: str):
         return None
 
 
-def _run_plugin_command(handler, arg: str, session=None) -> str:
+def _run_plugin_command(handler, arg: str, session=None, *, sid="") -> str:
     """Run a plugin slash-command handler under the session's ``HERMES_SESSION_*`` binding.
 
     Plugin handlers read ``get_session_env()`` for the chat/session they serve; these RPCs run on
     the socket/worker thread where nothing upstream binds it (only the turn path does), so a handler
     saw ``""`` or the launch process's inherited values. Same class as the messaging gateway's
     #108698; ``_set_session_context`` is the turn path's own seam."""
+    from hermes_cli.session_commands import is_session_command, prepare_session_command
+
+    if is_session_command(handler):
+        try:
+            request = prepare_session_command(handler, arg)
+        except ValueError as exc:
+            return str(exc)
+        return _run_plugin_session_command(handler, request, session, sid)
+
     plugins = _tools_mod("hermes_cli.plugins")
     tokens = _set_session_context(session.get("session_key", "") or "", cwd=str(session.get("cwd") or "")) if session else []
     try:
@@ -679,6 +700,21 @@ def _is_registry_command(base: str) -> bool:
 
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
+        from hermes_cli.session_commands import is_session_command
+
+        if is_session_command(handler):
+            authorized, err = _sess_nowait(params, rid)
+            if err:
+                return err
+            try:
+                output = _run_plugin_command(handler, arg, authorized, sid=params.get("session_id", ""))
+                return _ok(rid, {"type": "plugin", "output": output})
+            except _PluginSessionCommandBusy as exc:
+                return _err(rid, 4009, str(exc))
+            except Exception as exc:
+                logger.exception("Plugin session command dispatch failed: command=%s session_id=%s",
+                                 name, params.get("session_id", ""))
+                return _ok(rid, {"type": "plugin", "output": f"Plugin command error: {exc}"})
         with contextlib.suppress(Exception):
             return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg, session)})
     return None
@@ -981,30 +1017,60 @@ def _cmd_snapshot(rid, params, session, name, arg):
         "while the live agent has cached settings. Run it in the classic CLI, then restart the TUI.")
 
 
-def _cmd_compress(rid, params, session, name, arg):
-    if not session:
-        return _err(rid, 4001, "no active session to compress")
-    if busy := _busy_error(rid, session, "compress"):
-        return busy
+def _dispatch_manual_compression(
+    rid,
+    params: dict,
+    session: dict,
+    name: str,
+    arg: str,
+    control_token,
+) -> dict:
+    """Run one manual compression after its exact session-control lease is held."""
+    from agent.conversation_compression import (
+        finalize_context_engine_compression_notification,
+    )
+
     sid = params.get("session_id", "")
     if _session_uses_compute_host(session):
-        status, text = _compute_host_slash(sid, session, "compress", f"/{name}" + (f" {arg}" if arg else ""))
+        status, text = _compute_host_slash(
+            sid,
+            session,
+            "compress",
+            f"/{name}" + (f" {arg}" if arg else ""),
+        )
         if status in {"failed", "rejected"}:
             return _err(rid, 5019 if status == "failed" else 4009, text)
         if status == "pending":
             return _ok(rid, {"type": "exec", "status": "pending", "output": text})
         return _exec_out(rid, text)
+
     try:
-        output = _compress_live_with_feedback(sid, session, session["agent"], arg, snapshot_kwargs=True)
+        output = _compress_live_with_feedback(
+            sid, session, session["agent"], arg, snapshot_kwargs=True, control_token=control_token)
         return _exec_out(rid, output)
-    except CompressionBusy as exc:  # a turn won the race after the unlocked pre-check above
+    except CompressionBusy as exc:
         return _err(rid, 4009, str(exc))
     except Exception as exc:
-        _tools_mod("agent.conversation_compression").finalize_context_engine_compression_notification(
-            session["agent"], committed=False)
+        logger.debug('dispatch manual compression failed', exc_info=True)
+        finalize_context_engine_compression_notification(
+            session["agent"],
+            committed=False,
+        )
         return _err(rid, 5009, f"compress failed: {exc}")
 
 
+def _cmd_compress(rid, params, session, name, arg):
+    if not session:
+        return _err(rid, 4001, "no active session to compress")
+    if busy := _busy_error(rid, session, "compress"):
+        return busy
+    control_token, claim_error = _claim_manual_compression_control(session)
+    if claim_error is not None:
+        return _err(rid, 4009, _manual_compression_busy_text(claim_error))
+    try:
+        return _dispatch_manual_compression(rid, params, session, name, arg, control_token)
+    finally:
+        _release_session_control(session, control_token)
 # ─── /memory + /skills write-approval review ─────────────────────────────────
 # The review surface (pending / approve / reject / diff / approval) is owned by the shared handler
 # hermes_cli/write_approval_commands.handle_pending_subcommand, which the classic CLI and the
@@ -1095,6 +1161,15 @@ def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
     session = _sessions.get(params.get("session_id", ""))
 
+    # Parsed session capabilities execute directly, just as slash.exec does.
+    # In particular, invalid arguments precede quick-command config loading.
+    with _session_home_scope(session):
+        from hermes_cli.session_commands import is_session_command
+
+        handler = _plugin_command_handler(name)
+        if is_session_command(handler):
+            return _dispatch_plugin(rid, params, session, name, arg)
+
     # Stage order is load-bearing: quick > plugin > bundle > skill > built-in. One home binding
     # around the whole loop: the routing guard (``_profile_skill_command``) and the stages
     # must resolve against the SAME profile or a secondary-only skill is routed here and then
@@ -1108,87 +1183,6 @@ def _(rid, params: dict) -> dict:
                     _publish_session_control_snapshot(params.get("session_id", ""), session)
                 return res
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
-
-
-@method("slash.exec")
-def _(rid, params: dict) -> dict:
-    session, err = _sess_nowait(params, rid)
-    if err:
-        return err
-    cmd = params.get("command", "").strip()
-    if not cmd:
-        return _err(rid, 4004, "empty command")
-    # Skill/bundle and _PENDING_INPUT_COMMANDS must NOT reach the slash worker. Plugin
-    # commands also bypass it but return normal slash.exec output (TUI keeps the pager path).
-    parts = cmd.lstrip("/").split(maxsplit=1)
-    base = (parts[0] if parts else "").lower()
-    arg = parts[1] if len(parts) > 1 else ""
-    sid = params.get("session_id", "")
-    live_output = _live_slash_command_output(sid, session, base, arg)
-    if live_output is not None:
-        return _ok(rid, {"output": live_output or "(no output)"})
-    if base in _WORKER_BLOCKED_COMMANDS and _is_snapshot_restore(arg):
-        return _err(rid, 4018, "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore")
-    # Pending-input built-ins route straight to command.dispatch (some clients fail the
-    # error-then-retry fallback); bundles go the same way under their resolved key.
-    with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
-        target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
-    if target is not None:
-        return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
-    # Recognized skills keep the 4018 gate so clients command.dispatch. A scan
-    # exception must not fail open into the worker: return the dispatch payload
-    # (or a hard error) here, or the loading banner swallows the prompt.
-    skill_hit = _profile_skill_command(session, base)
-    if skill_hit is True:
-        return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
-    if skill_hit is None:
-        dispatched = _skill_dispatch_or_refuse(rid, sid, base, arg)
-        # A built-in cannot collide with a skill slug, so the worker may still
-        # run it. Anything else might be the skill the scan failed to see.
-        if (dispatched.get("result") or {}).get("type") or not _is_registry_command(base):
-            return dispatched
-    if plugin_handler := _plugin_command_handler(base) if base else None:
-        try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
-        except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
-    worker = session.get("slash_worker")
-    if not worker:
-        # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None
-        # and each fork a full MCP-fleet worker (the loser leaks). Serialize first-use spawn.
-        with _sessions_lock:
-            spawn_lock = session.setdefault("_slash_spawn_lock", threading.Lock())
-        with spawn_lock:
-            worker = session.get("slash_worker")
-            if not worker:
-                try:
-                    worker = _SlashWorker(
-                        session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
-                        profile_home=session.get("profile_home"),
-                        provider=getattr(session.get("agent"), "provider", None) or None)
-                    _attach_worker(sid, session, worker)
-                except Exception as e:
-                    return _err(rid, 5030, f"slash worker start failed: {e}")
-    try:
-        output = worker.run(cmd)
-        if seed := (worker.pop_seed() if hasattr(worker, "pop_seed") else ""):
-            # /prompt//blueprint composed a next-turn prompt in the worker; route it as a
-            # send dispatch (both Desktop and TUI clients already handle {type:"send"}).
-            return _ok(rid, {"type": "send", "message": seed})
-        payload = {"output": output or "(no output)"}
-        if warning := _mirror_slash_side_effects(sid, session, cmd):
-            payload["warning"] = warning
-        if base in _SESSION_CONTROL_SLASHES:
-            _publish_session_control_snapshot(sid, session)
-        return _ok(rid, payload)
-    except Exception as e:
-        if _worker_refused_skill(e):
-            # Refused before process_command; the worker is still healthy.
-            return _skill_dispatch_or_refuse(rid, sid, base, arg)
-        with contextlib.suppress(Exception):
-            worker.close()
-        session["slash_worker"] = None
-        return _err(rid, 5030, str(e))
 
 
 # ─── Insights / rollback / browser / config ──────────────────────────────────
@@ -2008,4 +2002,6 @@ def _(rid, params: dict) -> dict:
 
 def register(server) -> None:
     """Rebind this module's helpers + handlers onto ``server`` and register the handlers."""
+    from . import methods_slash_exec
+    methods_slash_exec.register(server)
     bind_module(globals(), server, skip=("_",))

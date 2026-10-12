@@ -47,7 +47,13 @@ class PackPluginEntry:
     def install_identifier(self) -> Optional[str]:
         """Identifier for the install path; None for bare names (resolved via the plugin catalog)."""
         if self.repo:
-            return f"{self.repo}/{self.subdir}" if self.subdir else self.repo
+            if not self.subdir:
+                return self.repo
+            from hermes_cli.plugins_cmd import _resolve_git_url
+
+            git_url, existing_subdir = _resolve_git_url(self.repo)
+            subdir = "/".join(part for part in (existing_subdir, self.subdir) if part)
+            return f"{git_url}#{subdir}"
         return None
 
 

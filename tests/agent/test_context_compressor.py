@@ -22,6 +22,7 @@ from agent.context_compressor import (
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from hermes_state import SessionDB
 from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
+import itertools
 
 _REQ = httpx.Request("POST", "http://x")
 
@@ -3317,7 +3318,7 @@ class TestSummaryPromptBounding:
         assert coverage["sampled_record_count"] == len(shown)
         # At least one initial gap was closed: fewer markers than the n-1 the n slices started with.
         assert sampled.count("chars elided") < ContextCompressor._SAMPLED_INPUT_SLICES - 1
-        for a, b in zip(shown, shown[1:]):
+        for a, b in itertools.pairwise(shown):
             if b == a + 1:
                 assert f"{records[a]}\n\n{records[b]}" in sampled, (a, b)
             else:

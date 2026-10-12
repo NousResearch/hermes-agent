@@ -550,9 +550,10 @@ def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
         out = subprocess.run(
             ["tmux", "list-panes", "-t", session, "-F", "#{pane_dead}"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+            check=False,
         )
         if out.stdout.strip() == "1":
-            subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True, timeout=5)
+            subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True, timeout=5, check=False)
             _kb._log.debug("Killed stale tmux session: %s", session)
     except Exception:
         pass  # best-effort — never block completion
@@ -839,4 +840,4 @@ def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) ->
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb  # noqa: E402
+from hermes_cli import kanban_db as _kb

@@ -33,7 +33,7 @@ class SettleReason(str, Enum):
     interrupt = "interrupt"
 
 
-KINDS: Tuple[str, ...] = ("connector", "mcp", "plugin", "skill")
+KINDS: tuple[str, ...] = ("connector", "mcp", "plugin", "skill")
 
 RESOLVED_STATES = frozenset({TargetState.connected, TargetState.skipped})
 # A failed catalog row is done as well: the host already ran the install and the row carries the
@@ -51,7 +51,7 @@ _S, _A = TargetState, Actor
 # (kind, from) -> {to: the only actor allowed to cause it}. Every `connected` is witnessed by the
 # backend: the gateway's account list for a managed target, the install / enable / OAuth worker for
 # an MCP one. The card can only skip a target, or ask for a failed one to be run again.
-TRANSITIONS: Dict[Tuple[str, TargetState], Dict[TargetState, Actor]] = {
+TRANSITIONS: dict[tuple[str, TargetState], dict[TargetState, Actor]] = {
     ("connector", _S.pending): {_S.initiated: _A.backend_watcher, _S.failed: _A.backend_watcher, _S.skipped: _A.user},
     ("connector", _S.initiated): {
         _S.connected: _A.backend_watcher, _S.failed: _A.backend_watcher, _S.expired: _A.clock, _S.skipped: _A.user,

@@ -216,7 +216,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
 
-    details: Dict[str, Any] = {}
+    details: dict[str, Any] = {}
     # An `auth: oauth` server that serves tools/list anonymously would probe OK
     # with no token — a false green. Require a token on disk, matching /auth.
     needs_oauth_token = servers[name].get("auth") == "oauth"
@@ -395,7 +395,7 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
     return await asyncio.to_thread(_run)
 
 
-def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str, Any]:
+def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> dict[str, Any]:
     auth = entry.auth
     transport = entry.transport
     install = entry.install

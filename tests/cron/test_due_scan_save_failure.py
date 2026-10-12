@@ -23,13 +23,13 @@ import sqlite3
 from datetime import timedelta
 
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 from cron import jobs as cronjobs
 from cron import store_health
 from cron.jobs import get_due_jobs, load_jobs, save_jobs
 
-FIXED_NOW = datetime(2026, 6, 22, 12, 0, 0, tzinfo=timezone.utc)
+FIXED_NOW = datetime(2026, 6, 22, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture()
@@ -278,7 +278,7 @@ def test_idle_tick_reprobes_a_degraded_store_and_clears_it(cron_store, monkeypat
     monkeypatch.setattr(store_health.time, "monotonic", lambda: clock["mono"])
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
     monkeypatch.setattr(scheduler, "_sweep_mcp_orphans", lambda: None)
-    monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [])
+    monkeypatch.setattr(scheduler, "get_due_jobs", list)
     enospc = OSError(errno.ENOSPC, "No space left on device")
     probe_result = [enospc]
     monkeypatch.setattr(store_health, "probe_store", lambda _d: probe_result[0])

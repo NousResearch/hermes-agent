@@ -61,7 +61,7 @@ class TestAuxClientHonorsUserDefaultHeaders:
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             from agent.auxiliary_client import resolve_provider_client
-            client, model = resolve_provider_client("main", "my-custom-model")
+            client, _model = resolve_provider_client("main", "my-custom-model")
 
         assert client is not None
         assert mock_openai.called
@@ -81,7 +81,7 @@ class TestAuxClientHonorsUserDefaultHeaders:
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             from agent.auxiliary_client import resolve_provider_client
-            client, model = resolve_provider_client("main", "my-custom-model")
+            client, _model = resolve_provider_client("main", "my-custom-model")
 
         assert client is not None
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
@@ -105,7 +105,7 @@ class TestAuxClientHonorsUserDefaultHeaders:
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             from agent.auxiliary_client import resolve_provider_client
-            client, model = resolve_provider_client("my-gw", "test-model")
+            client, _model = resolve_provider_client("my-gw", "test-model")
 
         assert client is not None
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}

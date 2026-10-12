@@ -35,8 +35,8 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch, **extra: Any) -> PhotonAdapte
     return PhotonAdapter(PlatformConfig(enabled=True, token="", extra=dict(extra)))
 
 
-def _capture_handled(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> List[MessageEvent]:
-    captured: List[MessageEvent] = []
+def _capture_handled(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> list[MessageEvent]:
+    captured: list[MessageEvent] = []
 
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
@@ -45,10 +45,10 @@ def _capture_handled(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) ->
     return captured
 
 
-def _capture_sidecar(adapter: PhotonAdapter, message_id: str = "out-1") -> List[Tuple[str, Dict[str, Any]]]:
-    calls: List[Tuple[str, Dict[str, Any]]] = []
+def _capture_sidecar(adapter: PhotonAdapter, message_id: str = "out-1") -> list[tuple[str, dict[str, Any]]]:
+    calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def fake_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
         calls.append((path, body))
         return {"ok": True, "messageId": message_id}
 
@@ -56,8 +56,8 @@ def _capture_sidecar(adapter: PhotonAdapter, message_id: str = "out-1") -> List[
     return calls
 
 
-def _reply_event(inner: Dict[str, Any], *, message_id: str = "in-2", target_id: str = "out-0",
-                 direction: str | None = "outbound", target_text: str | None = "earlier answer") -> Dict[str, Any]:
+def _reply_event(inner: dict[str, Any], *, message_id: str = "in-2", target_id: str = "out-0",
+                 direction: str | None = "outbound", target_text: str | None = "earlier answer") -> dict[str, Any]:
     return {
         "messageId": message_id,
         "space": {"id": DM, "type": "dm", "phone": PHONE},
@@ -201,7 +201,7 @@ def _fake_standalone_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, message_id: str):
             self._id = message_id
 
-        def json(self) -> Dict[str, Any]:
+        def json(self) -> dict[str, Any]:
             return {"ok": True, "messageId": self._id}
 
     class _FakeClient:
@@ -214,7 +214,7 @@ def _fake_standalone_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, url: str, json: Dict[str, Any], headers=None):
+        async def post(self, url: str, json: dict[str, Any], headers=None):
             counter["n"] += 1
             return _Resp(f"cron-{counter['n']}")
 

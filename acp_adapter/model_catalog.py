@@ -50,7 +50,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
     }
 
     def _entry_catalog(entry: dict) -> tuple[str, str, list[tuple[str, str]]] | None:
-        field = lambda key: str(entry.get(key) or "").strip()  # noqa: E731
+        field = lambda key: str(entry.get(key) or "").strip()
         provider_key, name, base_url = field("provider_key"), field("name"), field("base_url")
         if provider_key.lower() in disabled_keys or not name or not base_url:
             return None

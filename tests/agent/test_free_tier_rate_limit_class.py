@@ -18,7 +18,7 @@ MODEL = "nous/welcome"
 
 
 def _agent(api_key):
-    noop = lambda *a, **kw: None  # noqa: E731
+    noop = lambda *a, **kw: None
     return SimpleNamespace(
         provider="nous", api_key=api_key, base_url=WELCOME, model=MODEL, log_prefix="",
         _rate_limit_state=None, _has_pending_fallback=lambda: False, _dump_api_request_debug=noop,

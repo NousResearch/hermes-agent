@@ -305,7 +305,7 @@ def run_oneshot(
                 reasoning=reasoning,
                 ledger=bool(usage_file),
             )
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
             # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
             # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.

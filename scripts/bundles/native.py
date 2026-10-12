@@ -54,7 +54,7 @@ def _arch_guard(store_dir: Path) -> list[str]:
 
 from pm.uv_cache_prune import lock_package_names, prune_uv_cache_to_lock
 
-__all__ = ["prune_uv_cache_to_lock", "lock_package_names", "stage_uv_cache"]
+__all__ = ["lock_package_names", "prune_uv_cache_to_lock", "stage_uv_cache"]
 
 
 def stage_uv_cache(source: Path, destination: Path) -> None:
@@ -126,7 +126,7 @@ def stage_native(args) -> int:
                    "--ref", args.ref or "HEAD", "--source", str(root)]
         for name, product in getattr(args, "frontends", {}).items():
             command += [f"--{name}", str(product)]
-        return subprocess.run(command, cwd=root, env=env).returncode
+        return subprocess.run(command, cwd=root, env=env, check=False).returncode
 
 
 def prune_staged_store(store_dir: Path, names: list[str]) -> None:

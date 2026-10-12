@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from types import SimpleNamespace
 
 import pytest
@@ -43,7 +43,7 @@ def marks(tmp_path, monkeypatch):
 
 
 def _identity(monkeypatch, *shas: str) -> None:
-    committed = int((datetime.now(timezone.utc) - timedelta(days=10)).timestamp())
+    committed = int((datetime.now(UTC) - timedelta(days=10)).timestamp())
     sequence = iter(shas)
     last = {"sha": shas[0]}
 
@@ -186,7 +186,7 @@ def test_opted_out_start_purges_markers_left_while_opted_in(marks, monkeypatch):
 def test_v3_schema_accepts_exactly_the_contract_values():
     from pathlib import Path
 
-    import hermes_cli.observability as observability
+    from hermes_cli import observability
 
     schema = json.loads((Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v4.schema.json").read_text())
     by_name = {d["properties"]["name"]["const"]: d for d in schema["$defs"].values() if "properties" in d}

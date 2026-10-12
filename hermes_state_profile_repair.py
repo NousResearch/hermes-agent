@@ -47,7 +47,7 @@ def _stored_profile(value: Any) -> Optional[str]:
     return name or None
 
 
-def _table_columns(conn, table: str) -> List[str]:
+def _table_columns(conn, table: str) -> list[str]:
     return [row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")]
 
 
@@ -63,7 +63,7 @@ class SessionProfileRepairMixin:
 
     # ── finders ────────────────────────────────────────────────────────────────
 
-    def find_crossed_profile_sessions(self, owner: str) -> Dict[str, List[Dict[str, Any]]]:
+    def find_crossed_profile_sessions(self, owner: str) -> dict[str, list[dict[str, Any]]]:
         """Keyed session rows whose identity disagrees with itself or with this store.
 
         ``mislabelled``: ``profile_name`` names a profile other than the one in the row's own key
@@ -78,7 +78,7 @@ class SessionProfileRepairMixin:
             "       p.session_key AS parent_session_key "
             "FROM sessions s LEFT JOIN sessions p ON p.id = s.parent_session_id "
             "WHERE s.session_key LIKE 'agent:%' ORDER BY s.started_at, s.id")
-        found: Dict[str, List[Dict[str, Any]]] = {"mislabelled": [], "foreign": [], "crossed_parents": []}
+        found: dict[str, list[dict[str, Any]]] = {"mislabelled": [], "foreign": [], "crossed_parents": []}
         for row in rows:
             key_profile = session_key_profile(row["session_key"])
             if key_profile is None:
@@ -99,12 +99,12 @@ class SessionProfileRepairMixin:
                     "parent_session_id": row["parent_session_id"], "parent_profile": parent_profile})
         return found
 
-    def list_gateway_routing_rows(self) -> List[Dict[str, Any]]:
+    def list_gateway_routing_rows(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self._read_all(
             "SELECT scope, session_key, entry_json, updated_at FROM gateway_routing "
             "ORDER BY scope, session_key")]
 
-    def find_profile_less_telegram_topic_rows(self) -> List[Dict[str, Any]]:
+    def find_profile_less_telegram_topic_rows(self) -> list[dict[str, Any]]:
         """``telegram_dm_topic_bindings`` rows labelled ``default`` whose ``session_key`` names a named
         profile: written by a multiplexer that had not yet learned to stamp the routed profile
         (#76423). Stores whose topic tables predate ``profile_name`` have nothing to relabel."""
@@ -177,7 +177,7 @@ class SessionProfileRepairMixin:
 
     # ── cross-store move ──────────────────────────────────────────────────────
 
-    def export_session_for_move(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def export_session_for_move(self, session_id: str) -> Optional[dict[str, Any]]:
         """Everything the target store needs to hold *session_id* as its own: the row (every column),
         the resolved system prompt, EVERY message row (inactive and compacted generations included —
         a move is not an export) and its usage rows."""
@@ -199,7 +199,7 @@ class SessionProfileRepairMixin:
                     "usage": usage}
         return self._read_retrying_ioerr(_read)
 
-    def import_moved_session(self, payload: Dict[str, Any], *, profile_name: str) -> str:
+    def import_moved_session(self, payload: dict[str, Any], *, profile_name: str) -> str:
         """Insert a moved session into THIS store as *profile_name*'s. ``present`` when the id already
         exists (an earlier run copied but did not delete), else ``imported``. The parent link survives
         only when the parent is already here — a moved row must never point across stores or at a
@@ -234,7 +234,7 @@ class SessionProfileRepairMixin:
         return self._execute_write(_do)
 
     @staticmethod
-    def _insert_row(conn, table: str, values: Dict[str, Any], *, skip: frozenset) -> None:
+    def _insert_row(conn, table: str, values: dict[str, Any], *, skip: frozenset) -> None:
         columns = [c for c in _table_columns(conn, table) if c in values and c not in skip]
         conn.execute(
             f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
@@ -277,7 +277,7 @@ class SessionProfileRepairMixin:
             return changed
         return self._execute_write(_do)
 
-    def delete_gateway_routing_rows(self, rows: Iterable[Tuple[str, str]]) -> int:
+    def delete_gateway_routing_rows(self, rows: Iterable[tuple[str, str]]) -> int:
         wanted = list(rows)
         if not wanted:
             return 0
@@ -288,7 +288,7 @@ class SessionProfileRepairMixin:
                 for scope, key in wanted)
         return self._execute_write(_do)
 
-    def insert_gateway_routing_rows_if_absent(self, rows: Iterable[Tuple[str, str, str, float]]) -> int:
+    def insert_gateway_routing_rows_if_absent(self, rows: Iterable[tuple[str, str, str, float]]) -> int:
         """Adopt ``(scope, session_key, entry_json, updated_at)`` rows another store held for this
         one's routing index. An existing key wins — the row the gateway actually loads stays."""
         wanted = list(rows)
@@ -303,7 +303,7 @@ class SessionProfileRepairMixin:
 
     # ── telegram topic tables ─────────────────────────────────────────────────
 
-    def relabel_telegram_topic_rows(self, rows: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    def relabel_telegram_topic_rows(self, rows: Iterable[dict[str, Any]]) -> dict[str, int]:
         """Stamp the key's profile onto ``default``-labelled bindings (and the chat's mode row when
         only the default one exists). A binding that would collide with one the named profile already
         wrote is the stale duplicate and is removed."""
@@ -312,7 +312,7 @@ class SessionProfileRepairMixin:
         if not wanted:
             return counts
 
-        def _do(conn) -> Dict[str, int]:
+        def _do(conn) -> dict[str, int]:
             mode_has_profile = "profile_name" in _table_columns(conn, "telegram_dm_topic_mode")
             for row in wanted:
                 target = session_key_profile(row["session_key"])
@@ -341,7 +341,7 @@ class SessionProfileRepairMixin:
 
     # ── evidence for JSON-file repairs ────────────────────────────────────────
 
-    def key_profiles_for_chat(self, platform: str, chat_id: str) -> Set[str]:
+    def key_profiles_for_chat(self, platform: str, chat_id: str) -> set[str]:
         """Profiles whose keyed sessions hold *(platform, chat_id)* in this store — the evidence for
         who owns a profile-less ``gateway_voice_mode.json`` entry."""
         rows = self._read_all(

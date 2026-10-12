@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.tools._child_env_fixtures import child_env  # noqa: F401
+from tests.tools._child_env_fixtures import child_env
 
 _TIER1 = ("TELEGRAM_BOT_TOKEN", "GATEWAY_RELAY_SECRET")
 _PROVIDER = "OPENAI_API_KEY"

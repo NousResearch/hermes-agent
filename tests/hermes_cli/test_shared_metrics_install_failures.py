@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.observability as observability
+from hermes_cli import observability
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability import shared_metrics_fields as fields
 from hermes_cli.observability import shared_metrics_update as update_metrics
@@ -225,3 +225,20 @@ def test_an_unserved_identifier_names_the_registry_its_adapter_accepts(identifie
     from hermes_cli.skills_hub import _registry_from_identifier
 
     assert _registry_from_identifier(identifier) == registry
+
+
+@pytest.mark.parametrize(("url", "expected"), [
+    ("n8n.example.com/mcp-server/http", "config_invalid"),     # a pasted URL with no scheme
+    ("${HERMES_TEST_UNSET_MCP_URL}", "missing_credentials"),   # the URL's setup value never arrived
+])
+def test_an_oauth_card_install_that_fails_before_authorization_keeps_its_class(monkeypatch, url, expected):
+    """Invariant: the card/agent OAuth install (``mcp_oauth.start``) rebuilds the worker's error from
+    its text, so it must carry the worker's closed class; the row is never the bare ``exception``."""
+    from tools.connectors import mcp_oauth
+
+    monkeypatch.delenv("HERMES_TEST_UNSET_MCP_URL", raising=False)
+    with pytest.raises(Exception) as raised:
+        mcp_oauth.start("n8n-probe", cfg={"url": url, "auth": "oauth"}, url_timeout=60)
+    dims = fields.extension_install_fields(kind="mcp_server", source="catalog", name=None, outcome="failed",
+                                           error=raised.value)
+    assert dims["failure_class"] == expected

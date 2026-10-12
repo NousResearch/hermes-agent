@@ -27,14 +27,14 @@ _KIND_LABELS = {
 }
 
 
-def _group(findings: List[Finding]) -> Dict[str, List[Finding]]:
-    grouped: Dict[str, List[Finding]] = {}
+def _group(findings: list[Finding]) -> dict[str, list[Finding]]:
+    grouped: dict[str, list[Finding]] = {}
     for finding in findings:
         grouped.setdefault(finding.kind, []).append(finding)
     return grouped
 
 
-def _print_report(findings: List[Finding]) -> None:
+def _print_report(findings: list[Finding]) -> None:
     for kind, rows in _group(findings).items():
         print(f"\n{_KIND_LABELS.get(kind, kind)} ({len(rows)}):")
         for finding in rows:

@@ -8,8 +8,8 @@ import sys
 import packaging
 import pytest
 
-import pm.extras as extras
-import pm.features as features
+from pm import extras
+from pm import features
 from pm.environments import site_packages
 
 

@@ -36,7 +36,7 @@ class PreLlmSkipMixin:
             float, 0.0, _FALLBACK_PROBE_AT_MODEL_CONFIG_KEY, 0.0,
         )
 
-    def _fallback_streak_skip(self, telemetry: Dict[str, Any]) -> bool:
+    def _fallback_streak_skip(self, telemetry: dict[str, Any]) -> bool:
         """Pre-LLM skip while two summaries in a row fell back: compact deterministically instead of
         paying for a summary model that keeps failing (#63008). One probe per recovery window; a
         healthy summary resets the streak, another fallback benches it again."""
@@ -66,7 +66,7 @@ class PreLlmSkipMixin:
         return True
 
     def _feasibility_skip(
-        self, telemetry: Dict[str, Any], turns_to_summarize: List[Dict[str, Any]],
+        self, telemetry: dict[str, Any], turns_to_summarize: list[dict[str, Any]],
         compress_start: int, compress_end: int,
     ) -> bool:
         """Pre-LLM skip after a real-usage ineffectiveness strike (reads the counter, never writes)."""

@@ -245,7 +245,7 @@ def _publish_release(w: G.World, tag: str) -> str:
 def _publish_slow_deps_release(w: G.World, tag: str) -> str:
     text = w.git("show", "HEAD:pm/client.py") + "\n"
     if _DEPS_MARK not in text:
-        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.S | re.M)
+        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.DOTALL | re.MULTILINE)
         assert m, "premise: pm/client.py has no ensure_tools_for_sync() with a docstring to inject after"
         text = text[:m.end()] + _SLOW_DEPS + text[m.end():]
     return w.publish(f"release: e2e hostile pause slow deps {tag}", {
@@ -255,7 +255,7 @@ def _publish_slow_deps_release(w: G.World, tag: str) -> str:
 def _publish_broken_deps_release(w: G.World, tag: str) -> str:
     text = w.git("show", "HEAD:pm/client.py") + "\n"
     if _BREAK_MARK not in text:
-        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.S | re.M)
+        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.DOTALL | re.MULTILINE)
         assert m, "premise: pm/client.py has no ensure_tools_for_sync() with a docstring to inject after"
         text = text[:m.end()] + _BREAK_DEPS + text[m.end():]
     # pm's dependency stamp hashes uv.lock's bytes: a trailing TOML comment makes the venv stale

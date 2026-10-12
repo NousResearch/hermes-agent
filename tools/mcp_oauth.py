@@ -74,11 +74,11 @@ class RefreshFenceTimeout(RuntimeError):
 _FENCE_CONTENTION_ERRNOS = frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES, errno.EDEADLK})
 
 
-def _refresh_lock_path(path: "Path") -> "Path":
+def _refresh_lock_path(path: Path) -> Path:
     return path.with_suffix(path.suffix + ".refresh.lock")
 
 
-async def acquire_refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECONDS) -> int:
+async def acquire_refresh_fence(path: Path, *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECONDS) -> int:
     """Take the fence that owns one refresh generation across read -> POST -> persist.
 
     Token files are written atomically (``_write_json``), so a reader never
@@ -128,7 +128,7 @@ async def acquire_refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE
                 if fcntl is not None:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 elif msvcrt is not None:
-                    getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_NBLCK"), 1)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 else:  # pragma: no cover - no advisory locking primitive
                     raise RefreshFenceTimeout(
                         "refresh fence unsupported: no flock/msvcrt on this platform"
@@ -158,7 +158,7 @@ def release_refresh_fence(fd: int) -> None:
         if fcntl is not None:
             fcntl.flock(fd, fcntl.LOCK_UN)
         elif msvcrt is not None:
-            getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_UNLCK"), 1)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
     except OSError:
         pass
     finally:
@@ -243,7 +243,7 @@ def _safe_filename(name: str) -> str:
 # Holding the socket from port-selection time until _wait_for_callback adopts it closes the TOCTOU window
 # where another process could grab the port between _find_free_port() closing its probe socket and
 # HTTPServer binding minutes later (#22161).
-_reserved_sockets: "dict[int, socket.socket]" = {}
+_reserved_sockets: dict[int, socket.socket] = {}
 _MAX_RESERVED_SOCKETS = 8
 
 
@@ -286,7 +286,7 @@ def _cached_client_info(storage: "HermesTokenStorage | None") -> dict | None:
     return info if isinstance(info, dict) else None
 
 
-def _cached_redirect(storage: "HermesTokenStorage | None") -> "tuple[str | None, int | None]":
+def _cached_redirect(storage: "HermesTokenStorage | None") -> tuple[str | None, int | None]:
     """``(https proxy URI, loopback callback port)`` from the cached client registration (None when
     absent): a DCR ``client_id`` is bound to its registered redirect URI, so a new random port under
     it gets ``redirect_uri does not match any registered URIs``."""
@@ -650,7 +650,7 @@ class HermesTokenStorage:
 
 
 # Callback capture: the HTTP listener and the stdin paste reader share one result dict.
-def _authorization_code_result(code: str, state: "str | None", iss: "str | None" = None):
+def _authorization_code_result(code: str, state: str | None, iss: str | None = None):
     """Redirect parameters in the shape the installed SDK expects: mcp 2.0's ``callback_handler``
     returns an ``AuthorizationCodeResult`` (the SDK reads ``.state``/``.iss`` off it); older SDKs take a tuple."""
     try:
@@ -676,7 +676,7 @@ def _make_callback_handler() -> tuple[type, dict]:
     result: dict[str, Any] = {"auth_code": None, "state": None, "error": None, "iss": None}
 
     class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             parsed = _parse_redirect_query(urlparse(self.path).query)
             status = 200
             if not parsed["code"] and not parsed["error"]:
@@ -695,7 +695,7 @@ def _make_callback_handler() -> tuple[type, dict]:
             self.end_headers()
             self.wfile.write(f"<html><body>{body}</body></html>".encode())
 
-        def log_request(self, code: str = "-", size: str = "-") -> None:  # noqa: N802
+        def log_request(self, code: str = "-", size: str = "-") -> None:
             logger.debug("OAuth callback: %s %s", self.command, urlparse(self.path).path)  # never the query (carries the code)
 
         def log_message(self, fmt: str, *args: Any) -> None:
@@ -950,7 +950,7 @@ def _is_valid_cimd_url(url: str) -> bool:
 # lifetime), including ports restored from a cached registration.
 # Includes a port restored from a cached client registration, so a sibling server is never handed a port
 # another one is already registered on (#34260).
-_assigned_cimd_ports: "list[int]" = []
+_assigned_cimd_ports: list[int] = []
 
 
 def _pick_cimd_port() -> int | None:
@@ -970,7 +970,7 @@ def _pick_cimd_port() -> int | None:
     return _assigned_cimd_ports[0] if _assigned_cimd_ports else None
 
 
-def _server_declined_cimd(storage: "HermesTokenStorage | None") -> bool:
+def _server_declined_cimd(storage: HermesTokenStorage | None) -> bool:
     """True when cached metadata shows this server doesn't advertise CIMD. The SDK decides CIMD vs DCR
     in its 401 branch — after Hermes must fix the redirect URI — so cached metadata closes the gap;
     only a genuinely unknown server pays the optimistic pin."""
@@ -981,7 +981,7 @@ def _server_declined_cimd(storage: "HermesTokenStorage | None") -> bool:
     return metadata is not None and getattr(metadata, "client_id_metadata_document_supported", None) is not True
 
 
-def _maybe_use_cimd(cfg: dict, storage: "HermesTokenStorage | None" = None) -> "tuple[str, int] | None":
+def _maybe_use_cimd(cfg: dict, storage: HermesTokenStorage | None = None) -> tuple[str, int] | None:
     """``(client_id URL, pinned callback port)``, or None to use DCR. Each ineligibility case means the
     redirect URI is not one the document declares, the client identity is already settled, or the
     server is known not to want a document — a metadata URL would be rejected."""
@@ -1035,7 +1035,7 @@ def login_connect_timeout(config: dict) -> float:
                _seconds(oauth_cfg.get("timeout"), 300.0) + 15.0)
 
 
-def _configure_callback_port(cfg: dict, storage: "HermesTokenStorage | None" = None) -> int:
+def _configure_callback_port(cfg: dict, storage: HermesTokenStorage | None = None) -> int:
     """Resolve the callback port into ``cfg['_resolved_port']`` (0 = non-loopback URI). Precedence:
     dashboard flow / cached https redirect URI → CIMD pinned port (sets ``cfg['_cimd_url']``) →
     ``oauth.redirect_port`` → cached registration port → fresh ephemeral port (the only parked one).
@@ -1146,7 +1146,7 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
 
 
 def _invalidate_tokens_on_client_change(
-    storage: "HermesTokenStorage", new_client_id: str, new_client_secret: str | None) -> None:
+    storage: HermesTokenStorage, new_client_id: str, new_client_secret: str | None) -> None:
     """Drop cached tokens when the configured client identity changes: tokens minted under the old
     ``client_id`` fail refresh with ``invalid_client``, and pre-registered clients are exempt from
     auto-poison, so stale tokens would wedge every request until a manual wipe. Compares on-disk
@@ -1175,7 +1175,7 @@ def _invalidate_tokens_on_client_change(
             storage._server_name, old_client_id, new_client_id, storage._server_name)
 
 
-def _maybe_preregister_client(storage: "HermesTokenStorage", cfg: dict, client_metadata: "OAuthClientMetadata") -> None:
+def _maybe_preregister_client(storage: HermesTokenStorage, cfg: dict, client_metadata: "OAuthClientMetadata") -> None:
     """If cfg has a pre-registered client_id, persist it to storage."""
     client_id = cfg.get("client_id")
     if not client_id:

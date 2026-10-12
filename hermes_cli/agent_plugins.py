@@ -15,7 +15,7 @@ from agent.skill_utils import yaml_load
 from hermes_platform.declaration import Declaration, parse_declaration
 
 _HERMES_EXTENSION = "com.nousresearch.hermes"
-_LIVENESS: Dict[str, dict] = {}
+_LIVENESS: dict[str, dict] = {}
 
 
 def liveness_for(server_name: str) -> dict | None:
@@ -83,20 +83,20 @@ class AgentPluginPackage:
     root: Path
     data_root: Path
     manifest: Mapping[str, Any]
-    skills: Tuple[AgentPluginSkill, ...]
-    mcp_servers: Mapping[str, Dict[str, Any]]
+    skills: tuple[AgentPluginSkill, ...]
+    mcp_servers: Mapping[str, dict[str, Any]]
     server_declarations: Mapping[str, AgentPluginServerDeclaration]
-    diagnostics: Tuple[AgentPluginDiagnostic, ...]
+    diagnostics: tuple[AgentPluginDiagnostic, ...]
 
 
 def _server_declarations(
-    manifest: Mapping[str, Any], mcp_servers: Mapping[str, Dict[str, Any]]
-) -> Dict[str, AgentPluginServerDeclaration]:
+    manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]
+) -> dict[str, AgentPluginServerDeclaration]:
     namespace = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {})
     raw_servers = namespace.get("servers", {})
     if not isinstance(raw_servers, dict):
         raise AgentPluginError(f"extension '{_HERMES_EXTENSION}'.servers must be an object")
-    declarations: Dict[str, AgentPluginServerDeclaration] = {}
+    declarations: dict[str, AgentPluginServerDeclaration] = {}
     for name, raw in raw_servers.items():
         if name not in mcp_servers:
             raise AgentPluginError(f"server declaration '{name}' has no matching mcp.json server")
@@ -126,7 +126,7 @@ def _server_declarations(
     return declarations
 
 
-def _server_trust(manifest: Mapping[str, Any], mcp_servers: Mapping[str, Dict[str, Any]]) -> Dict[str, str]:
+def _server_trust(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]) -> dict[str, str]:
     """Servers the package asks Hermes to gate: ``extensions.com.nousresearch.hermes.servers.<name>.trust``.
 
     The package may only narrow access. ``untrusted`` makes every write-capable call to that server
@@ -135,7 +135,7 @@ def _server_trust(manifest: Mapping[str, Any], mcp_servers: Mapping[str, Dict[st
     the same name replaces the package's entry, trust included.
     """
     raw_servers = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {}).get("servers", {})
-    trust: Dict[str, str] = {}
+    trust: dict[str, str] = {}
     for name, raw in (raw_servers.items() if isinstance(raw_servers, dict) else ()):
         if not isinstance(raw, dict) or "trust" not in raw or name not in mcp_servers:
             continue  # shape errors are raised by _server_declarations
@@ -342,7 +342,7 @@ def _validate_remote_url(url: object) -> str:
     return url
 
 
-def _translate_remote(config: Mapping[str, Any]) -> Dict[str, Any]:
+def _translate_remote(config: Mapping[str, Any]) -> dict[str, Any]:
     """Translate a portable ``streamable-http`` entry into native MCP config. The v1 spec requires
     ``strict_redirect_headers``: drop configured headers on any cross-origin redirect."""
     if set(config) - _REMOTE_FIELDS:
@@ -350,14 +350,14 @@ def _translate_remote(config: Mapping[str, Any]) -> Dict[str, Any]:
     url = _validate_remote_url(config.get("url"))
     if not _validate_headers(config.get("headers")):
         raise ValueError("invalid headers")
-    translated: Dict[str, Any] = {"url": url, "strict_redirect_headers": True}
+    translated: dict[str, Any] = {"url": url, "strict_redirect_headers": True}
     if config.get("headers"):
         translated["headers"] = dict(config["headers"])
     return translated
 
 
 def _translate_stdio(config: Mapping[str, Any], plugin_root: Path, data_root: Path,
-                     create_data: bool = False) -> Dict[str, Any]:
+                     create_data: bool = False) -> dict[str, Any]:
     if set(config) - _STDIO_FIELDS:
         raise ValueError("unknown stdio field")
     command = config.get("command")
@@ -402,7 +402,7 @@ def _reject_sse(server: Mapping[str, Any]) -> None:
 
 
 def _discover_mcp(root: Path, data_root: Path, diagnostics: list[AgentPluginDiagnostic], *,
-                  create_data: bool = True) -> Dict[str, Dict[str, Any]]:
+                  create_data: bool = True) -> dict[str, dict[str, Any]]:
     mcp_path = root / "mcp.json"
     if not mcp_path.exists() and not mcp_path.is_symlink():
         return {}
@@ -422,7 +422,7 @@ def _discover_mcp(root: Path, data_root: Path, diagnostics: list[AgentPluginDiag
         return {}
     translators = {"stdio": lambda server: _translate_stdio(server, root, data_root, create_data),
                    "streamable-http": _translate_remote, "sse": _reject_sse}
-    translated: Dict[str, Dict[str, Any]] = {}
+    translated: dict[str, dict[str, Any]] = {}
     for name, server in servers.items():
         try:
             if not isinstance(name, str) or not name or not isinstance(server, dict):

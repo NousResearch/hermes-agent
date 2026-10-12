@@ -28,7 +28,7 @@ WATCH_INTERVAL_SECONDS = 5.0
 # The interrupt flag has no wake hook, so the tick sleep is sliced and the flag read each slice.
 _WAKE_SLICE_SECONDS = 0.25
 
-Callback = Callable[[Dict[str, Any]], Optional[str]]
+Callback = Callable[[dict[str, Any]], Optional[str]]
 
 
 @dataclass
@@ -77,7 +77,7 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
 
 
 def run_operation(
-    targets: List[Target],
+    targets: list[Target],
     kind: Kind,
     *,
     session_key: str,

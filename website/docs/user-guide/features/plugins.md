@@ -191,6 +191,11 @@ hermes plugins enable <name>      # add to allow-list
 hermes plugins disable <name>     # remove from allow-list + add to disabled
 ```
 
+If you saved a tool selection (`hermes tools`, so `platform_toolsets` lists toolsets explicitly), disabling a
+plugin also takes its toolset out of those saved lists, and enabling it puts the toolset back. The CLI and the
+Desktop/TUI/dashboard switch behave the same. With no saved selection the lists are left alone: a plugin's
+toolset is on by default.
+
 After `hermes plugins install owner/repo`, you're asked `Enable 'name' now? [y/N]` — defaults to no. Skip the prompt for scripted installs with `--enable` or `--no-enable`. A memory provider (a plugin whose `__init__.py` registers a `MemoryProvider`) asks `Use 'name' as the memory provider now?` instead: yes (or `--enable`) sets `memory.provider`, which is the only switch that activates a provider; no leaves it for `hermes memory setup`.
 
 For a reproducible install, pin a full immutable commit (tags, branches, and
@@ -534,8 +539,8 @@ gracefully.
 granted, `hermes plugins update` surfaces the additions and asks again. New
 capabilities stay off until you consent — a plugin update can never silently
 widen its access. Catalog re-pins go one step further: when the new pin adds
-tools, hooks, Python dependencies, host capabilities or a Desktop UI half the
-installed version did not have, the CLI shows the delta and asks `y/N` before
+tools, hooks, Python dependencies, host capabilities, a provider sign-in
+(`requires_auth`) or a Desktop UI half the installed version did not have, the CLI shows the delta and asks `y/N` before
 anything moves, and the Desktop / dashboard **Update** button opens the same
 confirmation. Declining (or a non-interactive session) leaves the plugin at
 the old pin.

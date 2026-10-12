@@ -35,7 +35,7 @@ class BitwardenLoginBackend(LoginBackend):
     prefix = "bw:"
     needs_unlock = True
 
-    def __init__(self, cfg: Optional[Dict] = None):
+    def __init__(self, cfg: Optional[dict] = None):
         self.cfg = cfg or {}
 
     def _bw(self) -> Path:
@@ -45,7 +45,7 @@ class BitwardenLoginBackend(LoginBackend):
             raise RuntimeError("Bitwarden CLI (bw) not found — install it or set vault.bitwarden.binary_path")
         return Path(found)
 
-    def _env(self, session_token: Optional[str]) -> Dict[str, str]:
+    def _env(self, session_token: Optional[str]) -> dict[str, str]:
         env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
         env["NO_COLOR"] = "1"
         if session_token:
@@ -85,16 +85,16 @@ class BitwardenLoginBackend(LoginBackend):
             raise RuntimeError(f"bw failed: {err[:200]}")
         return proc.stdout or ""
 
-    def list_items(self) -> List[VaultItemMeta]:
+    def list_items(self) -> list[VaultItemMeta]:
         if not self.is_unlocked():
             return []
         raw = json.loads(self._run("list", "items") or "[]")
-        out: List[VaultItemMeta] = []
+        out: list[VaultItemMeta] = []
         for item in raw if isinstance(raw, list) else []:
             if item.get("type") != 1 or not isinstance(item.get("login"), dict):
                 continue
             login = item["login"]
-            origins: List[str] = []
+            origins: list[str] = []
             for uri in login.get("uris") or []:
                 if uri.get("match") == 5:  # Bitwarden URI match "Never": not a fill target
                     continue

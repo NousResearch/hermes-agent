@@ -368,7 +368,7 @@ def schedule_env(monkeypatch, marker_home):
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     monkeypatch.setattr(server, "_wait_agent", lambda session, rid, timeout=30.0: None)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     submitted: list = []
     monkeypatch.setattr(
         server,
@@ -412,7 +412,7 @@ def test_hosted_room_marker_is_left_to_the_driver(schedule_env, marker_home):
 @pytest.fixture()
 def unseen_intro(monkeypatch):
     """An onboarding-enabled install whose desktop intro has not been seen yet."""
-    import hermes_cli.setup_profile as setup_profile
+    from hermes_cli import setup_profile
     monkeypatch.setattr(setup_profile, "onboarding_eligible", lambda: True)
     monkeypatch.setattr(setup_profile, "read_state", lambda: {"intro": "unseen"})
 

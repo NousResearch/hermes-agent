@@ -50,7 +50,7 @@ class _ModelHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     requests: list[dict[str, Any]] = []
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if self.path.rstrip("/") != "/v1/models":
             self.send_error(404)
             return
@@ -66,7 +66,7 @@ class _ModelHandler(BaseHTTPRequestHandler):
             ],
         })
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         if self.path.rstrip("/") != "/v1/chat/completions":
             self.send_error(404)
             return
@@ -225,7 +225,7 @@ class _ModelHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         for chunk in chunks:
-            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
             self.wfile.flush()
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
@@ -764,6 +764,7 @@ def main() -> int:
             text=True,
             capture_output=True,
             timeout=120,
+            check=False,
         )
     finally:
         server.shutdown()
@@ -848,6 +849,7 @@ def main() -> int:
         text=True,
         capture_output=True,
         timeout=60,
+        check=False,
     )
     (root / "skills.stdout.txt").write_text(
         skill_result.stdout,

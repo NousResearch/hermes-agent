@@ -29,7 +29,7 @@ def _path():
     return get_default_hermes_root() / "free_tier" / "sign_in_offer.json"
 
 
-def _read() -> Dict[str, Any]:
+def _read() -> dict[str, Any]:
     try:
         data = json.loads(_path().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
@@ -38,7 +38,7 @@ def _read() -> Dict[str, Any]:
 
 
 @contextmanager
-def _transaction() -> Iterator[tuple[Dict[str, Any], Any]]:
+def _transaction() -> Iterator[tuple[dict[str, Any], Any]]:
     from hermes_cli.auth import _file_lock
     from utils import atomic_write_text
     path = _path()
@@ -51,7 +51,7 @@ def _on_free_tier() -> bool:
     return anon_auth.has_guest() and anon_auth.guest_enabled()
 
 
-def _due_at(state: Dict[str, Any]) -> Optional[float]:
+def _due_at(state: dict[str, Any]) -> Optional[float]:
     if not state:
         return None
     offers = int(state.get("offers") or 0)
@@ -64,7 +64,7 @@ def _due_at(state: Dict[str, Any]) -> Optional[float]:
     return max(last_task + OFFER_DELAY_S, last_offer + REOFFER_AFTER_S[min(offers, len(REOFFER_AFTER_S)) - 1])
 
 
-def _due_in(state: Dict[str, Any]) -> Optional[int]:
+def _due_in(state: dict[str, Any]) -> Optional[int]:
     due_at = _due_at(state)
     if due_at is None or not _on_free_tier():
         return None

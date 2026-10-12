@@ -101,8 +101,8 @@ def _tools_mod(module: str):
     return importlib.import_module(module)
 
 
-_stripped = lambda v: bool(str(v or "").strip())  # noqa: E731 — required-param predicates
-_nonempty = lambda v: not (v is None or str(v) == "")  # noqa: E731
+_stripped = lambda v: bool(str(v or "").strip())
+_nonempty = lambda v: not (v is None or str(v) == "")
 _NAME = (("name", _stripped),)
 _NAME_SESSION = (("name", _stripped), ("session_id", _stripped))
 
@@ -199,7 +199,7 @@ def _capture_run_kwargs(timeout: int) -> dict:
 
 
 def _captured_exec(rid, cmd, timeout: int, *, on_result, timeout_err: tuple, fail_code: int,
-                   shell: bool = False, env: "dict | None" = None) -> dict:
+                   shell: bool = False, env: dict | None = None) -> dict:
     """Run ``cmd`` captured (see ``_capture_run_kwargs``) and hand the CompletedProcess to
     ``on_result``; TimeoutExpired → ``timeout_err`` (code, message), other errors → ``fail_code``."""
     try:

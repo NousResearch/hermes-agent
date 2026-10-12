@@ -25,6 +25,7 @@ from tools.binary_extensions import (
 from tools.file_tools_paths import (
     _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
 from tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
+import itertools
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -634,7 +635,7 @@ def _looks_like_read_file_line_numbered_content(content: str) -> bool:
             numbered.append(int(prefix))
     if len(numbered) < 2 or len(numbered) / len(lines) < 0.6:
         return False
-    consecutive_pairs = sum(1 for prev, current in zip(numbered, numbered[1:]) if current == prev + 1)
+    consecutive_pairs = sum(1 for prev, current in itertools.pairwise(numbered) if current == prev + 1)
     return consecutive_pairs >= len(numbered) - 1
 
 

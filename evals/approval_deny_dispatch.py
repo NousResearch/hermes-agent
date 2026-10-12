@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix="hermes-deny-dispatch-") as directory:
     if Path("/usr/bin/gnuenv").exists():
         (home / "env").symlink_to("/usr/bin/gnuenv")
     sys.path.insert(0, str(source))
-    from tools import terminal_tool  # noqa: F401
+    from tools import terminal_tool
     from tools.registry import registry
     from tools import approval_context
 

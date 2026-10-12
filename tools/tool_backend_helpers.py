@@ -95,7 +95,7 @@ def get_modal_auth_headers() -> Dict[str, str]:
 
 def resolve_modal_backend_state(modal_mode: object | None, *, has_direct: bool,
                                 managed_ready: bool,
-                                managed_enabled: bool | None = None) -> Dict[str, Any]:
+                                managed_enabled: bool | None = None) -> dict[str, Any]:
     """Resolve direct vs managed Modal backend: ``direct``/``managed`` are exclusive; ``auto``
     prefers managed when available, else direct."""
     requested_mode = coerce_modal_mode(modal_mode)
@@ -221,7 +221,7 @@ _SELECTION_NAME_KEYS = {"browser": ("cloud_provider",), "web": ("backend",)}
 _DEFAULT_NAME_KEYS = ("provider", "backend", "cloud_provider")
 
 
-def _raw_section(section: str) -> Dict[str, Any] | None:
+def _raw_section(section: str) -> dict[str, Any] | None:
     """The RAW (unmerged) config.yaml mapping for ``section``, or None."""
     try:
         from hermes_cli.config import read_raw_config_readonly
@@ -280,7 +280,7 @@ def selection_exists(section: str) -> bool:
 # otherwise fail silently at the FIRST tool call with a generic "no registered provider has that
 # name". Used by the startup config check and selection_error(); add removals here, never as
 # one-off string checks:  "web": {"<name>": "the <Name> backend was removed in vX (...)"}
-REMOVED_BACKENDS: Dict[str, Dict[str, str]] = {}
+REMOVED_BACKENDS: dict[str, dict[str, str]] = {}
 
 
 # Backends that once shipped in-tree but were removed. A config that still points at one otherwise fails

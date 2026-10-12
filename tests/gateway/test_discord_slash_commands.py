@@ -75,7 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class FakeTree:
@@ -456,7 +456,7 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
 # ------------------------------------------------------------------
 
 
-import discord as _discord_mod  # noqa: E402 — mock or real, used below
+import discord as _discord_mod
 
 
 class _FakeTextChannel:

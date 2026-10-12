@@ -69,14 +69,14 @@ def ticked_homes() -> dict:
         return dict(_ticked_homes)
 
 
-def serves_profile(home: Optional[Union[Path, str]] = None) -> bool:
+def serves_profile(home: Optional[Path | str] = None) -> bool:
     """True when THIS process's cron ticker owns ``home`` (default: the active cron scope)."""
     key = hermes_home_key(home if home is not None else get_hermes_home())
     with _ticked_lock:
         return key in _ticked_homes
 
 
-def owns_cron_tick_for(home: Optional[Union[Path, str]] = None) -> bool:
+def owns_cron_tick_for(home: Optional[Path | str] = None) -> bool:
     """True when this process is the host gateway multiplexer AND ticks ``home``.
 
     The runtime lock alone is not enough: it proves only that this process is the host gateway,
@@ -92,7 +92,7 @@ def owns_cron_tick_for(home: Optional[Union[Path, str]] = None) -> bool:
     return serves_profile(home)
 
 
-def record_serves_profile(record: Any, home: Optional[Union[Path, str]] = None) -> bool:
+def record_serves_profile(record: Any, home: Optional[Path | str] = None) -> bool:
     """True when a gateway runtime-status ``record``'s served set covers ``home``.
 
     The record is read from the holder's own home, so it always proves that home — that is the
@@ -120,7 +120,7 @@ def record_serves_profile(record: Any, home: Optional[Union[Path, str]] = None) 
     return label is not None and label in served
 
 
-def live_gateway_ticking(home: Optional[Union[Path, str]] = None) -> Optional[dict]:
+def live_gateway_ticking(home: Optional[Path | str] = None) -> Optional[dict]:
     """Runtime-status record of ANOTHER live host gateway that ticks ``home``, else None.
 
     ``None`` covers every "we cannot prove it" case: this process holds the lock itself, no lock
@@ -148,7 +148,7 @@ def live_gateway_ticking(home: Optional[Union[Path, str]] = None) -> Optional[di
     return record if record_serves_profile(record, home) else None
 
 
-def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
+def _claim_owner_is_dead(claim: dict[str, Any]) -> bool:
     """True when the claim's ``by`` names a process on THIS host that provably no longer exists.
     ``_machine_id()`` stamps ``host:pid[:token]``; a foreign host, an explicit HERMES_MACHINE_ID,
     or any liveness-probe failure returns False (fail safe: only a proven death shortens the TTL)."""

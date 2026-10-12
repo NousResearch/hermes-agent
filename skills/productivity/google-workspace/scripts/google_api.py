@@ -22,7 +22,7 @@ Usage:
 
 import argparse
 import base64
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 import email
 from email.header import decode_header
 from email.mime.application import MIMEApplication
@@ -164,6 +164,7 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
         capture_output=True,
         text=True, encoding='utf-8', errors='replace',
         env=_gws_env(),
+        check=False,
     )
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip() or "Unknown gws error"
@@ -999,7 +1000,7 @@ def gmail_modify(args):
 
 
 def calendar_list(args):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     time_min = _datetime_with_timezone(args.start or now.isoformat())
     time_max = _datetime_with_timezone(args.end or (now + timedelta(days=7)).isoformat())
 

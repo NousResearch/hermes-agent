@@ -55,7 +55,7 @@ PROVIDER_ENV_VARS = tuple(
 def _clear_provider_env(monkeypatch):
     for key in PROVIDER_ENV_VARS:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", dict)
 
 
 class TestResolveProvider:
@@ -529,7 +529,6 @@ class TestZaiEndpointAutoDetect:
         def _never_called(*a, **kw):
             nonlocal probe_called
             probe_called = True
-            return None
 
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _never_called)
         creds = resolve_api_key_provider_credentials("zai")
@@ -758,7 +757,7 @@ class TestMinimaxOAuthProvider:
         # agent/auxiliary_client.py. The profile layer is the source
         # of truth; _get_aux_model_for_provider() reads from it first
         # and only falls back to the dict when no profile is registered.
-        import model_tools  # noqa: F401  -- triggers plugin discovery
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile("minimax-oauth")
@@ -815,7 +814,7 @@ class TestFetchDeepInfraModels:
                     {"id": "stabilityai/stable-diffusion-xl-base-1.0", "metadata": {}},
                 ]}).encode()
 
-        import hermes_cli.models as models
+        from hermes_cli import models
         monkeypatch.setattr(
             models, "_urlopen_model_catalog_request", lambda *a, **kw: _Resp()
         )
@@ -831,7 +830,7 @@ class TestFetchDeepInfraModels:
 
 
     def test_catalog_uses_credential_safe_opener(self, monkeypatch):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         seen = {}
 
@@ -953,7 +952,7 @@ class TestDeepInfraPricingFetcher:
             # non-chat — must not appear
             {"id": "vendor/model-image", "metadata": {"tags": ["image-gen"], "pricing": {"per_image_unit": 0.05}}},
         ]}
-        import hermes_cli.models as models
+        from hermes_cli import models
         monkeypatch.setattr(
             models,
             "_urlopen_model_catalog_request",
@@ -1014,7 +1013,7 @@ class TestKilocodePricingFetcher:
             {"id": ""},
             "not-a-dict",
         ]}
-        import hermes_cli.models as models
+        from hermes_cli import models
         monkeypatch.setattr(
             models,
             "_urlopen_model_catalog_request",
@@ -1037,7 +1036,7 @@ class TestKilocodePricingFetcher:
         """Default endpoint is the kilocode provider profile's base_url + /models
         (no second hardcode); KILOCODE_BASE_URL overrides it; the catalog is
         fetched without a key; a failing endpoint yields {} without raising."""
-        import hermes_cli.models as models
+        from hermes_cli import models
         from hermes_cli.models_pricing import get_pricing_for_provider
 
         seen = []

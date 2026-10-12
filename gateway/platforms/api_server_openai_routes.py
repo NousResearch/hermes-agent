@@ -639,7 +639,8 @@ class OpenAICompatRoutesMixin:
             ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
-            _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
+            _openai_error, _redact_api_error_text)
+        from gateway.platforms.api_server_media import _api_turn_session_key, _resolve_media_to_data_urls
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -784,7 +785,8 @@ class OpenAICompatRoutesMixin:
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=(provided_session_id or session_id),
-                gateway_session_key=gateway_session_key)
+                gateway_session_key=gateway_session_key,
+                media_session_key=_api_turn_session_key(session_id, gateway_session_key))
 
         async def _compute_completion():
             return await self._run_agent(**run_kwargs)
@@ -798,7 +800,9 @@ class OpenAICompatRoutesMixin:
             return err
         result, usage = outcome
         presentation_muted = result.get("_notification_presentation_suppressed") is True
-        final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
+        final_response = await asyncio.to_thread(
+            _resolve_media_to_data_urls, result.get("final_response") or "",
+            _api_turn_session_key(session_id, gateway_session_key))
         completed, is_partial, is_failed, err_msg = _result_flags(result)
         if err_msg:
             err_msg = _redact_api_error_text(err_msg)
@@ -886,11 +890,14 @@ class OpenAICompatRoutesMixin:
     async def _write_sse_chat_completion(
         self, request: web.Request, completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str | None = None,
-        gateway_session_key: str | None = None) -> web.StreamResponse:
+        gateway_session_key: str | None = None, media_session_key: str = "") -> web.StreamResponse:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
-        disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
+        disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled.
+        ``media_session_key``: the turn's ``_api_turn_session_key`` (``session_id`` here is the
+        client-facing id, which can differ from the one the turn ran under)."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
+            _abandon_agent_task, _chat_usage_payload, _sse_frame)
+        from gateway.platforms.api_server_media import _resolve_media_to_data_urls
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
 
         def _chunk(delta: dict[str, Any], finish_reason=None, **extra) -> dict[str, Any]:
@@ -945,7 +952,8 @@ class OpenAICompatRoutesMixin:
             # once so the client does not see an empty stream (#31449). Mirrors
             # _ResponsesStream.collect_result for /v1/responses.
             if not content_sent and not presentation_muted and isinstance(result, dict):
-                fallback_text = _resolve_media_to_data_urls(result.get("final_response") or "")
+                fallback_text = await asyncio.to_thread(
+                    _resolve_media_to_data_urls, result.get("final_response") or "", media_session_key)
                 if fallback_text:
                     await response.write(_sse_frame(_chunk({"content": fallback_text})))
             elif not presentation_muted:
@@ -1037,7 +1045,8 @@ class OpenAICompatRoutesMixin:
             ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
             _content_has_visible_payload, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
-            _resolve_media_to_data_urls, _responses_usage_payload)
+            _responses_usage_payload)
+        from gateway.platforms.api_server_media import _api_turn_session_key, _resolve_media_to_data_urls
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -1179,7 +1188,9 @@ class OpenAICompatRoutesMixin:
         if err is not None:
             return err
         result, usage = outcome
-        final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
+        final_response = await asyncio.to_thread(
+            _resolve_media_to_data_urls, result.get("final_response", ""),
+            _api_turn_session_key(session_id, gateway_session_key))
         if not final_response:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
@@ -1199,7 +1210,8 @@ class OpenAICompatRoutesMixin:
         response_data = {
             "id": response_id, "object": "response", "status": "completed",
             "created_at": created_at, "model": body.get("model", self._model_name),
-            "output": self._extract_output_items(result, start_index=output_start_index),
+            "output": self._extract_output_items(
+                result, start_index=output_start_index, final_response=final_response),
             "usage": _responses_usage_payload(usage)}
         if store:
             response_store = self._current_response_store()
@@ -1300,9 +1312,11 @@ class OpenAICompatRoutesMixin:
         return out
 
     @staticmethod
-    def _extract_output_items(result: dict[str, Any], start_index: int = 0) -> list[dict[str, Any]]:
+    def _extract_output_items(result: dict[str, Any], start_index: int = 0,
+                              final_response: str = "") -> list[dict[str, Any]]:
         """Output items from ``result["messages"][start_index:]``: ``function_call`` per assistant
-        tool_call, ``function_call_output`` per tool message, then the final ``message``."""
+        tool_call, ``function_call_output`` per tool message, then the final ``message`` —
+        ``final_response`` when given (the MEDIA-resolved text), else the raw result's."""
         from gateway.platforms.api_server import _redact_api_error_text
         items: list[dict[str, Any]] = []
         messages = result.get("messages", [])
@@ -1330,7 +1344,7 @@ class OpenAICompatRoutesMixin:
                     "id": f"fco_{uuid.uuid4().hex[:24]}", "type": "function_call_output",
                     "status": "completed", "call_id": msg.get("tool_call_id", ""),
                     "output": msg.get("content", "")})
-        final = result.get("final_response", "") or _redact_api_error_text(
+        final = final_response or result.get("final_response", "") or _redact_api_error_text(
             result.get("error", "(No response generated)"))
         items.append(_message_item(final))
         return items

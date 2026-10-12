@@ -100,7 +100,27 @@ _CMDPOS = (
     r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
     r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+    r'(?:command\s+(?:-p\s+)?)?'  # `command [-p] NAME` runs NAME (`command -v NAME` only looks it up)
 )
+
+# Optional directory prefix on a command word: `/sbin/`, `/usr/local/sbin/`, `./`, `../bin/`, `~/bin/`.
+# Path characters cannot include whitespace, quotes, separators or parentheses, so the prefix is
+# confined to the single command word that _CMDPOS already anchored (`ls /sbin/reboot` stays
+# an argument; `$(` / backtick openers are consumed by _CMDPOS itself).
+# Each segment excludes `/` itself so the repetition is unambiguous (one way to split `////x`);
+# allowing `/` inside the segment class made `(?:[^…]*/)+` backtrack exponentially on long slash runs.
+_CMD_PATH_PREFIX = r'(?:[^\s\'"`;|&()<>\\/]*/)+'
+# What may follow a path-prefixed command name: end of the command word. Stricter than `\b` so a
+# path-prefixed script like `/opt/reboot-helper.sh` or `/usr/bin/ddrescue` is not mistaken for the
+# real binary (bare names keep their historical `\b` boundary).
+_CMD_WORD_END = r'(?=[\s;&|)`<>]|$)'
+
+
+def _cmd_name(name_re: str) -> str:
+    """Command-name matcher for _CMDPOS-anchored rules: the bare name (`reboot`) or the same name
+    behind a directory prefix (`/sbin/reboot`, `/usr/bin/systemctl`). Without the prefix branch
+    absolute-path spellings slipped past every command-name hardline rule."""
+    return rf'(?:{_CMD_PATH_PREFIX}(?:{name_re}){_CMD_WORD_END}|(?:{name_re})\b)'
 
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
@@ -117,7 +137,7 @@ _HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/
 # `rm` plus flag group, shared by the rm hardline rules (plain concatenation, not f-string:
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
 # must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
-_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+_RM_FLAG_PREFIX = _CMDPOS + _cmd_name(r'rm') + r'\s+(-[^\s]*\s+)*'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
@@ -128,7 +148,7 @@ _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 _SHUTDOWN_REBOOT_FLAG = r'(?=[^\n]*\s(?:-[a-z]*r[a-z]*|--reboot)\b)'
 _SHUTDOWN_HALT_FLAG = r'(?=[^\n]*\s(?:-[a-z]*[hp][a-z]*|--halt|--poweroff)\b)'
 # systemctl global flags may precede the verb (`systemctl --force reboot`, `systemctl -i poweroff`).
-_SYSTEMCTL_PREFIX = _CMDPOS + r'systemctl\s+(?:-[^\s]+\s+)*'
+_SYSTEMCTL_PREFIX = _CMDPOS + _cmd_name(r'systemctl') + r'\s+(?:-[^\s]+\s+)*'
 _REBOOT_DESC = "system reboot"
 _REBOOT_INIT_DESC = "init/telinit 6 (reboot)"
 _REBOOT_SYSTEMCTL_DESC = "systemctl reboot/kexec"
@@ -137,17 +157,17 @@ _SHUTDOWN_INIT_DESC = "init/telinit 0 (shutdown)"
 _SHUTDOWN_SYSTEMCTL_DESC = "systemctl poweroff/halt (shutdown)"
 _POWER_STATE_PATTERNS = [
     # reboot category
-    (_CMDPOS + r'reboot\b', _REBOOT_DESC),
-    (_CMDPOS + r'shutdown\b' + _SHUTDOWN_REBOOT_FLAG, _REBOOT_DESC),
-    (_CMDPOS + r'(?:halt|poweroff)\b[^\n]*\s--reboot\b', _REBOOT_DESC),
-    (_CMDPOS + r'(?:tel)?init\s+6\b', _REBOOT_INIT_DESC),
+    (_CMDPOS + _cmd_name(r'reboot'), _REBOOT_DESC),
+    (_CMDPOS + _cmd_name(r'shutdown') + _SHUTDOWN_REBOOT_FLAG, _REBOOT_DESC),
+    (_CMDPOS + _cmd_name(r'(?:halt|poweroff)') + r'[^\n]*\s--reboot\b', _REBOOT_DESC),
+    (_CMDPOS + _cmd_name(r'(?:tel)?init') + r'\s+6\b', _REBOOT_INIT_DESC),
     (_SYSTEMCTL_PREFIX + r'(?:reboot|kexec)\b', _REBOOT_SYSTEMCTL_DESC),
     # shutdown / poweroff / halt category
-    (_CMDPOS + r'(?:halt|poweroff)\b', _SHUTDOWN_DESC),
+    (_CMDPOS + _cmd_name(r'(?:halt|poweroff)'), _SHUTDOWN_DESC),
     # Plain `shutdown` (no -r) or any shutdown carrying a halt/poweroff flag.
-    (_CMDPOS + r'shutdown\b(?:(?!' + _SHUTDOWN_REBOOT_FLAG + r')|' + _SHUTDOWN_HALT_FLAG + r')', _SHUTDOWN_DESC),
-    (_CMDPOS + r'reboot\b[^\n]*\s(?:-[a-z]*p[a-z]*|--poweroff|--halt)\b', _SHUTDOWN_DESC),
-    (_CMDPOS + r'(?:tel)?init\s+0\b', _SHUTDOWN_INIT_DESC),
+    (_CMDPOS + _cmd_name(r'shutdown') + r'(?:(?!' + _SHUTDOWN_REBOOT_FLAG + r')|' + _SHUTDOWN_HALT_FLAG + r')', _SHUTDOWN_DESC),
+    (_CMDPOS + _cmd_name(r'reboot') + r'[^\n]*\s(?:-[a-z]*p[a-z]*|--poweroff|--halt)\b', _SHUTDOWN_DESC),
+    (_CMDPOS + _cmd_name(r'(?:tel)?init') + r'\s+0\b', _SHUTDOWN_INIT_DESC),
     (_SYSTEMCTL_PREFIX + r'(?:poweroff|halt)\b', _SHUTDOWN_SYSTEMCTL_DESC),
 ]
 # Hardline descriptions an operator may opt out of the floor, keyed to their category. An opted-in
@@ -179,11 +199,11 @@ HARDLINE_PATTERNS = [
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
     # (`echo "does this use mkfs?"`) cannot trip the floor.
     # See #93392.
-    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    (_CMDPOS + _cmd_name(r'mkfs(?:\.[a-z0-9]+)?'), "format filesystem (mkfs)"),
     # `dd` is a command-name token, so anchor it to command position like mkfs/rm/shutdown (#93392): quoted
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
-    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (_CMDPOS + _cmd_name(r'dd') + r'[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
     # Positionless rules (no command-name token: `>` sits mid-command, the fork bomb is a function
     # definition) are matched against a QUOTE-MASKED variant (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS /
     # _mask_quoted_prose) so quoted prose cannot trip them; sh -c / bash -c / eval payloads still scan raw.
@@ -196,7 +216,7 @@ HARDLINE_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
-    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    (_CMDPOS + _cmd_name(r'kill') + r'\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
     # Host power-state rules, split into two opt-in categories (approvals.allow_reboot /
     # approvals.allow_shutdown, see HARDLINE_OPT_IN_CATEGORIES). A command that could plausibly do
     # either (`shutdown -r -h`, `reboot -p`, `poweroff --reboot`) matches BOTH categories, so it stays
@@ -572,8 +592,8 @@ DANGEROUS_PATTERNS = [
     (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
     # _CMDPOS-anchored like the hardline twins: quoted prose mentioning mkfs/dd must not require approval to echo.
     # See #93392.
-    (_CMDPOS + r'mkfs\b', "format filesystem"),
-    (_CMDPOS + r'dd\s+.*if=', "disk copy"),
+    (_CMDPOS + _cmd_name(r'mkfs'), "format filesystem"),
+    (_CMDPOS + _cmd_name(r'dd') + r'\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # [^\n]* not .*: under DOTALL a WHERE on the *next* line would satisfy the lookahead and

@@ -22,6 +22,7 @@ must be false"), which the ladder still retries once but which say nothing about
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
@@ -68,13 +69,115 @@ def _profile_unsupported_formats(provider: Optional[str], base_url: Optional[str
     return tuple(getattr(profile, "unsupported_response_formats", ()) or ()) if profile is not None else ()
 
 
+# Body keys that carry routing METADATA rather than a reason -- an opaque identity or timestamp whose
+# value cannot tell the caller anything. A rejection whose payload holds nothing but these has named no
+# reason. opencode-go (opencode.ai/zen/go) answers HTTP 400 with exactly ``{"model":
+# "deepseek-v4.1-flash"}`` -- or an empty body -- for a deepseek-v4.1-flash request carrying
+# ``response_format`` (probed 2026-10-03: 23 of 24 fresh sessions; every one of them returned 200 for
+# the same request without the field).
+#
+# Deliberately NOT in this set: ``code``/``error_code``/``status``/``type``/``success``/``ok``. Those
+# carry a value the caller can READ, and a relay that answers ``{"error_code": "missing_session_id"}`` or
+# ``{"type": "rate_limit_error"}`` has named its reason -- treating such a payload as "names nothing"
+# would swallow exactly the failures the rest of the classifier exists to surface.
+_ECHO_BODY_KEYS = frozenset({
+    "model", "id", "object", "created", "request_id", "requestid", "request-id", "trace_id", "trace",
+    "log_id", "span_id",
+})
+# Body keys that WOULD carry a human-readable reason, when the payload has one.
+_DIAGNOSTIC_BODY_KEYS = frozenset({
+    "message", "msg", "detail", "details", "error", "errors", "reason", "description", "error_description",
+})
+
+
+def _error_body_text(error: Optional[BaseException]) -> str:
+    """The rejection's raw response body when the HTTP client exposes one, else the exception text."""
+    response = getattr(error, "response", None)
+    if response is not None:
+        for attr in ("text", "content"):
+            try:
+                value = getattr(response, attr, None)
+            except Exception:
+                value = None
+            if isinstance(value, bytes):
+                try:
+                    value = value.decode("utf-8", "replace")
+                except Exception:
+                    value = None
+            if isinstance(value, str) and value.strip():
+                return value
+    return str(error or "")
+
+
+def _payload_says_nothing(text: str) -> bool:
+    """Whether a rejection payload names no reason: empty, or JSON holding only routing echoes."""
+    text = (text or "").strip()
+    # The OpenAI SDK prefixes its own status line. With a parsed body that is "Error code: 400 - {body}";
+    # with an EMPTY (or closed-stream) body it is the bare "Error code: 400" -- no separator, nothing
+    # after it. Strip either form; the bare form leaves no text at all, which is the silent case.
+    if text.lower().startswith("error code:"):
+        _, sep, rest = text.partition("-")
+        text = rest.strip() if sep else ""
+    if not text:
+        return True
+    try:
+        body = json.loads(text)
+    except Exception:
+        return False  # unparsed prose may well name the problem — never assume it does not
+    if body is None:
+        return True  # a raw ``null`` body names nothing either
+    if not isinstance(body, dict) or not body:
+        return False
+    for key, value in body.items():
+        name = str(key).strip().lower()
+        if name in _DIAGNOSTIC_BODY_KEYS:
+            if isinstance(value, str):
+                if value.strip():
+                    return False
+            elif value:
+                return False
+            continue
+        if name in _ECHO_BODY_KEYS:
+            continue
+        # An unrecognised key with content is assumed to be a diagnostic.
+        if isinstance(value, str):
+            if value.strip():
+                return False
+        elif value:
+            return False
+    return True
+
+
+def is_diagnostic_free_rejection(error: Optional[BaseException], statuses: tuple = (400, 422)) -> bool:
+    """Whether *error* is an HTTP rejection whose payload names no reason at all.
+
+    Relays that spread one model across several upstreams can refuse a parameter on some of them and
+    answer with an empty body or bare routing echoes; there is no text to pattern-match. Callers treat
+    this as a last-resort signal: the request already carries the field, and the deciding evidence is
+    the retry — the ladder re-raises the narrowed error unchanged when the stripped retry fails too.
+    """
+    # The status may ride on the exception (``openai.APIStatusError.status_code``) or only on the
+    # response it wraps; a silent 401/429/500 must not slip through because the first lookup missed.
+    status = getattr(error, "status_code", None)
+    if status is None:
+        status = getattr(getattr(error, "response", None), "status_code", None)
+    if status is not None and status not in statuses:
+        return False
+    return _payload_says_nothing(_error_body_text(error))
+
+
 def is_capability_rejection(error: Optional[BaseException]) -> bool:
     """Whether a structured-output rejection speaks to the route/model's capability (memoisable) rather
     than to this request's schema (retry once, remember nothing)."""
     err_lower = str(error or "").lower()
     if "invalid schema" in err_lower:
         return False
-    return any(marker in err_lower for marker in _CAPABILITY_REJECTION_MARKERS)
+    if any(marker in err_lower for marker in _CAPABILITY_REJECTION_MARKERS):
+        return True
+    # Nothing to read at all: the caller only records *after* the retry without ``response_format``
+    # succeeded, so a diagnostic-free rejection is evidence the route refused the field, not this
+    # schema. Memoising it is what keeps the next structured-output call from paying the same 400.
+    return is_diagnostic_free_rejection(error)
 
 
 def remember_structured_output_rejection(

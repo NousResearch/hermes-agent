@@ -383,6 +383,27 @@ def test_interrupted_review_runs_retry_in_review_phase(
     assert event.payload.get("retry_status") == "review"
 
 
+def test_dispatcher_sweeps_survive_iso_text_timestamps(conn, monkeypatch) -> None:
+    """ISO text in the start/heartbeat columns (written outside the mutators,
+    #97455) must not abort the per-tick dispatcher sweeps that read them as
+    ints (each raised before): the max-runtime sweep skips an unreadable
+    start instead of killing, and the dead-worker backstop still reclaims."""
+    task_id = kb.create_task(conn, title="text clocks", assignee="builder", max_runtime_seconds=60)
+    claimed = kb.claim_task(conn, task_id)  # host-local claim lock: the crash sweep's scope
+    assert claimed is not None
+    kbd._set_worker_pid(conn, task_id, 98765)
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET started_at = '2020-01-01T00:00:00+00:00', "
+                     "last_heartbeat_at = '2020-01-01T00:00:00+00:00' WHERE id = ?", (task_id,))
+        conn.execute("UPDATE task_runs SET started_at = 'not-a-timestamp' WHERE id = ?",
+                     (claimed.current_run_id,))
+    assert kb.get_task(conn, task_id).last_heartbeat_at == 1577836800  # Task coerces it too
+    assert kbd.enforce_max_runtime(conn) == []  # eligible row (running, pid, cap): skipped, not killed
+    assert kbd.detect_stale_running(conn, stale_timeout_seconds=1) == []  # same: not reclaimed on it
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)  # text started_at: past the launch grace
+    assert kbd.detect_crashed_workers(conn) == [task_id]
+
+
 def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     task_id, _review = _claimed_review(conn, "Reviewer repeatedly fails")
     assert kbd._record_task_failure(

@@ -673,7 +673,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             continue
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
         # so retries must be measured from the active task_runs row.
-        elapsed = now - int(row["active_started_at"])
+        elapsed = now - (_kb._to_epoch(row["active_started_at"]) or now)  # unreadable clock: never kill
         limit = int(row["max_runtime_seconds"])
         if elapsed < limit:
             continue
@@ -778,12 +778,12 @@ def detect_stale_running(
     for row in rows:
         if row["active_started_at"] is None:
             continue
-        elapsed = now - int(row["active_started_at"])
+        elapsed = now - (_kb._to_epoch(row["active_started_at"]) or now)  # unreadable clock: never reclaim
         if elapsed < stale_timeout_seconds:
             continue
 
-        last_hb = row["last_heartbeat_at"]
-        hb_age = (now - int(last_hb)) if last_hb is not None else None
+        last_hb = _kb._to_epoch(row["last_heartbeat_at"])
+        hb_age = (now - last_hb) if last_hb is not None else None
         if hb_age is not None and hb_age < _STALE_HEARTBEAT_GAP_SECONDS:
             continue
 
@@ -883,7 +883,7 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
             payload = {
                 "reason": "orphaned_running",
                 "claim_lock": row["claim_lock"],
-                "claim_expires": _kb._opt_int(row["claim_expires"]),
+                "claim_expires": _kb._to_epoch(row["claim_expires"]),
                 "worker_pid": int(pid) if pid else None,
                 "now": now,
             }
@@ -1159,7 +1159,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
             # Launch-window grace so a freshly-spawned worker isn't reclaimed
             # before its PID is visible on /proc.
-            started_at = _kb._row_get(row, "started_at")
+            started_at = _kb._to_epoch(_kb._row_get(row, "started_at"))
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
             if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
@@ -1639,7 +1639,7 @@ def check_respawn_guard(
             "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? AND created_at > ? "
             "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, int(c["created_at"] or 0)),
+            (task_id, _kb._to_epoch(c["created_at"]) or now),  # unreadable: guard stays on
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
             return None

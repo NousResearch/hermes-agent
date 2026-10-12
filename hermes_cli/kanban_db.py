@@ -673,7 +673,7 @@ class Task:
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
         return cls(
             **{col: _lossy_text(row[col]) for col in _TASK_REQUIRED_COLUMNS},
-            **{col: _to_epoch(row[col]) for col in _TASK_EPOCH_COLUMNS},  # outside writers may store text: epoch or None
+            **{col: _to_epoch(g(col)) for col in _TASK_EPOCH_COLUMNS},  # outside writers may store text: epoch or None
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
             **{col: g(col) or None for col in _TASK_EMPTY_IS_NULL_COLUMNS},
             # Pre-migration fallbacks (spawn_failures / last_spawn_error) are only
@@ -691,11 +691,11 @@ _TASK_REQUIRED_COLUMNS = (
     "id", "title", "body", "assignee", "status", "priority", "created_by",
     "workspace_kind", "workspace_path", "claim_lock",
 )
-_TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expires")
+_TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expires", "last_heartbeat_at")
 # Later-added columns read as NULL when absent from the row.
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
-    "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
+    "max_runtime_seconds", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
@@ -2382,10 +2382,10 @@ def release_stale_claims(
     ).fetchall()
     for row in stale:
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
-        hb = row["last_heartbeat_at"]
+        hb = _to_epoch(row["last_heartbeat_at"])
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).
-        heartbeat_stale = hb is not None and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+        heartbeat_stale = hb is not None and (now - hb) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         started_at = _row_get(row, "worker_started_at")
         if (host_local and row["worker_pid"] and _worker_alive(row["worker_pid"], started_at)
                 and not heartbeat_stale):
@@ -2421,8 +2421,8 @@ def release_stale_claims(
                 payload={
                     "stale_lock": row["claim_lock"],
                     "worker_pid": _opt_int(row["worker_pid"]),
-                    "claim_expires": int(row["claim_expires"]),
-                    "last_heartbeat_at": _opt_int(row["last_heartbeat_at"]),
+                    "claim_expires": _to_epoch(row["claim_expires"]),
+                    "last_heartbeat_at": hb,
                     "now": now,
                     "host_local": host_local,
                     "heartbeat_stale": bool(heartbeat_stale),
@@ -2484,9 +2484,9 @@ def _extend_live_stale_claim(conn: sqlite3.Connection, row: sqlite3.Row, now: in
                 "reason": "pid_alive",
                 "worker_pid": int(row["worker_pid"]),
                 "claim_lock": row["claim_lock"],
-                "claim_expires_was": int(row["claim_expires"]),
+                "claim_expires_was": _to_epoch(row["claim_expires"]),
                 "claim_expires_now": new_expires,
-                "last_heartbeat_at": _opt_int(row["last_heartbeat_at"]),
+                "last_heartbeat_at": _to_epoch(row["last_heartbeat_at"]),
             },
             run_id=run_id,
         )

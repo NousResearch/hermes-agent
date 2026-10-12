@@ -133,8 +133,8 @@ def test_show_survives_iso_strings_in_integer_timestamp_columns(kanban_home):
 
     payload = json.loads(kc.run_slash(f"show {task_id} --json"))
     assert payload["task"]["id"] == task_id
-    assert payload["runs"] and all(isinstance(r["ended_at"], int) for r in payload["runs"])
-    assert payload["events"] and all(isinstance(e["created_at"], int) for e in payload["events"])
+    assert [r["ended_at"] for r in payload["runs"]] == [1787927722]  # iso_utc, not a 0 fallback
+    assert payload["events"] and {e["created_at"] for e in payload["events"]} == {1787936336}  # iso_z
 
 
 def test_kanban_edit_updates_documented_task_fields(kanban_home):

@@ -221,6 +221,35 @@ gateway:
 
 Both defaults preserve one session scope for the full session. Rotated spans retain the same `session_id` and add `hermes.session.segment` plus `hermes.session.segment_reason` (`compaction` or `max_turns`).
 
+#### Docker resource samples
+
+With a Relay exporter enabled, you can optionally attach CPU, CPU-pressure,
+quota-throttling, and sampled memory measurements to the Docker lifecycle scope:
+
+```yaml
+gateway:
+  telemetry:
+    execution_environment:
+      resource_sampling:
+        enabled: true
+        interval_seconds: 2.0
+```
+
+This setting also applies to CLI and cron sessions. It is off by default and
+requires Hermes and its Docker daemon to run on the same Linux cgroup-v2 host.
+Docker Desktop, macOS, Windows, remote daemons, and unreadable counters report
+unavailable measurements; they do not report zero usage. No sampling process
+runs inside the measured container, and tools do not wait for measurements.
+
+Resource events include the opaque container ID, measurement window, availability,
+and cumulative/interval CPU counters. The closing scope includes a summary of
+observed windows, missed publications, and the largest sampled memory reading.
+Tool spans remain under their turns and join through the same resource ID.
+Container totals include overlapping tools and background processes, so they
+are not per-tool CPU measurements or complete lifetime totals. CPU pressure is
+not Hermes queue wait. Kernel context-switch counts and GPU usage are explicitly
+not collected by this sampler.
+
 ### google_meet
 
 Lets the agent **join, transcribe, and participate in Google Meet calls** — take notes on a meeting, summarize the back-and-forth after, follow up on specific points, and (optionally) speak replies back into the call via TTS.

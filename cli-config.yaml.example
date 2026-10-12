@@ -1364,6 +1364,14 @@ agent:
 # Gateway Lifecycle
 # =============================================================================
 gateway:
+  # Optional CPU/pressure/memory measurements on Relay Docker lifecycle scopes.
+  # Same-host Linux cgroup v2 only; off by default. No kernel-switch or GPU counts.
+  # telemetry:
+  #   execution_environment:
+  #     resource_sampling:
+  #       enabled: false
+  #       interval_seconds: 2.0  # 1–60 seconds; actual measured windows are exported
+
   # Post-interrupt grace for running agents during an unexpected SIGTERM.
   # Adapter, bridge, and database teardown starts after this many seconds even
   # if an agent has not unwound. Keep it below the service-manager stop budget.

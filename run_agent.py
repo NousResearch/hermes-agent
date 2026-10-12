@@ -260,7 +260,8 @@ class AIAgent(
         notice_callback: Callable[..., Any] | None = None, notice_clear_callback: Callable[..., Any] | None = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
         reaction_callback: Optional[Callable[[str], None]] = None,
-        max_tokens: int | None = None, reasoning_config: dict[str, Any] | None = None, service_tier: str | None = None,
+        max_tokens: int | None = None, reasoning_config: dict[str, Any] | None = None,
+        adaptive_reasoning: dict[str, Any] | None = None, service_tier: str | None = None,
         request_overrides: dict[str, Any] | None = None, prefill_messages: list[dict[str, Any]] | None = None,
         platform: str | None = None, user_id: str | None = None, user_id_alt: str | None = None, user_name: str | None = None,
         chat_id: str | None = None, chat_name: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
@@ -406,6 +407,12 @@ class AIAgent(
         self._turn_author = None
         # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
         self._is_user_initiated_turn = False
+
+        # Adaptive-reasoning per-session state (continuation inheritance + escalation-notice dedup)
+        # does not carry across session boundaries.
+        self._adaptive_prev_effort = None
+        self._adaptive_last_notified_effort = None
+        self._adaptive_cache_warned = False
 
         self._transition_context_engine_session(
             old_session_id=old_session_id, new_session_id=getattr(self, "session_id", None),

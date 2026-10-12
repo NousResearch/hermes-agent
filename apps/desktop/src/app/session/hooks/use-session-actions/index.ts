@@ -77,12 +77,12 @@ import {
   $currentFastMode,
   $currentModel,
   $currentProvider,
-  $currentReasoningEffort,
   $currentServiceTier,
   $messages,
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
+  explicitEffortPick,
   getCurrentModelSource,
   idsShareLineage,
   type NewChatWorkspaceTarget,
@@ -328,7 +328,7 @@ async function desktopSessionCreateParams(
   const isManualSelection = getCurrentModelSource() === 'manual'
 
   const selection = {
-    effort: $currentReasoningEffort.get().trim(),
+    effort: explicitEffortPick(),
     fast: $currentFastMode.get(),
     serviceTier: $currentServiceTier.get().trim(),
     model: isManualSelection ? $currentModel.get().trim() : '',

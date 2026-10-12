@@ -64,6 +64,11 @@ A manager item that lists several websites (say `amazon.co.uk`,
 `www.amazon.co.uk` and `eu.account.amazon.com`) fills on each of those exact
 origins; nothing is inferred beyond the URLs saved on the item.
 
+Using more than one 1Password account? Set `vault.onepassword.account` to the
+account shorthand (`op account list` shows the values, e.g. `my`) — with several
+accounts in the app the CLI refuses to guess, and unlock fails until one is
+selected.
+
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
 
@@ -101,7 +106,7 @@ account token (`OP_SERVICE_ACCOUNT_TOKEN`).
 vault:
   onepassword:
     enabled: false          # opt OUT of a detected manager (default: on when installed)
-    account: ""             # `op --account` shorthand; empty = default
+    account: ""             # `op --account` shorthand; empty = default (set when using multiple accounts)
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
   bitwarden:
     enabled: false

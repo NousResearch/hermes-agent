@@ -738,7 +738,7 @@ class TurnRunner:
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
-        if ctx.matrix_activity_pane is not None and ctx.matrix_activity_pane.coalescing_enabled:
+        if ctx.matrix_activity_pane is not None:
             await self._send_matrix_activity_progress()
             return
         # Skip tool progress for platforms that can't edit messages (e.g. iMessage/BlueBubbles):
@@ -995,11 +995,10 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
-        if (ctx.matrix_activity_pane is not None and ctx.matrix_activity_pane.coalescing_enabled
-                and ctx.progress_queue is not None):
-            ctx.progress_queue.put(prepared)
-            return
         def present():
+            if ctx.matrix_activity_pane is not None and ctx.progress_queue is not None:
+                ctx.progress_queue.put(prepared)
+                return
             fut = self._schedule(
                 _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
                 f"status_callback ({event_type}) scheduling error",

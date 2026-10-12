@@ -23,13 +23,11 @@ class MatrixActivityPane:
         chat_id: str,
         reply_to: Optional[str] = None,
         metadata: Optional[dict] = None,
-        coalescing_enabled: bool = True,
     ) -> None:
         self.adapter = adapter
         self.chat_id = chat_id
         self.reply_to = reply_to
         self.metadata = dict(metadata or {})
-        self.coalescing_enabled = bool(coalescing_enabled)
         self.root_event_id: Optional[str] = None
         self.activity_lines: list[str] = []
         self.footer: Optional[str] = None
@@ -120,7 +118,7 @@ class MatrixActivityPane:
     async def flush(self) -> Any:
         """Publish a pending snapshot when the shared edit interval permits."""
         async with self.lock:
-            if self.closing or not self.coalescing_enabled:
+            if self.closing:
                 return None
             return await self._flush_locked()
 
@@ -138,7 +136,7 @@ class MatrixActivityPane:
         """Mutate and optionally publish under one turn-local lock."""
 
         async with self.lock:
-            if self.closing or not self.coalescing_enabled:
+            if self.closing:
                 return None
             mutate()
             # Queue consumers absorb without I/O, so cancellation cannot leave

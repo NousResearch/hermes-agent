@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.platforms.base import SendResult
+from gateway.config import Platform
 from gateway.matrix_activity_pane import MatrixActivityPane
 from gateway.run_turn_runner import TurnRunner
 from gateway.turn_context import TurnContext
@@ -61,13 +62,12 @@ class _PaneAdapter:
         return SendResult(success=True, message_id=message_id)
 
 
-def _pane(adapter=None, *, enabled=True):
+def _pane(adapter=None):
     return MatrixActivityPane(
         adapter=adapter or _PaneAdapter(),
         chat_id="!room:example",
         reply_to="$user",
         metadata={"thread": "kept"},
-        coalescing_enabled=enabled,
     )
 
 
@@ -286,3 +286,30 @@ async def test_cancelled_progress_transport_error_still_allows_turn_cleanup():
         if not task.done():
             task.cancel()
         await task
+
+
+def test_suppressed_warning_does_not_enter_activity_pane(monkeypatch):
+    """A diagnostic the notification policy hides must not reach the sticky pane."""
+    import sys
+    import types
+
+    fake_run = types.ModuleType("gateway.run")
+    fake_run._prepare_gateway_status_message = lambda platform, event_type, message: message
+    fake_run._redact_gateway_user_facing_secrets = lambda text: text
+    fake_run._send_or_update_status_coro = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_run)
+    queued = []
+    ctx = TurnContext()
+    ctx.mute_notification_reply = False
+    ctx.source = SimpleNamespace(platform=Platform.MATRIX)
+    ctx.matrix_activity_pane = object()
+    ctx.progress_queue = SimpleNamespace(put=queued.append)
+    ctx.user_config = {
+        "display": {"platforms": {"matrix": {"suppress_warning_notifications": True}}},
+    }
+    runner = TurnRunner(SimpleNamespace(), ctx)
+    runner._status_live = lambda: True
+    runner._status_callback_sync("warn", "disk almost full")
+    assert queued == []
+    runner._status_callback_sync("status", "still working")
+    assert queued == ["still working"]

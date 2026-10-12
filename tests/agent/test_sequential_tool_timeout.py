@@ -102,7 +102,7 @@ def _tool_call(call_id: str):
     return SimpleNamespace(
         id=call_id,
         type="function",
-        function=SimpleNamespace(name="web_extract", arguments="{}"),
+        function=SimpleNamespace(name="web_extract", arguments='{"urls": ["https://example.com"]}'),
     )
 
 

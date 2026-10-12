@@ -21,7 +21,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
-from tools.arg_coercion import coerce_tool_args
+from tools.arg_coercion import coerce_tool_args, missing_required_args_error
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 from utils import file_signature
 
@@ -832,6 +832,10 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
+        # Checked on the FINAL args: request middleware and pre_tool_call may supply a required field.
+        missing_error = missing_required_args_error(function_name, next_args)
+        if missing_error is not None:
+            return missing_error
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
     with _approval_observability(ids):

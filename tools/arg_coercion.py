@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Any, Dict
 
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 # Logger name kept as "model_tools": these messages were always emitted under
 # that name and log-based tooling filters on it.
@@ -78,6 +78,30 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
                 args[key] = _normalize_json_strings_for_schema(coerced, prop_schema)
 
     return args
+
+
+def missing_required_args_error(tool_name: str, args: dict[str, Any]) -> str | None:
+    """Model-facing error when *args* omit a schema-``required`` key, else ``None``.
+
+    Without it the handler runs on defaults (``read_file`` reads ".", ``search_files``
+    greps everything) or fails with an unrelated message, and the model cannot tell what
+    to fix. Defers to the handler when any supplied key is undeclared: several handlers
+    accept aliases models reach for (``a2a_call`` takes ``agent_name`` for ``agent``).
+    """
+    if not isinstance(args, dict):
+        return None
+    params = (registry.get_schema(tool_name) or {}).get("parameters") or {}
+    required, properties = params.get("required"), params.get("properties") or {}
+    if not isinstance(required, list) or any(key not in properties for key in args):
+        return None
+    missing = [name for name in required if isinstance(name, str) and name not in args]
+    if not missing:
+        return None
+    logger.info("missing_required_args_error: %s missing %s", tool_name, missing)
+    received = ", ".join(sorted(args)) or "none"
+    return tool_error(
+        f"{tool_name} was not run: missing required argument(s): {', '.join(missing)} "
+        f"(received: {received}). Re-emit the call with every required argument.")
 
 
 def _schema_accepts_kind(schema: Any, kind: str) -> bool:

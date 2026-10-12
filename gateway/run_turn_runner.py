@@ -1195,6 +1195,29 @@ class TurnRunner:
                 self._schedule(self._runner._deliver_platform_notice(self._ctx.source, line), "notice_callback delivery scheduling error")
         render_notification(present, platform=self._ctx.source.platform,
                             user_config=self._ctx.user_config, diagnostic=diagnostic)
+        if str(getattr(notice, "key", "") or "").startswith("provider_wall."):
+            # The chat that hit the wall has it in-band now; every OTHER home channel is owed it too.
+            self._schedule_provider_wall_fanout()
+
+    def _schedule_provider_wall_fanout(self) -> None:
+        """Fan the just-recorded provider-wall notice out to every served home channel.
+
+        Delivery is owned by ``gateway.run_notifications``; this only hops the sync notice callback
+        (which fires from the agent's worker thread) onto the gateway loop.
+        """
+        try:
+            from gateway.run_shutdown import _delivery_target_key
+
+            source = self._ctx.source
+            skip = {_delivery_target_key(source.platform.value, source.chat_id, source.thread_id)}
+        except Exception:
+            logger.debug("provider wall fan-out: could not resolve the originating chat", exc_info=True)
+            skip = set()
+        self._schedule(
+            self._runner._replay_pending_provider_wall_notice(skip_chats=skip),
+            "provider wall notice fan-out scheduling error",
+        )
+
 
     def _make_bg_review_callbacks(self):
         """(send, release): background-review messages ("💾 Memory updated") are held until the

@@ -298,6 +298,7 @@ class GatewayStartupMixin:
             await self._send_restart_notification()
             if planned_restart_notification_pending:
                 await self._replay_pending_planned_restart_notification()
+            await self._replay_pending_provider_wall_notice()
             await self._redeliver_claimed_obligations(claimed)
 
         boot_task = asyncio.create_task(_boot_sends())

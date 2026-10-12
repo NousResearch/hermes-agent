@@ -76,12 +76,12 @@ def _transcode_audio_for_stt(file_path: str, work_dir: str) -> tuple[Optional[st
         details = _process_error_detail(exc)
         logger.error("ffmpeg STT transcode failed for %s: %s", file_path, details)
         return None, f"failed to transcode audio for the STT API: {details}"
-    except Exception as exc:  # noqa: BLE001 - transcode is best-effort
+    except Exception as exc:
         logger.error("unexpected STT transcode failure for %s: %s", file_path, exc, exc_info=True)
         return None, f"failed to transcode audio for the STT API: {exc}"
 
 
-def _validate_audio_file_size(audio_path: Path, *, enforce_size_limit: bool = True) -> Optional[Dict[str, Any]]:
+def _validate_audio_file_size(audio_path: Path, *, enforce_size_limit: bool = True) -> Optional[dict[str, Any]]:
     """Return an error when *audio_path* is inaccessible or (if enforced) exceeds the remote upload cap."""
     try:
         file_size = audio_path.stat().st_size
@@ -92,7 +92,7 @@ def _validate_audio_file_size(audio_path: Path, *, enforce_size_limit: bool = Tr
     return None
 
 
-def _validate_audio_source_file(file_path: str, *, enforce_size_limit: bool = True) -> Optional[Dict[str, Any]]:
+def _validate_audio_source_file(file_path: str, *, enforce_size_limit: bool = True) -> Optional[dict[str, Any]]:
     """Validate source path safety (and optionally size) before any decoder runs."""
     audio_path = Path(file_path)
     if os.path.islink(audio_path):
@@ -104,7 +104,7 @@ def _validate_audio_source_file(file_path: str, *, enforce_size_limit: bool = Tr
     return _validate_audio_file_size(audio_path, enforce_size_limit=enforce_size_limit)
 
 
-def _validate_audio_file(file_path: str, *, enforce_size_limit: bool = True) -> Optional[Dict[str, Any]]:
+def _validate_audio_file(file_path: str, *, enforce_size_limit: bool = True) -> Optional[dict[str, Any]]:
     """Validate a supported, decoder-safe audio file."""
     source_error = _validate_audio_source_file(file_path, enforce_size_limit=enforce_size_limit)
     suffix = Path(file_path).suffix
@@ -113,7 +113,7 @@ def _validate_audio_file(file_path: str, *, enforce_size_limit: bool = True) -> 
     return _error_result(f"Unsupported format: {suffix}. Supported: {', '.join(sorted(SUPPORTED_FORMATS))}")
 
 
-def _prepare_audio_for_transcription(file_path: str) -> tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+def _prepare_audio_for_transcription(file_path: str) -> tuple[Optional[str], Optional[str], Optional[dict[str, Any]]]:
     """Convert a decoder-safe .silk source to a temporary supported WAV file."""
     from tools.transcription_tools import _HAS_PILK, _safe_find_spec
     audio_path = Path(file_path)
@@ -121,7 +121,7 @@ def _prepare_audio_for_transcription(file_path: str) -> tuple[Optional[str], Opt
         return file_path, None, None
     if not _HAS_PILK:
         # pilk is a tiny silk-v3 codec binding — lazy-installed on first .silk voice note.
-        _lazy_ensure_quietly("stt.silk")
+        _lazy_ensure_quietly("silk")
         if not _safe_find_spec("pilk"):
             return None, None, _error_result(
                 "Unsupported format: .silk. Install the optional 'pilk' dependency to enable WeChat voice transcription."
@@ -212,11 +212,11 @@ def _probe_audio_duration(file_path: str) -> Optional[float]:
         probe = _run_quiet([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of",
                             "default=noprint_wrappers=1:nokey=1", file_path], timeout=30)
         return float(probe.stdout.strip())
-    except Exception:  # noqa: BLE001 - probe is best-effort
+    except Exception:
         return None
 
 
-def _cloud_trim_settings(stt_config: Dict[str, Any]) -> tuple[bool, int, int]:
+def _cloud_trim_settings(stt_config: dict[str, Any]) -> tuple[bool, int, int]:
     """Resolve (enabled, threshold_db, keep_ms) for the cloud silence trim."""
     cfg = stt_config if isinstance(stt_config, dict) else {}
     # is_truthy_value: a YAML string "false" must disable, exactly like is_stt_enabled.
@@ -226,7 +226,7 @@ def _cloud_trim_settings(stt_config: Dict[str, Any]) -> tuple[bool, int, int]:
     return enabled, threshold_db, max(keep_ms, 0)
 
 
-def _trim_silence_for_cloud_stt(file_path: str, stt_config: Dict[str, Any]) -> Optional[str]:
+def _trim_silence_for_cloud_stt(file_path: str, stt_config: dict[str, Any]) -> Optional[str]:
     """Return a silence-trimmed copy of *file_path* for cloud upload, or None (= upload the original).
     On success the caller owns deleting the returned file's parent directory."""
     enabled, threshold_db, keep_ms = _cloud_trim_settings(stt_config)
@@ -271,7 +271,7 @@ def _trim_silence_for_cloud_stt(file_path: str, stt_config: Dict[str, Any]) -> O
                     original_duration, trimmed_duration, round((1 - trimmed_duration / original_duration) * 100))
         keep_result = True
         return trimmed_path
-    except Exception as exc:  # noqa: BLE001 - trim is best-effort
+    except Exception as exc:
         logger.debug("Cloud STT silence trim failed for %s: %s", file_path, exc)
         return None
     finally:

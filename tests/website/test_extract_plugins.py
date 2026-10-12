@@ -35,7 +35,7 @@ def mod():
 
 
 def _write_entry(catalog_dir: Path, name: str, **overrides) -> Path:
-    import yaml
+    import hermes_yaml as yaml
 
     entry = {
         "name": name,
@@ -242,6 +242,7 @@ def test_script_exits_zero_as_subprocess_when_catalog_missing(tmp_path):
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert (out_dir / "plugins.json").exists()

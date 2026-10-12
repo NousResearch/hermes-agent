@@ -246,6 +246,10 @@ class ProjectTreeLane(Result):
     path: str | None = None
     isMain: bool = False
     isKanban: bool = False
+    # True only when the placement saw git (probe or persisted repo root). The
+    # path-only heuristic lane for a non-git folder is isMain but isGit=False,
+    # so the renderer never offers `git switch` on it (#61362).
+    isGit: bool = True
     sessions: list[ProjectTreeSession] = Field(default_factory=list)
 
 

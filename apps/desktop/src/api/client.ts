@@ -1,4 +1,5 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
+import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 
@@ -25,13 +26,15 @@ const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 // ever fires when the turn itself would have been abandoned server-side.
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
+export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
+
 export class HermesGateway extends JsonRpcGatewayClient {
   constructor() {
     super({
       closedErrorMessage: 'Hermes gateway connection closed',
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,
-      notConnectedErrorMessage: 'Hermes gateway is not connected',
+      notConnectedErrorMessage: GATEWAY_NOT_CONNECTED_MESSAGE,
       // The channel already answered -32603; surface the crash in devtools like the dial-failure sink.
       onRequestHandlerError: (error, request) =>
         console.error(`[gateway] server request handler crashed for ${request.method} (${request.id}):`, error),
@@ -50,10 +53,16 @@ export class HermesGateway extends JsonRpcGatewayClient {
 // REST handlers accept profile reuse the primary dashboard via ?profile=;
 // unscoped handlers retain a profile backend. Remote overrides still route to
 // their owning backend. Null → primary, so single-profile users are unaffected.
-let _apiProfile: null | string = null
+interface ApiRequestScope {
+  profile: string | null
+  connectionId: string | null
+}
+
+// This is the request authority, not a second copy in a presentation store.
+export const $apiRequestScope: MapStore<ApiRequestScope> = map<ApiRequestScope>({ profile: null, connectionId: null })
 
 export function setApiRequestProfile(profile: null | string): void {
-  _apiProfile = profile || null
+  $apiRequestScope.setKey('profile', profile || null)
 }
 
 // An explicit scope (string or object, not `undefined`/`null`) is a user
@@ -64,7 +73,7 @@ export function setApiRequestProfile(profile: null | string): void {
 // hydration cannot consume that slot. The tag rides on the scope helper itself
 // so no api/ helper can carry a scope without it.
 export function profileScoped(profile?: null | string): { priority?: 'foreground'; profile?: string } {
-  const selected = profile === undefined ? _apiProfile : profile
+  const selected = profile === undefined ? $apiRequestScope.get().profile : profile
 
   return {
     ...(selected ? { profile: selected } : {}),
@@ -89,11 +98,43 @@ export function ownerScoped(owner?: OwnerScope): { connectionId?: string; priori
   }
 }
 
+/** An owner resolved ONCE for one operation (a recording, a voice conversation).
+ *  `null` halves mean "untagged": the primary profile / the connection an
+ *  untagged request lands on. They are never re-read from the ambient scope
+ *  later, so a gateway/profile switch mid-operation cannot move its tail
+ *  (release, transcription) to another backend. */
+export interface ResolvedOwner {
+  connectionId: null | string
+  profile: null | string
+}
+
+/** Fill an owner's missing halves from the ambient scope, now. */
+export function resolveOwnerNow(owner?: OwnerScope): ResolvedOwner {
+  const ambient = $apiRequestScope.get()
+
+  return {
+    connectionId: owner?.connectionId || ambient.connectionId || null,
+    profile: owner?.profile || ambient.profile || null
+  }
+}
+
+/** `hermesApi` for a resolved owner: its tags are sent verbatim, with no
+ *  ambient connection spread underneath. An untagged half stays untagged. A
+ *  named profile is always explicit here, so it carries the foreground
+ *  priority `profileScoped` gives explicit profiles (voice is user-driven). */
+export function hermesApiAs<T>(owner: ResolvedOwner, request: HermesApiRequest): Promise<T> {
+  return window.hermesDesktop.api<T>({
+    ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
+    ...(owner.profile ? { priority: 'foreground' as const, profile: owner.profile } : {}),
+    ...request
+  })
+}
+
 /** Profile that profile-scoped REST/WS calls should target (null → primary).
  *  Read-only twin of setApiRequestProfile for modules (e.g. voice playback)
  *  that build their own connection URLs and must stay on the same backend. */
 export function getApiRequestProfile(): null | string {
-  return _apiProfile
+  return $apiRequestScope.get().profile
 }
 
 // Registry connection serving the active gateway (null → the local pool).
@@ -102,11 +143,10 @@ export function getApiRequestProfile(): null | string {
 // that dial their own backend (pluginSocket) resolve it through the SAME
 // source of truth those paths maintain for $connection. That makes the plugin
 // socket follow registry-agent activations too, not just profile switches.
-// Same no-store-import contract as _apiProfile (avoids a cycle).
-let _apiConnectionId: null | string = null
+// Same no-store-import contract as profile scope (avoids a cycle).
 
 export function setApiRequestConnection(connectionId: null | string): void {
-  _apiConnectionId = connectionId || null
+  $apiRequestScope.setKey('connectionId', connectionId || null)
 }
 
 // Registry connection scope for a REST request. A registered remote gateway
@@ -116,11 +156,13 @@ export function setApiRequestConnection(connectionId: null | string): void {
 // resolves to no tag, keeping single-source users byte-identical; explicit
 // 'local' must remain tagged when the legacy primary points elsewhere.
 export function connectionScoped(): { connectionId?: string } {
-  return _apiConnectionId ? { connectionId: _apiConnectionId } : {}
+  const connectionId: string | null = $apiRequestScope.get().connectionId
+
+  return connectionId ? { connectionId } : {}
 }
 
 // Whether the window's primary connection is the local pool. Pushed from
-// store/session's setConnection (same no-store-import contract as _apiProfile)
+// store/session's setConnection (same no-store-import contract as profile scope)
 // so api/ helpers can name the backend an UNTAGGED request lands on without
 // importing the heavy session store — which would close a module cycle
 // through @/hermes.
@@ -135,7 +177,7 @@ export function setApiRequestLocalMode(local: boolean): void {
  *  never send this as a request pin (an explicit `'local'` bypasses Electron's
  *  legacy per-profile remote overrides). */
 export function ambientOwnerConnectionId(): string | undefined {
-  return _apiConnectionId ?? (_apiLocalMode ? 'local' : undefined)
+  return $apiRequestScope.get().connectionId ?? (_apiLocalMode ? 'local' : undefined)
 }
 
 /** Send a REST request to the renderer's active registry source. Request-level
@@ -213,5 +255,59 @@ export function profileScopeKey(scope?: ProfileScope): string {
 /** Registry connection id that connection-scoped WS calls should target
  *  (null → the local pool). Read-only twin of setApiRequestConnection. */
 export function getApiRequestConnection(): null | string {
-  return _apiConnectionId
+  return $apiRequestScope.get().connectionId
+}
+
+// ── Session-owner pin for session-scoped REST reads (#125372) ──────────────
+//
+// A read of /api/sessions/{id}[/messages|/timeline|/messages/around] only
+// means anything on the backend that OWNS the row. The store already resolves
+// that owner (knownOwnerForSession: tile route → persisted hint → tagged row)
+// and pushes the resolver here — same no-store-import seam as
+// setApiRequestProfile — so read helpers stop riding the WINDOW's ambient
+// connection onto a host that answers 404 "Session not found".
+
+export interface SessionReadOwnerRoute {
+  connectionId?: null | string
+  profile?: null | string
+  targetProfile?: null | string
+}
+
+export type SessionOwnerResolver = (sessionId: string) => SessionReadOwnerRoute | null | string | undefined
+
+let _sessionOwnerResolver: SessionOwnerResolver | null = null
+
+export function setSessionOwnerResolver(resolver: SessionOwnerResolver | null): void {
+  _sessionOwnerResolver = resolver
+}
+
+/** The connection pin a session-scoped READ must carry for `id`, or {} when
+ *  the caller already pinned a connection, no exact owner is known, or the
+ *  owner is the ambient connection. Pins 'local' too (the only way back to
+ *  this device when the primary is a remote registry source). When the caller
+ *  named no profile, the owner's backend-facing profile rides along: the
+ *  answering host resolves ?profile= against ITS OWN profiles. */
+export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { connectionId?: string; profile?: string } {
+  if (profile && typeof profile === 'object' && String(profile.connectionId ?? '').trim()) {
+    return {}
+  }
+
+  const owner = _sessionOwnerResolver?.(id)
+
+  if (!owner || typeof owner === 'string') {
+    return {}
+  }
+
+  const connectionId = String(owner.connectionId ?? '').trim()
+
+  if (!connectionId || connectionId === (ambientOwnerConnectionId() ?? 'local')) {
+    return {}
+  }
+
+  const ownerProfile = String(owner.targetProfile || owner.profile || '').trim()
+
+  return {
+    connectionId,
+    ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
+  }
 }

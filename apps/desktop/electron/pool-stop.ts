@@ -17,8 +17,8 @@
  *  - spawn paths can await inFlight(key) so a fresh child never overlaps a
  *    dying one on the same HERMES_HOME.
  *
- * Extracted into a dependency-free module (same pattern as backend-child.ts /
- * pool-eviction.ts) so the dedup and handle-retention semantics are asserted
+ * Extracted into a dependency-free module (same pattern as backend-child.ts)
+ * so the dedup and handle-retention semantics are asserted
  * directly instead of grepping main.ts source text.
  */
 

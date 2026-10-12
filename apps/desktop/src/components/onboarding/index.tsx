@@ -16,7 +16,6 @@ import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
 import { $freeTierStatus, FREE_TIER_MODEL, freeTierSetupFailure } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
-import { $introReveal, shouldPlayFirstRunIntro } from '@/store/intro-reveal'
 import { $setupReadyTick } from '@/store/live-sync'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
@@ -63,7 +62,8 @@ export {
   sortProviders
 } from './providers'
 
-import { requestGatewayForProfile } from '@/store/gateway'
+import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
+import { captureOnboardingScope, requestOnboardingGateway } from '@/store/onboarding-scope'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -131,7 +131,7 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
 // other api_key provider is appended with a generic "paste {KEY}" affordance.
 // OAuth / external providers are intentionally excluded here — they go through
 // the OAuth picker / sign-in flow, not a pasted key.
-function useApiKeyCatalog(): ApiKeyOption[] {
+function useApiKeyCatalog(scope: OnboardingContext['scope']): ApiKeyOption[] {
   const [rows, setRows] = useState<ModelOptionProvider[]>([])
 
   useEffect(() => {
@@ -141,7 +141,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
     // tests) is funneled into the same .catch instead of escaping.
     void Promise.resolve()
-      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }))
+      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, scope))
       .then(res => {
         if (!cancelled) {
           setRows(res.providers ?? [])
@@ -154,7 +154,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [scope])
 
   return useMemo(() => {
     const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
@@ -206,22 +206,29 @@ export function DesktopOnboardingOverlay({
   const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
-  const introReveal = useStore($introReveal)
   useStore($onboardingSurfaces)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
-  const targetProfile = onboarding.targetProfile ?? profile
+  useStore($gateway)
+  const connectionId = activeGatewayConnectionId()
+
+  const scope = useMemo(
+    () => onboarding.targetScope ?? captureOnboardingScope({ connectionId, profile }),
+    [onboarding.targetScope, profile, connectionId]
+  )
 
   // Async flows retain the initiating route even after the overlay closes.
   const ctx = useMemo<OnboardingContext>(
     () => ({
-      profile: targetProfile,
-      requestGateway: onboarding.targetProfile
-        ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
-        : requestGateway,
+      scope,
+      profile: scope.profile ?? undefined,
+      requestGateway:
+        scope.connectionId || (scope.profile && onboarding.targetScope)
+          ? (method, params) => requestOnboardingGateway(scope, method, params)
+          : requestGateway,
       onCompleted: () => onCompletedRef.current?.()
     }),
-    [onboarding.targetProfile, targetProfile, requestGateway]
+    [onboarding.targetScope, scope, requestGateway]
   )
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat
@@ -298,8 +305,13 @@ export function DesktopOnboardingOverlay({
           const current = $desktopOnboarding.get()
 
           return (
+            // `!== true` rather than `=== false`: an UNRESOLVED readiness state
+            // (a boot round whose probes both timed out) is left at `null`
+            // instead of being written down as unconfigured, and it needs this
+            // tick to settle too — otherwise the overlay sits on its
+            // "starting" header with nothing left to re-check it.
             !current.manual &&
-            current.configured === false &&
+            current.configured !== true &&
             current.flow.status === 'idle' &&
             current.mode === 'oauth' &&
             !current.localEndpoint
@@ -345,10 +357,7 @@ export function DesktopOnboardingOverlay({
     }
   }, [ctx, onboarding.flow.status, onboarding.manual, onboarding.providers])
 
-  if (
-    !onboarding.manual &&
-    (introReveal.phase !== 'hidden' || onboardingSurfaceActive() || shouldPlayFirstRunIntro(onboarding.firstRunSkipped))
-  ) {
+  if (!onboarding.manual && onboardingSurfaceActive()) {
     return null
   }
 
@@ -364,7 +373,12 @@ export function DesktopOnboardingOverlay({
   // The user chose "I'll choose a provider later" on first run. Stay out of the
   // way on every subsequent launch — they re-enter via Settings → Providers
   // (manual mode), which sets manual=true and bypasses this gate.
-  if (onboarding.firstRunSkipped && !onboarding.manual && !onboarding.freeTierReady) {
+  // `requested` also outranks the skip: it is only ever set when the user hit a
+  // REAL credential wall (the submit-time deferred warning, a stream that
+  // reported a provider setup error), never by a passive readiness round. Now
+  // that the skip is durable, without this a genuinely broken provider could
+  // leave the user with a prompt that silently refuses to send and no picker.
+  if (onboarding.firstRunSkipped && !onboarding.requested && !onboarding.manual && !onboarding.freeTierReady) {
     return null
   }
 
@@ -606,7 +620,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
-  const apiKeyOptions = useApiKeyCatalog()
+  const apiKeyOptions = useApiKeyCatalog(ctx.scope)
 
   // localEndpoint forces the key form regardless of `mode` (which a manual
   // provider refresh may flip back to 'oauth'); it preselects the local option
@@ -619,7 +633,9 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           canGoBack={hasOauth && !localEndpoint}
           initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : apiKeyInitialEnv}
           onBack={() => setOnboardingMode('oauth')}
-          onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, ctx, apiKey)}
+          onSave={(envKey, value, name, apiKey, modelName) =>
+            saveOnboardingApiKey(envKey, value, name, ctx, apiKey, modelName)
+          }
           options={apiKeyOptions}
         />
         {manual ? null : (
@@ -740,7 +756,13 @@ export function ApiKeyForm({
   isSet?: (envKey: string) => boolean
   onBack: () => void
   onClear?: (envKey: string) => void
-  onSave: (envKey: string, value: string, name: string, apiKey?: string) => Promise<{ message?: string; ok: boolean }>
+  onSave: (
+    envKey: string,
+    value: string,
+    name: string,
+    apiKey?: string,
+    modelName?: string
+  ) => Promise<{ message?: string; needsModelInput?: boolean; ok: boolean }>
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
 }) {
@@ -752,6 +774,12 @@ export function ApiKeyForm({
   // Optional endpoint API key, only used by the local / custom endpoint option
   // (whose `value` is the base URL). Cleared whenever the option changes.
   const [localKey, setLocalKey] = useState('')
+  // Optional manual model name, only used by the local / custom endpoint
+  // option when the previous probe came back with zero /v1/models entries.
+  // The input is hidden until the save call asks for it (needsModelInput), so
+  // the happy path (discovery finds a model) stays uncluttered.
+  const [modelName, setModelName] = useState('')
+  const [showModelInput, setShowModelInput] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
   // `options` can change at runtime when callers filter the catalog (e.g. the
@@ -762,6 +790,8 @@ export function ApiKeyForm({
       setOption(options[0])
       setValue('')
       setLocalKey('')
+      setModelName('')
+      setShowModelInput(false)
       setError(null)
     }
   }, [option.envKey, options])
@@ -774,6 +804,8 @@ export function ApiKeyForm({
     setOption(o)
     setValue('')
     setLocalKey('')
+    setModelName('')
+    setShowModelInput(false)
     setError(null)
     requestAnimationFrame(() => {
       entryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -787,8 +819,10 @@ export function ApiKeyForm({
   // placeholder so users can eyeball that the right key is in place.
   const currentRedacted = alreadySet ? (redactedValue?.(option.envKey) ?? null) : null
   // Only require a non-empty value — no length/format validation, so a short
-  // or unusual key can't block the user from continuing.
-  const canSave = value.trim().length >= 1
+  // or unusual key can't block the user from continuing. When the manual model
+  // input is showing, also require it to be filled (a saved endpoint without a
+  // model is still broken from the runtime's POV).
+  const canSave = value.trim().length >= 1 && (!isLocal || !showModelInput || modelName.trim().length >= 1)
   const optionCopy = t.onboarding.apiKeyOptions[option.id]
   const optionDescription = optionCopy?.description ?? option.description
 
@@ -799,13 +833,30 @@ export function ApiKeyForm({
 
     setSaving(true)
     setError(null)
-    const result = await onSave(option.envKey, value, option.name, isLocal ? localKey : undefined)
+
+    const result = await onSave(
+      option.envKey,
+      value,
+      option.name,
+      isLocal ? localKey : undefined,
+      isLocal && showModelInput ? modelName : undefined
+    )
 
     if (result.ok) {
       setValue('')
       setLocalKey('')
+      setModelName('')
+      setShowModelInput(false)
     } else {
       setError(result.message ?? t.onboarding.couldNotSave)
+
+      // The save handler asks the wizard to reveal a manual model-name input
+      // when the endpoint didn't enumerate any models at /v1/models — the path
+      // for OpenAI-compatible SaaS (Cohere, auth-gated gateways, …) that
+      // doesn't serve a discovery catalog in the OpenAI shape.
+      if (result.needsModelInput) {
+        setShowModelInput(true)
+      }
     }
 
     setSaving(false)
@@ -869,6 +920,17 @@ export function ApiKeyForm({
             placeholder={t.onboarding.localApiKeyPlaceholder}
             type="password"
             value={localKey}
+          />
+        ) : null}
+        {isLocal && showModelInput ? (
+          <Input
+            autoComplete="off"
+            autoFocus
+            className="font-mono"
+            onChange={e => setModelName(e.target.value)}
+            onKeyDown={e => isSubmitEnter(e) && void submit()}
+            placeholder={t.onboarding.localModelNamePlaceholder}
+            value={modelName}
           />
         ) : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}

@@ -2,7 +2,9 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ConnectionTargetState, ConnectorsConnectResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { useInRouterContext, useNavigate } from 'react-router'
 
+import { accountRenameRoute } from '@/app/capabilities/connectors/data/deep-link'
 import { useSessionView } from '@/app/chat/session-view'
 import { sessionRoute } from '@/app/routes'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
@@ -20,13 +22,14 @@ import {
 } from '@/lib/connector-tools'
 import {
   $connectionRequests,
+  connectionOpOf,
   type ConnectionOwner,
   connectionOwnerFor,
   type ConnectionRequest,
   connectionRequestOpen,
   type ConnectionTarget,
   continueConnectionRequest,
-  sessionConnectionRequest
+  toolConnectionRequest
 } from '@/store/connection-request'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
@@ -148,7 +151,14 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
-  const $request = useMemo(() => sessionConnectionRequest(runtimeId), [runtimeId])
+  const opId = connectionOpOf(props.args)
+  const running = props.result === undefined
+
+  const $request = useMemo(
+    () => toolConnectionRequest(runtimeId, props.toolCallId, opId, running),
+    [opId, props.toolCallId, running, runtimeId]
+  )
+
   const request = useStore($request)
   const targetNames = requestedConnectorNames(props.args)
 
@@ -264,6 +274,10 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   const { t } = useI18n()
   const copy = t.connectors
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
+  // Rows whose link the user opened from this card. `initiated` only means a link was minted: the
+  // connect-first handoff (D85) mints on the watcher's first pass, before anyone clicks, so the
+  // "Waiting for your browser…" cue belongs to a row the user actually opened.
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set())
   const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
   // A DOM handle for the focus handoff, never rendered state.
   const cardRef = useRef<HTMLDivElement | null>(null)
@@ -274,6 +288,12 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   // A refused re-mint is a click that changed nothing, so it gets a toast; the row stays as it was.
   const reissue = async (target: ConnectionTarget): Promise<void> => {
     setReissuing(current => new Set(current).add(target.name))
+    setOpened(current => {
+      const next = new Set(current)
+      next.delete(target.name)
+
+      return next
+    })
 
     try {
       await reissueConnectionTarget(owner, request, target.name)
@@ -309,6 +329,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
             />
           )
         })}
+        <NamedAccountNotices owner={owner} targets={request.targets} />
       </div>
     )
   }
@@ -319,6 +340,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
         {request.targets.map(target => {
           const phase = CONNECTOR_CARD_PHASES[target.state]
           const busy = reissuing.has(target.name)
+          const mark = phase.mark === 'waiting' && !opened.has(target.name) ? 'idle' : phase.mark
 
           const action =
             phase.verb === 'none'
@@ -331,6 +353,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
                   onClick: () => {
                     if (phase.verb === 'open' && target.connectUrl && window.hermesDesktop?.openExternal) {
                       void window.hermesDesktop.openExternal(target.connectUrl)
+                      setOpened(current => new Set(current).add(target.name))
                     }
 
                     if (phase.verb === 'reissue') {
@@ -347,14 +370,15 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
                 name: target.name,
                 title: connectorTitle(target.name)
               }}
-              cue={phase.mark === 'waiting' ? copy.waiting : undefined}
+              cue={mark === 'waiting' ? copy.waiting : undefined}
               key={target.name}
-              mark={phase.mark}
-              markLabel={MARK_LABEL[phase.mark](copy)}
+              mark={mark}
+              markLabel={MARK_LABEL[mark](copy)}
             />
           )
         })}
       </ConnectorCard>
+      <NamedAccountNotices owner={owner} targets={request.targets} />
       {unresolved ? (
         <div className="px-3.5">
           <Button onClick={() => void continueConnectionRequest(request)} size="xs" variant="textStrong">
@@ -363,6 +387,63 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
         </div>
       ) : null}
     </div>
+  )
+}
+
+/** One line per account Hermes named and connected; Rename opens that account's editor on the Connectors tab. */
+function NamedAccountNotices({ owner, targets }: { owner: ConnectionOwner; targets: readonly ConnectionTarget[] }) {
+  const named = targets.filter(target => target.state === 'connected' && target.alias)
+
+  if (named.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="grid gap-1 px-3.5" data-slot="connector-named-account">
+      {named.map(target => (
+        <NamedAccountNotice
+          alias={target.alias ?? ''}
+          connectionId={target.connectionId}
+          key={target.name}
+          name={target.name}
+          owner={owner}
+        />
+      ))}
+    </div>
+  )
+}
+
+interface NamedAccountProps {
+  alias: string
+  /** The account the line is about; the Rename link goes by it, since the name can change hands. */
+  connectionId: string
+  name: string
+  owner: ConnectionOwner
+}
+
+function NamedAccountNotice({ alias, connectionId, name, owner }: NamedAccountProps) {
+  const { t } = useI18n()
+  const inRouter = useInRouterContext()
+
+  return (
+    <p className="flex flex-wrap items-center gap-x-1.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)">
+      {t.connectors.namedAccount(connectorTitle(name), alias)}
+      {inRouter && connectionId ? (
+        <RenameAccountLink alias={alias} connectionId={connectionId} name={name} owner={owner} />
+      ) : null}
+    </p>
+  )
+}
+
+// useNavigate() throws outside a Router; the parent mounts this only inside one.
+function RenameAccountLink({ connectionId, name, owner }: NamedAccountProps) {
+  const { t } = useI18n()
+  const navigate = useNavigate()
+
+  return (
+    <Button onClick={() => navigate(accountRenameRoute(name, connectionId, owner))} size="inline" variant="textStrong">
+      {t.connectors.renameAccount}
+    </Button>
   )
 }
 
@@ -396,6 +477,7 @@ export function ConnectorExecution(props: ToolCallMessagePartProps) {
           <ToolFallback
             {...props}
             args={recordOf(recordOf(batch[index]).arguments ?? props.args)}
+            innerToolName={props.toolName === 'tool_call' ? label.name : props.toolName}
             isError={Boolean(result.error) || props.isError === true}
             key={`${props.toolCallId}:${index}`}
             result={item}

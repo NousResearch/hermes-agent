@@ -11,16 +11,16 @@ const { default: afterExtract } = await import('./after-extract.mjs')
 
 const require = createRequire(import.meta.url)
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const desktopPackage = require(path.join(desktopRoot, 'package.json'))
+// The builder config is electron-builder.config.cjs (package.json carries no `build` block).
+const builderConfig = require(path.join(desktopRoot, 'electron-builder.config.cjs'))
 
 // #105629: the identity stamp must run BEFORE electron-builder's ASAR-integrity
 // rewrite of the exe (beforeCopyExtraFiles), i.e. from afterExtract, never from
 // afterPack — rcedit cannot commit changes to the resedit-rewritten PE. And the
 // fix must keep the integrity check on (no disableAsarIntegrity workaround).
-test('the exe identity stamp is wired to afterExtract, not afterPack, with ASAR integrity kept on', () => {
-  assert.equal(desktopPackage.build.afterExtract, 'scripts/after-extract.mjs')
-  assert.equal(desktopPackage.build.afterPack, undefined)
-  assert.equal(desktopPackage.build.disableAsarIntegrity, undefined)
+test('the exe identity stamp is wired to afterExtract with ASAR integrity kept on', () => {
+  assert.equal(builderConfig.afterExtract, 'scripts/after-extract.mjs')
+  assert.equal(builderConfig.disableAsarIntegrity, undefined)
 })
 
 test('stamps the stock electron.exe on win32 only, before it is renamed to Hermes.exe', async () => {

@@ -13,6 +13,7 @@ and the gateway 404'd at ``send_photo`` time.
 from __future__ import annotations
 
 import http.server
+import os
 import socketserver
 import threading
 
@@ -29,7 +30,7 @@ PNG_1PX = bytes.fromhex(
 class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
     """Tiny HTTP server that mimics the shapes save_url_image must handle."""
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         if self.path == "/image.png":
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
@@ -69,7 +70,7 @@ class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-    def log_message(self, *args, **kw):  # noqa: D401
+    def log_message(self, *args, **kw):
         return
 
 
@@ -112,9 +113,10 @@ class TestSaveUrlImage:
 
         assert path.exists()
         assert path.read_bytes() == PNG_1PX
-        # The cache directory must be under HERMES_HOME — gateway cleanup
-        # relies on this being the canonical location.
-        assert "cache/images" in str(path)
+        # Durable generated-media dir: under HERMES_HOME but OUTSIDE the swept
+        # inbound caches — gateway cleanup must never delete the only copy of a
+        # generated deliverable (#126445).
+        assert os.path.join("cache", "generated", "images") in str(path)
         assert path.suffix == ".png"
 
     def test_404_raises(self, http_server):

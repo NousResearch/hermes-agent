@@ -88,7 +88,7 @@ def _try_lock_nb(handle) -> bool:
         import msvcrt
 
         handle.seek(0)
-        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_NBLCK"), 1)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
     else:
         import fcntl
 
@@ -105,7 +105,7 @@ def _unlock(handle) -> None:
         import msvcrt
 
         handle.seek(0)
-        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
     else:
         import fcntl
 
@@ -665,6 +665,54 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     return conn, out
 
 
+def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
+    """Refuse to create a fresh DB for a board that is not live.
+
+    ``board=None`` (or ``default``) is unaffected — except that a None board
+    can still *resolve* through the current-board context (``--board`` scope,
+    ``HERMES_KANBAN_BOARD``, the ``current`` file) to a named board dir; an
+    ``archived`` tombstone in that dir gets the same refusal. For any other
+    slug whose DB file does not exist yet, opening it would mkdir the board
+    directory and leave an empty DB-only stub — exactly how archived boards
+    (moved to ``_archived/`` with an ``archived`` tombstone ``board.json``) and
+    hard-deleted boards (no directory left at all) used to reappear as empty
+    active boards via stale dashboard/gateway read paths (#43243). Creation
+    is the job of :func:`kanban_db.create_board` (which writes the metadata
+    first); read paths get an actionable error instead of a resurrected board.
+    """
+    if path.exists():
+        return  # existing DB: a plain open, never a resurrection
+    if board is None:
+        # Default-DB and env-pinned paths never sit under a board dir, so a
+        # board.json here means the current-board context resolved to that
+        # board's dir; refuse only the archived case (a fresh home has no
+        # board.json next to its kanban.db, so creation still self-heals).
+        tombstone = path.parent / "board.json"
+        if tombstone.exists():
+            import json
+            try:
+                raw = json.loads(tombstone.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                return
+            if isinstance(raw, dict) and raw.get("archived"):
+                raise ValueError(
+                    f"kanban board {path.parent.name!r} is archived; "
+                    "refusing to recreate its database"
+                )
+        return
+    try:
+        slug = _kb._normalize_board_slug(board)
+    except ValueError:
+        return  # malformed slug: let the later open surface the error
+    if not slug or slug == _kb.DEFAULT_BOARD:
+        return
+    meta = _kb.read_board_metadata(slug)
+    if meta.get("archived"):
+        raise ValueError(f"kanban board {slug!r} is archived; refusing to recreate its database")
+    if not _kb.board_metadata_path(slug).exists():
+        raise ValueError(f"kanban board {slug!r} does not exist; create it with `hermes kanban boards create {slug}`")
+
+
 def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
@@ -684,6 +732,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             conn.close()
             raise PermissionError("Kanban descendants require an initialized board; ask its owner to initialize it")
         return conn
+    _refuse_dead_board_resurrection(path, board)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, skip the
@@ -758,6 +807,7 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     migration pass — callers that know the on-disk schema may have drifted
     (tests writing legacy event kinds, external upgrades) use it to force it."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    _refuse_dead_board_resurrection(path, board)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Clear the cache entry so connect() re-runs schema + migrations.
     with _INIT_LOCK:
@@ -1247,4 +1297,4 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb  # noqa: E402
+from hermes_cli import kanban_db as _kb

@@ -87,3 +87,21 @@ def test_reload_rediscovers_the_launch_profile_under_its_own_secret_scope(reload
 
     assert sorted(set(reload_env.scoped_homes)) == sorted(set(reload_env.discovered_homes))
     assert hermes_constants.hermes_home_key() in reload_env.scoped_homes
+
+
+def test_reload_forwards_disabled_toolsets_to_the_refresh(reload_env, monkeypatch):
+    """The per-session refresh re-resolves enabled AND disabled toolsets, so a toolset the user
+    just disabled in config (``agent.disabled_toolsets``) disappears from the live snapshot on
+    the same reload instead of surviving until /new (#44499)."""
+    seen: list[dict] = []
+
+    def _spy(agent, **kw):
+        seen.append(kw)
+        return set()
+
+    monkeypatch.setattr(_mcp_agent, "refresh_agent_mcp_tools", _spy)
+    monkeypatch.setattr(srv, "_load_disabled_toolsets", lambda: ["browser"])
+
+    srv._methods["reload.mcp"](1, {"session_id": "A", "confirm": True})
+
+    assert seen and all(kw.get("disabled_override") == ["browser"] for kw in seen)

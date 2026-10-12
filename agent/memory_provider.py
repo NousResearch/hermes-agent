@@ -27,7 +27,7 @@ def ctx_bound(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def spawn_context_thread(target: Callable[..., Any], *, name: str, daemon: bool = True,
-                         args: tuple = (), kwargs: Optional[Dict[str, Any]] = None) -> threading.Thread:
+                         args: tuple = (), kwargs: Optional[dict[str, Any]] = None) -> threading.Thread:
     """Unstarted thread running *target* under the spawner's contextvars (see :func:`ctx_bound`).
     Every memory-provider background job (prefetch, sync, writer loops) must go through this."""
     return threading.Thread(target=ctx_bound(target), args=args, kwargs=kwargs, name=name, daemon=daemon)
@@ -132,17 +132,17 @@ class MemoryProvider(ABC):
 
     def sync_turn(
         self, user_content: str, assistant_content: str, *,
-        session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,
-        turn_author: Optional[Dict[str, Any]] = None,
+        session_id: str = "", messages: Optional[list[dict[str, Any]]] = None,
+        turn_author: Optional[dict[str, Any]] = None,
     ) -> None:
         """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far.
         ``turn_author`` (``{"id", "name", "is_bot"}``) is who wrote the user side; the manager sends it only to signatures that accept it."""
 
     @abstractmethod
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         """OpenAI function-calling schemas ({"name", "description", "parameters"}); [] if none."""
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         """Handle one of this provider's tools; must return a JSON string."""
         raise NotImplementedError(f"Provider {self.name} does not handle tool {tool_name}")
 
@@ -156,13 +156,13 @@ class MemoryProvider(ABC):
         author_is_bot. The author trio names who wrote THIS turn (None, None, False without one): a shared session
         carries several participants, so a provider keying durable state on identity must read it per turn."""
 
-    def identity_signature(self) -> Dict[str, Any]:
+    def identity_signature(self) -> dict[str, Any]:
         """Identity-mapping values that must bust a cached gateway agent when they change (writer identity, alias
         tables, session-name prefixing). Provider-namespaced keys, JSON-serializable values. The gateway calls this
         on an uninitialized instance on every inbound message, so keep it cheap and read-only."""
         return {}
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         """End-of-session extraction; fires only at real session boundaries, never per-turn."""
 
     def on_session_switch(
@@ -173,29 +173,34 @@ class MemoryProvider(ABC):
         ``reset`` is True only for a genuinely new conversation (flush buffers); ``rewound``:
         same id but the transcript was truncated."""
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """Extract insights from ``messages`` about to be compressed, fed into the summary prompt."""
         return ""
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
         """PARENT-side observation of a completed delegation (the subagent has no provider session)."""
 
-    def get_config_schema(self) -> List[Dict[str, Any]]:
+    def get_config_schema(self) -> list[dict[str, Any]]:
         """Setup fields for ``hermes memory setup`` ([] if none): ``key``, ``description``,
         optional ``secret`` (goes to .env), ``required``, ``default``, ``choices``, ``type``
         (text | integer | number | boolean), ``minimum``/``maximum``/``step``, ``url``,
         ``env_var`` (explicit secret env var; default auto-generated)."""
         return []
 
-    def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
+    def save_config(self, values: dict[str, Any], hermes_home: str) -> None:
         """Write non-secret setup ``values`` to the provider's native config. Plugins MUST either
         override this or use only env vars (every schema field carrying ``env_var``)."""
 
-    def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[dict[str, Any]] = None) -> None:
         """Mirror a built-in memory-tool write (``action``: add | replace | remove; ``target``:
-        memory | user; ``metadata``: provenance such as write_origin, session_id, tool_name)."""
+        memory | user; ``metadata``: provenance such as write_origin, session_id, tool_name).
+        For replace/remove, ``metadata["previous_content"]`` is the full entry selected
+        under the native-store lock. Notifications follow a successful complete write
+        or batch; each batch operation sees the preceding operation's result. Older
+        callers may omit this field: ``old_text`` alone is not authoritative identity.
+        """
 
-    def backup_paths(self) -> List[str]:
+    def backup_paths(self) -> list[str]:
         """Absolute paths of provider state OUTSIDE HERMES_HOME for ``hermes backup``/``import``
         (paths outside the home dir are skipped). MUST work without ``initialize()`` or network."""
         return []

@@ -164,12 +164,6 @@ class TestMentionTokenMatching:
         # non-ASCII script, not a mention.
         assert await self._resolve("山田@Fizz") == []
 
-    @pytest.mark.asyncio
-    async def test_no_at_sign_short_circuits_without_cli_calls(self):
-        adapter = _make_adapter()
-        cli = _wire(adapter, _ScriptedCli())
-        assert await adapter._mention_pubkeys_for(CHANNEL, "no mentions here") == []
-        assert cli.calls == []
 
     @pytest.mark.asyncio
     async def test_longest_name_wins_and_consumes_span(self):

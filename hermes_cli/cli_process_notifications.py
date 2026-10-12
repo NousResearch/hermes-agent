@@ -19,11 +19,26 @@ class CLIProcessNotificationsMixin:
             resolved_key = event_key
         return str(resolved_key) == current_key
 
+    def _background_notifications_suppressed(self) -> bool:
+        """Whether ``display.background_process_notifications`` is ``off`` for this CLI session.
+
+        The key gates the gateway's completion injection (#9290) but the CLI drain never consulted
+        it, so the documented ``off`` escape hatch silently did nothing here (#123114). Mirrors the
+        gateway semantics: events are still drained, claimed and acknowledged — only the
+        turn-starting injection is suppressed."""
+        try:
+            from cli import CLI_CONFIG
+            mode = str((CLI_CONFIG.get("display") or {}).get("background_process_notifications") or "").strip().lower()
+        except Exception:
+            return False
+        return mode == "off"
+
     def _drain_process_notifications(self, consumer: str) -> None:
         from tools.process_registry import process_registry
         from tools.async_delegation import claim_event_delivery, complete_event_delivery
         from tools.process_registry_notifications import (
-            ProcessNotificationBatch, TimelineNotification, group_process_notifications)
+            HEARTBEAT_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification, group_process_notifications,
+            heartbeat_display_text)
 
         claimed = []
         for event, text in process_registry.drain_notifications(
@@ -34,12 +49,18 @@ class CLIProcessNotificationsMixin:
                 continue
             claimed.append((event, text))
             complete_event_delivery(event, claim)
+        if self._background_notifications_suppressed():
+            # Subagent results are not process notifications: they still land.
+            claimed = [(event, text) for event, text in claimed if event.get("type") == "async_delegation"]
         for notifications in group_process_notifications(claimed):
             event, text = notifications[0]
-            if event.get("type", "completion") == "completion":
+            evt_type = event.get("type", "completion")
+            if evt_type == "completion":
                 pending = ProcessNotificationBatch(notifications)
+            elif evt_type == "heartbeat":
+                pending = TimelineNotification(text, heartbeat_display_text(event), HEARTBEAT_DISPLAY_KIND)
             else:
-                pending = TimelineNotification.for_delegation(text, event) if event.get("type") == "async_delegation" else text
+                pending = TimelineNotification.for_delegation(text, event) if evt_type == "async_delegation" else text
                 from agent.notification_presentation import diagnostic_process_event
                 if diagnostic_process_event(event) and not isinstance(pending, TimelineNotification):
                     pending = TimelineNotification(text, text, "internal_notification", "diagnostic")

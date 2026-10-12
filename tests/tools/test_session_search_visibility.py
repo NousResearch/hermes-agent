@@ -5,7 +5,7 @@ import json
 import pytest
 
 from hermes_state import SessionDB
-from tools import session_search_tool  # noqa: F401  register the real handler
+from tools import session_search_tool  # register the real handler
 from tools.registry import registry
 
 

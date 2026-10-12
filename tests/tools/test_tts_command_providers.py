@@ -12,6 +12,7 @@ the tests run identically on Linux, macOS, and (with minor quoting
 differences) Windows.
 """
 
+import io
 import json
 import os
 import shlex
@@ -111,14 +112,10 @@ class TestCommandTtsEnv:
 
         captured = {}
 
-        class _Stream:
-            def read(self, size):
-                return ""
-
         class Proc:
             returncode = 0
-            stdout = _Stream()
-            stderr = _Stream()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
 
             def wait(self, timeout=None):
                 return 0
@@ -131,7 +128,7 @@ class TestCommandTtsEnv:
 
         result = _run_command_tts("echo hi", timeout=1)
 
-        assert result.returncode == 0
+        assert (result.returncode, Proc.stdout.closed, Proc.stderr.closed) == (0, True, True)
         env = captured["env"]
         assert "AUXILIARY_VISION_API_KEY" not in env
         assert "GATEWAY_RELAY_SECRET" not in env
@@ -481,14 +478,10 @@ class TestCommandTtsEnvPassthrough:
 
         captured = {}
 
-        class _Stream:
-            def read(self, size):
-                return ""
-
         class Proc:
             returncode = 0
-            stdout = _Stream()
-            stderr = _Stream()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
 
             def wait(self, timeout=None):
                 return 0
@@ -503,7 +496,7 @@ class TestCommandTtsEnvPassthrough:
             "echo hi", timeout=1, env_passthrough=["MY_TTS_API_KEY"]
         )
 
-        assert result.returncode == 0
+        assert (result.returncode, Proc.stdout.closed, Proc.stderr.closed) == (0, True, True)
         env = captured["env"]
         assert env["MY_TTS_API_KEY"] == "sk-provider"
         assert "OPENAI_API_KEY" not in env
@@ -562,14 +555,10 @@ class TestCommandProviderSpawnGroupKwargs:
     def test_popen_kwargs_hide_console_window_windows(self, monkeypatch):
         captured = {}
 
-        class _Stream:
-            def read(self, size):
-                return ""
-
         class Proc:
             returncode = 0
-            stdout = _Stream()
-            stderr = _Stream()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
 
             def wait(self, timeout=None):
                 return 0
@@ -582,7 +571,7 @@ class TestCommandProviderSpawnGroupKwargs:
 
         result = _run_command_tts("echo hi", timeout=1)
 
-        assert result.returncode == 0
+        assert (result.returncode, Proc.stdout.closed, Proc.stderr.closed) == (0, True, True)
         # Own process group (tree-kill on idle timeout) AND a hidden console.
         assert captured["creationflags"] & 0x08000000, "CREATE_NO_WINDOW missing"
         assert captured["creationflags"] & 0x00000200, "CREATE_NEW_PROCESS_GROUP missing"
@@ -592,14 +581,10 @@ class TestCommandProviderSpawnGroupKwargs:
     def test_popen_kwargs_start_new_session_posix(self, monkeypatch):
         captured = {}
 
-        class _Stream:
-            def read(self, size):
-                return ""
-
         class Proc:
             returncode = 0
-            stdout = _Stream()
-            stderr = _Stream()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
 
             def wait(self, timeout=None):
                 return 0
@@ -612,7 +597,7 @@ class TestCommandProviderSpawnGroupKwargs:
 
         result = _run_command_tts("echo hi", timeout=1)
 
-        assert result.returncode == 0
+        assert (result.returncode, Proc.stdout.closed, Proc.stderr.closed) == (0, True, True)
         assert captured["start_new_session"] is True
         assert "creationflags" not in captured
 

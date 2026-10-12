@@ -194,7 +194,10 @@ def run_command_provider(
                     break
                 output_queue.put((name, chunk))
         finally:
-            output_queue.put((name, None))
+            try:
+                stream.close()
+            finally:
+                output_queue.put((name, None))
 
     readers = [threading.Thread(target=read_stream, args=(name, stream), daemon=True)
                for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr))]

@@ -72,18 +72,21 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
         return None
 
 
-def remote_git_run(argv: list[str], *, cwd, timeout: float) -> Optional[subprocess.CompletedProcess]:
+def remote_git_run(argv: list[str], *, cwd, timeout: float,
+                   env=None) -> Optional[subprocess.CompletedProcess]:
     """A git command that talks to a remote, or None when it timed out (spawn failure raises).
 
     ``ls-remote`` forks ``git remote-https``. The passive update check runs it from a daemon
     thread, so over a slow network a plain ``subprocess.run`` child outlived the CLI on ``/exit``
     together with its helper, and a timeout killed only ``git``. Owned (``bounded_probe_run``),
     the group dies with this process however it exits, and a timeout kills all of it.
+    ``env`` replaces the isolated git env (a credentialed retry of the same command).
     """
     from hermes_cli._subprocess_compat import bounded_probe_run
 
     return bounded_probe_run(argv, timeout=timeout, cwd=str(cwd) if cwd is not None else None,
-                             env=source_git_env(), raise_on_spawn_failure=True, owned=True)
+                             env=env if env is not None else source_git_env(),
+                             raise_on_spawn_failure=True, owned=True)
 
 
 def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5, git: str = "git") -> Optional[str]:

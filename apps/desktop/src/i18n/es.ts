@@ -11,6 +11,7 @@ import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
+import { esSystemResources } from './es_system_resources'
 import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
@@ -4695,17 +4696,7 @@ export const esOverrides = {
       openStarmap: 'Abrir grafo de memoria',
       turnRunning: 'En ejecución',
       contextUsage: 'Uso de contexto',
-      systemResources: {
-        title: 'Recursos del sistema',
-        loading: 'Recursos…',
-        gpuUtilization: 'Uso de GPU',
-        gpuMemory: 'Memoria de GPU',
-        ram: 'RAM',
-        cpu: 'CPU',
-        disk: 'Disco',
-        unifiedNote: 'Memoria unificada: la GPU y el sistema comparten este espacio.',
-        toggle: 'Recursos del sistema'
-      },
+      systemResources: esSystemResources,
       contextUsagePanel: {
         categories: {
           conversation: 'Conversación',

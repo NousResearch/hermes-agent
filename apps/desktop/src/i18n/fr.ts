@@ -11,6 +11,7 @@ import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
+import { frSystemResources } from './fr_system_resources'
 import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
 
@@ -4710,17 +4711,7 @@ export const frOverrides = {
       openStarmap: 'Ouvrir le graphique de mémoire',
       turnRunning: 'En cours',
       contextUsage: 'Utilisation du contexte',
-      systemResources: {
-        title: 'Ressources système',
-        loading: 'Ressources…',
-        gpuUtilization: 'Utilisation du GPU',
-        gpuMemory: 'Mémoire GPU',
-        ram: 'RAM',
-        cpu: 'CPU',
-        disk: 'Disque',
-        unifiedNote: 'Mémoire unifiée — le GPU et le système partagent cet espace.',
-        toggle: 'Ressources système'
-      },
+      systemResources: frSystemResources,
       contextUsagePanel: {
         categories: {
           conversation: 'Conversation',

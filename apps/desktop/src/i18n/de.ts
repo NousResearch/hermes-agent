@@ -10,6 +10,7 @@ import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
+import { deSystemResources } from './de_system_resources'
 import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
@@ -4700,17 +4701,7 @@ export const deOverrides = {
       openStarmap: 'Memory-Graph öffnen',
       turnRunning: 'Läuft',
       contextUsage: 'Kontext-Verbrauch',
-      systemResources: {
-        title: 'Systemressourcen',
-        loading: 'Ressourcen…',
-        gpuUtilization: 'GPU-Auslastung',
-        gpuMemory: 'GPU-Speicher',
-        ram: 'RAM',
-        cpu: 'CPU',
-        disk: 'Datenträger',
-        unifiedNote: 'Unified Memory — die GPU und das System teilen sich diesen Speicherpool.',
-        toggle: 'Systemressourcen'
-      },
+      systemResources: deSystemResources,
       contextUsagePanel: {
         categories: {
           conversation: 'Konversation',

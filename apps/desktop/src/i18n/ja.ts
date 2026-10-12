@@ -10,6 +10,7 @@ import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
+import { jaSystemResources } from './ja_system_resources'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
@@ -3150,17 +3151,7 @@ export const jaOverrides = {
       turnRunning: '実行中',
       contextUsage: 'コンテキスト使用状況',
       compressions: count => `圧縮回数: ${count}`,
-      systemResources: {
-        title: 'システムリソース',
-        loading: 'リソース…',
-        gpuUtilization: 'GPU 使用率',
-        gpuMemory: 'GPU メモリ',
-        ram: 'RAM',
-        cpu: 'CPU',
-        disk: 'ディスク',
-        unifiedNote: 'ユニファイドメモリ——GPU とシステムがこのプールを共有します。',
-        toggle: 'システムリソース'
-      },
+      systemResources: jaSystemResources,
       contextUsagePanel: {
         categories: {
           conversation: '会話',

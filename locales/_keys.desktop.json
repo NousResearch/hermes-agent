@@ -4177,6 +4177,8 @@
     "shell.statusbar.starmap",
     "shell.statusbar.subagents",
     "shell.statusbar.switchModel",
+    "shell.statusbar.systemResources.cpu",
+    "shell.statusbar.systemResources.disk",
     "shell.statusbar.systemResources.gpuMemory",
     "shell.statusbar.systemResources.gpuUtilization",
     "shell.statusbar.systemResources.loading",

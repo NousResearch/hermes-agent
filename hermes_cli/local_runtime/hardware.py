@@ -58,7 +58,7 @@ _GPU_ENGINE_BACKENDS = ("vulkan", "hip")
 # One probe per process once a device answers (silicon doesn't change); a miss retries after this
 # long so a runtime installed mid-session gets picked up by the engine fallback.
 _POOL_NEGATIVE_TTL_S = 60.0
-_pool_probe_cache: tuple[float, "tuple[int, bool | None] | None"] | None = None
+_pool_probe_cache: tuple[float, tuple[int, bool | None] | None] | None = None
 
 # '  CUDA0: NVIDIA Example Device (1234-core Example GPU) (46464 MiB, 46284 MiB free)'
 # — greedy .* pins the LAST parenthesized group, so device names with parentheses parse.
@@ -67,7 +67,8 @@ _DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
 
 def _stdout(*argv: str) -> str:
     return subprocess.run(
-        list(argv), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
+        list(argv), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+        check=False,
     ).stdout
 
 
@@ -174,7 +175,7 @@ def _ram_bytes() -> tuple[int, int]:
 # nvidia-smi lives at a fixed path under the driver install; PATH presence varies by session type
 # (services and gateways often run minimal environments) and by driver generation (the legacy
 # NVSMI dir was never on PATH). Cached: the driver doesn't move mid-process.
-_smi_path_cache: "tuple[str | None] | None" = None
+_smi_path_cache: tuple[str | None] | None = None
 
 
 def _nvidia_smi_path() -> str | None:
@@ -212,7 +213,7 @@ def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
     return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
 
 
-_gpu_query_cache: "tuple[float, dict | None] | None" = None
+_gpu_query_cache: tuple[float, dict | None] | None = None
 # The statusbar polls /api/local-models/hardware every 5s and the endpoint needs
 # name/util/vram; the budget probe needs total/free. One shared query (with a TTL
 # shorter than the poll) serves both, so one poll = one nvidia-smi spawn (#120262)
@@ -221,7 +222,7 @@ _gpu_query_cache: "tuple[float, dict | None] | None" = None
 _GPU_QUERY_TTL_S = 4.0
 
 
-def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
+def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
     """One nvidia-smi read shared by the budget probe and the hardware endpoint.
 
     Returns ``dict(gpu_name=, total_bytes=, free_bytes=, used_bytes=, gpu_util_percent=,
@@ -244,7 +245,7 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
             [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            creationflags=windows_hide_flags())
+            creationflags=windows_hide_flags(), check=False)
         if out.returncode != 0 or not out.stdout.strip():
             _gpu_query_cache = (now, None)
             return None
@@ -267,7 +268,7 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
     return None
 
 
-def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
+def _cuda_driver_pool() -> tuple[int, bool | None] | None:
     """(allocator_total_bytes, integrated_or_None) from the CUDA driver API via ctypes against the
     driver's own DLL/SO — no toolkit, no subprocess, ~ms. INTEGRATED is the vendor's own
     unified-memory declaration; total is the pool the allocator will actually hand out (on
@@ -315,7 +316,7 @@ def _configured_engine():
     return installed_engine(section.get("backend") or "auto")
 
 
-def _engine_device_pool() -> "tuple[int, bool | None] | None":
+def _engine_device_pool() -> tuple[int, bool | None] | None:
     """(engine_total_bytes, None) from the installed runtime's own --list-devices, or None. The
     fallback when the driver API is unreachable: asks the exact binary that will do the
     allocating. Carries no integrated verdict — callers must gate it."""
@@ -325,7 +326,7 @@ def _engine_device_pool() -> "tuple[int, bool | None] | None":
             return None
         exe = engine.binary
         out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(exe.parent))
+                             text=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(exe.parent), check=False)
         if out.returncode != 0:
             return None
         for line in (out.stdout + out.stderr).splitlines():
@@ -335,7 +336,7 @@ def _engine_device_pool() -> "tuple[int, bool | None] | None":
     return None
 
 
-def _device_pool_view() -> "tuple[int, bool | None] | None":
+def _device_pool_view() -> tuple[int, bool | None] | None:
     """Best available allocator-side view, cached: a hit is permanent for the process, a miss
     retries after a short TTL (the engine binary can appear mid-session via a pane install)."""
     global _pool_probe_cache
@@ -349,10 +350,10 @@ def _device_pool_view() -> "tuple[int, bool | None] | None":
     return view
 
 
-_accelerator_cache: "dict[str, tuple[float, dict | None]]" = {}
+_accelerator_cache: dict[str, tuple[float, dict | None]] = {}
 
 
-def _accelerator_device(*, fresh: bool = False) -> "dict | None":
+def _accelerator_device(*, fresh: bool = False) -> dict | None:
     """The device a Vulkan/HIP engine will place layers on, or None (no such engine, probe miss).
 
     Mirrors llama.cpp's own placement: discrete devices whenever one exists, an integrated one only
@@ -419,7 +420,7 @@ def _gpu_engine_runs_the_model() -> bool:
     return False
 
 
-def _windows_igpu_bytes(device: "dict | None") -> int | None:
+def _windows_igpu_bytes(device: dict | None) -> int | None:
     """What Windows lets the integrated GPU allocate (Task Manager's GPU memory), or None.
 
     The adapter is the one the engine named, else the only non-NVIDIA hardware adapter when a

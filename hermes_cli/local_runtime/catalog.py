@@ -101,11 +101,11 @@ class CatalogEntry:
     # GGUF general.architecture; prices architecture-specific buffers (estimator._WINDOW_COMPUTE_BYTES)
     # before the file is on disk.
     architecture: str = ""
-    mmproj: "AssetFile | None" = None    # vision projector, downloads with model
-    draft: "AssetFile | None" = None     # spec-decode draft model (e.g. DSpark)
+    mmproj: AssetFile | None = None    # vision projector, downloads with model
+    draft: AssetFile | None = None     # spec-decode draft model (e.g. DSpark)
     # MTP head shipped as its own file (the model carries none): the engine loads it as the
     # draft for MTP spec decode. Downloads with the model.
-    mtp_head: "AssetFile | None" = None
+    mtp_head: AssetFile | None = None
     sampling: dict = field(default_factory=dict)  # INI long-form launch defaults
     # Oldest llama.cpp release tag that can load this model (day-0 architectures need the release
     # where their support landed). Empty means any installed engine.
@@ -220,7 +220,7 @@ _PRODUCT_DEFAULTS = {
 }
 
 
-def _hardware_key(budget: HardwareBudget, backend: str) -> "tuple[str, str, str]":
+def _hardware_key(budget: HardwareBudget, backend: str) -> tuple[str, str, str]:
     """(platform, backend, reference GPU name) for the shipped tables; the name is empty when the
     GPU is not recognized."""
     # Drivers may append a parenthesized description to the stable device name.
@@ -246,8 +246,8 @@ def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: H
 
 
 def recommended_entry(budget: HardwareBudget,
-                      entries: "tuple[CatalogEntry, ...] | None" = None, *, backend: str = "auto"
-                      ) -> "tuple[CatalogEntry, str] | None":
+                      entries: tuple[CatalogEntry, ...] | None = None, *, backend: str = "auto"
+                      ) -> tuple[CatalogEntry, str] | None:
     """The catalog's default pick for THIS machine, with its reason key.
 
     Callers pass pre-filtered entries when some are ineligible for reasons the catalog can't know
@@ -296,7 +296,7 @@ _refresh_lock = threading.Lock()
 _last_refresh_attempt = 0.0
 
 
-def _asset_from(d: "dict | None") -> "AssetFile | None":
+def _asset_from(d: dict | None) -> AssetFile | None:
     if not d:
         return None
     return AssetFile(path=d["path"], size_bytes=int(d["size_bytes"]), local=d.get("local"),
@@ -314,7 +314,7 @@ _SCALAR_FIELDS = {
 }
 
 
-def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
+def _load_catalog(doc: dict) -> tuple[CatalogEntry, ...]:
     """Parse a catalog document. Unknown fields are ignored (newer catalogs stay readable by older
     apps); a major schema bump is the signal that they wouldn't be, and the caller skips it."""
     if int(doc.get("schema_version", 0)) != _SCHEMA_VERSION:
@@ -337,14 +337,14 @@ def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
     return tuple(entries)
 
 
-def _packaged_catalog() -> "tuple[CatalogEntry, ...]":
+def _packaged_catalog() -> tuple[CatalogEntry, ...]:
     from importlib.resources import files
 
     raw = files("hermes_cli.local_runtime").joinpath("catalog.json").read_text(encoding="utf-8-sig")
     return _load_catalog(json.loads(raw))
 
 
-CATALOG: "tuple[CatalogEntry, ...]" = _packaged_catalog()
+CATALOG: tuple[CatalogEntry, ...] = _packaged_catalog()
 
 
 def refresh_catalog(force: bool = False) -> bool:
@@ -383,7 +383,7 @@ def catalog_by_id() -> dict[str, CatalogEntry]:
     return {entry.id: entry for entry in CATALOG}
 
 
-def find_entry_for_model(model_id: str) -> "tuple[CatalogEntry, QuantVariant] | None":
+def find_entry_for_model(model_id: str) -> tuple[CatalogEntry, QuantVariant] | None:
     """Locate the entry + variant that owns a staged model id."""
     for entry in CATALOG:
         for variant in entry.variants:
@@ -392,6 +392,6 @@ def find_entry_for_model(model_id: str) -> "tuple[CatalogEntry, QuantVariant] | 
     return None
 
 
-def entry_for_model(model_id: str) -> "CatalogEntry | None":
+def entry_for_model(model_id: str) -> CatalogEntry | None:
     hit = find_entry_for_model(model_id)
     return hit[0] if hit is not None else None

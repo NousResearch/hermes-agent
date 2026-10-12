@@ -4,10 +4,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import plugins.platforms.slack.adapter as slack_mod
 from tests.gateway.test_slack import (
     TestAgentSessionsApiRouting as _AgentSessionsHelpers,
     _pin_legacy_assistant_threads_api,
 )
+
+
+class _SlackApiError(Exception):
+    """``slack_sdk.SlackApiError`` shape: the adapter reads ``response["error"]``."""
+
+    def __init__(self, error: str):
+        super().__init__(error)
+        self.response = {"error": error}
 
 
 class TestSemanticThreadTitles:
@@ -44,3 +53,75 @@ class TestSemanticThreadTitles:
         await a._set_assistant_thread_title("D123", "171234.0001", "T1 title", team_id="T1", semantic=True)
         await a._set_assistant_thread_title("D123", "171234.0001", "T2 title", team_id="T2", semantic=True)
         assert [call.kwargs["title"] for call in rename.await_args_list] == ["T1 title", "T2 title"]
+
+    @pytest.mark.asyncio
+    async def test_missing_agent_session_is_created_then_keeps_the_generated_title(self):
+        slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a.config.extra["assistant_thread_titles"] = True
+        rename = a._app.client.agents_sessions_rename = AsyncMock(
+            side_effect=[_SlackApiError("session_not_found"), None]
+        )
+        create = a._app.client.agents_sessions_setStatus = AsyncMock()
+        a._app.client.assistant_threads_setTitle = AsyncMock()
+
+        await a._set_assistant_thread_title(
+            "D123", "171234.0001", "Generated title", team_id="T1", semantic=True)
+
+        assert create.await_args.kwargs == {
+            "channel_id": "D123",
+            "thread_ts": "171234.0001",
+            "status": "active",
+            "title": "Generated title",
+        }
+        assert [call.kwargs["title"] for call in rename.await_args_list] == [
+            "Generated title",
+            "Generated title",
+        ]
+        await a._set_assistant_thread_title("D123", "171234.0001", "later raw message", team_id="T1")
+        assert rename.await_count == 2
+        a._app.client.assistant_threads_setTitle.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_session_typing_uses_the_status_enum(self):
+        slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        status = a._app.client.agents_sessions_setStatus = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await a.send_typing("D123", metadata={"thread_id": "171234.0001"})
+        await a.stop_typing("D123", metadata={"thread_id": "171234.0001"})
+
+        assert [call.kwargs["status"] for call in status.await_args_list] == ["processing", "active"]
+        a._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_not_authorized_rename_creates_the_session(self):
+        slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a.config.extra["assistant_thread_titles"] = True
+        a._app.client.agents_sessions_rename = AsyncMock(
+            side_effect=[_SlackApiError("not_authorized"), None])
+        create = a._app.client.agents_sessions_setStatus = AsyncMock()
+
+        await a._set_assistant_thread_title(
+            "D123", "171234.0001", "Generated title", team_id="T1", semantic=True)
+
+        assert create.await_args.kwargs["status"] == "active"
+        assert create.await_args.kwargs["title"] == "Generated title"
+
+    @pytest.mark.asyncio
+    async def test_unrelated_title_error_is_warned_and_does_not_create(self, caplog):
+        slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a.config.extra["assistant_thread_titles"] = True
+        a._app.client.agents_sessions_rename = AsyncMock(side_effect=_SlackApiError("invalid_auth"))
+        create = a._app.client.agents_sessions_setStatus = AsyncMock()
+
+        with caplog.at_level("WARNING", logger="plugins.platforms.slack.adapter"):
+            await a._set_assistant_thread_title(
+                "D123", "171234.0001", "Nope", team_id="T1", semantic=True)
+
+        assert create.await_count == 0
+        assert not a._semantically_titled_assistant_threads
+        assert any("invalid_auth" in record.message for record in caplog.records)

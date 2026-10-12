@@ -949,6 +949,7 @@ class SlackAdapter(AssistantThreadTitles, BasePlatformAdapter):
     mention-gated channels, threads, attachments, slash commands, status text."""
 
     _session_title_method = staticmethod(_session_title_method)
+    _session_status_method = staticmethod(_session_status_method)
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
@@ -2699,15 +2700,6 @@ class SlackAdapter(AssistantThreadTitles, BasePlatformAdapter):
             self.config, "typing_status_text", None)
         _status = _status or self._default_status_text(_status_started)
         await self._set_thread_status(chat_id, team_id, thread_ts, _status, "failed")
-
-    async def _set_thread_status(
-        self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
-        try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
-            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
-        except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:

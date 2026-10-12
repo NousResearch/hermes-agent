@@ -113,7 +113,7 @@ def _default_chain_credential(config: EntraIdentityConfig) -> Any:
 # is built explicitly from its own secret scope (client secret first, then workload identity). Under multiplex
 # the ambient default chain is refused outright when the profile sets no credential of its own: every source it
 # could mint from (env SP, CLI/azd/PowerShell caches, host managed identity) is the launch context's identity,
-# and _inject_bearer would ship it to whatever base_url the served profile configured.
+# and _inject_auth would ship it to whatever base_url the served profile configured.
 _credentials_by_home: dict[tuple, Any] = {}
 
 _AMBIENT_CHAIN_REFUSAL = (
@@ -309,7 +309,9 @@ def _strip_auth_headers(request: Any) -> None:
         request.headers.pop(header_name, None)
 
 
-def build_bearer_http_client(token_provider: Callable[[], str], *, sends_as_api_key: Callable[[str], bool] | None = None, **httpx_kwargs: Any) -> Any:
+def build_bearer_http_client(
+    token_provider: Callable[[], str], *, sends_as_api_key: Callable[[str], bool] | None = None, **httpx_kwargs: Any
+) -> Any:
     """``httpx.Client`` minting a fresh Entra bearer JWT per outbound request. The Anthropic SDK computes
     ``Authorization`` once at construction, so per-request refresh needs a ``request`` hook: mint (cheap —
     azure-identity caches), strip pre-set auth headers, set ``Authorization: Bearer``. ``httpx_kwargs`` are
@@ -319,7 +321,7 @@ def build_bearer_http_client(token_provider: Callable[[], str], *, sends_as_api_
         raise ValueError("build_bearer_http_client requires a zero-arg callable token provider")
     import httpx
 
-    def _inject_bearer(request: httpx.Request) -> None:
+    def _inject_auth(request: httpx.Request) -> None:
         try:
             token = materialize_bearer_for_http(token_provider)
         except ValueError as exc:
@@ -337,7 +339,7 @@ def build_bearer_http_client(token_provider: Callable[[], str], *, sends_as_api_
         else:
             request.headers["Authorization"] = f"Bearer {token}"
 
-    return httpx.Client(event_hooks={"request": [_inject_bearer]}, **httpx_kwargs)
+    return httpx.Client(event_hooks={"request": [_inject_auth]}, **httpx_kwargs)
 
 
 __all__ = [

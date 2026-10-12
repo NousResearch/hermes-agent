@@ -25,10 +25,9 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
-from utils import atomic_json_write
+from utils import atomic_json_write, base_url_hostname
 from agent.secret_scope import get_secret as _get_secret
 
 logger = logging.getLogger(__name__)
@@ -70,6 +69,12 @@ def _is_oauth_token(key: str) -> bool:
     return key.startswith(("sk-ant-", "eyJ", "cc-"))
 
 
+def is_native_anthropic_host(base_url: Any) -> bool:
+    """True when *base_url* is exactly ``api.anthropic.com`` (an empty base_url is the native default)."""
+    text = str(base_url or "").strip()
+    return not text or base_url_hostname(text) == "api.anthropic.com"
+
+
 def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Optional[str] = None) -> bool:
     """Claude Code OAuth identity for one Anthropic Messages route (#114967).
 
@@ -81,9 +86,7 @@ def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Option
     materialized once for the shape test (``CommandTokenSource`` caches, so this never double-mints)
     and a mint failure classifies as non-OAuth — the wire client surfaces the real error.
     """
-    text = str(base_url or "").strip()
-    native_host = not text or (urlparse(text).hostname or "").lower().rstrip(".") == "api.anthropic.com"
-    if not (native_host or (provider or "").strip().lower() == "anthropic"):
+    if not (is_native_anthropic_host(base_url) or (provider or "").strip().lower() == "anthropic"):
         return False
     if callable(credential) and not isinstance(credential, str):
         try:

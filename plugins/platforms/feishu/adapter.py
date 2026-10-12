@@ -1742,11 +1742,11 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             request = self._build_delete_message_request(message_id)
             response = await self._run_blocking(self._client.im.v1.message.delete, request)
             if self._response_succeeded(response):
+                for key, target in tuple(self._last_bot_messages.items()):
+                    if target == message_id:
+                        self._last_bot_messages.pop(key, None)
                 return True
-            logger.debug(
-                "[Feishu] Delete of message %s rejected: code=%s msg=%s",
-                message_id, getattr(response, "code", None), getattr(response, "msg", None),
-            )
+            logger.debug("[Feishu] Delete of message %s rejected: code=%s msg=%s", message_id, getattr(response, "code", None), getattr(response, "msg", None))
             return False
         except Exception:
             logger.debug("[Feishu] Failed to delete message %s", message_id, exc_info=True)

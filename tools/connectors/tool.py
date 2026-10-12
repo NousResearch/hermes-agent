@@ -21,6 +21,7 @@ def manage_connections(
     mcp_backend: Optional[Any] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
     connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
 ) -> str:
@@ -40,7 +41,7 @@ def manage_connections(
 
     return run_managed_action(
         action, managed, args,
-        client_factory=client_factory, session_id=session_id, tool_call_id=tool_call_id,
+        client_factory=client_factory, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
         connection_callback=connection_callback, connectors_available=connectors_available,
     )
 
@@ -154,7 +155,8 @@ registry.register(
     # a cached schema agree. Read as a module attribute so tests patch
     # ``gateway.config.connectors_available`` at one seam.
     handler=lambda args, **kw: manage_connections(
-        args, session_id=kw.get("session_id"), connectors_available=gateway_config.connectors_available,
+        args, session_id=kw.get("session_id"), tool_call_id=kw.get("tool_call_id"),
+        connectors_available=gateway_config.connectors_available,
     ),
     check_fn=lambda: gateway_config.connectors_available(),
     emoji="🔗",

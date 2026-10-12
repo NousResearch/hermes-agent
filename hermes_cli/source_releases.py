@@ -166,6 +166,10 @@ def _describe_release_failure(failure: BaseException) -> str:
 
         # The request that failed, not the configuration: a rejected token retries anonymously.
         return describe_github_failure(failure, authenticated=getattr(failure, "hermes_authenticated", False))
+    if isinstance(failure, (subprocess.SubprocessError, OSError)):
+        # A git leg timeout or refused connection is a fact about the local machine,
+        # never evidence about what upstream published (#137244).
+        return f"Could not reach the repository (git transport failed): {failure}"
     return f"No published stable release could be verified: {failure}"
 
 

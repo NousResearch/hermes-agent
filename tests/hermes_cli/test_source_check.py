@@ -285,6 +285,39 @@ def test_channel_failure_never_probes_or_heals_a_branch(installation, name, fail
     assert json.loads(branch_file.read_text())["branch"] == "deleted"
 
 
+def test_stable_git_leg_failure_names_the_local_network_not_publishing(installation):
+    """The stable lookup's git leg is refused (https is not an allowed protocol here):
+    the message must blame the git transport, not assert the vendor published nothing (#137244)."""
+    from hermes_cli.source_check import check_for_updates
+
+    root, _linked, home, _base, _head, responses, _requests, _git = installation
+    responses["/repos/fixture/fork/releases/latest"] = (200, {"tag_name": "v0.21.7",
+                                                             "draft": False, "prerelease": False})
+    responses["/repos/fixture/fork/commits/v0.21.7"] = (200, {"sha": "a" * 40})
+    status = check_for_updates(install_root=root, home=home, channel="stable")
+    assert status.get("error") == "release-unavailable", status
+    assert "git transport failed" in status["message"], status["message"]
+    assert "No published stable release" not in status["message"], status["message"]
+
+
+def test_stable_verification_failure_keeps_saying_no_release(installation, monkeypatch):
+    """Only transport failures change wording: a release that fails publication checks
+    still reports exactly that, with its cause appended."""
+    from hermes_cli import source_releases
+    from hermes_cli.source_check import check_for_updates
+
+    root, _linked, home, *_rest = installation
+
+    def unpublished(*args, **kwargs):
+        raise ValueError("v9.9.9 is not a published stable release")
+
+    monkeypatch.setattr(source_releases, "_resolve_release", unpublished)
+    status = check_for_updates(install_root=root, home=home, channel="stable")
+    assert status.get("error") == "release-unavailable", status
+    assert "No published stable release could be verified" in status["message"], status["message"]
+    assert "is not a published stable release" in status["message"], status["message"]
+
+
 def test_main_follows_the_branch_without_reading_a_channel_record(installation):
     """main IS the git branch: no R2 record is requested (a regional WAF can answer
     it 403), the configured branch is probed, and the Desktop branch setting is left alone."""

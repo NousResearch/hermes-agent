@@ -293,11 +293,11 @@ lsp:
   #   manual  — only use binaries already on PATH
   install_strategy: auto
 
-  # Node package manager for the npm-based servers: npm (default), pnpm
-  # or yarn. Installs still land in <HERMES_HOME>/lsp/node_modules; a
+  # Node package manager for the npm-based servers: npm (default), pnpm,
+  # yarn or bun. Installs still land in <HERMES_HOME>/lsp/node_modules; a
   # manager that is configured but not installed — or a value outside
-  # npm|pnpm|yarn — skips the install with a warning instead of silently
-  # using npm, so a pnpm/yarn supply-chain policy (minimumReleaseAge,
+  # npm|pnpm|yarn|bun — skips the install with a warning instead of silently
+  # using npm, so a pnpm/yarn/bun supply-chain policy (minimumReleaseAge,
   # allowBuilds, …) is never bypassed. Yarn Berry (2+): its default PnP
   # linker writes no node_modules/.bin, so set `nodeLinker: node-modules`
   # in <HERMES_HOME>/lsp/.yarnrc.yml. pnpm 11 blocks git-hosted transitive

@@ -98,7 +98,7 @@ def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_
     monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
     runs = []
     monkeypatch.setattr(install_mod.subprocess, "run", lambda cmd, **kw: (runs.append(cmd), MagicMock(returncode=0, stderr=""))[1])
-    present = {"npm": "/usr/bin/npm", "pnpm": "/usr/bin/pnpm", "yarn": "/usr/bin/yarn"}
+    present = {"npm": "/usr/bin/npm", "pnpm": "/usr/bin/pnpm", "yarn": "/usr/bin/yarn", "bun": "/usr/bin/bun"}
     monkeypatch.setattr(install_mod, "find_node_executable", lambda name: present.get(name))
 
     cfg["lsp"] = {"package_manager": "pnpm"}
@@ -109,12 +109,16 @@ def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_
     install_mod._install_npm("pyright", "pyright-langserver")
     assert runs[-1] == ["/usr/bin/yarn", "--cwd", staging, "add", "pyright"]
 
+    cfg["lsp"] = {"package_manager": "bun"}
+    install_mod._install_npm("pyright", "pyright-langserver")
+    assert runs[-1] == ["/usr/bin/bun", "add", "--cwd", staging, "--no-progress", "pyright"]
+
     cfg["lsp"] = {"package_manager": "pnmp"}  # unknown (typo) → fail closed, no npm run
     assert install_mod._install_npm("pyright", "pyright-langserver") is None
     del present["yarn"]
     cfg["lsp"] = {"package_manager": "yarn"}  # configured but absent → no install, no npm run
     assert install_mod._install_npm("pyright", "pyright-langserver") is None
-    assert len(runs) == 2
+    assert len(runs) == 3
 
 
 if __name__ == "__main__":  # pragma: no cover

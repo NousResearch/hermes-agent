@@ -218,6 +218,7 @@ _NODE_PM_ARGV: dict[str, Callable[[str], list]] = {
     # Global ``--cwd`` (before the command) is accepted by both Yarn Classic and Yarn Berry; Berry's
     # default PnP linker writes no ``node_modules/.bin``, so the staging dir needs ``nodeLinker: node-modules``.
     "yarn": lambda staging: ["--cwd", staging, "add"],
+    "bun": lambda staging: ["add", "--cwd", staging, "--no-progress"],
 }
 
 
@@ -230,7 +231,7 @@ def _node_package_manager() -> Optional[str]:
         return "npm"
     pm = str(lsp_cfg.get("package_manager") or "npm").strip().lower() if isinstance(lsp_cfg, dict) else "npm"
     if pm not in _NODE_PM_ARGV:
-        # Fail closed: a typo must not silently bypass a pnpm/yarn supply-chain policy by running npm.
+        # Fail closed: a typo must not silently bypass a pnpm/yarn/bun supply-chain policy by running npm.
         logger.warning("[install] lsp.package_manager=%r is not one of %s; skipping install", pm, sorted(_NODE_PM_ARGV))
         return None
     return pm
@@ -242,7 +243,7 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
     pm = _node_package_manager()
     if pm is None:
         return None
-    # npm is Hermes's own PM-managed copy, never the user's; pnpm/yarn are an explicit user choice.
+    # npm is Hermes's own PM-managed copy, never the user's; pnpm/yarn/bun are an explicit user choice.
     pm_bin = find_node_executable(pm)
     if pm_bin is None and pm == "npm":
         try:
@@ -254,7 +255,7 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
             logger.warning("[install] cannot install %s: managed npm unavailable (%s)", pkg, exc)
             return None
     if pm_bin is None:
-        # Deliberately no silent fallback to npm: a pnpm/yarn choice is usually a supply-chain policy.
+        # Deliberately no silent fallback to npm: a pnpm/yarn/bun choice is usually a supply-chain policy.
         logger.warning("[install] cannot install %s: lsp.package_manager is %r but no usable %s was found "
                        "(install it, or set lsp.package_manager: npm)", pkg, pm, pm)
         return None

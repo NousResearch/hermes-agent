@@ -362,3 +362,19 @@ def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
     assert result.returncode != 0
     assert "versioned Docker manifest differs" in result.stderr
     assert not marker.exists()
+
+
+def test_every_run_step_receives_the_variables_it_reads():
+    """A run step reading $VAR it was never given gets an empty string: rc.14-v0.21.7 passed
+    every build and gate, then 'complete' died rendering the builds table without
+    CLOUDFLARE_R2_PUBLIC_URL or RELEASE_CLAIM_TAG."""
+    import re
+
+    runner = {"GITHUB_REPOSITORY", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "GITHUB_ENV", "GITHUB_SHA",
+              "GITHUB_RUN_ID", "GITHUB_WORKSPACE", "RUNNER_TEMP", "HOME", "PATH"}
+    for name, job in workflow("stable-release.yml")["jobs"].items():
+        given = set(job.get("env") or {})
+        for step in job.get("steps", []):
+            used = set(re.findall(r"\$\{?([A-Z][A-Z0-9_]+)", step.get("run", ""))) - runner
+            missing = used - given - set(step.get("env") or {})
+            assert not missing, f"{name} / {step.get('name') or step['run'][:40]}: {sorted(missing)}"

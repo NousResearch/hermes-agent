@@ -79,6 +79,45 @@ class Pruner:
             raise PruneError(f"checkpoint ref has no readable history: {ref}")
         return commits
 
+    def _rev_list(self, ref: str, max_count: int | None = None) -> list[str] | None:
+        """Raw rev-list returning oldest-first commits, or None when the walk fails."""
+        args = ["rev-list"]
+        if max_count is not None:
+            args += ["--max-count", str(max_count)]
+        args += ["--reverse", ref]
+        ok, output, _ = self.run_git(args, self.store, self.cwd)
+        if not ok:
+            return None
+        return output.splitlines()
+
+    def repair_unwalkable(self, ref: str) -> bool:
+        """Rebuild a ref whose history walk dies on a missing parent object onto a fresh
+        root of its readable commits, so ``git gc`` can traverse the store again (a
+        missing mid-chain object is unreachable garbage after the rewrite). CAS-guarded
+        by _rewrite; the reclaimed space is collected by the next gc. Returns whether a
+        repair was applied."""
+        tip = self._rev_list(ref, 1)
+        if not tip:
+            return False  # nothing readable at the tip; rewriting cannot help
+        if self._rev_list(ref) is not None:
+            return False  # walkable: the failure came from elsewhere, not this ref
+        hi = 1
+        while self._rev_list(ref, hi * 2) is not None:
+            hi *= 2
+        lo = hi
+        hi *= 2
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if self._rev_list(ref, mid) is not None:
+                lo = mid
+            else:
+                hi = mid
+        readable = self._rev_list(ref, lo)
+        if not readable:
+            return False
+        self._rewrite(ref, readable, readable, gc=False)
+        return True
+
     def _rewrite(self, ref: str, original: list[str], keep: list[str], *, gc: bool) -> None:
         parent = None
         for sha in keep:
@@ -117,7 +156,13 @@ class Pruner:
             return False
         changed = False
         for ref in self._git(["for-each-ref", "--format=%(refname)", self.refs_prefix]).splitlines():
-            commits = self._commits(ref)
+            try:
+                commits = self._commits(ref)
+            except PruneError:
+                if not self.repair_unwalkable(ref):
+                    raise
+                changed = True
+                continue
             if len(commits) > 1:
                 self._rewrite(ref, commits, commits[1:], gc=False)
                 changed = True
@@ -128,7 +173,10 @@ class Pruner:
         store fits. Returns whether it did; a failed Git step raises immediately."""
         if cap_bytes <= 0 or self.dir_size(self.store) <= cap_bytes:
             return True
-        self.reclaim()
+        try:
+            self.reclaim()
+        except PruneError:
+            pass  # an unwalkable ref blocks repack; the rounds below repair or isolate it
         if self.dir_size(self.store) <= cap_bytes:
             return True
         refs = self._git(["for-each-ref", "--format=%(refname)", self.refs_prefix]).splitlines()
@@ -137,10 +185,19 @@ class Pruner:
         for _ in range(20):
             changed = False
             for ref in refs:
-                commits = self._commits(ref)
-                if len(commits) <= 1:
+                try:
+                    commits = self._commits(ref)
+                except PruneError:
+                    if not self.repair_unwalkable(ref):
+                        raise
+                    changed = True
                     continue
-                self._rewrite(ref, commits, commits[1:], gc=True)
+                try:
+                    if len(commits) <= 1:
+                        continue
+                    self._rewrite(ref, commits, commits[1:], gc=True)
+                except PruneError:
+                    continue  # gc is still blocked by another ref; retry next round
                 changed = True
                 if self.dir_size(self.store) <= cap_bytes:
                     return True

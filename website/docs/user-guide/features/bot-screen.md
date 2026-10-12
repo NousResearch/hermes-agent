@@ -11,7 +11,11 @@ browser act on, streamed live into Hermes Desktop. Watch what the bot does,
 **take over** when it hits a login, 2FA prompt, CAPTCHA or payment step, then
 **hand control back** and let it continue with the session you just signed in
 to. The bot keeps working after you close the app or turn off your laptop; the
-screen lives on the gateway host, not on your machine.
+screen lives on the gateway host, not on your machine. If the gateway runs its
+`terminal` in a sandbox (`terminal.backend: docker`, `ssh` or `singularity`),
+the screen lives **inside that sandbox** instead, alongside the shell, so the
+bot's `computer_use` and browser never act outside the boundary you drew (see
+[Where the screen runs](#where-the-screen-runs)).
 
 Every Hermes profile ("bot") has its own screen, its own browser profile and
 its own cookies. Screens are work surfaces, not security boundaries: the bots
@@ -222,6 +226,109 @@ hermes computer-use screen install [-y]    # apt/dnf/pacman the packages
 hermes -p research computer-use screen start   # another bot's screen
 ```
 
+## Where the screen runs
+
+`computer_use`, the bot's browser and the screen they act on always run in the
+same place. `bot_desktop.placement` decides where:
+
+| `terminal.backend` | `placement: auto` (default) | What that means |
+|---|---|---|
+| `local` | gateway host | The terminal, the screen, the browser and `computer_use` all share the machine running the gateway. |
+| `docker`, `ssh`, `singularity` | **inside the sandbox** | Xvnc + Xfce, Chromium and cua-driver run in the container / on the SSH host, spawned through the same `docker exec` / `ssh` channel the terminal uses. The pane streams the sandbox's screen; nothing of the host desktop is reachable. |
+| `modal`, `daytona`, `vercel_sandbox` | **refused** | These backends cannot host a display yet. Rather than quietly running the screen on the host beside the sandbox you chose for the agent, `Start` explains and points at `placement: gateway`. |
+
+`placement: gateway` forces the pre-existing behaviour (screen on the gateway
+host even with a sandboxed terminal) as an explicit opt-in; `placement:
+terminal` forces the sandbox and errors when it cannot host one (with a
+`local` backend the terminal *is* the gateway host, so it resolves there).
+
+Placement is policy, not a snapshot of what happens to be running. When the
+screen is placed in the sandbox, the first browser or `computer_use` call
+brings it up there on demand (no `auto_start` opt-in needed: the sandbox is
+the boundary you chose, and a screen inside it touches nothing outside it),
+and when it cannot come up the call fails with the reason. The host is never
+the fallback for a sandbox whose screen is down. A gateway restart does not
+lose the screen either: the host-side marker records which container owns
+it, so the restarted gateway re-attaches to a still-running sandbox, and
+`Stop` takes down the screen where it actually runs even if you changed
+`placement` in the meantime.
+
+### The sandbox image
+
+The sandbox needs the desktop stack. `nousresearch/hermes-sandbox:desktop` is
+the default image for every container backend (Docker, Modal, Daytona,
+Singularity): the `nikolaik/python-nodejs` base (Python 3.13 / Node 26) plus
+TigerVNC, the Xfce components, a headed Chromium, `agent-browser`, `cua-driver`
+and the everyday tools that base lacked (jq, ripgrep, fd, tmux, rsync, sudo for
+the image's `pn` user). Its default user is root, like the old default, so
+shell workflows do not change. An image you pinned yourself is left alone, and
+the screen then tells you it needs this image or `bot_desktop.placement: gateway`:
+
+```yaml
+terminal:
+  backend: docker
+  docker_image: nousresearch/hermes-sandbox:desktop
+```
+
+With a plain image the Screen pane reports the missing binaries and names
+this tag.
+
+Under Singularity/Apptainer the same image is converted to a SIF
+(`docker://nousresearch/hermes-sandbox:desktop`); Dockerfile `ENV` survives the
+conversion, the image's `USER` does not: everything runs as you, so the browser
+profile lands in your `$HOME` inside the container, which is the persistent
+overlay by default. The instance runs `--containall`, so its temp dir (where the
+screen's runtime state lives) is Apptainer's session tmpfs, 64 MiB unless your
+admin raised `sessiondir max size`. This path is verified against the Apptainer
+documentation, not exercised live.
+
+An SSH host is whatever you point the backend at, so it carries the stack
+itself: the same binaries (TigerVNC, Xfce, `cua-driver`, `agent-browser` with a
+Chromium it can find), reachable from a **non-interactive login session**. That
+last part is where a host built from the desktop image differs from `docker exec`:
+a Dockerfile `ENV` never reaches an ssh session, so the image also writes
+`PLAYWRIGHT_BROWSERS_PATH` to `/etc/environment` for PAM to apply. A host of
+your own needs the equivalent, or `agent-browser` reports "Chrome not found"
+over ssh while working in a local shell.
+
+**Upgrading from the previous default.** A Docker sandbox you already have is
+kept, not replaced: when `docker_image` is unset and a persisted container runs
+another image (the old default, `nikolaik/python-nodejs:python3.11-nodejs20`),
+the terminal keeps using that container and you decide the switch. The
+interactive CLI asks once at startup; the Screen pane shows the same choice
+with **Switch image** / **Keep current image**; `hermes config set
+terminal.docker_image nousresearch/hermes-sandbox:desktop` is the same answer
+from any shell. Either answer writes `terminal.docker_image`, and a written
+image is a decision: the container is recreated on the next terminal call only
+when you chose the new image, and only once the new image has been pulled (a
+private or misspelled tag, or a registry outage, keeps your current container
+running instead of leaving you with nothing). What a switch means: files under `/root` and
+`/workspace` stay (they are host directories under `~/.hermes/sandboxes/`),
+packages installed inside the container with `apt`/`pip`/`npm -g` are
+reinstalled on demand, and Python 3.11 virtualenvs need a rebuild on 3.13.
+Gateways and cron never decide; they keep the sandbox and log the notice.
+Configs that literally held the old default were unset on upgrade (that value
+was the template copied, not a pin). Modal restores its snapshot and Daytona
+reuses its labeled sandbox regardless of the configured image, so an existing
+sandbox there is untouched and only a fresh one gets the new image. Desktop processes run as the image's unprivileged `pn` (uid 1000);
+Chromium gets `--no-sandbox` inside containers (Docker's seccomp profile
+denies the user namespaces its own sandbox needs; the container is the
+sandbox).
+
+Runtime state inside the sandbox (X socket, cookie, launcher log) lives under
+`<sandbox tmp>/hermes-bot-desktop/<profile>/`; the host keeps only a marker under
+`<HERMES_HOME>/bot-desktop/`. The browser profile (logins, cookies) lives in the
+desktop user's home inside the sandbox, `~/.hermes/bot-desktop/browser-profile`,
+shared by the agent's browser and the dock's **Browser** icon. It follows the
+container's own persistence: kept across stops and restarts of a persisted
+container, gone with an ephemeral one or when you approve an image switch (the
+container's writable layer is what a switch replaces). It is deliberately not
+under the container's temp dir, which Docker mounts as a small tmpfs that is emptied on every stop.
+Screenshots the browser tools take are copied back to the host so `MEDIA:`
+paths keep working, the pane's thumbnail is grabbed inside the sandbox, and
+`browser_exec` / the vault autofill reach the sandbox's Chromium through a port
+forwarded over the same `docker exec` / `ssh` channel.
+
 ## Configuration
 
 ```yaml
@@ -230,6 +337,7 @@ bot_desktop:
   auto_start: false         # set true to start on the first computer_use call or headed browser use
   min_free_memory_mb: 1536  # refuse to start below this much free memory (0 = never check)
   idle_stop_minutes: 30     # stop a screen nobody used for this long (0 = keep it up)
+  placement: auto           # auto | terminal | gateway — see "Where the screen runs"
 ```
 
 `auto_start` is off by default. Start the screen from the Desktop's Screen

@@ -482,52 +482,51 @@ export function TreeSplit({
         }
 
         done = true
-        resize.finish()
-
-        // Put every wrapper's inline style back exactly as React last wrote
-        // it BEFORE the store commit. React only rewrites a wrapper whose
-        // style prop changed; a preview pinned on a track the commit leaves
-        // alone (the flex run beside a zone that folded to its rail) would
-        // otherwise survive as a stale `flex: 0 1 <px>` and stop it growing.
-        // A no-movement click has no commit, so this is also its whole cleanup.
-        restoreStyles()
-
-        if (lastPlan && lastPlan.moved !== 0) {
-          // Dragged a tool panel down to its collapsed header? Fold the zone
-          // to its rail instead of persisting a sliver — and DON'T write the
-          // sliver size, so restoring brings back the size it had before.
-          // Only a track THIS gesture took to its floor counts: an unrelated
-          // rail already resting there must not cancel the commit.
-          const collapsedSide = sashTracks.find(
-            (track, index) => track.collapseId && track.initial > track.floor && lastPlan!.sizes[index] <= track.floor
-          )?.collapseId
-
-          if (collapsedSide) {
-            setTreeGroupMinimized(collapsedSide, true)
-          } else {
-            commitPlan(lastPlan)
-          }
-        }
-
-        // Geometry vars re-enable AFTER the final store commit above, so the
-        // release publishes exactly one fresh measurement.
-        endSashDrag()
-        releaseGuests()
-        document.body.style.cursor = restoreCursor
-        document.body.style.userSelect = restoreSelect
 
         try {
-          handle.releasePointerCapture?.(pointerId)
-        } catch {
-          // Mirror.
-        }
+          try {
+            resize.finish()
+          } finally {
+            restoreStyles()
+          }
 
-        window.removeEventListener('pointermove', onMove, true)
-        window.removeEventListener('pointerup', cleanup, true)
-        window.removeEventListener('pointercancel', cleanup, true)
-        window.removeEventListener('blur', cleanup)
-        handle.removeEventListener('lostpointercapture', cleanup)
-        persistTree()
+          if (lastPlan && lastPlan.moved !== 0) {
+            // Dragged a tool panel down to its collapsed header? Fold the zone
+            // to its rail instead of persisting a sliver — and DON'T write the
+            // sliver size, so restoring brings back the size it had before.
+            // Only a track THIS gesture took to its floor counts: an unrelated
+            // rail already resting there must not cancel the commit.
+            const collapsedSide = sashTracks.find(
+              (track, index) => track.collapseId && track.initial > track.floor && lastPlan!.sizes[index] <= track.floor
+            )?.collapseId
+
+            if (collapsedSide) {
+              setTreeGroupMinimized(collapsedSide, true)
+            } else {
+              commitPlan(lastPlan)
+            }
+          }
+        } finally {
+          // Geometry vars re-enable AFTER the final store commit above, so the
+          // release publishes exactly one fresh measurement.
+          endSashDrag()
+          releaseGuests()
+          document.body.style.cursor = restoreCursor
+          document.body.style.userSelect = restoreSelect
+
+          try {
+            handle.releasePointerCapture?.(pointerId)
+          } catch {
+            // Mirror.
+          }
+
+          window.removeEventListener('pointermove', onMove, true)
+          window.removeEventListener('pointerup', cleanup, true)
+          window.removeEventListener('pointercancel', cleanup, true)
+          window.removeEventListener('blur', cleanup)
+          handle.removeEventListener('lostpointercapture', cleanup)
+          persistTree()
+        }
       }
 
       window.addEventListener('pointermove', onMove, true)
@@ -812,14 +811,15 @@ function Sash({
     <div
       className={cn(
         'group absolute z-20 [-webkit-app-region:no-drag]',
-        // Asymmetric grab band: only 1px reaches into the leading pane so its
-        // edge-hugging 8px scrollbar stays clickable (the old centered 9px band
-        // swallowed it entirely — the pointer got col-resize instead of the
-        // thumb). The trailing side keeps a generous 7px reach; total grab
-        // width stays ~8px so the sash is no harder to hit.
-        horizontal ? 'inset-y-0 left-0 w-[8px] -translate-x-[1px]' : 'inset-x-0 top-0 h-[8px] -translate-y-[1px]',
+        // Grab band lives entirely in the trailing pane. A 1px overlap into
+        // the leading pane (the previous asymmetric band) still stole the
+        // Windows overlay-scrollbar hit target on the chat — only ~3px of
+        // thumb remained clickable (#99867). The sash stays 8px wide, all
+        // on the sidebar/tool side of the seam.
+        horizontal ? 'inset-y-0 left-0 w-[8px]' : 'inset-x-0 top-0 h-[8px]',
         disabled ? 'pointer-events-none' : horizontal ? 'cursor-col-resize' : 'cursor-row-resize'
       )}
+      data-sash-overlap="trailing"
       onDoubleClick={disabled ? undefined : onDoubleClick}
       onPointerDown={disabled ? undefined : onPointerDown}
       role="separator"

@@ -137,7 +137,7 @@ class TestExposeCli:
 
     @posix_only
     def test_leaves_another_installs_wrapper_alone(self, fake_install):
-        home, root = fake_install
+        home, _root = fake_install
         other = "/somewhere/else/checkout"
         wrapper_dir = home / ".local" / "bin"
         wrapper_dir.mkdir(parents=True)
@@ -252,7 +252,7 @@ def test_direct_packaged_cli_exposes_shims_before_electron(tmp_path):
     # `--help` reaches main()'s boot bootstrap (which owns expose_cli) before argparse
     # exits; `--version` is answered on the pre-import fast path and never gets there.
     result = subprocess.run([str(bin_dir / "hermes"), "--help"], env=env,
-                            capture_output=True, text=True, timeout=30, encoding="utf-8")
+                            capture_output=True, text=True, timeout=30, encoding="utf-8", check=False)
     assert result.returncode == 0, result.stderr
     for name in ("hermes", "hermes-agent", "hermes-acp"):
         assert (home / ".local/bin" / name).is_symlink()

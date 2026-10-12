@@ -17,6 +17,7 @@ import { Input } from '@/components/ui/input'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { useI18n } from '@/i18n'
+import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import {
   $interfaceMode,
@@ -100,12 +101,7 @@ function PresetCard({ preset }: { preset: Contribution }) {
   return (
     <div className="group/preset relative">
       <button
-        className={cn(
-          'flex w-full flex-col gap-1.5 rounded-lg border p-1.5 text-left transition-colors',
-          active
-            ? 'border-(--ui-accent) bg-(--ui-row-active-background)'
-            : 'border-(--ui-stroke-secondary) hover:border-(--ui-stroke-primary) hover:bg-(--ui-row-hover-background)'
-        )}
+        className={cn(selectableCardClass({ active, prominent: true }), 'flex w-full flex-col gap-1.5 p-1.5 text-left')}
         onClick={() => applyLayoutPreset(preset.id, tree)}
         type="button"
       >
@@ -148,10 +144,8 @@ function ModeCard({ mode }: { mode: InterfaceMode }) {
     <button
       aria-pressed={active}
       className={cn(
-        'flex w-full flex-col gap-0.5 rounded-lg border px-2.5 py-2 text-left transition-colors',
-        active
-          ? 'border-(--ui-accent) bg-(--ui-row-active-background)'
-          : 'border-(--ui-stroke-secondary) hover:border-(--ui-stroke-primary) hover:bg-(--ui-row-hover-background)'
+        selectableCardClass({ active, prominent: true }),
+        'flex w-full flex-col gap-0.5 px-2.5 py-2 text-left'
       )}
       onClick={() => setInterfaceMode(mode)}
       type="button"
@@ -224,7 +218,7 @@ export function LayoutPicker() {
               </div>
             )}
             <Button
-              className="h-8 w-full justify-center gap-1.5 border border-dashed border-(--ui-stroke-secondary) text-muted-foreground hover:border-(--ui-stroke-primary) hover:text-foreground"
+              className="w-full border border-dashed border-(--ui-stroke-secondary) text-muted-foreground hover:border-(--ui-stroke-primary) hover:text-foreground"
               onClick={() => $zoneEditorOpen.set(true)}
               size="sm"
               variant="ghost"
@@ -246,7 +240,7 @@ export function LayoutPicker() {
             >
               <Input
                 autoFocus
-                className="h-7 flex-1 text-xs"
+                className="flex-1"
                 onChange={e => setName(e.target.value)}
                 onKeyDown={e => {
                   if (e.key === 'Escape') {
@@ -255,6 +249,7 @@ export function LayoutPicker() {
                   }
                 }}
                 placeholder={t.zones.nameLayoutPlaceholder}
+                size="sm"
                 value={name}
               />
               <Button disabled={!name.trim()} size="sm" type="submit" variant="outline">
@@ -265,14 +260,10 @@ export function LayoutPicker() {
               </Button>
             </form>
           ) : (
-            <button
-              className="flex items-center gap-1.5 self-start text-xs text-muted-foreground/80 transition-colors hover:text-foreground"
-              onClick={() => setSaving(true)}
-              type="button"
-            >
+            <Button className="self-start" onClick={() => setSaving(true)} size="inline" variant="text">
               <Codicon name="save" size="0.8125rem" />
               {t.zones.saveCurrentAs}
-            </button>
+            </Button>
           )}
         </>
       )}

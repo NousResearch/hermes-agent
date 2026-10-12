@@ -52,7 +52,7 @@ _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
     _regex_hint(r"^CONFLICT |Automatic merge failed|needs merge",
                 "Git merge conflict. Do not retry this command. Resolve the conflicted files "
                 "listed above (edit, then `git add`), then continue (`git rebase --continue` / "
-                "commit the merge) — or abort with `--abort`.", re.M),
+                "commit the merge) — or abort with `--abort`.", re.MULTILINE),
     _regex_hint(r"(?:bash: line \d+: |bash: |sh: \d*:? ?)?([\w.+-]+): command not found",
                 _missing_command_hint),
     # Almost always a venv-activation slip, not a missing dependency.

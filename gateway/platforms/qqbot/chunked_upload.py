@@ -75,12 +75,12 @@ class _PreparePart:
 class _PrepareResult:
     upload_id: str
     block_size: int
-    parts: List[_PreparePart]
+    parts: list[_PreparePart]
     concurrency: int = _DEFAULT_CONCURRENT_PARTS
     retry_timeout: float = 0.0
 
 
-def _parse_prepare_response(raw: Dict[str, Any]) -> _PrepareResult:
+def _parse_prepare_response(raw: dict[str, Any]) -> _PrepareResult:
     """Parse upload_prepare response (either bare or wrapped in ``data``)."""
     src = raw.get("data") if isinstance(raw.get("data"), dict) else raw
     if not (upload_id := str(src.get("upload_id", ""))):
@@ -126,16 +126,16 @@ class ChunkedUploader:
     circular import; must raise RuntimeError with the biz_code in the message);
     ``http_put`` is ``(url, data, headers) -> httpx-like response`` for COS PUTs."""
 
-    def __init__(self, api_request: Callable[..., Awaitable[Dict[str, Any]]],
+    def __init__(self, api_request: Callable[..., Awaitable[dict[str, Any]]],
                  http_put: Callable[..., Awaitable[Any]], log_tag: str = "QQBot") -> None:
         self._api_request = api_request
         self._http_put = http_put
         self._log_tag = log_tag
 
-    async def _post(self, job: _Job, endpoint: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _post(self, job: _Job, endpoint: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._api_request("POST", job.path(endpoint), body=body, timeout=FILE_UPLOAD_TIMEOUT)
 
-    async def upload(self, chat_type: str, target_id: str, file_path: str, file_type: int, file_name: str) -> Dict[str, Any]:
+    async def upload(self, chat_type: str, target_id: str, file_path: str, file_type: int, file_name: str) -> dict[str, Any]:
         """Run the full chunked upload (``chat_type`` 'c2c'|'group', ``file_type`` MEDIA_TYPE_*)
         and return the raw ``complete_upload`` response (contains ``file_info``).
         Raises UploadDailyLimitExceededError (40093002), UploadFileTooLargeError, RuntimeError."""
@@ -163,7 +163,7 @@ class ChunkedUploader:
         logger.info("[%s] All %d parts uploaded, completing…", self._log_tag, job.total_parts)
         return await self._complete(job)
 
-    async def _prepare(self, job: _Job, file_type: int, file_name: str, hashes: Dict[str, str]) -> _PrepareResult:
+    async def _prepare(self, job: _Job, file_type: int, file_name: str, hashes: dict[str, str]) -> _PrepareResult:
         body = {"file_type": file_type, "file_name": file_name, "file_size": job.file_size,
                 "md5": hashes["md5"], "sha1": hashes["sha1"], "md5_10m": hashes["md5_10m"]}
         try:
@@ -247,7 +247,7 @@ class ChunkedUploader:
                              elapsed, exc)
                 await asyncio.sleep(_PART_FINISH_RETRY_INTERVAL)
 
-    async def _complete(self, job: _Job) -> Dict[str, Any]:
+    async def _complete(self, job: _Job) -> dict[str, Any]:
         """Call ``complete_upload`` with retry — the ``/files`` endpoint (same as the simple URL upload)
         selects the chunked-completion path when only ``upload_id`` is sent."""
         return await self._with_retries(
@@ -271,12 +271,12 @@ def _read_file_chunk(file_path: str, offset: int, length: int) -> bytes:
         fh.seek(offset)
         data = fh.read(length)
     if len(data) != length:
-        raise IOError(f"Short read from {file_path}: expected {length} bytes at offset {offset}, got {len(data)} "
+        raise OSError(f"Short read from {file_path}: expected {length} bytes at offset {offset}, got {len(data)} "
                       f"(file may be truncated)")
     return data
 
 
-def _compute_file_hashes(file_path: str, file_size: int) -> Dict[str, str]:
+def _compute_file_hashes(file_path: str, file_size: int) -> dict[str, str]:
     """Compute md5, sha1, and md5_10m in a single pass (for small files md5_10m is just the full md5)."""
     md5, sha1, md5_10m = hashlib.md5(), hashlib.sha1(), hashlib.md5()
     need_10m = file_size > _MD5_10M_SIZE
@@ -290,14 +290,3 @@ def _compute_file_hashes(file_path: str, file_size: int) -> Dict[str, str]:
             bytes_read += len(chunk)
     full_md5 = md5.hexdigest()
     return {"md5": full_md5, "sha1": sha1.hexdigest(), "md5_10m": md5_10m.hexdigest() if need_10m else full_md5}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-import functools  # noqa: F401,E402
-
-ApiRequestFn = Callable[..., Awaitable[Dict[str, Any]]]
-# ---- END PLUGIN-COMPAT ----

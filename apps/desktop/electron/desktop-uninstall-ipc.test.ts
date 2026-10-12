@@ -4,7 +4,7 @@ import { registerDesktopUninstallIpc } from './desktop-uninstall'
 import type { DesktopUninstallIpcDeps, DesktopUninstallSummary } from './desktop-uninstall'
 import type { InstallStamp } from './install-stamp'
 
-const fallbackSummary: Omit<DesktopUninstallSummary, 'code_removal_allowed'> = {
+const fallbackSummary: Omit<DesktopUninstallSummary, 'code_removal_allowed' | 'native_removal_instructions'> = {
   hermes_home: '/test/.hermes',
   agent_installed: true,
   gui_installed: true,
@@ -31,7 +31,8 @@ function captureIpc(stamp: DesktopUninstallIpcDeps['stamp']): CapturedIpc {
   const probeSummary: CapturedIpc['probeSummary'] = vi.fn(async (): Promise<DesktopUninstallSummary> => ({
     ...fallbackSummary,
     probe: 'python',
-    code_removal_allowed: true
+    code_removal_allowed: true,
+    native_removal_instructions: null
   }))
 
   const runUninstall: CapturedIpc['runUninstall'] = vi.fn<DesktopUninstallIpcDeps['runUninstall']>(
@@ -48,7 +49,15 @@ function captureIpc(stamp: DesktopUninstallIpcDeps['stamp']): CapturedIpc {
     }
   }
 
-  registerDesktopUninstallIpc({ ipcMain, stamp, fallbackSummary: localSummary, probeSummary, runUninstall })
+  registerDesktopUninstallIpc({
+    ipcMain,
+    stamp,
+    fallbackSummary: localSummary,
+    probeSummary,
+    runUninstall,
+    removableAppPath: (): null => null,
+    openAppsSettings: async (): Promise<void> => {}
+  })
 
   return {
     probeSummary,
@@ -78,9 +87,10 @@ test('excluded artifact owners block every uninstall IPC before a Python probe o
   for (const stamp of stamps) {
     const ipc: CapturedIpc = captureIpc(stamp)
 
-    expect(await ipc.invoke('hermes:uninstall:summary')).toEqual({
+    expect(await ipc.invoke('hermes:uninstall:summary')).toMatchObject({
       ...fallbackSummary,
-      code_removal_allowed: false
+      code_removal_allowed: false,
+      native_removal_instructions: expect.any(String)
     })
     expect(ipc.probeSummary).not.toHaveBeenCalled()
 
@@ -101,16 +111,26 @@ test('self-managed installs retain summary and uninstall IPC behavior under Elec
   for (const stamp of [null, { payload: 'bootstrap', updateMechanism: 'self' }] as const) {
     const ipc: CapturedIpc = captureIpc(stamp)
 
-    ipc.probeSummary.mockResolvedValue({ ...fallbackSummary, probe: 'python', code_removal_allowed: false })
+    ipc.probeSummary.mockResolvedValue({
+      ...fallbackSummary,
+      probe: 'python',
+      code_removal_allowed: false,
+      native_removal_instructions: null
+    })
     expect(await ipc.invoke('hermes:uninstall:summary')).toEqual({
       ...fallbackSummary,
       probe: 'python',
-      code_removal_allowed: true
+      code_removal_allowed: true,
+      native_removal_instructions: null
     })
     expect(ipc.probeSummary).toHaveBeenCalledOnce()
     expect(ipc.localSummary).not.toHaveBeenCalled()
 
-    ipc.probeSummary.mockResolvedValue({ ...fallbackSummary, code_removal_allowed: false })
+    ipc.probeSummary.mockResolvedValue({
+      ...fallbackSummary,
+      code_removal_allowed: false,
+      native_removal_instructions: null
+    })
     expect(await ipc.invoke('hermes:uninstall:summary')).toMatchObject({
       probe: 'fallback',
       code_removal_allowed: true

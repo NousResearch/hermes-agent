@@ -151,7 +151,7 @@ class TestGatewayAutoLoadScaffold:
         return f"{joined}\n\n{user_text}" if user_text else joined
 
     def test_describes_the_typed_request(self, skills):
-        message = self._auto_load_scaffold(skills_dir := skills, ["work"],
+        message = self._auto_load_scaffold(skills, ["work"],
                                            user_text="Fix the CI gate before the release")
         assert describe_skill_invocation(message) == "Fix the CI gate before the release"
 

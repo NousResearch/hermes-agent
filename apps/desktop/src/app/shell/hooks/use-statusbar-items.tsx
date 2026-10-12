@@ -9,7 +9,9 @@ import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextMeterDetail, ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { useChangeWorkspaceItem } from '@/app/shell/hooks/use-change-workspace'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { useFocusedSessionRow } from '@/app/shell/hooks/use-focused-session-row'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
@@ -57,8 +59,7 @@ import {
   $sessionStartedAt,
   $tileSessionFocusStartedAt,
   $turnStartedAt,
-  idsShareLineage,
-  sessionMatchesStoredId
+  idsShareLineage
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedRuntimeId, $focusedSessionState, $sessionTiles, isSessionRemote } from '@/store/session-states'
@@ -82,6 +83,7 @@ const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
+  changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void>
   chatOpen: boolean
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
@@ -98,6 +100,7 @@ interface StatusbarItemsOptions {
 
 export function useStatusbarItems({
   agentsOpen,
+  changeSessionCwd,
   chatOpen,
   commandCenterOpen,
   extraLeftItems,
@@ -214,34 +217,8 @@ export function useStatusbarItems({
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
-  // A tile's stored row supplies the cold/fallback session-start and cwd when
-  // no focused runtime value is available. Only these scalars are read off
-  // `$sessions`, so select them — a whole-list `useStore` re-ran this hook on
-  // every session-list write (title updates, poll refreshes, archives).
-  const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
-    focusedStoredSessionId
-      ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
-      : null
-  )
-
-  const focusedRowCwd = useStoreSelector($sessions, sessions => {
-    if (!focusedStoredSessionId) {
-      return ''
-    }
-
-    const row = sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))
-
-    return row?.cwd?.trim() || ''
-  })
-
-  // Which backend the focused row runs on: a Connections-tagged row names its
-  // gateway; an untagged one is the window's primary. Decides whether the OS
-  // file manager on this computer can show its workspace at all.
-  const focusedRowConnectionId = useStoreSelector($sessions, sessions =>
-    focusedStoredSessionId
-      ? sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.connection_id?.trim() || ''
-      : ''
-  )
+  // A tile's stored row: cold/fallback start and cwd, and which backend it runs on.
+  const { focusedRowConnectionId, focusedRowCwd, focusedRowStartedAt } = useFocusedSessionRow(focusedStoredSessionId)
 
   const offerLocalReveal = shouldOfferLocalReveal(focusedRowConnectionId, connection?.mode === 'remote')
 
@@ -283,6 +260,12 @@ export function useStatusbarItems({
   // the tree changes; null (no named project) falls back to the cwd leaf below.
   const projectTree = useStore($projectTree)
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+
+  const changeWorkspaceItem = useChangeWorkspaceItem(changeSessionCwd, currentCwd, busy, {
+    focusedRowConnectionId,
+    focusedRuntimeId,
+    primaryFocused
+  })
 
   const sessionStartedAt = resolveSessionTimerSince({
     focusedStoredSessionId,
@@ -566,6 +549,7 @@ export function useStatusbarItems({
         label: projectName || (currentCwd ? pathLeaf(currentCwd) : undefined),
         menuItems: currentCwd
           ? [
+              changeWorkspaceItem,
               {
                 id: 'copy-workspace-path',
                 label: fileMenu.copyPath,
@@ -644,6 +628,7 @@ export function useStatusbarItems({
     [
       agentsOpen,
       botsShowing,
+      changeWorkspaceItem,
       commandCenterOpen,
       copy,
       currentCwd,

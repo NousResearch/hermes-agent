@@ -40,7 +40,7 @@ git() {{
 }}
 stage_repository
 '''
-    result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
     calls = attempts.read_text(encoding="utf-8-sig").splitlines()
     assert len(calls) > 1
     assert "--no-checkout" in calls[-1]
@@ -60,8 +60,8 @@ def _run_repository_stage(installer: str, tmp_path: Path, install: Path, origin_
     env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
                HERMES_INSTALL_DIR=install.as_posix(), HERMES_REPO_URL=origin_url)
     if installer == "sh":
-        script = f"source {shlex.quote((ROOT / 'scripts/install.sh').as_posix())} --manifest\nstage_repository\n"
-        return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        script = f"source {shlex.quote((ROOT / 'scripts/install.sh').as_posix())} --manifest\nsleep() {{ :; }}\nstage_repository\n"
+        return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=False)
     if os.name != "nt":
         # pwsh on POSIX cannot run the Windows-only pinned Git: seed its PM store slot with host git.
         version = json.loads((ROOT / "pm" / "lock.json").read_text(encoding="utf-8-sig"))["packages"]["git"]["version"]
@@ -73,7 +73,7 @@ def _run_repository_stage(installer: str, tmp_path: Path, install: Path, origin_
     return subprocess.run([POWERSHELL, "-NoProfile", "-File", str(ROOT / "scripts" / "install.ps1"),
                            "-Stage", "repository", "-NonInteractive", "-InstallDir", str(install),
                            "-HermesHome", str(tmp_path / "home")],
-                          env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240)
+                          env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240, check=False)
 
 
 @pytest.mark.live_system_guard_bypass
@@ -115,3 +115,18 @@ def test_existing_treeless_checkout_is_refetched_before_update(tmp_path, install
     assert git(install, "config", "--get", "remote.origin.partialclonefilter").stdout.strip() == "blob:none"
     assert git(install, "rev-parse", "HEAD").stdout.strip() == head, "the checkout was re-cloned, not converted"
     git(install, "rev-list", "HEAD", "--", "history.txt", GIT_NO_LAZY_FETCH="1")  # history answers offline
+
+
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("installer", [
+    "sh",
+    pytest.param("ps1", marks=pytest.mark.skipif(POWERSHELL is None, reason="needs PowerShell")),
+])
+def test_clone_failure_reason_carries_gits_own_error(tmp_path, installer):
+    """Hermes-Setup shows the stage reason as-is: it must name git's cause, not only the step."""
+    missing = tmp_path / "no-such-repo.git"
+    result = _run_repository_stage(installer, tmp_path, tmp_path / "install", missing.as_uri())
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "git clone failed; no checkout published: fatal:" in output, output
+    assert "no-such-repo.git" in output.split("no checkout published: fatal:", 1)[1].splitlines()[0]

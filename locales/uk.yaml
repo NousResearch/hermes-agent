@@ -184,8 +184,8 @@ gateway:
     choice_normal: "normal — стандартна обробка"
     choice_auto: "auto — швидко в перші секунди кожного ходу"
     choice_cold: "cold — швидко лише на першому ході сесії"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, ціна ×6)"
-    ultrafast_not_supported: "⚡ Ultrafast доступний лише для GPT-6 Astra (поточна модель: `{model}`)."
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast, ціна ×6"
+    ultrafast_not_supported: "⚡ Ultrafast недоступний для `{model}` у цьому обліковому записі або маршруті."
   footer:
     status: "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage: "Використання: `/footer [on|off|status]`"
@@ -2279,6 +2279,7 @@ cli:
     failed: "Не вдалося підключитися"
     authorized_no_tools: "Авторизовано. Інструменти недоступні."
     connected: "Підключено"
+    named_account: "Hermes назвав цей обліковий запис {name} «{alias}». Його можна перейменувати будь-коли."
     waiting: "Очікування…"
   editor:
     only_interactive: "Зовнішній редактор доступний лише в інтерактивному CLI."
@@ -2660,7 +2661,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast доступний лише для GPT-6 Astra (поточна модель: {model})."
+      ultrafast_not_supported: "(._.) Ultrafast недоступний для {model} у цьому обліковому записі або маршруті."
       usage: "Використання: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: встановлено {value} {scope}"

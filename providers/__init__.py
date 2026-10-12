@@ -168,7 +168,7 @@ _NAMED_CUSTOM_MEMO_SIG: dict[str, Any] = {}
 _NAMED_CUSTOM_MEMO_NO_SIG = object()
 
 
-def _has_named_custom_provider(name: str, home: "Path | None", hkey: str) -> bool:
+def _has_named_custom_provider(name: str, home: Path | None, hkey: str) -> bool:
     """``has_named_custom_provider`` memoized on the home's config file signature."""
     from utils import file_signature
 

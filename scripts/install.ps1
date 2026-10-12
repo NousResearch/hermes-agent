@@ -711,9 +711,11 @@ function Invoke-Logged {
         Log $StatusLabel
         # stderr stays on stderr (Hermes-Setup logs it); the lines are kept so a
         # failure reason can name the cause.
-        $outputLines = New-Object 'System.Collections.Generic.List[string]'
+        # Named -TypeName: a positional New-Object binds to callers' New-Object shims.
+        $outputLines = New-Object -TypeName 'System.Collections.Generic.Queue[string]'
         Invoke-Native { & $NativeBlock 2>&1 } | ForEach-Object {
-            $outputLines.Add("$_")
+            $outputLines.Enqueue("$_")
+            if ($outputLines.Count -gt 20) { [void]$outputLines.Dequeue() }
             if ($_ -is [System.Management.Automation.ErrorRecord]) { [Console]::Error.WriteLine("$_") }
             else { $_ | Out-Host }
         }

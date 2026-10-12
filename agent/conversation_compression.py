@@ -9,6 +9,7 @@ one pass per session at a time (durable lock) but sessions run concurrently, so 
 """
 
 from __future__ import annotations
+from agent.runtime_override import durable_session_model, note_durable_compaction_commit
 
 import concurrent.futures
 import contextlib
@@ -45,7 +46,6 @@ from hermes_state_pidns import holder_namespace_token
 
 logger = logging.getLogger(__name__)
 
-
 @contextlib.contextmanager
 def _swallow(message: str, *, exc_info: bool = False):
     """Run a best-effort block; on Exception log ``message`` at DEBUG and continue."""
@@ -53,7 +53,6 @@ def _swallow(message: str, *, exc_info: bool = False):
         yield
     except Exception as exc:
         logger.debug(message, exc_info=True) if exc_info else logger.debug(message, exc)
-
 
 # Terminal outcomes from host/hygiene timeout or cooldown writers. Detached heartbeat workers must not clobber these
 # (timeout unobservable). Seeing one latches the heartbeat silent so a later UNKNOWN rewrite can't re-arm a zombie.
@@ -3352,7 +3351,7 @@ def _publish_rotated_compaction(
     from tools.approval_yolo import with_session_yolo
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
-        source=_compression_child_source(agent, old_session_id), model=agent.model,
+        source=_compression_child_source(agent, old_session_id), model=durable_session_model(agent),
         model_config=with_session_yolo(agent._session_init_model_config, old_session_id),
         system_prompt=new_system_prompt, messages=compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
@@ -3825,6 +3824,7 @@ def _commit_compaction(
                 agent._last_flushed_db_idx = len(compressed)
                 agent._flushed_db_message_session_id = agent.session_id
             session_commit_succeeded = True
+            note_durable_compaction_commit(agent, split_status)
         except Exception as e:
             # Rotation: atomic publication failed (including lease loss) — keep the parent live and discard the stale
             # compacted snapshot. In-place: archive_and_compact is atomic so old rows stay active, but marker-swept

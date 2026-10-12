@@ -43,6 +43,7 @@ from agent.model_metadata import (
 )
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
+from agent.ephemeral_model_projection import projection_writes_suppressed
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
@@ -2403,6 +2404,8 @@ class ContextCompressor(
 
     def _durable_write(self, method: str, label: str, *args) -> bool:
         """Best-effort write of a durable per-session value; True only when the write succeeded."""
+        if projection_writes_suppressed(self):
+            return False  # transient model-only reset; real events still persist
         setter = getattr(getattr(self, "_session_db", None), method, None)
         if not getattr(self, "_session_id", "") or not callable(setter):
             return False
@@ -2679,14 +2682,12 @@ class ContextCompressor(
         runtime_changed = (model, provider, base_url, api_mode) != (self.model, self.provider, self.base_url, self.api_mode)
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         self.context_length = context_length
-        # max_tokens=None means "unspecified": keep the existing output reservation.
-        # A switch that genuinely changes the output budget passes the new value explicitly. (#43547)
+        # max_tokens=None preserves the old output reservation; explicit switches pass a new value (#43547).
         if max_tokens is not None:
             self.max_tokens = self._coerce_max_tokens(max_tokens)
         if runtime_changed:
-            # The aux ceiling was probed against the previous main runtime (an "auto" aux route follows the
-            # main model); the caller re-runs the feasibility probe. A same-runtime recompute (overflow-reported
-            # window, grown local window, tier cap) keeps it: the summariser did not change (#114707).
+            # Re-probe the aux ceiling on true route changes; recomputing one
+            # route's threshold need not discard its probe (#114707).
             self._aux_context_ceiling = None
         self._base_threshold_percent, self.threshold_percent, self.threshold_tokens = self._derive_trigger(
             model, context_length, provider)
@@ -2695,11 +2696,11 @@ class ContextCompressor(
         self._tail_token_budget = None
         _ = self.tail_token_budget  # eager recompute, same timing as before
         self.max_summary_tokens = min(int(context_length * 0.05), _SUMMARY_TOKENS_CEILING)
-        # Old usage cannot price a new model. Clear it without arming the post-compaction
-        # latch: the next response supplies usage or enables the usage-less fallback.
+        # Discard old-model usage; next response supplies usage or fallback estimation.
         self.last_prompt_tokens = self.last_completion_tokens = self.last_total_tokens = 0
         self._reset_real_usage_pairing()
-        # Strikes were judged against the previous threshold; void them durably too.
+        if runtime_changed and not self._ineffective_compression_count:
+            self._persist_ineffective_compression_count()
         self._record_ineffective_compression_verdict(0)
         self._prellm_skip_count = 0
         if runtime_changed:
@@ -2707,7 +2708,6 @@ class ContextCompressor(
             self._persist_fallback_compression_streak()
             # Cooldowns are scoped to the failed model/provider; a switch gets an immediate attempt.
             self._clear_compression_failure_cooldown()
-            # The overload budget rode those cooldowns; a new runtime restarts it too.
             self._reset_consecutive_overload_aborts()
         self._verify_compaction_cleared_threshold = self._last_compression_made_progress = False
         # Runway was computed against the previous model's trigger; clear the durable copy too.

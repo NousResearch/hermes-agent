@@ -676,6 +676,13 @@ exclude-newer = "14 days"
 # google-cloud-pubsub: same exact-pin shape (==2.39.2, google-chat adapter).
 # The pin bump WAS the review; exclude-newer only filters it because the
 # 14-day window is younger than the reviewed release.
+#
+# oauthlib: temporary exclude-newer exception for the CVE-2026-49265
+# (GHSA-xpv3-w29h-x7cv / PYSEC-2026-4114, PKCE code_verifier timing side-channel)
+# fix in 4.0.0, published 2026-09-28. Hermes consumes oauthlib as an OAuth
+# *client* only (google-auth-oauthlib via the [google]/[google-chat] extras), and
+# 4.0.0's two breaking changes are both provider/server-side, so the client PKCE
+# path is unaffected. Remove after the window passes.
 
 [tool.uv.exclude-newer-package]
 agent-client-protocol = false
@@ -731,6 +738,7 @@ modal = false
 nemo-relay = false
 neutts = "2026-07-22T14:54:23Z"
 numpy = false
+oauthlib = false
 openai = false
 opentelemetry-exporter-otlp-proto-http = false
 opentelemetry-sdk = false

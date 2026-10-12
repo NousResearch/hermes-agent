@@ -63,9 +63,11 @@ def test_direct_brave_status_tracks_credentials_and_toolset(web_profile, selecti
 @pytest.mark.parametrize("gateway_ready", [False, True])
 @pytest.mark.parametrize("legacy", [False, True])
 def test_gateway_selection_suppresses_direct_search_credentials(web_profile, backend, credentials, gateway_ready, legacy):
-    selection = {"backend": "nous", "search_backend": backend}
+    # No web.search_backend vendor pin: such a pin routes search to that vendor directly even under
+    # a managed shared selection, so only an unpinned managed selection may hide the credential.
+    selection = {"backend": "nous"}
     if legacy:
-        selection = {"backend": backend, "search_backend": backend, "use_gateway": True}
+        selection = {"backend": backend, "use_gateway": True}
     web = web_profile(selection, credentials=credentials, gateway_ready=gateway_ready)
     assert web.available is gateway_ready
     assert web.active is gateway_ready

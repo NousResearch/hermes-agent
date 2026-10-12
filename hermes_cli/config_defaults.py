@@ -2099,9 +2099,6 @@ DEFAULT_CONFIG = {
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
 
-        # Opt-in same-host Linux Docker measurements, including CLI/cron sessions.
-        "telemetry": {"execution_environment": {"resource_sampling": {"enabled": False, "interval_seconds": 2.0}}},
-
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,
@@ -2110,6 +2107,9 @@ DEFAULT_CONFIG = {
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
         # at-least-once). Disable to lose in-flight final responses on crash/restart.
         "delivery_ledger": True,
+        # Seconds to wait for one platform to connect at startup/reconnect; raise on "discord
+        # connect timed out" loops (many slash commands to sync). 0/negative = wait forever. Bridged
+        # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
         # Seconds the gateway waits for a single messaging platform to finish connecting during startup (and
         # on reconnect). Discord in particular can blow past the old fixed 30s when an account has many
         # slash commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this if your gateway hits

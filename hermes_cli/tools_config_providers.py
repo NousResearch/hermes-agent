@@ -981,7 +981,7 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
 
     if not env_vars:
         if provider.get("post_setup"):
-            _run_post_setup(provider["post_setup"])
+            _run_post_setup(provider["post_setup"], config)
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
@@ -993,7 +993,7 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
 
     all_configured = _prompt_env_vars(env_vars, reconfigure=reconfigure)
     if provider.get("post_setup") and all_configured:
-        _run_post_setup(provider["post_setup"])
+        _run_post_setup(provider["post_setup"], config)
     if all_configured:
         if not reconfigure:
             _print_success(f"  {provider['name']} configured!")
@@ -1117,15 +1117,18 @@ def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
     _print_success(f"  Vision set to {slug} / {model}")
 
 
-def _configure_simple_requirements(ts_key: str, *, reconfigure: bool = False):
+def _configure_simple_requirements(ts_key: str, config: dict, *, reconfigure: bool = False):
     """Fallback for toolsets that just need env vars (no provider selection).
     Vision has its own provider/model picker — run it directly so neither flow falls back to the generic
     single-key prompt (which would re-ask for OPENROUTER_API_KEY)."""
-    from hermes_cli.tools_config import TOOLSET_ENV_REQUIREMENTS, _toolset_has_keys, _toolset_label
+    from hermes_cli.tools_config import TOOLSET_ENV_REQUIREMENTS, _cfg_section, _toolset_has_keys, _toolset_label
 
     if ts_key == "vision":
         if reconfigure or not _toolset_has_keys("vision"):
             _configure_vision_backend()
+            # The picker saves auxiliary.vision itself; carry it into the caller's config, which `hermes tools`
+            # saves over the whole file afterwards.
+            _cfg_section(config, "auxiliary")["vision"] = _cfg_section(_cfg_section(load_config(), "auxiliary"), "vision")
         return
 
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])

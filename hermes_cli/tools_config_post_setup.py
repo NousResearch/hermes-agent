@@ -11,7 +11,7 @@ from typing import Set
 from hermes_cli.cli_output import (
     print_error as _print_error, print_info as _print_info, print_success as _print_success,
     print_warning as _print_warning)
-from hermes_cli.config import get_env_value
+from hermes_cli.config import get_env_value, load_config
 from hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver
 from tools.transcription_common import DEFAULT_LOCAL_MODEL, STT_MODEL_CATALOG
 
@@ -302,9 +302,22 @@ _POST_SETUP_HOOKS: dict = {
 }
 
 
-def _run_post_setup(post_setup_key: str):
-    """Run post-setup hooks for tools that need extra installation steps."""
+def _run_post_setup(post_setup_key: str, config: dict | None = None):
+    """Run post-setup hooks for tools that need extra installation steps.
+
+    A hook may enable its plugin through plugin admission (langfuse), which commits ``plugins.enabled`` /
+    ``plugins.disabled`` to config.yaml itself. When the caller holds a ``config`` it saves afterwards
+    (``hermes tools``), copy that selection into it so the caller's save does not restore stale lists."""
     _POST_SETUP_HOOKS.get(post_setup_key, lambda: None)()
+    if config is None:
+        return
+    saved = load_config().get("plugins") or {}
+    plugins = config.setdefault("plugins", {})
+    for key in ("enabled", "disabled"):
+        if key in saved:
+            plugins[key] = saved[key]
+        else:
+            plugins.pop(key, None)
 
 
 def valid_post_setup_keys() -> set[str]:

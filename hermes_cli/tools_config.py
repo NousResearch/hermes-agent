@@ -875,7 +875,7 @@ def _configure_toolset(ts_key: str, config: dict, *, force_fresh: bool = True, r
     if cat:
         _configure_tool_category(ts_key, cat, config, force_fresh=force_fresh, reconfigure=reconfigure)
     else:
-        _configure_simple_requirements(ts_key, reconfigure=reconfigure)
+        _configure_simple_requirements(ts_key, config, reconfigure=reconfigure)
 
 
 def _reconfigure_tool(config: dict, *, force_fresh: bool = True):

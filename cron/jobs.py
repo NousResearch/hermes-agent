@@ -1210,8 +1210,15 @@ def compute_next_run(schedule: dict[str, Any], last_run_at: Optional[str] = None
         # wall clock for croniter, then re-attach the zone to the result, so
         # the wall-clock hour stays correct every calendar day, including DST
         # boundaries (morning-routine 09:00 America/Toronto).
-        # Fall back to the base's own zone only when nothing is configured.
-        zone = get_timezone() or base_time.tzinfo
+        # Respect per-job schedule timezone if configured (e.g. America/New_York for DST adaptation)
+        sched_tz = None
+        if isinstance(schedule, dict) and schedule.get("tz"):
+            try:
+                import zoneinfo
+                sched_tz = zoneinfo.ZoneInfo(schedule["tz"])
+            except Exception:
+                pass
+        zone = sched_tz or get_timezone() or base_time.tzinfo
         base_wall = base_time.astimezone(zone).replace(tzinfo=None)
         it = croniter(expr, base_wall)
         # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):

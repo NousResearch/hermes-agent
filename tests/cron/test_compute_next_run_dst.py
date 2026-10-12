@@ -76,3 +76,20 @@ class TestFallBackStrictlyAfterContract:
             compute_next_run({"kind": "cron", "expr": "* * * * *"},
                              last_run_at=base.isoformat()))
         assert nxt.timestamp() > base.timestamp()
+
+
+class TestScheduleSpecificTimezone:
+    def test_schedule_tz_overrides_profile_timezone(self):
+        """When schedule specifies a timezone (e.g. America/New_York), compute_next_run must honor it."""
+        ny = ZoneInfo("America/New_York")
+        schedule = {"kind": "cron", "expr": "0 9 * * 1-5", "tz": "America/New_York"}
+        # Base is Friday 09:00 NY time
+        base = datetime(2026, 10, 9, 9, 0, tzinfo=ny)
+        nxt_str = compute_next_run(schedule, last_run_at=base.isoformat())
+        assert nxt_str is not None
+        nxt = datetime.fromisoformat(nxt_str)
+        assert nxt.tzinfo is not None
+        assert nxt.astimezone(ny).hour == 9
+        assert nxt.astimezone(ny).minute == 0
+        assert nxt.astimezone(ny).day == 12  # Monday
+

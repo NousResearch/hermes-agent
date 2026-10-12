@@ -17,7 +17,7 @@ Render authored HTML or SVG to a verified image file.
 | Source | Optional — install with `hermes skills install official/creative/visual-artifact-delivery` |
 | Path | `optional-skills/creative/visual-artifact-delivery` |
 | Version | `1.0.0` |
-| Author | Pedro Relvas (@PRELVAS94), Hermes Agent |
+| Author | Pedro Relvas (PRELVAS94), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `diagram`, `rendering`, `screenshot`, `svg`, `verification`, `delivery` |

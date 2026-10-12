@@ -2,7 +2,7 @@
 name: visual-artifact-delivery
 description: "Render authored HTML or SVG to a verified image file."
 version: 1.0.0
-author: Pedro Relvas (@PRELVAS94), Hermes Agent
+author: Pedro Relvas (PRELVAS94), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:

@@ -19,6 +19,7 @@ from hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
+from . import shared_metrics_connectors as connectors_
 from . import shared_metrics_efficiency as eff
 from . import shared_metrics_engagement as engagement_
 from . import shared_metrics_fields as fields_
@@ -189,6 +190,7 @@ class _MetricsSession:
     # Compression rotated this id away: close once its in-flight turn ends.
     retiring: bool = False
     efficiency: eff.SessionEfficiency = field(default_factory=eff.SessionEfficiency)
+    connectors: connectors_.ConnectorSessionState = field(default_factory=connectors_.ConnectorSessionState)
     route_run: engagement_.RouteRun = field(default_factory=engagement_.RouteRun)
     api_calls: int = 0
     tool_call_total: int = 0
@@ -467,10 +469,12 @@ class _Runtime:
         session, task = self._task_pair(event, start=True, allow_task_id_fallback=True)
         if session is None or task is None or not _text(event, "tool_call_id"):
             return
-        identity = self._tool_call_identity(event)
+        if connectors_.is_connector_batch(event):
+            return  # each entry opens its own lifecycle; the wrapper counts only if no entry ran
         with session.lock:
             if not self._admits(session, task, event):
                 return
+            identity = self._tool_call_identity(event, session, task_id)
             key = (task_id, *identity)
             if identity in task.completed_tool_call_ids or key in session.tool_calls:
                 return
@@ -512,7 +516,11 @@ class _Runtime:
                 return
             tool_call = None
             if _text(event, "tool_call_id"):
-                observed_identity = self._tool_call_identity(event)
+                base_identity = self._tool_call_identity(event)
+                if session.connectors.batch_already_counted(task_id, event, base_identity):
+                    task.completed_tool_call_ids.add(base_identity)
+                    return
+                observed_identity = self._tool_call_identity(event, session, task_id)
                 if observed_identity in task.completed_tool_call_ids:
                     return
                 identity = observed_identity
@@ -540,6 +548,9 @@ class _Runtime:
             if task.cost.user_turn:
                 session.efficiency.tools.used.add(eff.toolset_metric_name(event.get("toolset")))
             self._finish_tool_call(task, tool_call, event)
+            chain = session.connectors.observe(task_id, event, self._tool_call_identity(event))
+            if chain is not None:
+                self._mark(session, task, contract.CONNECTOR_CHAIN_MARK, chain)
 
     def record_skill_lifecycle(self, event: dict[str, Any]) -> None:
         """Emit one allowlisted skill fact without its local identity."""
@@ -770,9 +781,13 @@ class _Runtime:
                 self._turn_sessions[(session.session_id, turn_id)] = session
 
     @staticmethod
-    def _tool_call_identity(event: dict[str, Any]) -> tuple[str, str, str]:
-        """Identify one provider-local tool call without exporting its IDs."""
-        return _text(event, "api_request_id"), _text(event, "turn_id"), _text(event, "tool_call_id")
+    def _tool_call_identity(
+        event: dict[str, Any], session: _MetricsSession | None = None, task_id: str = "",
+    ) -> tuple[str, str, str]:
+        """Identify one provider-local tool call without exporting its IDs. With ``session``, a
+        connector entry of a ``tool_call`` batch gets its own identity (entries share the call id)."""
+        base = _text(event, "api_request_id"), _text(event, "turn_id"), _text(event, "tool_call_id")
+        return base if session is None else session.connectors.identity(task_id, event, base)
 
     @staticmethod
     def _event_matches_task_turn(task: _TaskRun, event: dict[str, Any]) -> bool:
@@ -917,6 +932,7 @@ class _Runtime:
             return False
         self._end_pending_tool_calls(session, task, event)
         self._end_pending_model_calls(session, {**event, "task_id": task_id})
+        session.connectors.forget_task(task_id)
         fields = contract.task_terminal_fields(
             {**task.start_fields, **event},
             duration_ms=_elapsed_ms(task.started_ns),

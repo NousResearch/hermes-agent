@@ -39,6 +39,17 @@ def suppress_post_tool_call_hook():
     finally:
         _post_tool_call_hook_suppressed.reset(token)
 
+
+@contextmanager
+def own_post_tool_call_hook():
+    """Each entry of a connector ``tool_call`` batch is its own call and emits its own post-tool
+    event, even inside an executor that suppressed the inner one for the wrapper."""
+    token = _post_tool_call_hook_suppressed.set(False)
+    try:
+        yield
+    finally:
+        _post_tool_call_hook_suppressed.reset(token)
+
 # Platform-bundle names already flagged in disabled_toolsets (advisory logged once per name).
 _WARNED_DISABLED_BUNDLES: set = set()
 

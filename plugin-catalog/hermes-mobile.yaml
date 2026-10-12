@@ -1,6 +1,6 @@
 name: hermes-mobile
 repo: https://github.com/geniok1980/hermes-mobile-adapter
-sha: 8111c11ee7e674c7e819347ce7a9642ba9f9fd78
+sha: 7fdaf232bc43df2d8b730c04bf7460557fb35c82
 subdir: adapter/hermes_mobile
 title: Hermes Mobile Adapter
 description: >-
@@ -8,11 +8,12 @@ description: >-
   text, voice, images, video and documents in both directions, approval/clarify/slash cards
   answered from the app, streaming edits, typing and avatar state events, cron delivery to a
   chosen device. Ships TypeScript and Python SDKs, platform guides and an acceptance checklist.
-  Disclosure — opens a listening WebSocket socket (wildcard host by default, port 8787) guarded
-  by a shared token; inbound media is written under $HERMES_HOME/mobile-media; secrets are read
-  through Hermes's profile-scoped route; approvals and clarify cards stay with Hermes; no
-  telemetry, no third-party network calls, no self-update (the pinned SHA is the only update
-  path).
+  Disclosure — listens on loopback by default (the wildcard address only when set
+  explicitly, behind a wss proxy); inbound media is written under $HERMES_HOME/mobile-media;
+  secrets are read through Hermes's profile-scoped route; approval and clarify cards stay with
+  Hermes; deliver frames are accepted only from the cron sender (loopback peer or a token from
+  MOBILE_DELIVER_TOKENS); no telemetry, no third-party network calls, no self-update (the pinned
+  SHA is the only update path).
 maintainer: geniok1980
 tier: community
 category: platform

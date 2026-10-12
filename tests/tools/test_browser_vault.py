@@ -202,6 +202,19 @@ class TestClassifier:
     def test_unmatched_returns_none(self):
         assert classify_login_control(_ctrl(label="Search the docs")) is None
 
+    def test_issue_and_start_dates_are_not_the_card_expiry(self):
+        """Maestro-style "Issue date" / "Start date" / "Valid from" boxes share the MM/YY shape;
+        the expiry must land in the real expiry box even when one of them comes first."""
+        from agent.vault_login_classifier import classify_checkout_control, select_checkout_fills
+        from agent.vault_store import PAYMENT_FIELDS
+
+        for label in ("Issue date (MM / YY)", "Start date (MM/YY)", "Valid from MM/YY"):
+            assert classify_checkout_control(_ctrl(label=label)) is None, label
+        controls = [_ctrl(label="Issue date (MM / YY)", index=0), _ctrl(label="Expiry date (MM / YY)", index=1)]
+        classified = [c for c in map(classify_checkout_control, controls) if c is not None]
+        fills = select_checkout_fills(classified, _CARD, PAYMENT_FIELDS)
+        assert fills == [{"index": 1, "token": "cc-exp", "value": "07/29"}]
+
     def test_select_password_fill_picks_best_password(self):
         user = ClassifiedLoginControl(_ctrl(index=0, form_index=0, autocomplete="username"), 100, "username")
         pw_heur = ClassifiedLoginControl(_ctrl(index=1, form_index=0, type="password"), 90, "current-password")

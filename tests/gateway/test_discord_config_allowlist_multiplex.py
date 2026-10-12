@@ -88,6 +88,51 @@ def test_button_click_in_a_thread_follows_the_thread_message_verdict(config_only
     assert _component_check_auth(stranger, snapshot, set(), live_auth=adapter._component_live_auth) is False
 
 
+@pytest.mark.parametrize("user_id,expected", [(USER, True), (STRANGER, False)])
+def test_guild_channel_message_and_button_honor_config_allow_from(config_only_discord, user_id, expected):
+    """Regression: ``allow_from`` is Discord's only user allowlist, so it governs guild channels
+    too. The gateway's fallback read ``group_allow_from`` (Telegram's group-only key) for ``group``
+    sources and silently dropped the allowlisted user's channel messages and button clicks."""
+    from plugins.platforms.discord.adapter_component_auth import _component_check_auth
+
+    runner, adapter = _wire(config_only_discord)
+    source = adapter.build_source(
+        chat_id=CHANNEL, chat_type="group", user_id=user_id, user_name="u", guild_id="1")
+    runner._canonicalize(source, primary_home=config_only_discord)
+    assert runner._is_user_authorized_for_source(source) is expected
+
+    click = _click(user_id, SimpleNamespace(id=int(CHANNEL)))
+    snapshot = adapter._get_allowed_users()
+    assert _component_check_auth(click, snapshot, set(), live_auth=adapter._component_live_auth) is expected
+
+
+def test_telegram_group_still_requires_group_allow_from(monkeypatch):
+    """Guard: Telegram's ``allow_from`` is DM-only and must not admit the user in a group."""
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.pairing import PairingStore
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    for key in ("TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS",
+                "GATEWAY_ALLOW_ALL_USERS", "TELEGRAM_ALLOW_ALL_USERS"):
+        monkeypatch.delenv(key, raising=False)
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    adapter = object.__new__(TelegramAdapter)
+    adapter.config = PlatformConfig(enabled=True, extra={"allow_from": "777"})
+    runner.config.platforms = {Platform.TELEGRAM: adapter.config}
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.pairing_store = PairingStore(profile="default")
+
+    def source(chat_type):
+        return SessionSource(platform=Platform.TELEGRAM, chat_id="-100555", chat_type=chat_type,
+                             user_id="777")
+
+    assert runner._is_user_authorized(source("dm")) is True
+    assert runner._is_user_authorized(source("group")) is False
+
+
 def test_button_click_in_a_thread_resolves_a_thread_scoped_route(monkeypatch):
     """A click carries the thread id, so a ``thread_id`` profile route matches it the same way it
     matches the thread's messages: a user paired only in the routed profile can answer the card."""

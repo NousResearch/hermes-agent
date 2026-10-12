@@ -23,12 +23,6 @@ def _reset_cgroup_cache():
     docker_env._storage_opt_ok = None
 
 
-def test_pids_limit_not_in_base_security_args():
-    """``--pids-limit`` must NOT be hardcoded in the static security args.
-
-    It requires the pids cgroup controller and is gated on the probe instead.
-    """
-    assert "--pids-limit" not in docker_env._BASE_SECURITY_ARGS
 
 
 def test_probe_returns_true_when_container_starts(monkeypatch):

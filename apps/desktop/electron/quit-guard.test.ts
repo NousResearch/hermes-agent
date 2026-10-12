@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import {
+  type ActiveWork,
+  backendOwnedByApp,
+  mergeActiveWork,
+  normalizeActiveWork,
+  quitPromptFor,
+  shouldGuardWindowClose
+} from './quit-guard'
 
 test('normalizeActiveWork drops junk and keeps the count at least the title count', () => {
   assert.deepEqual(normalizeActiveWork(null), { count: 0, titles: [] })
@@ -38,7 +45,6 @@ test('quitPromptFor names the running chats', () => {
   const prompt = quitPromptFor({ count: 2, titles: ['Fix login', 'Ship docs'] }, false)
 
   assert.ok(prompt)
-  assert.equal(prompt.message, 'Hermes is still working on 2 chats.')
   assert.ok(prompt.detail.includes('• Fix login'))
   assert.ok(prompt.detail.includes('• Ship docs'))
 })
@@ -47,16 +53,97 @@ test('quitPromptFor summarizes past the list cap and counts untitled work', () =
   const prompt = quitPromptFor({ count: 9, titles: ['a', 'b', 'c', 'd', 'e', 'f'] }, false)
 
   assert.ok(prompt)
-  assert.equal(prompt.message, 'Hermes is still working on 9 chats.')
   assert.ok(prompt.detail.includes('• d'))
   assert.ok(!prompt.detail.includes('• e'))
   assert.ok(prompt.detail.includes('• 5 more'))
 })
 
-test('quitPromptFor speaks singular for one chat', () => {
-  const prompt = quitPromptFor({ count: 1, titles: [] }, false)
+// #79579: only a backend the app owns (spawned locally, or started over SSH)
+// dies with it. A remote URL or Hermes Cloud backend keeps the turn running
+// after the app quits, so the prompt must not claim the work is lost.
+test('backendOwnedByApp: a local primary is owned even before its child attaches', () => {
+  assert.equal(backendOwnedByApp({ ownedBackendCount: 0, primaryRouteKind: null }), true)
+})
+
+test('backendOwnedByApp: an SSH primary is owned (the app starts and stops that server)', () => {
+  assert.equal(backendOwnedByApp({ ownedBackendCount: 0, primaryRouteKind: 'ssh' }), true)
+})
+
+test('backendOwnedByApp: a remote URL or cloud primary with nothing spawned is not owned', () => {
+  assert.equal(backendOwnedByApp({ ownedBackendCount: 0, primaryRouteKind: 'remote' }), false)
+  assert.equal(backendOwnedByApp({ ownedBackendCount: 0, primaryRouteKind: 'cloud' }), false)
+})
+
+test('backendOwnedByApp: a remote primary alongside a spawned backend stays owned', () => {
+  // Another window/profile may be running its turn on that local child.
+  assert.equal(backendOwnedByApp({ ownedBackendCount: 1, primaryRouteKind: 'remote' }), true)
+})
+
+test('quitPromptFor warns about lost work when the app owns the backend (local)', () => {
+  const owned = backendOwnedByApp({ ownedBackendCount: 1, primaryRouteKind: null })
+  const prompt = quitPromptFor({ count: 1, titles: ['Fix login'] }, false, owned)
 
   assert.ok(prompt)
-  assert.equal(prompt.message, 'Hermes is still working on 1 chat.')
-  assert.ok(prompt.detail.includes('mid-turn'))
+  assert.ok(prompt.detail.includes('is lost'))
+  assert.deepEqual(prompt.buttons, ['Keep Running', 'Quit Anyway'])
+})
+
+for (const primaryRouteKind of ['remote', 'cloud'] as const) {
+  test(`quitPromptFor says the agent keeps running on a ${primaryRouteKind} backend`, () => {
+    const owned = backendOwnedByApp({ ownedBackendCount: 0, primaryRouteKind })
+    const prompt = quitPromptFor({ count: 1, titles: ['Fix login'] }, false, owned)
+
+    assert.ok(prompt)
+    assert.ok(prompt.detail.includes('• Fix login'))
+    assert.ok(!prompt.detail.includes('lost'), 'a backend that outlives the app loses nothing')
+    assert.ok(prompt.detail.includes('keeps running'))
+    assert.notDeepEqual(prompt.buttons, ['Keep Running', 'Quit Anyway'])
+  })
+}
+
+// -- shouldGuardWindowClose -------------------------------------------------
+
+test('shouldGuardWindowClose guards active work on the last chat window', () => {
+  assert.equal(shouldGuardWindowClose({ count: 1, titles: ['Fix login'] }, false, false, false), true)
+  assert.equal(shouldGuardWindowClose({ count: 3, titles: ['a', 'b', 'c'] }, false, false, false), true)
+})
+
+test('shouldGuardWindowClose does not guard when no work is active', () => {
+  assert.equal(shouldGuardWindowClose({ count: 0, titles: [] }, false, false, false), false)
+})
+
+test('shouldGuardWindowClose does not guard the macOS close gesture', () => {
+  // Closing the primary window there is a "stay in Dock" gesture, not a quit.
+  assert.equal(shouldGuardWindowClose({ count: 2, titles: ['Fix login'] }, false, true, false), false)
+})
+
+test('shouldGuardWindowClose does not guard during a handoff', () => {
+  // Update / swap / uninstall relaunch: the app is replacing itself.
+  assert.equal(shouldGuardWindowClose({ count: 2, titles: ['Fix login'] }, true, false, false), false)
+})
+
+test('shouldGuardWindowClose does not guard a non-final chat window', () => {
+  assert.equal(shouldGuardWindowClose({ count: 1, titles: ['Fix login'] }, false, false, true), false)
+})
+
+// -- lastActiveWorkSeen fallback semantics (via mergeActiveWork) ---------------
+
+test('mergeActiveWork keeps a live count when the per-window map reads empty', () => {
+  // A stream can reload its webContents mid-turn, dropping its map entry
+  // before the guard runs; the cached summary must still count the turn.
+  const mapWork = mergeActiveWork([]) // map reads empty
+  const cached: ActiveWork = { count: 2, titles: ['Fix login'] }
+  const merged = mergeActiveWork([mapWork, cached])
+  assert.equal(merged.count, 2)
+  assert.deepEqual(merged.titles, ['Fix login'])
+})
+
+test('an idle cache does not resurrect finished work', () => {
+  // The cache is only refreshed by real publishes, so count=0 clears it.
+  const merged = mergeActiveWork([
+    { count: 0, titles: [] },
+    { count: 0, titles: [] }
+  ])
+
+  assert.equal(merged.count, 0)
 })

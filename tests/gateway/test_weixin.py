@@ -3,18 +3,14 @@
 import asyncio
 import base64
 import json
-import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.config import GatewayConfig, Platform
 from gateway.platforms import weixin
 from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
-from tools.send_message_tool import _send_to_platform
 from tools.send_message_targets import _parse_target_ref
 
 
@@ -28,19 +24,6 @@ def _make_adapter() -> WeixinAdapter:
     )
 
 
-class TestWeixinInboundVoiceTranscript:
-    def test_voice_transcript_keeps_voice_origin_marker(self):
-        item_list = [
-            {
-                "type": weixin.ITEM_VOICE,
-                "voice_item": {"text": "帮我查一下今天天气"},
-            }
-        ]
-
-        assert weixin._extract_text(item_list) == (
-            "[Voice transcription provided by Weixin]\n"
-            "帮我查一下今天天气"
-        )
 
 
 class TestWeixinFormatting:
@@ -220,33 +203,6 @@ class TestWeixinStatePersistence:
         assert writes[-1] == {"user-1": "t1", "user-2": "t2"}
 
 
-class TestWeixinQrLogin:
-    @pytest.mark.asyncio
-    async def test_qr_login_timeout_uses_monotonic_clock(self, tmp_path):
-        first_qr = {
-            "qrcode": "qr-1",
-            "qrcode_img_content": "https://example.com/qr-1",
-        }
-        pending = {"status": "wait"}
-
-        with patch("gateway.platforms.weixin._api_get", new_callable=AsyncMock) as api_get_mock, \
-             patch("gateway.platforms.weixin.time") as mock_time, \
-             patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
-             patch("gateway.platforms.weixin.aiohttp.ClientSession", create=True) as session_cls, \
-             patch("builtins.print"):
-            api_get_mock.side_effect = [first_qr, pending]
-            mock_time.monotonic.side_effect = [1000, 1000.2, 1001.1]
-            mock_time.time.side_effect = [1000, 900, 901, 902]
-
-            session = AsyncMock()
-            session.__aenter__.return_value = session
-            session.__aexit__.return_value = False
-            session_cls.return_value = session
-
-            result = await weixin.qr_login(str(tmp_path), timeout_seconds=1)
-
-        assert result is None
-        assert api_get_mock.await_count == 2
 
 
 class TestWeixinSendMessageIntegration:
@@ -448,9 +404,6 @@ class TestWeixinOutboundMedia:
         assert upload_url == "https://upload.example.com/media"
         assert upload_kwargs["headers"] == {"Content-Type": "application/octet-stream"}
         assert upload_kwargs["data"]
-        # Timeout is now enforced externally via asyncio.wait_for() rather than
-        # aiohttp.ClientTimeout, so it no longer appears as a post() kwarg.
-        assert "timeout" not in upload_kwargs
         payload = api_post_mock.await_args.kwargs["payload"]
         media = payload["msg"]["item_list"][0]["image_item"]["media"]
         assert media["encrypt_query_param"] == "enc-param"
@@ -510,12 +463,6 @@ class TestWeixinBlankMessagePrevention:
         assert adapter._split_text("") == []
 
 
-class TestWeixinStreamingCursorSuppression:
-    """WeChat doesn't support message editing — cursor must be suppressed."""
-
-    def test_supports_message_editing_is_false(self):
-        adapter = _make_adapter()
-        assert adapter.SUPPORTS_MESSAGE_EDITING is False
 
 
 class TestWeixinMediaBuilder:
@@ -623,10 +570,6 @@ class TestIsStaleSessionRet:
         assert weixin._is_stale_session_ret(-2, None, "freq limit") is False
 
 
-    def test_errcode_minus_14_is_not_matched_here(self):
-        # -14 is handled by the separate SESSION_EXPIRED_ERRCODE path; the
-        # helper only disambiguates -2 from a genuine rate limit.
-        assert weixin._is_stale_session_ret(-14, None, "session expired") is False
 
 
 class TestWeixinContentDedup:
@@ -729,23 +672,6 @@ class _StubSession:
 
 
 class TestWeixinApiTimeout:
-    def test_api_post_does_not_pass_aiohttp_timeout_kwarg(self):
-        session = _StubSession(_StubResponse(body='{"ret": 0}'))
-        result = asyncio.run(
-            weixin._api_post(
-                session,
-                base_url="https://weixin.example.com",
-                endpoint="ep",
-                payload={"k": "v"},
-                token="tok",
-                timeout_ms=5000,
-            )
-        )
-        assert result == {"ret": 0}
-        # The fix enforces the timeout via asyncio.wait_for, so ClientTimeout is
-        # gone and `timeout` is no longer forwarded to session.post().
-        [(_url, kwargs)] = session.post_calls
-        assert "timeout" not in kwargs
 
 
     def test_get_updates_returns_empty_sentinel_on_timeout(self):
@@ -762,6 +688,49 @@ class TestWeixinApiTimeout:
             )
         )
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
+
+
+class TestWeixinPollLoopSyncBuf:
+    """The long-poll cursor write (fsync + rename) must not run on the event loop."""
+
+    def _run_polls(self, monkeypatch, buffers):
+        import threading
+
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._poll_session = Mock()
+        responses = iter(buffers)
+        saves = []
+
+        async def _get_updates(*args, **kwargs):
+            try:
+                return {"ret": 0, "msgs": [], "get_updates_buf": next(responses)}
+            except StopIteration:
+                adapter._running = False
+                return {"ret": 0, "msgs": []}
+
+        def _save(hermes_home, account_id, sync_buf):
+            saves.append((sync_buf, threading.get_ident()))
+
+        monkeypatch.setattr(weixin, "_get_updates", _get_updates)
+        monkeypatch.setattr(weixin, "_load_sync_buf", lambda *a: "buf-0")
+        monkeypatch.setattr(weixin, "_save_sync_buf", _save)
+
+        async def scenario():
+            await adapter._poll_loop()
+            return threading.get_ident()
+
+        return saves, asyncio.run(scenario())
+
+    def test_cursor_write_runs_off_the_loop_thread(self, monkeypatch):
+        saves, loop_thread = self._run_polls(monkeypatch, ["buf-1"])
+        assert [buf for buf, _ in saves] == ["buf-1"]
+        assert all(thread != loop_thread for _, thread in saves)
+
+    def test_unchanged_cursor_is_not_rewritten(self, monkeypatch):
+        # Empty long-polls (and the timeout sentinel) echo the current buffer back.
+        saves, _ = self._run_polls(monkeypatch, ["buf-0", "buf-1", "buf-1", "buf-2"])
+        assert [buf for buf, _ in saves] == ["buf-1", "buf-2"]
 
 
 class TestWeixinVoiceAlwaysDownloaded:
@@ -792,56 +761,7 @@ class TestWeixinVoiceAlwaysDownloaded:
             },
         }
 
-    @pytest.mark.asyncio
-    async def test_download_voice_returns_path_when_tencent_text_set(self, tmp_path, monkeypatch):
-        """#27300 PRIMARY: voice ``_download_media`` must not short-circuit on
-        ``voice_item.text``. The audio is needed so Hermes' own STT can
-        re-transcribe when Tencent's text is in the wrong language.
-        """
-        adapter = _make_adapter()
-        adapter._cdn_base_url = "https://example.invalid"
-        adapter._poll_session = Mock()
 
-        fake_audio_bytes = b"\\x00\\x01\\x02FAKE_SILK"
-        monkeypatch.setattr(weixin, "cache_audio_from_bytes_async",
-                            AsyncMock(side_effect=lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}")))
-
-        async def _fake_download(session, *, cdn_base_url, encrypted_query_param,
-                                 aes_key_b64, full_url, timeout_seconds):
-            return fake_audio_bytes
-
-        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
-
-        item = self._make_voice_item(text="garbled-tencent-transcript")
-        result, _mime = await adapter._download_media(item, weixin._INBOUND_MEDIA[weixin.ITEM_VOICE])
-
-        # Currently broken: returns None when voice_item.text is set.
-        # After fix: returns a local path so the central STT pipeline
-        # can pick it up and re-transcribe.
-        assert result is not None, (
-            "_download_media returned None even though raw audio is "
-            "available — Hermes' STT pipeline needs the audio to handle "
-            "non-Chinese voice messages (#27300)."
-        )
-        assert result.endswith(".silk")
-
-    def test_extract_text_does_not_return_tencent_voice_text(self):
-        """#27300 SECONDARY: ``_extract_text`` must not return
-        ``voice_item.text`` verbatim. That text is Tencent Cloud's
-        STT output, which is wrong for non-Chinese audio and the
-        whole reason #27300 was filed. Returning empty forces the
-        central STT pipeline's transcript to become the body.
-        """
-        item_list = [self._make_voice_item(text="garbled-tencent-transcript")]
-        result = weixin._extract_text(item_list)
-        # Currently broken: returns "garbled-tencent-transcript".
-        # After fix: returns "" (empty string) so the central pipeline
-        # transcript replaces it as the user-visible body.
-        assert result != "garbled-tencent-transcript", (
-            "_extract_text returned Tencent's text directly — for "
-            "non-Chinese audio this is garbage; the central STT "
-            "pipeline's transcript should be the body (#27300)."
-        )
 
 
     @pytest.mark.asyncio

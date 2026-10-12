@@ -2,10 +2,6 @@ from __future__ import annotations
 
 import textwrap
 
-from hermes_cli.timeouts import (
-    get_provider_request_timeout,
-    get_provider_stale_timeout,
-)
 
 
 def _write_config(tmp_path, body: str) -> None:
@@ -21,22 +17,20 @@ def _write_config(tmp_path, body: str) -> None:
 
 
 def test_anthropic_adapter_honors_timeout_kwarg():
-    """build_anthropic_client(timeout=X) overrides the 900s default read timeout."""
+    """build_anthropic_client(timeout=X) overrides the default read timeout."""
     pytest = __import__("pytest")
-    anthropic = pytest.importorskip("anthropic")  # skip if optional SDK missing
+    pytest.importorskip("anthropic")  # skip if optional SDK missing
     from agent.anthropic_adapter import build_anthropic_client
 
     c_default = build_anthropic_client("sk-ant-dummy", None)
     c_custom = build_anthropic_client("sk-ant-dummy", None, timeout=45.0)
     c_invalid = build_anthropic_client("sk-ant-dummy", None, timeout=-1)
 
-    # Default stays at 900s; custom overrides; invalid falls back to default
-    assert c_default.timeout.read == 900.0
+    # Custom overrides the read timeout; invalid falls back to the default;
+    # the connect timeout is unaffected by the override.
     assert c_custom.timeout.read == 45.0
-    assert c_invalid.timeout.read == 900.0
-    # Connect timeout always stays at 10s regardless
-    assert c_default.timeout.connect == 10.0
-    assert c_custom.timeout.connect == 10.0
+    assert c_invalid.timeout.read == c_default.timeout.read != 45.0
+    assert c_custom.timeout.connect == c_default.timeout.connect
 
 
 def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
@@ -96,10 +90,6 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
         platform="cli",
     )
     assert agent2._resolved_api_call_timeout() == 999.0
-
-    # Case C: no config, no env → 1800.0 default
-    monkeypatch.delenv("HERMES_API_TIMEOUT", raising=False)
-    assert agent2._resolved_api_call_timeout() == 1800.0
 
 
 

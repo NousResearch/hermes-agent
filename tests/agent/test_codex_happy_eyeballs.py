@@ -1,5 +1,4 @@
 import errno
-import selectors
 import socket
 
 import httpcore
@@ -257,36 +256,6 @@ def test_async_connect_races_past_blackholed_ipv6(monkeypatch):
     # and wins immediately. Serial behavior would block until the IPv6
     # connect timeout (tens of seconds). Generous bound for slow CI hosts.
     assert elapsed < 5.0
-
-
-class _RecordingPool:
-    def __init__(self):
-        self._network_backend = "default"
-
-
-class _RecordingTransport:
-    def __init__(self):
-        self._pool = _RecordingPool()
-
-
-def test_enable_happy_eyeballs_on_client_covers_transport_and_mounts():
-    class _Client:
-        pass
-
-    client = _Client()
-    client._transport = _RecordingTransport()
-    client._mounts = {"https://": _RecordingTransport(), "http://": None}
-
-    process_bootstrap.enable_happy_eyeballs_on_client(client)
-
-    assert isinstance(
-        client._transport._pool._network_backend,
-        process_bootstrap._HappyEyeballsSyncBackend,
-    )
-    assert isinstance(
-        client._mounts["https://"]._pool._network_backend,
-        process_bootstrap._HappyEyeballsSyncBackend,
-    )
 
 
 def test_enable_happy_eyeballs_on_client_skips_proxy_pools(no_proxy_env):

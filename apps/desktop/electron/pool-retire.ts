@@ -147,12 +147,6 @@ export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDe
         throw new Error(`Backend for "${key}" was retired; open it explicitly to reconnect.`)
       }
     },
-    retireIdle: (key: string, idleMs: number) =>
-      enqueue(async () => {
-        const entry = deps.pool.get(key)
-
-        return entry ? retire(key, entry, () => Date.now() - (entry.lastActiveAt || 0) > idleMs) : false
-      }),
     evictTo: (keep: number, freshMs: number) =>
       enqueue(async () => {
         const retired: string[] = []

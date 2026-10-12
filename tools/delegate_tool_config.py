@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 from utils import base_url_hostname, is_truthy_value
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import scoped_fallback_chain
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -268,7 +268,12 @@ def _resolve_child_credential_pool(
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool
             return _loaded_pool(child_key)
-        if parent_pool is not None and effective_provider == parent_provider:
+        if effective_provider == parent_provider:
+            # A same-provider parent with no pool is using a fixed credential.
+            # Loading a separate provider pool here can replace the inherited
+            # endpoint and key when the child acquires its startup lease (#71424).
+            if parent_pool is None:
+                return None
             if not effective_base_url or _pool_serves_endpoint(parent_pool, effective_provider, effective_base_url):
                 return parent_pool
             logger.debug("Parent %s pool has no entry for child endpoint %s; not sharing it",
@@ -465,32 +470,26 @@ _ROUTING_FILTER_DEFAULTS = (
 _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
 
-def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[List[Dict[str, Any]]]:
+def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[list[dict[str, Any]]]:
     """Fallback chain for a child, owned by the same config block as its route.
 
     Pinned children (provider, endpoint or model override) never borrow the parent chain;
     unpinned children inherit it when ``fallback_providers`` is absent/null. An explicit ``[]``
     disables fallback either way. Malformed entries are dropped by the canonical normalizer.
+    Same rule as a pinned cron job (``cron/scheduler.py::_job_fallback_chain``).
     """
-    default = None if pinned else (getattr(parent_agent, "_fallback_chain", None) or None)
-    declared = routing_cfg.get("fallback_providers") if isinstance(routing_cfg, dict) else None
-    if declared is None:
-        return default
-    if declared == []:
-        return None
-    normalized = get_fallback_chain({"fallback_providers": declared})
-    if not normalized:
-        logger.warning("delegation fallback_providers has no usable routes; using the %s default",
-                       "pinned" if pinned else "inherited")
-    return normalized or default
+    return scoped_fallback_chain(
+        getattr(parent_agent, "_fallback_chain", None),
+        routing_cfg.get("fallback_providers") if isinstance(routing_cfg, dict) else None,
+        pinned=pinned, owner="delegation")
 
 
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
-    override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
-    routing_cfg: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    override_acp_command: Optional[str], override_acp_args: Optional[list[str]],
+    routing_cfg: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
     or is Nous Portal (dual-wire); a pinned ``delegation.command`` must exist on PATH or the spawn fails loudly;
@@ -580,7 +579,7 @@ def _resolve_child_runtime(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),

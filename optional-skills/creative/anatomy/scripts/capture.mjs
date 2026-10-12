@@ -74,6 +74,11 @@ function playwrightShells() {
   return found;
 }
 
+// Chrome refuses to start its sandbox as root (containers, CI, LXC); without this flag it exits at once.
+function rootFlags() {
+  return process.getuid?.() === 0 ? ["--no-sandbox"] : [];
+}
+
 function chromePath() {
   const candidates = [
     process.env.CHROME_PATH, ...playwrightShells(),
@@ -113,6 +118,7 @@ async function main() {
   const profile = mkdtempSync(join(tmpdir(), "iso-capture-"));
   const chrome = spawn(binary, [
     "--headless=new",
+    ...rootFlags(),
     "--remote-debugging-port=0",
     `--user-data-dir=${profile}`,
     "--no-first-run",
@@ -125,7 +131,9 @@ async function main() {
   ]);
   const port = await new Promise((done, fail) => {
     let text = "";
-    const timer = setTimeout(() => fail(new Error("Chrome did not start")), 20000);
+    const timer = setTimeout(() => fail(new Error(`Chrome did not start within 20 s\n${text.slice(-800)}`)), 20000);
+    chrome.on("error", (error) => { clearTimeout(timer); fail(error); });
+    chrome.on("exit", (code, signal) => { clearTimeout(timer); fail(new Error(`Chrome exited (${signal ?? code}) before DevTools started\n${text.slice(-800)}`)); });
     chrome.stderr.on("data", (chunk) => {
       text += chunk;
       const match = text.match(/DevTools listening on ws:\/\/[^:]+:(\d+)\//);

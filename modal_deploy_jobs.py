@@ -136,6 +136,9 @@ def build_runtime_environment() -> dict[str, str]:
             os.replace(temporary_path, config_path)
             os.chmod(config_path, 0o600)
 
+    env["HERMES_TELEGRAM_DISABLE_FALLBACK_IPS"] = "true"
+    env["HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT"] = "3.0"
+
     return env
 
 

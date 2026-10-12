@@ -120,6 +120,9 @@ def build_runtime_environment() -> dict[str, str]:
             with open(config_path, "w", encoding="utf-8") as handle:
                 yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
 
+    env["HERMES_TELEGRAM_DISABLE_FALLBACK_IPS"] = "true"
+    env["HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT"] = "3.0"
+
     return env
 
 @app.function(

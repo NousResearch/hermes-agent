@@ -163,6 +163,8 @@ def build_runtime_environment() -> dict[str, str]:
 
     env["BROWSER_USE_HEADLESS"] = "true"
     env["AGENT_BROWSER_ARGS"] = "--no-sandbox,--disable-dev-shm-usage"
+    env["HERMES_TELEGRAM_DISABLE_FALLBACK_IPS"] = "true"
+    env["HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT"] = "3.0"
 
     return env
 

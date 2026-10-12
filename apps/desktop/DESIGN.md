@@ -50,6 +50,35 @@ one-off at the call site.
 - **Pages are durable destinations.** Chat, Skills, Messaging, and Artifacts
   remain in shell chrome. Do not hide a distinct product noun inside an
   unrelated page.
+- **Simple workspace navigation.** Chats and Bots retain separate sidebar
+  panes. New chat and Search lead the Chats sidebar. Organize chats combines
+  profile filtering and grouping immediately above the list; changing a filter
+  preserves the current conversation and draft. Unscoped rows show owner initials.
+  A single filtered profile supplies New chat's owner; otherwise the last used
+  profile does. The composer offers the existing profile/device picker before
+  the first send. Existing owners are read-only. Manage profiles remains in the
+  organizer, and remote recovery belongs to the shell.
+  Unassigned conversations sit directly under Chats; named groups sit under
+  Projects. More, Layout, and Settings share one footer row. More contains
+  secondary and contributed destinations. Titlebar Settings and Layout return
+  when the footer is unavailable.
+  Advanced preferences remain saved independently. Simple dots indicate unread
+  messages; running and input-required states use distinct activity icons.
+- **Simple chat browsing.** Ordinary history/search selections reuse an italic,
+  content-titled preview unless the conversation already has a retained tab.
+  Keep open on the preview, double-click, or its context menu retains the chat
+  through the existing opener. Row menus and modifier/middle-click also open
+  named tabs. Retention preserves the exact owner and unsent draft; closing a
+  retained tab leaves history intact. The empty inactive preview is hidden until
+  browsing or New chat needs it. Sending does not automatically retain a preview.
+  Simple has no duplicate conversation header; tab context menus own actions.
+  Transcript and composer share centered 48rem column edges. The two-row composer
+  keeps model controls, voice and Send alongside context. Existing
+  unassigned chats omit an empty project label; stored membership is authoritative.
+  A foreign owner's uncached working path is labeled Folder with a full-path
+  tooltip. Read-only messages use filled bubbles. The turn navigator appears
+  from three turns and uses prompt-preview tooltips. Hidden keep-alive panes
+  cannot receive pointer events and have hidden visibility and zero opacity.
 - **Route overlays are short tasks.** Settings, Command Center, Cron, Profiles,
   Agents, and Starmap render as `OverlayView` cards and return to the previous
   route on close. Model/session pickers and dialogs layer above the current

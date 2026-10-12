@@ -56,6 +56,15 @@ export const $interfaceMode = persistentAtom<InterfaceMode>(
   modeCodec
 )
 
+// Styles that differ by mode key off the root, like the chat text scale.
+$interfaceMode.subscribe(mode => {
+  const root = globalThis.document?.documentElement
+
+  if (root) {
+    root.dataset.interfaceMode = mode
+  }
+})
+
 export const modeLayout = createLayoutPersistence(
   $interfaceMode.get(),
   !isSecondaryWindow() && !isBrowserWindow() && !isHudWindow()
@@ -89,6 +98,8 @@ export interface ModePolicy {
   profileRailVisible: boolean
   reasoningCollapsedByDefault: boolean
   reviewOpen: boolean
+  sidebarProfileFilter: string[]
+  showAllProfiles: boolean
   sidebarRowMeta: SidebarRowMeta[]
   statusbarVisible: boolean
   terminalOpen: boolean
@@ -106,12 +117,14 @@ const SIMPLE_POLICY: PolicyTable = {
   fileBrowserOpen: false,
   // Inline diffs are the review pane's job; the changed-files summary stays.
   hideCodeDiffs: true,
-  // Without the statusbar, multi-gateway installs still need the rail even
-  // when the active gateway has only one profile.
-  profileRailVisible: context => context.profileCount > 1 || context.connectionCount > 1,
+  // Simple has a named profile dropdown; the rail can still be explicitly revealed.
+  profileRailVisible: false,
   // A quiet "Thought for Ns" row instead of a live reasoning stream.
   reasoningCollapsedByDefault: true,
   reviewOpen: false,
+  // The Simple profile dropdown owns scope; Advanced subsets stay saved.
+  sidebarProfileFilter: [],
+  showAllProfiles: true,
   // What was said and when — cost, tokens, PR and profile chips are readouts.
   sidebarRowMeta: ['preview', 'updated'],
   // The bar carries the free tier's Sign in chip, the one standing way in to a

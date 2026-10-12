@@ -1,8 +1,10 @@
 import { useStore } from '@nanostores/react'
 
+import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { $interfaceMode } from '@/store/interface-mode'
 import { $sessionColorById, sessionColorFor } from '@/store/session-color'
 import { $sessionDotStateById, type SessionDotState } from '@/store/session-dot-state'
 import type { SessionInfo } from '@/types/hermes'
@@ -125,6 +127,7 @@ export interface SessionStatusDotProps {
 export function SessionStatusDot({ storedSessionId, session, branchStem, className }: SessionStatusDotProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  const simple = useStore($interfaceMode) === 'simple'
 
   // Subscribe to the shared color map for reactivity; sessionColorFor falls
   // back to the resolver for a session outside the recents page.
@@ -138,6 +141,12 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
   )
 
   const variant = DOT_VARIANTS[dotState]
+  const quiet = simple && (dotState === 'idle' || dotState === 'draft')
+  const activity = simple && !quiet && dotState !== 'unread'
+
+  if (quiet && !branchStem) {
+    return null
+  }
 
   return (
     <span className={cn('flex items-center gap-0.5', className)}>
@@ -146,7 +155,15 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
           {branchStem}
         </span>
       ) : null}
-      {dotState === 'idle' ? (
+      {quiet ? null : activity ? (
+        <span aria-label={variant.ariaLabel?.(r)} role="status" title={variant.title?.(r)}>
+          <Codicon
+            className={dotState === 'needs-input' ? 'text-amber-500' : 'text-(--ui-text-tertiary)'}
+            name={dotState === 'needs-input' ? 'warning' : dotState === 'background' ? 'terminal' : 'loading'}
+            size="0.625rem"
+          />
+        </span>
+      ) : dotState === 'idle' ? (
         // Rendered even with no color to paint: an empty dot of the same size
         // keeps every row's title on one left edge, so a session finishing
         // can't shift the list under the pointer.

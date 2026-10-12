@@ -6,6 +6,7 @@ export interface SessionDraftTitleProps {
   /** The draft's composer key — a tile's stored session id, or null for the
    *  new chat that has no session yet. */
   scope: null | string
+  emptyTitle?: string
 }
 
 /**
@@ -20,6 +21,6 @@ export interface SessionDraftTitleProps {
  * Falls back to the placeholder rather than going blank, so an emptied composer
  * reads the same as one never typed into.
  */
-export function SessionDraftTitle({ scope }: SessionDraftTitleProps) {
-  return useStoreSelector($draftTitles, titles => draftTitleIn(titles, scope)) || NEW_SESSION_TITLE
+export function SessionDraftTitle({ scope, emptyTitle = NEW_SESSION_TITLE }: SessionDraftTitleProps) {
+  return useStoreSelector($draftTitles, titles => draftTitleIn(titles, scope)) || emptyTitle
 }

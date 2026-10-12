@@ -12,6 +12,8 @@ import { ProfileSwitcher } from './profile-dropdown-switcher'
 // gateway and select through the same store action the rail uses.
 
 const selectProfile = vi.fn()
+const changeDraftProfile = vi.fn()
+const changeDraftAgent = vi.fn()
 const setShowAllProfiles = vi.fn()
 
 vi.mock('react-router', () => ({ useNavigate: () => vi.fn() }))
@@ -34,6 +36,10 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: atom('default'),
+  $newChatProfile: atom(null),
+  $newChatRoute: atom(null),
+  changeDraftProfile: (name: string) => changeDraftProfile(name),
+  changeDraftAgent: (route: unknown) => changeDraftAgent(route),
   $profileColors: atom({}),
   $profileCreateRequest: atom(0),
   $profileOrder: atom([]),
@@ -89,5 +95,19 @@ it('switches profiles from the statusbar dropdown while the rail is hidden', asy
   })
 
   expect(selectProfile).toHaveBeenCalledWith('clippy')
+  expect(setShowAllProfiles).not.toHaveBeenCalled()
+})
+
+it('changes a draft owner without selecting a history scope or offering All profiles as an agent', async () => {
+  render(<ProfileSwitcher placement="composer" />)
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'Profiles: default' }), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: 'mouse'
+  })
+  expect(screen.queryByRole('menuitemradio', { name: 'All profiles' })).toBeNull()
+  fireEvent.click(await screen.findByRole('menuitemradio', { name: /clippy/ }))
+  expect(changeDraftProfile).toHaveBeenCalledWith('clippy')
+  expect(selectProfile).not.toHaveBeenCalled()
   expect(setShowAllProfiles).not.toHaveBeenCalled()
 })

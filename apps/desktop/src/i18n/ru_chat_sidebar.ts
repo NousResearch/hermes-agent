@@ -1,0 +1,42 @@
+export const ruSidebarFilter = {
+  grouping: 'Группировка',
+  ordering: 'Сортировка',
+  show: 'Показывать',
+  inboxStyle: 'Стиль «Входящие»',
+  status: 'Статус',
+  pullRequest: 'Запрос на слияние',
+  profile: 'Профиль',
+  project: 'Проект',
+  archived: 'Архивные',
+  expandAll: 'Развернуть все',
+  collapseAll: 'Свернуть все',
+  updated: 'Обновление',
+  created: 'Создано',
+  tokens: 'Токены',
+  cost: 'Стоимость',
+  manual: 'Вручную',
+  preview: 'Превью',
+  pr: 'PR',
+  open: 'Открыт',
+  draft: 'Черновик',
+  merged: 'Слит',
+  closed: 'Закрыт',
+  needsInput: 'Нужен ввод',
+  working: 'В работе',
+  unread: 'Непрочитанные',
+  idle: 'Бездействие',
+  filters: 'Фильтры',
+  resetToDefaults: 'Сбросить настройки',
+  noPR: 'Без PR'
+}
+
+export const ruSimpleWorkspace = {
+  keepOpen: 'Оставить открытым',
+  folder: 'Папка',
+  organizeChats: 'Упорядочить чаты',
+  openInNewTabFailed: 'Не удалось открыть этот чат в новой вкладке. Попробуйте ещё раз.',
+  searchChats: 'Поиск чатов…',
+  chats: 'Чаты',
+  newChat: 'Новый чат',
+  more: 'Ещё'
+}

@@ -389,10 +389,11 @@ export const $sidebarProjectFilter = persistentAtom(
 
 // Profile names, as `normalizeProfileKey` reports them. Only bites while the
 // sidebar is showing every profile — scoped to one, the scope is the filter.
-export const $sidebarProfileFilter = persistentAtom(
-  SIDEBAR_PROFILE_FILTER_STORAGE_KEY,
-  [] as string[],
-  Codecs.stringArray
+const $sidebarProfileFilterPref = persistentAtom(SIDEBAR_PROFILE_FILTER_STORAGE_KEY, [] as string[], Codecs.stringArray)
+
+// Simple uses its profile dropdown as the sole scope control; preserve Advanced subsets.
+export const $sidebarProfileFilter = modeBound('sidebarProfileFilter', $sidebarProfileFilterPref, value =>
+  $sidebarProfileFilterPref.set(value)
 )
 
 // Whether a session's branch has a PR, and in what state. Fetched per repo via

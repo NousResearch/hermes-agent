@@ -5,6 +5,7 @@ import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
+import { enSidebarFilter, enSimpleWorkspace } from './en_chat_sidebar'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
 import { enLocalModels } from './en_local_models'
@@ -18,6 +19,7 @@ import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  simpleWorkspace: enSimpleWorkspace,
   externalOpenFailed: {
     title: 'Couldn’t open this link',
     message: 'No browser is registered to open this address. Copy the link and open it manually.',
@@ -3218,37 +3220,7 @@ export const en: Translations = {
   },
 
   sidebar: {
-    filter: {
-      grouping: 'Grouping',
-      ordering: 'Ordering',
-      show: 'Show',
-      filters: 'Filters',
-      status: 'Status',
-      pullRequest: 'Pull request',
-      profile: 'Profile',
-      project: 'Project',
-      archived: 'Archived',
-      resetToDefaults: 'Reset to defaults',
-      expandAll: 'Expand all',
-      collapseAll: 'Collapse all',
-      inboxStyle: 'Inbox style',
-      updated: 'Updated',
-      created: 'Created',
-      tokens: 'Tokens',
-      cost: 'Cost',
-      manual: 'Manual',
-      preview: 'Preview',
-      pr: 'PR',
-      needsInput: 'Needs input',
-      working: 'Working',
-      unread: 'Unread',
-      draft: 'Draft',
-      idle: 'Idle',
-      open: 'Open',
-      merged: 'Merged',
-      closed: 'Closed',
-      noPR: 'No PR'
-    },
+    filter: enSidebarFilter,
     gatewayGroups: {
       grouping: 'Gateway & profile',
       rename: 'Rename group',

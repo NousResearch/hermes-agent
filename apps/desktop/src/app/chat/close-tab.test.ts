@@ -24,6 +24,7 @@ vi.mock('@/components/pane-shell/tree/store', () => ({
 }))
 
 vi.mock('@/store/session-states', () => ({
+  $botChatScopes: atom({}),
   closeSessionTile: (...args: unknown[]) => closeSessionTile(...args),
   nextSessionTileForWorkspace: () => nextSessionTileForWorkspace()
 }))
@@ -36,8 +37,10 @@ vi.mock('@/store/profile', () => ({
   setShowAllProfiles: () => {}
 }))
 
+import { $interfaceMode } from '@/store/interface-mode'
 import { $previewTabs, closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $botChatScopes } from '@/store/session-states'
 
 import { $workspaceIsPage } from '../routes'
 
@@ -61,6 +64,8 @@ function loadedMainOnly() {
 }
 
 beforeEach(() => {
+  $interfaceMode.set('advanced')
+  $botChatScopes.set({})
   vi.stubGlobal('document', { activeElement: null })
   closeRightRail()
   window.localStorage.clear()
@@ -101,6 +106,25 @@ describe('closeActiveTab', () => {
  * draft. The gesture used to dead-end whenever main was the only tab.
  */
 describe('closeWorkspaceTab', () => {
+  it('keeps Home permanent for a Bot-scoped conversation in Simple', () => {
+    $interfaceMode.set('simple')
+    loadedMainOnly()
+    $botChatScopes.set({ 'stored-a': { workspaceMode: 'bots', workspaceOwnerKey: 'bot:research' } })
+    expect(closeWorkspaceTab()).toBe(false)
+    expect(requestFreshSession).not.toHaveBeenCalled()
+  })
+
+  it('keeps Simple Chats permanent without consuming a named tab', () => {
+    $interfaceMode.set('simple')
+    loadedMainOnly()
+    nextSessionTileForWorkspace.mockReturnValue('stored-b')
+    const load = vi.fn()
+    expect(closeWorkspaceTab(load)).toBe(false)
+    expect(closeSessionTile).not.toHaveBeenCalled()
+    expect(load).not.toHaveBeenCalled()
+    expect(requestFreshSession).not.toHaveBeenCalled()
+  })
+
   it('shifts the next stacked session into main', () => {
     loadedMainOnly()
     nextSessionTileForWorkspace.mockReturnValue('stored-b')

@@ -4,7 +4,8 @@ import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
-import { $profileColors, normalizeProfileKey } from '@/store/profile'
+import { $interfaceMode } from '@/store/interface-mode'
+import { $profileColors, $profiles, normalizeProfileKey, profileLabel } from '@/store/profile'
 
 /** Owning-profile chip: the shared {@link ProfileGlyph}, resolved against the
  *  live profile colors and labelled with the full name. Identity, not status —
@@ -13,7 +14,11 @@ export function ProfileTag({ className, profile }: { className?: string; profile
   const { t } = useI18n()
   const colors = useStore($profileColors)
   const key = normalizeProfileKey(profile)
-  const label = t.sidebar.row.ownedByProfile(key)
+  const simple = useStore($interfaceMode) === 'simple'
+  const profiles = useStore($profiles)
+  const owningProfile = profiles.find(candidate => normalizeProfileKey(candidate.name) === key)
+  const displayName = simple && owningProfile ? profileLabel(owningProfile) : key
+  const label = t.sidebar.row.ownedByProfile(displayName)
 
   return (
     <Tip label={label}>
@@ -21,8 +26,9 @@ export function ProfileTag({ className, profile }: { className?: string; profile
         aria-label={label}
         className={className}
         color={resolveProfileColor(key, colors)}
+        defaultStyle={simple ? 'initial' : 'home'}
         isDefault={key === 'default'}
-        name={key}
+        name={displayName}
         role="img"
       />
     </Tip>

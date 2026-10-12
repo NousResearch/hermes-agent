@@ -1,3 +1,4 @@
+import { arrayMove } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -5,15 +6,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { ColorSwatches } from '@/components/ui/color-swatches'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { AlertTriangle, Save } from '@/lib/icons'
-import { resolveProfileColor } from '@/lib/profile-color'
+import { PROFILE_SWATCHES, resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
+import { $hasMultipleConnections } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
+import {
+  $profileColors,
+  $profileOrder,
+  profileLabel,
+  refreshProfiles,
+  setProfileColor,
+  setProfileOrder,
+  sortByProfileOrder
+} from '@/store/profile'
+import { openRemoteOverrideDialog } from '@/store/profile-remote-override'
+import { runExportProfileFlow } from '@/store/profile-share'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -47,6 +61,37 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   const [query, setQuery] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
+  const order = useStore($profileOrder)
+  const colors = useStore($profileColors)
+  const multipleConnections = useStore($hasMultipleConnections)
+  const [colorProfile, setColorProfile] = useState<null | ProfileInfo>(null)
+
+  const orderedProfiles = useMemo(
+    () =>
+      profiles
+        ? [
+            ...profiles.filter(profile => profile.is_default),
+            ...sortByProfileOrder(
+              profiles.filter(profile => !profile.is_default),
+              order
+            )
+          ]
+        : [],
+    [profiles, order]
+  )
+
+  const moveProfile = (name: string, direction: number) => {
+    const names = orderedProfiles.filter(profile => !profile.is_default).map(profile => profile.name)
+    const index = names.indexOf(name)
+    const target = index + direction
+
+    if (index < 0 || target < 0 || target >= names.length) {
+      return
+    }
+
+    setProfileOrder(arrayMove(names, index, target))
+  }
+
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
 
   const refresh = useCallback(async () => {
@@ -83,13 +128,13 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
     const q = normalize(query)
 
     if (!profiles || !q) {
-      return profiles ?? []
+      return orderedProfiles
     }
 
-    return profiles.filter(
+    return orderedProfiles.filter(
       profile => profile.name.toLowerCase().includes(q) || (profile.model ?? '').toLowerCase().includes(q)
     )
-  }, [profiles, query])
+  }, [orderedProfiles, profiles, query])
 
   // The shared Create/Rename dialogs own the createProfile / renameProfile /
   // updateProfileSoul calls; the panel just selects the resulting profile and
@@ -131,21 +176,42 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
                 <ProfileRow
                   active={selected?.name === profile.name}
                   key={profile.name}
-                  menuItems={
-                    profile.is_default
-                      ? // Renaming the default profile sets a presentation-only
-                        // display name (the canonical id stays "default").
-                        [{ icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) }]
-                      : [
-                          { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) },
+                  menuItems={[
+                    { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) },
+                    { icon: 'symbol-color', label: p.color, onSelect: () => setColorProfile(profile) },
+                    { icon: 'package', label: p.exportMenu, onSelect: () => void runExportProfileFlow(profile.name) },
+                    ...(!profile.is_default
+                      ? [
+                          {
+                            icon: 'arrow-up',
+                            label: t.sidebar.gatewayGroups.moveUp,
+                            disabled: orderedProfiles.filter(item => !item.is_default)[0]?.name === profile.name,
+                            onSelect: () => moveProfile(profile.name, -1)
+                          },
+                          {
+                            icon: 'arrow-down',
+                            label: t.sidebar.gatewayGroups.moveDown,
+                            disabled: orderedProfiles.at(-1)?.name === profile.name,
+                            onSelect: () => moveProfile(profile.name, 1)
+                          },
+                          ...(!multipleConnections
+                            ? [
+                                {
+                                  icon: 'globe',
+                                  label: p.remoteOverride.menuItem,
+                                  onSelect: () => openRemoteOverrideDialog(profile.name)
+                                }
+                              ]
+                            : []),
                           {
                             icon: 'trash',
                             label: t.common.delete,
                             onSelect: () => setPendingDelete(profile),
-                            tone: 'danger'
+                            tone: 'danger' as const
                           }
                         ]
-                  }
+                      : [])
+                  ]}
                   onSelect={() => setSelectedName(profile.name)}
                   profile={profile}
                 />
@@ -161,6 +227,26 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
           </PanelBody>
         </>
       )}
+
+      <Dialog onOpenChange={open => !open && setColorProfile(null)} open={colorProfile !== null}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {p.colorFor} · {colorProfile ? profileLabel(colorProfile) : ''}
+            </DialogTitle>
+          </DialogHeader>
+          {colorProfile && (
+            <ColorSwatches
+              clearIcon="sync"
+              clearLabel={p.autoColor}
+              onChange={color => setProfileColor(colorProfile.name, color)}
+              swatches={PROFILE_SWATCHES}
+              swatchLabel={p.setColor}
+              value={resolveProfileColor(colorProfile.name, colors)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
 
       <RenameProfileDialog
         currentName={pendingRename?.name ?? ''}

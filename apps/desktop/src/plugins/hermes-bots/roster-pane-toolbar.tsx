@@ -69,10 +69,7 @@ export function renderRosterToolbar({
 }: renderRosterToolbarProps) {
   return (
     <>
-      <div className="flex items-center justify-between gap-2 px-2.5 pt-2.5 pb-1.5">
-        <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)">
-          Bots
-        </span>
+      <div className="flex items-center justify-end gap-2 px-2.5 pt-2.5 pb-1.5">
         <div className="flex items-center gap-0.5">
           <Tip
             label={activityToasts ? 'Activity toasts on — click to silence' : 'Activity toasts off — click to enable'}

@@ -224,3 +224,14 @@ describe('wake-word ear visibility', () => {
     expect((ear as HTMLButtonElement).disabled).toBe(true)
   })
 })
+
+it('keeps Send visible for an empty Simple composer and preserves voice conversation in its menu', () => {
+  renderControls({ sendFirst: true, hasComposerPayload: false, canSubmit: false })
+  expect(screen.getByRole('button', { name: 'Send' }).hasAttribute('disabled')).toBe(true)
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'Voice' }), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: 'mouse'
+  })
+  expect(screen.getByRole('menuitem', { name: 'Start voice conversation' })).toBeTruthy()
+})

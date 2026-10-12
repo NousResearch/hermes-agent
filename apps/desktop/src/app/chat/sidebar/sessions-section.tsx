@@ -20,6 +20,7 @@ import {
 } from '@/lib/session-date-groups'
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import { $interfaceMode } from '@/store/interface-mode'
 import {
   $sidebarListGroupIds,
   $sidebarShowAllSessions,
@@ -194,6 +195,119 @@ interface SidebarSessionsSectionProps {
   card?: boolean
 }
 
+type SectionHeaderProps = React.ComponentProps<typeof SidebarSectionHeader>
+
+/** Simple lists unassigned chats as a top-level Chats section instead of a Home
+ *  folder under Projects, so the Projects heading moves down beside its rows. */
+function useSeparateChats(hasProjectContent: boolean, first: SidebarProjectTree | undefined) {
+  const simple = useStore($interfaceMode) === 'simple'
+  const separate = simple && !hasProjectContent && Boolean(first?.isNoProject)
+
+  return {
+    bodyOpen: (sectionOpen: boolean) => separate || sectionOpen,
+    header: (
+      project: SidebarProjectTree,
+      onNewSession: ChatsSectionHeaderProps['onNewSession'],
+      onNewSessionSplit: ChatsSectionHeaderProps['onNewSessionSplit']
+    ) =>
+      separate && project.isNoProject
+        ? (open: boolean, onToggle: () => void) => (
+            <ChatsSectionHeader
+              onNewSession={onNewSession}
+              onNewSessionSplit={onNewSessionSplit}
+              onToggle={onToggle}
+              open={open}
+            />
+          )
+        : undefined,
+    separate,
+    topHeader: (header: SectionHeaderProps) => (separate ? null : <SidebarSectionHeader {...header} />)
+  }
+}
+
+interface ChatsSectionHeaderProps {
+  onNewSession?: (cwd: null | string) => void
+  onNewSessionSplit?: NewSessionSplitHandler
+  onToggle: () => void
+  open: boolean
+}
+
+function ChatsSectionHeader({ onNewSession, onNewSessionSplit, onToggle, open }: ChatsSectionHeaderProps) {
+  const { t } = useI18n()
+  const label = t.simpleWorkspace.newChat
+
+  return (
+    <SidebarSectionHeader
+      action={
+        onNewSession ? (
+          <WorkspaceAddButton
+            label={label}
+            onClick={() => onNewSession(null)}
+            onPointerDown={
+              onNewSessionSplit
+                ? event => {
+                    startNewSessionDrag(
+                      placement =>
+                        onNewSessionSplit(placement.dir, {
+                          anchor: placement.anchor,
+                          before: placement.before,
+                          cwd: null
+                        }),
+                      event,
+                      { cwd: null, label }
+                    )
+                  }
+                : undefined
+            }
+          />
+        ) : undefined
+      }
+      label={t.simpleWorkspace.chats}
+      onToggle={onToggle}
+      open={open}
+    />
+  )
+}
+
+type ReorderProps = React.ComponentProps<typeof ReorderableList>
+
+/** The project rows, reorderable when there is more than one, and under their
+ *  own heading when Chats is a separate section. */
+function ProjectsBlock({
+  children,
+  header,
+  ids,
+  onReorder,
+  sensors,
+  separate
+}: {
+  children: React.ReactNode
+  header: SectionHeaderProps
+  ids: string[]
+  onReorder?: ReorderProps['onReorder']
+  sensors: ReorderProps['sensors']
+  separate: boolean
+}) {
+  const rows = onReorder ? (
+    <ReorderableList ids={ids} onReorder={onReorder} sensors={sensors}>
+      {children}
+    </ReorderableList>
+  ) : (
+    children
+  )
+
+  if (!separate) {
+    return <>{rows}</>
+  }
+
+  return ids.length > 0 ? (
+    <div className="pt-2">
+      <SidebarSectionHeader {...header} />
+      {header.open && rows}
+    </div>
+  ) : null
+}
+
 export function SidebarSessionsSection({
   label,
   open,
@@ -248,7 +362,19 @@ export function SidebarSessionsSection({
   const dotStates = useStore($sessionDotStateById)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
   const isListGroupOpen = useCallback((key: string) => nodeOpen[listGroupNodeId(key)] ?? true, [nodeOpen])
+  const chats = useSeparateChats(Boolean(projectContent), projectOverview?.[0])
   const sectionOpen = collapsible ? open : true
+
+  const header = {
+    action: headerAction,
+    collapsible,
+    icon: labelIcon,
+    label,
+    meta: labelMeta,
+    onToggle,
+    open: sectionOpen
+  }
+
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
   // A defined project list is itself content (even an empty project should
   // render as a drill-in row so the user can see it exists).
@@ -537,26 +663,23 @@ export function SidebarSessionsSection({
         // preview rows instead of the live overlay.
         previewSessions={projectOverviewPreviews?.[project.id]}
         project={project}
+        renderHeader={chats.header(project, onNewSessionInWorkspace, onNewSessionSplit)}
         renderRows={showAllSessions ? items => renderPreviewRows(items, project.id) : renderRows}
       />
     )
 
-    const rows = sortableProjects.map(project => projectRow(project, Row))
-
     inner = (
       <>
         {home && projectRow(home, ProjectOverviewRow)}
-        {projectsDraggable && onReorderProjects ? (
-          <ReorderableList
-            ids={sortableProjects.map(project => project.id)}
-            onReorder={onReorderProjects}
-            sensors={dndSensors}
-          >
-            {rows}
-          </ReorderableList>
-        ) : (
-          rows
-        )}
+        <ProjectsBlock
+          header={header}
+          ids={sortableProjects.map(project => project.id)}
+          onReorder={projectsDraggable ? onReorderProjects : undefined}
+          sensors={dndSensors}
+          separate={chats.separate}
+        >
+          {sortableProjects.map(project => projectRow(project, Row))}
+        </ProjectsBlock>
       </>
     )
   } else if (groups?.length && groups.every(group => group.mode === 'profile' && group.profile)) {
@@ -625,16 +748,8 @@ export function SidebarSessionsSection({
 
   return (
     <SidebarGroup className={rootClassName}>
-      <SidebarSectionHeader
-        action={headerAction}
-        collapsible={collapsible}
-        icon={labelIcon}
-        label={label}
-        meta={labelMeta}
-        onToggle={onToggle}
-        open={sectionOpen}
-      />
-      {sectionOpen && (
+      {chats.topHeader(header)}
+      {chats.bodyOpen(sectionOpen) && (
         <SidebarGroupContent className={resolvedContentClassName}>
           {inner}
           {footer}

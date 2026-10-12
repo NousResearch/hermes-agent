@@ -26,8 +26,9 @@ import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { $interfaceMode } from '@/store/interface-mode'
 import { $sidebarRowMeta } from '@/store/layout'
-import { normalizeProfileKey } from '@/store/profile'
+import { $showAllProfiles, normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
@@ -125,6 +126,43 @@ function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   return unit === 'second' ? r.ageNow : `${value}${r[AGE_KEY[unit]]}`
 }
 
+/** Simple-mode row rules. The default profile has no mark worth a row slot in
+ *  Advanced — a chip saying "the normal one" on every row is noise — but
+ *  all-profiles browsing in Simple needs an owner on every row, including
+ *  project trees whose group label names the project and not the owner. Simple
+ *  also pins from the row itself and does not tint rows open in another tab. */
+function useSimpleRow() {
+  const simple = useStore($interfaceMode) === 'simple'
+  const allProfiles = useStore($showAllProfiles)
+
+  return {
+    openClass: simple ? undefined : 'bg-(--ui-row-open-background)',
+    pinButton: (isPinned: boolean, onPin?: () => void) =>
+      simple ? <RowPinButton isPinned={isPinned} onPin={onPin} /> : null,
+    showsOwner: (requested: boolean) => requested || (simple && allProfiles),
+    tagged: (profile: string | null | undefined) => simple || normalizeProfileKey(profile) !== 'default'
+  }
+}
+
+function RowPinButton({ isPinned, onPin }: { isPinned: boolean; onPin?: () => void }) {
+  const r = useI18n().t.sidebar.row
+  const label = isPinned ? r.unpin : r.pin
+
+  return (
+    <Tip label={label}>
+      <Button
+        aria-label={label}
+        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        onClick={onPin}
+        size="icon-xs"
+        variant="ghost"
+      >
+        <Codicon name={isPinned ? 'pinned' : 'pin'} size="0.75rem" />
+      </Button>
+    </Tip>
+  )
+}
+
 function SidebarSessionRowImpl({
   session,
   branchStem,
@@ -148,6 +186,7 @@ function SidebarSessionRowImpl({
   ...rest
 }: SidebarSessionRowProps) {
   const { t } = useI18n()
+  const simpleRow = useSimpleRow()
   const r = t.sidebar.row
   const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
@@ -171,9 +210,7 @@ function SidebarSessionRowImpl({
   // Pinned metadata occupies the actions slot and swaps out for the kebab on
   // hover, so the row reserves the same width either way and never reflows.
   const pinnedAge = rowMeta.includes('updated')
-  // The default profile has no mark worth spending a row slot on — a chip on
-  // every row that says "the normal one" is noise. Named profiles only.
-  const hasProfileTag = normalizeProfileKey(session.profile) !== 'default'
+  const hasProfileTag = simpleRow.tagged(session.profile)
   const pinnedProfile = hasProfileTag && rowMeta.includes('profile')
   // The branch's PR, if the row was asked to show one. A selector, not a plain
   // useStore: a repo's PRs land as a single map write, and only the rows on
@@ -205,7 +242,7 @@ function SidebarSessionRowImpl({
   // to the left of the kebab's own column: never flush right, never swapping.
   const trailing: { key: string; node: React.ReactNode }[] = []
 
-  if ((showProfile || pinnedProfile) && hasProfileTag) {
+  if (simpleRow.showsOwner(showProfile || pinnedProfile) && hasProfileTag) {
     trailing.push({ key: 'profile', node: <ProfileTag profile={session.profile} /> })
   }
 
@@ -316,6 +353,7 @@ function SidebarSessionRowImpl({
       onClick={event => event.stopPropagation()}
       onPointerDown={event => event.stopPropagation()}
     >
+      {simpleRow.pinButton(isPinned, onPin)}
       {trailing.map(({ key, node }, index) => (
         <span
           className={
@@ -382,7 +420,7 @@ function SidebarSessionRowImpl({
           // Open in another pane: the SAME band, just weaker. Its own mixed
           // token rather than row opacity — dimming the whole row would take
           // the title and the status dot down with it.
-          openUnfocused && 'bg-(--ui-row-open-background)',
+          openUnfocused && simpleRow.openClass,
           liveTurn && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
           // it (translucency let the rows below bleed through). data-glass-opaque

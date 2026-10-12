@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 /**
  * SESSION TILES — a stored session rendered as a layout-tree pane BESIDE the
  * main thread (multi-session tiling). A tile IS the real chat surface: the
@@ -13,8 +14,6 @@
  * the pane (tab Close) removes the tile + its zone; tiles persist across
  * restarts and re-resume on boot.
  */
-
-import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { atom, computed } from 'nanostores'
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
@@ -43,6 +42,7 @@ import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope, draftTitleFor, takeSessionDraft } from '@/store/composer'
 import { $gatewaySwitching } from '@/store/gateway-switch'
+import { $interfaceMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
@@ -225,7 +225,6 @@ function buildTileView(storedSessionId: string): SessionView {
 
 // Module-level constants so these ChatView props are referentially stable —
 // tiles have no pin/delete affordance, and transcription needs no per-tile state.
-const noop = () => undefined
 
 const tileTranscribeAudio = async (audio: Blob, owner?: ResolvedOwner) => {
   // Client-direct first (profile's own STT provider, no gateway audio hop);
@@ -335,6 +334,21 @@ function TileChat({
   // wrappers onto them keeps identity stable across renders.
   const { addContextRefAttachment, pasteClipboardImage, pickContextPaths, pickImages, removeAttachment } = composer
 
+  const onDeleteSelectedSession = useCallback(() => {
+    void sessionTileDelegate()?.deleteSession(storedSessionId)
+  }, [storedSessionId])
+
+  const onToggleSelectedPin = useCallback(() => {
+    const row = tileStoredRow(storedSessionId)
+    const pinId = row ? sessionPinId(row) : storedSessionId
+
+    if ($pinnedSessionIds.get().includes(pinId)) {
+      unpinSession(pinId)
+    } else {
+      pinSession(pinId)
+    }
+  }, [storedSessionId])
+
   const onAddUrl = useCallback(
     (url: string) => addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
     [addContextRefAttachment]
@@ -410,7 +424,7 @@ function TileChat({
           onAttachPastedText={composer.attachPastedText}
           onBranchInNewChat={actions.branchInNewChat}
           onCancel={actions.cancelRun}
-          onDeleteSelectedSession={noop}
+          onDeleteSelectedSession={onDeleteSelectedSession}
           onDismissError={actions.dismissError}
           onEdit={actions.editMessage}
           onPasteClipboardImage={onPasteClipboardImage}
@@ -425,7 +439,7 @@ function TileChat({
           onSteerHidden={actions.injectHiddenPrompt}
           onSubmit={actions.submitText}
           onThreadMessagesChange={actions.handleThreadMessagesChange}
-          onToggleSelectedPin={noop}
+          onToggleSelectedPin={onToggleSelectedPin}
           onTranscribeAudio={tileTranscribeAudio}
           reasoningMenuContent={reasoningMenuContent}
           requestModelOptionsForOwner={requestTileGateway}
@@ -921,7 +935,9 @@ export function SessionTabMenu({
  *  once a tab is ever gained; this is the explicit way back). A fresh draft has
  *  no session — no menu. */
 export function WorkspaceTabMenu({ children }: { children: React.ReactElement }) {
+  const interfaceMode = useStore($interfaceMode)
   const selected = useStore($selectedStoredSessionId)
+  const canClose = interfaceMode !== 'simple'
 
   const hideTabBar = () => {
     const tree = $layoutTree.get()
@@ -938,7 +954,7 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
 
   return (
     <SessionTabMenu
-      onClose={() => closeTreePane('workspace')}
+      onClose={canClose ? () => closeTreePane('workspace') : undefined}
       onHideTabBar={hideTabBar}
       storedSessionId={selected}
       tabPaneId="workspace"

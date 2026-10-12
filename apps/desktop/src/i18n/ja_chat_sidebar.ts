@@ -1,0 +1,42 @@
+export const jaSidebarFilter = {
+  grouping: 'グループ化',
+  ordering: '並び替え',
+  show: '表示',
+  filters: 'フィルター',
+  status: 'ステータス',
+  pullRequest: 'プルリクエスト',
+  profile: 'プロファイル',
+  project: 'プロジェクト',
+  archived: 'アーカイブ',
+  resetToDefaults: 'デフォルトに戻す',
+  expandAll: 'すべて展開',
+  collapseAll: 'すべて折りたたむ',
+  inboxStyle: '受信トレイスタイル',
+  updated: '更新',
+  created: '作成',
+  tokens: 'トークン',
+  cost: 'コスト',
+  manual: '手動',
+  preview: 'プレビュー',
+  pr: 'PR',
+  needsInput: '入力待ち',
+  working: '実行中',
+  unread: '未読',
+  draft: '下書き',
+  idle: 'アイドル',
+  open: 'オープン',
+  merged: 'マージ済み',
+  closed: 'クローズ済み',
+  noPR: 'PRなし'
+}
+
+export const jaSimpleWorkspace = {
+  keepOpen: '開いたままにする',
+  folder: 'フォルダー',
+  organizeChats: 'チャットを整理',
+  openInNewTabFailed: 'このチャットを新しいタブで開けませんでした。もう一度お試しください。',
+  searchChats: 'チャットを検索…',
+  chats: 'チャット',
+  newChat: '新しいチャット',
+  more: 'その他'
+}

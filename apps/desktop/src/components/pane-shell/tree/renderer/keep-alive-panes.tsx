@@ -145,7 +145,7 @@ const KeepAlivePaneHost = memo(function KeepAlivePaneHost({ pane, placement, epo
       className={cn(
         'absolute overflow-auto',
         placement.overlay ? 'z-40' : 'z-0',
-        !placement.visible && 'pointer-events-none invisible'
+        !placement.visible && 'pointer-events-none invisible opacity-0'
       )}
       data-pane-host={pane.id}
       data-pane-overlay={placement.overlay || undefined}

@@ -1,0 +1,42 @@
+export const deSidebarFilter = {
+  grouping: 'Gruppierung',
+  ordering: 'Sortierung',
+  show: 'Anzeigen',
+  filters: 'Filter',
+  status: 'Status',
+  pullRequest: 'Pull Request',
+  profile: 'Profil',
+  project: 'Projekt',
+  archived: 'Archiviert',
+  resetToDefaults: 'Auf Standard zurücksetzen',
+  expandAll: 'Alle ausklappen',
+  collapseAll: 'Alle einklappen',
+  inboxStyle: 'Posteingangsstil',
+  updated: 'Aktualisiert',
+  created: 'Erstellt',
+  tokens: 'Tokens',
+  cost: 'Kosten',
+  manual: 'Manuell',
+  preview: 'Vorschau',
+  pr: 'PR',
+  needsInput: 'Eingabe nötig',
+  working: 'In Arbeit',
+  unread: 'Ungelesen',
+  draft: 'Entwurf',
+  idle: 'Inaktiv',
+  open: 'Offen',
+  merged: 'Gemergt',
+  closed: 'Geschlossen',
+  noPR: 'Kein PR'
+}
+
+export const deSimpleWorkspace = {
+  keepOpen: 'Offen halten',
+  folder: 'Ordner',
+  organizeChats: 'Chats organisieren',
+  openInNewTabFailed: 'Der Chat konnte nicht in einem neuen Tab geöffnet werden. Versuche es erneut.',
+  searchChats: 'Chats durchsuchen…',
+  chats: 'Chats',
+  newChat: 'Neuer Chat',
+  more: 'Mehr'
+}

@@ -1,12 +1,13 @@
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { isMacPlatform } from '@/lib/platform'
+import { setInterfaceMode } from '@/store/interface-mode'
 import { resetBinding, setBinding } from '@/store/keybinds'
 
 import { useKeybinds } from './use-keybinds'
@@ -137,5 +138,48 @@ describe('close-tab chord over a focused terminal', () => {
 
     expect(event.defaultPrevented).toBe(true)
     expect(mocks.closeActiveTerminal).not.toHaveBeenCalled()
+  })
+})
+
+describe('Capabilities command destination', () => {
+  afterEach(() => {
+    resetBinding('nav.capabilities')
+    setInterfaceMode('advanced')
+  })
+  it.each(['simple', 'advanced'] as const)('uses the %s configuration home', mode => {
+    setInterfaceMode(mode)
+    setBinding('nav.capabilities', ['mod+alt+c'])
+
+    const view = renderHook(
+      () => {
+        useKeybinds(deps)
+
+        return useLocation()
+      },
+      {
+        wrapper: ({ children }: { children: ReactNode }) => <MemoryRouter>{children}</MemoryRouter>
+      }
+    )
+
+    try {
+      act(() =>
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'c',
+            code: 'KeyC',
+            altKey: true,
+            metaKey: isMacPlatform(),
+            ctrlKey: !isMacPlatform(),
+            bubbles: true,
+            cancelable: true
+          })
+        )
+      )
+      expect(view.result.current.pathname + view.result.current.search).toBe(
+        mode === 'simple' ? '/settings?tab=capabilities' : '/capabilities'
+      )
+    } finally {
+      view.unmount()
+    }
   })
 })

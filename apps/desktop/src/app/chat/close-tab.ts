@@ -3,6 +3,7 @@ import { closeActiveTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { $workspaceIsPage } from '@/app/routes'
 import { closeFocusedSessionTab, closeFocusedToolTab } from '@/components/pane-shell/tree/store'
 import { isFocusWithin } from '@/lib/keybinds/combo'
+import { $interfaceMode } from '@/store/interface-mode'
 import { requestFreshSession } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { closeSessionTile, nextSessionTileForWorkspace } from '@/store/session-states'
@@ -28,6 +29,10 @@ import { closeSessionTile, nextSessionTileForWorkspace } from '@/store/session-s
  * into main"; omitting it disables the promotion half.
  */
 export function closeWorkspaceTab(loadSessionIntoWorkspace?: (storedSessionId: string) => void): boolean {
+  if ($interfaceMode.get() === 'simple') {
+    return false
+  }
+
   // Order matters — close the tile FIRST so the selection homes to the
   // workspace instead of re-fronting the tile.
   if (loadSessionIntoWorkspace) {

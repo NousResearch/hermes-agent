@@ -1,10 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
 import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteProfile, getProfileSoul, updateProfileSoul } from '@/hermes'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
+import { setProfileColor, setProfileOrder } from '@/store/profile'
+import { openRemoteOverrideDialog } from '@/store/profile-remote-override'
+import { runExportProfileFlow } from '@/store/profile-share'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { ProfilesView } from './index'
@@ -36,6 +40,10 @@ vi.mock('@/hermes', () => ({
   updateProfileSoul: vi.fn(async () => ({ ok: true }))
 }))
 
+vi.mock('@/store/profile-share', () => ({ runExportProfileFlow: vi.fn() }))
+vi.mock('@/store/profile-remote-override', () => ({ openRemoteOverrideDialog: vi.fn() }))
+vi.mock('@/store/connections', () => ({ $hasMultipleConnections: atom(false) }))
+
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
   notifyError: vi.fn()
@@ -48,6 +56,7 @@ vi.mock('@/store/gateway', () => ({
 const {
   $activeGatewayProfile: activeGateway,
   $profileColors,
+  $profileOrder,
   $showAllProfiles
 } = vi.hoisted(() => {
   const { atom } = require('nanostores') as typeof Nanostores
@@ -55,6 +64,7 @@ const {
   return {
     $activeGatewayProfile: atom<string>('default'),
     $profileColors: atom<Record<string, string>>({}),
+    $profileOrder: atom<string[]>([]),
     $showAllProfiles: atom<boolean>(false)
   }
 })
@@ -62,6 +72,16 @@ const {
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: activeGateway,
   $profileColors,
+  $profileOrder,
+  setProfileColor: vi.fn((name, color) => $profileColors.set({ ...$profileColors.get(), [name]: color })),
+  setProfileOrder: vi.fn(names => $profileOrder.set(names)),
+  sortByProfileOrder: (items: ProfileInfo[], order: string[]) =>
+    [...items].sort((a, b) => {
+      const ai = order.indexOf(a.name),
+        bi = order.indexOf(b.name)
+
+      return (ai < 0 ? Infinity : ai) - (bi < 0 ? Infinity : bi) || a.name.localeCompare(b.name)
+    }),
   // `session-states` -> `preview` -> `layout` reaches this mock now that the
   // right rail is scoped per profile; layout.ts derives its grouping from it.
   $showAllProfiles,
@@ -209,4 +229,35 @@ describe('ProfilesView', () => {
     expect(selectProfile).not.toHaveBeenCalled()
     expect(setActiveProfile).not.toHaveBeenCalled()
   })
+})
+
+it('exposes ordering, color, export, and remote configuration without a profile rail', async () => {
+  $profileOrder.set([])
+  vi.mocked(refreshProfiles).mockResolvedValue([
+    makeProfile('default', true),
+    makeProfile('alpha'),
+    makeProfile('work')
+  ])
+  await renderProfilesView()
+  realClick(await findRowMenu('work'))
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Move up' }))
+  expect(setProfileOrder).toHaveBeenLastCalledWith(['work', 'alpha'])
+  realClick(await findRowMenu('work'))
+  expect(screen.getByRole('menuitem', { name: 'Move up' }).getAttribute('aria-disabled')).toBe('true')
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Move down' }))
+  expect(setProfileOrder).toHaveBeenLastCalledWith(['alpha', 'work'])
+  realClick(await findRowMenu('work'))
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Color…' }))
+  const colorButton = screen.getAllByRole('button', { name: /^Set color/ })[0]
+  fireEvent.click(colorButton)
+  expect(setProfileColor).toHaveBeenLastCalledWith('work', expect.any(String))
+  fireEvent.click(screen.getByRole('button', { name: /^Close$/ }))
+  await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).toBeNull())
+  await waitFor(() => expect(window.document.body.style.pointerEvents).not.toBe('none'))
+  realClick(await findRowMenu('work'))
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Export…' }))
+  expect(runExportProfileFlow).toHaveBeenLastCalledWith('work')
+  realClick(await findRowMenu('work'))
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Connect to a remote host…' }))
+  expect(openRemoteOverrideDialog).toHaveBeenLastCalledWith('work')
 })

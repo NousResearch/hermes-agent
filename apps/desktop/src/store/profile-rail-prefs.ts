@@ -1,5 +1,7 @@
+import { computed } from 'nanostores'
+
 import { Codecs, persistentAtom } from '@/lib/persisted'
-import { modeBound } from '@/store/interface-mode'
+import { $showsAdvancedChrome, modeBound } from '@/store/interface-mode'
 
 // The colored profile strip at the sidebar foot. For someone who runs profiles
 // as bots it duplicates the footer's gateway selector, so it can be switched
@@ -11,6 +13,13 @@ const $profileRailVisiblePref = persistentAtom('hermes.desktop.profileRailVisibl
 
 export const $profileRailVisible = modeBound('profileRailVisible', $profileRailVisiblePref, value =>
   $profileRailVisiblePref.set(value)
+)
+
+// The statusbar picker stands in for a hidden rail only in Advanced: Simple
+// offers profiles from Organize chats and the composer.
+export const $statusbarProfileSwitcherHidden = computed(
+  [$profileRailVisible, $showsAdvancedChrome],
+  (rail, advanced) => rail || !advanced
 )
 
 export function toggleProfileRailVisible() {

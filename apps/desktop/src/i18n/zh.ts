@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhSidebarFilter, zhSimpleWorkspace } from './zh_chat_sidebar'
 import { zhConnectorCard } from './zh_connector_card'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
@@ -13,6 +14,7 @@ import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  simpleWorkspace: zhSimpleWorkspace,
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
@@ -3117,37 +3119,7 @@ export const zhOverrides = {
   },
 
   sidebar: {
-    filter: {
-      grouping: '分组',
-      ordering: '排序',
-      show: '显示',
-      filters: '筛选',
-      status: '状态',
-      pullRequest: '拉取请求',
-      profile: '配置档案',
-      project: '项目',
-      archived: '已归档',
-      resetToDefaults: '重置为默认',
-      expandAll: '全部展开',
-      collapseAll: '全部折叠',
-      inboxStyle: '收件箱样式',
-      updated: '更新时间',
-      created: '创建时间',
-      tokens: '词元数',
-      cost: '费用',
-      manual: '手动',
-      preview: '预览',
-      pr: 'PR',
-      needsInput: '需要输入',
-      working: '运行中',
-      unread: '未读',
-      draft: '草稿',
-      idle: '空闲',
-      open: '打开',
-      merged: '已合并',
-      closed: '已关闭',
-      noPR: '无PR'
-    },
+    filter: zhSidebarFilter,
     profileRail: '配置档案栏',
     gatewayGroups: {
       grouping: '网关与配置',

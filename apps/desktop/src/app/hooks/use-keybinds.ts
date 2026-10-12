@@ -39,7 +39,7 @@ import {
   openFindBar
 } from '@/store/find-in-page'
 import { toggleHud } from '@/store/hud'
-import { toggleSimpleMode } from '@/store/interface-mode'
+import { $interfaceMode, toggleSimpleMode } from '@/store/interface-mode'
 import { $capture, $comboIndex, captureStep, endCapture, setBinding } from '@/store/keybinds'
 import {
   cycleSidebarGrouping,
@@ -302,7 +302,11 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.commandCenter': deps.toggleCommandCenter,
     'nav.settings': () => navigate(SETTINGS_ROUTE),
     'nav.profiles': () => navigate(PROFILES_ROUTE),
-    'nav.capabilities': () => navigateToWorkspacePage(navigate, CAPABILITIES_ROUTE),
+    'nav.capabilities': () =>
+      navigateToWorkspacePage(
+        navigate,
+        $interfaceMode.get() === 'simple' ? `${SETTINGS_ROUTE}?tab=capabilities` : CAPABILITIES_ROUTE
+      ),
     'nav.messaging': () => navigateToWorkspacePage(navigate, MESSAGING_ROUTE),
     'nav.artifacts': () => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),

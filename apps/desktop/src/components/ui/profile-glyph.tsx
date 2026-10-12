@@ -4,22 +4,22 @@ import { cn } from '@/lib/utils'
 
 import { Codicon } from './codicon'
 
-/** A profile's mark, in one place: the default profile is the `home` icon (it
- *  has no color of its own and an initial would read as just another named
- *  profile); every other profile is a soft tint of its color carrying its
- *  initial. Presentational — callers resolve the color from `$profileColors`. */
+/** The default profile uses a home mark or an initial; named profiles use
+ *  tinted initials. Callers resolve the color and visible profile name. */
 export function ProfileGlyph({
   className,
   color,
+  defaultStyle = 'home',
   isDefault,
   name,
   ...props
 }: Omit<React.ComponentProps<'span'>, 'color'> & {
   color: null | string
+  defaultStyle?: 'home' | 'initial'
   isDefault: boolean
   name: string
 }) {
-  if (isDefault) {
+  if (isDefault && defaultStyle === 'home') {
     return (
       <span className={cn('grid size-4 shrink-0 place-items-center', className)} {...props}>
         <Codicon className="text-(--ui-text-quaternary)" name="home" size="0.75rem" />

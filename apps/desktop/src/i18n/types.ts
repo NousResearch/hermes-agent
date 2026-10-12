@@ -13,6 +13,7 @@ import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
+import type { SidebarFilterTranslations, SimpleWorkspaceTranslations } from './types_chat_sidebar'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
@@ -2807,38 +2808,9 @@ export interface Translations extends NoticeTranslations {
     missingBody: string
   }
 
+  simpleWorkspace: SimpleWorkspaceTranslations
   sidebar: {
-    filter: {
-      grouping: string
-      ordering: string
-      show: string
-      filters: string
-      status: string
-      pullRequest: string
-      profile: string
-      project: string
-      archived: string
-      resetToDefaults: string
-      expandAll: string
-      collapseAll: string
-      inboxStyle: string
-      updated: string
-      created: string
-      tokens: string
-      cost: string
-      manual: string
-      preview: string
-      pr: string
-      needsInput: string
-      working: string
-      unread: string
-      draft: string
-      idle: string
-      open: string
-      merged: string
-      closed: string
-      noPR: string
-    }
+    filter: SidebarFilterTranslations
     gatewayGroups: {
       grouping: string
       rename: string

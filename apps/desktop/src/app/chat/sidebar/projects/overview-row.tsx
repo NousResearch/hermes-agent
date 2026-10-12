@@ -8,6 +8,7 @@ import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $interfaceMode } from '@/store/interface-mode'
 import { $sidebarShowAllSessions } from '@/store/layout'
 import { fetchProjectSessions, projectProfile } from '@/store/projects'
 
@@ -42,7 +43,7 @@ import { WorkspaceAddButton, WorkspaceShowMoreRow } from './workspace-header'
 // Auto-discovered repos (git lanes Desktop found by scanning disk, not rows in
 // projects.db) get the `repo` glyph so a glance tells explicit projects
 // (`folder-library`) apart from incidental disk/session findings.
-export function projectIcon({ color, icon, isAuto, isNoProject }: SidebarProjectTree) {
+export function projectIcon({ color, icon, isAuto, isNoProject }: SidebarProjectTree, simple = false) {
   if (color && !icon) {
     return (
       <SidebarRowLeadGlyph>
@@ -54,7 +55,7 @@ export function projectIcon({ color, icon, isAuto, isNoProject }: SidebarProject
   return (
     <SidebarRowLeadGlyph style={color ? { color } : undefined}>
       <Codicon
-        name={icon || (isNoProject ? 'home' : isAuto ? 'repo' : 'folder-library')}
+        name={icon || (simple ? 'folder' : isNoProject ? 'home' : isAuto ? 'repo' : 'folder-library')}
         size={SIDEBAR_LEAD_ICON_SIZE}
       />
     </SidebarRowLeadGlyph>
@@ -87,6 +88,8 @@ interface ProjectOverviewRowProps {
    *  this project's cwd, placed exactly where it's dropped. */
   onNewSessionSplit?: NewSessionSplitHandler
   renderRows?: (sessions: SessionInfo[]) => React.ReactNode
+  /** A top-level chat section uses the same preview/paging without a folder row. */
+  renderHeader?: (open: boolean, onToggle: () => void) => React.ReactNode
   activeProjectId?: null | string
   previewSessions?: SessionInfo[]
   /** What the project tree drops (pins, filter misses, just-deleted rows) —
@@ -103,12 +106,23 @@ interface ProjectOverviewRowProps {
   style?: React.CSSProperties
 }
 
+// A top-level chat section supplies its own header and drops the folder row's nesting.
+const previewContainer = (bare: boolean) => (bare ? 'div' : SidebarRowNest)
+
+const rowHeader = (
+  render: ProjectOverviewRowProps['renderHeader'],
+  open: boolean,
+  toggle: () => void,
+  fallback: React.ReactNode
+) => (render ? render(open, toggle) : fallback)
+
 export function ProjectOverviewRow({
   project,
   onEnter,
   onNewSession,
   onNewSessionSplit,
   renderRows,
+  renderHeader,
   activeProjectId,
   previewSessions,
   isSessionHidden,
@@ -126,6 +140,7 @@ export function ProjectOverviewRow({
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
+  const simple = useStore($interfaceMode) === 'simple'
   const showAllSessions = useStore($sidebarShowAllSessions)
   // The tree payload previews only the most-recent few sessions per project
   // (kept light on purpose); "Show all" hydrates THIS project's lanes on demand
@@ -180,11 +195,13 @@ export function ProjectOverviewRow({
       dragHandleProps={dragHandleProps}
       leadClassName="overflow-visible"
     >
-      {projectIcon(project)}
+      {projectIcon(project, simple)}
     </SidebarRowGrab>
   ) : (
-    <SidebarRowLead>{projectIcon(project)}</SidebarRowLead>
+    <SidebarRowLead>{projectIcon(project, simple)}</SidebarRowLead>
   )
+
+  const PreviewContainer = previewContainer(Boolean(renderHeader))
 
   const labelLink = (
     <SidebarRowLink
@@ -291,15 +308,20 @@ export function ProjectOverviewRow({
       style={style}
     >
       {/* Home has no per-project actions, so it gets no right-click menu. */}
-      {project.isNoProject ? (
-        shell
-      ) : (
-        <ProjectContextMenu isActive={isActive} project={project}>
-          {shell}
-        </ProjectContextMenu>
+      {rowHeader(
+        renderHeader,
+        open,
+        toggleOpen,
+        project.isNoProject ? (
+          shell
+        ) : (
+          <ProjectContextMenu isActive={isActive} project={project}>
+            {shell}
+          </ProjectContextMenu>
+        )
       )}
       {open && preview.length > 0 && (
-        <SidebarRowNest>
+        <PreviewContainer>
           {renderRows?.(rows)}
           {offerShowAll && (
             <WorkspaceShowMoreRow disabled={expanding} label={s.projects.showAllCount(total)} onClick={showAll} />
@@ -307,7 +329,7 @@ export function ProjectOverviewRow({
           {expanded && page.more > 0 && (
             <WorkspaceShowMoreRow label={s.showMoreIn(page.more, project.label)} onClick={page.showMore} />
           )}
-        </SidebarRowNest>
+        </PreviewContainer>
       )}
     </div>
   )

@@ -8,6 +8,7 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { setInterfaceMode } from '@/store/interface-mode'
 import { $sidebarMessagingOpenIds, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
@@ -41,7 +42,12 @@ const sessionRows = [
   makeSessionInfo({ id: 'tile-two', last_active: 2, profile: 'default', started_at: 1, title: 'Tile two' })
 ]
 
-const renderSidebar = (pathname: string, currentView: AppView, onRetrySessions: () => Promise<void> = noopAsync) =>
+const renderSidebar = (
+  pathname: string,
+  currentView: AppView,
+  onRetrySessions: () => Promise<void> = noopAsync,
+  onNavigate = vi.fn()
+) =>
   render(
     <MemoryRouter initialEntries={[pathname]}>
       <SidebarProvider>
@@ -52,7 +58,7 @@ const renderSidebar = (pathname: string, currentView: AppView, onRetrySessions: 
           onDeleteSession={noop}
           onLoadMoreSessions={noop}
           onManageCronJob={noop}
-          onNavigate={noop}
+          onNavigate={onNavigate}
           onNewSessionInWorkspace={noop}
           onNewSessionSplit={noop}
           onResumeSession={noop}
@@ -306,6 +312,7 @@ describe('ChatSidebar section labels', () => {
     $projectTree.set([])
     setSidebarAgentsGrouped(false)
     $sessions.set([])
+    setInterfaceMode('advanced')
   })
 
   it('labels the section "Projects" when the grouped tree has a real project', () => {
@@ -329,6 +336,29 @@ describe('ChatSidebar section labels', () => {
 
     expect(screen.getByText('Sessions')).toBeTruthy()
     expect(screen.queryByText('Projects')).toBeNull()
+  })
+
+  it('renders unassigned Simple chats as their own section beside Projects', () => {
+    setInterfaceMode('simple')
+    setShowAllProfiles(false)
+    setSidebarAgentsGrouped(true)
+    $sessions.set(sessionRows)
+    $projectTree.set([{ ...realProject, sessionCount: 1 }, ...homeOnly])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Chats')).toBeTruthy()
+    expect(screen.getByText('Projects')).toBeTruthy()
+    expect(screen.queryByText('No project')).toBeNull()
+    expect(screen.queryByText('Home')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Open No project' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
+    expect(screen.getByText('Tile one')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
+    expect(screen.queryByText('Tile one')).toBeNull()
+    expect(screen.getByText('new-project')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
   })
 
   it('keeps the "Sessions" label when the grouped tree is only the synthetic Home bucket', () => {
@@ -499,5 +529,78 @@ describe('ChatSidebar messaging owners', () => {
     expect(telegramGroups()).toHaveLength(0)
     expect(screen.queryByText('work-1')).toBeNull()
     expect(within(row('default-1')).queryByRole('img', { name: /^Profile:/ })).toBeNull()
+  })
+})
+
+describe('Simple workspace navigation', () => {
+  afterEach(() => {
+    cleanup()
+    setInterfaceMode('advanced')
+    setShowAllProfiles(false)
+    setSidebarGrouping('date')
+    $sessions.set([])
+    $profiles.set([])
+  })
+
+  it('identifies default and named owners in project-grouped All profiles rows', () => {
+    setInterfaceMode('simple')
+    $profiles.set([
+      { name: 'default', is_default: true },
+      { name: 'work', is_default: false }
+    ] as typeof $profiles.value)
+    $sessions.set([
+      makeSessionInfo({ connection_id: 'local', id: 'simple-default', profile: 'default', title: 'Everyday chat' }),
+      makeSessionInfo({ connection_id: 'local', id: 'simple-work', profile: 'work', title: 'Work chat' })
+    ])
+    $projectTree.set([])
+    setShowAllProfiles(true)
+    setSidebarGrouping('project')
+    renderSidebar('/', 'chat')
+
+    const row = (title: string) => screen.getByText(title).closest('.group.row-hover') as HTMLElement
+
+    expect(within(row('Everyday chat')).getByRole('img', { name: 'Profile: default' })).toBeTruthy()
+    expect(within(row('Work chat')).getByRole('img', { name: 'Profile: work' })).toBeTruthy()
+  })
+
+  it('keeps secondary and plugin destinations reachable through More', async () => {
+    setInterfaceMode('simple')
+    $profiles.set([
+      { name: 'default', is_default: true, has_env: false, model: '', provider: '', path: '', skill_count: 0 }
+    ])
+
+    const dispose = registry.registerMany([
+      {
+        area: SIDEBAR_NAV_AREA,
+        id: 'board',
+        data: { codicon: 'project', label: 'Kanban', path: '/kanban', tier: 'advanced' }
+      }
+    ])
+
+    const onNavigate = vi.fn()
+
+    try {
+      renderSidebar('/chat', 'chat', noopAsync, onNavigate)
+      expect(screen.queryByRole('button', { name: 'Profiles: default' })).toBeNull()
+      expect(screen.getByRole('button', { name: 'Organize chats' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: /^New chat/ })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Capabilities' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Artifacts' })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      expect(onNavigate).toHaveBeenLastCalledWith(expect.objectContaining({ route: '/settings' }))
+      await act(async () => {
+        fireEvent.pointerDown(screen.getByRole('button', { name: 'More' }), { button: 0, ctrlKey: false })
+      })
+      expect(screen.getByRole('menuitem', { name: 'Capabilities' })).toBeTruthy()
+      expect(screen.getByRole('menuitem', { name: 'Artifacts' })).toBeTruthy()
+      expect(screen.getByRole('menuitem', { name: 'Scheduled jobs' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Kanban' }))
+      expect(onNavigate).toHaveBeenLastCalledWith(expect.objectContaining({ route: '/kanban' }))
+      act(() => setInterfaceMode('advanced'))
+      expect(screen.getByRole('button', { name: 'Capabilities' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'More' })).toBeNull()
+    } finally {
+      dispose()
+    }
   })
 })

@@ -6,6 +6,8 @@ import { useLocation, useNavigate } from 'react-router'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { resetLayoutTree } from '@/components/pane-shell/tree/store'
+import { $paneVisible } from '@/components/pane-shell/tree/store'
+import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
@@ -22,6 +24,7 @@ import {
   $fileBrowserOpen,
   $leftSideOpen,
   $panesFlipped,
+  $sidebarOpen,
   toggleLeftSide,
   togglePanesFlipped,
   toggleRightSide
@@ -134,6 +137,16 @@ function useModifierHeld(): boolean {
   return held
 }
 
+/** Simple's sidebar footer carries Settings and Layout; the titlebar offers them only while that footer is out of view. */
+function useSimpleFooterShown(): boolean {
+  const simple = useStore($interfaceMode) === 'simple'
+  const sidebarVisible = useStore($paneVisible('sessions'))
+  const workspaceMode = useStore($workspaceMode)
+  const sidebarOpen = useStore($sidebarOpen)
+
+  return simple && sidebarOpen && sidebarVisible && workspaceMode === 'sessions'
+}
+
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -145,6 +158,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
+  const footerOwnsAppActions = useSimpleFooterShown()
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
   // One filter for every cluster: a tool's own `hidden`, then the mode's tier.
@@ -216,6 +230,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       actionId: 'nav.settings',
       icon: <TitlebarIcon name="settings-gear" />,
       id: 'settings',
+      hidden: footerOwnsAppActions,
       label: t.titlebar.openSettings,
       onSelect: () => {
         triggerHaptic('open')
@@ -229,6 +244,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       // LayoutGlyph) — the mod-click telegraphs itself before it happens.
       icon: <LayoutGlyph modHeld={modHeld} />,
       id: 'layout',
+      hidden: footerOwnsAppActions,
       label: t.titlebar.layoutEditor,
       onSelect: event => {
         if (event?.metaKey || event?.ctrlKey) {

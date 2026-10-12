@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { notify, notifyError } from '@/store/notifications'
+import { $profiles } from '@/store/profile'
 import {
   $remoteOverrideDialogProfile,
   closeRemoteOverrideDialog,
@@ -307,4 +308,15 @@ export function ProfileRemoteOverrideDialog({ profileNames }: { profileNames: st
       </DialogContent>
     </Dialog>
   )
+}
+
+/** Recovery stays mounted even when the profile navigation pane is hidden. */
+export function ProfileRemoteOverrideHost() {
+  const profiles = useStore($profiles)
+  const namesKey = profiles.map(profile => profile.name).join('\u0000')
+  useEffect(() => {
+    void refreshProfileRemoteOverrides(namesKey ? namesKey.split('\u0000') : [])
+  }, [namesKey])
+
+  return <ProfileRemoteOverrideDialog profileNames={profiles.map(profile => profile.name)} />
 }

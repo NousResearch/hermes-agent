@@ -36,6 +36,10 @@ vi.mock('@/lib/haptics', () => ({
   triggerHaptic: mocks.triggerHaptic
 }))
 
+// The profile store binds its scope to the interface mode at import, which the
+// `computed` stub above cannot serve; nothing here reads slash completions.
+vi.mock('@/lib/slash-completion-cache', () => ({}))
+
 vi.mock('@/lib/spoken-reply', () => ({
   adoptSpokenReplySession: vi.fn(),
   markAssistantIdSpoken: vi.fn(),

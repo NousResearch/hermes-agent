@@ -8,13 +8,14 @@
  *     screen; else load into main (same as the left sessions sidebar).
  *   - `stack` (⌘K, notifications — anything that opens a chat from outside the
  *     workspace) — like `tab`, but may spend main or an open blank draft tab
- *     when either is empty.
+ *     when either is empty. Simple uses `in-place` for ordinary Sessions opens.
  *   - `tab` (⌘/⌃-click / ⌘-Enter / session refs) — focus if already on screen,
  *     else open as a stacked session tab (never steals main from under you).
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
 import type { WorkspaceMode } from '@/contrib/types'
+import { $interfaceMode } from '@/store/interface-mode'
 import { $activeSessionId, $selectedStoredSessionId, markSessionRead, requestSessionResume } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
@@ -27,6 +28,7 @@ import {
   setSessionTileWorkspaceScope
 } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import { $openWorkspaceSessionInNewTab } from '@/store/workspace-tab-action'
 
 import { $workspaceIsPage, sessionRoute } from './routes'
 
@@ -106,6 +108,25 @@ export function openSessionFromPicker(
   openSession(storedSessionId, navigate, resolved, workspaceScope)
 }
 
+/** Simple uses the same browsing view for history and picker selections.
+ *  Explicit tabs/windows and Bot-scoped pickers keep their own intent. */
+const simpleIntent = (intent: OpenSessionIntent, simpleBrowsing: boolean): OpenSessionIntent =>
+  simpleBrowsing && intent === 'stack' ? 'in-place' : intent
+
+/** In Simple the permanent Chats tab is a browsing surface. An explicit tab
+ *  request promotes its conversation instead of treating it as retained. */
+function promoteSimplePreview(focused: 'main' | 'tile', simpleBrowsing: boolean): boolean {
+  const promote = $openWorkspaceSessionInNewTab.get()
+
+  if (!simpleBrowsing || focused !== 'main' || !promote) {
+    return false
+  }
+
+  promote()
+
+  return true
+}
+
 /**
  * @param navigate Required for `in-place` (route into main when not on screen).
  *   `tab` / `window` ignore it — pass a no-op when you don't have a router handle.
@@ -128,7 +149,8 @@ export function openSession(
   setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
   const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
 
-  let resolved: OpenSessionIntent = intent
+  const simpleBrowsing = !botWorkspaceScope && $interfaceMode.get() === 'simple'
+  let resolved: OpenSessionIntent = simpleIntent(intent, simpleBrowsing)
 
   if (resolved === 'window') {
     if (canOpenSessionWindow()) {
@@ -175,6 +197,10 @@ export function openSession(
     const focused = focusOpenSession(storedSessionId, workspaceScope)
 
     if (focused) {
+      if (promoteSimplePreview(focused, simpleBrowsing)) {
+        return
+      }
+
       if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
         navigate(sessionRoute(storedSessionId))
       }

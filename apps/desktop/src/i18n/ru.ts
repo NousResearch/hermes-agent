@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruSidebarFilter, ruSimpleWorkspace } from './ru_chat_sidebar'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
@@ -32,6 +33,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ruOverrides = {
+  simpleWorkspace: ruSimpleWorkspace,
   sharedMetrics: ruSharedMetrics,
   sessionImport: {
     title: 'Продолжить из другого приложения',
@@ -2545,37 +2547,7 @@ export const ruOverrides = {
   },
   sidebar: {
     profileRail: 'Панель профилей',
-    filter: {
-      grouping: 'Группировка',
-      ordering: 'Сортировка',
-      show: 'Показывать',
-      inboxStyle: 'Стиль «Входящие»',
-      status: 'Статус',
-      pullRequest: 'Запрос на слияние',
-      profile: 'Профиль',
-      project: 'Проект',
-      archived: 'Архивные',
-      expandAll: 'Развернуть все',
-      collapseAll: 'Свернуть все',
-      updated: 'Обновление',
-      created: 'Создано',
-      tokens: 'Токены',
-      cost: 'Стоимость',
-      manual: 'Вручную',
-      preview: 'Превью',
-      pr: 'PR',
-      open: 'Открыт',
-      draft: 'Черновик',
-      merged: 'Слит',
-      closed: 'Закрыт',
-      needsInput: 'Нужен ввод',
-      working: 'В работе',
-      unread: 'Непрочитанные',
-      idle: 'Бездействие',
-      filters: 'Фильтры',
-      resetToDefaults: 'Сбросить настройки',
-      noPR: 'Без PR'
-    },
+    filter: ruSidebarFilter,
     gatewayGroups: {
       grouping: 'Шлюз и профиль',
       rename: 'Переименовать группу',

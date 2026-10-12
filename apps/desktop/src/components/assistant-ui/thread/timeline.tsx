@@ -7,6 +7,7 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { $interfaceMode } from '@/store/interface-mode'
 import { $hideThreadTimeline } from '@/store/thread-timeline'
 
 import { messageContentText } from './content'
@@ -39,6 +40,7 @@ export const ThreadTimeline: FC = () => {
 }
 
 const ActiveThreadTimeline: FC = () => {
+  const simple = useStore($interfaceMode) === 'simple'
   const view = useSessionView()
   const { t } = useI18n()
   const history = useTranscriptWindow()
@@ -300,7 +302,7 @@ const ActiveThreadTimeline: FC = () => {
     }
   }, [cancelJump, railEntries, history.isHistorical])
 
-  if (!railEntries.length) {
+  if (!railEntries.length || (simple && railEntries.length < 3)) {
     return null
   }
 

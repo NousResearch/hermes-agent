@@ -42,6 +42,8 @@ import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
+import { ChatContext } from '../chat-context'
+
 import { AttachmentList } from './attachments'
 import {
   acceptsTriggerCompletion,
@@ -96,6 +98,7 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
+import { useComposerLayout } from './simple-layout'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
@@ -381,6 +384,7 @@ export function ChatBar({
     poppedOut
   })
 
+  const layout = useComposerLayout({ compactPill, guidedChat, stacked })
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
 
@@ -1109,7 +1113,7 @@ export function ChatBar({
       busy={busy}
       busyAction={busyAction}
       canSubmit={canSubmit}
-      compactModelPill={poppedOut || compactPill}
+      compactModelPill={poppedOut || layout.compactPill}
       conversation={{
         active: voiceConversationActive,
         level: conversation.level,
@@ -1128,12 +1132,13 @@ export function ChatBar({
       onDictate={dictate}
       onQueue={queueDraft}
       onToggleAutoSpeak={handleToggleAutoSpeak}
+      sendFirst={layout.simple}
       state={state}
       voiceStatus={voiceStatus}
     />
   )
 
-  const inputWidthClass = composerInputWidthClass(stacked)
+  const inputWidthClass = composerInputWidthClass(layout.stackedInput)
 
   const input = (
     <div className={cn('relative', inputWidthClass)}>
@@ -1147,7 +1152,7 @@ export function ChatBar({
         className={cn(
           'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           '**:data-ref-text:cursor-default',
-          stacked && 'pl-3',
+          layout.stackedInput && 'pl-3',
           inputWidthClass,
           // Inside the native Wayland HUD drag region: a drag region swallows
           // the page's mouse input whole, so the input must opt back out or it
@@ -1155,7 +1160,7 @@ export function ChatBar({
           hudNativeDrag && '[-webkit-app-region:no-drag]'
         )}
         contentEditable={!inputDisabled}
-        data-placeholder={placeholder}
+        data-placeholder={layout.placeholder(disabled, placeholder)}
         data-slot={RICH_INPUT_SLOT}
         dir={textDirection}
         onBeforeInput={handleEditorBeforeInput}
@@ -1522,16 +1527,10 @@ export function ChatBar({
                     </div>
                   )}
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
-                  <div
-                    className={cn(
-                      'grid w-full',
-                      stacked
-                        ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
-                        : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
-                    )}
-                  >
-                    <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
+                  <div className={layout.gridClass}>
+                    <div className={layout.menuClass}>
                       {contextMenu}
+                      <ChatContext cwd={cwd} profile={profile} shown={layout.simple} />
                       <ContribSlot area={COMPOSER_AREAS.leading} />
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>

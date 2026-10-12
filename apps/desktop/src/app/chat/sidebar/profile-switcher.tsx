@@ -46,7 +46,7 @@ import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@
 import type { DesktopRegistryConnection } from '@/global'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { type Translations, useI18n } from '@/i18n'
+import { useI18n } from '@/i18n'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
@@ -58,7 +58,6 @@ import {
   reorderCommitHaptic,
   reorderStepHaptic
 } from '@/lib/reorder'
-import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import {
   $activeConnectionId,
@@ -86,7 +85,6 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
-import { $profileDotStateByScope, type ProfileDotSummary, profileDotSummaryFor } from '@/store/profile-dot-state'
 import {
   $profileRemoteOverrides,
   openRemoteOverrideDialog,
@@ -99,14 +97,13 @@ import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
-import { sessionDotClassName } from '../session-status-dot'
 
 import { ConnectionGlyph } from './connection-glyph'
 import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
 import { buildRestGroups, countRestAgents, type FleetAgent, type FleetGroup, fleetRouteKey } from './fleet-rail'
 import { useLocalDeviceSwitch } from './local-device-switch'
 import { ProfileLaunchContextMenu, ProfileLaunchMenuSection } from './profile-launch-menu'
-import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
+import { ProfileStatusDot, profileStatusLabel, useProfileStatus } from './profile-status'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
 import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
@@ -123,41 +120,6 @@ const PROFILE_DROPDOWN_THRESHOLD = 13
 // row. It paints the session status dot's own class for the same state, so a
 // profile's loudest state reads the same as its sessions' dots below. The
 // `profile-status-dot` slot lets tests (and tours) find it.
-function ProfileStatusDot({ summary }: { summary: ProfileDotSummary }) {
-  return <span aria-hidden="true" className={sessionDotClassName(summary.state)} data-slot="profile-status-dot" />
-}
-
-/** The a11y/tooltip text for one square's summary — every non-zero count,
- *  most urgent first ("1 session needs your answer, 2 unread sessions"). The
- *  counts ride the accessible name so the state is never color-only. */
-function profileStatusLabel(p: Translations['profiles'], summary: ProfileDotSummary): string {
-  const parts: string[] = []
-
-  if (summary.needsInputCount > 0) {
-    parts.push(p.status.needsInput(summary.needsInputCount))
-  }
-
-  if (summary.workingCount > 0) {
-    parts.push(p.status.working(summary.workingCount))
-  }
-
-  if (summary.unreadCount > 0) {
-    parts.push(p.status.unread(summary.unreadCount))
-  }
-
-  return parts.join(', ')
-}
-
-/** One profile square's rollup of its sessions' shared dot state, keyed by the
- *  (gateway, profile) the square names. `connectionId` is null for this
- *  machine's primary. The interned summaries keep the selector's bail-out
- *  intact: a square re-renders only when its own counts change. */
-function useProfileStatus(profile: null | string, connectionId: null | string | undefined): ProfileDotSummary | null {
-  return useStoreSelector($profileDotStateByScope, byScope =>
-    profile ? (profileDotSummaryFor(byScope, connectionId, profile) ?? null) : null
-  )
-}
-
 // Neighbors reflow on RAIL_TRANSITION; the dragged square glides between
 // snapped cells on the snappier DRAG_TRANSITION. Both come from the SHARED
 // reorder primitive (lib/reorder.ts) so every reorder strip feels identical.
@@ -727,8 +689,6 @@ export function ProfileRail() {
         profileName={pendingRestSoul?.profile ?? null}
         scope={pendingRestSoul ? restScope(pendingRestSoul) : undefined}
       />
-
-      <ProfileRemoteOverrideDialog profileNames={profileNames} />
     </div>
   )
 }

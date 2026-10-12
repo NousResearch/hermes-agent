@@ -13,9 +13,11 @@ import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import { $profileColors } from '@/store/profile'
+import { $profileDotStateByScope, profileDotSummaryFor } from '@/store/profile-dot-state'
 
 import { ConnectionGlyph } from './connection-glyph'
 import type { FleetAgent, FleetGroup } from './fleet-rail'
+import { ProfileStatusDot, profileStatusLabel } from './profile-status'
 
 interface FleetGatewayMenuGroupProps {
   group: FleetGroup
@@ -33,6 +35,7 @@ export function FleetGatewayMenuGroup({ group, onSelect, slot, wrapRow }: FleetG
   const { t } = useI18n()
   const p = t.profiles
   const colors = useStore($profileColors)
+  const statuses = useStore($profileDotStateByScope)
 
   return (
     <div data-connection-id={group.connectionId} data-slot={slot}>
@@ -46,8 +49,16 @@ export function FleetGatewayMenuGroup({ group, onSelect, slot, wrapRow }: FleetG
         const localDefault = agent.connectionKind === 'local' && agent.isDefault
         const label = localDefault ? p.fleet.localDevice : p.fleet.onGateway(agent.profile, group.label)
 
+        const summary = profileDotSummaryFor(statuses, agent.connectionId, agent.profile)
+        const statusText = summary ? profileStatusLabel(p, summary) : null
+
         const row = (
-          <DropdownMenuItem aria-label={label} className="min-w-0" key={agent.profile} onSelect={() => onSelect(agent)}>
+          <DropdownMenuItem
+            aria-label={[label, statusText].filter(Boolean).join(', ')}
+            className="min-w-0"
+            key={agent.profile}
+            onSelect={() => onSelect(agent)}
+          >
             <span className="flex min-w-0 items-center gap-1.5">
               {localDefault ? (
                 <Codicon aria-hidden="true" name="device-desktop" size="0.875rem" />
@@ -60,6 +71,7 @@ export function FleetGatewayMenuGroup({ group, onSelect, slot, wrapRow }: FleetG
                 />
               )}
               <span className="truncate">{agent.profile}</span>
+              {summary && <ProfileStatusDot summary={summary} />}
             </span>
           </DropdownMenuItem>
         )

@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
+import { jaSidebarFilter, jaSimpleWorkspace } from './ja_chat_sidebar'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
@@ -13,6 +14,7 @@ import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  simpleWorkspace: jaSimpleWorkspace,
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
@@ -2281,37 +2283,7 @@ export const jaOverrides = {
   sidebar: {
     profileRail: 'プロファイルバー',
     markAllRead: 'すべて既読にする',
-    filter: {
-      grouping: 'グループ化',
-      ordering: '並び替え',
-      show: '表示',
-      filters: 'フィルター',
-      status: 'ステータス',
-      pullRequest: 'プルリクエスト',
-      profile: 'プロファイル',
-      project: 'プロジェクト',
-      archived: 'アーカイブ',
-      resetToDefaults: 'デフォルトに戻す',
-      expandAll: 'すべて展開',
-      collapseAll: 'すべて折りたたむ',
-      inboxStyle: '受信トレイスタイル',
-      updated: '更新',
-      created: '作成',
-      tokens: 'トークン',
-      cost: 'コスト',
-      manual: '手動',
-      preview: 'プレビュー',
-      pr: 'PR',
-      needsInput: '入力待ち',
-      working: '実行中',
-      unread: '未読',
-      draft: '下書き',
-      idle: 'アイドル',
-      open: 'オープン',
-      merged: 'マージ済み',
-      closed: 'クローズ済み',
-      noPR: 'PRなし'
-    },
+    filter: jaSidebarFilter,
     gatewayGroups: {
       grouping: 'ゲートウェイとプロファイル',
       rename: 'グループ名を変更',

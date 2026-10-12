@@ -1,14 +1,19 @@
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $defaultProfileRoute } from '@/store/default-profile'
+import { $interfaceMode } from '@/store/interface-mode'
+import { $sidebarProfileFilter } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import {
+  $activeGatewayProfile,
   $newChatProfile,
   $newChatRoute,
   type AgentProfileRoute,
   captureNewChatSource,
   ensureGatewayAgent,
   ensureGatewayProfile,
-  pinLegacyNewChatProfile
+  pinLegacyNewChatProfile,
+  pinNewChatProfile,
+  profilePickOwnerRoute
 } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
@@ -21,6 +26,13 @@ import {
 /** Only generic New Session actions consult this preference. Explicit profile,
  * agent, project and existing-session actions keep their captured owner. */
 export function defaultNewSessionTarget(): { profile: string; route: AgentProfileRoute | null } | null {
+  if ($interfaceMode.get() === 'simple') {
+    const filter = $sidebarProfileFilter.get()
+    const profile = filter.length === 1 ? filter[0] : $activeGatewayProfile.get()
+
+    return { profile, route: profilePickOwnerRoute(profile) }
+  }
+
   const project = $projectScope.get()
 
   if (project !== ALL_PROJECTS && project !== NO_PROJECT_ID) {
@@ -57,12 +69,16 @@ export function prepareDefaultNewSession(): void {
     $newChatRoute.set(target.route)
     captureNewChatSource(target.route.connectionId)
   } else {
-    pinLegacyNewChatProfile(target.profile)
+    if ($interfaceMode.get() === 'simple') {
+      pinNewChatProfile(target.profile)
+    } else {
+      pinLegacyNewChatProfile(target.profile)
+    }
   }
 
   const activation = target.route
     ? ensureGatewayAgent(target.route.connectionId, target.profile)
-    : ensureGatewayProfile(target.profile, { forceLegacyRoute: true })
+    : ensureGatewayProfile(target.profile, $interfaceMode.get() === 'simple' ? undefined : { forceLegacyRoute: true })
 
   void activation.catch(error => {
     notifyError(error, `Failed to open profile "${target.profile}"`)

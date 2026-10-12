@@ -29,12 +29,16 @@ import { $fleetRoster } from '@/store/fleet-roster'
 import { notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $newChatProfile,
+  $newChatRoute,
   $profileColors,
   $profileCreateRequest,
   $profileOrder,
   $profiles,
   $showAllProfiles,
   ALL_PROFILES,
+  changeDraftAgent,
+  changeDraftProfile,
   normalizeProfileKey,
   prewarmProfilePick,
   profileLabel,
@@ -43,6 +47,7 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
+import { $profileDotStateByScope, profileDotSummaryFor } from '@/store/profile-dot-state'
 import { runImportProfileFlow } from '@/store/profile-share'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -51,6 +56,8 @@ import { PROFILES_ROUTE } from '../../routes'
 import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
 import { buildRestGroups, type FleetAgent, fleetRouteKey } from './fleet-rail'
 import { useLocalDeviceSwitch } from './local-device-switch'
+import { ProfileLaunchContextMenu } from './profile-launch-menu'
+import { combineProfileStatus, ProfileStatusDot, profileStatusLabel, useProfileStatus } from './profile-status'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
@@ -63,7 +70,14 @@ import { useProfilePrewarm } from './use-profile-prewarm'
  * plain-dropdown door for people who run profiles as bots and don't want a
  * strip of them.
  */
-export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
+interface ProfileSwitcherProps {
+  compact?: boolean
+  placement?: 'composer' | 'sidebar' | 'statusbar'
+}
+
+export function ProfileSwitcher({ compact = false, placement = 'statusbar' }: ProfileSwitcherProps) {
+  const composer = placement === 'composer'
+  const look = placementLook(placement, compact)
   const { t } = useI18n()
   const p = t.profiles
   const navigate = useNavigate()
@@ -71,7 +85,9 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const gatewayProfile = useStore($activeGatewayProfile)
-  const showAll = useStore($showAllProfiles)
+  const draftProfile = useDraftProfile()
+  const allProfiles = useStore($showAllProfiles)
+  const showAll = !composer && allProfiles
   const multipleConnections = useStore($hasMultipleConnections)
   const registry = useStore($connectionsRegistry)
   const activeConnectionId = useStore($activeConnectionId)
@@ -114,13 +130,19 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   )
 
   const ordered = defaultProfile ? [defaultProfile, ...named] : named
-  const active = showAll ? undefined : profiles.find(profile => normalizeProfileKey(profile.name) === activeKey)
+
+  const active = showAll
+    ? undefined
+    : profiles.find(profile => normalizeProfileKey(profile.name) === (composer ? draftProfile || activeKey : activeKey))
+
   const value = showAll ? ALL_PROFILES : (active?.name ?? '')
 
   const choose = (name: string) => {
     triggerHaptic('selection')
 
-    if (name === ALL_PROFILES) {
+    if (composer) {
+      changeDraftProfile(name)
+    } else if (name === ALL_PROFILES) {
       setShowAllProfiles(true)
     } else {
       selectProfile(name)
@@ -128,6 +150,12 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   }
 
   const commitRestSwitch = (agent: FleetAgent) => {
+    if (composer) {
+      changeDraftAgent({ connectionId: agent.connectionId, profile: agent.profile })
+
+      return
+    }
+
     const key = fleetRouteKey(agent.connectionId, agent.profile)
     triggerHaptic('selection')
     setPendingRoute(key)
@@ -161,20 +189,39 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
     })
   }
 
-  const triggerLabel = showAll ? p.allProfiles : active ? profileLabel(active) : p.title
+  const statuses = useStore($profileDotStateByScope)
+
+  const otherProfileStatus = combineProfileStatus([
+    ...ordered
+      .filter(profile => showAll || normalizeProfileKey(profile.name) !== activeKey)
+      .map(profile => profileDotSummaryFor(statuses, activeConnectionId, profile.name)),
+    ...restGroups.flatMap(group =>
+      [group.defaultAgent, ...group.named].map(agent =>
+        profileDotSummaryFor(statuses, agent.connectionId, agent.profile)
+      )
+    )
+  ])
+
+  const triggerLabel = showAll
+    ? p.allProfiles
+    : active
+      ? profileLabel(active)
+      : composer
+        ? draftProfile || gatewayProfile
+        : p.title
 
   return (
     <div
       aria-busy={pendingRoute !== null}
       aria-label={p.title}
-      className={cn('min-w-16 shrink overflow-hidden', compact ? 'h-full max-w-40' : 'max-w-72')}
+      className={cn('min-w-16 shrink overflow-hidden', look.widthClass)}
       data-slot="profile-switcher"
       role="group"
     >
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
-            aria-label={`${p.title}: ${triggerLabel}`}
+            aria-label={withProfileStatus(`${p.title}: ${triggerLabel}`, p, otherProfileStatus)}
             className={cn(
               'w-full min-w-0 justify-between overflow-hidden px-1 text-(--ui-text-secondary) data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground',
               compact && 'h-full min-h-0 rounded-none px-1.5 text-[0.6875rem] font-normal'
@@ -193,20 +240,24 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
                   aria-hidden="true"
                   className="size-3 text-[0.4375rem]"
                   color={resolveProfileColor(active.name, colors)}
+                  defaultStyle={look.glyphStyle}
                   isDefault={active.is_default}
-                  name={active.name}
+                  name={look.glyphName(active)}
                 />
               )}
               <span className="truncate">{triggerLabel}</span>
             </span>
+            {otherProfileStatus && <ProfileStatusDot summary={otherProfileStatus} />}
             <Codicon aria-hidden="true" className="shrink-0 opacity-60" name="chevron-down" size="0.875rem" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-48 max-w-72" collisionPadding={8} side="top">
+        <DropdownMenuContent align="start" className="min-w-48 max-w-72" collisionPadding={8} side={look.menuSide}>
           <DropdownMenuRadioGroup onValueChange={choose} value={value}>
             {ordered.map(profile => (
               <ProfileItem
                 color={resolveProfileColor(profile.name, colors)}
+                connectionId={activeConnectionId}
+                defaultStyle={look.glyphStyle}
                 isDefault={profile.is_default}
                 key={profile.name}
                 label={profileLabel(profile)}
@@ -215,7 +266,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
             ))}
             {/* Nothing to widen to with one profile: the ALL view only exists
                 once a second profile does (the rail hides its toggle then too). */}
-            {profiles.length > 1 && (
+            {!composer && profiles.length > 1 && (
               <DropdownMenuRadioItem className="min-w-0" value={ALL_PROFILES}>
                 <span className="flex min-w-0 items-center gap-1.5">
                   <Codicon aria-hidden="true" className="text-(--ui-text-tertiary)" name="layers" size="0.875rem" />
@@ -230,6 +281,16 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
               key={group.connectionId}
               onSelect={switchToRest}
               slot="profile-switcher-gateway"
+              wrapRow={(row, agent, label) => (
+                <ProfileLaunchContextMenu
+                  connectionId={agent.connectionId}
+                  key={fleetRouteKey(agent.connectionId, agent.profile)}
+                  label={label}
+                  profile={agent.profile}
+                >
+                  {row}
+                </ProfileLaunchContextMenu>
+              )}
             />
           ))}
           <DropdownMenuSeparator />
@@ -262,31 +323,76 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   )
 }
 
+/** How the picker presents itself where it is mounted: the statusbar keeps its
+ *  compact home-glyph form; the Simple sidebar and composer name profiles by
+ *  label and initial. */
+function placementLook(placement: NonNullable<ProfileSwitcherProps['placement']>, compact: boolean) {
+  const labeled = placement !== 'statusbar'
+  const sidebar = placement === 'sidebar'
+
+  return {
+    glyphName: (profile: Parameters<typeof profileLabel>[0]) => (labeled ? profileLabel(profile) : profile.name),
+    glyphStyle: labeled ? ('initial' as const) : ('home' as const),
+    menuSide: sidebar ? ('bottom' as const) : ('top' as const),
+    widthClass: sidebar ? 'w-full' : compact ? 'h-full max-w-40' : 'max-w-72'
+  }
+}
+
+/** The owner a new chat is about to use: its captured route, else the intended profile. */
+function useDraftProfile() {
+  const route = useStore($newChatRoute)
+  const intent = useStore($newChatProfile)
+
+  return route?.targetProfile || route?.profile || intent
+}
+
+const withProfileStatus = (
+  label: string,
+  copy: Parameters<typeof profileStatusLabel>[0],
+  summary: Parameters<typeof profileStatusLabel>[1] | null | undefined
+) => (summary ? `${label}, ${profileStatusLabel(copy, summary)}` : label)
+
 function ProfileItem({
+  connectionId,
   color,
+  defaultStyle,
   isDefault,
   label,
   name
 }: {
+  connectionId: null | string
   color: null | string
+  defaultStyle: 'home' | 'initial'
   isDefault: boolean
   label: string
   name: string
 }) {
+  const { t } = useI18n()
+  const summary = useProfileStatus(name, connectionId)
   const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
 
   return (
-    <DropdownMenuRadioItem
-      className="min-w-0"
-      onPointerEnter={startPrewarm}
-      onPointerLeave={cancelPrewarm}
-      onPointerMove={notePointerMove}
-      value={name}
-    >
-      <span className="flex min-w-0 items-center gap-1.5">
-        <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
-        <span className="truncate">{label}</span>
-      </span>
-    </DropdownMenuRadioItem>
+    <ProfileLaunchContextMenu connectionId={connectionId ?? 'local'} label={label} profile={name}>
+      <DropdownMenuRadioItem
+        aria-label={withProfileStatus(label, t.profiles, summary)}
+        className="min-w-0"
+        onPointerEnter={startPrewarm}
+        onPointerLeave={cancelPrewarm}
+        onPointerMove={notePointerMove}
+        value={name}
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          <ProfileGlyph
+            aria-hidden="true"
+            color={color}
+            defaultStyle={defaultStyle}
+            isDefault={isDefault}
+            name={defaultStyle === 'initial' ? label : name}
+          />
+          <span className="truncate">{label}</span>
+          {summary && <ProfileStatusDot summary={summary} />}
+        </span>
+      </DropdownMenuRadioItem>
+    </ProfileLaunchContextMenu>
   )
 }

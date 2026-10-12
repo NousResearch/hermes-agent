@@ -32,6 +32,7 @@ import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
+import { $interfaceMode } from '@/store/interface-mode'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $projectTree,
@@ -56,6 +57,7 @@ import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session
 import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
+import { $openWorkspaceSessionInNewTab } from '@/store/workspace-tab-action'
 
 import type { SessionTitleResponse } from '../../types'
 
@@ -248,6 +250,26 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   )
 }
 
+/** Whether a session's menu offers a named tab, and what it calls it. Named
+ *  tabs are already open. Simple's Chats tab only browses a chat, so its
+ *  current conversation can still be kept open in a named tab. */
+function useOpenInTabOffer(sessionId: string, surface: 'row' | 'tab', tabPaneId: string | undefined) {
+  const { t } = useI18n()
+  const tiles = useStore($sessionTiles)
+  const simple = useStore($interfaceMode) === 'simple'
+  const promoteWorkspaceSession = useStore($openWorkspaceSessionInNewTab)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
+
+  const alreadyTabbed =
+    tiles.some(tile => tile.storedSessionId === sessionId) ||
+    (sessionId === selectedStoredSessionId && !(simple && promoteWorkspaceSession))
+
+  return {
+    label: simple && surface === 'tab' ? t.simpleWorkspace.keepOpen : t.sidebar.row.openInNewTab,
+    offered: (surface === 'row' || (simple && tabPaneId === 'workspace')) && !alreadyTabbed
+  }
+}
+
 function useSessionActions({
   sessionId,
   title,
@@ -278,28 +300,23 @@ function useSessionActions({
   // the project menu's appearance-popover guard.
   const suppressCloseFocusRef = useRef(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
-  const tiles = useStore($sessionTiles)
-  const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const openInTab = useOpenInTabOffer(sessionId, surface, tabPaneId)
   const isRemote = useStore($connection)?.mode === 'remote'
   // The row's finished-unread dot is cleared by opening the session (main or
   // tile) — this menu item is the explicit escape hatch for the rest.
   const isUnread = useStore($unreadFinishedSessionIds).includes(sessionId)
-
-  // Already showing as a tab somewhere (a tile, or loaded in main — main IS
-  // a tab): offering "Open in new tab" again is noise.
-  const alreadyTabbed = sessionId === selectedStoredSessionId || tiles.some(tile => tile.storedSessionId === sessionId)
 
   const spec = (partial: Omit<ActionItemSpec, 'onSelect'> & { onSelect: () => void }): ActionItemSpec => partial
 
   // OPEN — where else this session can go. A tab surface IS a tab already,
   // so it only offers the window hop (and its own Close, below).
   const openItems: ActionItemSpec[] = [
-    ...(surface === 'row' && !alreadyTabbed
+    ...(openInTab.offered
       ? [
           spec({
             disabled: !sessionId,
             icon: 'browser',
-            label: r.openInNewTab,
+            label: openInTab.label,
             onSelect: () => {
               triggerHaptic('selection')
               // Stack into the MAIN zone as a tab (center dock; the strip

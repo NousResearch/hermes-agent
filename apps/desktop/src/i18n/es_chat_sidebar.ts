@@ -1,0 +1,42 @@
+export const esSidebarFilter = {
+  grouping: 'Agrupación',
+  ordering: 'Orden',
+  show: 'Mostrar',
+  filters: 'Filtros',
+  status: 'Estado',
+  pullRequest: 'Pull request',
+  profile: 'Perfil',
+  project: 'Proyecto',
+  archived: 'Archivados',
+  resetToDefaults: 'Restablecer valores predeterminados',
+  expandAll: 'Expandir todo',
+  collapseAll: 'Contraer todo',
+  inboxStyle: 'Estilo bandeja de entrada',
+  updated: 'Actualizado',
+  created: 'Creado',
+  tokens: 'Tokens',
+  cost: 'Coste',
+  manual: 'Manual',
+  preview: 'Vista previa',
+  pr: 'PR',
+  needsInput: 'Requiere respuesta',
+  working: 'Trabajando',
+  unread: 'No leídos',
+  draft: 'Borrador',
+  idle: 'Inactivo',
+  open: 'Abierta',
+  merged: 'Fusionada',
+  closed: 'Cerrada',
+  noPR: 'Sin PR'
+}
+
+export const esSimpleWorkspace = {
+  keepOpen: 'Mantener abierto',
+  folder: 'Carpeta',
+  organizeChats: 'Organizar chats',
+  openInNewTabFailed: 'No se pudo abrir este chat en una pestaña nueva. Inténtalo de nuevo.',
+  searchChats: 'Buscar chats…',
+  chats: 'Chats',
+  newChat: 'Nuevo chat',
+  more: 'Más'
+}

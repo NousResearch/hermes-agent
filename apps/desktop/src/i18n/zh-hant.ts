@@ -13,6 +13,16 @@ import { zhHantDiagnostics } from './zh-hant_diagnostics'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
+  simpleWorkspace: {
+    keepOpen: '保持開啟',
+    folder: '資料夾',
+    organizeChats: '整理聊天',
+    openInNewTabFailed: '無法在新分頁中開啟此聊天。請重試。',
+    searchChats: '搜尋聊天…',
+    chats: '聊天',
+    newChat: '新增聊天',
+    more: '更多'
+  },
   skillDeepLink: {
     installTitle: (name: string) => `安裝「${name}」？`,
     installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',

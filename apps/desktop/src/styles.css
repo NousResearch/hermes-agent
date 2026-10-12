@@ -1752,6 +1752,21 @@ body.guest-pointer-lock :is(webview, iframe) {
   );
 }
 
+/* Simple tabs reserve a close slot so revealing the button cannot cover the
+   title or make it read as part of the adjacent new-tab control. */
+[data-closeable][data-close-slot] {
+  --pane-tab-close-width: 1.5rem;
+}
+
+[data-closeable][data-close-slot] > .pane-tab-content {
+  padding-inline-end: var(--pane-tab-close-width);
+  mask-image: none;
+}
+
+[data-closeable][data-close-slot] > .pane-tab-content > span:last-child > span {
+  text-overflow: ellipsis;
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md,
 [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote, table, pre) {
   font-size: inherit;
@@ -3885,4 +3900,29 @@ html[data-hud-window] [data-slot='popover-content'] {
    author `!important` rule beats the widget's inline non-important style. */
 [data-pane-hidden] * {
   visibility: inherit !important;
+}
+
+/* Simple conversation bubbles are readable content; inline editors keep their own chrome. */
+[data-interface-mode='simple'] [data-chat-surface] .composer-human-message:not(:has([contenteditable], textarea)) {
+  width: fit-content;
+  max-width: 88%;
+  align-self: flex-end;
+  border-color: transparent;
+  background: var(--ui-control-active-background);
+}
+
+/* Simple reads as one centered column: transcript and composer share its edges. */
+[data-interface-mode='simple'] [data-chat-surface] {
+  --composer-width: 48rem;
+}
+
+[data-interface-mode='simple'] [data-slot='aui_thread-content'] {
+  width: min(var(--composer-width), calc(100% - 2rem));
+  padding-inline: 1.25rem;
+}
+
+/* Retaining a conversation leaves a fresh working draft mounted, but its
+   preview tab only appears when it is active or has content. */
+[data-tree-tab='workspace']:has([data-empty-preview]):not([aria-selected='true']) {
+  display: none;
 }

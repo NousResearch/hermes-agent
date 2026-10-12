@@ -1,0 +1,42 @@
+export const frSidebarFilter = {
+  grouping: 'Regroupement',
+  ordering: 'Tri',
+  show: 'Afficher',
+  filters: 'Filtres',
+  status: 'État',
+  pullRequest: 'Pull request',
+  profile: 'Profil',
+  project: 'Projet',
+  archived: 'Archivées',
+  resetToDefaults: 'Rétablir les valeurs par défaut',
+  expandAll: 'Tout déplier',
+  collapseAll: 'Tout replier',
+  inboxStyle: 'Style boîte de réception',
+  updated: 'Mise à jour',
+  created: 'Création',
+  tokens: 'Jetons',
+  cost: 'Coût',
+  manual: 'Manuel',
+  preview: 'Aperçu',
+  pr: 'PR',
+  needsInput: 'Action requise',
+  working: 'En cours',
+  unread: 'Non lues',
+  draft: 'Brouillon',
+  idle: 'Inactive',
+  open: 'Ouverte',
+  merged: 'Fusionnée',
+  closed: 'Fermée',
+  noPR: 'Aucune PR'
+}
+
+export const frSimpleWorkspace = {
+  keepOpen: 'Garder ouvert',
+  folder: 'Dossier',
+  organizeChats: 'Organiser les chats',
+  openInNewTabFailed: 'Impossible d’ouvrir cette conversation dans un nouvel onglet. Réessayez.',
+  searchChats: 'Rechercher des discussions…',
+  chats: 'Discussions',
+  newChat: 'Nouvelle discussion',
+  more: 'Plus'
+}

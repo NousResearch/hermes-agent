@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { $interfaceMode } from '@/store/interface-mode'
 
 const view = { $messages: atom<ChatMessage[]>([]) }
 let visible = true
@@ -61,6 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $interfaceMode.set('advanced')
   window.document.body.innerHTML = ''
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -214,4 +216,13 @@ describe('timeline position in the real rail component', () => {
     expect(frames.size).toBe(0)
     expect([...resizes].every(observer => observer.targets.size === 0)).toBe(true)
   })
+})
+
+it('omits the Simple timeline for fewer than three prompts', () => {
+  $interfaceMode.set('simple')
+  view.$messages.set([
+    { id: 'only-turn', role: 'user', parts: [{ type: 'text', text: 'One prompt' }] }
+  ] as ChatMessage[])
+  const result = render(<ThreadTimeline />)
+  expect(result.container.querySelector('[data-slot="thread-timeline"]')).toBeNull()
 })

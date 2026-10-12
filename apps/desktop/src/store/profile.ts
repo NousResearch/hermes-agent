@@ -26,6 +26,7 @@ import {
   openGatewayForProfile,
   openSecondaryCount
 } from '@/store/gateway'
+import { modeBound } from '@/store/interface-mode'
 import { notifyError } from '@/store/notifications'
 import { $poolLimits } from '@/store/pool-limits'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
@@ -949,9 +950,11 @@ const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 
 // Opt-in unified view. When false, scope follows the live gateway profile, so
 // single-profile users (who never see the switcher) are completely unaffected.
-export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
-
-$showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
+const $showAllProfilesPref = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
+$showAllProfilesPref.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
+export const $showAllProfiles = modeBound('showAllProfiles', $showAllProfilesPref, value =>
+  $showAllProfilesPref.set(value)
+)
 
 // The profile context the sidebar is currently showing: a concrete profile key,
 // or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the
@@ -1071,6 +1074,23 @@ function leaveForeignProjectScope(profile: string, connectionId: null | string =
 // Pin the next new chat to `name` (legacy profile-only door) so session.create
 // reads the profile the user clicked "+" under, not whatever
 // $activeGatewayProfile holds once an in-flight profile swap settles (#79005).
+export function profilePickOwnerRoute(name: string): AgentProfileRoute | null {
+  const profile = normalizeProfileKey(name)
+  const connectionId = profilePickConnectionId(profile)
+
+  return connectionId ? { connectionId, profile } : null
+}
+
+export function changeDraftProfile(name: string): void {
+  const target = pinNewChatProfile(name)
+  leaveForeignProjectScope(target)
+  void activateOnCurrentSource(target).catch(error => {
+    if (!notifyRemoteOverrideAuthFailure(target, error)) {
+      notifyError(error, `Failed to open profile "${target}"`)
+    }
+  })
+}
+
 export function pinNewChatProfile(name: string): string {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
@@ -1101,7 +1121,7 @@ export function newSessionInProfile(name: string): void {
 /** Start a draft owned by a specific registry agent. Foreground activation is
  * only a presentation step; the route stays attached to the draft for the
  * eventual session.create request. */
-export function newSessionInAgent(route: AgentProfileRoute): void {
+export function changeDraftAgent(route: AgentProfileRoute): void {
   const captured = {
     ...route,
     connectionId: route.connectionId.trim(),
@@ -1117,11 +1137,15 @@ export function newSessionInAgent(route: AgentProfileRoute): void {
   $newChatRoute.set(captured)
   captureNewChatSource(captured.connectionId)
   leaveForeignProjectScope(captured.profile, captured.connectionId)
-  requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
   void ensureGatewayAgent(captured.connectionId, captured.profile).catch((error: unknown) => {
     notifyError(error, `Failed to open profile "${captured.profile}"`)
   })
+}
+
+export function newSessionInAgent(route: AgentProfileRoute): void {
+  changeDraftAgent(route)
+  requestFreshSession()
 }
 
 export function setShowAllProfiles(value: boolean): void {

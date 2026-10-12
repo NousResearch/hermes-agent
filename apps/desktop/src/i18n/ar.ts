@@ -12,6 +12,16 @@ import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
+  simpleWorkspace: {
+    keepOpen: 'إبقاء مفتوحًا',
+    folder: 'المجلد',
+    organizeChats: 'تنظيم المحادثات',
+    openInNewTabFailed: 'تعذّر فتح هذه المحادثة في علامة تبويب جديدة. حاول مرة أخرى.',
+    searchChats: 'البحث في المحادثات…',
+    chats: 'المحادثات',
+    newChat: 'محادثة جديدة',
+    more: 'المزيد'
+  },
   sharedMetrics: arCommon.sharedMetrics,
   externalOpenFailed: arChrome.externalOpenFailed,
   sessionImport: arConnectors.sessionImport,

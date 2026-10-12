@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
+import { useNavigate } from 'react-router'
 
 import { sessionDotClassName } from '@/app/chat/session-status-dot'
+import { PROFILES_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -18,9 +20,11 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { desktopGit } from '@/lib/desktop-git'
 import { cn } from '@/lib/utils'
+import { $activeConnectionId } from '@/store/connections'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import {
   $sidebarCardRows,
@@ -58,9 +62,11 @@ import {
   $profiles,
   $showAllProfiles,
   normalizeProfileKey,
+  profileLabel,
   requestProfileCreate,
   toggleShowAllProfiles
 } from '@/store/profile'
+import { $profileDotStateByScope, type ProfileDotSummary, profileDotSummaryFor } from '@/store/profile-dot-state'
 import { $profileRailVisible, toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { runImportProfileFlow } from '@/store/profile-share'
 import { $projectTree } from '@/store/projects'
@@ -69,15 +75,22 @@ import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
 import type { SessionStatusBucket } from '@/store/session-dot-state'
 import { $sessionsHaveCost } from '@/store/sidebar-archive'
 
+import { combineProfileStatus, ProfileStatusDot, profileStatusLabel } from './profile-status'
+
 interface Option<T extends string = string> {
   /** A status dot's full className, from the row's own vocabulary. */
   dot?: string
   icon?: string
   id: T
   label: string
+  attention?: ProfileDotSummary
 }
 
 function OptionGlyph({ option }: { option: Option }) {
+  if (option.attention) {
+    return <ProfileStatusDot summary={option.attention} />
+  }
+
   if (option.dot) {
     return <span aria-hidden="true" className={cn('shrink-0', option.dot)} />
   }
@@ -113,7 +126,17 @@ function OptionRadio({ option }: { option: Option }) {
   )
 }
 
-export function SidebarFilterMenu({ className }: { className?: string }) {
+export function SidebarFilterMenu({
+  className,
+  label,
+  showGrouping = false,
+  side
+}: {
+  className?: string
+  label?: string
+  showGrouping?: boolean
+  side?: 'top' | 'bottom'
+}) {
   const { t } = useI18n()
   const f = t.sidebar.filter
 
@@ -168,10 +191,8 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const showAllSessions = useStore($sidebarShowAllSessions)
   const statusFilter = useStore($sidebarStatusFilter)
   const projectFilter = useStore($sidebarProjectFilter)
-  const profileFilter = useStore($sidebarProfileFilter)
   const showAllProfiles = useStore($showAllProfiles)
   const profileNames = useStore($profiles).map(profile => normalizeProfileKey(profile.name))
-  const narrowsByProfile = showAllProfiles && profileNames.length > 1
   const prFilter = useStore($sidebarPrFilter)
   const showArchived = useStore($sidebarShowArchived)
   const filtersActive = useStore($sidebarFiltersActive)
@@ -206,6 +227,8 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   )
 
   const groupingLabel = groupings.find(option => option.id === grouping)?.label
+  // Simple has no Home folder: unassigned chats read as having no project.
+  const homeLabel = showsAdvancedChrome ? t.sidebar.projects.home : t.rightSidebar.noProjectTitle
 
   // Two options are conditional: dragging a row is what picks manual, so it
   // only appears as a way back out once there's a hand-picked order to leave;
@@ -233,26 +256,14 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          aria-label={f.filters}
-          className={cn(
-            className,
-            'data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100',
-            // Active filters read as "this control is engaged", the same way the
-            // open menu does — never as an accent, which the sidebar reserves
-            // for a session that is actually doing something.
-            filtersActive && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-          )}
-          size="icon-xs"
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="list-filter" size="0.75rem" />
-        </Button>
-      </DropdownMenuTrigger>
+      <FilterTrigger
+        className={className}
+        filtersActive={filtersActive}
+        groupingLabel={showGrouping ? groupingLabel : undefined}
+        label={label || f.filters}
+      />
 
-      <DropdownMenuContent align="start" className="min-w-52">
+      <DropdownMenuContent align="start" className="min-w-52" side={side}>
         <DropdownMenuGroup>
           <DropdownMenuSub>
             <DropdownMenuSubTrigger hideChevron>
@@ -369,31 +380,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
             </DropdownMenuSub>
           )}
 
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>{f.profile}</DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
-              {/* Scoped to one profile the rail is already the filter, so the
-                  per-profile boxes only appear where they can narrow something.
-                  The actions below stand on their own. */}
-              {narrowsByProfile && (
-                <>
-                  {profileNames.map(name => (
-                    <OptionCheckbox
-                      checked={profileFilter.includes(name)}
-                      key={name}
-                      onCheck={() => toggleSidebarProfileFilter(name)}
-                      option={{ icon: 'account', id: name, label: name }}
-                    />
-                  ))}
-                  <DropdownMenuSeparator />
-                </>
-              )}
-              <DropdownMenuItem onSelect={requestProfileCreate}>{t.profiles.newProfile}</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void runImportProfileFlow()}>
-                {t.profiles.importProfile}
-              </DropdownMenuItem>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
+          <ProfileFilterSubmenu />
 
           {projects.length > 1 && (
             <DropdownMenuSub>
@@ -408,7 +395,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
                       icon: project.isNoProject ? 'home' : 'root-folder',
                       id: project.id,
                       // Home is synthetic, so its label is ours to translate.
-                      label: project.isNoProject ? t.sidebar.projects.home : project.label
+                      label: project.isNoProject ? homeLabel : project.label
                     }}
                   />
                 ))}
@@ -421,7 +408,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
               visible while it's on, or deleting your way back down to one
               profile would strand the sidebar in a mode nothing can leave (the
               rail hides its switcher at one profile too). */}
-          {(profileNames.length > 1 || showAllProfiles) && (
+          {offersAllProfiles(showsAdvancedChrome, profileNames.length, showAllProfiles) && (
             <OptionCheckbox
               checked={showAllProfiles}
               onCheck={toggleShowAllProfiles}
@@ -442,6 +429,8 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
         <DropdownMenuSeparator />
 
+        <ManageProfilesItem />
+
         {foldIds.length > 0 && (
           <DropdownMenuItem onSelect={() => setWorkspaceNodesOpen(foldIds, foldCollapsed)}>
             {foldCollapsed ? f.expandAll : f.collapseAll}
@@ -452,5 +441,139 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  )
+}
+
+// Nothing to widen to until a second profile exists — but the toggle stays
+// while it is on. Simple filters profiles from the Profile submenu instead.
+const offersAllProfiles = (advanced: boolean, profileCount: number, showAll: boolean) =>
+  advanced && (profileCount > 1 || showAll)
+
+/** The menu's trigger. Simple labels it with the current grouping and carries
+ *  the attention dot for profiles the list is not showing. */
+function FilterTrigger({
+  className,
+  filtersActive,
+  groupingLabel,
+  label
+}: {
+  className?: string
+  filtersActive: boolean
+  groupingLabel?: string
+  label: string
+}) {
+  const { t } = useI18n()
+  const simple = !useStore($showsAdvancedChrome)
+  const statuses = useStore($profileDotStateByScope)
+  const attention = simple ? combineProfileStatus(Object.values(statuses)) : null
+
+  return (
+    <Tip label={label}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          aria-label={[label, attention ? profileStatusLabel(t.profiles, attention) : null].filter(Boolean).join(', ')}
+          className={cn(
+            className,
+            'data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100',
+            // Active filters read as "this control is engaged", the same way the
+            // open menu does — never as an accent, which the sidebar reserves
+            // for a session that is actually doing something.
+            filtersActive && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+          )}
+          size={groupingLabel ? 'sm' : 'icon-xs'}
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="list-filter" size="0.75rem" />
+          {groupingLabel && (
+            <span className="truncate">
+              {t.sidebar.filter.grouping}: {groupingLabel}
+            </span>
+          )}
+          {attention && <ProfileStatusDot summary={attention} />}
+        </Button>
+      </DropdownMenuTrigger>
+    </Tip>
+  )
+}
+
+/** Per-profile filter boxes. Advanced also creates and imports profiles here;
+ *  Simple names each profile, marks the ones needing attention and adds All. */
+function ProfileFilterSubmenu() {
+  const { t } = useI18n()
+  const advanced = useStore($showsAdvancedChrome)
+  const profiles = useStore($profiles)
+  const profileFilter = useStore($sidebarProfileFilter)
+  const showAllProfiles = useStore($showAllProfiles)
+  const statuses = useStore($profileDotStateByScope)
+  const activeConnectionId = useStore($activeConnectionId)
+
+  if (!advanced && profiles.length <= 1) {
+    return null
+  }
+
+  const option = (profile: (typeof profiles)[number]): Option => {
+    const name = normalizeProfileKey(profile.name)
+
+    if (advanced) {
+      return { icon: 'account', id: name, label: name }
+    }
+
+    const attention = profileDotSummaryFor(statuses, activeConnectionId, name)
+    const status = attention ? profileStatusLabel(t.profiles, attention) : null
+
+    return { attention, icon: 'account', id: name, label: [profileLabel(profile), status].filter(Boolean).join(', ') }
+  }
+
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>{t.sidebar.filter.profile}</DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
+        {/* Scoped to one profile the rail is already the filter, so the
+            per-profile boxes only appear where they can narrow something.
+            The actions below stand on their own. */}
+        {showAllProfiles && profiles.length > 1 && (
+          <>
+            {!advanced && (
+              <OptionCheckbox
+                checked={profileFilter.length === 0}
+                onCheck={() => $sidebarProfileFilter.set([])}
+                option={{ id: 'all', label: t.profiles.allProfiles }}
+              />
+            )}
+            {profiles.map(profile => {
+              const row = option(profile)
+
+              return (
+                <OptionCheckbox
+                  checked={profileFilter.includes(row.id)}
+                  key={row.id}
+                  onCheck={() => toggleSidebarProfileFilter(row.id)}
+                  option={row}
+                />
+              )
+            })}
+          </>
+        )}
+        {advanced && (
+          <>
+            {showAllProfiles && profiles.length > 1 && <DropdownMenuSeparator />}
+            <DropdownMenuItem onSelect={requestProfileCreate}>{t.profiles.newProfile}</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void runImportProfileFlow()}>{t.profiles.importProfile}</DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  )
+}
+
+/** Simple's door to profile management, which Advanced reaches from its rail. */
+function ManageProfilesItem() {
+  const { t } = useI18n()
+  const navigate = useNavigate()
+  const advanced = useStore($showsAdvancedChrome)
+
+  return advanced ? null : (
+    <DropdownMenuItem onSelect={() => navigate(PROFILES_ROUTE)}>{t.profiles.manageProfiles}</DropdownMenuItem>
   )
 }

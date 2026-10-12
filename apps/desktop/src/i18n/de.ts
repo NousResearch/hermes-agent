@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
+import { deSidebarFilter, deSimpleWorkspace } from './de_chat_sidebar'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
 import { deLocalModels } from './de_local_models'
@@ -15,6 +16,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  simpleWorkspace: deSimpleWorkspace,
   sharedMetrics: deSharedMetrics,
   intro: introDe,
   connectors: deConnectorCard,
@@ -3656,37 +3658,7 @@ export const deOverrides = {
     missingBody: 'Dieses Artifact ist nicht mehr in der lokalen Registry.'
   },
   sidebar: {
-    filter: {
-      grouping: 'Gruppierung',
-      ordering: 'Sortierung',
-      show: 'Anzeigen',
-      filters: 'Filter',
-      status: 'Status',
-      pullRequest: 'Pull Request',
-      profile: 'Profil',
-      project: 'Projekt',
-      archived: 'Archiviert',
-      resetToDefaults: 'Auf Standard zurücksetzen',
-      expandAll: 'Alle ausklappen',
-      collapseAll: 'Alle einklappen',
-      inboxStyle: 'Posteingangsstil',
-      updated: 'Aktualisiert',
-      created: 'Erstellt',
-      tokens: 'Tokens',
-      cost: 'Kosten',
-      manual: 'Manuell',
-      preview: 'Vorschau',
-      pr: 'PR',
-      needsInput: 'Eingabe nötig',
-      working: 'In Arbeit',
-      unread: 'Ungelesen',
-      draft: 'Entwurf',
-      idle: 'Inaktiv',
-      open: 'Offen',
-      merged: 'Gemergt',
-      closed: 'Geschlossen',
-      noPR: 'Kein PR'
-    },
+    filter: deSidebarFilter,
     gatewayGroups: {
       grouping: 'Gateway & Profil',
       rename: 'Gruppe umbenennen',

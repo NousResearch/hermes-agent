@@ -13,6 +13,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { openWorkspaceSessionInNewTab } from '@/app/chat/keep-session-open'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
@@ -91,6 +92,7 @@ import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
+import { $openWorkspaceSessionInNewTab } from '@/store/workspace-tab-action'
 import { useSkinCommand } from '@/themes/use-skin-command'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -1045,15 +1047,31 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     return () => $newSessionTabAction.set(null)
   }, [openNewSessionTab])
 
-  // The MAIN tab's Close. The workspace pane can't leave the tree, so its
-  // closer empties it instead: the next stacked session shifts in, else main
-  // drops to a fresh draft. Registering it here is also what gives the tab its
-  // close GESTURE (⌘-click / middle-click) — the strip reads the closer, not
-  // the `uncloseable` flag, so the pane stays undismissable either way.
   useEffect(() => {
-    registerPaneCloser('workspace', () => void closeWorkspaceTab(id => navigate(sessionRoute(id))))
+    $openWorkspaceSessionInNewTab.set(() => {
+      openWorkspaceSessionInNewTab(() => startFreshSessionDraft({ replaceRoute: true }))
+    })
 
-    return () => registerPaneCloser('workspace')
+    return () => $openWorkspaceSessionInNewTab.set(null)
+  }, [startFreshSessionDraft])
+
+  // Simple's Home browsing tab is permanent across Chats and Bots.
+  // Advanced retains the existing close gesture and conversation promotion.
+  useEffect(() => {
+    const syncCloser = () => {
+      registerPaneCloser(
+        'workspace',
+        $interfaceMode.get() === 'simple' ? undefined : () => void closeWorkspaceTab(id => navigate(sessionRoute(id)))
+      )
+    }
+
+    syncCloser()
+    const dispose = $interfaceMode.listen(syncCloser)
+
+    return () => {
+      dispose()
+      registerPaneCloser('workspace')
+    }
   }, [navigate])
 
   // One owner-aware door for "open a stored session from a list row" — the

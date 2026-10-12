@@ -47,6 +47,7 @@ export function ComposerControls({
   hasComposerPayload,
   hideModelPill = false,
   minimal = false,
+  sendFirst = false,
   state,
   voiceStatus,
   onDictate,
@@ -64,6 +65,7 @@ export function ComposerControls({
   hasComposerPayload: boolean
   hideModelPill?: boolean
   minimal?: boolean
+  sendFirst?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
@@ -78,7 +80,7 @@ export function ComposerControls({
     return <ConversationPill {...conversation} disabled={disabled} />
   }
 
-  const showVoicePrimary = !busy && !hasComposerPayload
+  const showVoicePrimary = !sendFirst && !busy && !hasComposerPayload
   // Steer is just send: a payload keeps the Send affordance mid-turn. Stop
   // only when the composer is empty and a turn is running.
   const showStop = busy && !hasComposerPayload
@@ -89,7 +91,7 @@ export function ComposerControls({
   // same reason — same controls, same state, different budget. Below that
   // even the menu goes: at `minimal` the row is the send button and nothing
   // else, which is the one thing that must survive every width.
-  const foldedVoice = hudMode || foldVoice
+  const foldedVoice = sendFirst || hudMode || foldVoice
 
   const voiceControls = foldedVoice ? (
     <VoiceMenu

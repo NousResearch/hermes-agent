@@ -33,7 +33,7 @@ import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
 import { recordAction } from '@/store/desktop-metrics'
-import { $interfaceMode, $showsAdvancedChrome, shownInMode } from '@/store/interface-mode'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $bindings } from '@/store/keybinds'
 import {
   $dismissedAutoProjectIds,
@@ -135,7 +135,7 @@ import { $workingSessionIds } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
-import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
+import { SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
 import {
@@ -152,7 +152,6 @@ import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session
 
 import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
-import { SidebarFilterMenu } from './filter-menu'
 import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
@@ -189,6 +188,7 @@ import {
 } from './section-states'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
+import { HeaderFilterButton, OrganizeChatsBar, SimpleSidebarFooter, useSidebarNav } from './simple-sidebar'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useEnteredProjectSessions } from './use-entered-project-sessions'
 import { useServerSessionSearch } from './use-server-session-search'
@@ -204,8 +204,8 @@ const NON_SESSION_LOAD_STEP = 10
 // screen — has the connection to itself first.
 const PROJECT_TREE_WARM_MS = 2_000
 
-// A row's `tier` is the one mode it belongs to (Simple keeps the setup rows,
-// Advanced adds the readouts); the list filters once, nothing is passed down.
+// Advanced shows direct destination rows. Simple keeps New chat here and
+// makes the secondary destinations available through More.
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
@@ -439,7 +439,6 @@ export function ChatSidebar({
     [navContributions]
   )
 
-  const interfaceMode = useStore($interfaceMode)
   const showsAdvancedChrome = useStore($showsAdvancedChrome)
 
   // Nav preferences (`sidebarNav.prefs` contributions): a plugin may hide rows
@@ -448,10 +447,7 @@ export function ChatSidebar({
   // disposes its contribution and the rows come straight back.
   const navPrefs = useContributions(SIDEBAR_NAV_PREFS_AREA)
 
-  const navItems = useMemo(
-    () => applySidebarNavPrefs([...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)), navPrefs),
-    [contributedNav, interfaceMode, navPrefs]
-  )
+  const nav = useSidebarNav(SIDEBAR_NAV, contributedNav, navPrefs)
 
   const panesFlipped = useStore($panesFlipped)
   const grouping = useStore($sidebarGrouping)
@@ -994,9 +990,9 @@ export function ChatSidebar({
           excludeProjectSessions(
             {
               ...project,
-              // Home is synthetic, so its name is ours to translate — every
-              // other label is a repo basename or a name the user typed.
-              label: project.isNoProject ? s.projects.home : project.label,
+              // The unassigned bucket is synthetic, so its name is ours to
+              // translate; user project names stay intact.
+              label: project.isNoProject ? nav.homeLabel : project.label,
               repos: orderRepos(project.repos)
             },
             isHiddenFromProjects
@@ -1031,7 +1027,7 @@ export function ChatSidebar({
     projectFilter,
     projectOrderIds,
     isHiddenFromProjects,
-    s
+    nav.homeLabel
   ])
 
   // The overview only renders in grouped mode; the model stays live regardless
@@ -1267,7 +1263,7 @@ export function ChatSidebar({
       ? enteredProject.label
       : worktreeGroupingActive && (hasProjectRows || projectTreeLoading)
         ? s.projects.sectionLabel
-        : s.sessions
+        : nav.sessionsLabel
 
   // Mirror the section's skeleton gate (projectsLoading + nothing to show yet):
   // while the skeleton is up there's no point also spinning the header count.
@@ -1577,7 +1573,7 @@ export function ChatSidebar({
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
-              {navItems.map(item => {
+              {nav.navItems.map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =
@@ -1589,6 +1585,8 @@ export function ChatSidebar({
                   (currentView === 'extension' && Boolean(item.route) && pathname === item.route)
 
                 const isNewSession = item.id === 'new-session'
+                const label = nav.label(item)
+                const Icon = nav.icon(item)
 
                 const button = (
                   <SidebarMenuButton
@@ -1647,15 +1645,13 @@ export function ChatSidebar({
                     tooltip={
                       item.keybindActionId
                         ? {
-                            children: (
-                              <TipKeybindLabel actionId={item.keybindActionId} text={s.nav[item.id] ?? item.label} />
-                            )
+                            children: <TipKeybindLabel actionId={item.keybindActionId} text={label} />
                           }
-                        : (s.nav[item.id] ?? item.label)
+                        : label
                     }
                     type="button"
                   >
-                    <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
+                    <Icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
                     {/* Shrink-to-fit, not flex-1: the label carries the row's
                         `data-tour` handle, and anything anchored to it should
                         land at the end of the WORD, not out at the sidebar's
@@ -1666,7 +1662,7 @@ export function ChatSidebar({
                         Its own `sidebar-nav-` namespace: the overlay nav owns
                         `nav-<id>`, and both are on screen with Settings open. */}
                     <span className="min-w-0 truncate" data-tip-arrow-only="" data-tour={`sidebar-nav-${item.id}`}>
-                      {s.nav[item.id] ?? item.label}
+                      {label}
                     </span>
                     {isNewSession && (
                       <KbdGroup
@@ -1685,7 +1681,7 @@ export function ChatSidebar({
                     {isNewSession || item.route ? (
                       <ContextMenu>
                         <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
-                        <ContextMenuContent aria-label={s.nav[item.id] ?? item.label}>
+                        <ContextMenuContent aria-label={label}>
                           <SplitSubmenu
                             kit={CONTEXT_SPLIT_KIT}
                             label={s.row.openInSplit}
@@ -1714,14 +1710,16 @@ export function ChatSidebar({
         {showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">
             <SearchField
-              aria-label={s.searchAria}
+              aria-label={nav.searchAria}
               inputRef={searchInputRef}
               onChange={setSearchQuery}
-              placeholder={s.searchPlaceholder}
+              placeholder={nav.searchPlaceholder}
               value={searchQuery}
             />
           </div>
         )}
+
+        <OrganizeChatsBar />
 
         {showSessionSections && (
           <div
@@ -1759,7 +1757,7 @@ export function ChatSidebar({
               />
             )}
 
-            {!trimmedQuery && (
+            {nav.showsPinned(trimmedQuery, pinnedSessions.length) && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 // Inbox style rides whichever view is active — pinned rows
@@ -1935,9 +1933,7 @@ export function ChatSidebar({
                             }
                           }}
                         />
-                        <div className="grid size-6 place-items-center">
-                          <SidebarFilterMenu className={HEADER_NAV_BTN} />
-                        </div>
+                        <HeaderFilterButton className={HEADER_NAV_BTN} />
                       </>
                     )}
                   </div>
@@ -2066,6 +2062,7 @@ export function ChatSidebar({
             <ProfileRail />
           </div>
         )}
+        <SimpleSidebarFooter items={nav.moreItems} onNavigate={onNavigate} pathname={pathname} view={currentView} />
       </SidebarContent>
       <ProjectDialog />
       {/* One mount for the whole app. The header of WorktreeDialog tells why. */}

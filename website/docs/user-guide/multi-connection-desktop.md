@@ -253,8 +253,10 @@ that live on one gateway.
   or sessions in the sidebar.
 - Desktop loads the local connection registry at startup, even with the status
   bar hidden, and keeps it current when gateways are saved or removed. Opening
-  Settings is not required. In Simple mode, the profile rail stays available
-  when more than one gateway is registered, even with only a default profile.
+  Settings is not required. In Simple mode, the new-chat composer profile picker
+  includes gateway switching, even with only a default profile on the active
+  gateway. Organize chats filters history without switching the open conversation;
+  Manage profiles remains available there. Existing chats retain their recorded owner.
   Loading the registry does not connect every gateway; there is no periodic
   fleet polling.
 - Hovering an agent pre-warms its backend so the switch doesn't pay a cold

@@ -44,7 +44,7 @@ import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { requestGatewayForProfile } from '@/store/gateway'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $profileRailVisible } from '@/store/profile-rail-prefs'
+import { $statusbarProfileSwitcherHidden } from '@/store/profile-rail-prefs'
 import { $projectTree, projectNameForCwd } from '@/store/projects'
 import {
   $activeSessionId,
@@ -121,7 +121,7 @@ export function useStatusbarItems({
   // minimized zone, which lit the button for a pane the user couldn't see.
   const terminalShowing = useStore($paneVisible('terminal'))
   const sessionsShowing = useStore($paneVisible('sessions'))
-  const profileRailVisible = useStore($profileRailVisible)
+  const profileSwitcherHidden = useStore($statusbarProfileSwitcherHidden)
   const botsShowing = useStore($paneVisible('hermes-bots:pane'))
   const primaryBusy = useStore($busy)
   // Draft / primary composer atom — used only while the focused surface is the
@@ -503,7 +503,7 @@ export function useStatusbarItems({
       {
         // The rail's stand-in: the profile picker moves down here while the
         // colored strip is hidden, so switching profiles always has a door.
-        hidden: !sessionsShowing || profileRailVisible,
+        hidden: !sessionsShowing || profileSwitcherHidden,
         id: 'profile-switcher',
         lockedVisible: true,
         render: () => <ProfileSwitcher compact />
@@ -662,7 +662,7 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
-      profileRailVisible,
+      profileSwitcherHidden,
       projectName,
       sessionsShowing,
       subagentsFailed,

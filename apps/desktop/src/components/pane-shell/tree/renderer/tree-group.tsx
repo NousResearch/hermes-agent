@@ -32,6 +32,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
+import { $interfaceMode } from '@/store/interface-mode'
 import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
 
 import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
@@ -238,6 +239,21 @@ function ZoneMenu({
   )
 }
 
+/** Simple's strips: sentence-case labels, a reserved close slot, no chat "+"
+ *  (New chat lives in the sidebar) and no minimize on an expanded hide-only pane. */
+function useSimpleStrip() {
+  const simple = useStore($interfaceMode) === 'simple'
+  const newSessionTabAction = useStore($newSessionTabAction)
+
+  return {
+    canMinimize: (minimizable: boolean, hideOnly: boolean | undefined, minimized: boolean | undefined) =>
+      minimizable && !(simple && hideOnly && !minimized),
+    closeSlot: (closeable: boolean) => (simple && closeable ? '' : undefined),
+    labelClass: simple ? 'normal-case tracking-normal' : undefined,
+    newSessionTabAction: simple ? undefined : newSessionTabAction
+  }
+}
+
 export function TreeGroup({
   node,
   parentAxis,
@@ -280,7 +296,7 @@ export function TreeGroup({
   const narrow = useStore($narrowViewport)
   const workspaceMode = useStore($workspaceMode)
   const workspaceOwnerKey = useStore($workspaceOwnerKey)
-  const newSessionTabAction = useStore($newSessionTabAction)
+  const { canMinimize, closeSlot, labelClass, newSessionTabAction } = useSimpleStrip()
   const panesWithCloser = useStore($panesWithCloser)
   // Multi-tab selection (⌥/Ctrl-click, Shift-click) — null for every zone but
   // the one holding it, so this subscription is quiet during normal use.
@@ -550,7 +566,7 @@ export function TreeGroup({
                     side={railSide}
                     vertical
                   >
-                    <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
+                    <PaneTabLabel className={labelClass}>{tabLabel(paneId)}</PaneTabLabel>
                   </PaneTab>
                 )
               })}
@@ -604,7 +620,7 @@ export function TreeGroup({
                 titlebar={tabsInTitlebar}
                 trailing={
                   <>
-                    {minimizable && (
+                    {canMinimize(minimizable, paneChrome(active).hideOnly, node.minimized) && (
                       <button
                         aria-label={node.minimized ? t.zones.restore : minimizeLabel}
                         className="mx-1 grid size-5 shrink-0 place-items-center self-center [-webkit-app-region:no-drag] rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 group-hover/pane-header:opacity-100"
@@ -630,6 +646,7 @@ export function TreeGroup({
                     <PaneTab
                       active={isActive}
                       aria-selected={isActive}
+                      data-close-slot={closeSlot(closeable)}
                       data-tree-tab={paneId}
                       key={paneId}
                       onClose={closeable ? () => closeTab(paneId) : undefined}
@@ -724,7 +741,7 @@ export function TreeGroup({
                           </TabKeyHint>
                         </span>
                       ) : null}
-                      <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
+                      <PaneTabLabel className={labelClass}>{tabLabel(paneId)}</PaneTabLabel>
                     </PaneTab>
                   )
 

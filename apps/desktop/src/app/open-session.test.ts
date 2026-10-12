@@ -26,6 +26,9 @@ vi.mock('@/store/session-states', () => ({
 }))
 
 vi.mock('@/store/windows', () => ({
+  isSecondaryWindow: () => false,
+  isBrowserWindow: () => false,
+  isHudWindow: () => false,
   canOpenSessionWindow: () => canOpenSessionWindow(),
   openSessionInNewWindow: (...args: unknown[]) => openSessionInNewWindow(...args)
 }))
@@ -35,7 +38,9 @@ vi.mock('./routes', () => ({
   sessionRoute: (id: string) => `/c/${encodeURIComponent(id)}`
 }))
 
+import { $interfaceMode } from '@/store/interface-mode'
 import { $activeSessionId, $selectedStoredSessionId, $sessionResumeRequest } from '@/store/session'
+import { $openWorkspaceSessionInNewTab } from '@/store/workspace-tab-action'
 
 import { openSession, openSessionFromPicker, openSessionIntentFromModifiers } from './open-session'
 
@@ -68,6 +73,8 @@ describe('openSession', () => {
   const navigate = vi.fn()
 
   beforeEach(() => {
+    $interfaceMode.set('advanced')
+    $openWorkspaceSessionInNewTab.set(null)
     navigate.mockClear()
     focusOpenSession.mockReset()
     frontMainIfSelected.mockClear()
@@ -83,6 +90,37 @@ describe('openSession', () => {
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
     $sessionResumeRequest.set(null)
+  })
+
+  it('promotes the Chats conversation for an explicit Simple tab request, including modifier-click intent', () => {
+    $interfaceMode.set('simple')
+    const promote = vi.fn()
+    $openWorkspaceSessionInNewTab.set(promote)
+    focusOpenSession.mockReturnValue('main')
+    openSession('s1', navigate, openSessionIntentFromModifiers({ metaKey: true }))
+    expect(promote).toHaveBeenCalledTimes(1)
+    expect(openSessionTile).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('focuses an existing named tab without promoting or duplicating it in Simple', () => {
+    $interfaceMode.set('simple')
+    const promote = vi.fn()
+    $openWorkspaceSessionInNewTab.set(promote)
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate, 'tab')
+    expect(promote).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('preserves Advanced tab behavior even when a promotion handler is registered', () => {
+    const promote = vi.fn()
+    $openWorkspaceSessionInNewTab.set(promote)
+    focusOpenSession.mockReturnValue('main')
+    openSession('s1', navigate, 'tab')
+    expect(promote).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
   })
 
   it('in-place focuses an existing tile and does not navigate', () => {
@@ -228,6 +266,37 @@ describe('openSession', () => {
     openSession('s1', navigate, 'stack')
     expect(navigate).toHaveBeenCalledWith('/c/s1')
     expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('Simple history and palette selections reuse the browsing view, while explicit tabs stay open', () => {
+    $interfaceMode.set('simple')
+    $selectedStoredSessionId.set('current')
+    focusOpenSession.mockReturnValue(null)
+
+    openSession('history', navigate)
+    openSessionFromPicker('search-result', navigate, 'stack')
+
+    expect(navigate.mock.calls).toEqual([['/c/history'], ['/c/search-result']])
+    expect(openSessionTile).not.toHaveBeenCalled()
+    expect(reuseBlankDraftTile).not.toHaveBeenCalled()
+
+    focusOpenSession.mockReturnValue('tile')
+    openSession('kept-open', navigate)
+    expect(navigate).toHaveBeenCalledTimes(2)
+
+    focusOpenSession.mockReturnValue(null)
+    openSession('explicit', navigate, 'tab')
+    expect(openSessionTile).toHaveBeenCalledWith('explicit', 'center')
+  })
+
+  it('Simple preserves a Bot-scoped picker and its exact owner', () => {
+    $interfaceMode.set('simple')
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'mini::default' }
+    focusedSessionWorkspaceScope.mockReturnValue(scope)
+    focusOpenSession.mockReturnValue(null)
+    openSessionFromPicker('bot-side-chat', navigate, 'stack')
+    expect(openSessionTile).toHaveBeenCalledWith('bot-side-chat', 'center', undefined, undefined, scope)
+    expect(navigate).not.toHaveBeenCalled()
   })
 
   it('picker doors resume into the focused Bot workspace and stay in-place in Sessions', () => {

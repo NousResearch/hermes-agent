@@ -4,6 +4,8 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
+import { ProfileRemoteOverrideHost } from '@/app/chat/sidebar/profile-remote-override-dialog'
+import { WorkspaceTabTitle } from '@/app/chat/workspace-tab-title'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
@@ -38,7 +40,7 @@ import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
-import { LocalizedTabTitle, translateNow } from '@/i18n'
+import { LocalizedTabTitle, translateNow, useI18n } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import {
   Download,
@@ -189,6 +191,13 @@ const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => vo
   return true
 }
 
+function ChatsTabTitle() {
+  const mode = useStore($interfaceMode)
+  const { t } = useI18n()
+
+  return <>{mode === 'simple' ? t.simpleWorkspace.chats : t.sidebar.sessions}</>
+}
+
 registry.registerMany([
   {
     id: 'sessions',
@@ -207,8 +216,9 @@ registry.registerMany([
       // Standing chrome: no close gestures at all — the tab is shown/hidden
       // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
       hideOnly: true,
-      tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.sessions} />,
-      tabTitleText: () => translateNow('sidebar.sessions'),
+      tabTitle: () => <ChatsTabTitle />,
+      tabTitleText: () =>
+        translateNow($interfaceMode.get() === 'simple' ? 'simpleWorkspace.chats' : 'sidebar.sessions'),
       width: `${SIDEBAR_DEFAULT_WIDTH}px`,
       minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
       maxWidth: `${SIDEBAR_MAX_WIDTH}px`
@@ -479,8 +489,8 @@ watchUnreadWriteGuard()
 // backend — otherwise every boot re-requests the dead ids and 404s on each.
 watchDeadSessionPrune()
 
-// The main tab reads as its SESSION (the loaded title, "New session" on a
-// fresh draft) — a stack of main + tiles is then just a row of session names.
+// Simple browses through a titled preview; retained tabs keep their titles.
+// Advanced and Bot-scoped conversations retain their session/owner titles.
 // register() replaces same-id in place; the render fn is the shared constant
 // above, so the pane content never remounts.
 const syncWorkspaceTitle = () => {
@@ -492,6 +502,9 @@ const syncWorkspaceTitle = () => {
   // "New session" in the tab while its sidebar row read correctly.
   const stored = selected ? ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, selected)) : null
 
+  const scope = selected ? $botChatScopes.get()[selected] : undefined
+  const conversationTitle = workspaceOwnerTitle(stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE, scope)
+
   registry.register({
     id: 'workspace',
     area: 'panes',
@@ -499,10 +512,7 @@ const syncWorkspaceTitle = () => {
     // that. Keeping it here would re-register the pane on every keystroke.
     // A bot chat reads as its BOT: every canonical Bot Chat is stored under
     // the same name, which told two open bots apart by nothing (#99152).
-    title: workspaceOwnerTitle(
-      stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,
-      selected ? $botChatScopes.get()[selected] : undefined
-    ),
+    title: conversationTitle,
     data: {
       // The tab's status dot — the SAME primitive the sidebar row and session
       // tiles render, so the main tab never disagrees with its sidebar row. A
@@ -512,7 +522,19 @@ const syncWorkspaceTitle = () => {
       // A draft's name lives in its composer, not in any session row, so the
       // label subscribes to it directly — typing renames the tab without
       // re-registering the pane.
-      tabTitle: stored ? undefined : () => <SessionDraftTitle scope={selected} />,
+      tabTitle: () => (
+        <WorkspaceTabTitle>
+          {stored || scope ? (
+            conversationTitle
+          ) : (
+            <SessionDraftTitle
+              emptyTitle={$interfaceMode.get() === 'simple' ? translateNow('simpleWorkspace.newChat') : undefined}
+              scope={selected}
+            />
+          )}
+        </WorkspaceTabTitle>
+      ),
+      tabTitleText: () => conversationTitle,
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
       // Page-owned controls take the vetoed tab row. Deliberately NOT the
@@ -532,6 +554,7 @@ const syncWorkspaceTitle = () => {
   })
 }
 
+$interfaceMode.listen(syncWorkspaceTitle)
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
 // The cron and messaging slices arrive on their OWN fetch, after a restored
@@ -543,6 +566,7 @@ $botChatScopes.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
 registry.subscribeArea(WORKSPACE_PAGE_HEADER_AREA, syncWorkspaceTitle)
+syncWorkspaceTitle()
 
 // Layout reset collapses every session tile into main as a tab (after the
 // workspace) instead of re-scattering them — pre-placed before adoption.
@@ -825,6 +849,7 @@ export function ContribController() {
 
           {/* "Close running tab?" — the busy/input-blocked tile close gate. */}
           <SessionTileCloseConfirm />
+          <ProfileRemoteOverrideHost />
 
           {/* The REAL statusbar (model pill, command center, agents, …) with
               statusBar.left/right contributions merged in. Unmounted — not

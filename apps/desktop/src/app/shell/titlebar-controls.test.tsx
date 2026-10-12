@@ -4,8 +4,13 @@ import { useEffect } from 'react'
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { group } from '@/components/pane-shell/tree/model'
+import { $hiddenTreePanes, $layoutTree } from '@/components/pane-shell/tree/store'
+import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
+import { $interfaceMode } from '@/store/interface-mode'
+import { setSidebarOpen } from '@/store/layout'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { ROUTES_AREA } from '../routes'
@@ -62,6 +67,23 @@ describe('TitlebarControls fixed clusters', () => {
   afterEach(() => {
     dispose()
     cleanup()
+    $interfaceMode.set('advanced')
+    $workspaceMode.set('sessions')
+    $hiddenTreePanes.set(new Set())
+    setSidebarOpen(true)
+  })
+
+  it('keeps Settings reachable without duplicating the visible Simple sidebar shortcut', () => {
+    $interfaceMode.set('simple')
+    setSidebarOpen(true)
+    $layoutTree.set(group(['sessions']))
+    renderControls('/chat')
+    expect(screen.queryByLabelText('Open settings')).toBeNull()
+    act(() => $hiddenTreePanes.set(new Set(['sessions'])))
+    expect(screen.getByLabelText('Open settings')).toBeTruthy()
+    act(() => $hiddenTreePanes.set(new Set()))
+    act(() => $workspaceMode.set('bots'))
+    expect(screen.getByLabelText('Open settings')).toBeTruthy()
   })
 
   it('keeps the app clusters on a contributed page that mounts no titlebar chrome', () => {

@@ -73,6 +73,31 @@ def test_done_column_orders_by_completion_time_not_creation(client):
     assert [t["id"] for t in done] == [first["id"], second["id"]]
 
 
+def test_done_column_survives_non_integer_completed_at(client):
+    """A writer that bypassed complete_task can leave a non-integer completed_at
+    behind. The board must render (no 500 from negating a string), order a
+    parseable ISO stamp by its parsed time, and park garbage last with None."""
+    early = client.post("/api/plugins/kanban/tasks", json={"title": "epoch int"}).json()["task"]
+    iso = client.post("/api/plugins/kanban/tasks", json={"title": "iso string"}).json()["task"]
+    garbage = client.post("/api/plugins/kanban/tasks", json={"title": "garbage"}).json()["task"]
+    _finish(client, early["id"])
+    _finish(client, iso["id"])
+    _finish(client, garbage["id"])
+
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET completed_at = 1000 WHERE id = ?", (early["id"],))
+        conn.execute("UPDATE tasks SET completed_at = '2026-09-30T14:22:11' WHERE id = ?", (iso["id"],))
+        conn.execute("UPDATE tasks SET completed_at = 'not-a-timestamp' WHERE id = ?", (garbage["id"],))
+        conn.commit()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+    done = next(c["tasks"] for c in r.json()["columns"] if c["name"] == "done")
+    # The ISO stamp parses to a present-day epoch far above 1000; garbage
+    # coerces to None and sorts last.
+    assert [t["id"] for t in done] == [iso["id"], early["id"], garbage["id"]]
+
+
 def test_queue_lane_keeps_fifo_default(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]

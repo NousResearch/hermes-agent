@@ -1,5 +1,6 @@
 """Completion artifact confinement contracts ported from PR #86610."""
 import os
+import sqlite3
 from pathlib import Path
 import pytest
 from hermes_cli import kanban_db as kb
@@ -15,6 +16,19 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     kb.init_db()
     return home
+
+@pytest.mark.parametrize("memory", [False, True])
+def test_unknown_connection_board_never_uses_ambient_board(
+    kanban_home, tmp_path, monkeypatch, memory,
+):
+    monkeypatch.setattr(kb, "get_current_board", lambda: "unrelated-board")
+    conn = sqlite3.connect(":memory:" if memory else tmp_path / "unknown.db")
+    conn.row_factory = sqlite3.Row
+    try:
+        with pytest.raises(kb.ArtifactPreservationError, match="board ownership"):
+            kba._connection_board(conn)
+    finally:
+        conn.close()
 
 def test_complete_task_stages_dir_workspace_legacy_artifact(
     kanban_home,

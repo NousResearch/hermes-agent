@@ -9,7 +9,7 @@ from typing import Optional
 
 def _connection_board(conn: sqlite3.Connection) -> str:
     """Derive board ownership from an open connection's main DB path."""
-    from hermes_cli.kanban_db import DEFAULT_BOARD, kanban_home, boards_root, _normalize_board_slug, get_current_board
+    from hermes_cli.kanban_db import DEFAULT_BOARD, kanban_home, boards_root, _normalize_board_slug, ArtifactPreservationError
     try:
         row = conn.execute("PRAGMA database_list").fetchone()
         db_path = Path(row["file"]).resolve(strict=False)
@@ -23,7 +23,9 @@ def _connection_board(conn: sqlite3.Connection) -> str:
                 return board
     except (OSError, RuntimeError, TypeError, ValueError):
         pass
-    return get_current_board()
+    raise ArtifactPreservationError(
+        "cannot determine artifact board ownership from the connection"
+    )
 
 def _scope_completion_artifacts(
     conn: sqlite3.Connection,

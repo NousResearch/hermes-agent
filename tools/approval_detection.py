@@ -151,8 +151,9 @@ _POWER_STATE_PATTERNS = [
     (_SYSTEMCTL_PREFIX + r'(?:poweroff|halt)\b', _SHUTDOWN_SYSTEMCTL_DESC),
 ]
 # Hardline descriptions an operator may opt out of the floor, keyed to their category. An opted-in
-# category is NOT auto-run: the same patterns sit in DANGEROUS_PATTERNS, so the command falls through
-# to the normal approval flow (manual prompt / smart guardian / yolo, per approvals.mode).
+# category is NOT auto-run: it goes to a human-only gate (tools.approval._power_command_gate) that
+# always asks a live person once — smart mode, allowlists, session approvals and yolo/off cannot
+# approve it, and contexts with nobody to ask (cron, -q, unattended platforms) deny it.
 HARDLINE_OPT_IN_CATEGORIES = {
     _REBOOT_DESC: "reboot", _REBOOT_INIT_DESC: "reboot", _REBOOT_SYSTEMCTL_DESC: "reboot",
     _SHUTDOWN_DESC: "shutdown", _SHUTDOWN_INIT_DESC: "shutdown", _SHUTDOWN_SYSTEMCTL_DESC: "shutdown",
@@ -409,6 +410,25 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+_POWER_STATE_COMPILED = [
+    (pattern_re, description) for pattern_re, description, _ in HARDLINE_PATTERNS_COMPILED
+    if description in HARDLINE_OPT_IN_CATEGORIES
+]
+
+
+def detect_power_state_command(command: str) -> str | None:
+    """Description of the first host reboot/shutdown rule anywhere in *command* (any chained
+    segment, any de-obfuscated variant), else ``None``. Used after the floor to route an opted-in
+    power command to the human-only gate: such a command is never approved by smart mode, an
+    allowlist, a session approval, yolo/off or an unattended approve-mode."""
+    for command_variant in _command_detection_variants(command):
+        variant_lower = command_variant.lower()
+        for pattern_re, description in _POWER_STATE_COMPILED:
+            if pattern_re.search(variant_lower):
+                return description
+    return None
+
+
 def detect_hardline_command(command: str, allow_categories=()) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description).
 
@@ -563,9 +583,9 @@ DANGEROUS_PATTERNS = [
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
-    # Host reboot/shutdown: hardline by default, so these only fire once the operator opts a
-    # category out of the floor (approvals.allow_reboot / allow_shutdown) — the command must then
-    # still be approved like any other dangerous command rather than run silently.
+    # Host reboot/shutdown: hardline by default. Once a category is opted out of the floor
+    # (approvals.allow_reboot / allow_shutdown) the guards route it to the human-only gate before
+    # this layer; listing it here keeps detection and `hermes approvals test` consistent.
     *_POWER_STATE_PATTERNS,
     (r'\bpkill\s+-9\b', "force kill processes"),
     # killall with SIGKILL (-9 / -KILL / -s KILL / -SIGKILL) and `killall -r <regex>` broad sweeps

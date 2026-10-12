@@ -294,7 +294,7 @@ def _get_approval_config() -> dict:
 def _get_hardline_opt_ins() -> frozenset:
     """Opt-in hardline categories enabled in config: ``"reboot"`` when ``approvals.allow_reboot``
     and ``"shutdown"`` when ``approvals.allow_shutdown`` is true (both default false). An enabled
-    category leaves the unconditional floor but still goes through the normal approval flow."""
+    category leaves the unconditional floor but still needs a live human approval every time."""
     cfg = _get_approval_config()
     enabled = set()
     if is_truthy_value(cfg.get("allow_reboot", False)):

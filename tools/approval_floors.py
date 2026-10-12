@@ -101,13 +101,13 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
         "need to run it, run it yourself in a terminal outside the agent."
     )
     # Opt-in categories (host reboot / shutdown) name the config key that lifts them, so an operator
-    # of an always-on host knows the switch exists; enabling it still requires normal approval.
+    # of an always-on host knows the switch exists; enabling it still requires a human every time.
     setting = hardline_opt_in_setting(description)
     if setting:
         message += (
             f" The operator can allow this category by setting {setting}: true in config.yaml "
-            f"(`hermes config set {setting} true`); the command then goes through the normal "
-            "dangerous-command approval flow instead of being hard-blocked."
+            f"(`hermes config set {setting} true`); the command then requires a live human approval "
+            "every time instead of being hard-blocked."
         )
     # The parser-limit block is almost always a giant inline payload, not a forbidden operation, and is typically
     # followed by blind rephrase retries — point at the saved script (or the write_file recipe).

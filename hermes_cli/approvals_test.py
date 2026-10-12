@@ -6,7 +6,7 @@ order the runtime guard (``check_all_command_guards``) applies them:
 
 1. container-skip gate (isolated backends bypass all guards), 2. hardline blocklist (never
 bypassable, fires before yolo/off), 3. sudo-stdin guard (unconditional), 4. user ``approvals.deny``
-rules (fire before yolo/off), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
+rules (fire before yolo/off), 4b. opted-in reboot/shutdown (human prompt every time), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
 ``command_allowlist``, 7. dangerous-pattern detection (would prompt).
 """
 
@@ -91,6 +91,17 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
             "user-deny", rule=deny_pattern,
             detail="matches a user-defined approvals.deny rule in "
                    "config.yaml (blocked even under --yolo / mode=off)",
+        )
+
+    # 4b. Opted-in host reboot/shutdown (passed the floor above): human-only gate, evaluated before
+    #     yolo / mode=off / allowlist / smart, exactly as at runtime.
+    power_desc = approval_detection.detect_power_state_command(command)
+    if power_desc is not None:
+        return result(
+            "ask-approval", rule=power_desc,
+            detail="opted-in host power command: requires human approval every time "
+                   "(smart/allowlist/yolo cannot approve); denied in cron, -q and unattended "
+                   "sessions with no one to ask",
         )
 
     # 5. Yolo / approvals.mode=off bypass.

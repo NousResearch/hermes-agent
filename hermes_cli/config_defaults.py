@@ -1666,23 +1666,13 @@ DEFAULT_CONFIG = {
         # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
         # commands touching /etc".
         "smart_policy": "",
-        # After this many consecutive guardian DENYs in a session, the deny message escalates to a
-        # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
+        # Consecutive guardian DENYs per session before the deny message hard-stops (0 off; approval resets).
         "denial_breaker_threshold": 3,
-        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo
-        # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
-        # --force*".
+        # Case-insensitive fnmatch globs on terminal commands; a match blocks even under --yolo / mode=off.
+        # Quote in YAML when starting with * or containing {}/!/: e.g. "git push --force*".
         "deny": [],
-        # Opt-in exceptions to the hardline floor for host power-state commands. Off by default: the
-        # agent can never reboot / power off its host. Self-hosted always-on agents may need to
-        # (kernel updates, recovering wedged USB hardware). True lifts ONLY that category off the
-        # unconditional blocklist; the command still goes through the normal dangerous-command
-        # approval flow (prompt / smart guardian / yolo per approvals.mode, cron_mode, ...).
-        # allow_reboot: reboot, shutdown -r, systemctl reboot/kexec, init/telinit 6.
-        # allow_shutdown: shutdown [-h|-P|-H], poweroff, halt, systemctl poweroff/halt, init/telinit 0.
-        # Ambiguous spellings (`shutdown -rh`, `reboot -p`) need both.
-        "allow_reboot": False,
-        "allow_shutdown": False,
+        # Opt-in reboot / shutdown off the hardline floor (see security.md): ALWAYS needs a human prompt.
+        "allow_reboot": False, "allow_shutdown": False,
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
         # so the next message re-sends full input). "Always Approve" → false.
         "mcp_reload_confirm": True,

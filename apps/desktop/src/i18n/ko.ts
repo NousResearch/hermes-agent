@@ -35,7 +35,9 @@ export const koOverrides = {
     openInBrowser: '브라우저에서 열기',
     setupCancel: '취소',
     authorizedToolsUnavailable: '승인됨. 도구를 사용할 수 없습니다.',
-    required: '필수'
+    required: '필수',
+    namedAccount: (app, alias) => `Hermes가 이 ${app} 계정에 붙인 이름: ${alias}`,
+    renameAccount: '이름 변경'
   },
 
   connectorsPage: {
@@ -198,6 +200,31 @@ export const koOverrides = {
       usesPerMonth: '30일간 사용 횟수',
       advanced: '고급',
       advancedHint: 'mcp.json 항목과 로그'
+    },
+    accounts: {
+      heading: '계정',
+      count: count => `계정 ${count}개`,
+      addAnother: '다른 계정 추가',
+      aliasLabel: '계정 이름',
+      aliasHint: '소문자, 숫자, 대시로 최대 32자입니다. 예: work, home.',
+      aliasInvalid: '소문자, 숫자, 대시만 쓰고 소문자나 숫자로 시작하세요.',
+      aliasTaken: '이미 쓰고 있는 이름입니다.',
+      add: '연결',
+      rename: '이름 변경',
+      renameLabel: name => `${name}의 새 이름`,
+      renameGone: '그 계정이 더 이상 없습니다. 삭제되었거나 재연결로 교체되었습니다.',
+      remove: '삭제',
+      removeTitle: (app, name) => `${name} ${app} 계정을 삭제할까요?`,
+      removeBody: 'Hermes가 더 이상 이 계정으로 동작하지 않습니다. 다른 계정은 연결된 채로 유지됩니다.',
+      retiredCount: count => `교체된 계정 ${count}개`,
+      status: {
+        expired: '접근 권한 만료',
+        failed: '연결하지 못함',
+        inactive: '비활성',
+        pending: '로그인 대기 중',
+        retired: '재연결로 교체됨',
+        revoked: '접근 권한 취소됨'
+      }
     },
 
     tools: {
@@ -1680,7 +1707,23 @@ export const koOverrides = {
       driverHealth: '드라이버 상태'
     },
     about: {
-      updates: '업데이트'
+      updates: '업데이트',
+      channel: {
+        title: '업데이트 채널',
+        description:
+          '안정 릴리스는 배포된 릴리스만 설치합니다. 모든 커밋은 변경이 들어오는 대로 main 브랜치를 따라갑니다.',
+        stable: '안정 릴리스',
+        main: '모든 커밋',
+        stableConfirmTitle: '안정 릴리스로 전환할까요?',
+        stableConfirmBody:
+          'Hermes가 최신 배포 릴리스로 옮겨 가며, 이 릴리스는 지금 실행 중인 코드보다 오래되었을 수 있습니다. 더 새 코드가 쓴 데이터를 제대로 읽지 못할 수 있으니 먼저 백업하세요.',
+        stableConfirm: '안정 릴리스로 전환',
+        failed: '업데이트 채널을 변경하지 못했습니다',
+        detailsLabel: '채널',
+        branch: b => `브랜치: ${b}`,
+        change: '변경',
+        latestRelease: v => `최신 안정 릴리스(${v})를 쓰고 있습니다.`
+      }
     },
     config: {
       minimizeToTrayTitle: '트레이로 최소화',
@@ -2184,9 +2227,7 @@ export const koOverrides = {
         'best-quality-resident':
           'GPU 안에서 전부 돌면서 최고 속도를 내는 모델 중 품질이 가장 높습니다. 이 하드웨어에서 예상되는 속도와 품질을 함께 따져 고릅니다.',
         'speed-gated-quality':
-          '더 품질 좋은 모델도 이 머신에 들어가지만 메모리 대역폭 탓에 응답이 너무 느립니다 — 빠른 속도를 유지하는 모델 중 가장 좋은 것입니다.',
-        'fastest-resident':
-          '이 하드웨어에서 최고 속도를 내는 모델은 없습니다. 이 모델이 GPU 메모리 안에서만 돌면서 가장 근접합니다.'
+          '더 품질 좋은 모델도 이 머신에 들어가지만 메모리 대역폭 탓에 응답이 너무 느립니다 — 빠른 속도를 유지하는 모델 중 가장 좋은 것입니다.'
       } as Record<string, string>,
       noRecommendationTitle: '이 머신에 대한 자동 추천 없음',
       noRecommendationDetail:
@@ -4235,12 +4276,6 @@ export const koOverrides = {
     editingQueuedInComposer: '입력창에서 대기 중인 턴 편집 중',
     restoredDraftNotice: '보내지 않은 메시지를 복원했습니다',
     restoredDraftUndo: '되돌리기',
-    localSetup: {
-      title: '이 컴퓨터에서 실행할 수 있습니다',
-      text: (model: string) =>
-        `${model}을(를) 이 머신에서 구동할 수 있습니다. 무료이며 대화는 이 컴퓨터 밖으로 나가지 않습니다.`,
-      action: '살펴보기'
-    },
     queueEdit: '편집',
     queueExpand: '펼치기',
     queueCollapse: '접기',

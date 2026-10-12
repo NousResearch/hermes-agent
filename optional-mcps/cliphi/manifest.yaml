@@ -1,0 +1,46 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: cliphi
+description: >-
+  Turn your long videos into ready-to-post vertical clips with captions
+  via https://www.cliphi.com/api/mcp (OAuth).
+source: https://www.cliphi.com/docs
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint and code_challenge_methods_supported: S256);
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh. Registration is open — no client_name allowlist —
+# so no provider-specific defaults are needed.
+transport:
+  type: http
+  url: https://www.cliphi.com/api/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - cliphi
+    - clips
+    - shorts
+  hosts:
+    - cliphi.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Cliphi
+  (or run `hermes mcp login cliphi`). Approve access, then restart the
+  session so tools load.
+
+  Try it before connecting anything — the free get_demo tool returns a
+  real finished job with live preview pages.
+
+  Prompt with a link to your own video:
+    make clips from my talk: https://www.youtube.com/watch?v=<id>
+
+  Previews are free. Only the moments you pick get rendered, and each
+  render reports its exact credit cost before you keep it.

@@ -2745,6 +2745,10 @@ class BasePlatformAdapter(ABC):
         directly)."""
         return None
 
+    async def configure_room_threading(self, chat_id: str, mode: str) -> str:
+        """Handle room-local auto-threading control; adapters opt in to persistence and policy."""
+        return t("threading.unsupported")
+
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a sent message (optional: success=False makes callers send anew). ``finalize`` marks

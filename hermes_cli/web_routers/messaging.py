@@ -173,7 +173,7 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
 
 def _platform_enablement(
     platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool,
-    *, config_loader=None,
+    *, config_loader,
 ) -> tuple[bool, bool, dict | None]:
     """(enabled, configured, home_channel). Profile-scoped: derive from the profile's
     config.yaml + .env only — load_gateway_config()'s env-override layer reads
@@ -182,8 +182,7 @@ def _platform_enablement(
     if scoped:
         configured = bool(required) and all(env_on_disk.get(key) for key in required)
         try:
-            config = config_loader() if config_loader is not None else load_config()
-            plat_cfg = (config.get("platforms") or {}).get(platform_id)
+            plat_cfg = (config_loader().get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
             hc = plat_cfg.get("home_channel")
             # Setup writes credentials without a platforms entry; explicit disable wins.
@@ -194,9 +193,9 @@ def _platform_enablement(
             enabled, home_channel = False, None
         return enabled, configured, home_channel
     try:
-        from gateway.config import Platform, load_gateway_config
+        from gateway.config import Platform
 
-        gateway_config = config_loader() if config_loader is not None else load_gateway_config()
+        gateway_config = config_loader()
         platform = Platform(platform_id)
         platform_config = gateway_config.platforms.get(platform)
         enabled = bool(platform_config and platform_config.enabled)
@@ -211,7 +210,7 @@ def _platform_enablement(
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None,
-    *, config_loader=None,
+    *, config_loader,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}

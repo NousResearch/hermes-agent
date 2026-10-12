@@ -290,13 +290,16 @@ def gmail_search(args: argparse.Namespace) -> None:
     # gws params and the Python client's keyword arguments share the API's parameter names.
     if _gws_binary():
         results = _run_gws(["gmail", "users", "messages", "list"], params=params)
-        fetch = lambda message_id: _run_gws(  # noqa: E731
-            ["gmail", "users", "messages", "get"], params={"userId": "me", "id": message_id, **meta})
+
+        def fetch(message_id):
+            return _run_gws(
+                ["gmail", "users", "messages", "get"], params={"userId": "me", "id": message_id, **meta})
     else:
         service = build_service("gmail", "v1")
         results = service.users().messages().list(**params).execute()
-        fetch = lambda message_id: service.users().messages().get(  # noqa: E731
-            userId="me", id=message_id, **meta).execute()
+
+        def fetch(message_id):
+            return service.users().messages().get(userId="me", id=message_id, **meta).execute()
 
     output = []
     for msg_meta in results.get("messages", []):

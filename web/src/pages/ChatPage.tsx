@@ -41,6 +41,7 @@ import { readChatPanelCollapsed, toggleChatPanelCollapsed } from "@/lib/chat-pan
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { attachCompositionRegionTracker } from "@/lib/pty-composition-region";
 import { createComposingKeyGuard, type PtyComposingKeyGuard } from "@/lib/pty-composing-key";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
@@ -837,19 +838,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
         }
       };
-      const markCompositionEnd = (ev: CompositionEvent) => {
-        mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        compositionForwarder.onCompositionEnd(ev.data);
-      };
-
+      // Only text a composition added reaches the fallback forwarder.
+      const compositionRegion = attachCompositionRegionTracker(textarea, {
+        onEnd: () => {
+          mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+        },
+        onCommit: (data) => compositionForwarder.onCompositionEnd(data),
+      });
       textarea.addEventListener("beforeinput", markReplacementInput, true);
-      textarea.addEventListener("compositionend", markCompositionEnd, true);
       composingKeys = createComposingKeyGuard(textarea, () =>
         sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, "\r"),
       );
       mobileInputCleanup = () => {
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
-        textarea.removeEventListener("compositionend", markCompositionEnd, true);
+        compositionRegion.dispose();
         composingKeys?.dispose();
       };
     }

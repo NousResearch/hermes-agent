@@ -502,6 +502,54 @@ describe("ChatPage", () => {
     }
   });
 
+  // Device trace (SwiftKey): letters arrive as plain commits, then the space
+  // bar re-opens a composition over the committed word and closes it again.
+  // That compositionend must not re-send the word; a composition that adds
+  // text the terminal never emitted still reaches the PTY via the fallback.
+  it("re-sends only text a composition actually added", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => socket.onopen?.());
+      socket.send.mockClear();
+      const textarea = container.querySelector<HTMLTextAreaElement>(".hermes-chat-xterm-host textarea")!;
+      const compose = (type: string, data: string) =>
+        textarea.dispatchEvent(new CompositionEvent(type, { bubbles: true, data }));
+
+      // "The" already committed letter by letter; SwiftKey re-opens it at the space.
+      textarea.value = "The";
+      await act(async () => {
+        compose("compositionstart", "");
+        compose("compositionupdate", "The");
+        compose("compositionend", "The");
+        textarea.value = "The ";
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(socket.send).not.toHaveBeenCalledWith("The");
+
+      // A dead-key composition that xterm never echoed still gets forwarded.
+      await act(async () => {
+        compose("compositionstart", "");
+        textarea.value = "The ä";
+        compose("compositionupdate", "ä");
+        compose("compositionend", "ä");
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(socket.send).toHaveBeenCalledWith("ä");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reconnects on tab return after a hidden-tab close even when a stale upload banner is showing", async () => {
     const { default: ChatPage } = await import("./ChatPage");
     await render(

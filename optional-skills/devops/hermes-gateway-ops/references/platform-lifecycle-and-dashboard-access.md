@@ -7,7 +7,7 @@ update) refuses or hangs, or a restart happened that nobody asked for locally.
 
 ## 1. Attribute the message before diagnosing
 
-First, find where the exact error text lives:
+First, locate where the exact error text lives:
 
 - Hit under the Hermes install (Python sources or the dashboard's bundled
   web assets) → upstream Hermes behaviour; follow the code path.

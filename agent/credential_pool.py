@@ -1510,6 +1510,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if force:
                 self._mark_exhausted(entry, None)
             return None
+        if self.provider == "xai-oauth":
+            from agent.credential_pool_xai import refresh_xai_pool_entry
+            return refresh_xai_pool_entry(self, entry)
         # Plugin providers with a ``refresh_credential`` hook are treated as single-use by default:
         # the pool cannot know their grant semantics, and a needless in-lock re-read is cheaper than
         # a ``refresh_token_reused`` login loss. Eligibility comes from the hook, never a name set.
@@ -1702,7 +1705,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         try:
             if self.provider == "anthropic":
                 updated = self._refresh_anthropic(entry)
-            elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
+            elif self.provider == "openai-codex":
                 entry = self._sync_entry_from_auth_store(entry)
                 updated = self._post_tokens_refresh(entry)
             elif (plugin_refresh := plugin_refresh_hook(self.provider)) is not None:
@@ -1798,7 +1801,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     entry.label or entry.id[:8], exc)
                 self._mark_dead_refresh_grant(entry, exc)
                 return None
-        elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
+        elif self.provider == "openai-codex":
             _, display, _, terminal_fn_name = _TOKENS_SINGLETON_PROVIDERS[self.provider]
             synced = self._sync_entry_from_auth_store(entry)
             if synced.refresh_token != entry.refresh_token:
@@ -1815,7 +1818,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     "%s OAuth refresh token is terminally invalid (%s); clearing local token state. "
                     "Re-run 'hermes auth add %s' to sign in again.", display, exc, self.provider)
                 self._clear_terminal_tokens_state(entry, exc)
-                self._quarantine_sources(entry, {"device_code"}, matching_tokens=self.provider == "xai-oauth")
+                self._quarantine_sources(entry, {"device_code"})
                 self._mark_dead_refresh_grant(entry, exc)
                 return None
         elif self.provider == "nous":
@@ -1872,16 +1875,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             )
 
     def _clear_terminal_tokens_state(self, entry: PooledCredential, exc: Exception) -> None:
-        """Drop the dead Codex/xAI token pair from auth.json unless a peer already rotated it."""
-        if self.provider == "xai-oauth":
-            from hermes_cli.auth_xai import _quarantine_xai_oauth_tokens
-            with auth_mod._provider_state_transaction(self.provider) as source:
-                _quarantine_xai_oauth_tokens(
-                    exc, source=source,
-                    failed_tokens={"access_token": entry.access_token, "refresh_token": entry.refresh_token},
-                    reason="credential_pool_refresh_failure",
-                )
-            return
+        """Drop the dead Codex token pair from auth.json unless a peer already rotated it."""
         display = _TOKENS_SINGLETON_PROVIDERS[self.provider][1]
         try:
             with _auth_store_lock():

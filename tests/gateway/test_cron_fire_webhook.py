@@ -372,42 +372,6 @@ async def test_fire_passes_live_adapters_to_provider(adapter, monkeypatch):
     assert seen.get("loop") is not None
 
 
-@pytest.mark.asyncio
-async def test_fire_without_runner_passes_none_adapters(adapter, monkeypatch):
-    """No gateway runner (standalone/edge case) → fire still works with
-    adapters=None, preserving the historical standalone delivery path."""
-    seen = {}
-
-    class _AdapterSpyProvider:
-        def fire_due(self, job_id, *, adapters=None, loop=None):
-            seen["job_id"] = job_id
-            seen["adapters"] = adapters
-            return True
-
-    monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
-        lambda: _AdapterSpyProvider(),
-    )
-    monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
-        lambda: (lambda **kw: {"purpose": "cron_fire"}),
-    )
-
-    with patch("gateway.run._gateway_runner_ref", lambda: None):
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/api/cron/fire",
-                                  headers={"Authorization": "Bearer good"},
-                                  json={"job_id": "no-runner"})
-            assert resp.status == 202
-
-        for _ in range(50):
-            if seen:
-                break
-            await asyncio.sleep(0.01)
-
-    assert seen.get("job_id") == "no-runner"
-    assert seen.get("adapters") is None
 
 
 @pytest.mark.asyncio

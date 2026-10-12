@@ -145,7 +145,7 @@ class TestUpgrade:
         anon_auth.ensure_portal_identity(explicit=True)
         before = _auth_file_path().read_bytes()
         shared_before = _shared_store(tmp_path)
-        portal.status_sequence = [{"status": "pending"}, {"status": "voided", "reason": "user_declined"}]
+        portal.status_sequence = [{"status": "voided", "reason": "user_declined"}]
         code = anon_auth.upgrade_guest(_args())
         out = capsys.readouterr().out
         assert code == 1

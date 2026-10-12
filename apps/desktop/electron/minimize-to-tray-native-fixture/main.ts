@@ -34,7 +34,7 @@ async function run() {
     log: console.log
   })
 
-  controller.registerWindow(primary)
+  controller.registerWindow(primary, { closeToTray: true })
   controller.registerWindow(peer)
 
   const html =
@@ -78,8 +78,12 @@ async function run() {
     assert.equal(app.dock!.isVisible(), true)
   }
 
-  primary.minimize()
+  primary.close()
   await delay(250)
+  assert.equal(primary.isDestroyed(), false)
+  assert.equal(primary.isVisible(), false)
+  assert.equal(controller.status().available, true)
+  assert.equal(await primary.webContents.executeJavaScript('window.draft'), 'preserved')
   peer.close()
   assert.equal(peer.isDestroyed(), true)
   assert.equal(primary.isDestroyed(), false)
@@ -106,6 +110,7 @@ async function run() {
           'last hidden window removes Dock',
           'renderer draft survives',
           'restore reveals all tray-hidden windows and Dock',
+          'primary close hides without destroying renderer or tray',
           'peer close remains close',
           'disable restores before destroying tray',
           'explicit quit exits'

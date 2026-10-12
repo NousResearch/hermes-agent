@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: asana
+connector_slug: asana
 description: >-
   Tasks, projects, and goals from your Asana workspace.
 source: https://developers.asana.com/docs/integrating-with-asanas-mcp-server

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { ListRow } from '@/app/settings/primitives'
+import { SETTING_IDS, settingElementId } from '@/app/settings/settings-manifest'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { $poolLimits, loadPoolLimits, savePoolLimits } from '@/store/pool-limits'
@@ -83,6 +84,7 @@ export function PoolLimitsSetting() {
           </div>
         }
         description="How many bot backends stay running for instant switching. Higher = faster switches, more memory (~60MB per backend). Applies immediately."
+        id={settingElementId(SETTING_IDS.advanced.warmBotBackends)}
         title={t.settings.poolLimits.warmBotBackendsTitle}
       />
       <ListRow
@@ -107,7 +109,8 @@ export function PoolLimitsSetting() {
             <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">ms</span>
           </div>
         }
-        description="How long an unused bot backend stays warm before it is shut down. Raise this so bots you revisit every few minutes never pay a cold start."
+        description="How long an unused remote bot connection stays cached before it is dropped. Local backends keep running while idle, since they run cron jobs and bot chats."
+        id={settingElementId(SETTING_IDS.advanced.backendIdleTimeout)}
         title={t.settings.poolLimits.backendIdleTimeoutTitle}
       />
     </>

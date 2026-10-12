@@ -13,6 +13,7 @@ import {
 } from '@/store/quick-entry'
 
 import { ListRow, ToggleRow } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 
 /**
  * Quick Entry — the global-hotkey mini composer's settings rows.
@@ -63,6 +64,7 @@ export function QuickEntrySettings() {
       <ToggleRow
         checked={state.enabled}
         description={q.enabledDesc}
+        id={settingElementId(SETTING_IDS.advanced.quickEntry)}
         label={q.enabledTitle}
         onChange={enabled => void saveQuickEntrySettings({ enabled })}
       />
@@ -97,6 +99,7 @@ export function QuickEntrySettings() {
           )
         }
         description={q.shortcutDesc}
+        id={settingElementId(SETTING_IDS.advanced.quickEntryShortcut)}
         title={q.shortcutTitle}
       />
     </>

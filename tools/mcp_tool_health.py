@@ -75,7 +75,7 @@ class MCPServerHealthMixin:
         async def _run():
             try:
                 await self._refresh_tools()
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- a traceback would re-render unredacted text; logs type + redacted message
                 logger.error("MCP server '%s': dynamic tool refresh failed (%s): %s", self.name,
                              type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
         task = asyncio.create_task(_run())
@@ -108,7 +108,7 @@ class MCPServerHealthMixin:
                 origin = _sanitize_error(f"{self.name}/{logger_name}" if logger_name else self.name,
                                          self._redaction_values)
                 logger.log(level, "MCP server log [%s]: %s", origin, data)
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- a traceback would re-render unredacted text; logs type + redacted message
                 logger.debug("Failed to handle MCP log notification from '%s' (%s): %s", self.name,
                              type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
         return _on_log
@@ -136,7 +136,7 @@ class MCPServerHealthMixin:
                     logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
                 elif isinstance(payload, _core.ResourceListChangedNotification):
                     logger.debug("MCP server '%s': resources/list_changed (ignored)", self.name)
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- a traceback would re-render unredacted text; logs type + redacted message
                 logger.error("Error in MCP message handler for '%s' (%s): %s", self.name,
                              type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
         return _handler

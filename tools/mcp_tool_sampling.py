@@ -324,7 +324,7 @@ class ElicitationHandler:
         except TimeoutError:
             logger.warning("MCP server '%s' elicitation timed out after %ds", self.server_name, int(self.timeout))
             return self._result("cancel", "errors")
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- a traceback would re-render unredacted text; logs type + redacted message
             logger.error("MCP server '%s' elicitation failed (%s): %s", self.server_name,
                          type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
             return self._result("decline", "errors")

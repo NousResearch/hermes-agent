@@ -558,7 +558,7 @@ def _load_mcp_server_env(config: dict) -> dict[str, str]:
         from agent.secret_scope import load_env_file
 
         return load_env_file(env_path_obj, strict=True)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- fall back on any read/decode failure; never log path or text
         logger.warning(
             "MCP env_file could not be read; falling back to profile/process secrets"
         )

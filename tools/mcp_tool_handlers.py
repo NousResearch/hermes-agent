@@ -73,7 +73,7 @@ def _trust_gate_check(server_name: str, tool_name: str, redaction_values=()) -> 
             f"Server '{server_name}' is configured 'trust: untrusted'. "
             f"Approve to run '{tool_name}' once, or deny to block it.",
             surface=f"mcp-trust/{server_name}", title=f"MCP server '{server_name}' is asking")
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- a traceback would re-render unredacted text; logs type + redacted message
         logger.error("MCP trust gate: approval check failed for %s.%s (%s): %s", server_name,
                      _sanitize_error(tool_name, redaction_values), type(exc).__name__,
                      _sanitize_error(_exc_str(exc), redaction_values))

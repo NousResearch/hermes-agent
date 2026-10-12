@@ -164,6 +164,7 @@ def test_probe_surfaces_keep_resolving_snapshot(
     # The real probe resolves A before the peer rotates/deletes its file and reflects A.
     fixture.on_request.append(lambda: _mutate(fixture.env_file, mutation))
     caplog.set_level(logging.DEBUG, logger="tools.mcp_tool")
+    # health: allow HX011 -- one parametrized sink inventory: each case sets up one Hermes-owned diagnostic sink
     if sink == "sanitize":
         with pytest.raises(NonMcpEndpointError) as caught:
             mcp_config._probe_single_server("snapshot", fixture.raw)

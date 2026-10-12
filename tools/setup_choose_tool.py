@@ -214,22 +214,10 @@ def _name_rows() -> Optional[list]:
 
 
 def _connectors_closed() -> Optional[str]:
-    from tools.connectors.gateway.config import connectors_available, load_config
+    from tools.connectors.gateway.config import connectors_available
 
-    if connectors_available():
-        return None
-    from hermes_cli.anon_auth import current_nous_state, ensure_portal_identity, guest_enabled
-
-    # Connectors ride a Nous identity. A boot-time guest mint can be refused (rate limited) and stop retrying, so
-    # the card makes one attempt of its own; the mint memo's cooldown still holds it back from the portal.
-    if load_config().enabled and not current_nous_state() and guest_enabled():
-        try:
-            ensure_portal_identity(explicit=True)
-        except Exception:  # health: allow BLE001 -- one best-effort mint; on any failure the card says why it is closed
-            logger.info("setup_choose: no guest identity for connectors", exc_info=True)
-        if connectors_available():
-            return None
-    return _NO_CONNECTORS
+    # A user with no Nous identity is open too: the first connect creates the guest.
+    return None if connectors_available() else _NO_CONNECTORS
 
 
 def _plugins_closed() -> Optional[str]:

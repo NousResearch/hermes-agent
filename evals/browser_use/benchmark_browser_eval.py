@@ -17,6 +17,9 @@ import tempfile
 import time
 import urllib.request
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _find_chrome() -> str:
@@ -56,7 +59,7 @@ def _start_chrome(port: int):
     proc.terminate()
     try:
         proc.wait(timeout=3)
-    except Exception:
+    except subprocess.TimeoutExpired:
         proc.kill()
     shutil.rmtree(profile, ignore_errors=True)
     raise RuntimeError("Chrome didn't expose CDP")
@@ -144,8 +147,8 @@ def main():
         # orphaned /tmp profile dir.
         try:
             SUPERVISOR_REGISTRY.stop_all()
-        except Exception as e:
-            print(f"supervisor stop_all() failed during teardown: {e}", file=sys.stderr)
+        except Exception:
+            logger.exception("supervisor stop_all() failed during teardown")
         proc.terminate()
         try:
             proc.wait(timeout=3)

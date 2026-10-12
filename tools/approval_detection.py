@@ -694,21 +694,42 @@ _GREP_SHORT_OPTIONS_WITH_ARG = {"A", "B", "C", "D", "d", "e", "f", "m"}
 _BASH_OPTIONS_WITH_ARG = {"-O", "+O", "-o", "+o", "--init-file", "--rcfile"}
 _BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
 _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_SEGMENTS = 128_000, 4_096, 25_000
+_MAX_DETECTION_NESTING_DEPTH = 100
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
 
 
+def _command_substitution_depth(command: str) -> int:
+    """Deepest ``$(...)`` / backtick nesting. The quote-aware command-start walk recurses once per
+    substitution level, so this probe is iterative by necessity: recursing here would reproduce the
+    stack overflow it exists to bound (#137066). Single-quoted spans are literal data; double-quoted
+    substitutions execute in a real shell and the walk descends into them, so they count."""
+    depth = deepest = 0
+    for kind, i, _, quote in _scan_shell(command, comments=True):
+        if kind != "char" or quote == "'":
+            continue
+        if command.startswith("$(", i) or command[i] == "`":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif command[i] in ")`" and depth:
+            depth -= 1
+    return deepest
+
+
 def _command_parser_limit_exceeded(command: str) -> bool:
     """Bound all parser work before normalization/tokenization. Separator counting is deliberately
     conservative: quoted separators over-count, but crossing the ceiling fails closed rather than
-    letting an uninspected suffix execute."""
+    letting an uninspected suffix execute. Nesting depth is bounded for the same reason: a 3 KB
+    chain of ``$($($(...)))`` passes every size check yet overflows the recursive walk's stack."""
     if len(command) > _MAX_DETECTION_COMMAND_CHARS:
         return True
     # Long separator-free input has no compound-command utility and makes every regex inspect one giant token.
     if len(command) > _MAX_SEPARATOR_FREE_COMMAND_CHARS and not any(char in command for char in ";&|\n"):
         return True
-    return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
+    if sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS:
+        return True
+    return _command_substitution_depth(command) >= _MAX_DETECTION_NESTING_DEPTH
 
 
 def _backtick_end_from(segment: str, i: int) -> int | None:

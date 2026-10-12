@@ -76,6 +76,16 @@ def attach_to_tool_tail(agent: Any, messages: list) -> int:
     return len(offers)
 
 
+def take_delivered(agent: Any) -> list[Any]:
+    """Return and clear the keys attached since the last call, leaving pending offers in place."""
+    state = vars(agent).get(_STATE_ATTR)
+    if state is None:
+        return []
+    with state.lock:
+        delivered, state.delivered = state.delivered, []
+    return delivered
+
+
 def take_outcome(agent: Any) -> tuple[list[Any], list[tuple[Any, str]]]:
     """Return and clear ``(delivered_keys, undelivered_offers)``.
 

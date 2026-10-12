@@ -555,7 +555,8 @@ def _plugin_aliases(key: str, entries: Optional[list] = None) -> set:
     The loader matches BOTH the canonical key (``web/firecrawl``) and the manifest name
     (``web-firecrawl``), so a stale entry under any form vetoes an enable ("explicit disable wins").
     Pass *entries* to reuse one :func:`_discover_all_plugins` scan across several keys."""
-    names = {key, key.split("/")[-1]}
+    from hermes_cli.left_core_migration import legacy_plugin_keys
+    names = {key, key.split("/")[-1], *legacy_plugin_keys(key)}
     names.update(e[0] for e in (_discover_all_plugins() if entries is None else entries) if e[5] == key)
     return names
 
@@ -672,7 +673,9 @@ def _find_plugin_entry(name: str) -> Optional[tuple]:
     ``web/exa``) only when unique; else the catalog name the plugin was installed under.
     Never guesses between two candidates."""
     entries = _discover_all_plugins()
-    exact = next((entry for entry in entries if name in (entry[0], entry[5])), None)
+    from hermes_cli.left_core_migration import legacy_plugin_alias
+    target = legacy_plugin_alias(name) or name  # ``observability/langfuse`` -> its catalog plugin
+    exact = next((entry for entry in entries if target in (entry[0], entry[5])), None)
     if exact is not None:
         return exact
     leaf_matches = [entry for entry in entries if name == entry[5].split("/")[-1]]

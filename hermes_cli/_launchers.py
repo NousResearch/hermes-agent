@@ -499,7 +499,24 @@ def _write_shell(target: Path, command: list[str]) -> Path | None:
 
 
 def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str) -> Path | None:
-    return _write_shell(out_dir / name, [str(python_exe), "-I", "-c", script])
+    # A real script preserves the entrypoint's basename for process supervisors.
+    # Keep it install-owned, next to bin, rather than exposing another PATH command.
+    script_path = out_dir.parent / ".launcher" / name
+    script_bytes = f"#!{python_exe} -I\n{script}".encode()
+
+    def write_script(staging: Path) -> None:
+        staging.write_bytes(script_bytes)
+        staging.chmod(0o755)
+
+    try:
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        unchanged = (script_path.is_file() and script_path.read_bytes() == script_bytes
+                     and script_path.stat().st_mode & 0o111 == 0o111)
+        if not unchanged and _write_atomic(script_path, write_script) is None:
+            return None
+    except OSError:
+        return None
+    return _write_shell(out_dir / name, [str(python_exe), "-I", str(script_path)])
 
 
 def _owns_launcher(target: Path, root: Path) -> bool:
@@ -519,6 +536,27 @@ def _owns_launcher(target: Path, root: Path) -> bool:
     bootstrap = f"sys.path.insert(0, {str(root)!r})"
     if paths.intersection(tokens) or any(bootstrap in token for token in tokens):
         return True
+    # Named-script launchers carry their ownership marker in the adjacent file.
+    # Follow only our exact exec/python/-I/sibling/argv form, including when the
+    # old interpreter is already gone and the command needs republishing.
+    script_path = target.parent.parent / ".launcher" / target.name
+    if (len(tokens) == 5 and tokens[0] == "exec" and tokens[2] == "-I"
+            and tokens[3] == str(script_path) and tokens[4] == "$@"):
+        try:
+            # Match the generated executable preamble, not arbitrary text in a
+            # comment, string or uncalled function of another install's script.
+            preamble = (
+                "import os, re, sys\n"
+                "import contextlib, hashlib, io, pathlib, shutil, subprocess\n"
+                "os.environ.pop('PYTHONHOME', None)\n"
+                "os.environ.pop('PYTHONPATH', None)\n"
+                f"{bootstrap}\n"
+            )
+            shebang, _, body = script_path.read_text(encoding="utf-8-sig").partition("\n")
+            if shebang.startswith("#!") and body.startswith(preamble):
+                return True
+        except (OSError, UnicodeError):
+            pass
     # The historical updater wrote ACP as a sibling-hermes forwarder. Adopt
     # it only when that sibling demonstrably belongs to this installation.
     if target.name == "hermes-acp":

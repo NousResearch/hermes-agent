@@ -1,6 +1,6 @@
 name: colorado-traffic
 repo: https://github.com/drkpxl/colorado-traffic
-sha: 8cc28ae63016daf1795c6e48e35c7d0e45863c9d
+sha: e7ae48527f7069ed4e311516773d4828e8453efb
 description: 'Live Colorado highway events from CDOT COtrip. No API key. Default corridor
   is I-70 Golden to east Denver. Separates incidents happening now from scheduled
   work and unverified Waze reports.'

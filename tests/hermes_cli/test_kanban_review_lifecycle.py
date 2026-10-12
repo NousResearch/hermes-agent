@@ -472,11 +472,11 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         with kb.write_txn(conn):
             conn.execute(
                 "INSERT INTO task_runs (task_id, profile, status, outcome, "
-                "started_at, ended_at) VALUES (?, 'reviewer', 'rate_limited', "
-                "'rate_limited', ?, ?)",
+                "started_at, ended_at, metadata) VALUES (?, 'reviewer', 'rate_limited', "
+                "'rate_limited', ?, ?, ?)",
                 # ended_at strictly after the review-handoff run so the
                 # "latest run" query deterministically picks this one.
-                (review_id, _now, _now + 5),
+                (review_id, _now, _now + 5, json.dumps({"retry_at": _now + 300})),
             )
         assert kbd.check_respawn_guard(
             conn, review_id, lane="review"

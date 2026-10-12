@@ -50,7 +50,7 @@ def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
 
 @pytest.mark.parametrize(
     "rc, event, failure_counted",
-    [(0, "protocol_violation", False), (kb.KANBAN_RATE_LIMIT_EXIT_CODE, "rate_limited", False)],
+    [(0, "protocol_violation", False), (kb.KANBAN_RATE_LIMIT_EXIT_CODE, "rate_limited", True)],
 )
 def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, failure_counted):
     """Empty reap registry + exit trailer in the log: a clean exit is the protocol violation

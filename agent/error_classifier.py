@@ -1029,10 +1029,10 @@ def _status_403(c: _Ctx) -> Verdict:
     if c.code in _403_TRANSIENT_CODES:
         return _V_OVERLOADED
     # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
-    xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
+    xai_spend = c.provider_slug in {"xai", "xai-oauth"} and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
     billing = xai_spend or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)
     if billing:
-        return _V_BILLING
+        return _V_BILLING if xai_spend else _billing_hints(c.msg)
     # A WAF/CDN in front of the provider answered, not the provider: the credential never
     # reached it, so key guidance and credential rotation are wrong (#53099, #70566). Gated on
     # 403 and on established block/challenge markers; any other 403 stays auth.
@@ -1082,9 +1082,11 @@ def _status_429(c: _Ctx) -> Verdict:
         return _V_BILLING
     # Carry the reset window so the terminal copy can name it instead of "wait a minute" (#89401).
     reset = _rate_limit_reset_seconds(c.msg, c.body, c.headers)
-    if reset:
-        return _v(_R.rate_limit, **_ROTATE_FALLBACK, error_context={"reset_at": time.time() + reset})
-    return _V_RATE_LIMIT
+    # Structured allowance exhaustion remains quota-scoped even with a reset window.
+    ctx = {"quota_exhausted": True} if c.code == "usage_limit_reached" else {}
+    if reset is not None:
+        ctx["reset_at"] = time.time() + reset
+    return _v(_R.rate_limit, **_ROTATE_FALLBACK, error_context=ctx)
 
 
 def _status_5xx(c: _Ctx) -> Verdict:

@@ -450,6 +450,9 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
 
 
 def _fmt_gave_up(ev, n) -> tuple:
+    if _payload(ev, "provider_quota"):
+        reason = _clip(ev, "error", "gateway.kanban.ping.reason_suffix", 160)
+        return t("gateway.kanban.ping.blocked", head=n.head, reason=reason), None, None
     # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
     # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
     failures = _payload(ev, "failures")
@@ -564,6 +567,8 @@ class _KanbanNotification:
         formatter = _EVENT_FORMATTERS.get(ev.kind)
         if formatter is None:
             return None
+        if ev.kind in {"crashed", "timed_out"} and self.task and self.task.status == "blocked":
+            return t("gateway.kanban.ping.blocked", head=self.head, reason="")
         msg, handoff, review_detail = formatter(ev, self)
         if handoff is not None:
             self.wake_handoff = handoff
@@ -586,7 +591,13 @@ class _KanbanNotification:
             # for child tasks; use it only for legacy rows.
             self.session_key = sub["chat_id"] or getattr(task, "session_id", None) or ""
         # i18n keys: gateway.kanban.wake.<kind> for each _WAKE_KINDS entry.
-        _parts = [t(f"gateway.kanban.wake.{k}") for k in _WAKE_KINDS if k in self.wake_kinds]
+        _parts = []
+        for kind in _WAKE_KINDS:
+            if kind not in self.wake_kinds:
+                continue
+            if task and task.status == "blocked" and kind in {"crashed", "timed_out"}:
+                kind = "blocked"
+            _parts.append(t(f"gateway.kanban.wake.{kind}"))
         _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
         synth = t(
             "gateway.kanban.wake.message",

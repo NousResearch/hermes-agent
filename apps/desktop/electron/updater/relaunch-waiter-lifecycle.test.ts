@@ -8,6 +8,7 @@ import path from 'node:path'
 import { test, vi } from 'vitest'
 
 import {
+  POWERSHELL_PATH,
   RELAUNCH_WAITER_LOG_TAIL_BYTES,
   type RelaunchWaiterHandle,
   type SpawnWaiter,
@@ -46,18 +47,20 @@ for (const mode of [
       const readyFile: string = path.join(stage, 'ready.txt')
       assert.equal(
         command,
-        path.win32.join(
-          process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows',
-          'System32',
-          'WindowsPowerShell',
-          'v1.0',
-          'powershell.exe'
-        )
+        path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'cmd.exe')
       )
-      assert.deepEqual(options, { cwd: stage, detached: true, stdio: 'ignore', windowsHide: true })
+      assert.deepEqual(options, { cwd: stage, detached: false, stdio: 'ignore', windowsHide: true })
       assert.notEqual(stage, path.dirname(scriptPath))
       assert.deepEqual(fs.readFileSync(path.join(stage, 'update-relaunch-waiter.ps1')), fs.readFileSync(scriptPath))
       assert.deepEqual(args, [
+        '/d',
+        '/s',
+        '/c',
+        'start',
+        '',
+        '/b',
+        '/wait',
+        POWERSHELL_PATH,
         '-NoProfile',
         '-NonInteractive',
         '-ExecutionPolicy',
@@ -117,7 +120,15 @@ for (const mode of [
           identityName: 'disposable-waiter-test',
           scriptPath
         },
-        { spawn: start, handshakeTimeoutMs: mode.ready ? 10_000 : 2_000, cancelTimeoutMs: 2_000, pollMs: 20 }
+        {
+          spawn: start,
+          kill: child => {
+            child.kill()
+          },
+          handshakeTimeoutMs: mode.ready ? 10_000 : 2_000,
+          cancelTimeoutMs: 2_000,
+          pollMs: 20
+        }
       )
 
       if (!mode.ready && mode.refuseKill) {

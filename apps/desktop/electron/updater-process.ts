@@ -296,13 +296,15 @@ export function resolvePosixScriptHandoff(
  * Survival past our own exit does not need `detached`: libuv's per-process
  * job object has JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, so grandchildren
  * (`start`'s powershell) are never members and Windows does not tie a
- * process's lifetime to its parent. `start` returns immediately, so the
+ * process's lifetime to its parent. By default `start` returns immediately, so the
  * spawned pid is the WRAPPER's — callers must not use it as a marker owner
- * (the script claims the marker itself with its own $PID).
+ * (the script claims the marker itself with its own $PID). Set waitForExit to
+ * keep the wrapper alive for callers that need to cancel its process tree.
  */
 export function wrapHandoffForDetachedConsole(
   handoff: UpdateScriptHandoff,
-  extraArgs: string[]
+  extraArgs: string[],
+  waitForExit = false
 ): {
   command: string
   args: string[]
@@ -311,7 +313,18 @@ export function wrapHandoffForDetachedConsole(
 } {
   return {
     command: 'cmd.exe',
-    args: ['/d', '/s', '/c', 'start', '', '/b', handoff.command, ...handoff.args, ...extraArgs],
+    args: [
+      '/d',
+      '/s',
+      '/c',
+      'start',
+      '',
+      '/b',
+      ...(waitForExit ? ['/wait'] : []),
+      handoff.command,
+      ...handoff.args,
+      ...extraArgs
+    ],
     detached: false
   }
 }

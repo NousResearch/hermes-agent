@@ -33,7 +33,7 @@ def _docker_reason() -> str | None:
     if exe is None:
         return "docker CLI not installed; the musl host shape runs in an Alpine container"
     try:
-        cp = subprocess.run([exe, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, timeout=30)
+        cp = subprocess.run([exe, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"docker daemon unreachable ({exc})"
     if cp.returncode != 0:
@@ -78,12 +78,12 @@ def alpine_install(tmp_path_factory):
     shutil.copy(H.WORKTREE / "scripts" / "install.sh", work / "install.sh")
     # The --shared origin borrows objects from this checkout's object store: mount it too.
     objects = Path(I.git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=H.WORKTREE)) / "objects"
-    pull = subprocess.run(["docker", "pull", "-q", IMAGE], capture_output=True, text=True, timeout=600)
+    pull = subprocess.run(["docker", "pull", "-q", IMAGE], capture_output=True, text=True, timeout=600, check=False)
     assert pull.returncode == 0, f"docker pull {IMAGE} failed (network?):\n{pull.stderr[-2000:]}"
     argv = ["docker", "run", "--rm", "-e", f"ORIGIN={origin}",
             "-v", f"{origin}:{origin}:ro", "-v", f"{objects}:{objects}:ro", "-v", f"{work}:/work:ro",
             IMAGE, "sh", "-c", SCRIPT]
-    cp = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
+    cp = subprocess.run(argv, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode != 90, "harness: apk could not install bash/git/curl in the container:\n" + I.describe(cp)
     return cp
 

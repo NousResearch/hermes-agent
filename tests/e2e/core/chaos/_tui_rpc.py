@@ -198,7 +198,7 @@ class Heartbeat:
                 self._inflight_since = None
             self._stop.wait(self.interval)
 
-    def __enter__(self) -> "Heartbeat":
+    def __enter__(self) -> Heartbeat:
         self._inflight_since: float | None = None
         self._thread.start()
         return self

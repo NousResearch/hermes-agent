@@ -184,8 +184,8 @@ gateway:
     choice_normal: "normal — المعالجة القياسية"
     choice_auto: "auto — سريع في الثواني الأولى من كل دور"
     choice_cold: "cold — سريع في الدور الأول من الجلسة فقط"
-    choice_ultrafast: "ultrafast — ‏OpenAI Ultrafast ‏(GPT-6 Astra، السعر ×6)"
-    ultrafast_not_supported: "⚡ ‏Ultrafast متاح فقط لـ GPT-6 Astra (النموذج الحالي: `{model}`)."
+    choice_ultrafast: "ultrafast — ‏OpenAI Ultrafast، السعر ×6"
+    ultrafast_not_supported: "⚡ ‏Ultrafast غير متاح لـ `{model}` على هذا الحساب أو المسار."
   footer:
     status: "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
     usage: "الاستخدام: `/footer [on|off|status]`"
@@ -2279,6 +2279,7 @@ cli:
     failed: "فشل الاتصال"
     authorized_no_tools: "تم التصريح. الأدوات غير متاحة."
     connected: "متصل"
+    named_account: "سمّى Hermes حساب {name} هذا {alias}. يمكنك إعادة تسميته في أي وقت."
     waiting: "في الانتظار…"
   editor:
     only_interactive: "المحرّر الخارجي متاح فقط داخل واجهة سطر الأوامر التفاعلية."
@@ -2660,7 +2661,7 @@ cli:
       feature_anthropic: "الوضع السريع من Anthropic"
       feature_openai: "المعالجة ذات الأولوية"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) ‏Ultrafast متاح فقط لـ GPT-6 Astra (النموذج الحالي: {model})."
+      ultrafast_not_supported: "(._.) ‏Ultrafast غير متاح لـ {model} على هذا الحساب أو المسار."
       usage: "الاستخدام: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ تم ضبط {feature} على {value} {scope}"

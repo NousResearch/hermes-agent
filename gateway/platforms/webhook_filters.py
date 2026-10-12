@@ -193,6 +193,7 @@ class WebhookRouteProcessor:
             result = subprocess.run(
                 [interpreter, str(path)], input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=self.script_timeout_seconds, cwd=str(path.parent), env=build_subprocess_env(), **popen_kwargs,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             logger.warning("[webhook] script timed out: %s", path)

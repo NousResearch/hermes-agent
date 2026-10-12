@@ -1,6 +1,6 @@
 """Exact scheduled identities, independent of mutable jobs.json dispatch stamps, plus the
 profile-local stale-schedule catch-up counter marker."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ def scheduled_instant(value):
         instant = datetime.fromisoformat(value)
         if instant.tzinfo is None:
             return None
-        return instant.astimezone(timezone.utc).isoformat()
+        return instant.astimezone(UTC).isoformat()
     except ValueError:
         return None
 

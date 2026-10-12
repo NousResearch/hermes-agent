@@ -89,6 +89,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant` (plugin), `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
+| `wake_origin_session` | No | If `true`, resume the chat session recorded in `payload.watch.origin` instead of starting a one-shot webhook session. Requires a real HMAC secret (not `INSECURE_NO_AUTH`); mutually exclusive with `deliver_only`, `cron_job` and `coalesce`. See [Waking the Originating Session](#waking-the-originating-session). |
 | `cron_job` | No | Fire an existing cron job (by ID or name) on each event instead of starting a fresh webhook agent session. The rendered `prompt` becomes transient per-run context; the job's own prompt, skills, model, and delivery settings apply. Mutually exclusive with `deliver_only`. See [Event-Triggered Cron Jobs](#event-triggered-cron-jobs). |
 | `coalesce` | No | Debounce rapid distinct events on the same logical entity into one agent run. Block with a required `key` (payload field or template identifying the entity, e.g. `pull_request.number`), optional `window_seconds` (quiet window, default 30) and `max_wait_seconds` (dispatch cap, default 300). See [Event Coalescing](#event-coalescing). Mutually exclusive with `deliver_only` and `cron_job`. |
 | `mirror_to_session` | No | Default `false`. When `true`, after a successful delivery to a chat platform the delivered message is also written into that chat's session transcript (as a labelled user turn, the same way continuable cron briefs are), so when you reply in that chat the agent knows what it just sent you. See [Replying to a delivery](#replying-to-a-delivery). |
@@ -443,6 +444,54 @@ hermes webhook subscribe antenna-matches \
 - Idempotency uses the same `X-GitHub-Delivery` / `X-Request-ID` header — retries with the same ID return `status=duplicate` and do NOT re-deliver.
 
 ---
+
+## Waking the Originating Session {#waking-the-originating-session}
+
+An integration that opens a durable watch (a chat or mail watch exposed by an MCP server) usually wants the later event to resume *the session that opened it*, not a disposable `webhook:*` session. Two opt-in pieces make that work.
+
+**1. Tell the MCP server where the session lives.** List the tools that create watches under `session_origin` in the MCP server's config:
+
+```yaml
+mcp_servers:
+  chat_watch:
+    command: node
+    args: [/opt/chat-watch/index.js]
+    session_origin:
+      tools: [watch_chat, send_text_and_watch]   # explicit names only; no wildcard
+      # argument: _hermesOrigin                  # default
+```
+
+When one of those tools is called from a chat session, Hermes adds the reserved argument (`_hermesOrigin` by default) with `platform`, `chatId`, `chatType`, `threadId`, `userId`, `userIdAlt`, `profile`, `scopeId`, `sessionId` and `sessionKey`. Tools not listed get nothing, and sessions with no chat channel (CLI) get nothing. Any value the model puts in that argument is overwritten. The server stores the origin with the watch.
+
+**2. Wake it from the webhook.** The watcher POSTs events to a route with `wake_origin_session: true`, carrying the stored origin as `payload.watch.origin`:
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        chat-watch:
+          secret: "<hmac secret>"
+          wake_origin_session: true
+          prompt: "New message in {watch.chatId}: {message.text}"
+```
+
+The rendered prompt is delivered to that session through its own platform adapter, so the agent replies in the same chat or thread.
+
+| Response | Meaning |
+|----------|---------|
+| `202` `{"mode": "origin_session"}` | The wake was handed to the session |
+| `200` `{"status": "duplicate"}` | Same delivery ID already seen; no second turn (send a stable `X-Request-ID`) |
+| `502` `Origin-session wake failed` | A check below failed; the reason is in the gateway log only |
+
+### Security model
+
+- Off by default: a route needs `wake_origin_session`, and an MCP tool needs to be listed under `session_origin`.
+- The route requires HMAC authentication; `INSECURE_NO_AUTH` is rejected.
+- Origins on the `webhook`, `local` and `api_server` platforms cannot be woken.
+- A route under `/p/<profile>/` only wakes that profile's sessions, and the adapter is chosen with the same fail-closed lookup as other cross-platform delivery.
+- The session key is recomputed from the origin and must match the stored one.
+- If the user ran `/new` or `/reset` since the watch was opened, the wake is refused. A session that only rotated through context compression is followed to its live continuation.
 
 ## Event-Triggered Cron Jobs {#event-triggered-cron-jobs}
 

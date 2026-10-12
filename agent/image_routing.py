@@ -7,6 +7,8 @@ non-vision models). :func:`decide_image_input_mode` picks once per turn from
 explicit ``auxiliary.vision`` backend forces ``text`` even for vision-capable
 main models (``native`` is the absolute override); else ``supports_vision``
 (config override or catalog) decides. ``vision_analyze`` stays a tool regardless.
+Delegated children are exempt from the aux pin: ``delegation.image_input_mode``
+(``auto`` by default) pins them, else the child's own model decides.
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ from contextlib import suppress
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+from agent.delegation_context import is_delegated_child_process_context
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +148,7 @@ def _supports_vision_override(
     model: str,
     *,
     requested_provider: str = "",
+    is_delegated_route: bool = False,
 ) -> Optional[bool]:
     """Resolve user-declared vision capability from config.yaml; None when unset.
 
@@ -152,13 +157,23 @@ def _supports_vision_override(
     rewritten to ``provider="custom"`` at runtime while config keeps the user's
     name under ``model.provider``, so the requested, runtime and config
     identities are all tried, plus the bare ``<name>`` of any ``custom:<name>``.
+
+    ``is_delegated_route`` scopes the top-level ``model.supports_vision``
+    short-circuit to the MAIN model's route: that block declares the
+    persisted-default model, and a delegated child runs a different resolved
+    model/provider — letting the main's declaration answer for the child both
+    promotes explicitly-blind children to native and suppresses explicitly
+    vision-capable ones. Per-provider entries stay in play because a child
+    inheriting the same provider keeps its declarations.
     """
     if not isinstance(cfg, dict):
         return None
     model_cfg = _dict_or_empty(cfg.get("model"))
-    top = _coerce_capability_bool(model_cfg.get("supports_vision"))
-    if top is not None:
-        return top
+    top = None
+    if not is_delegated_route:
+        top = _coerce_capability_bool(model_cfg.get("supports_vision"))
+        if top is not None:
+            return top
 
     candidates: list[str] = []
     for candidate in filter(None, (requested_provider, provider, _clean_str(model_cfg.get("provider")))):
@@ -355,7 +370,8 @@ def _lookup_supports_vision(
     ):
         requested_provider = _runtime_main("requested_provider")
 
-    override = _supports_vision_override(cfg, provider, model, requested_provider=requested_provider)
+    override = _supports_vision_override(cfg, provider, model, requested_provider=requested_provider,
+                                         is_delegated_route=is_delegated_child_process_context())
     if override is not None:
         return override
     if not provider or not model:
@@ -372,6 +388,12 @@ def _lookup_supports_vision(
     return None
 
 
+def _delegation_image_mode(cfg: Optional[dict[str, Any]]) -> str:
+    """``delegation.image_input_mode`` coerced to a valid mode (``auto`` default)."""
+    raw = _dict_or_empty(_dict_or_empty(cfg).get("delegation")).get("image_input_mode")
+    return _coerce_mode(raw)
+
+
 def decide_image_input_mode(
     provider: str,
     model: str,
@@ -380,12 +402,29 @@ def decide_image_input_mode(
     requested_provider: str = "",
 ) -> str:
     """Return ``"native"`` or ``"text"`` for the given turn (``cfg`` None behaves as
-    auto; ``requested_provider`` is the identity before runtime canonicalization)."""
-    mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
-    if mode_cfg != "auto":
-        return mode_cfg
-    if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
-        return "text"
+    auto; ``requested_provider`` is the identity before runtime canonicalization).
+
+    Delegated children (ContextVar or the ``HERMES_DELEGATED_CHILD_CONTEXT`` marker —
+    the marker survives into descendant processes by design, so a nested Hermes
+    launched from a child's shell also takes this branch) get their own precedence:
+    ``delegation.image_input_mode`` → ``agent.image_input_mode`` → capability. The
+    child inherits the agent-level pin as a compatibility fallback (existing
+    configurations must keep protecting image-rejecting backends), and only the
+    explicit-``auxiliary.vision`` pin is skipped for children: that pin serves the
+    MAIN conversation's vision tool and remains the describer for children on the
+    text lane, but it must not demote a vision-capable child's own native route."""
+    if is_delegated_child_process_context():
+        mode = _delegation_image_mode(cfg)
+        if mode == "auto":
+            mode = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
+        if mode != "auto":
+            return mode
+    else:
+        mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
+        if mode_cfg != "auto":
+            return mode_cfg
+        if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
+            return "text"
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}
     return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"

@@ -656,11 +656,16 @@ def _is_image_url(ref: str) -> bool:
 def _build_child_goal_message(goal: str, images: list[str], child) -> Any:
     """The child's first user message when a task forwards ``images``.
 
-    Routing reuses the inbound-image policy (``agent.image_routing``, honouring ``agent.image_input_mode``): a
-    vision-capable child gets an OpenAI-style content list (text part + one ``image_url`` part per image; local files
-    as data URLs behind the read guard, http(s)/data URLs verbatim); otherwise the goal gains ``[Image attached …]``
-    hint lines for ``vision_analyze``. Any failure degrades to the text-only goal so image plumbing never breaks a
-    spawn — logged at warning since the caller asked for the images.
+    Routing reuses the inbound-image policy (``agent.image_routing``) under the
+    CHILD's resolved runtime: delegated-child precedence is
+    ``delegation.image_input_mode`` → ``agent.image_input_mode`` → capability
+    (the ``auxiliary.vision`` pin applies only to the main conversation). A
+    vision-capable child gets an OpenAI-style content list (text part + one
+    ``image_url`` part per image; local files as data URLs behind the read
+    guard, http(s)/data URLs verbatim); otherwise the goal gains
+    ``[Image attached …]`` hint lines for ``vision_analyze``. Any failure
+    degrades to the text-only goal so image plumbing never breaks a spawn —
+    logged at warning since the caller asked for the images.
     """
     try:
         # data: URLs ride as image parts only — their base64 never goes into the text hint or a text-mode goal.
@@ -672,10 +677,26 @@ def _build_child_goal_message(goal: str, images: list[str], child) -> Any:
         with _quiet(None):
             from hermes_cli.config import load_config_readonly
             cfg = load_config_readonly()
-        mode = decide_image_input_mode(
-            str(getattr(child, "provider", "") or ""), str(getattr(child, "model", "") or ""), cfg,
+        # Bind the CHILD's resolved runtime around the routing decision: capability probes
+        # (managed-runtime, Ollama) and endpoint resolution must not consult the parent's
+        # route, which is still the ambient runtime until the child's conversation starts.
+        from agent.auxiliary_client import reset_runtime_main, set_runtime_main
+
+        _runtime_token = set_runtime_main(
+            str(getattr(child, "provider", "") or ""),
+            str(getattr(child, "model", "") or ""),
             requested_provider=str(getattr(child, "requested_provider", "") or ""),
+            base_url=str(getattr(child, "base_url", "") or ""),
+            api_key=str(getattr(child, "api_key", "") or ""),
+            api_mode=str(getattr(child, "api_mode", "") or ""),
         )
+        try:
+            mode = decide_image_input_mode(
+                str(getattr(child, "provider", "") or ""), str(getattr(child, "model", "") or ""), cfg,
+                requested_provider=str(getattr(child, "requested_provider", "") or ""),
+            )
+        finally:
+            reset_runtime_main(_runtime_token)
         if mode == "native":
             parts, skipped = build_native_content_parts(goal, paths, urls)
             if skipped:
@@ -850,7 +871,13 @@ class _ChildRun:
         worker_thread_holder: dict[str, Optional[threading.Thread]] = {"t": None}
         # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
         _images = list(getattr(child, "_delegate_images", None) or [])
-        user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
+        # Inside delegated_child_context: decide_image_input_mode must see the child scope, or a
+        # main-conversation auxiliary.vision pin would strip pixels from the goal message even
+        # for a vision-capable child.
+        from agent.delegation_context import delegated_child_context as _delegated_ctx
+
+        with _delegated_ctx(str(getattr(child, "session_id", "") or "")):
+            user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()

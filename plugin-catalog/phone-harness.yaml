@@ -1,0 +1,18 @@
+name: phone-harness
+repo: https://github.com/ShawnPana/phone-harness
+sha: 5a119c72789589c5f252860ee0d38de99e349882
+subdir: integrations/hermes
+title: Phone Harness
+description: "Drive a real phone from Hermes with one phone_exec tool: an iPhone via iPhone Mirroring on a Mac, an Android over adb, or a cloud phone from Phone Harness Cloud. Disclosure — runs model-written Python locally through the phone-harness package (scripts that import beyond phone helpers and data modules, call open/exec/eval, or run adb shell go to Hermes's approval prompt first); taps and types into your real phone and its accounts; writes screenshots to the system temp folder; a cloud phone streams its screen to Phone Harness Cloud, bills by the minute, and uses phone-harness's own cloud sign-in."
+maintainer: ShawnPana
+tier: community
+category: tools
+version: "0.1.0"
+docs_url: https://github.com/ShawnPana/phone-harness/tree/5a119c72789589c5f252860ee0d38de99e349882/integrations/hermes#readme
+capabilities:
+  provides_tools:
+  - phone_exec
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []

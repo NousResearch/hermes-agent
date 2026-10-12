@@ -46,6 +46,22 @@ Sites that ask for a code after the password are handled the same way:
 - **Code sent to your phone or email**: a small prompt appears in your
   surface ("Verification code for github.com"), you type the code, Hermes
   enters it into the page. The code never enters the conversation either.
+- **Code sent by email, with no one at the keyboard** (cron, API): name a
+  helper command for the site's exact origin. Hermes runs it, polls it for
+  up to 120 seconds, and enters the code it prints. The code never reaches
+  the agent:
+
+  ```yaml
+  vault:
+    otp_commands:
+      https://www.example.com: ~/.local/bin/example-otp-from-mail
+  ```
+
+  The helper prints only the code, or `{"code": "...", "reference": "..."}`,
+  and prints nothing while the email has not arrived yet. `reference` is
+  returned to the agent (for example a message id, so it can mark the email
+  as read). Hermes sets `HERMES_OTP_ORIGIN` and `HERMES_OTP_SINCE` (epoch
+  seconds) for the helper. A failing helper reports only its exit status.
 - **Passkeys, hardware keys, app approvals** ("tap Approve in Duo"): nothing
   to type. The agent tells you to complete it on your device and waits for
   the page to move on.

@@ -370,6 +370,18 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
             code = None
         if code:
             source = backend.name
+    reference = ""
+    if not code:
+        # A user-configured helper (vault.otp_commands) reads an emailed/SMS code server-side: the
+        # code goes to the page without passing through the model, and works in headless sessions.
+        from agent.vault_otp_command import OtpCommandError, fetch_otp_code
+        try:
+            fetched = fetch_otp_code(origin)
+        except OtpCommandError as exc:
+            return json.dumps({"success": False, "error_type": "otp_command_failed",
+                               "error": f"{exc}. Nothing was written. Stop and tell the user."})
+        if fetched is not None:
+            code, reference, source = fetched.code, fetched.reference, "otp_command"
     if not code:
         prompt = get_code_prompt_callback()
         if prompt is None or not can_prompt_here():
@@ -393,8 +405,11 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
         return json.dumps({"success": False, "error_type": "origin_changed", "error": "The page navigated before the code could be entered. Nothing was written."})
     filled = int(parsed.get("filled", 0)) if isinstance(parsed, dict) else 0
-    return json.dumps({"success": bool(filled), "filled_fields": filled, "origin": origin, "source": source,
-                       "next": "Submit the form (many sites auto-submit when the last digit lands)."})
+    out = {"success": bool(filled), "filled_fields": filled, "origin": origin, "source": source,
+           "next": "Submit the form (many sites auto-submit when the last digit lands)."}
+    if reference:
+        out["reference"] = reference  # non-secret (e.g. the message id), for mailbox cleanup after acceptance
+    return json.dumps(out)
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
@@ -665,7 +680,9 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
     "name": "browser_vault_enter_code",
     "description": (
         "The page asks for a one-time / verification / 2FA code after the password: call this. If the saved login "
-        "has an authenticator key the code is generated and entered with no questions; otherwise the user is asked "
+        "has an authenticator key the code is generated and entered with no questions; if the user configured a code "
+        "helper for the site (emailed/SMS codes) it is fetched and entered the same way, and `reference` names the "
+        "message so you can mark it read after the site accepts the code; otherwise the user is asked "
         "for the code in their UI (they read it from their phone, email or authenticator app). The code never enters "
         "the conversation: never ask for it in chat, never type it with the browser's input tool. no_code_field means "
         "the site wants a passkey/hardware key/app approval: tell the user to complete it on their device, then wait "

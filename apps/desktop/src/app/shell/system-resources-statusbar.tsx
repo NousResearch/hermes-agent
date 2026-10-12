@@ -68,9 +68,12 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
   const [stats, setStats] = useState<SystemStats | null>(null)
   // A connection switch restarts the poll: both routes are re-read at once,
   // so the header never names the old machine over the new one's numbers.
+  // Keyed on id AND baseUrl: local and unregistered v1/env remotes carry no
+  // connectionId, so the id alone would miss a switch between two of them.
   // ($connection rather than store/connections' $activeConnectionId, which
   // drags the whole source-switch module into this leaf.)
-  const connectionId = useStore($connection)?.connectionId ?? null
+  const connection = useStore($connection)
+  const connectionKey = connection ? `${connection.connectionId ?? ''}|${connection.baseUrl}` : null
 
   useEffect(() => {
     setHardware(null)
@@ -153,7 +156,7 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
         window.clearTimeout(timer)
       }
     }
-  }, [shown, connectionId])
+  }, [shown, connectionKey])
 
   const hasGpu = Boolean(hardware?.gpu_name)
 

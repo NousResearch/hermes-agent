@@ -255,6 +255,7 @@ describe('system-resources CPU and disk', () => {
 
 describe('system-resources poll cadence', () => {
   afterEach(() => {
+    $connection.set(null)
     vi.useRealTimers()
     getLocalHardware.mockClear()
     getSystemStats.mockClear()
@@ -297,7 +298,7 @@ describe('system-resources poll cadence', () => {
   it('re-reads stats immediately and clears the old host on a connection switch', async () => {
     // One poll per connection: the initial one and the switch's re-read.
     getLocalHardware.mockResolvedValueOnce(NO_GPU_HARDWARE).mockResolvedValueOnce(NO_GPU_HARDWARE)
-    $connection.set({ connectionId: 'local' } as never)
+    $connection.set({ baseUrl: 'http://127.0.0.1:9119' } as never)
     $localModelsEnabled.set(true)
     $statusbarHiddenIds.set([])
 
@@ -315,7 +316,9 @@ describe('system-resources poll cadence', () => {
     )
 
     await act(async () => {
-      $connection.set({ connectionId: 'ssh-box' } as never)
+      // No connectionId on either side (local -> unregistered remote): the
+      // baseUrl alone must restart the poll.
+      $connection.set({ baseUrl: 'https://ssh-box.example:9119' } as never)
     })
     expect(getSystemStats).toHaveBeenCalledTimes(2)
     expect(result.current.label).not.toContain('CPU 12%')
@@ -324,7 +327,6 @@ describe('system-resources poll cadence', () => {
       release({ hostname: 'ssh-box', cpu_count: 2, psutil: true, cpu_percent: 80 })
     })
     await waitFor(() => expect(result.current.label).toBe('CPU 80% · RAM 16G/32G'))
-    $connection.set(null)
     unmount()
   })
 

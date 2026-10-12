@@ -922,6 +922,12 @@ class ClientLifecycleMixin:
         cc = getattr(self, "context_compressor", None)
         if cc is not None and getattr(cc, "api_key", None) == old_token:
             cc.api_key = new_token
+        scope = getattr(self, "_active_runtime_override_scope", None)
+        session_cc = getattr(scope, "_session_compressor", None)
+        if session_cc is None and scope is not None:
+            session_cc = scope._snapshot.get("context_compressor")
+        if session_cc is not None and session_cc is not cc and getattr(session_cc, "api_key", None) == old_token:
+            session_cc.api_key = new_token
         rt = getattr(self, "_primary_runtime", None) or {}
         if rt.get("anthropic_api_key") == old_token:  # fallback restore rebuilds from the key + flag pair
             rt["is_anthropic_oauth"] = self._is_anthropic_oauth

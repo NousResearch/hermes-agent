@@ -45,7 +45,8 @@ _TERMINAL_STATUSES_SQL = "('done', 'archived', 'failed', 'cancelled')"
 _ACTIVE_CHILDREN_SQL = (
     "SELECT 1 FROM task_links l "
     "JOIN tasks t ON t.id = l.child_id "
-    f"WHERE l.parent_id = ? AND t.status NOT IN {_TERMINAL_STATUSES_SQL} "
+    f"WHERE l.parent_id = ? AND (t.status NOT IN {_TERMINAL_STATUSES_SQL} "
+    "OR EXISTS (SELECT 1 FROM task_runs r WHERE r.task_id=t.id AND r.worker_pid IS NOT NULL)) "
     "LIMIT 1"
 )
 
@@ -87,16 +88,18 @@ def _is_terminal_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
 
 _OTHER_LIVE_PATHS_SQL = (
-    "SELECT workspace_path FROM tasks "
-    "WHERE id != ? AND workspace_path IS NOT NULL "
-    f"AND status NOT IN {_TERMINAL_STATUSES_SQL}"
+    "SELECT t.workspace_path FROM tasks t "
+    "WHERE t.id != ? AND t.workspace_path IS NOT NULL "
+    f"AND (t.status NOT IN {_TERMINAL_STATUSES_SQL} OR EXISTS ("
+    "SELECT 1 FROM task_runs r WHERE r.task_id=t.id AND r.worker_pid IS NOT NULL))"
 )
 # Sibling boards mint their own ids, so the id being cleaned up here can
 # name a different live task there. Do not exclude it.
 _ANY_LIVE_PATHS_SQL = (
-    "SELECT workspace_path FROM tasks "
-    "WHERE workspace_path IS NOT NULL "
-    f"AND status NOT IN {_TERMINAL_STATUSES_SQL}"
+    "SELECT t.workspace_path FROM tasks t "
+    "WHERE t.workspace_path IS NOT NULL "
+    f"AND (t.status NOT IN {_TERMINAL_STATUSES_SQL} OR EXISTS ("
+    "SELECT 1 FROM task_runs r WHERE r.task_id=t.id AND r.worker_pid IS NOT NULL))"
 )
 
 
@@ -115,7 +118,7 @@ def _conn_uses_path(
             other_key = _path_key(Path(other).expanduser().resolve(strict=False))
         except OSError:
             continue
-        if other_key == key:
+        if Path(other_key).is_relative_to(key) or Path(key).is_relative_to(other_key):
             return True
     return False
 
@@ -169,8 +172,8 @@ def _workspace_in_use_by_other(
     """Why *path* must be kept: ``"shared"``, ``"unknown"``, or None when free.
 
     ``gc``, completion and deferred parent cleanup used to ``rmtree`` a shared
-    ``workspace_path`` as soon as one of its tasks went terminal. Compare the
-    resolved path: a row may store ``~`` or a symlinked spelling.
+    ``workspace_path`` as soon as one of its tasks went terminal. Compare
+    overlapping resolved paths: a row may store ``~`` or a symlinked spelling.
 
     The connection covers one board. A ready task on a named board can point
     at the same directory. If that set of databases cannot be read, refuse
@@ -366,6 +369,13 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     only when provably free of work (clean tree, every commit reachable from a
     remote-tracking ref); ``dir`` is intentionally preserved."""
     try:
+        if conn.execute(
+            "SELECT 1 FROM task_runs WHERE task_id=? AND worker_pid IS NOT NULL LIMIT 1",
+            (task_id,),
+        ).fetchone():
+            # Logical completion precedes physical exit. The dispatcher clears
+            # retained worker identities only after verifying exit, then retries.
+            return
         row = conn.execute(_WORKSPACE_ROW_SQL, (task_id,)).fetchone()
         if not row:
             return
@@ -421,6 +431,23 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         _try_cleanup_parent_workspaces(conn, task_id)
     except Exception:
         pass  # best-effort — never block completion
+
+
+def _cleanup_terminal_workspaces_after_exit(conn: sqlite3.Connection) -> None:
+    """Retry cleanup if the process stopped after PID clearance but before removal."""
+    pending = conn.execute(
+        "SELECT t.id, t.workspace_path FROM tasks t "
+        "WHERE t.status IN ('done','archived','failed','cancelled') "
+        "AND t.workspace_kind IN ('scratch','worktree') AND t.workspace_path IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM task_runs r WHERE r.task_id=t.id AND r.worker_pid IS NOT NULL)"
+    ).fetchall()
+    for task in pending:
+        try:
+            if Path(task["workspace_path"]).exists():
+                _cleanup_workspace(conn, task["id"])
+        except (OSError, sqlite3.Error):
+            _kb._log.exception("kanban dispatch: deferred workspace cleanup failed for task %s",
+                               task["id"])
 
 
 def _cleanup_worktree_workspace(
@@ -516,6 +543,8 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 or not row["workspace_path"]
                 or not _is_terminal_task(conn, parent_id)
                 or _has_active_children(conn, parent_id)
+                or conn.execute("SELECT 1 FROM task_runs WHERE task_id=? AND worker_pid IS NOT NULL",
+                                (parent_id,)).fetchone()
             ):
                 continue
             ws_path = row["workspace_path"]

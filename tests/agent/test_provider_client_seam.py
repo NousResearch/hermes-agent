@@ -76,11 +76,10 @@ def test_an_out_of_tree_profile_supplies_the_client_through_create_openai_client
     assert isinstance(_build("openai-api", "https://api.example/v1"), OpenAI)
 
 
-def test_a_broken_plugin_falls_through_instead_of_taking_the_turn_down(registered):
-    from agent.agent_runtime_helpers import _provider_supplied_client
-
+def test_a_broken_plugin_preserves_its_error_instead_of_switching_transport(registered):
     registered(_ExplodingProfile(name="seam-boom", base_url="acp://seam-boom"))
-    assert _provider_supplied_client(_agent("seam-boom"), {"api_key": "k"}) is None
+    with pytest.raises(RuntimeError, match="plugin is broken"):
+        _build("seam-boom", "acp://seam-boom")
 
 
 def test_copilot_acp_still_gets_its_acp_client_via_its_profile():

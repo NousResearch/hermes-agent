@@ -472,16 +472,10 @@ def _terminate_reclaimed_worker(
 
 
 def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
-    """End host-local workers that outlived their run (issue #111791) — a worker
-    that called ``kanban_complete`` and then hung keeps its ``state.db`` sidecar
-    fds open and no ``running``-only sweep can see it once ``tasks.worker_pid`` is
-    cleared. Keys on the closed ``task_runs`` row's retained pid + spawn
-    fingerprint: a legacy row (NULL fingerprint) or a recycled PID is never
-    signalled; a pid that is simply gone just has its evidence cleared. A run
-    that ended less than ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left
-    alone so a worker still finalising after its own transition is not killed.
-    One row's failure (signal, /proc probe) is logged and skips only that row.
-    Returns the task ids whose worker was terminated."""
+    """End host-local workers that outlived a terminal run (issue #111791).
+    The closed run retains PID and spawn fingerprint after the task row clears.
+    Never signal a legacy or recycled PID; honor the finalization grace period.
+    Retry workspace cleanup after PID clearance. Return terminated task ids."""
     rows = conn.execute(
         "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
         "WHERE ended_at IS NOT NULL AND ended_at <= ? "
@@ -494,10 +488,12 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
         try:
             _reap_terminal_worker_row(conn, row, host_prefix, signal_fn, reaped)
         except Exception:
-            _kb._log.debug(
+            _kb._log.exception(
                 "kanban dispatch: terminal worker reap failed for run %s (task %s)",
-                row["id"], row["task_id"], exc_info=True,
+                row["id"], row["task_id"],
             )
+    from hermes_cli.kanban_db_workspace import _cleanup_terminal_workspaces_after_exit
+    _cleanup_terminal_workspaces_after_exit(conn)
     return reaped
 
 
@@ -527,6 +523,9 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
             )
     if alive:
         reaped.append(row["task_id"])
+    from hermes_cli.kanban_db_workspace import _cleanup_workspace, _is_terminal_task
+    if _is_terminal_task(conn, row["task_id"]):
+        _cleanup_workspace(conn, row["task_id"])
 
 
 def _worker_survived_termination(termination: dict) -> bool:

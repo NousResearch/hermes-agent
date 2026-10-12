@@ -3,8 +3,11 @@
 Every event frame through :func:`server.write_json` (hence ``_emit``) gets a per-session monotonic
 ``seq`` and lands in a small ring per session; a reconnecting client calls ``session.events.since``
 with its last seen seq and gets everything newer. Invariants: stdio TUI unaffected (``seq`` only on
-event frames; Ink ignores unknown keys); one lock guards counters + buffers, and write_json already
-serializes per-transport writes so stamping cannot reorder frames; memory bound =
+event frames; Ink ignores unknown keys); one lock guards counters + buffers, and a per-session
+stamp lock (:func:`emit_frame_lock`) holds the stamp→enqueue window so frames cannot leave a
+session's transport in an order its seq contradicts — callers are worker threads (parallel tool
+callbacks), and write_json's transport enqueue alone does not serialize two callers against
+each other; memory bound =
 _REPLAY_BUFFER_MAX events AND _REPLAY_BUFFER_BYTES_MAX frozen UTF-8 payload bytes per session,
 _REPLAY_PROCESS_BYTES_MAX frozen UTF-8 payload bytes across at most _REPLAY_SESSIONS_MAX sessions,
 oldest evicted FIFO (their seq/truncation counters are retained so a revisited session stays
@@ -43,6 +46,28 @@ _replay_buffer_bytes: dict[str, int] = {}
 _replay_evicted_through: dict[str, int] = {}
 _replay_total_bytes = 0
 _replay_next_seq: dict[str, int] = {}
+
+# sid -> lock covering one frame's stamp→enqueue window (see emit_frame_lock).
+# Unlocked locks carry no state, so they are never pruned; growth tracks sessions seen.
+_emit_locks: dict[str, threading.Lock] = {}
+_emit_locks_guard = threading.Lock()
+
+
+def emit_frame_lock(sid: str) -> threading.Lock:
+    """Per-session lock covering one frame's stamp→enqueue window.
+
+    Callers are worker threads (parallel tool callbacks emit a session's frames
+    concurrently), and the client drops any same-session frame whose seq does not
+    advance its watermark. A transport's enqueue order is its call order, so two
+    callers racing between stamp and write can enqueue an inverted pair — and the
+    earlier frame, already counted in the replay ring, silently never reaches the
+    wire. Hold this lock across both steps.
+    """
+    with _emit_locks_guard:
+        lock = _emit_locks.get(sid)
+        if lock is None:
+            lock = _emit_locks[sid] = threading.Lock()
+        return lock
 
 
 def replay_epoch() -> str:

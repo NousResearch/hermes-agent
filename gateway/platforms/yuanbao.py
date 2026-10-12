@@ -13,14 +13,10 @@ import binascii
 import collections
 import contextlib
 import dataclasses
-import hashlib
-import hmac
 import json
 import logging
 import os
 import re
-import secrets
-import sys
 import time
 import urllib.parse
 import uuid
@@ -66,15 +62,14 @@ from gateway.platforms.yuanbao_proto import (
     encode_get_group_member_list, next_seq_no,
 )
 from gateway.session_transcript import TranscriptReadError
+from gateway.platforms.yuanbao_sign import (
+    SignManager,  # re-export: the facade owns the public seam
+    APP_VERSION as _APP_VERSION, BOT_VERSION as _BOT_VERSION,
+    YUANBAO_INSTANCE_ID as _YUANBAO_INSTANCE_ID, OPERATION_SYSTEM as _OPERATION_SYSTEM,
+)
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
-
-# AUTH_BIND / sign-token header values
-from hermes_cli.version_info import get_version_info
-
-_APP_VERSION = _BOT_VERSION = get_version_info().base_version
-_YUANBAO_INSTANCE_ID = str(HERMES_INSTANCE_ID)
-_OPERATION_SYSTEM = sys.platform
 
 DEFAULT_WS_GATEWAY_URL = "wss://bot-wss.yuanbao.tencent.com/wss/connection"
 DEFAULT_API_DOMAIN = "https://bot.yuanbao.tencent.com"
@@ -118,6 +113,9 @@ _YB_LOCAL_MEDIA_RE = re.compile(r"\[(\w+):[^\]]*?(/[^\]]+?)\s*\]")
 _RESOLVABLE_MEDIA_KINDS = frozenset({"image", "file", "video"})  # kinds injected into model context
 _INDICATOR_RE = re.compile(r'\s*\(\d+/\d+\)$')  # "(1/3)" page indicators from BasePlatformAdapter
 _TEXT_ELEM_TYPE = "TIMTextElem"
+# @nickname bounded by whitespace / line edges — a mention as it is typed into a text element
+# (the picker's TIMCustomElem form is a different shape entirely).
+_AT_MENTION_RE = re.compile(r'(?:(?<=\s)|(?<=^))@(\S+?)(?=\s|$)', re.MULTILINE)
 
 OBSERVED_MEDIA_BACKFILL_LOOKBACK = 50  # recent transcript messages scanned for observed media
 OBSERVED_MEDIA_BACKFILL_MAX_RESOLVE_PER_TURN = 12
@@ -158,126 +156,6 @@ class MarkdownProcessor:
         return _mdchunk.split_text_fence_aware(text, max_chars, len_fn, prefer_paragraphs=True, balance_fences=False)
 
 
-class SignManager:
-    """Sign-token acquisition, caching, signing and retry. All state is class-level so one
-    shared client serves the whole process."""
-    TOKEN_PATH = "/api/v5/robotLogic/sign-token"
-    RETRYABLE_CODE = 10099
-    MAX_RETRIES = 3
-    RETRY_DELAY_S = 1.0
-    CACHE_REFRESH_MARGIN_S = 60  # treat as expiring this many seconds early
-    HTTP_TIMEOUT_S = 10.0
-    _cache: dict[str, dict[str, Any]] = {}  # app_key → {"token", "bot_id", "expire_ts", ...}
-    # Per-app_key refresh locks, created lazily from async context so they bind to the running
-    # loop; disconnect() clears them to avoid stale locks across reconnects.
-    _locks: dict[str, asyncio.Lock] = {}
-
-    @classmethod
-    def get_refresh_lock(cls, app_key: str) -> asyncio.Lock:
-        """Per-app_key refresh lock (create on demand). Call only from a running event loop."""
-        if app_key not in cls._locks:
-            cls._locks[app_key] = asyncio.Lock()
-        return cls._locks[app_key]
-
-    @staticmethod
-    def compute_signature(nonce: str, timestamp: str, app_key: str, app_secret: str) -> str:
-        """HMAC-SHA256(key=app_secret, msg=nonce+timestamp+app_key+app_secret).hexdigest()."""
-        plain = nonce + timestamp + app_key + app_secret
-        return hmac.new(app_secret.encode(), plain.encode(), hashlib.sha256).hexdigest()
-
-    @staticmethod
-    def build_timestamp() -> str:
-        """Beijing-time ISO-8601 timestamp without milliseconds (2006-01-02T15:04:05+08:00)."""
-        return datetime.now(tz=timezone(timedelta(hours=8))).strftime("%Y-%m-%dT%H:%M:%S+08:00")
-
-    @classmethod
-    def is_cache_valid(cls, entry: dict[str, Any]) -> bool:
-        return entry["expire_ts"] - time.time() > cls.CACHE_REFRESH_MARGIN_S
-
-    @classmethod
-    def clear_locks(cls) -> None:
-        cls._locks.clear()
-
-    @classmethod
-    def purge_expired(cls) -> int:
-        """Drop expired token-cache entries; returns count purged."""
-        now = time.time()
-        expired_keys = [k for k, v in cls._cache.items() if now - v.get("expire_ts", 0) > 0]
-        for k in expired_keys:
-            cls._cache.pop(k, None)
-        return len(expired_keys)
-
-    @classmethod
-    async def fetch(cls, app_key: str, app_secret: str, api_domain: str, route_env: str = "") -> dict[str, Any]:
-        """POST sign-token, retrying RETRYABLE_CODE up to MAX_RETRIES times."""
-        url = f"{api_domain.rstrip('/')}{cls.TOKEN_PATH}"
-        async with httpx.AsyncClient(timeout=cls.HTTP_TIMEOUT_S) as client:
-            for attempt in range(cls.MAX_RETRIES + 1):
-                nonce = secrets.token_hex(16)
-                timestamp = cls.build_timestamp()
-                payload = {"app_key": app_key, "nonce": nonce,
-                           "signature": cls.compute_signature(nonce, timestamp, app_key, app_secret), "timestamp": timestamp}
-                headers = {"Content-Type": "application/json", "X-AppVersion": _APP_VERSION, "X-OperationSystem": _OPERATION_SYSTEM,
-                           "X-Instance-Id": _YUANBAO_INSTANCE_ID, "X-Bot-Version": _BOT_VERSION}
-                if route_env:
-                    headers["X-Route-Env"] = route_env
-                logger.info("Sign token request: url=%s%s", url, f" (retry {attempt}/{cls.MAX_RETRIES})" if attempt > 0 else "")
-                response = await client.post(url, json=payload, headers=headers)
-                if response.status_code != 200:
-                    raise RuntimeError(f"Sign token API returned {response.status_code}: {response.text[:200]}")
-                try:
-                    result_data: dict[str, Any] = response.json()
-                except Exception as exc:
-                    raise ValueError(f"Sign token response parse error: {exc}") from exc
-                code = result_data.get("code")
-                if code == 0:
-                    data = result_data.get("data")
-                    if not isinstance(data, dict):
-                        raise ValueError(f"Sign token response missing 'data' field: {result_data}")
-                    logger.info("Sign token success: bot_id=%s", data.get("bot_id"))
-                    return data
-                if code != cls.RETRYABLE_CODE or attempt >= cls.MAX_RETRIES:
-                    raise RuntimeError(f"Sign token error: code={code}, msg={result_data.get('msg', '')}")
-                logger.warning("Sign token retryable: code=%s, retrying in %ss (attempt=%d/%d)",
-                               code, cls.RETRY_DELAY_S, attempt + 1, cls.MAX_RETRIES)
-                await asyncio.sleep(cls.RETRY_DELAY_S)
-        raise RuntimeError("Sign token failed: max retries exceeded")
-
-    @classmethod
-    async def _fetch_into_cache(cls, app_key: str, app_secret: str, api_domain: str, route_env: str) -> None:
-        data = await cls.fetch(app_key, app_secret, api_domain, route_env)
-        duration: int = data.get("duration", 0)
-        cls._cache[app_key] = {
-            "token": data.get("token", ""), "bot_id": data.get("bot_id", ""), "duration": duration,
-            "product": data.get("product", ""), "source": data.get("source", ""),
-            "expire_ts": time.time() + (duration if duration > 0 else 3600),
-        }
-
-    @classmethod
-    async def get_token(cls, app_key: str, app_secret: str, api_domain: str, route_env: str = "") -> dict[str, Any]:
-        """WS auth token, served from cache while valid (with CACHE_REFRESH_MARGIN_S)."""
-        cls.purge_expired()
-        cached = cls._cache.get(app_key)
-        if cached and cls.is_cache_valid(cached):
-            logger.info("Using cached token (%ds remaining)", int(cached["expire_ts"] - time.time()))
-            return dict(cached)
-        async with cls.get_refresh_lock(app_key):
-            cached = cls._cache.get(app_key)
-            if cached and cls.is_cache_valid(cached):
-                return dict(cached)
-            await cls._fetch_into_cache(app_key, app_secret, api_domain, route_env)
-        return dict(cls._cache[app_key])
-
-    @classmethod
-    async def force_refresh(cls, app_key: str, app_secret: str, api_domain: str, route_env: str = "") -> dict[str, Any]:
-        """Clear the cached token and re-sign."""
-        logger.warning("[force-refresh] Clearing cache and re-signing token: app_key=****%s", app_key[-4:])
-        async with cls.get_refresh_lock(app_key):
-            cls._cache.pop(app_key, None)
-            await cls._fetch_into_cache(app_key, app_secret, api_domain, route_env)
-        return dict(cls._cache[app_key])
-
-
 @dataclass
 class InboundContext:
     """Mutable context passed through every inbound middleware in registration order."""
@@ -308,6 +186,7 @@ class InboundContext:
     media_urls: list = dc_field(default_factory=list)
     media_types: list = dc_field(default_factory=list)
     channel_prompt: Optional[str] = None  # GroupAttributionMiddleware
+    group_mention_name: str = ""  # GroupAtGuardMiddleware: typed @name that admitted the turn
 
 
 class InboundMiddleware(ABC):
@@ -1068,15 +947,66 @@ class GroupAtGuardMiddleware(InboundMiddleware):
     def _is_at_bot(cls, msg_body: list, bot_id: Optional[str]) -> bool:
         return any(True for _ in cls._iter_bot_mentions(msg_body, bot_id))
 
+    @staticmethod
+    def _bot_group_names(adapter, group_code: str) -> set[str]:
+        """Lowercased names this bot answers to in *group_code*, from the (unexpired) member cache:
+        its own ``nickname`` and ``name_card`` (群昵称). Empty when the cache is cold, the bot has
+        no id, or the group has no entry — callers must then fail closed."""
+        bot_id = str(getattr(adapter, "_bot_id", "") or "").strip()
+        group_code = str(group_code or "").strip()
+        if not bot_id or not group_code:
+            return set()
+        entry = (getattr(adapter, "_member_cache", None) or {}).get(group_code)
+        if not entry:
+            return set()
+        updated_ts, members = entry
+        if time.time() - updated_ts >= adapter.MEMBER_CACHE_TTL_S:
+            return set()  # expired ⇒ unknown name ⇒ observe-only, never guess
+        names: set[str] = set()
+        for member in members or []:
+            if str(member.get("user_id") or "").strip() != bot_id:
+                continue
+            for key in ("nickname", "name_card"):
+                name = str(member.get(key) or "").strip().lower()
+                if name:
+                    names.add(name)
+        return names
+
+    @classmethod
+    def _typed_mention_name(cls, ctx: InboundContext) -> str:
+        """The bot's own name typed as ``@name`` in a plain text element, or "".
+
+        A picker-attached mention arrives as TIMCustomElem and is handled by ``_iter_bot_mentions``;
+        a hand-typed (or copy-pasted) ``@botname`` is ordinary text, so it is matched here against
+        the bot's OWN names resolved from the member cache. Opt-in via
+        ``platforms.yuanbao.extra.text_mention_fallback``; a miss — flag off, no cache entry,
+        expired entry, or a name that belongs to another member — returns "", which keeps the
+        observe-only path.
+        """
+        if not is_truthy_value((ctx.adapter.config.extra or {}).get("text_mention_fallback")):
+            return ""
+        names = cls._bot_group_names(ctx.adapter, ctx.group_code)
+        if not names:
+            return ""
+        for text in (str(elem.get("msg_content", {}).get("text") or "")
+                     for elem in ctx.msg_body or []
+                     if isinstance(elem, dict) and elem.get("msg_type") == _TEXT_ELEM_TYPE):
+            for match in _AT_MENTION_RE.finditer(text):
+                candidate = match.group(1)
+                if candidate.lower() in names:
+                    return candidate
+        return ""
+
     @classmethod
     def _extract_bot_mention_text(cls, msg_body: list, bot_id: Optional[str]) -> str:
         """Display text used to @-mention this bot (e.g. ``@yuanbao-bot``), or ""."""
         return next((t for t in (str(c.get("text") or "").strip() for c in cls._iter_bot_mentions(msg_body, bot_id)) if t), "")
 
     @staticmethod
-    def _build_group_channel_prompt(msg_body: list, bot_id: Optional[str]) -> str:
-        """Per-turn group-chat prompt that highlights which message to respond to."""
-        bot_mention = GroupAtGuardMiddleware._extract_bot_mention_text(msg_body, bot_id) or "unknown"
+    def _build_group_channel_prompt(msg_body: list, bot_id: Optional[str], typed_mention: str = "") -> str:
+        """Per-turn group-chat prompt that highlights which message to respond to. *typed_mention*
+        is the hand-typed ``@name`` that admitted the turn when no picker elem carried one."""
+        bot_mention = GroupAtGuardMiddleware._extract_bot_mention_text(msg_body, bot_id) or typed_mention or "unknown"
         return (
             "You are handling a Yuanbao group chat message.\n"
             f"- Your identity: user_id={bot_id or 'unknown'}, @-mention name in this group={bot_mention}\n"
@@ -1113,13 +1043,19 @@ class GroupAtGuardMiddleware(InboundMiddleware):
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
+        typed_mention = ""
         if ctx.chat_type == "group" and not ctx.owner_command and not self._is_at_bot(ctx.msg_body, adapter._bot_id):
-            self._observe_group_message(
-                adapter, ctx.source, ctx.sender_nickname or ctx.from_account, ctx.raw_text,
-                msg_id=ctx.msg_id or None, forwarded_records=ctx.forwarded_records, ctx=ctx,
-            )
-            logger.info("[%s] Group message observed (no @bot): chat=%s from=%s", adapter.name, ctx.chat_id, ctx.from_account)
-            return  # Stop pipeline — message observed but not dispatched
+            typed_mention = self._typed_mention_name(ctx)
+            if not typed_mention:
+                self._observe_group_message(
+                    adapter, ctx.source, ctx.sender_nickname or ctx.from_account, ctx.raw_text,
+                    msg_id=ctx.msg_id or None, forwarded_records=ctx.forwarded_records, ctx=ctx,
+                )
+                logger.info("[%s] Group message observed (no @bot): chat=%s from=%s", adapter.name, ctx.chat_id, ctx.from_account)
+                return  # Stop pipeline — message observed but not dispatched
+            ctx.group_mention_name = typed_mention
+            logger.info("[%s] Group message dispatched on typed @%s mention (text_mention_fallback): chat=%s from=%s",
+                        adapter.name, typed_mention, ctx.chat_id, ctx.from_account)
         await next_fn()
 
 
@@ -1131,7 +1067,8 @@ class GroupAttributionMiddleware(InboundMiddleware):
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         if ctx.chat_type == "group" and not ctx.owner_command:
-            ctx.channel_prompt = GroupAtGuardMiddleware._build_group_channel_prompt(ctx.msg_body, ctx.adapter._bot_id)
+            ctx.channel_prompt = GroupAtGuardMiddleware._build_group_channel_prompt(
+                ctx.msg_body, ctx.adapter._bot_id, typed_mention=f"@{ctx.group_mention_name}" if ctx.group_mention_name else "")
             ctx.raw_text = f"[{ctx.sender_nickname or ctx.from_account or 'unknown'}|{ctx.from_account or 'unknown'}]\n{ctx.raw_text}"
             if ctx.source is not None:
                 ctx.source = dataclasses.replace(ctx.source, user_name=None)
@@ -2381,7 +2318,7 @@ class MessageSender:
     IMAGE_EXTS: ClassVar[frozenset] = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"})
     CHAT_DICT_MAX_SIZE: ClassVar[int] = 1000  # Max distinct chat IDs in _chat_locks
     # @nickname bounded by whitespace / line edges
-    _AT_USER_RE = re.compile(r'(?:(?<=\s)|(?<=^))@(\S+?)(?=\s|$)', re.MULTILINE)
+    _AT_USER_RE = _AT_MENTION_RE
 
     def __init__(self, adapter: YuanbaoAdapter) -> None:
         self._adapter = adapter

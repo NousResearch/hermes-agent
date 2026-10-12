@@ -636,6 +636,7 @@ _ENV_STEPS: tuple = (
             ("api_domain", "YUANBAO_API_DOMAIN"), ("route_env", "YUANBAO_ROUTE_ENV"),
             ("dm_policy", "YUANBAO_DM_POLICY", _strip_lower), ("dm_allow_from", "YUANBAO_DM_ALLOW_FROM"),
             ("group_policy", "YUANBAO_GROUP_POLICY", _strip_lower), ("group_allow_from", "YUANBAO_GROUP_ALLOW_FROM"),
+            ("text_mention_fallback", "YUANBAO_TEXT_MENTION_FALLBACK"),
         ),
         home="YUANBAO_HOME_CHANNEL",
     ),

@@ -530,7 +530,7 @@ async def test_observed_dispatch_preserves_transport_and_shared_profile_sessions
     import hermes_state
     from gateway.platforms.event import MessageType
     from gateway.session import SessionStore
-    from gateway.session_identity import identity_of
+    from gateway.session_identity import identity_of, replace_source
     from hermes_constants import get_hermes_home
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
@@ -543,6 +543,9 @@ async def test_observed_dispatch_preserves_transport_and_shared_profile_sessions
     (home / "profiles" / PROFILE_NAME / "config.yaml").write_text("{}\n")
     runner = _make_multiplex_runner()
     runner._primary_profile_name = "default"
+    # Shared routing is an operator choice; observed attribution must not force it for commands.
+    runner.config.group_sessions_per_user = False
+    runner._secondary_config.group_sessions_per_user = False
     runner.session_store = SessionStore(sessions_dir=home / "sessions", config=runner.config)
     adapters = {}
     handlers = {}
@@ -571,7 +574,8 @@ async def test_observed_dispatch_preserves_transport_and_shared_profile_sessions
         event = adapter._apply_telegram_group_observe_attribution(MessageEvent(
             text="/stop", source=source, user_id=admin, message_type=MessageType.COMMAND,
             raw_message=raw, message_id="command"))
-        assert event.source.user_id is None
+        assert event.source is source
+        assert event.source.user_id == event.user_id == admin
         assert identity_of(event.source) is identity
         assert runner._intake_adapter_for(event.source) is adapter
         response = await handlers[profile](event)
@@ -586,8 +590,9 @@ async def test_observed_dispatch_preserves_transport_and_shared_profile_sessions
         assert runner.hooks.emit_collect.call_args.args[1]["user_id"] == admin
         before = runner.hooks.emit_collect.await_count
         for actor in [SECONDARY_ADMIN if admin == PRIMARY_ADMIN else PRIMARY_ADMIN, None]:
+            denied_source = replace_source(event.source, user_id=actor, user_name=None)
             denied = await handlers[profile](MessageEvent(
-                text="/stop", source=event.source, user_id=actor, message_id="denied"))
+                text="/stop", source=denied_source, user_id=actor, message_id="denied"))
             assert "⛔" in denied
         assert runner.hooks.emit_collect.await_count == before
         assert Path(get_hermes_home()) == home

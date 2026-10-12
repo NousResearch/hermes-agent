@@ -6161,8 +6161,8 @@ class TelegramAdapter(TelegramCommandPickersMixin, TelegramHeldInboundMixin, Bas
         observe_prompt = self._telegram_group_observe_channel_prompt()
         channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
         if event.message_type == MessageType.COMMAND:
-            # Commands share the conversation route; MessageEvent retains the real actor for authorization.
-            return dataclasses.replace(event, source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt)
+            # Commands retain the authenticated sender; native session settings choose their route.
+            return dataclasses.replace(event, channel_prompt=channel_prompt)
         return dataclasses.replace(
             event, text=self._telegram_group_observe_attributed_text(event),
             source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt)

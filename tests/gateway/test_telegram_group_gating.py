@@ -242,7 +242,7 @@ def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions
     asyncio.run(_run())
 
 
-def test_observed_group_command_keeps_actor_but_routes_to_shared_session():
+def test_observed_group_command_preserves_sender_source():
     adapter = _make_adapter(
         require_mention=True,
         allowed_chats=["-100"],
@@ -261,46 +261,80 @@ def test_observed_group_command_keeps_actor_but_routes_to_shared_session():
 
     assert attributed.text == "/new@hermes_bot"
     assert attributed.get_command() == "new"
-    # Session routing and actor identity are separate concerns. The source is
-    # shared so /new resets the same transcript ordinary observed/mentioned
-    # group messages use, while MessageEvent retains the real sender for slash
-    # access control and /whoami.
-    assert attributed.source.user_id is None
-    assert attributed.source.user_name is None
+    assert attributed.source is event.source
+    assert attributed.source.user_id == "111"
+    assert attributed.source.user_name == "Alice Example"
     assert attributed.user_id == "111"
     assert attributed.user_name == "Alice Example"
     assert build_session_key(
         attributed.source, group_sessions_per_user=True
-    ) == "agent:main:telegram:group:-100"
+    ) == "agent:main:telegram:group:-100:111"
     assert "observed Telegram group context" in attributed.channel_prompt
 
 
-def test_observed_group_model_bare_and_suffixed_forms_share_the_exact_key():
+@pytest.mark.parametrize("per_user", [None, True, False])
+def test_observed_group_commands_use_native_session_configuration(
+    per_user, monkeypatch, tmp_path
+):
+    """Commands keep their actor while native config selects shared or isolated lanes."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "{}\n" if per_user is None else f"group_sessions_per_user: {str(per_user).lower()}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    config = load_gateway_config()
+    assert config.group_sessions_per_user is (per_user is not False)
     adapter = _make_adapter(
         require_mention=True,
-        allowed_chats=["-100"],
-        group_allowed_chats=["-100"],
+        allowed_chats=["-100", "-200"],
+        group_allowed_chats=["-100", "-200"],
         observe_unmentioned_group_messages=True,
     )
-    keys = []
+    keys = {}
+    for chat_id, thread_id in ((-100, None), (-200, None), (-100, 7), (-100, 8)):
+        for user_id in (111, 222):
+            for command in ("/model", "/model@hermes_bot"):
+                raw_message = _group_message(
+                    command, chat_id=chat_id, thread_id=thread_id, from_user_id=user_id,
+                    entities=[_bot_command_entity(command, command)],
+                )
+                assert adapter._should_process_message(raw_message, is_command=True) is True
+                event = adapter._build_message_event(raw_message, MessageType.COMMAND)
+                attributed = adapter._apply_telegram_group_observe_attribution(event)
+                assert attributed.source is event.source
+                assert attributed.source.user_id == attributed.user_id == str(user_id)
+                keys[chat_id, thread_id, user_id, command] = build_session_key(
+                    attributed.source, group_sessions_per_user=config.group_sessions_per_user,
+                    thread_sessions_per_user=config.thread_sessions_per_user,
+                )
 
-    for command in ("/model", "/model@hermes_bot"):
-        raw_message = _group_message(
-            command,
-            entities=[_bot_command_entity(command, command)],
+            assert keys[chat_id, thread_id, user_id, "/model"] == keys[
+                chat_id, thread_id, user_id, "/model@hermes_bot"
+            ]
+        first = keys[chat_id, thread_id, 111, "/model"]
+        second = keys[chat_id, thread_id, 222, "/model"]
+        assert (first == second) is (per_user is False or thread_id is not None)
+        observed_source = adapter._telegram_group_observe_shared_source(attributed.source)
+        observed_key = build_session_key(
+            observed_source, group_sessions_per_user=config.group_sessions_per_user,
+            thread_sessions_per_user=config.thread_sessions_per_user,
         )
-        assert adapter._should_process_message(raw_message, is_command=True) is True
-        event = adapter._apply_telegram_group_observe_attribution(
-            adapter._build_message_event(raw_message, MessageType.COMMAND)
-        )
-        keys.append(build_session_key(event.source, group_sessions_per_user=True))
-        assert event.source.user_id is None
-        assert event.user_id == "111"
+        assert (second == observed_key) is (per_user is False or thread_id is not None)
 
-    assert keys == [
-        "agent:main:telegram:group:-100",
-        "agent:main:telegram:group:-100",
-    ]
+    assert len({keys[chat_id, thread_id, 111, "/model"]
+                for chat_id, thread_id in ((-100, None), (-200, None), (-100, 7), (-100, 8))}) == 4
+    dm_keys = []
+    for user_id in (111, 222):
+        event = adapter._build_message_event(_dm_message("/model", from_user_id=user_id), MessageType.COMMAND)
+        assert adapter._apply_telegram_group_observe_attribution(event) is event
+        dm_keys.append(build_session_key(
+            event.source, group_sessions_per_user=config.group_sessions_per_user,
+            thread_sessions_per_user=config.thread_sessions_per_user,
+        ))
+    assert dm_keys[0] != dm_keys[1]
+    assert not set(dm_keys).intersection(keys.values())
 
 
 def test_observed_group_bare_command_exception_preserves_other_routing_modes():
@@ -324,7 +358,7 @@ def test_observed_group_bare_command_exception_preserves_other_routing_modes():
     # DMs remain unrestricted.
     assert ordinary._should_process_message(_dm_message("/model"), is_command=True) is True
 
-    # Observe-mode forum topics keep the topic component while sharing within it.
+    # Observe-mode commands retain their sender even in forum topics.
     observed = _make_adapter(
         require_mention=True,
         allowed_chats=["-100"],
@@ -341,7 +375,11 @@ def test_observed_group_bare_command_exception_preserves_other_routing_modes():
         observed._build_message_event(topic_bare, MessageType.COMMAND)
     )
     assert topic_event.source.thread_id == "7"
-    assert topic_event.source.user_id is None
+    assert topic_event.source.user_id == "111"
+    assert build_session_key(topic_event.source) == "agent:main:telegram:group:-100:7"
+    assert build_session_key(
+        topic_event.source, thread_sessions_per_user=True
+    ) == "agent:main:telegram:group:-100:7:111"
 
 
 def test_shared_group_observe_source_is_authorized_by_group_allowed_chats(monkeypatch):

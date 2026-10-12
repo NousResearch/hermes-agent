@@ -57,8 +57,9 @@ def _make_event(text: str, source: SessionSource) -> MessageEvent:
 async def test_shared_group_source_authorizes_and_identifies_actual_actor():
     """A shared routing source must not erase the command sender's identity.
 
-    Telegram observe mode deliberately removes user_id from SessionSource so
-    normal turns and slash commands key to one group transcript. The actor is
+    Ordinary Telegram observe-mode turns remove user_id from SessionSource.
+    Typed commands retain it and use native session settings. For sources
+    that do omit participant identity, the actor is
     carried separately on MessageEvent and must still drive the group slash
     policy and /whoami response.
     """

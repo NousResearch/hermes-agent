@@ -180,7 +180,7 @@ def _repair_internal_alpha_holes(image):
     w, h = rgba.size
     px = rgba.load()
     visited = bytearray(w * h)
-    _is_transparent = lambda x, y: px[x, y][3] <= _ALPHA_FLOOR  # noqa: E731
+    _is_transparent = lambda x, y: px[x, y][3] <= _ALPHA_FLOOR
     _border_flood(w, h, visited, _is_transparent)  # edge-connected transparency = background
     for hole in _unvisited_components(w, h, visited, _is_transparent):
         seen = set(hole)
@@ -291,7 +291,7 @@ def _group_component_rows(boxes: list[tuple[int, int, int, int]]) -> list[list[t
     """Group component boxes into visual rows, then sort left→right."""
     if not boxes:
         return []
-    cy = lambda b: (b[1] + b[3]) / 2  # noqa: E731
+    cy = lambda b: (b[1] + b[3]) / 2
     row_tol = max(12, _median_box_size(boxes)[1] * 0.55)
     rows: list[list[tuple[int, int, int, int]]] = []
     centers: list[float] = []
@@ -496,7 +496,7 @@ def _column_profile(image) -> list[int]:
 def _best_shift(ref: list[int], prof: list[int], window: int) -> int:
     """Integer dx that best aligns *prof* onto *ref* (1-D cross-correlation; the body dominates, limbs barely move it)."""
     n = len(ref)
-    score = lambda d: sum(ref[x] * prof[x - d] for x in range(max(0, d), min(n, n + d)))  # noqa: E731
+    score = lambda d: sum(ref[x] * prof[x - d] for x in range(max(0, d), min(n, n + d)))
     return max(range(-window, window + 1), key=score)  # ties → smallest dx
 
 
@@ -619,24 +619,3 @@ def _check_atlas_cells(atlas) -> tuple[list[str], list[str], list[str]]:
     if residue:
         errors.append(f"{residue} transparent pixels retain RGB residue")
     return errors, warnings, filled_states
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import io  # noqa: F401,E402
-import io  # noqa: F401,E402
-
-COLUMNS = max(count for _, _, count in ROW_SPECS)
-
-FRAME_COUNTS: dict[str, int] = {state: count for state, _, count in ROW_SPECS}
-
-ROWS = len(ROW_SPECS)
-
-def atlas_to_webp_bytes(atlas) -> bytes:
-    """Encode an atlas image to lossless WebP bytes (the on-disk pet format)."""
-    buf = io.BytesIO()
-    atlas.save(buf, format="WEBP", lossless=True, quality=100, method=6, exact=True)
-    return buf.getvalue()
-# ---- END PLUGIN-COMPAT ----

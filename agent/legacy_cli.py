@@ -9,6 +9,19 @@ here too, so the installer's PATH launcher behaves the same way.
 
 from __future__ import annotations
 
+# hermes_bootstrap first (UTF-8 stdio on Windows; no-op on POSIX), like every other entry point.
+try:
+    import hermes_bootstrap
+except ModuleNotFoundError:
+    pass  # partial `hermes update` — only skips the Windows UTF-8 stdio setup
+
+# The `hermes-agent` console script lands here without hermes_cli.main: repair a `hermes update` killed
+# while git wrote the new tree before importing anything else from the checkout.
+from hermes_cli import _early_recovery
+
+if _early_recovery.restore_interrupted_pull():
+    _early_recovery.relaunch_after_restore()
+
 import argparse
 from typing import Callable, List, Optional
 
@@ -44,7 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None, *, run: Optional[Callable[..., object]] = None) -> int:
+def main(argv: Optional[list[str]] = None, *, run: Optional[Callable[..., object]] = None) -> int:
     """Parse ``argv`` (default ``sys.argv[1:]``) and run one query through ``run_agent.main``.
 
     Metadata flags and a bare invocation never reach the runner; ``run`` lets

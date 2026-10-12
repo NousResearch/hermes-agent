@@ -21,7 +21,6 @@ from gateway.config import Platform
 from tests.gateway.restart_test_helpers import make_restart_runner
 from tools import browser_tool_lifecycle as bt_lifecycle
 
-
 @pytest.fixture(autouse=True)
 def _reset_cron_running_set():
     import cron.scheduler as sched
@@ -32,7 +31,6 @@ def _reset_cron_running_set():
     sched._running_job_ids.clear()
     sched._interrupted_job_ids.clear()
 
-
 def _telegram_job(job_id="be62d36a9914", name="daily-digest", chat_id="123456"):
     return {
         "id": job_id,
@@ -40,10 +38,8 @@ def _telegram_job(job_id="be62d36a9914", name="daily-digest", chat_id="123456"):
         "deliver": f"telegram:{chat_id}",
     }
 
-
 def _telegram_target(chat_id="123456"):
     return {"platform": "telegram", "chat_id": chat_id, "thread_id": None}
-
 
 def _bind_notifier(runner):
     from gateway.run import GatewayRunner
@@ -55,7 +51,6 @@ def _bind_notifier(runner):
         GatewayRunner._thread_metadata_for_target.__get__(runner, GatewayRunner)
     )
     return runner
-
 
 class TestNotifyInterruptedCronJobs:
     @pytest.mark.asyncio
@@ -93,7 +88,6 @@ class TestNotifyInterruptedCronJobs:
         expected = 0 if setting is True else 1
         assert sent == expected
         assert len(adapter.sent) == expected
-
 
     @pytest.mark.asyncio
     async def test_local_only_job_stays_silent(self):
@@ -198,7 +192,6 @@ class TestNotifyInterruptedCronJobs:
         assert sent == 1
         assert len(adapter.sent) == 1
 
-
 class TestShutdownDeliversNoticeBeforeDisconnect:
     @pytest.mark.asyncio
     async def test_notice_is_sent_while_the_adapter_is_still_connected(self, monkeypatch):
@@ -244,5 +237,3 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         assert events.index("cron_notice") < events.index("disconnect"), (
             f"notice sent after adapter teardown — it would be lost: {events}"
         )
-
-

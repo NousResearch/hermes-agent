@@ -28,12 +28,9 @@ from __future__ import annotations
 from typing import cast
 from unittest.mock import MagicMock
 
-
-
 # ---------------------------------------------------------------------------
 # OpenAI SDK construction preserves the callable
 # ---------------------------------------------------------------------------
-
 
 class TestCreateOpenAIClientCallable:
     """``AIAgent._create_openai_client`` must pass the callable through
@@ -80,11 +77,9 @@ class TestCreateOpenAIClientCallable:
         )
         assert client is not None
 
-
 # ---------------------------------------------------------------------------
 # Auxiliary runtime preserves the callable
 # ---------------------------------------------------------------------------
-
 
 class TestNormalizeMainRuntimePreservesCallable:
     """The aux client orchestrator must keep the callable on the
@@ -116,13 +111,9 @@ class TestNormalizeMainRuntimePreservesCallable:
         })
         assert normalized["api_key"] == "sk-static"
 
-
-
-
 # ---------------------------------------------------------------------------
 # Display surfaces never invoke the callable
 # ---------------------------------------------------------------------------
-
 
 class TestTruncateTokenCallable:
     def test_callable_returns_placeholder(self):
@@ -152,28 +143,15 @@ class TestTruncateTokenCallable:
         assert _truncate_token(None) == ""
         assert _truncate_token("") == ""
 
-
 # ---------------------------------------------------------------------------
 # Serialization scrub — runtime dicts with callables must NOT silently
 # JSON-encode as ``"<function ...>"`` (would leak garbage into events).
 # ---------------------------------------------------------------------------
 
-
-
-
 # ---------------------------------------------------------------------------
 # batch_runner strips callables from the worker config dict
 # ---------------------------------------------------------------------------
 
-
-
-
 # ---------------------------------------------------------------------------
 # Inline masked-banner / display sites (callable-aware)
 # ---------------------------------------------------------------------------
-
-
-
-
-
-

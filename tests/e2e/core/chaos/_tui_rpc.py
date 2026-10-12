@@ -27,7 +27,7 @@ class RpcError(AssertionError):
 
 class TuiGatewayProcess:
     def __init__(self, env: dict[str, str], cwd: Path, stderr_path: Path) -> None:
-        self._stderr_fh = open(stderr_path, "wb")  # noqa: SIM115 - closed in close()
+        self._stderr_fh = open(stderr_path, "wb")
         self.stderr_path = stderr_path
         self.proc = subprocess.Popen(
             [python_exe(), "-X", "faulthandler", "-m", "tui_gateway.entry"],
@@ -157,9 +157,15 @@ class TuiGatewayProcess:
         try:
             if not self._stderr_fh.closed:
                 self._stderr_fh.flush()
-            data = self.stderr_path.read_bytes()[-n:].decode(errors="replace")
+            raw = self.stderr_path.read_bytes()
         except OSError:
-            data = ""
+            raw = b""
+        # A fatal signal's faulthandler dump prints the faulting ("Current thread") stack
+        # FIRST, so a plain byte tail cuts exactly the frame that names the crash: keep the
+        # whole dump from its header when the gateway died on a signal.
+        rc = self.proc.poll()
+        start = raw.rfind(b"Fatal Python error") if rc is not None and rc < 0 else -1
+        data = (raw[start:start + 256_000] if start >= 0 else raw[-n:]).decode(errors="replace")
         return f"\n--- gateway stderr tail ---\n{data}" if data else ""
 
 
@@ -192,7 +198,7 @@ class Heartbeat:
                 self._inflight_since = None
             self._stop.wait(self.interval)
 
-    def __enter__(self) -> "Heartbeat":
+    def __enter__(self) -> Heartbeat:
         self._inflight_since: float | None = None
         self._thread.start()
         return self

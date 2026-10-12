@@ -15,7 +15,7 @@ describe('voiceFieldVisible', () => {
   it('always shows top-level + non-provider keys', () => {
     const config = cfg()
 
-    for (const key of ['tts.provider', 'stt.enabled', 'stt.provider', 'voice.auto_tts', 'voice.record_key']) {
+    for (const key of ['tts.provider', 'stt.enabled', 'stt.provider', 'voice.auto_tts']) {
       expect(voiceFieldVisible(key, config)).toBe(true)
     }
   })

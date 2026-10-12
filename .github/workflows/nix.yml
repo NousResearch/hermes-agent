@@ -14,23 +14,39 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:
+    inputs:
+      release:
+        description: 'Stable-release candidate run: force the flake-check lane regardless of the classifier.'
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: 'Release version stamped into an isolated flake source tree.'
+        required: false
+        type: string
+        default: ''
+
 
 permissions:
   contents: read
 
-# PR runs collapse to the newest commit. A push to main is never cancelled:
-# each one saves the store cache that later PRs restore from, so cancelling a
-# merge would leave the next PR to build from nothing.
+# A workflow_call run (stable release) is never cancelled: its group uses
+# github.run_id so a parent rerun cannot kill this child mid-flight, and
+# cancel-in-progress is false there — each run saves the store cache that
+# later PRs restore from.
 concurrency:
-  group: nix-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: nix-${{ inputs.release == true && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ inputs.release != true && github.event_name == 'pull_request' }}
 
 jobs:
-  # A `paths:` filter cannot gate this workflow correctly. The flake packages
-  # the product, and nine of the checks then run the built binary, so a change
-  # to hermes_cli/ alone can fail `nix flake check` without touching one file
-  # under nix/. The `nix` lane therefore follows python_prod as well as the
-  # flake inputs. On push the classifier fails open and every lane is true.
+  # A `paths:` filter cannot gate this workflow: a push to main must run it
+  # whatever changed, because the flake packages the product and nine of the
+  # checks run the built binary. The `nix` lane is a slow lane
+  # (classify_changes.py): on a pull request it runs for the flake files and
+  # the dependency manifests, or the run-e2e label. On push the classifier
+  # fails open and every lane is true, so a product change that breaks the
+  # flake turns main red after the merge.
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
@@ -38,7 +54,11 @@ jobs:
     outputs:
       nix: ${{ steps.classify.outputs.nix }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          # github.sha is the exact candidate commit on a stable tag-dispatched
+          # caller and the head SHA on every other event.
+          ref: ${{ github.sha }}
 
       - name: Detect affected areas
         id: classify
@@ -49,7 +69,9 @@ jobs:
   flake-check:
     name: nix flake check
     needs: [detect]
-    if: needs.detect.outputs.nix == 'true'
+    # Release runs force the lane: a stable candidate must build the flake
+    # no matter what its diff touches.
+    if: needs.detect.outputs.nix == 'true' || inputs.release == true
     # The build compiles the package and its whole dependency closure, so this
     # takes minutes and not seconds when the cache misses. `nix flake check`
     # builds 21 checks, and --max-jobs defaults to the core count. It uses the
@@ -58,7 +80,11 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          # github.sha is the exact candidate commit on a stable tag-dispatched
+          # caller and the head SHA on every other event.
+          ref: ${{ github.sha }}
 
       - name: Install Nix
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
@@ -113,7 +139,39 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
+      - name: Prepare isolated release source
+        if: inputs.release == true
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-source"
+          git archive "$GITHUB_SHA" | tar -x -C "$RUNNER_TEMP/release-source"
+          python3 scripts/releases/stamping.py --tree "$RUNNER_TEMP/release-source" \
+            --version "$RELEASE_VERSION"
+
       - name: nix flake check
         # --print-build-logs: a check that fails then prints the assertion
         # that failed, and not only the derivation that failed to build.
-        run: nix flake check --print-build-logs
+        # A path: flake has no git metadata, so the release source names its
+        # commit with ?rev=: without it self.rev is null, the install stamp
+        # carries no commit, and the packaged CLI reports "unknown".
+        run: nix flake check "${{ inputs.release == true && format('path:{0}/release-source?rev={1}', runner.temp, github.sha) || '.' }}" --print-build-logs
+
+      - name: Verify release package runtime identity
+        if: inputs.release == true
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          source="path:$RUNNER_TEMP/release-source?rev=$GITHUB_SHA"
+          package="$(nix build "$source#default" --no-link --print-out-paths)"
+          actual="$("$package/bin/hermes" --version)"
+          ACTUAL_VERSION="$actual" python3 - <<'PY'
+          import os
+
+          expected = os.environ["RELEASE_VERSION"]
+          # Line one is "Hermes Agent v<version> (...)"; later lines (Python, OpenAI SDK) carry other versions.
+          first = os.environ["ACTUAL_VERSION"].splitlines()[0].split()
+          actual = first[2].removeprefix("v") if first[:2] == ["Hermes", "Agent"] and len(first) > 2 else ""
+          if actual != expected:
+              raise SystemExit(f"Nix package version mismatch: expected {expected}, got {actual}")
+          PY

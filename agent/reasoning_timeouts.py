@@ -42,6 +42,9 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         # "Ox Alpha" stealth reasoning model (OpenRouter / OpenCode Zen slugs); Thinking
         # Machines Inkling (covers inkling-small and :free SKUs).
         "ox-alpha", "x-preview-f-free", "inkling",
+        # MiniMax M2.x (m2.5/m2.7): reasoning_content before first content token; 240s
+        # mid-think stalls observed (#62353).
+        "minimax-m2",
     ),
     # Anthropic Claude 4.x+ thinking variants (anchored so 3.x never matches).
     240: ("claude-opus-4", "claude-opus-5"),

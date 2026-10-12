@@ -819,3 +819,100 @@ def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():
     assert not is_native_gemini_base_url(
         "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
     )
+
+
+def test_thinking_tokens_are_counted_as_output_and_surfaced_as_reasoning():
+    """Gemini bills hidden thinking under its own ``thoughtsTokenCount``;
+    ``candidatesTokenCount`` covers visible output only while ``totalTokenCount``
+    includes thoughts. Dropping thoughts made the emitted usage internally
+    inconsistent (prompt + completion != total) and billed a thinking turn at a
+    fraction of its real output."""
+    from agent.gemini_native_adapter import translate_gemini_response
+    from agent.usage_pricing import normalize_usage
+
+    prompt, visible, thoughts = 10, 200, 5000
+    payload = {
+        "candidates": [{"content": {"parts": [{"text": "done"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": prompt,
+            "candidatesTokenCount": visible,
+            "thoughtsTokenCount": thoughts,
+            "totalTokenCount": prompt + visible + thoughts,
+        },
+    }
+
+    usage = translate_gemini_response(payload, model="gemini-2.5-flash").usage
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    assert usage.completion_tokens_details.reasoning_tokens == thoughts
+
+    canonical = normalize_usage(usage, provider="google")
+    assert canonical.output_tokens == visible + thoughts
+    assert canonical.reasoning_tokens == thoughts
+
+
+def test_response_without_thinking_tokens_keeps_its_output_count():
+    """Non-thinking / older responses omit ``thoughtsTokenCount``; their numbers
+    must not move, and reasoning stays zero."""
+    from agent.gemini_native_adapter import translate_gemini_response
+    from agent.usage_pricing import normalize_usage
+
+    prompt, visible = 10, 5
+    payload = {
+        "candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": prompt,
+            "candidatesTokenCount": visible,
+            "totalTokenCount": prompt + visible,
+        },
+    }
+
+    usage = translate_gemini_response(payload, model="gemini-2.5-flash").usage
+    assert usage.completion_tokens == visible
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    assert normalize_usage(usage, provider="google").reasoning_tokens == 0
+
+
+@pytest.mark.parametrize("json_schema_surface, key", [(True, "responseJsonSchema"), (False, "responseSchema")])
+def test_build_gemini_request_translates_response_format_on_both_schema_surfaces(json_schema_surface, key):
+    """OpenAI response_format reaches generationConfig: full JSON Schema under ``responseJsonSchema`` on
+    v1beta, the OpenAPI subset under ``responseSchema`` elsewhere (with unsupported keys stripped)."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        response_format={"type": "json_schema", "json_schema": {"name": "out", "schema": schema}},
+        tools_as_json_schema=json_schema_surface,
+    )["generationConfig"]
+    assert generation["responseMimeType"] == "application/json"
+    assert generation[key]["properties"] == schema["properties"] and generation[key]["required"] == ["ok"]
+    assert ("additionalProperties" in generation[key]) is json_schema_surface
+
+
+@pytest.mark.parametrize("tool_choice", ["required", {"type": "function", "function": {"name": "lookup"}}])
+def test_build_gemini_request_drops_json_output_when_tool_choice_forces_calls(tool_choice):
+    """Gemini 400s on forced function calling (mode ANY) combined with a JSON responseMimeType, on every model."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+        tool_choice=tool_choice, model="gemini-3-flash",
+        response_format={"type": "json_schema", "json_schema": {"name": "out", "schema": {"type": "object"}}},
+        tools_as_json_schema=True,
+    )["generationConfig"]
+    assert not {"responseMimeType", "responseJsonSchema", "responseSchema"} & set(generation)
+
+
+@pytest.mark.parametrize("model, keeps_json", [("gemini-2.5-flash", False), ("gemini-3-flash", True)])
+def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keeps_json):
+    """Pre-Gemini-3 rejects function declarations alongside a JSON mime type (HTTP 400 "Function calling
+    with a response mime type: 'application/json' is unsupported"); Gemini 3+ accepts the combination."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+        tool_choice="auto", model=model, response_format={"type": "json_object"}, tools_as_json_schema=True,
+    )["generationConfig"]
+    assert ("responseMimeType" in generation) is keeps_json

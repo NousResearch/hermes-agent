@@ -118,10 +118,6 @@ def test_reap_orphans_kills_only_our_parentless_binaries(tmp_path, monkeypatch):
     exe = tmp_path / "llama-server.exe"
     exe.write_text("")
 
-    orphan = _FakeChild(300)
-    adopted = _FakeChild(301)     # parent alive -> not an orphan
-    foreign = _FakeChild(302)     # different binary -> never touched
-
     def _info(pid, exe_path, ppid):
         p = _FakeChild(pid)
         p.info = {"exe": exe_path, "ppid": ppid}
@@ -146,11 +142,8 @@ def test_reap_orphans_kills_only_our_parentless_binaries(tmp_path, monkeypatch):
         AccessDenied=_NoSuch,
     )
     monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
-    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.server_binary",
-                        lambda install_dir: exe)
-
     sup = LlamaServerSupervisor.__new__(LlamaServerSupervisor)
-    sup.install_dir = tmp_path
+    sup.binary = exe
     sup.proc = None
     sup._job = None
     sup._reap_orphaned_children()

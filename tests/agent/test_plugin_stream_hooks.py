@@ -360,3 +360,33 @@ def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
 
     assert calls[0]["kind"] == "reasoning"
     assert calls[0]["delta"] == "bedrock reasoning"
+
+
+def test_inline_think_reaches_reasoning_pane_unless_native_reasoning_streamed():
+    """#89647: inline <think> text stripped from content feeds reasoning_callback (the live pane), but not
+    once the provider streamed native reasoning for this response (no double reasoning)."""
+    agent = _agent()
+    seen = []
+    agent.reasoning_callback = seen.append
+    agent._reset_stream_delivery_tracking()
+    for delta in ["<think>", "Let me", " check config", "</think>", "The answer is 42."]:
+        agent._fire_stream_delta(delta)
+    assert "".join(seen) == "Let me check config"
+
+    seen.clear()
+    agent._reset_stream_delivery_tracking()
+    agent._fire_reasoning_delta("native")
+    agent._fire_stream_delta("<think>dup</think>ok")
+    assert seen == ["native"]
+
+
+def test_finish_chat_stream_recovers_inline_reasoning_content():
+    """#89647: with no reasoning delta, reasoning_content comes from the <think> blocks in raw content."""
+    from agent import chat_completion_helpers as cch
+
+    call = cch._StreamingCall.__new__(cch._StreamingCall)
+    call.agent = _agent()
+    deltas = ["<think>", "Let me", " check config", "</think>", "The answer is 42."]
+    resp = call._finish_chat_stream(None, "assistant", deltas, [], {}, "stop", "MiniMax-M3", None,
+                                    flush_pending=lambda: None)
+    assert resp.choices[0].message.reasoning_content == "Let me check config"

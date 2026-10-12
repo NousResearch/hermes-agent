@@ -630,7 +630,7 @@ def test_migration_backfill_idempotent_under_re_run(tmp_path, monkeypatch):
 # Battle-test findings (May 2026: stress/ suite exposed zombie + id collision)
 # -------------------------------------------------------------------------
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_pid_alive_detects_zombie(kanban_home):
     """_pid_alive must return False for a zombie process.
 
@@ -1237,6 +1237,7 @@ def _drive_nonzero_crash(conn, tid, fake_pid):
     return _drive_worker_exit(conn, tid, fake_pid, 256)
 
 
+@pytest.mark.platforms("linux")
 def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
     """Mixed failure kinds must not consume the violation retry budget.
 
@@ -1373,6 +1374,7 @@ def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
     from hermes_cli import kanban_db_dispatch as kbd
     assert kb.get_current_board() == "default"
     board = "other-board"
+    kb.create_board(board)  # explicit creation; connect() must not create boards (#43243)
     conn = kbc.connect(board=board)
     try:
         tid = kb.create_task(conn, title="handoff", assignee="worker")

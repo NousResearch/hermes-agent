@@ -28,12 +28,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-
-
 # ---------------------------------------------------------------------------
 # Agent fixture — real methods bound where the fix depends on them
 # ---------------------------------------------------------------------------
-
 
 def _make_agent():
     """Minimal AIAgent with the real text helpers the fix relies on."""
@@ -54,7 +51,6 @@ def _make_agent():
     agent._stream_callback = None
     return agent
 
-
 def _vision_tool_result(text="The image shows a red stop sign."):
     """A realistic tool message whose content is a list (vision result)."""
     return {
@@ -66,11 +62,9 @@ def _vision_tool_result(text="The image shows a red stop sign."):
         ],
     }
 
-
 # ---------------------------------------------------------------------------
 # build_assistant_message — non-streaming / gateway path (site 2)
 # ---------------------------------------------------------------------------
-
 
 class TestBuildAssistantMessageMultimodal:
     def test_list_content_does_not_crash(self):
@@ -96,13 +90,9 @@ class TestBuildAssistantMessageMultimodal:
         assert isinstance(msg["content"], str)
         assert "answer after seeing the screenshot" in msg["content"]
 
-
-
-
 # ---------------------------------------------------------------------------
 # _interim_assistant_visible_text — dedup path (site 1)
 # ---------------------------------------------------------------------------
-
 
 class TestInterimVisibleTextMultimodal:
     def test_tool_list_content_does_not_crash(self):
@@ -114,7 +104,6 @@ class TestInterimVisibleTextMultimodal:
         # The helper must not raise on a tool message whose content is a list.
         visible = AIAgent._interim_assistant_visible_text(agent, tool_msg)
         assert isinstance(visible, str)
-
 
     def test_assistant_list_content_flattened(self):
         """An assistant message with list content yields flattened visible text."""
@@ -132,10 +121,6 @@ class TestInterimVisibleTextMultimodal:
         visible = AIAgent._interim_assistant_visible_text(agent, assistant_msg)
         assert "Let me look at the screenshot." in visible
 
-
 # ---------------------------------------------------------------------------
 # duplicate_previous_interim dedup — the exact shape from conversation_loop.py
 # ---------------------------------------------------------------------------
-
-
-

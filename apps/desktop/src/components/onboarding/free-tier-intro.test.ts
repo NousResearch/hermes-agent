@@ -23,7 +23,7 @@ function gatewayReturning(freeTier: FreeTierStatus, route = true) {
     }
 
     if (method === 'setup.runtime_check') {
-      return { free_tier: route, ok: true } as T
+      return { free_tier_route: route, ok: true } as T
     }
 
     return { provider_configured: true } as T

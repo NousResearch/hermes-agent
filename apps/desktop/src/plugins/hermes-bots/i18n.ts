@@ -66,7 +66,10 @@ type BotsMessages = {
     inheritedModel: string
     soul: string
     shareKeys: string
+    shareKeysOn: (target: string) => string
     shareKeysHint: string
+    needsModel: string
+    configureModel: string
     createEmpty: string
     nameTakenHint: string
     nameFirstHint: string
@@ -171,6 +174,8 @@ type BotsMessages = {
     /** Re-opens the forever-chat on purpose. A plain row click only returns to
      *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
     openBotChat: string
+    /** Screen-reader label for the row spinner while a cold bot chat opens. */
+    openingChat: string
     /** Row context menu: pin/hide toggles, their toasts, and the groups entry. */
     pinToTop: string
     unpin: string
@@ -381,12 +386,19 @@ type BotsMessages = {
     portalNotInstalled: string
     portalUnsupported: string
     portalUnavailable: string
+    /** Managed runtimes (Hermes Cloud): updates are the platform's job, not the user's. */
+    portalUnavailableManaged: string
     unavailableTitle: string
     autoOpenMenu: string
     autoOpenOnToast: (name: string) => string
     autoOpenOffToast: (name: string) => string
     stoppedTitle: string
     stoppedBody: string
+    placementSandbox: (backend: string) => string
+    imageSwitchTitle: string
+    imageSwitchBody: (current: string, target: string) => string
+    imageSwitchApprove: string
+    imageSwitchKeep: string
     start: string
     attaching: string
     streamLost: string
@@ -503,8 +515,12 @@ const en: BotsMessages = {
     inheritedModel: 'inherited from launch profile',
     soul: 'SOUL.md (optional — replaces the generated persona)',
     shareKeys: 'Share keys & accounts with the main profile',
+    shareKeysOn: target => `Share keys & accounts with the default profile on ${target}`,
     shareKeysHint:
       'Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.',
+    needsModel:
+      'No model provider is ready for it yet, so it skipped its introduction. Pick a provider and model under Advanced.',
+    configureModel: 'Configure model',
     createEmpty: 'Create empty (skip bundled skills)',
     nameTakenHint: 'That name is taken — pick another before configuring capabilities.',
     nameFirstHint: 'Name the bot first — a draft profile is created when you open this tab (discarded if you cancel).',
@@ -610,6 +626,7 @@ const en: BotsMessages = {
     descriptionHint: 'Leave blank to generate from the bot’s name and description.',
     newChatWith: 'New chat with this bot',
     openBotChat: 'Open Bot Chat',
+    openingChat: 'Opening chat…',
     pinToTop: 'Pin to top',
     unpin: 'Unpin',
     pinnedToast: name => `${name} pinned to top`,
@@ -809,12 +826,19 @@ const en: BotsMessages = {
     portalNotInstalled: 'Not installed on host',
     portalUnsupported: 'Not available on this host',
     portalUnavailable: 'Update the bot\u2019s Hermes to use Screen',
+    portalUnavailableManaged: 'Screen is not available on this managed Hermes release yet',
     unavailableTitle: 'Screen needs a newer Hermes',
     autoOpenMenu: 'Open Screen when the bot uses it',
     autoOpenOnToast: name => `${name}’s Screen opens when it starts using its desktop`,
     autoOpenOffToast: name => `${name}’s Screen stays closed until you open it`,
     stoppedTitle: 'Screen is off',
     stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
+    placementSandbox: backend => `Screen runs inside the ${backend} sandbox, with the terminal`,
+    imageSwitchTitle: 'New sandbox image available',
+    imageSwitchBody: (current, target) =>
+      `Your sandbox still runs ${current}, which has no desktop. Switching to ${target} recreates the container the next time the bot uses its terminal: files in /root and /workspace stay on this machine, packages installed inside the container are reinstalled on demand.`,
+    imageSwitchApprove: 'Switch image',
+    imageSwitchKeep: 'Keep current image',
     start: 'Start screen',
     attaching: 'Connecting to the screen\u2026',
     streamLost: 'Screen stream ended',
@@ -928,8 +952,12 @@ const ja: BotsMessages = {
     inheritedModel: '起動時のプロファイルから継承',
     soul: 'SOUL.md（任意 — 生成された人格を置き換えます）',
     shareKeys: 'メインプロファイルとキー・アカウントを共有',
+    shareKeysOn: target => `${target} の default プロファイルとキー・アカウントを共有`,
     shareKeysHint:
       'サブスクリプション、OAuth ログイン、API キーをコピーせず共有するため、トークン更新で互いに無効になりません。チェックを外すと独立したスナップショットをコピーします。',
+    needsModel:
+      'まだ使用できるモデルプロバイダーがないため、自己紹介をスキップしました。「詳細設定」でプロバイダーとモデルを選んでください。',
+    configureModel: 'モデルを設定',
     createEmpty: '空のプロファイルを作成（同梱スキルを除外）',
     nameTakenHint: 'その名前は使用済みです。機能を設定する前に別の名前を選んでください。',
     nameFirstHint:
@@ -1035,6 +1063,7 @@ const ja: BotsMessages = {
     descriptionHint: '空欄のままにすると、ボットの名前と説明から生成します。',
     newChatWith: 'このボットと新しいチャット',
     openBotChat: 'ボットチャットを開く',
+    openingChat: 'チャットを開いています…',
     pinToTop: '先頭にピン留め',
     unpin: 'ピン留めを解除',
     pinnedToast: name => `${name}を先頭にピン留めしました`,
@@ -1237,12 +1266,19 @@ const ja: BotsMessages = {
     portalNotInstalled: 'ホストに未インストール',
     portalUnsupported: 'このホストでは利用できません',
     portalUnavailable: 'Screen を使うにはボットの Hermes を更新してください',
+    portalUnavailableManaged: 'この管理された Hermes リリースではまだ Screen を利用できません',
     unavailableTitle: 'Screen には新しい Hermes が必要です',
     autoOpenMenu: 'ボットが画面を使い始めたら Screen を開く',
     autoOpenOnToast: name => `${name} がデスクトップを使い始めると Screen が開きます`,
     autoOpenOffToast: name => `${name} の Screen は手動で開くまで閉じたままです`,
     stoppedTitle: '画面はオフです',
     stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
+    placementSandbox: backend => `画面は ${backend} サンドボックス内（ターミナルと同じ場所）で動作します`,
+    imageSwitchTitle: '新しいサンドボックスイメージがあります',
+    imageSwitchBody: (current, target) =>
+      `サンドボックスはまだ ${current} で動作しており、デスクトップがありません。${target} に切り替えると、ボットが次にターミナルを使うときにコンテナが再作成されます。/root と /workspace のファイルはこのマシンに残り、コンテナ内にインストールしたパッケージは必要に応じて再インストールされます。`,
+    imageSwitchApprove: 'イメージを切り替える',
+    imageSwitchKeep: '現在のイメージを使い続ける',
     start: '画面を起動',
     attaching: '画面に接続中…',
     streamLost: '画面ストリームが終了しました',
@@ -1354,8 +1390,11 @@ const zh: BotsMessages = {
     inheritedModel: '继承启动时的配置档案',
     soul: 'SOUL.md（可选，将替换生成的人格）',
     shareKeys: '与主配置档案共享密钥和账户',
+    shareKeysOn: target => `与 ${target} 上的 default 配置档案共享密钥和账户`,
     shareKeysHint:
       '订阅、OAuth 登录和 API 密钥保持共享而非复制，令牌刷新不会使另一方失效。取消勾选则创建隔离的快照副本。',
+    needsModel: '它还没有可用的模型提供商，因此跳过了自我介绍。请在“高级”中选择提供商和模型。',
+    configureModel: '配置模型',
     createEmpty: '创建空配置（跳过内置技能）',
     nameTakenHint: '此名称已被占用，请先选择其他名称再配置能力。',
     nameFirstHint: '请先为机器人命名，打开此标签页时将创建草稿配置档案（取消时会丢弃）。',
@@ -1454,6 +1493,7 @@ const zh: BotsMessages = {
     descriptionHint: '留空则根据机器人的名称和描述生成。',
     newChatWith: '与此机器人开新聊天',
     openBotChat: '打开机器人聊天',
+    openingChat: '正在打开聊天…',
     pinToTop: '置顶',
     unpin: '取消置顶',
     pinnedToast: name => `已将 ${name} 置顶`,
@@ -1650,12 +1690,19 @@ const zh: BotsMessages = {
     portalNotInstalled: '主机未安装',
     portalUnsupported: '此主机不可用',
     portalUnavailable: '更新机器人的 Hermes 以使用屏幕',
+    portalUnavailableManaged: '此托管 Hermes 版本尚不支持屏幕',
     unavailableTitle: '屏幕需要更新版的 Hermes',
     autoOpenMenu: '机器人使用屏幕时自动打开',
     autoOpenOnToast: name => `${name} 开始使用桌面时会自动打开屏幕`,
     autoOpenOffToast: name => `${name} 的屏幕将保持关闭，直到你手动打开`,
     stoppedTitle: '屏幕已关闭',
     stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
+    placementSandbox: backend => `屏幕运行在 ${backend} 沙箱内，与终端同处`,
+    imageSwitchTitle: '有新的沙箱镜像',
+    imageSwitchBody: (current, target) =>
+      `沙箱仍在运行 ${current}，其中没有桌面。切换到 ${target} 后，机器人下次使用终端时会重建容器：/root 和 /workspace 中的文件保留在本机，容器内安装的软件包会按需重新安装。`,
+    imageSwitchApprove: '切换镜像',
+    imageSwitchKeep: '保留当前镜像',
     start: '启动屏幕',
     attaching: '正在连接屏幕…',
     streamLost: '屏幕流已结束',
@@ -1767,8 +1814,11 @@ const zhHant: BotsMessages = {
     inheritedModel: '繼承啟動時的設定檔',
     soul: 'SOUL.md（選填，將取代產生的人格）',
     shareKeys: '與主要設定檔共用金鑰和帳戶',
+    shareKeysOn: target => `與 ${target} 上的 default 設定檔共用金鑰和帳戶`,
     shareKeysHint:
       '訂閱、OAuth 登入和 API 金鑰保持共用而非複製，權杖更新不會使另一方失效。取消勾選則建立隔離的快照副本。',
+    needsModel: '它還沒有可用的模型提供者，因此略過了自我介紹。請在「進階」中選擇提供者和模型。',
+    configureModel: '設定模型',
     createEmpty: '建立空白設定（略過內建技能）',
     nameTakenHint: '此名稱已被使用，請先選擇其他名稱再設定功能。',
     nameFirstHint: '請先為機器人命名，開啟此分頁時將建立草稿設定檔（取消時會捨棄）。',
@@ -1867,6 +1917,7 @@ const zhHant: BotsMessages = {
     descriptionHint: '留空則依機器人的名稱和描述產生。',
     newChatWith: '與此機器人開新聊天',
     openBotChat: '開啟機器人聊天',
+    openingChat: '正在開啟聊天…',
     pinToTop: '釘選到頂端',
     unpin: '取消釘選',
     pinnedToast: name => `已將 ${name} 釘選到頂端`,
@@ -2063,12 +2114,19 @@ const zhHant: BotsMessages = {
     portalNotInstalled: '主機未安裝',
     portalUnsupported: '此主機不可用',
     portalUnavailable: '更新機器人的 Hermes 以使用螢幕',
+    portalUnavailableManaged: '此託管 Hermes 版本尚不支援螢幕',
     unavailableTitle: '螢幕需要較新版的 Hermes',
     autoOpenMenu: '機器人使用螢幕時自動開啟',
     autoOpenOnToast: name => `${name} 開始使用桌面時會自動開啟螢幕`,
     autoOpenOffToast: name => `${name} 的螢幕將保持關閉，直到你手動開啟`,
     stoppedTitle: '螢幕已關閉',
     stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',
+    placementSandbox: backend => `畫面在 ${backend} 沙箱內執行，與終端同處`,
+    imageSwitchTitle: '有新的沙箱映像',
+    imageSwitchBody: (current, target) =>
+      `沙箱仍在執行 ${current}，其中沒有桌面。切換到 ${target} 後，機器人下次使用終端時會重建容器：/root 和 /workspace 中的檔案保留在本機，容器內安裝的套件會按需重新安裝。`,
+    imageSwitchApprove: '切換映像',
+    imageSwitchKeep: '保留目前映像',
     start: '啟動螢幕',
     attaching: '正在連線至螢幕…',
     streamLost: '螢幕串流已結束',

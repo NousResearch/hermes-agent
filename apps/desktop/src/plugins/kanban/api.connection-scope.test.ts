@@ -37,7 +37,7 @@ describe('kanban connection scope', () => {
     expect(boardsKey(result.current)).toEqual(['kanban', 'boards', 'spark'])
   })
 
-  it('remembers the slug per connection and dials the socket once per switch', () => {
+  it('remembers the slug per connection and dials the socket once per switch', async () => {
     const stored = new Map<string, unknown>([
       ['boardSlug', 'ops'],
       ['boardSlug.spark', 'research']
@@ -60,7 +60,10 @@ describe('kanban connection scope', () => {
     const dispose = bindApi(async () => ({}) as never, storage, socket)
 
     expect($boardSlug.get()).toBe('ops')
-    expect(dials).toEqual(['/events?board=ops'])
+    // No snapshot yet: the socket waits for /board, then opens. This gateway
+    // has no latest_event_id, so the URL stays unscoped by since and the
+    // server starts at the tail.
+    await vi.waitFor(() => expect(dials).toEqual(['/events?board=ops']))
 
     // Boot publishes the local descriptor after plugins bound: same scope, no dial.
     setConnection({ mode: 'local' } as never)
@@ -69,14 +72,16 @@ describe('kanban connection scope', () => {
     // Different slug on the next gateway: exactly one dial, not one per listener.
     setConnection({ connectionId: 'spark', mode: 'remote' } as never)
     expect($boardSlug.get()).toBe('research')
-    expect(dials).toEqual(['/events?board=ops', '/events?board=research'])
+    await vi.waitFor(() => expect(dials).toEqual(['/events?board=ops', '/events?board=research']))
 
     // Same slug on the way back to a gateway with an equal selection still
     // dials once — the backend behind the slug changed.
     stored.set('boardSlug', 'research')
     setConnection({ mode: 'local' } as never)
     expect($boardSlug.get()).toBe('research')
-    expect(dials).toEqual(['/events?board=ops', '/events?board=research', '/events?board=research'])
+    await vi.waitFor(() =>
+      expect(dials).toEqual(['/events?board=ops', '/events?board=research', '/events?board=research'])
+    )
 
     // Writes land under the scope current at write time.
     $boardSlug.set('triage')

@@ -2,6 +2,8 @@
 
 import logging
 import os
+import re
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +24,32 @@ from gateway.config import (
     _apply_env_overrides,
     load_gateway_config,
 )
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_gateway_file_layers_preserve_unicode_and_fallback(tmp_path, monkeypatch, encoding):
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    legacy = tmp_path / "gateway.json"
+    yaml_path = tmp_path / "config.yaml"
+    legacy.write_bytes(json.dumps({"reset_triggers": ["/départ"], "quick_commands": {
+        "salut": {"type": "prompt", "prompt": "héritage 世界"},
+    }}, ensure_ascii=False).encode(encoding))
+    config = load_gateway_config()
+    assert config.reset_triggers == ["/départ"]
+    assert config.quick_commands["salut"]["prompt"] == "héritage 世界"
+
+    yaml_path.write_bytes("quick_commands:\n  salut:\n    type: prompt\n    prompt: bonjour 世界\n".encode(encoding))
+    config = load_gateway_config()
+    assert config.reset_triggers == ["/départ"]
+    assert config.quick_commands["salut"]["prompt"] == "bonjour 世界"
+
+    yaml_path.write_bytes("quick_commands: [".encode(encoding))
+    assert load_gateway_config().quick_commands["salut"]["prompt"] == "héritage 世界"
+    legacy.write_bytes("{broken".encode(encoding))
+    assert load_gateway_config().quick_commands == {}
 
 
 class TestHomeChannelRoundtrip:
@@ -1316,7 +1344,7 @@ class TestHomeChannelEnvOverrides:
 
         for platform, platform_config, env, expected in cases:
             config = GatewayConfig(platforms={platform: platform_config})
-            with patch.dict(os.environ, env, clear=True):
+            with patch.dict(os.environ, {**env, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
                 _apply_env_overrides(config)
 
             home = config.platforms[platform].home_channel
@@ -1452,7 +1480,7 @@ class TestApiServerEnvOverride:
         )
 
         api_server_key = "secret-key-at-least-16"
-        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key}, clear=True):
+        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
             _apply_env_overrides(config)
 
         # Explicit disable wins over the env-var presence.
@@ -1538,6 +1566,7 @@ class TestWebhookEnvOverride:
         with patch.dict(
             os.environ,
             {
+                "HERMES_HOME": os.environ["HERMES_HOME"],
                 "WEBHOOK_ENABLED": "true",
                 "WEBHOOK_PORT": "9999",
                 "WEBHOOK_SECRET": "shared-secret",
@@ -1558,3 +1587,179 @@ class TestWebhookEnvOverride:
             config.platforms[Platform.WEBHOOK].extra.get("secret")
             == "shared-secret"
         )
+
+
+class TestOnAllAdaptersDown:
+    """gateway.on_all_adapters_down: what the runner does when the last messaging
+    adapter goes down (#118080). Default 'exit' preserves the service-restart
+    contract; 'stay_alive' is for launchers with no supervising service manager
+    (the desktop app's direct `hermes serve` child)."""
+
+    def test_default_is_exit(self):
+        config = GatewayConfig.from_dict({})
+        assert config.on_all_adapters_down == "exit"
+
+    def test_yaml_value_accepted_and_roundtrips(self):
+        config = GatewayConfig.from_dict({"gateway": {"on_all_adapters_down": "stay_alive"}})
+        assert config.on_all_adapters_down == "stay_alive"
+        assert GatewayConfig.from_dict(config.to_dict()).on_all_adapters_down == "stay_alive"
+
+    def test_unrecognized_yaml_falls_back_to_exit(self):
+        config = GatewayConfig.from_dict({"gateway": {"on_all_adapters_down": "yolo"}})
+        assert config.on_all_adapters_down == "exit"
+
+    def test_env_override_wins_and_invalid_env_falls_back(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_ON_ALL_ADAPTERS_DOWN", "stay_alive")
+        assert GatewayConfig.from_dict(
+            {"gateway": {"on_all_adapters_down": "exit"}}
+        ).on_all_adapters_down == "stay_alive"
+        monkeypatch.setenv("GATEWAY_ON_ALL_ADAPTERS_DOWN", "whatever")
+        assert GatewayConfig.from_dict(
+            {"gateway": {"on_all_adapters_down": "exit"}}
+        ).on_all_adapters_down == "exit"
+        monkeypatch.delenv("GATEWAY_ON_ALL_ADAPTERS_DOWN")
+        assert GatewayConfig.from_dict({}).on_all_adapters_down == "exit"
+
+
+class TestTopLevelBlockVsAuthoredExtra:
+    """The semantic YAML owner wins at both the extra and adapter/env boundaries."""
+
+    @pytest.mark.parametrize("platform,block,authored,global_value,operator_env", [
+        ("slack", {"require_mention": False, "strict_mention": False, "thread_require_mention": False,
+                   "free_response_channels": [], "allow_bots": False},
+         {"require_mention": True, "strict_mention": True, "thread_require_mention": True,
+          "free_response_channels": ["C1", "C2"]}, None, None),
+        ("slack", {"extra": {"strict_mention": False, "allow_bots": True}},
+         {"strict_mention": True}, None, None),
+        ("slack", {"allow_bots": True}, {"strict_mention": True}, None, None),
+        ("slack", {"strict_mention": True, "extra": {"strict_mention": False}}, {}, None, None),
+        ("slack", {"strict_mention": True}, {"strict_mention": True}, None, None),
+        ("slack", {"reply_to_mode": "all"}, {}, None, None),
+        ("telegram", {"extra": {"require_mention": False}}, {"require_mention": True}, False, None),
+        ("telegram", {"extra": {"require_mention": False}}, {"require_mention": True}, False, "false"),
+    ], ids=["direct", "subdict", "fill", "block-own-extra", "equal", "no-bridged-key",
+            "telegram-global-fallback", "operator-env"])
+    def test_yaml_owner_reaches_adapter(self, platform, block, authored, global_value,
+                                       operator_env, tmp_path, monkeypatch, caplog):
+        import json
+        from gateway.config_loader import load_yaml_layer
+
+        home = tmp_path / "home"
+        home.mkdir()
+        cfg = {platform: block}
+        if authored:
+            cfg["platforms"] = {platform: {"enabled": True, "extra": authored}}
+        if global_value is not None:
+            cfg["require_mention"] = global_value
+        (home / "config.yaml").write_text(json.dumps(cfg), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        for key in list(os.environ):
+            if key.startswith(platform.upper() + "_"):
+                monkeypatch.delenv(key)
+        if operator_env is not None:
+            monkeypatch.setenv("TELEGRAM_REQUIRE_MENTION", operator_env)
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            data = {}
+            load_yaml_layer(home, data)
+        if block == {"reply_to_mode": "all"}:
+            assert platform not in data.get("platforms", {})
+            return
+        extra = data["platforms"][platform]["extra"]
+        expected = {**block.get("extra", {}), **{k: v for k, v in block.items() if k != "extra"}, **authored}
+        for key, value in expected.items():
+            assert extra[key] == value
+        conflicts = {key for source in (block, block.get("extra", {})) for key in source
+                     if key in authored and source[key] != authored[key]}
+        warnings = [r.getMessage() for r in caplog.records if "took precedence" in r.getMessage()]
+        assert len(warnings) == len(conflicts)
+        for key in conflicts:
+            assert sum(bool(re.search(rf"\b{re.escape(key)}\b", msg)) for msg in warnings) == 1
+        if platform == "slack" and "strict_mention" in block:
+            assert os.environ["SLACK_STRICT_MENTION"] == str(expected["strict_mention"]).lower()
+        if "free_response_channels" in block:
+            assert os.environ["SLACK_THREAD_REQUIRE_MENTION"] == "true"
+            assert os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C1,C2"
+        if platform == "telegram":
+            from gateway.platform_registry import platform_registry
+            entry = next(e for e in platform_registry.all_entries() if e.name == "telegram")
+            cls = entry.adapter_factory.__globals__["TelegramAdapter"]
+            adapter = cls.__new__(cls)
+            adapter.config = PlatformConfig.from_dict(data["platforms"][platform])
+            assert adapter._telegram_require_mention() is (operator_env is None)
+            assert os.environ["TELEGRAM_REQUIRE_MENTION"] == (operator_env or "true")
+
+    @pytest.mark.parametrize("source,platform", [
+        *((source, "slack") for source in ("legacy", "root", "root-extra", "nested",
+          "managed-extra", "mixed", "dict-disjoint", "dict-overlap", "root-sibling")),
+        ("root-sibling", "discord"), ("root-sibling", "telegram"),
+    ])
+    def test_configuration_layer_owner(self, source, platform, tmp_path, monkeypatch, caplog):
+        import json
+
+        home = tmp_path / "home"
+        managed = tmp_path / "managed"
+        home.mkdir()
+        managed.mkdir()
+        pin = {"require_mention": True, "allow_from": ["U_ADMIN"]}
+        user = {"platforms": {platform: {"enabled": True, "extra": {
+            "require_mention": False, "allow_from": ["U_USER"], "strict_mention": True}}}}
+        managed_cfg = {
+            "root": {platform: pin},
+            "root-extra": {platform: {"extra": pin}},
+            "nested": {"gateway": {"platforms": {platform: pin}}},
+            "managed-extra": {"platforms": {platform: {"extra": pin}}},
+            "mixed": {platform: pin, "gateway": {"platforms": {platform: {"extra": pin}}}},
+        }.get(source, {})
+        if source == "legacy":
+            (home / "gateway.json").write_text(json.dumps({"platforms": {platform: {
+                "enabled": True, "extra": {"require_mention": True, "strict_mention": True}}}}), encoding="utf-8")
+            user = {platform: {"require_mention": False, "strict_mention": False}}
+        elif source == "managed-extra":
+            user = {platform: {"require_mention": False, "allow_from": ["U_USER"]}}
+        if source.startswith("dict-"):
+            user["platforms"][platform]["extra"] = {"channel_prompts": {"C_USER": "user prompt"}}
+            if source == "dict-overlap":
+                user["platforms"][platform]["extra"]["channel_prompts"]["C_ADMIN"] = "user override"
+            managed_cfg = {"platforms": {platform: {"extra": {"channel_prompts": {"C_ADMIN": "admin prompt"}}}}}
+        if source == "root-sibling":
+            user[platform] = {"allow_bots": True}
+            user["require_mention"] = False
+            managed_cfg = {"gateway": {"platforms": {platform: {"extra": pin}}}}
+        (home / "config.yaml").write_text(json.dumps(user), encoding="utf-8")
+        (managed / "config.yaml").write_text(json.dumps(managed_cfg), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        for key in list(os.environ):
+            if key.startswith(platform.upper() + "_"):
+                monkeypatch.delenv(key)
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = load_gateway_config()
+        extra = config.platforms[Platform(platform)].extra
+        if source.startswith("dict-"):
+            assert extra["channel_prompts"] == {"C_USER": "user prompt", "C_ADMIN": "admin prompt"}
+            return
+        if source == "root-sibling":
+            assert str(extra["allow_bots"]).lower() == "true"
+        if source == "legacy":
+            assert extra["require_mention"] is False
+            assert extra["strict_mention"] is False
+            assert os.environ["SLACK_REQUIRE_MENTION"] == "false"
+            assert os.environ["SLACK_STRICT_MENTION"] == "false"
+        else:
+            assert extra["require_mention"] is True
+            assert extra["allow_from"] in (["U_ADMIN"], "U_ADMIN")
+            assert os.environ.get("SLACK_REQUIRE_MENTION", "true") == "true"
+            if source != "managed-extra":
+                assert extra["strict_mention"] is True
+        if source != "managed-extra":
+            assert not [r for r in caplog.records if "took precedence" in r.getMessage()]
+        if source == "root-sibling" and platform == "discord":
+            assert os.environ["DISCORD_ALLOWED_USERS"] == "U_ADMIN"
+        if source == "root-sibling" and platform == "telegram":
+            from gateway.platform_registry import platform_registry
+            entry = next(e for e in platform_registry.all_entries() if e.name == "telegram")
+            cls = entry.adapter_factory.__globals__["TelegramAdapter"]
+            adapter = cls.__new__(cls)
+            adapter.config = config.platforms[Platform.TELEGRAM]
+            assert adapter._telegram_require_mention() is True
+            assert os.environ["TELEGRAM_REQUIRE_MENTION"] == "true"

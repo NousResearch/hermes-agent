@@ -218,3 +218,103 @@ describe('ErrorBoundary assistant-ui lookup recovery', () => {
     expect(recoveryWarningCount(warnSpy.mock.calls)).toBe(0)
   })
 })
+
+// #98654: Radix portal teardown racing a host subtree swap makes vendor React
+// throw "Tried to unmount a fiber that is already unmounted" from INSIDE
+// whatever boundary hosts the portal (observed as `contrib:workspace`), so the
+// pane blanks until a manual Retry. The tree settles once the swap completes,
+// so a scoped boundary gets the same capped auto-recovery the root gets for
+// assistant-ui races.
+const PORTAL_UNMOUNT_ERROR = new Error('Tried to unmount a fiber that is already unmounted')
+
+const portalRecoveryWarningCount = (calls: unknown[][]) =>
+  calls.filter(call => call.some(value => String(value).includes('auto-recovering from portal teardown'))).length
+
+describe('ErrorBoundary portal teardown recovery', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('auto-recovers a scoped boundary that hosts the portal race (#98654)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const box: { error: Error | null } = { error: PORTAL_UNMOUNT_ERROR }
+    const Bomb = makeBomb(box)
+
+    render(
+      <ErrorBoundary fallback={() => <div>scoped fallback</div>} label="contrib:workspace">
+        <Bomb />
+      </ErrorBoundary>
+    )
+
+    box.error = null
+    act(() => vi.runOnlyPendingTimers())
+
+    expect(screen.getByText('recovered')).toBeTruthy()
+    expect(screen.queryByText('scoped fallback')).toBeNull()
+    expect(portalRecoveryWarningCount(warnSpy.mock.calls)).toBe(1)
+  })
+
+  it('stops retrying a persistent portal race after the recovery budget is exhausted', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const Bomb = makeBomb({ error: PORTAL_UNMOUNT_ERROR })
+
+    render(
+      <ErrorBoundary fallback={() => <div>scoped fallback</div>} label="contrib:workspace">
+        <Bomb />
+      </ErrorBoundary>
+    )
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      act(() => vi.runOnlyPendingTimers())
+    }
+
+    expect(screen.getByText('scoped fallback')).toBeTruthy()
+    expect(portalRecoveryWarningCount(warnSpy.mock.calls)).toBe(3)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each([
+    ['a near-miss unmount message', new Error('Tried to unmount a fiber that was painted twice')],
+    ['an unrelated render error', new Error('some unrelated application error')]
+  ])('does not auto-recover %s in a scoped boundary', (_label, error) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const Bomb = makeBomb({ error })
+
+    render(
+      <ErrorBoundary fallback={() => <div>scoped fallback</div>} label="contrib:workspace">
+        <Bomb />
+      </ErrorBoundary>
+    )
+
+    act(() => vi.runAllTimers())
+
+    expect(screen.getByText('scoped fallback')).toBeTruthy()
+    expect(portalRecoveryWarningCount(warnSpy.mock.calls)).toBe(0)
+  })
+
+  it('recovers at root as well, sharing the same budget as scoped boundaries', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const box: { error: Error | null } = { error: PORTAL_UNMOUNT_ERROR }
+    const Bomb = makeBomb(box)
+
+    render(
+      <RootErrorBoundary>
+        <Bomb />
+      </RootErrorBoundary>
+    )
+
+    box.error = null
+    act(() => vi.runOnlyPendingTimers())
+
+    expect(screen.getByText('recovered')).toBeTruthy()
+    expect(portalRecoveryWarningCount(warnSpy.mock.calls)).toBe(1)
+  })
+})

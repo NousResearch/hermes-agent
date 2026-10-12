@@ -102,7 +102,7 @@ from agent.transports.chat_completions import ChatCompletionsTransport
 loaded = get_compatible_custom_providers(load_config())
 rows = []
 for provider in ["custom:my-gateway", "custom"]:
-    for model in models:
+    for model, model_spec in models.items():
         agent = AIAgent(
             model=model,
             provider=provider,
@@ -124,7 +124,7 @@ for provider in ["custom:my-gateway", "custom"]:
         rows.append({
             "provider": agent.provider,
             "model": agent.model,
-            "declared_format": models[model].get("reasoning_format"),
+            "declared_format": model_spec.get("reasoning_format"),
             "profile": None if profile is None else type(profile).__name__,
             "agent_has_custom_models": any(
                 e.get("models") == models for e in agent._custom_providers

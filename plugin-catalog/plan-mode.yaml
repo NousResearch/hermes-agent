@@ -1,23 +1,47 @@
 name: plan-mode
 title: Plan mode
 repo: https://github.com/100yenadmin/hermes-plan-mode
-sha: b2516184698d030131f6aec4020fe55ffb65cb56
-description: 'Enforced per-session plan mode: /planmode on blocks mutating Hermes tools dispatched through pre_tool_call (writes outside
-  .hermes/plans, terminal, code execution, delegation, MCP) until you /planmode approve the plan. Fails closed. Enforced in the classic CLI on
-  released Hermes (<= 0.21.4); gateway, TUI and Desktop need a build with hermes-agent commits 5943347a2a and 35fdb4608a (after v2026.9.21) and
-  refuse /planmode on until then. Disclosure: Codex app-server native exec and TUI side agents bypass pre_tool_call and are not enforced.'
+sha: 7e77318d6d69d561a50deed07e4ae72d6498be0f
+description: 'Claude Code-style plan mode on every interactive Hermes surface: /plan or /planmode on blocks mutating Hermes tools dispatched
+  through pre_tool_call (writes outside .hermes/plans, terminal, code execution, delegation, MCP) while the agent
+  explores, asks clarifying questions and writes a plan. The agent submits the plan with plan_mode(submit) and you
+  approve it through Hermes'' own approval prompt (gateway buttons, the TUI/Desktop card, the CLI panel or /approve);
+  it then implements in the same turn and tracks todo_list progress. Deny keeps planning and the agent revises.
+  When yolo or approvals.mode: off would auto-approve, it asks one clarify question instead (Approve plan rev N /
+  Keep planning), and only that answer approves. By default plans are compact and decision-complete and the agent
+  does not commit unless asked (plan_style, allow_commits and plan_skill settings; plan_style: core keeps the
+  zero-context /plan craft).
+  Classic CLI enforced on every supported Hermes; gateway, TUI and Desktop from Hermes v2026.9.24 (0.21.5), and
+  refused on older builds. Disclosure — plan-mode does not enforce Codex app-server exec/applyPatch or TUI
+  /background and btw side agents. It reads seven internal Hermes seams for session identity, workspace, profile and
+  skills.inline_shell, each guarded with a documented fallback. It creates .hermes/plans under the session working directory
+  and keeps per-session state in plugin state. It adds a turn note while planning or executing, a ≤200-char
+  system-prompt hint, and a one-line footer to short replies on chat platforms. When you pick "Always" on a plan
+  approval, Hermes core writes a plugin_rule:plan-mode entry to command_allowlist in config.yaml. With
+  allow_gateway_injection: true it queues one message to start work after a typed /planmode approve. No network
+  calls, no subprocesses, no self-updater.'
 maintainer: 100yenadmin
 tier: community
 category: tools
 requires_hermes: '>=0.21.2'
 docs_url: https://github.com/100yenadmin/hermes-plan-mode#readme
-version: "0.1.6"
+version: "0.3.5"
+image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/cli-approval.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/cli-deny-clarify.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/cli-approve-implement.png
 platforms: []
 capabilities:
-  provides_tools: []
+  provides_tools:
+    - plan_mode
   provides_hooks:
     - pre_tool_call
+    - post_tool_call
     - pre_llm_call
+    - transform_llm_output
+    - pre_approval_request
+    - post_approval_response
     - on_session_finalize
     - on_session_reset
   provides_middleware: []

@@ -22,12 +22,10 @@ import threading
 
 import pytest
 
-import cron.jobs as jobs
+from cron import jobs
 
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only: uid/gid ownership semantics"
-)
+pytestmark = pytest.mark.platforms("posix")  # POSIX-only: uid/gid ownership semantics
 
 
 @pytest.fixture()

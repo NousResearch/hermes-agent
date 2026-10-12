@@ -2,8 +2,9 @@ import { type ChatMessage, type GatewayEventPayload, restorePendingBlockingToolC
 import {
   $connectionRequests,
   clearConnectionRequest,
+  CONNECTION_OP_ARG,
   type ConnectionRequest,
-  isCatalogKind,
+  isCatalogRequest,
   normalizeConnectionRequest,
   setConnectionRequest
 } from '@/store/connection-request'
@@ -56,11 +57,16 @@ export function restorePendingConnectionFromSnapshot(
   return { authoritativeAbsent: false, cleared: null, request }
 }
 
-/** Tool row for a pending operation whose `tool.start` event was missed. */
+/** Tool row for a pending operation (upserted onto the `tool.start` row when that arrived). The row keeps
+ *  the op id, so its card stays this operation's after a later call reuses the call id. */
 export function connectionRequestToolPayload(request: ConnectionRequest): GatewayEventPayload & { name: string } {
-  if (request.targets.some(target => isCatalogKind(target.kind))) {
+  if (isCatalogRequest(request)) {
     return {
-      args: { action: 'install', items: request.targets.map(target => ({ id: target.name, kind: target.kind })) },
+      args: {
+        action: 'install',
+        items: request.targets.map(target => ({ id: target.name, kind: target.kind })),
+        [CONNECTION_OP_ARG]: request.opId
+      },
       name: 'manage_catalog',
       tool_id: request.toolCallId
     }
@@ -69,7 +75,8 @@ export function connectionRequestToolPayload(request: ConnectionRequest): Gatewa
   return {
     args: {
       action: request.targets[0]?.action ?? (request.targets[0]?.kind === 'connector' ? 'connect' : 'install'),
-      connectors: request.targets.map(target => ({ mcp: target.kind === 'mcp', name: target.name }))
+      connectors: request.targets.map(target => ({ mcp: target.kind === 'mcp', name: target.name })),
+      [CONNECTION_OP_ARG]: request.opId
     },
     name: 'manage_connections',
     tool_id: request.toolCallId

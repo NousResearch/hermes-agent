@@ -37,7 +37,9 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     disabled = getattr(agent, "disabled_toolsets", None)
     if enabled_override is not None or disabled_override is not None:
         enabled = enabled_override if enabled_override is not None else enabled
-        disabled = disabled_override if disabled_override is not None else disabled
+        if disabled_override is not None:
+            from toolsets import session_disabled_toolsets
+            disabled = session_disabled_toolsets(disabled_override, getattr(agent, "platform", None))
         agent.enabled_toolsets, agent.disabled_toolsets = enabled, disabled
     return enabled, disabled
 
@@ -46,15 +48,15 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
     """Byte-level diff of the serialized tool arrays (dynamic schemas change CONTENT under
     stable names); False if either side fails to serialize."""
     try:
-        dump = lambda defs: json.dumps(defs, sort_keys=True, separators=(",", ":"), default=str)  # noqa: E731
+        dump = lambda defs: json.dumps(defs, sort_keys=True, separators=(",", ":"), default=str)
         return dump(_agent_tool_defs(agent)) != dump(new_defs)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
-def _drop_side_agent_tools(agent, new_defs: list, new_names: set) -> tuple:
-    from tools.connectors.turn import side_agent_tool_drops
-    drops = side_agent_tool_drops(agent)
+def _drop_session_tools(agent, new_defs: list, new_names: set) -> tuple:
+    from toolsets import agent_tool_drops
+    drops = agent_tool_drops(agent)
     if not drops:
         return new_defs, new_names
     return [entry for entry in new_defs if _def_name(entry) not in drops], new_names - drops
@@ -76,7 +78,7 @@ def _publish_tool_snapshot(
         current = {_def_name(t) for t in current_defs}
         if prefix_registered is not None:
             new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
-        new_defs, new_names = _drop_side_agent_tools(agent, new_defs, new_names)
+        new_defs, new_names = _drop_session_tools(agent, new_defs, new_names)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         # Same NAME set: no change for MCP-reload callers. Content-aware callers
@@ -127,7 +129,7 @@ def refresh_agent_mcp_tools(
     if preserve_prefix:
         try:
             prefix_registered = {entry.name for entry in registry.get_all_entries()}
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
@@ -166,14 +168,14 @@ def persist_agent_tool_names(agent) -> None:
         return
     try:
         db.update_session_tool_names(session_id, {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)})
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("tool_names persist skipped", exc_info=True)
 
 
 def _config_permitted_names(agent) -> set:
     """Tool names this agent's toolset selection allows before ``check_fn``: all a pin may carry
     forward. A client-surface toolset counts as allowed (only its client can add it, so its absence
-    here is no config choice); ``disabled_toolsets`` and role reservations still strip it."""
+    here is no config choice); ``disabled_toolsets`` still strips it."""
     from model_tools import _select_tool_names
     from toolsets import CLIENT_SURFACE_TOOLSETS
     enabled = getattr(agent, "enabled_toolsets", None)
@@ -227,7 +229,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     merged = _drop_gated_carried_tools(merged, carried)
     merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
-    merged, merged_names = _drop_side_agent_tools(agent, merged, merged_names)
+    merged, merged_names = _drop_session_tools(agent, merged, merged_names)
     changed = merged != fresh_defs
     if changed:
         with _agent_tools_lock:

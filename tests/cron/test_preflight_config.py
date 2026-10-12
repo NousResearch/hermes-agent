@@ -114,7 +114,7 @@ class TestMissingProviderKeyBlocks:
         job = _job()
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, output, _final_response, error, agent_constructed = \
                 _run_job_patched(job, tmp_path, resolve=_AuthErrorFactory())
 
         assert agent_constructed is False
@@ -131,13 +131,12 @@ class TestMissingProviderKeyBlocks:
 
         def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
             deliveries.append(content)
-            return None
 
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
             fake_db = MagicMock()
             for _tick in range(2):
-                fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
+                fresh = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
                 with patch("cron.scheduler._hermes_home", tmp_path), \
                      patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                      patch("hermes_cli.env_loader.load_hermes_dotenv"), \
@@ -152,7 +151,7 @@ class TestMissingProviderKeyBlocks:
                     assert ok is True
                     assert mock_agent_cls.called is False
 
-            stored = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
+            stored = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
 
         assert stored["last_status"] == "blocked_config"
         assert len(deliveries) == 1, (
@@ -182,7 +181,7 @@ class TestMissingProviderKeyBlocks:
         job = _job()
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, _output, _final_response, error, agent_constructed = \
                 _run_job_patched(job, tmp_path, resolve=resolve)
 
         assert agent_constructed is True
@@ -211,7 +210,7 @@ class TestMissingProviderKeyBlocks:
         job = _job(provider="anthropic", model="claude-sonnet-5")
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, _output, _final_response, error, agent_constructed = \
                 _run_job_patched(job, tmp_path, resolve=resolve)
 
         assert agent_constructed is False
@@ -225,7 +224,7 @@ class TestHealthyJobUnaffected:
         job = _job()
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, _output, final_response, error, agent_constructed = \
                 _run_job_patched(job, tmp_path)
 
         assert success is True
@@ -241,14 +240,14 @@ class TestHealthyJobUnaffected:
             cron_jobs.save_jobs([job])
             # Tick 1: blocked.
             _run_job_patched(job, tmp_path, resolve=_AuthErrorFactory())
-            stored = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
+            stored = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
             assert stored.get("preflight_alerted")
             # Tick 2: key restored → healthy run clears the marker.
-            fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
+            fresh = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
             success, *_rest, agent_constructed = _run_job_patched(fresh, tmp_path)
             assert success is True
             assert agent_constructed is True
-            stored = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
+            stored = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
             assert not stored.get("preflight_alerted")
 
 
@@ -264,13 +263,12 @@ class TestOptOut:
 
         def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
             deliveries.append(content)
-            return None
 
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
             fake_db = MagicMock()
             for _tick in range(2):
-                fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
+                fresh = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
                 with patch("cron.scheduler._hermes_home", tmp_path), \
                      patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                      patch("hermes_cli.env_loader.load_hermes_dotenv"), \
@@ -284,7 +282,7 @@ class TestOptOut:
                     sched.run_one_job(fresh)
                     assert mock_agent_cls.called is False
 
-            stored = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
+            stored = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
 
         assert stored["last_status"] == "error"
         assert len(deliveries) == 2  # old behavior: alert every tick
@@ -311,7 +309,7 @@ class TestSkillReadiness:
         job = _job(skills=["needy-skill"])
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, output, _final_response, error, agent_constructed = \
                 _run_job_patched(job, tmp_path, skill_view=fake_skill_view)
 
         assert agent_constructed is False
@@ -336,7 +334,7 @@ class TestSkillReadiness:
         job = _job(skills=["ready-skill"])
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, _output, _final_response, _error, agent_constructed = \
                 _run_job_patched(job, tmp_path, skill_view=fake_skill_view)
 
         assert success is True
@@ -350,7 +348,7 @@ class TestDeliveryPlatform:
             cron_jobs.save_jobs([job])
             with patch("cron.scheduler_delivery._is_known_delivery_platform",
                        return_value=False):
-                success, output, final_response, error, agent_constructed = \
+                success, output, _final_response, error, agent_constructed = \
                     _run_job_patched(job, tmp_path)
 
         assert agent_constructed is False

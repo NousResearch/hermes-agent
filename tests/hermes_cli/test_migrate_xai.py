@@ -248,6 +248,7 @@ class TestCrashDurability:
         # ...and the aborted write must not leave a temp file behind.
         assert list(trap_config.parent.glob("*.tmp")) == []
 
+    @pytest.mark.require_symlinks
     def test_symlinked_config_is_replaced_in_place(self, tmp_path: Path):
         """A config.yaml symlinked into a dotfiles repo must stay a symlink."""
         real_dir = tmp_path / "dotfiles"
@@ -270,7 +271,7 @@ class TestCrashDurability:
         assert real.read_text(encoding="utf-8") == link.read_text(encoding="utf-8")
         assert "grok-4.3" in real.read_text(encoding="utf-8")
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    @pytest.mark.platforms("posix")  # POSIX permission bits
     def test_existing_file_mode_is_preserved(self, trap_config: Path):
         """Managed (NixOS 0640) and container installs widen config.yaml
         deliberately; the migration must not silently tighten it to 0600."""

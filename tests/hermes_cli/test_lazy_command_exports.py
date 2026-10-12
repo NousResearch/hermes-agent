@@ -15,7 +15,6 @@ import pytest
 
 import hermes_cli.main
 
-
 def test_importing_main_does_not_import_command_modules():
     code = textwrap.dedent(
         """
@@ -38,9 +37,9 @@ def test_importing_main_does_not_import_command_modules():
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
-
 
 @pytest.mark.real_concurrent_gate  # conftest autouse stub would shadow one frozen name
 def test_frozen_updater_surface_resolves_to_real_objects():
@@ -53,7 +52,3 @@ def test_frozen_updater_surface_resolves_to_real_objects():
             assert got is getattr(mod, name) or (
                 getattr(got, "__module__", None) == module and getattr(got, "__name__", None) == name
             ), name
-
-
-
-

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   cronEditorUpdates,
   cronModelChoiceValue,
+  jobDescription,
   jobIsScriptOnly,
   lastErrorSummary,
   parseCronDeliveryTargets,
@@ -32,6 +33,21 @@ describe('jobIsScriptOnly', () => {
     expect(jobIsScriptOnly({ no_agent: false, script: 'echo hi' })).toBe(false)
     expect(jobIsScriptOnly({ no_agent: true, script: '' })).toBe(false)
     expect(jobIsScriptOnly({ no_agent: true, script: null })).toBe(false)
+  })
+})
+
+describe('jobDescription', () => {
+  it('returns the prompt when present', () => {
+    expect(jobDescription({ prompt: 'Summarize mail', script: 'sync.sh' })).toBe('Summarize mail')
+  })
+
+  it('falls back to the script when the prompt is empty (script-only jobs)', () => {
+    expect(jobDescription({ prompt: '', script: 'sync_quillreach_cron.sh' })).toBe('sync_quillreach_cron.sh')
+  })
+
+  it('returns an empty string when neither prompt nor script is set', () => {
+    expect(jobDescription({ prompt: '', script: '' })).toBe('')
+    expect(jobDescription({ prompt: null, script: null })).toBe('')
   })
 })
 
@@ -88,6 +104,17 @@ describe('lastErrorSummary', () => {
 
     expect(summary.length).toBeLessThanOrEqual(200)
     expect(summary.endsWith('…')).toBe(true)
+  })
+
+  it('caps astral error text without splitting a surrogate pair (review follow-up)', () => {
+    // last_error is raw Python exception text; astral characters reach the cap. slice()'s
+    // UTF-16 unit limit used to leave a lone high surrogate that rendered as U+FFFD.
+    // 250 emoji = 500 units > ERROR_SUMMARY_MAX; the old slice(0, 199) cut inside the
+    // pair at unit 198, emitting '\uD83D…'.
+    const summary = lastErrorSummary(`ValueError: ${'😀'.repeat(250)}`)
+
+    expect(summary.endsWith('😀…')).toBe(true)
+    expect(summary.slice(0, -1).endsWith('\uD83D')).toBe(false)
   })
 
   it('returns an empty string for missing input', () => {

@@ -16,6 +16,9 @@ import { useTheme } from '@/themes'
 import { $accentOverride, setAccentOverride } from '@/themes/accent-override'
 import { normalizeHex } from '@/themes/color'
 import type { ThemeMode } from '@/themes/context'
+import { nousTheme } from '@/themes/presets'
+import { retintTheme } from '@/themes/retint'
+import { installUserTheme } from '@/themes/user-themes'
 
 export type SetupRow = SetupChooseOption
 
@@ -69,11 +72,34 @@ const APP_LABELS: Record<SetupChooseKind, (id: string, sources: Pick<RowSources,
 
 interface LiveLook {
   apply: (id: string, setMode: (mode: ThemeMode) => void) => void
+  commit?: (id: string, setTheme: (name: string) => void) => void
   snapshot: (mode: ThemeMode, setMode: (mode: ThemeMode) => void) => () => void
 }
 
 export const LIVE_LOOK: Partial<Record<SetupChooseKind, LiveLook>> = {
   accent: {
+    commit: (id, setTheme) => {
+      const hex = normalizeHex(id)
+
+      if (!hex) {
+        return
+      }
+
+      // Save the confirmed palette through normal theme persistence. The preview
+      // override is temporary and must not tint later theme or profile selections.
+      const theme =
+        hex === NOUS_ACCENT
+          ? nousTheme
+          : installUserTheme({
+              ...retintTheme(nousTheme, hex),
+              name: `nous-accent-${hex.slice(1)}`,
+              label: `${nousTheme.label} · ${hex}`
+            })
+
+      setTheme(theme.name)
+      setOnboardingAnswers({ accent: hex === NOUS_ACCENT ? null : hex })
+      setAccentOverride(null)
+    },
     apply: id => {
       const hex = normalizeHex(id)
 

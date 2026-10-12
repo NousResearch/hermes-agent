@@ -70,7 +70,7 @@ export function SetupChoosePending({
   const copy = t.assistant.clarify
   const setupCopy = t.assistant.setupChoose
   const storedId = useStore(useSessionView().$storedId)
-  const { mode, setMode } = useTheme()
+  const { mode, setMode, setTheme } = useTheme()
 
   const { kind, pickerKind, ready, requestId, setup, source } = setupChooseSource(request, fromArgs)
   const freeText = pickerKind === null
@@ -148,14 +148,23 @@ export function SetupChoosePending({
     [kind, mode, question.multiSelect, requestId, setMode]
   )
 
+  const commitLook = useCallback(
+    (ids: string[]) => {
+      if (ids[0]) {
+        LIVE_LOOK[kind]?.commit?.(ids[0], setTheme)
+      }
+    },
+    [kind, setTheme]
+  )
+
   // Composer text that names a row picks it through this card, so the typed pick applies its look too.
   const liveRequestId = request?.requestId
 
   useEffect(() => {
     if (liveRequestId) {
-      stageSetupChoose(liveRequestId, { preview: stage })
+      stageSetupChoose(liveRequestId, { commit: commitLook, preview: stage })
     }
-  }, [liveRequestId, stage])
+  }, [commitLook, liveRequestId, stage])
 
   const toggle = useCallback(
     (_question: ClarifyQuestion, choice: string) => {

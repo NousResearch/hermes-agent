@@ -3498,7 +3498,7 @@ class ContextCompressor(
         from hermes_state_errors import PruneRowStaleError, PruneRowUnresolvedError
 
         ignored = {_DB_PERSISTED_MARKER, "_row_id"}
-        changes: List[tuple] = []
+        changes: list[tuple] = []
         unwritten_seen = False
         for original, replacement in zip(messages, pruned_msgs):
             if not isinstance(original, dict) or not isinstance(replacement, dict):

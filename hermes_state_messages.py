@@ -1130,7 +1130,7 @@ class SessionMessagesMixin:
         return self._execute_transcript_write(_do, compacted_messages)
 
     def rewrite_pruned_rows(self, session_id: str, changes: list[tuple[dict[str, Any], dict[str, Any]]], *,
-        model_config_patch: Optional[Dict[str, Any]] = None) -> int:
+        model_config_patch: Optional[dict[str, Any]] = None) -> int:
         """Proactive-prune commit that rewrites only the changed rows, in place (#124102).
 
         ``archive_and_compact`` is a generation writer: it archives every active row and re-inserts the whole

@@ -208,7 +208,7 @@ def _profile_author() -> str:
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
+    "schedule", "unblock", "hold", "release", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
     "gc",
@@ -525,6 +525,24 @@ def _cmd_show(args: argparse.Namespace) -> int:
             print(f"  max-retries: {int(cfg_val)} (config kanban.failure_limit)")
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
+    # Operator dispatch hold: always visible (never suppressed as stuck) —
+    # including a lapsed-but-uncleared flag, which still needs a release.
+    if task.do_not_dispatch or task.do_not_dispatch_reason or task.do_not_dispatch_until:
+        import time as _time
+        now = int(_time.time())
+        active = kb.dispatch_hold_active(task, now)
+        bits = []
+        if task.do_not_dispatch_reason:
+            bits.append(task.do_not_dispatch_reason)
+        if task.do_not_dispatch_until is not None:
+            if now < task.do_not_dispatch_until:
+                bits.append(f"lapses in {task.do_not_dispatch_until - now}s")
+            else:
+                bits.append("lapsed — `kanban release` to clear")
+        elif active:
+            bits.append("indefinite — `kanban release` to clear")
+        state = "HELD (dispatcher will not spawn)" if active else "flag set but LAPSED (dispatches normally)"
+        field("dispatch-hold", f"{state}" + (f": {'; '.join(bits)}" if bits else ""))
     field("created", f"{_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
@@ -1023,13 +1041,96 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     ids, rc = _require_ids(args)
     if rc:
         return rc
+    force = getattr(args, "force", False)
     reason = _stripped_or_none(getattr(args, "reason", None))
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
+        if not force:
+            # Scoped confirmation: tasks WITHOUT loop history unblock
+            # silently; tasks WITH prior same-kind re-blocks are refused
+            # unless the operator re-runs with --force, so a cron (or a
+            # tired human) can't silently re-arm an unblock loop. The
+            # refusal names the signal; nothing is mutated on this path.
+            looped = [(tid, kb.unblock_loop_signal(conn, tid)) for tid in ids]
+            refused = [(tid, sig) for tid, sig in looped if sig]
+            if refused:
+                for tid, sig in refused:
+                    kind = sig.get("block_kind") or "untyped"
+                    print(
+                        f"refusing to unblock {tid} without --force: "
+                        f"{sig['block_recurrences']} prior same-kind block(s) "
+                        f"(kind={kind})"
+                        + (" — the next same-kind re-block routes it to triage"
+                           if sig.get("trips_triage_next") else ""),
+                        file=sys.stderr,
+                    )
+                return 1
+        signals = {tid: kb.unblock_loop_signal(conn, tid) for tid in ids}
+
+        def ok_msg(tid):
+            sig = signals.get(tid)
+            if sig:
+                kind = sig.get("block_kind") or "untyped"
+                return (f"Unblocked {tid}{suffix} "
+                        f"[loop-risk acknowledged with --force: "
+                        f"{sig['block_recurrences']} prior same-kind block(s), kind={kind}]")
+            return f"Unblocked {tid}{suffix}"
+
         op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
-        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
+        return _bulk_apply(ids, op, ok_msg,
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+
+
+def _cmd_hold(args: argparse.Namespace) -> int:
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return _err("kanban hold is orchestrator-only; workers must hand off their assigned task")
+    ids, rc = _require_ids(args)
+    if rc:
+        return rc
+    reason = _stripped_or_none(getattr(args, "reason", None))
+    ttl = getattr(args, "ttl", None)
+    if ttl is not None:
+        try:
+            ttl = int(ttl)
+        except (TypeError, ValueError):
+            return _err("--ttl must be an integer number of seconds")
+        if ttl <= 0:
+            return _err("--ttl must be a positive number of seconds")
+    author = _profile_author()
+    with kbc.connect_closing() as conn:
+        def op(tid):
+            return kb.set_do_not_dispatch(conn, tid, reason=reason, ttl_seconds=ttl, by=author)
+
+        def ok_msg(tid):
+            held = kb.get_task(conn, tid)
+            scope = (
+                f", lapses in {ttl}s" if ttl is not None
+                else (f", indefinite (owner: {author})")
+            )
+            detail = ""
+            if held is not None and held.do_not_dispatch_reason:
+                detail = f" — {held.do_not_dispatch_reason}"
+            return f"Held {tid} (do-not-dispatch{scope}){detail}"
+
+        return _bulk_apply(ids, op, ok_msg,
+                           lambda tid: f"cannot hold {tid} (unknown id, terminal status, or already held?)")
+
+
+def _cmd_release(args: argparse.Namespace) -> int:
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return _err("kanban release is orchestrator-only; workers must hand off their assigned task")
+    ids, rc = _require_ids(args)
+    if rc:
+        return rc
+    reason = _stripped_or_none(getattr(args, "reason", None))
+    author = _profile_author() if reason else None
+    suffix = f": {reason}" if reason else ""
+    with kbc.connect_closing() as conn:
+        op = _commented(conn, reason, author, "RELEASE",
+                        lambda tid: kb.clear_do_not_dispatch(conn, tid, by=_profile_author()))
+        return _bulk_apply(ids, op, lambda tid: f"Released {tid} (dispatch hold cleared){suffix}",
+                           lambda tid: f"cannot release {tid} (unknown id or not held?)")
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:
@@ -1328,6 +1429,7 @@ _HANDLERS = {
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
+    "hold": _cmd_hold, "release": _cmd_release,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,

@@ -1930,6 +1930,13 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Phase2 P3 scoped wave-cap: positive int 1..4 = max in-flight workers
+        # per upstream endpoint (normalized base_url bucket) per tick;
+        # 0 = disabled kill-switch (prior behaviour). Default 3.
+        "wave_cap_per_upstream": 3,
+        # Phase2 P3 scoped-circuit kill-switch: False disables the fast-crash
+        # circuit + scoped pause entirely (prior behaviour). Default True.
+        "scoped_circuit_enabled": True,
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a

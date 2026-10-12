@@ -265,7 +265,8 @@ def _process_single_prompt(
         )
         try:
             # task_id ensures each task gets its own isolated VM
-            result = agent.run_conversation(prompt, task_id=task_id)
+            # Headless turn: honour full provider parks, not the 300s interactive cap.
+            result = agent.run_conversation(prompt, task_id=task_id, interactive=False)
 
             # Stats before conversion — keep the original evaluation order.
             tool_stats = _extract_tool_stats(result["messages"])

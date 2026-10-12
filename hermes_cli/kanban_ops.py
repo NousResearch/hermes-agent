@@ -59,7 +59,8 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee, kanban.max_in_progress,
-    # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
+    # kanban.max_in_progress_per_profile, kanban.wave_cap_per_upstream,
+    # kanban.scoped_circuit_enabled and kanban.max_spawn with the same
     # semantics as the gateway dispatch path.
     try:
         from hermes_cli.config import load_config
@@ -69,6 +70,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = kbd._positive_int(
             _kanban_cfg.get("max_in_progress_per_profile"), None
         )
+        # Phase2 P3: config-layer normalization (None -> default 3, 0 = off).
+        wave_cap_per_upstream = kbd._normalize_wave_cap_setting(
+            _kanban_cfg.get("wave_cap_per_upstream", 3)
+        )
+        scoped_circuit_enabled = bool(_kanban_cfg.get("scoped_circuit_enabled", True))
         # Memory-derived default when unset — same fallback the gateway applies.
         max_in_progress = kbd.resolve_max_in_progress(
             kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
@@ -81,6 +87,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        # Phase2 P3: config unreadable — kill-switches to prior behaviour.
+        wave_cap_per_upstream = None
+        scoped_circuit_enabled = True
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -90,6 +99,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            wave_cap_per_upstream=wave_cap_per_upstream,
+            scoped_circuit_enabled=scoped_circuit_enabled,
         )
     if getattr(args, "json", False):
         _print_json({
@@ -105,12 +116,22 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
+            # Phase2 P3: additive scoped-cap/pause buckets.
+            "skipped_upstream_capped": [
+                {"task_id": tid, "upstream_key": key, "current": current}
+                for (tid, key, current) in res.skipped_upstream_capped
+            ],
+            "scoped_paused": [
+                {"task_id": tid, "upstream_key": key}
+                for (tid, key) in res.scoped_paused
+            ],
             "auto_assigned_default": res.auto_assigned_default,
             "respawn_guarded": [
                 {"task_id": tid, "reason": reason}
                 for (tid, reason) in res.respawn_guarded
             ],
             "rate_limited": res.rate_limited,
+            "ledger_warnings": res.ledger_warnings,
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
         }, ascii=True)
@@ -141,6 +162,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:
         print(f"Deferred ({who} at per-profile cap, {current} running): {tid}")
+    # Phase2 P3: scoped holds read as scoped, never "stuck".
+    for tid, key, current in res.skipped_upstream_capped:
+        print(f"Deferred (upstream {key} at wave cap, {current} in flight): {tid}")
+    for tid, key in res.scoped_paused:
+        print(f"Paused (upstream {key} parked — scoped, other upstreams flow): {tid}")
     if res.skipped_nonspawnable:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
@@ -150,6 +176,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Guarded ({reason}): {tid}")
     if res.rate_limited:
         print(f"Rate-limited (released to ready, no failure counted): {', '.join(res.rate_limited)}")
+    if res.ledger_warnings:
+        print(f"Ledger warnings (warn-only, no writes made):")
+        for warning in res.ledger_warnings:
+            print(f"  ! {warning}")
     if res.skipped_locked:
         print("Skipped: another dispatcher holds this board's lock (no writes this tick)")
     if res.memory_pressure:

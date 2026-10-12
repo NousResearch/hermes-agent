@@ -331,6 +331,10 @@ _SPECS = [
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,
+        _arg("--force", action="store_true",
+             help="Confirm unblocking a task with unblock-loop history (prior same-kind re-blocks). "
+                  "Without it, loop-risk tasks are refused so a cron can't silently re-arm a loop; "
+                  "tasks with no loop history unblock without this flag."),
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
     _cmd("request-review", [
         _TASK_ID,
@@ -368,6 +372,17 @@ _SPECS = [
                   f"(spawn_failed, timed_out, or crashed; default: {kbd.DEFAULT_FAILURE_LIMIT})"),
         _json_flag(),
     ], help="One dispatcher pass: reclaim stale, promote ready, spawn workers"),
+    _cmd("hold", [
+        _TASK_IDS,
+        _reason("Why the task must not dispatch — recorded on the dispatch_hold audit event."),
+        _arg("--ttl", type=int, default=None,
+             help="Hold lapse in seconds (e.g. 3600 = release automatically in one hour). "
+                  "Omit for an indefinite hold (recorded with its owner instead)."),
+    ], help="Hold one or more tasks from dispatch (operator do-not-dispatch; survives status changes)"),
+    _cmd("release", [
+        _TASK_IDS,
+        _reason("Optional note — recorded on the dispatch_release audit event."),
+    ], help="Release an operator dispatch hold (see hold)"),
     _cmd("daemon", [
         _arg("--interval", type=float, default=60.0, help="Seconds between dispatch ticks (default: 60)"),
         _arg("--max", type=int, help="Cap number of spawns per tick"),

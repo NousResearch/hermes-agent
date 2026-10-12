@@ -1305,7 +1305,7 @@ class TestRunJobSkillBacked:
             register_env_passthrough(["NOTION_API_KEY"])
             return json.dumps({"success": True, "content": "# notion\nUse Notion."})
 
-        def _run_conversation(prompt, *, task_id=None):
+        def _run_conversation(prompt, *, task_id=None, interactive=None):
             from tools.env_passthrough import get_all_passthrough
 
             assert isinstance(task_id, str)

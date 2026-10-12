@@ -42,6 +42,10 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    # Phase2 P3: per-upstream wave cap (default 3, 0 = disabled kill-switch)
+    # and scoped-circuit kill-switch (default true).
+    wave_cap_per_upstream: int
+    scoped_circuit_enabled: bool
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -102,6 +106,17 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         logger.info("kanban dispatcher: default_assignee=%r (unassigned ready tasks "
                     "will route to this profile)", default_assignee)
 
+    # Phase2 P3: scoped wave-cap (default 3, valid 1..4, 0 = disabled
+    # kill-switch restoring prior behaviour) + scoped-circuit kill-switch
+    # (default true). Kill-switches land in this first diff; restart to
+    # apply. Threaded dispatch_once -> _dispatch_once_locked like the
+    # other caps (tick_once_for_board forwards asdict minus interval).
+    wave_cap = _kbd()._normalize_wave_cap_setting(
+        kanban_cfg.get("wave_cap_per_upstream", 3)
+    )
+    logger.info("kanban dispatcher: wave_cap_per_upstream=%d", wave_cap)
+    circuit_enabled = bool(kanban_cfg.get("scoped_circuit_enabled", True))
+    logger.info("kanban dispatcher: scoped_circuit_enabled=%s", circuit_enabled)
     return _DispatcherSettings(
         interval=interval,
         max_spawn=max_spawn,
@@ -115,6 +130,8 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        wave_cap_per_upstream=wave_cap,
+        scoped_circuit_enabled=circuit_enabled,
     )
 
 
@@ -342,5 +359,14 @@ def _log_spawn_results(results: Optional[list]) -> bool:
                 len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                 res.promoted,
                 len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+            )
+        # Phase2 P3: additive surfacing — scoped holds must read as scoped,
+        # never "stuck". Counts only (keys are endpoint URLs, stay out of logs).
+        capped = len(getattr(res, "skipped_upstream_capped", None) or [])
+        paused = len(getattr(res, "scoped_paused", None) or [])
+        if res is not None and (capped or paused):
+            logger.info(
+                "kanban dispatcher [%s]: upstream_capped=%d scoped_paused=%d",
+                slug, capped, paused,
             )
     return any_spawned

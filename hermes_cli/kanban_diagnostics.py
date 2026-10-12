@@ -178,6 +178,30 @@ def _is_running(task) -> bool:
     return _task_field(task, "status") == "running"
 
 
+def _dispatch_hold_active(task, now: int) -> bool:
+    """Mirror of ``kanban_db.dispatch_hold_active`` without the import.
+
+    The diagnostics engine stays dependency-light (it also runs in the
+    dashboard); the logic is three lines — flag set plus TTL unexpired —
+    and any drift between the two copies fails visible (a held task shows
+    ``dispatch_held`` while dispatching, or vice versa), never silent.
+    Pre-migration rows (columns absent) read as unheld.
+    """
+    try:
+        flag = int(_task_field(task, "do_not_dispatch", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if not flag:
+        return False
+    until = _task_field(task, "do_not_dispatch_until", None)
+    if until is None:
+        return True
+    try:
+        return int(now) < int(until)
+    except (TypeError, ValueError):
+        return True
+
+
 def _runs_newest_first(runs) -> list[Any]:
     # reversed(sorted()) not sorted(reverse=True): equal ids must keep the
     # last-listed run first.
@@ -684,9 +708,14 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     (default 30 min). Deliberately age-based and identity-agnostic so it
     catches typo'd assignees, deleted profiles, and down external worker
     pools alike without a registry to curate. Unassigned tasks are excluded —
-    the dispatcher's ``skipped_unassigned`` already covers them."""
+    the dispatcher's ``skipped_unassigned`` already covers them. Tasks under
+    an operator dispatch hold are excluded too — a held task is parked on
+    purpose (see the ``dispatch_held`` rule), and reporting it as stranded
+    would train operators to ignore the signal."""
     threshold_seconds = float(cfg.get("stranded_threshold_seconds", 30 * 60))
     if _task_field(task, "status") != "ready":
+        return []
+    if _dispatch_hold_active(task, now):
         return []
     # A live claim means it's being worked on even without progress yet.
     if _task_field(task, "claim_lock"):
@@ -736,6 +765,46 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_dispatch_held(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Operator dispatch hold (``kanban hold``) on a live-lane task.
+
+    This is intentional parking, NOT distress — but it must stay VISIBLE:
+    without this rule a held task goes quiet (the respawn guard skips it,
+    ``stranded_in_ready`` excludes it) and the hold is forgotten. Severity
+    stays ``warning`` (never error/critical): the operator asked for this.
+    Auto-clears on ``release`` or TTL lapse.
+    """
+    status = _task_field(task, "status")
+    if status in (None, "done", "archived"):
+        return []
+    if not _dispatch_hold_active(task, now):
+        return []
+    task_id = _task_field(task, "id")
+    reason = _task_field(task, "do_not_dispatch_reason", None) or "no reason recorded"
+    until = _task_field(task, "do_not_dispatch_until", None)
+    if until is not None:
+        try:
+            scope = f"lapses in {int(until) - int(now)}s"
+        except (TypeError, ValueError):
+            scope = "TTL unreadable — check the hold"
+    else:
+        scope = "indefinite hold"
+    release_cmd = f"hermes kanban release {task_id}" if task_id else "hermes kanban release <id>"
+    actions = [
+        _cli_hint(f"Release the hold: {release_cmd}", release_cmd, suggested=True),
+    ]
+    return [Diagnostic(
+        kind="dispatch_held", severity="warning",
+        title=f"Dispatch held by operator ({scope})",
+        detail="This task is held from dispatch on purpose: "
+               f"{reason}. The dispatcher will not spawn it until the hold is "
+               "released or lapses — this is not a stuck task.",
+        actions=actions,
+        first_seen_at=int(now), last_seen_at=int(now), count=1,
+        data={"reason": reason, "until": until, "status": status},
+    )]
+
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
@@ -747,6 +816,7 @@ _RULES: list[RuleFn] = [
     _rule_running_with_open_parents,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
+    _rule_dispatch_held,
     _rule_stranded_in_ready,
 ]
 

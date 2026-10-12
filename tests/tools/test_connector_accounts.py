@@ -39,6 +39,10 @@ class _ExecuteTransport:
     """Answers every execute with one result per call, each naming the account it ran under."""
 
     def request(self, method, url, *, headers=None, json=None, timeout=None):
+        if "call" in json:
+            call = json["call"]
+            return _Response({"result": {"connector": call["connector"], "tool": call["tool"], "data": {"ok": True},
+                                         "account": call["arguments"].get("connector_alias")}})
         results = [{"index": i, "connector": c["connector"], "tool": c["tool"], "data": {"ok": True},
                     "account": c["arguments"].get("connector_alias")} for i, c in enumerate(json["tools"])]
         return _Response({"results": results, "successCount": len(results), "errorCount": 0,

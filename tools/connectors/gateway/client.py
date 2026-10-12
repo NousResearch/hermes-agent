@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Protocol, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 import requests
 from pydantic import ValidationError
@@ -37,6 +38,12 @@ SEARCH_TIMEOUT_SECONDS = 30.0
 SCHEMAS_TIMEOUT_SECONDS = 10.0
 
 _MAX_RETRIES = 1
+# Execute retries these once under the same idempotency key; the gateway replays a settled call.
+_RETRY_ONCE_STATUSES = frozenset({502, 503, 504})
+# A 429 asking for a longer wait is returned to the model rather than holding the turn.
+_MAX_RETRY_AFTER_SECONDS = 10.0
+# Gateway origins that rejected the single-call execute form; they get the array form for the process.
+_LEGACY_EXECUTE_ORIGINS: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -91,6 +98,7 @@ class ConnectorClient:
         header_provider: Optional[Callable[[str], dict]] = None,
         call: Optional[CallRef] = None,
         initiator: Optional[str] = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._transport = transport or _default_transport()
         self._endpoint_resolver = endpoint_resolver or _default_endpoint_resolver
@@ -98,6 +106,7 @@ class ConnectorClient:
         # The model call this client serves, and who asked for a connect; both go on the wire.
         self._call = call
         self._initiator = initiator
+        self._sleep = sleep
 
     def search(self, queries: Sequence[dict[str, Any]]) -> dict[str, Any]:
         body = wire.ConnectorSearchRequest(
@@ -198,7 +207,67 @@ class ConnectorClient:
     def execute(
         self, planned: Sequence[PlannedCall], *, return_to: Optional[str] = None, op: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Return gateway results in request order; merge owns length mismatches."""
+        """One result per planned call, in request order: ``{"data", "error"}``.
+
+        Each call is its own single-call request; a failure status with an error body is that call's
+        error entry. A gateway that predates the single-call form gets the legacy array once and is
+        remembered for the process."""
+        origin = self._endpoint_resolver()
+        if origin and origin in _LEGACY_EXECUTE_ORIGINS:
+            return self._execute_legacy(planned, return_to=return_to, op=op)
+        results: list[dict[str, Any]] = []
+        for index, plan in enumerate(planned):
+            result = self._execute_one(plan, return_to=return_to, op=op)
+            if result is None:
+                if origin:
+                    _LEGACY_EXECUTE_ORIGINS.add(origin)
+                logger.info("Connector gateway predates single-call execute; using the array form")
+                return results + self._execute_legacy(planned[index:], return_to=return_to, op=op)
+            results.append(result)
+        return results
+
+    def _execute_one(
+        self, plan: PlannedCall, *, return_to: Optional[str], op: Optional[str],
+    ) -> Optional[dict[str, Any]]:
+        """``None`` when the gateway rejected the single-call form itself (an older gateway)."""
+        body = wire.ConnectorExecuteSingleRequest(
+            call=wire.ConnectorExecuteCall(connector=plan.connector, tool=plan.tool, arguments=plan.arguments),
+            return_to=return_to, op=op,
+        ).model_dump(by_alias=True, exclude_none=True)
+        url = self._url(wire.CONNECTOR_EXECUTE_PATH)
+        idempotency_key = str(uuid.uuid4())
+        for attempt in range(1 + _MAX_RETRIES):
+            response = self._send("POST", url, body, timeout=EXECUTE_TIMEOUT_SECONDS, idempotency_key=idempotency_key,
+                                  retry_transport=attempt < _MAX_RETRIES)
+            if response is None:
+                continue
+            status = int(getattr(response, "status_code", 0))
+            payload = _safe_json(response)
+            if 200 <= status < 300:
+                parsed = self._parse(wire.ConnectorExecuteSingleResponse, payload, "connector execute result")
+                entry = {"data": parsed.result.data, "error": None}
+                if parsed.result.account:
+                    entry["account"] = parsed.result.account
+                return entry
+            headers = getattr(response, "headers", None)
+            if status == 400 and _rejects_single_call_form(payload):
+                return None
+            failure = _call_failure(payload)
+            wait = _retry_wait(status, headers) if attempt < _MAX_RETRIES else None
+            if wait is not None:
+                logger.debug("Connector execute attempt %d got %d; retrying with same key", attempt + 1, status)
+                if wait:
+                    self._sleep(wait)
+                continue
+            if failure is None:
+                raise parse_gateway_error(status, payload, headers)
+            return {"data": None, "error": _error_dict(failure, status=status, headers=headers)}
+        raise ToolGatewayError("connector execute retries exhausted", code="TRANSPORT_ERROR", retryable=True)
+
+    def _execute_legacy(
+        self, planned: Sequence[PlannedCall], *, return_to: Optional[str] = None, op: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """The array form an older gateway accepts: a 200 envelope with per-call errors inside."""
         body = wire.ConnectorExecuteRequest(
             tools=[
                 wire.ConnectorExecuteCall(
@@ -233,6 +302,30 @@ class ConnectorClient:
             timeout=timeout, idempotency_key=idempotency_key, retries=retries,
         )
 
+    def _url(self, path: str) -> str:
+        origin = self._endpoint_resolver()
+        if not origin:
+            raise GatewayUnavailable(
+                "no tool gateway origin resolves", code="NO_ORIGIN"
+            )
+        return f"{origin.rstrip('/')}/{path}"
+
+    def _send(
+        self, method: str, url: str, body: Optional[dict[str, Any]], *,
+        timeout: float, idempotency_key: Optional[str], retry_transport: bool,
+    ) -> Any:
+        """One HTTP attempt. A transport failure returns ``None`` when the caller may retry, else raises."""
+        headers = self._attempt_headers(url, idempotency_key)
+        try:
+            return self._transport.request(method, url, headers=headers, json=body, timeout=timeout)
+        except Exception as exc:
+            log_connector_outcome(_route_key(url.split("/", 3)[-1]), None, code="TRANSPORT_ERROR", call=self._call)
+            if retry_transport:
+                return None
+            raise ToolGatewayError(
+                f"transport failure: {exc}", code="TRANSPORT_ERROR", retryable=True
+            ) from exc
+
     def _request(
         self,
         method: str,
@@ -245,28 +338,13 @@ class ConnectorClient:
     ) -> _Reply:
         """The 2xx reply, unchecked; the caller logs its outcome once the body is read. A failed
         status is logged and raised here."""
-        origin = self._endpoint_resolver()
-        if not origin:
-            raise GatewayUnavailable(
-                "no tool gateway origin resolves", code="NO_ORIGIN"
-            )
-        url = f"{origin.rstrip('/')}/{path}"
-
+        url = self._url(path)
         route = _route_key(path)
-        last_error: Optional[ToolGatewayError] = None
         for attempt in range(1 + retries):
-            headers = self._attempt_headers(url, idempotency_key)
-            try:
-                response = self._transport.request(
-                    method, url, headers=headers, json=body, timeout=timeout
-                )
-            except Exception as exc:
-                last_error = ToolGatewayError(
-                    f"transport failure: {exc}", code="TRANSPORT_ERROR", retryable=True
-                )
-                log_connector_outcome(route, None, code="TRANSPORT_ERROR", call=self._call)
+            response = self._send(method, url, body, timeout=timeout, idempotency_key=idempotency_key,
+                                  retry_transport=attempt < retries)
+            if response is None:
                 continue
-
             status = int(getattr(response, "status_code", 0))
             request_id = response_request_id(response)
             if 200 <= status < 300:
@@ -276,7 +354,6 @@ class ConnectorClient:
             error.request_id = error.request_id or request_id
             log_connector_outcome(route, status, code=error.code, request_id=error.request_id, call=self._call)
             if error.retryable and attempt < retries:
-                last_error = error
                 logger.debug(
                     "Connector %s attempt %d got %d; retrying with same key",
                     path,
@@ -285,9 +362,7 @@ class ConnectorClient:
                 )
                 continue
             raise error
-
-        assert last_error is not None
-        raise last_error
+        raise ToolGatewayError("connector request retries exhausted", code="TRANSPORT_ERROR", retryable=True)
 
     def _attempt_headers(self, url: str, idempotency_key: Optional[str]) -> dict[str, str]:
         """Every header of one HTTP attempt: auth, caller identity, and the idempotency key."""
@@ -327,19 +402,80 @@ def _route_key(path: str) -> str:
 def _result_dict(result: wire.ConnectorExecuteResult) -> dict[str, Any]:
     error = None
     if result.error is not None:
-        error = {"code": result.error.code, "message": result.error.message}
-        if result.error.connector:
-            error["connector"] = result.error.connector
-        if result.error.connect_url:
-            error["connect_url"] = result.error.connect_url
-        if result.error.connection_id:
-            error["connection_id"] = result.error.connection_id
-        if result.error.hint:
-            error["hint"] = result.error.hint
+        error = _error_dict(result.error)
     entry = {"data": result.data, "error": error}
     if result.account:
         entry["account"] = result.account
     return entry
+
+
+def _error_dict(
+    failure: wire.ConnectorToolError, *, status: Optional[int] = None, headers: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """The plain error entry merge renders. ``status`` and ``request_id`` are for logs, never the model."""
+    error: dict[str, Any] = {"code": failure.code, "message": failure.message}
+    family = wire.execute_error_family(failure.code, failure.family)
+    if family:
+        error["family"] = family
+    for key, value in (("connector", failure.connector), ("connect_url", failure.connect_url),
+                       ("connection_id", failure.connection_id), ("hint", failure.hint)):
+        if value:
+            error[key] = value
+    if status is not None:
+        error["status"] = status
+    request_id = getattr(failure, "request_id", None) or (headers or {}).get("x-request-id")
+    if request_id:
+        error["request_id"] = str(request_id)
+    return error
+
+
+def _call_failure(payload: Any) -> Optional[wire.ConnectorExecuteFailure]:
+    """A single-call failure body: a flat ``{code, message}`` the gateway marks with a family or a code
+    this client knows. Anything else (auth, dark route, idempotency conflict) stays a route failure."""
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("code"), str):
+        return None
+    if payload.get("family") is None and payload["code"] not in wire.EXECUTE_ERROR_CODES:
+        return None
+    try:
+        return wire.ConnectorExecuteFailure.model_validate(
+            {"message": "The connector gateway reported an error.", **payload})
+    except ValidationError:
+        return None
+
+
+def _rejects_single_call_form(payload: Any) -> bool:
+    """An older gateway validates every body as the array form and names ``tools`` in its 400."""
+    if not isinstance(payload, Mapping):
+        return False
+    issues = payload.get("issues")
+    if isinstance(issues, list):
+        for issue in issues:
+            path = issue.get("path") if isinstance(issue, Mapping) else None
+            if isinstance(path, list) and path[:1] == ["tools"]:
+                return True
+    envelope = payload.get("error")
+    code = envelope.get("code") if isinstance(envelope, Mapping) else payload.get("code")
+    if code != "VALIDATION_ERROR":
+        return False
+    text = envelope if isinstance(envelope, Mapping) else payload
+    return "tools" in f"{text.get('message', '')} {text.get('details', '')}"
+
+
+def _retry_wait(status: int, headers: Optional[Mapping[str, Any]]) -> Optional[float]:
+    """Seconds to wait before the one retry, or ``None`` when this status is not retried.
+
+    A 429 is retried only when the gateway names a wait, and only a short one; a longer wait goes back
+    to the model as the call's error instead of holding the turn."""
+    if status in _RETRY_ONCE_STATUSES:
+        return 0.0
+    if status != 429:
+        return None
+    raw = (headers or {}).get("Retry-After")
+    try:
+        wait = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return wait if 0 <= wait <= _MAX_RETRY_AFTER_SECONDS else None
 
 
 def _safe_json(response: Any) -> Any:

@@ -105,7 +105,8 @@ class FileOperations(ABC):
         """Whole file as a plain string: no pagination, line numbers or clamping."""
 
     @abstractmethod
-    def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
+    def write_file(self, path: str, content: str, pre_content: Optional[str] = None,
+                   create_only: bool = False) -> WriteResult:
         """Write content to a file, creating directories as needed."""
 
     @abstractmethod
@@ -713,7 +714,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._escape_shell_arg(sys.executable)
         return "python3"
 
-    def _exec_python_snippet(self, snippet: str, py: str | None = None) -> ExecuteResult:
+    def _exec_python_snippet(self, snippet: str, py: str | None = None,
+                             stdin_data: Optional[str] = None) -> ExecuteResult:
         """Run a Python ``snippet`` in the terminal backend's interpreter.
 
         Base64-encodes the snippet so it survives every shell/quoting layer
@@ -727,7 +729,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if py is None:
             py = self._python_interpreter_cmd()
         return self._exec(
-            f"{py} -c \"import base64; exec(base64.b64decode('{encoded}').decode())\""
+            f"{py} -c \"import base64; exec(base64.b64decode('{encoded}').decode())\"", stdin_data=stdin_data
         )
 
     def _try_read_utf16(self, path: str, offset: int, limit: int,
@@ -1491,7 +1493,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             pass
         return None, None
 
-    def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
+    def write_file(self, path: str, content: str, pre_content: Optional[str] = None,
+                   create_only: bool = False) -> WriteResult:
         """Write content atomically, creating parent directories as needed.
 
         Order: deny list → lone-surrogate refusal → fail-closed syntax gate on the
@@ -1518,7 +1521,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Pre-content is read only for extensions in the UNION of in-process lint and
         # LSP coverage (keeps the hot path fast for binaries).
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
-        has_bom, pre_content, original_ending = self._probe_write_target(path, pre_content, want_pre)
+        has_bom, pre_content, original_ending = (
+            (False, None, "\n") if create_only
+            else self._probe_write_target(path, pre_content, want_pre))
         if ext == ".json":
             refused = _refuse_introduced_json_constant(path, content, pre_content)
             if refused is not None:
@@ -1538,7 +1543,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # this content, so these are the bytes on disk; the early rejection above
         # guarantees this cannot raise.
         content_bytes = content.encode("utf-8", "surrogateescape")
-        write_result = self._atomic_write(path, content)
+        if create_only:
+            from tools.file_operations_create import atomic_create
+
+            write_result = atomic_create(self, path, content)
+            if write_result.exit_code == 17:
+                return WriteResult(error=f"File already exists: {path}", status="already_exists")
+        else:
+            write_result = self._atomic_write(path, content)
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
         content_verified, verify_error = self._verify_written_hash(path, content_bytes)
@@ -1554,7 +1566,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
             _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
-            lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics)
+            lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics,
+            warning=(write_result.stdout.strip() or None) if create_only else None)
 
     # --- PATCH (replace mode) -----------------------------------------------
 

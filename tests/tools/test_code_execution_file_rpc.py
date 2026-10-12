@@ -17,7 +17,7 @@ CALLS = {
     "web_search": {"query": "fixture", "limit": 3},
     "web_extract": {"urls": ["https://example.test"], "char_limit": 3000},
     "read_file": {"path": "reference", "offset": 2, "limit": 4},
-    "write_file": {"path": "output", "content": "café", "cross_profile": False},
+    "write_file": {"path": "output", "content": "café", "cross_profile": False, "create_only": True},
     "search_files": {"pattern": "x", "target": "files", "path": ".", "file_glob": "*.py",
                      "limit": 4, "offset": 2, "output_mode": "count", "context": 3, "order": "modified"},
     "patch": {"path": "output", "old_string": "old", "new_string": "new", "replace_all": True,

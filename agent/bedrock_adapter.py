@@ -1278,6 +1278,9 @@ def call_converse(
     placement; evicts the cached client on stale-connection errors."""
     client = _get_bedrock_runtime_client(region)
     kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config)
+    from agent.auxiliary_request_requirements import guard_converse_send, request_requirements_active
+    if request_requirements_active():
+        client.meta.events.register("before-send.bedrock-runtime.Converse", guard_converse_send, unique_id="auxiliary-required-request")
     try:
         response = client.converse(**kwargs)
     except Exception as exc:

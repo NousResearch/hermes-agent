@@ -48,34 +48,12 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 if TYPE_CHECKING:
     from openai import OpenAI
 
-_OPENAI_CLS_CACHE: Optional[type] = None
+from agent.auxiliary_request_clients import AuxiliaryOpenAIProxy
+from agent.auxiliary_request_requirements import (
+    AuxiliaryRequestRequirements, AuxiliaryRequestRequirementError, request_requirements_scope, required_output_cap, request_requirements_active, preserve_stream_requirements,
+)
 
-
-def _load_openai_cls() -> type:
-    """Import and cache ``openai.OpenAI``."""
-    global _OPENAI_CLS_CACHE
-    if _OPENAI_CLS_CACHE is None:
-        from openai import OpenAI as _cls
-        _OPENAI_CLS_CACHE = _cls
-    return _OPENAI_CLS_CACHE
-
-
-class _OpenAIProxy:
-    """Lazy stand-in for ``openai.OpenAI``: forwards calls and isinstance checks, importing on first use."""
-    __slots__ = ()
-
-    def __call__(self, *args, **kwargs):
-        return _load_openai_cls()(*args, **kwargs)
-
-    def __instancecheck__(self, obj):
-        return isinstance(obj, _load_openai_cls())
-
-    def __repr__(self):
-        return "<lazy openai.OpenAI proxy>"
-
-
-OpenAI = _OpenAIProxy()
-
+OpenAI = AuxiliaryOpenAIProxy()
 
 # Availability probe mode: check_fns only need to know whether a client is RESOLVABLE, so
 # inside `aux_probe_mode()` constructors return a stub instead of importing openai + building
@@ -1925,7 +1903,7 @@ def _maybe_wrap_anthropic(
     if api_mode != "anthropic_messages" and (api_mode or not _endpoint_speaks_anthropic_messages(base_url)):
         return client_obj
     try:
-        from agent.anthropic_adapter import build_anthropic_client
+        from agent.auxiliary_request_clients import build_request_anthropic_client as build_anthropic_client
     except ImportError:
         logger.warning(
             "Endpoint %s speaks Anthropic Messages but the anthropic SDK is "
@@ -2695,6 +2673,8 @@ def _relay_sync_stream(
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages
 
+    from agent.auxiliary_request_clients import validate_client_dispatch
+    validate_client_dispatch(client)
     kwargs = prepare_chat_messages(client, kwargs)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
@@ -2914,7 +2894,7 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
         # OAuth identity only when the host is exactly api.anthropic.com (key_cmd callable included,
         # #114967); third-party Anthropic-compatible gateways never get it.
         try:
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.auxiliary_request_clients import build_request_anthropic_client as build_anthropic_client
             from agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
         except ImportError:
@@ -3041,7 +3021,7 @@ def _try_azure_foundry(
 def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
                    explicit_base_url: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
     try:
-        from agent.anthropic_adapter import build_anthropic_client
+        from agent.auxiliary_request_clients import build_request_anthropic_client as build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token
     except ImportError:
         return None, None
@@ -4713,7 +4693,8 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
-    from openai import AsyncOpenAI
+    from agent.auxiliary_request_clients import openai_request_client_classes
+    AsyncOpenAI = openai_request_client_classes()[1]
     if isinstance(sync_client, _AuxProbeClientStub):
         return sync_client, model
     if isinstance(sync_client, CodexAuxiliaryClient):
@@ -4867,7 +4848,8 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[
     final_model = _normalize_resolved_model(model or "google/gemini-3-flash-preview", provider)
     try:
         # Aliased import: a bare `from openai import OpenAI` would shadow the module-level lazy proxy.
-        from openai import OpenAI as _VertexOpenAI
+        from agent.auxiliary_request_clients import openai_request_client_classes
+        _VertexOpenAI = openai_request_client_classes()[0]
         client = _VertexOpenAI(api_key=token, base_url=base_url)
     except Exception as exc:
         logger.warning("resolve_provider_client: cannot create Vertex client: %s", exc)
@@ -5215,7 +5197,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # Mirrors the anonymous-custom branch in _try_custom_endpoint(). See #15033.
     if entry_api_mode == "anthropic_messages":
         try:
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.auxiliary_request_clients import build_request_anthropic_client as build_anthropic_client
             from agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
             if entry_headers:
@@ -5804,8 +5786,9 @@ def _client_cache_key(
     api_key_key = _runtime_cache_discriminator("api_key", api_key or "")
     # Profile home leads the key: callers that omit api_key (pool / Nous auth.json paths) would
     # otherwise share one client across multiplex profiles holding different credentials.
-    return (hermes_home_key(), provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key,
+    key = (hermes_home_key(), provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key,
             _borrowed_main_credential_key(provider, base_url, api_key, runtime))
+    return key + ("required_request",) if request_requirements_active() else key
 
 
 def _borrowed_main_credential_key(provider: str, base_url: Optional[str], api_key: Any, runtime: dict[str, Any]) -> tuple:
@@ -6583,28 +6566,6 @@ def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
         return False
 
 
-def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effective_base: str, task: Optional[str]) -> bool:
-    """Whether an explicit max_tokens is forwarded on this route.
-
-    No default cap elsewhere (omitted = provider default; avoids max_completion_tokens / ZAI-vision
-    quirks). Forward only where mandatory or honored: Anthropic Messages wire (400 without it);
-    NVIDIA NIM (empty choices[] when omitted); MoA reference slots; Gemini native (fixed 65,535
-    ceiling otherwise); OpenRouter (budgets the FULL window when omitted → 402 on low credit);
-    managed local llama-server (uncapped decode with no EOS burns the GPU to the context window).
-    """
-    return (
-        _is_anthropic_compat_endpoint(provider, effective_base)
-        or _nous_on_messages_wire(provider_norm, model)
-        or provider_norm in _NVIDIA_PROVIDER_NAMES
-        or base_url_host_matches(effective_base, "integrate.api.nvidia.com")
-        or str(task) == "moa_reference"
-        or _is_gemini_native_route(provider_norm, effective_base)
-        or provider_norm == "openrouter"
-        or base_url_host_matches(effective_base, "openrouter.ai")
-        or _is_managed_local_endpoint(effective_base)
-    )
-
-
 def _dedupe_tool_names(tools: list, provider: str, model: str) -> list:
     """Drop duplicate tool names (Vertex/Azure/Bedrock 400 on them) with a warning."""
     seen: set = set()
@@ -6743,6 +6704,8 @@ def _build_call_kwargs(
     ``no_progress_timeout`` is a Codex-Responses-only extra (consumed by
     ``_CodexCompletionsAdapter.create``'s ``**kwargs`` catch-all); callers must only pass it
     when the resolved client is a ``CodexAuxiliaryClient`` — real SDK clients don't accept it."""
+    from agent.auxiliary_request_requirements import _forwards_max_tokens
+
     kwargs: dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout}
     if no_progress_timeout is not None:
         kwargs["no_progress_timeout"] = no_progress_timeout
@@ -6760,7 +6723,7 @@ def _build_call_kwargs(
         if not _forbids_sampling_params(model):
             kwargs["temperature"] = temperature
     provider_norm = str(provider or "").strip().lower()
-    if max_tokens is not None and _forwards_max_tokens(provider, provider_norm, model, effective_base, task):
+    if max_tokens is not None and (required_output_cap() is not None or _forwards_max_tokens(provider, provider_norm, model, effective_base, task)):
         kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model))  # picks max_completion_tokens where needed
     if tools:
         kwargs["tools"] = _dedupe_tool_names(tools, provider, model)
@@ -7150,6 +7113,8 @@ def _create_with_progress_once(
     ``force_stream``, where a stream-only provider rejects the plain call by definition, so the original
     error is surfaced to the normal recovery chains instead.
     """
+    from agent.auxiliary_request_clients import validate_client_dispatch
+    validate_client_dispatch(client)
     kwargs = bypass_chat_sdk_request_transform(kwargs, client)
     _notify_aux_dispatch()
     # Dispatch alone is not forward progress: a 401/retry/fallback dispatch must not
@@ -7371,6 +7336,8 @@ async def _acreate_with_progress(
 ) -> Any:
     """Async :func:`_create_with_progress`: stream + re-aggregate (ticking the hook per substantive
     chunk) when a progress hook is active or the provider is stream-only; plain create otherwise."""
+    from agent.auxiliary_request_clients import validate_client_dispatch
+    validate_client_dispatch(client)
     kwargs = bypass_chat_sdk_request_transform(kwargs, client)
     _notify_aux_dispatch()
     # Same contract as the sync twin (#114938): dispatch alone is not progress.
@@ -7593,6 +7560,8 @@ def _param_rung_accepts(exc: Exception) -> bool:
     chains with the stripped kwargs; re-raise anything those chains won't handle.
     A 429 on the retry is the credential/provider-fallback rungs' job, so it falls
     through too (the pre-ladder max_tokens rung accepted rate limits)."""
+    if isinstance(exc, AuxiliaryRequestRequirementError):
+        return False
     return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
             or _is_rate_limit_error(exc) or _is_statusless_structured_provider_error(exc)
             or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
@@ -7696,8 +7665,11 @@ def _ladder_parameter_rungs(
         retry_kwargs = strip(kwargs)
         logger.info("Auxiliary %s%s: %s: %s", task or "call", tag, message, first_err)
         rejection = first_err
-        resp, first_err = yield from _rung(
-            _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
+        try:
+            resp, first_err = yield from _rung(
+                _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
+        except AuxiliaryRequestRequirementError as failure:
+            raise failure from rejection
         if first_err is None:
             if remember is not None:
                 # Same key _build_call_kwargs looks up (base_info or resolved_base_url), so the
@@ -7961,6 +7933,8 @@ def _aux_recovery_ladder(
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
     Each rung returns a response, narrows ``first_err`` and falls through, or re-raises.
     Raises the narrowed ``first_err`` when exhausted (after evicting a connection-poisoned client)."""
+    if isinstance(first_err, AuxiliaryRequestRequirementError):
+        raise first_err
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
@@ -7998,7 +7972,7 @@ def _aux_recovery_ladder(
     raise first_err
 
 
-def _drive_ladder(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
+def _drive_ladder(ladder, perform: Callable[[_LadderStep], Any], *, prior_error: Exception | None = None) -> Any:
     """Run a ladder generator, feeding each step's result (or exception) back in."""
     try:
         step = next(ladder)
@@ -8006,6 +7980,11 @@ def _drive_ladder(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
             try:
                 result = perform(step)
             except Exception as exc:
+                if isinstance(exc, AuxiliaryRequestRequirementError):
+                    if exc.__cause__ is None and prior_error is not None:
+                        raise exc from prior_error
+                    raise
+                prior_error = exc
                 step = ladder.throw(exc)
             else:
                 step = ladder.send(result)
@@ -8013,7 +7992,7 @@ def _drive_ladder(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
         return stop.value
 
 
-async def _drive_ladder_async(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
+async def _drive_ladder_async(ladder, perform: Callable[[_LadderStep], Any], *, prior_error: Exception | None = None) -> Any:
     """Async twin of :func:`_drive_ladder` (``perform`` is awaited)."""
     try:
         step = next(ladder)
@@ -8021,6 +8000,11 @@ async def _drive_ladder_async(ladder, perform: Callable[[_LadderStep], Any]) -> 
             try:
                 result = await perform(step)
             except Exception as exc:
+                if isinstance(exc, AuxiliaryRequestRequirementError):
+                    if exc.__cause__ is None and prior_error is not None:
+                        raise exc from prior_error
+                    raise
+                prior_error = exc
                 step = ladder.throw(exc)
             else:
                 step = ladder.send(result)
@@ -8048,6 +8032,7 @@ def call_llm(
     extra_headers: Optional[dict[str, str]] = None, api_mode: str | None = None, stream: bool = False,
     stream_options: dict | None = None, route_info: Optional[dict[str, str]] = None,
     latency_info: Optional[dict[str, int]] = None,
+    requirements: AuxiliaryRequestRequirements | None = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     queue_started_at = time.monotonic()
@@ -8060,6 +8045,7 @@ def call_llm(
     prior_progress_hook = getattr(_aux_progress, "hook", None)
     try:
         with (
+            request_requirements_scope(requirements, tools, max_tokens),
             scoped_runtime_main(main_runtime),
             aux_progress_hook(
                 prior_progress_hook
@@ -8078,6 +8064,8 @@ def call_llm(
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
             )
+            if stream:
+                response = preserve_stream_requirements(response)
         if stream and semaphore is not None:
             stream_semaphore = semaphore
             semaphore = None
@@ -8256,6 +8244,8 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
+        if isinstance(first_err, AuxiliaryRequestRequirementError):
+            raise
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
@@ -8265,7 +8255,7 @@ def _call_llm_impl(
             return _call_fallback_candidate_sync(*args, **kw)
         return _drive_ladder(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
-            _perform)
+            _perform, prior_error=first_err)
 
 
 def _coerce_llm_message(response):
@@ -8343,13 +8333,14 @@ async def async_call_llm(
     temperature: Optional[float] = None, max_tokens: int | None = None, tools: list | None = None,
     timeout: float | None = None, extra_body: dict | None = None, reasoning_config: Optional[dict] = None,
     route_info: Optional[dict[str, str]] = None,
+    requirements: AuxiliaryRequestRequirements | None = None,
 ) -> Any:
     """Run an asynchronous auxiliary LLM request under the configured limit."""
     semaphore = _acquire_async_aux_semaphore(task)
     if semaphore is not None:
         await semaphore.acquire()
     try:
-        with scoped_runtime_main(main_runtime):
+        with scoped_runtime_main(main_runtime), request_requirements_scope(requirements, tools, max_tokens):
             return await _async_call_llm_impl(
                 task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
                 main_runtime=main_runtime, messages=messages, temperature=temperature,
@@ -8402,6 +8393,8 @@ async def _async_call_llm_impl(
                         "once on the same provider before fallback: %s", task or "call", transient_err)
             return await _primary()
     except Exception as first_err:
+        if isinstance(first_err, AuxiliaryRequestRequirementError):
+            raise
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
@@ -8413,4 +8406,4 @@ async def _async_call_llm_impl(
             return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
         return await _drive_ladder_async(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
-            _perform)
+            _perform, prior_error=first_err)

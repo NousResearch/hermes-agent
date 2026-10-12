@@ -7,6 +7,11 @@
         "description": "Complete content to write to the file",
         "type": "string"
       },
+      "create_only": {
+        "default": false,
+        "description": "Atomically create a new file. Refuses any existing directory entry, including symlinks, with status=already_exists; never overwrites.",
+        "type": "boolean"
+      },
       "path": {
         "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)",
         "type": "string"

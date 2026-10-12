@@ -18,6 +18,7 @@ import os
 import re
 import stat
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,7 @@ def sweep_transcript_media(db) -> int:
         store = _open_store(_media_root(db.db_path), create=False)
     except OSError:  # missing, or a symlinked/non-directory component: nothing of ours to reclaim
         return 0
-    with store as (base, dir_fd):
+    with store as (base, dir_fd), store.lock():
         cutoff = time.time() - MEDIA_GC_GRACE_SECONDS
         with db._read_ctx() as conn:
             conn.execute("BEGIN")
@@ -138,6 +139,36 @@ class _open_store:
     def __enter__(self):
         return self.value
 
+    @contextmanager
+    def lock(self):
+        """Cross-process exclusion of publication (verify, renew or write) and reclamation
+        (snapshot, stat, unlink): a collector never unlinks a digest that a writer renewed after
+        the collector observed it, and two writers never both see a digest as absent.
+        The lock file sits in ``cache/``, beside the store, so the store holds only digests."""
+        from pm.filesystem import lock_fd
+
+        # ponytail: one exclusive lock per store; per-digest locks if publication contention shows up.
+        parent = self.fds[-2] if self.fds else None
+        base = "" if parent is not None else str(Path(self.value[0]).parent)
+        name, flags = os.path.join(base, ".transcript_media.lock"), os.O_RDWR | _NOFOLLOW | getattr(os, "O_BINARY", 0)
+        # Racing plain O_CREAT opens through separate dir fds can fail with ENOENT on APFS.
+        while True:
+            try:
+                fd = os.open(name, flags, dir_fd=parent)
+                break
+            except FileNotFoundError:
+                pass
+            try:
+                fd = os.open(name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+                break
+            except FileExistsError:
+                pass
+        try:
+            lock_fd(fd, wait=True)
+            yield
+        finally:
+            os.close(fd)
+
     def __exit__(self, *_exc) -> None:
         for fd in reversed(self.fds):
             os.close(fd)
@@ -146,7 +177,8 @@ class _open_store:
 
 def _put(root: Path, data: bytes) -> str:
     digest = hashlib.sha256(data).hexdigest()
-    with _open_store(root, create=True) as (base, dir_fd):
+    store = _open_store(root, create=True)
+    with store as (base, dir_fd), store.lock():
         target = os.path.join(base, digest)
         try:
             # Reuse only verified bytes: a corrupt copy is replaced, so a profile move cannot land on it.
@@ -228,7 +260,6 @@ def _externalize_payload(payload: str, prefix: str, root: Path, refs: list, path
     if data is None or base64.b64encode(data).decode("ascii") != payload:
         ref["encoded_sha256"] = _put(root, payload.encode("utf-8"))
     refs.append(ref)
-    return None
 
 
 def prepare_media_content(db_path, content: Any, media_content: Any = None, *, display: bool = True) -> tuple[Any, str | None]:

@@ -776,3 +776,60 @@ def test_two_profile_homes_a_b_a_keep_their_own_media(tmp_path, monkeypatch):
     finally:
         for store in dbs.values():
             store.close()
+
+
+def test_publication_waits_for_an_in_flight_sweep(db, tmp_path, monkeypatch):
+    """The sweep's stat-then-unlink and a renewal of the same digest never interleave."""
+    import threading
+    import hermes_state_media as media
+
+    content = _history("user")[0]["content"]
+    media.prepare_media_content(db.db_path, content)
+    _age_media(tmp_path)  # an old orphan the collector will judge eligible
+    at_stat, resume, published = threading.Event(), threading.Event(), threading.Event()
+    real_stat, collector = os.stat, {}
+
+    def pause_after_stat(name, *args, **kwargs):
+        result = real_stat(name, *args, **kwargs)
+        if threading.get_ident() == collector.get("tid") and len(os.path.basename(os.fspath(name))) == 64:
+            at_stat.set()
+            assert resume.wait(10)
+        return result
+
+    def sweep():
+        collector["tid"] = threading.get_ident()
+        with SessionDB(db_path=db.db_path) as other:
+            media.sweep_transcript_media(other)
+
+    def publish():
+        _flush(db, [{"role": "user", "content": _history("user")[0]["content"]}])
+        published.set()
+
+    monkeypatch.setattr(os, "stat", pause_after_stat)
+    gc, writer = threading.Thread(target=sweep), threading.Thread(target=publish)
+    gc.start()
+    try:
+        assert at_stat.wait(10)
+        writer.start()
+        assert not published.wait(0.5), "a renewal ran between the collector's stat and its unlink"
+    finally:
+        resume.set()
+        gc.join(10)
+        writer.join(10)
+    assert published.is_set()
+    assert db.get_messages_as_conversation("vision", repair_alternation=True)[0]["content"] == content
+
+
+def test_concurrent_first_publications_replace_the_digest_once(db, tmp_path, monkeypatch):
+    """A writer that finds the verified digest renews it instead of replacing it: on Windows a replay
+    reader holding the file open makes that replace fail, which used to flatten the row to text."""
+    from concurrent.futures import ThreadPoolExecutor
+    import hermes_state_media as media
+
+    replaced, real_replace = [], os.replace
+    monkeypatch.setattr(os, "replace", lambda *a, **k: (replaced.append(a[1]), real_replace(*a, **k))[1])
+    content = _history("user")[0]["content"]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        rows = list(pool.map(lambda _: media.prepare_media_content(db.db_path, content), range(16)))
+    assert all(sidecar for _, sidecar in rows)
+    assert len(replaced) == 1

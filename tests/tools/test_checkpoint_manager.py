@@ -12,6 +12,7 @@ from pathlib import Path
 from tools.checkpoint_manager import (
     CheckpointManager,
     _init_store,
+    _list_project_refs,
     _run_git,
     _git_env,
     _project_hash,
@@ -1386,3 +1387,109 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+# =========================================================================
+# Stage byte gate + virtual-disk-image excludes (#137220)
+# =========================================================================
+
+class TestStageByteGate:
+    """``_untracked_bytes`` must run *before* ``git add -A``.
+
+    ``max_file_size_mb`` only drops oversize paths from the index after the
+    add has already hashed them into the store's object DB, so a workdir
+    holding one huge file used to translate its bytes into tmp packs on the
+    store's disk (and the add outlived its timeout once orphaned).
+    """
+
+    def test_skips_workdir_whose_untracked_bytes_exceed_the_cap(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_STAGE_BYTES", 4 * 1024)
+        # Not covered by DEFAULT_EXCLUDES — the exclude patterns are the
+        # other half of the fix and get their own test below.
+        (work_dir / "dataset.bin").write_bytes(b"\0" * (16 * 1024))
+
+        m = CheckpointManager(enabled=True, max_file_size_mb=10)
+
+        assert m.ensure_checkpoint(str(work_dir), "initial") is False
+        # Nothing was hashed into the store, so no project ref exists.
+        assert _list_project_refs(_store_path(checkpoint_base), str(work_dir)) == []
+
+    def test_ignored_files_do_not_count_against_the_cap(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_STAGE_BYTES", 4 * 1024)
+        # Excluded by DEFAULT_EXCLUDES, so the gate must not see its bytes…
+        (work_dir / "backup.iso").write_bytes(b"\0" * (16 * 1024))
+        # …while the tracked corpus stays far below the cap.
+        assert (work_dir / "main.py").stat().st_size < 4 * 1024
+
+        m = CheckpointManager(enabled=True, max_file_size_mb=10)
+
+        assert m.ensure_checkpoint(str(work_dir), "initial") is True
+        assert len(m.list_checkpoints(str(work_dir))) == 1
+
+    def test_zero_cap_disables_the_gate(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_STAGE_BYTES", 0)
+        (work_dir / "dataset.bin").write_bytes(b"\0" * (16 * 1024))
+
+        m = CheckpointManager(enabled=True, max_file_size_mb=1)
+
+        assert m.ensure_checkpoint(str(work_dir), "initial") is True
+        # The per-file cap still applies afterwards.
+        diff = m.session_diff(str(work_dir))["diff"]
+        assert "dataset.bin" not in diff
+
+    def test_disk_images_stay_out_of_new_checkpoints(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        (work_dir / "docker_data.vhdx").write_bytes(b"\0" * (16 * 1024))
+        (work_dir / "vm.qcow2").write_bytes(b"\0" * (16 * 1024))
+
+        m = CheckpointManager(enabled=True, max_file_size_mb=10)
+
+        assert m.ensure_checkpoint(str(work_dir), "initial") is True
+        diff = m.session_diff(str(work_dir))["diff"]
+        assert "docker_data.vhdx" not in diff
+        assert "vm.qcow2" not in diff
+
+
+class TestStoreExcludeSync:
+    def test_new_store_excludes_disk_images(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+
+        excludes = (store / "info" / "exclude").read_text()
+        for pattern in ("*.vhdx", "*.vhd", "*.qcow2", "*.qcow", "*.vmdk", "*.evm"):
+            assert pattern in excludes
+
+    def test_existing_store_gains_missing_patterns_and_keeps_user_lines(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        exclude = store / "info" / "exclude"
+        # Rewind to a pre-vhd-pattern exclude plus a hand-appended line, the
+        # shape a user's workaround leaves behind (see #137220).
+        rewound = [p for p in exclude.read_text().splitlines() if p != "*.vhdx"]
+        rewound += ["*.img", "*.vpc"]
+        exclude.write_text("\n".join(rewound) + "\n")
+
+        assert _init_store(store, str(work_dir)) is None
+
+        lines = exclude.read_text().splitlines()
+        assert "*.vhdx" in lines, "missing default pattern was not backfilled"
+        assert "*.img" in lines and "*.vpc" in lines, "user lines were dropped"
+        assert len(lines) == len(set(lines)), "backfill duplicated a pattern"
+        # Idempotent: a second init neither repeats nor reorders further.
+        assert _init_store(store, str(work_dir)) is None
+        assert exclude.read_text().splitlines() == lines

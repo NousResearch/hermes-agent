@@ -186,3 +186,131 @@ assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
 """], capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr
+
+
+# ---------------------------------------------------------------------------
+# An install environment replaced under a live process: certifi's path dies
+# ---------------------------------------------------------------------------
+
+
+def _stand_in_certifi_env(root: Path, name: str, bundle: bytes) -> Path:
+    """A certifi package whose bundle sits next to its own ``__file__``."""
+    package = root / name / "certifi"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        "import os\n\n\ndef where():\n"
+        "    return os.path.join(os.path.dirname(__file__), 'cacert.pem')\n"
+    )
+    (package / "cacert.pem").write_bytes(bundle)
+    return package
+
+
+def _client_ssl_context(client):
+    """The context httpx built for this client's connection pool."""
+    from typing import Any, cast
+
+    return cast(Any, client._transport)._pool._ssl_context
+
+
+def _rotated_certifi(tmp_path: Path, monkeypatch, *, replacement: bool):
+    """Delete the environment directory the imported certifi points into.
+
+    The package manager's rotation without a package manager: certifi is imported
+    from ``env-a``, then that directory is removed. ``replacement`` adds the
+    identical package the manager would have installed as ``env-b``.
+    """
+    import importlib
+    import shutil
+    import sys
+
+    import certifi as real_certifi
+
+    bundle = Path(real_certifi.where()).read_bytes()  # a real PEM: contexts must load it
+    old_env = _stand_in_certifi_env(tmp_path, "env-a", bundle)
+    if replacement:
+        new_env = _stand_in_certifi_env(tmp_path, "env-b", bundle)
+        monkeypatch.syspath_prepend(str(new_env.parent))
+    monkeypatch.syspath_prepend(str(old_env.parent))
+    monkeypatch.delitem(sys.modules, "certifi", raising=False)
+    importlib.invalidate_caches()
+    stand_in = importlib.import_module("certifi")
+    monkeypatch.setitem(sys.modules, "certifi", stand_in)
+    assert Path(stand_in.where()).parent == old_env
+    shutil.rmtree(old_env)
+    assert not Path(stand_in.where()).exists()
+    return stand_in
+
+
+def test_replaced_install_environment_re_resolves_certifi_in_place(tmp_path, monkeypatch, caplog, no_ca_env):
+    """A process that outlives an environment rotation holds certifi's path into the
+    deleted directory, and httpx builds every SSL context through it. The module is
+    re-executed against the live ``sys.path``, so client construction succeeds again
+    for this process and every other certifi consumer in it."""
+    import logging
+    import ssl
+
+    import httpx
+
+    stand_in = _rotated_certifi(tmp_path, monkeypatch, replacement=True)
+
+    with caplog.at_level(logging.WARNING, logger="agent.ssl_verify"):
+        verify = resolve_httpx_verify()
+
+    assert verify is True  # httpx's own default, now backed by a bundle that exists
+    with httpx.Client(verify=verify) as client:  # the construction that raised FileNotFoundError
+        assert _client_ssl_context(client).verify_mode == ssl.CERT_REQUIRED
+    assert Path(stand_in.where()).is_file()  # re-derived from the live sys.path
+    logged = [r for r in caplog.records if r.name == "agent.ssl_verify"]
+    assert len(logged) == 1 and "re-resolved" in logged[0].getMessage()
+
+
+def test_unrecoverable_bundle_hands_over_the_platform_context(tmp_path, monkeypatch, caplog, no_ca_env):
+    """Nothing left to re-resolve: the platform store is handed over instead of
+    raising, which is the difference between a degraded process and a fleet-wide
+    TLS outage that only a restart clears."""
+    import logging
+    import ssl
+
+    import httpx
+
+    from agent import ssl_verify
+
+    _rotated_certifi(tmp_path, monkeypatch, replacement=False)
+    monkeypatch.setattr(ssl_verify, "_reload_certifi_bundle", lambda: None)
+
+    with caplog.at_level(logging.WARNING, logger="agent.ssl_verify"):
+        verify = resolve_httpx_verify()
+
+    assert isinstance(verify, ssl.SSLContext)
+    logged = [r for r in caplog.records if r.name == "agent.ssl_verify"]
+    assert len(logged) == 1 and "could not be re-resolved" in logged[0].getMessage()
+    with httpx.Client(verify=verify) as client:
+        assert _client_ssl_context(client).verify_mode == ssl.CERT_REQUIRED
+
+
+def test_requests_verify_hands_over_a_bundle_that_exists(tmp_path, monkeypatch, no_ca_env):
+    """``requests`` freezes its default bundle path when it is imported, so no reload
+    can reach it: its call sites ask for a live bundle instead."""
+    from agent import ssl_verify
+
+    stand_in = _rotated_certifi(tmp_path, monkeypatch, replacement=True)
+
+    verify = ssl_verify.requests_verify()
+
+    assert verify == stand_in.where()
+    assert Path(str(verify)).is_file()
+
+
+def test_requests_verify_never_hands_over_the_deleted_bundle(tmp_path, monkeypatch, no_ca_env):
+    """With nothing re-resolvable the answer is OpenSSL's own bundle, or requests'
+    own default — never the path the rotation deleted."""
+    from agent import ssl_verify
+
+    stand_in = _rotated_certifi(tmp_path, monkeypatch, replacement=False)
+    dead = stand_in.where()
+    monkeypatch.setattr(ssl_verify, "_reload_certifi_bundle", lambda: None)
+
+    verify = ssl_verify.requests_verify()
+
+    assert str(verify) != dead
+    assert verify is True or Path(str(verify)).exists()

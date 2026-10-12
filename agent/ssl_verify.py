@@ -130,6 +130,98 @@ def platform_ssl_context() -> ssl.SSLContext:
     return _shared_context(None)
 
 
+def certifi_bundle_path() -> Optional[str]:
+    """certifi's CA bundle path, re-derived when a rotation invalidated it.
+
+    ``certifi.where()`` builds its path from the imported module's ``__file__``, so a
+    process that outlives an install-environment rotation — the package manager creates
+    a new environment directory and deletes the old one — keeps pointing into the
+    deleted directory for the rest of its life, and every TLS client it builds
+    afterwards fails. Re-executing the module re-derives ``__file__`` from the live
+    ``sys.path``; when even that finds nothing, the platform store is the answer and
+    never an exception.
+
+    Returns a bundle path that exists on disk, else ``None``.
+    """
+    try:
+        import certifi
+    except ImportError:
+        return None
+    stale = certifi.where()
+    if Path(stale).is_file():
+        return stale
+    recovered = _reload_certifi_bundle()
+    if recovered is not None:
+        logger.warning(
+            "TLS trust: certifi's CA bundle %s no longer exists — the install "
+            "environment it belongs to was replaced under this process; re-resolved "
+            "to %s. TLS clients built before this point used the dead path.",
+            stale,
+            recovered,
+        )
+        return recovered
+    logger.warning(
+        "TLS trust: certifi's CA bundle %s no longer exists and certifi could not be "
+        "re-resolved; using the platform trust store for the rest of this process.",
+        stale,
+    )
+    return None
+
+
+def _reload_certifi_bundle() -> Optional[str]:
+    """Re-execute the imported certifi module so its path follows the live ``sys.path``.
+
+    ``None`` when certifi was never imported or its package is gone from every
+    ``sys.path`` entry — the caller then falls back to the platform store.
+    """
+    import importlib
+    import sys
+
+    module = sys.modules.get("certifi")
+    if module is None:
+        return None
+    # The replaced directory is gone; a finder holding a cached listing of it would
+    # still resolve the old package.
+    importlib.invalidate_caches()
+    try:
+        path = importlib.reload(module).where()
+    except Exception as exc:  # the reload re-executes third-party module code
+        logger.debug("certifi could not be re-resolved: %s", exc, exc_info=True)
+        return None
+    return path if path and Path(path).is_file() else None
+
+
+def requests_verify() -> bool | str:
+    """``verify`` for a ``requests`` call in this process.
+
+    ``requests`` resolves ``verify=True`` through ``DEFAULT_CA_BUNDLE_PATH``, a string
+    frozen when ``requests`` was imported — the one certifi consumer a module reload
+    cannot reach, so a rotated environment leaves every ``requests`` call raising
+    ``OSError: Could not find a suitable TLS CA certificate bundle``. The live bundle
+    (certifi's, re-derived; else OpenSSL's own default) keeps those calls working;
+    ``True`` only when nothing resolves, which is requests' own default.
+    """
+    bundle = certifi_bundle_path()
+    if bundle:
+        return bundle
+    defaults = ssl.get_default_verify_paths()
+    for candidate in (defaults.cafile, defaults.capath):
+        if candidate and Path(candidate).exists():
+            return candidate
+    return True
+
+
+def _default_verify() -> bool | ssl.SSLContext:
+    """``verify`` for the platform default path.
+
+    httpx resolves ``verify=True`` through ``certifi.where()`` at client construction,
+    which raises ``FileNotFoundError`` on a bundle path a rotation deleted. Hand the
+    platform context over instead when no bundle can be found; a re-derivable bundle
+    keeps ``True`` — the module reload already repaired certifi process-wide.
+    """
+    return True if certifi_bundle_path() else _shared_context(None)
+
+
 def resolve_httpx_verify(
     *,
     ca_bundle: Optional[str] = None,
@@ -142,7 +234,9 @@ def resolve_httpx_verify(
     2. explicit ``ca_bundle`` (the provider's ``ssl_ca_cert``) — that
        bundle INSTEAD of the platform store, for an endpoint whose chain
        the machine has no reason to trust
-    3. ``True`` — the platform store, via the process-wide install
+    3. ``True`` — the platform store, via the process-wide install, or the
+       platform context when the certifi bundle this process resolved at
+       import no longer exists (a replaced install environment)
 
     ``base_url`` only labels the insecure-mode warning.
     """
@@ -171,4 +265,4 @@ def resolve_httpx_verify(
     # proxy environment handling remains enabled.
     if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
         return _shared_context(None)
-    return True
+    return _default_verify()

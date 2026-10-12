@@ -11,8 +11,9 @@ only shows up afterwards, as a smaller MEMORY.md.
 This stages a destructive whole-entry replace plus a remove through the background review's own
 staging path (unattended review stages instead of applying), then prints both surfaces verbatim:
 `/memory pending` and `/memory approve all`. Exit 0 when the pending view states the char delta
-of each staged entry, 1 when it does not (the state before the fix). Nothing is written outside
-the scratch HERMES_HOME this script creates.
+of each staged entry, 1 when it does not (the state before the fix). The scratch HERMES_HOME this
+needs is a `TemporaryDirectory`, so nothing the run writes outlives it — the run states at the end
+whether the tree is gone instead of leaving it lying around.
 """
 import json
 import os
@@ -30,12 +31,7 @@ NEW_CLAUSE = "drop-off = deliberate KDE AC suspend 1h, no WoL"
 TAILNET = "tailnet = 100.64.0.0/10, exit node = nas-2"
 
 
-def main(argv):
-    tree = Path(argv[1]).resolve() if len(argv) > 1 else Path(__file__).resolve().parents[1]
-    sys.path.insert(0, str(tree))
-    os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="eval-136738-")
-    os.environ.pop("HERMES_CRON_SESSION", None)
-
+def _drive(tree):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa
     from tools.memory_tool import MemoryStore, memory_tool
@@ -82,6 +78,22 @@ def main(argv):
     failed = [label for label, ok in checks if not ok]
     print(f"\n{'PASS' if not failed else 'FAIL'}: {len(checks) - len(failed)}/{len(checks)} checks")
     return 1 if failed else 0
+
+
+def main(argv):
+    tree = Path(argv[1]).resolve() if len(argv) > 1 else Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(tree))
+    # HERMES_HOME has to be a real directory before hermes is imported, and the run must not leave
+    # it behind: TemporaryDirectory removes the tree on the way out, on every return path.
+    with tempfile.TemporaryDirectory(prefix="eval-136738-") as home:
+        os.environ["HERMES_HOME"] = home
+        os.environ.pop("HERMES_CRON_SESSION", None)
+        code = _drive(tree)
+    if os.path.exists(home):
+        print(f"\nFAIL: the scratch HERMES_HOME was left behind at {home}")
+        return 1
+    print(f"\nscratch HERMES_HOME removed: {home}")
+    return code
 
 
 if __name__ == "__main__":

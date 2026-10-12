@@ -1,0 +1,5 @@
+name: cline-provider
+kind: model-provider
+version: 1.0.0
+description: Cline — OpenAI-compatible API (Anthropic, OpenAI, Google + ClinePass)
+author: Nous Research

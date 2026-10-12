@@ -795,6 +795,37 @@ def test_replied_voice_note_stays_text_and_stt_eligible():
         assert event.media_types == ["audio/ogg"]
         assert _event_media_is_stt_input(event, 0) is True
         assert "[Replied-to audio 'voice.ogg' saved at:" in event.text
+        assert "that replied-to voice note, not this message" in event.text
+
+        # The typed text stays the answer to a pending clarify; the replied-to speech is context.
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
+        assert (await runner._prepare_clarify_reply_text(event)).startswith("continue")
+
+    asyncio.run(_run())
+
+
+def test_replied_bot_voice_note_is_not_transcribed():
+    """The bot's own voice note (TTS output) is retyped like an audio file, so a reply to it
+    never feeds the bot's speech back through STT as user input."""
+    async def _run():
+        adapter = _make_adapter()
+        cached = SimpleNamespace(
+            path="cache/audio/bot-voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")
+        adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+        msg = SimpleNamespace(reply_to_message=SimpleNamespace(
+            voice=SimpleNamespace(file_name="voice.ogg"), audio=None, from_user=SimpleNamespace(is_bot=True)))
+        event = _reply_text_event()
+
+        await adapter._cache_replied_media(msg, event)
+
+        from gateway.run import _event_media_is_stt_input
+
+        assert event.message_type == MessageType.AUDIO
+        assert _event_media_is_stt_input(event, 0) is False
+        assert "not this message" not in event.text
 
     asyncio.run(_run())
 

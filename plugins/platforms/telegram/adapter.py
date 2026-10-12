@@ -6275,9 +6275,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return
         status, cached = await self._download_observed_media(reply_msg, "replied-to media")
         if status == "ok":
-            # A replied voice note keeps the reply's type: AUDIO would skip STT, VOICE would auto-TTS a typed reply.
-            self._attach_cached(event, cached, f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
-                                "[Telegram] Cached replied-to %s at %s", retype=getattr(reply_msg, "voice", None) is None)
+            # A person's replied voice note keeps the reply's type (AUDIO skips STT, VOICE auto-TTSes a typed reply); a bot's own is never transcribed.
+            spoken = getattr(reply_msg, "voice", None) is not None and not getattr(getattr(reply_msg, "from_user", None), "is_bot", False)
+            self._attach_cached(event, cached, f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]" + " [Any transcript quoted above is that replied-to voice note, not this message.]" * spoken, "[Telegram] Cached replied-to %s at %s", retype=not spoken)
 
     def _observed_media_source(self, msg: Message):
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""

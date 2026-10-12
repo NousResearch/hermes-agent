@@ -31,7 +31,7 @@ def _pool_two_keys():
 
 
 def test_zai_limit_exhausted_rotates_on_first_429():
-    pool, failed, healthy = _pool_two_keys()
+    pool, _failed, _healthy = _pool_two_keys()
     agent = SimpleNamespace(
         provider="zai", api_key="key-failed", _credential_pool=pool,
         _credential_pool_entry_id="failed",
@@ -53,7 +53,7 @@ def test_zai_limit_exhausted_rotates_on_first_429():
 def test_zai_limit_exhausted_marks_failed_key_not_healthy():
     """The exhausted marking must land on the key that served the request, so the
     surviving key stays available for the rotation."""
-    pool, failed, healthy = _pool_two_keys()
+    pool, _failed, _healthy = _pool_two_keys()
     agent = SimpleNamespace(
         provider="zai", api_key="key-failed", _credential_pool=pool,
         _credential_pool_entry_id="failed",

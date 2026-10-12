@@ -1159,7 +1159,7 @@ def test_cleanup_sweeps_stale_live_intents_and_keeps_fresh_ones(tmp_path, monkey
     housekeeping sweep must reap the orphans like it reaps the dm files themselves."""
     import os
 
-    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir_path", lambda: tmp_path)
     stale = tmp_path / "dm-old.txt.live.json"
     stale.write_text("{}", encoding="utf-8")
     os.utime(stale, (1, 1))

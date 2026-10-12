@@ -83,6 +83,9 @@ def _env_ref_name(ref: str) -> str:
     return ref
 
 
+_SUBSTRING_REDACTION_MIN_CHARS = 8
+
+
 def _sanitize_error(text: str, redaction_values: Iterable[str] = ()) -> str:
     """Strip credential-like patterns from error text before returning to LLM.
 
@@ -108,7 +111,12 @@ def _sanitize_error(text: str, redaction_values: Iterable[str] = ()) -> str:
         json.dumps(value, ensure_ascii=False)[1:-1],
     )}
     if values:
-        pattern = "|".join(re.escape(value) for value in sorted(values, key=len, reverse=True))
+        # The snapshot also holds non-secret settings (DEBUG=1, REGION=eu): a short value only
+        # matches as a whole token, or it would shred status codes, numbers and words.
+        pattern = "|".join(
+            re.escape(value) if len(value) >= _SUBSTRING_REDACTION_MIN_CHARS
+            else rf"(?<![A-Za-z0-9]){re.escape(value)}(?![A-Za-z0-9])"
+            for value in sorted(values, key=len, reverse=True))
         sanitized = re.sub(pattern, "[REDACTED]", sanitized)
     return _CREDENTIAL_PATTERN.sub("[REDACTED]", sanitized)
 

@@ -68,7 +68,7 @@ class _DisabledTier:
 
     available = False
 
-    def __getattr__(self, name):  # noqa: D105
+    def __getattr__(self, name):
         def _raise(*a: Any, **k: Any):
             raise SemanticUnavailable("semantic tier disabled")
 

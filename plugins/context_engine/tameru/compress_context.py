@@ -34,7 +34,7 @@ from .contract_gates import (
     distinctive_query_terms,
     query_has_distinctive_selectors,
 )
-from .folding import fold_lossless, json_brief, mask_template  # noqa: F401 (fold_lossless re-exported)
+from .folding import fold_lossless, json_brief, mask_template
 from .format_adapters import FILLER_WORDS
 from .industrial import IndustrialLimits, IndustrialResult, industrial_preprocess
 from .supersession import apply_supersession
@@ -46,10 +46,14 @@ from .unicode_profile import (
 )
 
 try:  # optional semantic tier — never required
-    from .semantic import resolve_tier  # noqa: F401
+    from .semantic import resolve_tier
 except ImportError:  # direct-script use without package context
     def resolve_tier(tier):
         return tier
+
+# Public re-export (``from tameru.compress_context import fold_lossless``); naming it here
+# keeps the import from looking unused.
+_REEXPORTED = (fold_lossless,)
 
 try:
     DEFAULT_CCR_DIR = Path.home() / ".tameru" / "cache" / "context-compress-ccr"
@@ -294,7 +298,7 @@ def classify_line(line: str) -> str:
     if re.match(r"^\|.*\|$", t):
         return "table"
     if re.match(r"^(User|Assistant|System|Tool|Developer):", t) or re.match(
-        r"^\[(user|assistant|system|tool|developer)\]", t, re.I
+        r"^\[(user|assistant|system|tool|developer)\]", t, re.IGNORECASE
     ):
         return "chat"
     if t[:1] in "{[" or re.match(r'^"[A-Za-z0-9_]+"\s*:', t):
@@ -866,7 +870,7 @@ def _looks_like_csv(text: str) -> bool:
 
 def _selector_patterns(terms: Iterable[str]) -> list[re.Pattern[str]]:
     return [
-        re.compile(rf"(?<![A-Za-z0-9_]){re.escape(term)}(?![A-Za-z0-9_])", re.I)
+        re.compile(rf"(?<![A-Za-z0-9_]){re.escape(term)}(?![A-Za-z0-9_])", re.IGNORECASE)
         for term in terms
     ]
 
@@ -942,7 +946,7 @@ def preprocess_flat_records(text: str, query: str) -> str:
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_TEST_SUMMARY_RE = re.compile(r"Tests\s+\d+\s+passed", re.I)
+_TEST_SUMMARY_RE = re.compile(r"Tests\s+\d+\s+passed", re.IGNORECASE)
 _TEST_FILE_NOISE_RE = re.compile(
     r"ExperimentalWarning|Use `node --trace-warnings|^\s*[✓✔]\s"
 )
@@ -992,19 +996,19 @@ def preprocess_test_runner(
 
 # A reduced test run at most this long is final (never re-scored).
 _TEST_REDUCTION_FINAL_CHARS = 16000
-_FILLER_COMMENT_RE = re.compile(r"^(--|#)\s*filler\b", re.I)
+_FILLER_COMMENT_RE = re.compile(r"^(--|#)\s*filler\b", re.IGNORECASE)
 _TRUST_RISK_RE = re.compile(
     r"\b(?:untrusted|not\s+operational)\b"
     r"|\b(?:obsolete|unrelated)\b.{0,24}"
     r"\b(?:glossary|example|sample|entry|data)\b"
     r"|\b(?:ignore|disregard|override|forget)\b.{0,48}"
     r"\b(?:instructions?|prompt|system)\b",
-    re.I,
+    re.IGNORECASE,
 )
 _TRUST_QUERY_RE = re.compile(
     r"\b(?:injection|untrusted|malicious|prompt\s+attack|obsolete|unrelated)\b"
     r"|\bignore\s+(?:prior|previous)\b",
-    re.I,
+    re.IGNORECASE,
 )
 # v0.6.0: a query that says "trust nothing from untrusted sources",
 # "exclude untrusted …" etc. is asking for the SAFE behaviour — it must
@@ -1014,7 +1018,7 @@ _TRUST_EXCLUDE_CUE_RE = re.compile(
     r"\b(?:trust\s+nothing|don't\s+trust|do\s+not\s+trust|exclude|filter\s+out|omit)\b"
     r".{0,40}\b(?:untrusted|unverified|malicious)\b"
     r"|\b(?:exclude|drop|skip|omit)\s+(?:any\s+)?(?:untrusted|unverified|malicious)\b",
-    re.I,
+    re.IGNORECASE,
 )
 
 
@@ -1418,15 +1422,13 @@ def _segment_blocks_chunked(lines: list[str]) -> list[dict[str, Any]]:
             prev_type = kind
             continue
         new = False
-        if start is None:
-            new = True
-        elif kind in {"heading", "fence", "definition"}:
-            new = True
-        elif kind == "list":
-            new = True
-        elif prev_type == "blank" and kind != "blank":
-            new = True
-        elif kind != prev_type and kind in {"log", "chat", "import", "list", "table", "json"}:
+        if (
+            start is None
+            or kind in {"heading", "fence", "definition"}
+            or kind == "list"
+            or (prev_type == "blank" and kind != "blank")
+            or (kind != prev_type and kind in {"log", "chat", "import", "list", "table", "json"})
+        ):
             new = True
         elif btype == "text" and kind in {"definition", "code"}:
             # A code/definition region starting inside a text block: split so
@@ -1887,7 +1889,7 @@ def _is_sink_noise(text: str) -> bool:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not lines:
         return False
-    return all(re.match(r"^(--|#)\s*filler\b", ln, re.I) for ln in lines)
+    return all(re.match(r"^(--|#)\s*filler\b", ln, re.IGNORECASE) for ln in lines)
 
 
 def _query_signal(blocks: list[dict[str, Any]]) -> float:
@@ -1915,13 +1917,12 @@ def _important(blocks: list[dict[str, Any]]) -> set[int]:
         # injection finding). The rare-candidate loop above already skips.
         if b.get("trust_risk"):
             continue
-        if b["type"] == "trace":
-            ids.add(b["id"])
-        elif b["entity_hits"] and b["score"] >= 5.0:
-            ids.add(b["id"])
-        elif b["score"] >= 9 and (b["entity_hits"] or b["term_hits"]):
-            ids.add(b["id"])
-        elif b["type"] == "definition" and b["entity_hits"]:
+        if (
+            b["type"] == "trace"
+            or (b["entity_hits"] and b["score"] >= 5.0)
+            or (b["score"] >= 9 and (b["entity_hits"] or b["term_hits"]))
+            or (b["type"] == "definition" and b["entity_hits"])
+        ):
             ids.add(b["id"])
     cap = max(3, min(18, math.ceil(n * 0.22)))
     if len(ids) > cap:
@@ -2589,10 +2590,10 @@ def select_fixed(
         # immovable — they must not consume the budget they outrank.
         pinned_tokens = sum(b["tokens"] for b in blocks if b["id"] in pinned_ids)
         budget = pinned_tokens + max(
-            1, int(round(max(0, total - pinned_tokens) * budget_ratio))
+            1, round(max(0, total - pinned_tokens) * budget_ratio)
         )
     else:
-        budget = max(1, int(round(total * budget_ratio)))
+        budget = max(1, round(total * budget_ratio))
     if reserve_tokens > 0:
         # v1.4.0 (E8): tokens the caller's gap markers will occupy are not
         # available to content.
@@ -2691,11 +2692,11 @@ def _extract_critical_lines(text: str) -> list[str]:
             critical.append(t)
             continue
         start = _lead_ts_end(scan)
-        # Lines with key-value patterns (config, settings, identifiers)
-        if len(t) > 15 and _CRITICAL_KV_RE.search(scan, start):
-            critical.append(t)
-        # Lines containing specific numbers (dates, IDs, versions, counts)
-        elif _CRITICAL_NUM_RE.search(scan, start):
+        # Lines with key-value patterns (config, settings, identifiers), or
+        # lines containing specific numbers (dates, IDs, versions, counts)
+        if (len(t) > 15 and _CRITICAL_KV_RE.search(scan, start)) or _CRITICAL_NUM_RE.search(
+            scan, start
+        ):
             critical.append(t)
     return critical
 
@@ -3323,14 +3324,13 @@ def _clear_tool_payloads(text: str) -> str:
         # like a tool output marker.
         is_tool_result = False
         if (
-            line.startswith("  ") or line.startswith("\t")
-        ) and (
-            stripped.startswith("{")
-            or stripped.startswith("[")
-            or stripped.startswith('"')
-        ):
-            is_tool_result = True
-        elif stripped.startswith("TOOL:") and len(stripped) > 30:
+            (line.startswith("  ") or line.startswith("\t"))
+            and (
+                stripped.startswith("{")
+                or stripped.startswith("[")
+                or stripped.startswith('"')
+            )
+        ) or (stripped.startswith("TOOL:") and len(stripped) > 30):
             is_tool_result = True
         elif re.match(r"^\s{2,}\w[^(]*\(", line) and "=>" in stripped:
             # Indented function-call line with an arrow (tool call result)
@@ -3585,7 +3585,7 @@ def _summary_preserves_required_facts(
                 rf"(?<!\w){re.escape(query_term)}(?!\w)\s+"
                 r"(?:is|are|was|were|equals?|uses?|=)\s+(.+)$",
                 segment,
-                re.I,
+                re.IGNORECASE,
             )
             if not match:
                 continue

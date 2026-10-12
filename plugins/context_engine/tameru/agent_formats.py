@@ -413,12 +413,12 @@ def _diff_path(f: _DiffFile) -> str:
         elif ln.startswith("--- "):
             minus = ln[4:].split("\t")[0].strip()
     if plus and plus != "/dev/null":
-        return plus[2:] if plus.startswith("b/") else plus
+        return plus.removeprefix("b/")
     if minus and minus != "/dev/null":
-        return minus[2:] if minus.startswith("a/") else minus
+        return minus.removeprefix("a/")
     parts = f.header[0].split()
     last = parts[-1] if parts else "?"
-    return last[2:] if last.startswith("b/") else last
+    return last.removeprefix("b/")
 
 
 def adapt_unified_diff(
@@ -980,9 +980,9 @@ def _classify_pytest(lines: list[str]) -> tuple[list[bool], list[int], list[int]
                 tests[i] = p.group(1).count(".")
             i += 1
             continue
-        if section == "" and ln.strip():
-            keep[i] = True
-        elif section == "drop" and _PYTEST_FAILURE_WORD_RE.search(ln):
+        if (section == "" and ln.strip()) or (
+            section == "drop" and _PYTEST_FAILURE_WORD_RE.search(ln)
+        ):
             keep[i] = True
         i += 1
     return keep, tests, suites, captured
@@ -1079,9 +1079,9 @@ def _classify_cargo(lines: list[str]) -> tuple[list[bool], list[int], list[int]]
         if ln == "failures:":
             in_failures = True
             keep[i] = True
-        elif ln.startswith(("test result:", "running ", "     Running ", "   Doc-tests ")):
-            keep[i] = True
-        elif ln.startswith("---- ") and ln.endswith(" ----"):
+        elif ln.startswith(("test result:", "running ", "     Running ", "   Doc-tests ")) or (
+            ln.startswith("---- ") and ln.endswith(" ----")
+        ):
             keep[i] = True
         elif _CARGO_OK_RE.match(ln):
             tests[i] = 1

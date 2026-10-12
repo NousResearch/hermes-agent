@@ -20,7 +20,7 @@ import re
 from collections import Counter
 from typing import Any
 
-__all__ = ["fold_lossless", "mask_template", "json_brief"]
+__all__ = ["fold_lossless", "json_brief", "mask_template"]
 
 # --------------------------------------------------------------------------
 # E9: fold_lossless
@@ -265,12 +265,22 @@ def _dumps(obj: Any) -> str:
     return _UNSAFE_RAW_RE.sub(_escape_char, out)
 
 
-def _escape_char(match: "re.Match[str]") -> str:
+def _json_brief_body(
+    count: int, keys: str, head: str, tail: str, notable: str, omitted: int
+) -> str:
+    """The JSON brief object; ``keys`` is already-dumped JSON, the row lists are joined dumps."""
+    return (
+        f'{{"_count":{count:d},"_keys":{keys},"_head":[{head}],"_tail":[{tail}],'
+        f'"_notable":[{notable}],"_omitted":{omitted:d}}}'
+    )
+
+
+def _escape_char(match: re.Match[str]) -> str:
     code = ord(match.group())
     if code > 0xFFFF:  # JSON escapes astral characters as a surrogate pair
         code -= 0x10000
-        return "\\u%04x\\u%04x" % (0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF))
-    return "\\u%04x" % code
+        return f"\\u{0xD800 + (code >> 10):04x}\\u{0xDC00 + (code & 0x3FF):04x}"
+    return f"\\u{code:04x}"
 
 
 def _find_rows(obj: Any) -> tuple[list[dict], str | None, dict] | None:
@@ -424,7 +434,7 @@ def _json_brief(text: str, *, budget_chars: int, query: str = "") -> str | None:
     pre = [0] * (n + 1)
     for i, d in enumerate(dumped):
         pre[i + 1] = pre[i] + len(d) + 1
-    head_overhead = len('{"_count":%d,"_keys":%s,"_head":[],"_tail":[],"_notable":[],"_omitted":%d}' % (n, _dumps(keys), n))
+    head_overhead = len(_json_brief_body(n, _dumps(keys), "", "", "", n))
 
     def parts(k: int) -> tuple[list[int], list[int]]:
         head = list(range(min(k, n)))
@@ -446,16 +456,13 @@ def _json_brief(text: str, *, budget_chars: int, query: str = "") -> str | None:
         if size(head, tail, notable) > inner_budget + 3 * len(notable) + 4:
             return None
         omitted = n - len(shown) - len(notable)
-        body = (
-            '{"_count":%d,"_keys":%s,"_head":[%s],"_tail":[%s],"_notable":[%s],"_omitted":%d}'
-            % (
-                n,
-                _dumps(keys),
-                ",".join(dumped[i] for i in head),
-                ",".join(dumped[i] for i in tail),
-                ",".join(dumped[i] for i in sorted(notable)),
-                omitted,
-            )
+        body = _json_brief_body(
+            n,
+            _dumps(keys),
+            ",".join(dumped[i] for i in head),
+            ",".join(dumped[i] for i in tail),
+            ",".join(dumped[i] for i in sorted(notable)),
+            omitted,
         )
         return (body, len(body)) if len(body) <= inner_budget else None
 

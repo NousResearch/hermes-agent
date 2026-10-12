@@ -147,7 +147,7 @@ def apply_supersession(scored: list[dict[str, Any]], kept: set[int]) -> set[int]
         # found by counting postings across this block's terms.
         counts: dict[int, int] = {}
         for t in n_terms:
-            for other in postings.get(t, ()):  # noqa: B007
+            for other in postings.get(t, ()):
                 if other < new_id and len(terms_by_id[other]) <= _MAX_SUPERSESSION_TOKENS:
                     counts[other] = counts.get(other, 0) + 1
         for old_id, shared_n in counts.items():

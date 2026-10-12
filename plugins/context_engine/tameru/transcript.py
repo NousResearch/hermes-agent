@@ -428,7 +428,7 @@ def _boolean_requirement_satisfied(field: str, expected: bool, post: str) -> boo
         rf"{field_ref}\s*(?:(?:is|equals?)\s+|[=:]\s*)?"
         r"(true|yes|on|false|no|off)\b",
         post,
-        re.I,
+        re.IGNORECASE,
     )
     if explicit:
         return (explicit.group(1).casefold() in {"true", "yes", "on"}) is expected
@@ -437,20 +437,20 @@ def _boolean_requirement_satisfied(field: str, expected: bool, post: str) -> boo
         re.search(
             rf"\b(?:is\s+)?(?:not|never)\s+(?:currently\s+)?{field_ref}",
             post,
-            re.I,
+            re.IGNORECASE,
         )
     )
-    positive = bool(re.search(field_ref, post, re.I)) and not negated
+    positive = bool(re.search(field_ref, post, re.IGNORECASE)) and not negated
 
     field_key = "_".join(words)
     if field_key == "enabled":
-        not_disabled = bool(re.search(r"\bnot\s+disabled\b", post, re.I))
-        disabled = bool(re.search(r"\bdisabled\b", post, re.I)) and not not_disabled
+        not_disabled = bool(re.search(r"\bnot\s+disabled\b", post, re.IGNORECASE))
+        disabled = bool(re.search(r"\bdisabled\b", post, re.IGNORECASE)) and not not_disabled
         positive = positive or not_disabled
         negated = negated or disabled
     elif field_key == "active":
-        not_inactive = bool(re.search(r"\bnot\s+inactive\b", post, re.I))
-        inactive = bool(re.search(r"\binactive\b", post, re.I)) and not not_inactive
+        not_inactive = bool(re.search(r"\bnot\s+inactive\b", post, re.IGNORECASE))
+        inactive = bool(re.search(r"\binactive\b", post, re.IGNORECASE)) and not not_inactive
         positive = positive or not_inactive
         negated = negated or inactive
 

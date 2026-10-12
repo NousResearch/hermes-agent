@@ -584,6 +584,52 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
+def _command_link_dir() -> tuple[Path, str]:
+    """(directory, display) of the user's command link; mirrors install.sh logic."""
+    prefix = os.environ.get("PREFIX", "")
+    termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+    return (Path(prefix) / "bin", "$PREFIX/bin") if termux else (Path.home() / ".local" / "bin", "~/.local/bin")
+
+
+def _check_owned_command(kind: str, should_fix: bool, f: Finding) -> None:
+    """A desktop bundle or a distro package publishes ``hermes`` itself (``launcher_owner``):
+    doctor never links one, removes a launcher an older setup/doctor wrote for this tree
+    (it shadows the owner's command), and only reports a foreign link."""
+    from hermes_cli._launchers import _owns_launcher
+    from hermes_cli.doctor import PROJECT_ROOT
+    from hermes_cli.steward import read_install_stamp
+    from hermes_platform.resolver import locate_command
+
+    distribution = read_install_stamp(PROJECT_ROOT).get("distribution")
+    owner = distribution.strip() if isinstance(distribution, str) and distribution.strip() else "its installer"
+    link_dir, display = _command_link_dir()
+    link = link_dir / "hermes"
+    # The app links its shims from <payload>/bin; that link is the owner's command.
+    bundle_link = (kind == "bundle" and link.is_symlink()
+                   and link.resolve().is_relative_to((PROJECT_ROOT.parent / "bin").resolve()))
+    flagged = False
+    if not bundle_link and _owns_launcher(link, PROJECT_ROOT):
+        if should_fix:
+            link.unlink()
+            check_ok(f"Removed stale launcher: {display}/hermes", f"({owner} provides the hermes command)")
+            f.fixed += 1
+        else:
+            flagged = True
+            check_warn(f"{display}/hermes is a stale Hermes launcher", f"({owner} provides the hermes command)")
+            f.issues.append(f"Remove the stale {display}/hermes — run 'hermes doctor --fix'")
+    elif link.is_symlink() and not bundle_link:
+        flagged = True
+        check_warn(f"{display}/hermes points elsewhere", f"(-> {link.resolve()}; {owner} provides the hermes command)")
+        f.manual_issues.append(f"Review {display}/hermes manually; it may shadow the {owner} command and was not changed")
+    # Only an absolute hit: an empty PATH entry would resolve against the cwd.
+    found = next((c for c in locate_command("hermes").command if os.path.isabs(c)), None)
+    if flagged and found and Path(found) == link:
+        return  # the warning above already names the command that runs
+    if not check_bool(found, f"Hermes command managed by {owner} ({found})",
+                      f"Hermes command not on PATH (managed by {owner})"):
+        f.manual_issues.append(f"Reinstall Hermes with {owner}; it provides the hermes command")
+
+
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
     """Check the install-owned launch contract without replacing custom commands."""
@@ -602,8 +648,11 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
             check_warn(f"Hermes command not on PATH ({method}-managed)")
             f.manual_issues.append(_python_repair_hint())
         return
-    from hermes_cli._launchers import resolve_store_python
+    from hermes_cli._launchers import launcher_owner, resolve_store_python
     from pm.environments import base_venv, selected_venv
+
+    if kind := launcher_owner(PROJECT_ROOT):
+        return _check_owned_command(kind, should_fix, f)
 
     try:
         selected = selected_venv(PROJECT_ROOT)
@@ -616,10 +665,7 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
         check_warn("Hermes entry point not found", f"({venv_bin})")
         return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
     check_ok(f"Hermes entry point exists ({venv_bin})")
-    # Expected command link directory (mirrors install.sh logic).
-    prefix = os.environ.get("PREFIX", "")
-    termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
-    link_dir, display = (Path(prefix) / "bin", "$PREFIX/bin") if termux else (Path.home() / ".local" / "bin", "~/.local/bin")
+    link_dir, display = _command_link_dir()
     link = link_dir / "hermes"
     if link.is_symlink():
         target, expected = link.resolve(), venv_bin.resolve()

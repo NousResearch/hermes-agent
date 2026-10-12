@@ -188,6 +188,8 @@ class _EnvironmentLifecycle:
         self.operation = None
         self._configuration_owned = False
         self.resources = None
+        self._measurements_closed = False
+        self._measurement_resource_id = opaque_docker_resource_id(getattr(environment, "_container_id", None))
         with runtime._sessions_lock:
             if runtime._closing:
                 raise RuntimeError("Hermes Relay runtime is shutting down")
@@ -201,12 +203,7 @@ class _EnvironmentLifecycle:
             raise
         # Backend ownership is captured on the environment; do not retain its
         # Python handle or session after construction.
-        environment, self.scope.environment = self.scope.environment, None
-        from agent.relay_resource_samples import observe_resources
-        self.resources = observe_resources(self)
-        native_id = getattr(environment, "_container_id", None)
-        if self.resources is not None and native_id is not None:
-            self.resources.start(environment._docker_exe, native_id)
+        self.scope.environment = None
 
     def prepare_cleanup(self):
         runtime = self.scope.runtime()
@@ -235,12 +232,13 @@ class _EnvironmentLifecycle:
         with self.lock:
             if self.scope.closed:
                 return
+            self._measurements_closed = True
             if runtime is not None and not self._configuration_owned:
                 # A cutoff pop can time out after the host has entered shutdown.
                 # Join its existing configuration until that pop really finishes.
                 relay_runtime._PLUGIN_CONFIGURATION.acquire(self, runtime.relay)
                 self._configuration_owned = True
-        summary = None if self.resources is None else self.resources.finish()
+            summary = None if self.resources is None else self.resources.finish()
         self.scope.close(reason, on_done=self._release, resource_summary=summary)
 
     def transition(
@@ -249,11 +247,13 @@ class _EnvironmentLifecycle:
         evidence: str = "operation_result", previous_container_id: str | None = None,
         error_class: str | None = None,
     ) -> None:
-        if self.resources is not None:
+        with self.lock:
             if action in ("stop", "remove", "recover") and outcome == "requested":
-                self.resources.stop_resource()
-            elif outcome == "succeeded" and state_after == "running" and container_id is not None:
-                self.resources.start(environment._docker_exe, container_id)
+                self._measurement_resource_id = None
+                if self.resources is not None:
+                    self.resources.finish()
+            elif outcome == "succeeded" and state_after == "running":
+                self._measurement_resource_id = opaque_docker_resource_id(container_id)
         data = {
             "schema_version": "1", "backend": "docker", "action": action,
             "outcome": outcome, "evidence": evidence, **_resource(container_id),

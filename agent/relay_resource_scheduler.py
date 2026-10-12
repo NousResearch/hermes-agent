@@ -89,16 +89,11 @@ def _loss(window: SchedulerWindow) -> dict[str, dict[str, int]]:
     return loss
 
 
-def project_window(window: SchedulerWindow, token: SchedulerToken, *, previous_end_ns: int = 0) -> dict:
-    """Validate a disjoint, loss-free window without exporting PID/cgroup identities."""
-    if not isinstance(window.summary_id, str) or not 1 <= len(window.summary_id) <= 64:
-        raise ValueError("Invalid scheduler summary ID")
-    uuid.UUID(window.summary_id)
+def project_timing(window, token: SchedulerToken, *, previous_end_ns: int = 0) -> dict:
+    """Bind an external source window to its observation and clock domain."""
     if (window.source_identity_before != token.source_identity
             or window.source_identity_after != token.source_identity):
-        raise ValueError("Scheduler source lifetime changed")
-    if window.source_clock != "mono" or window.attribution_verified is not True:
-        raise ValueError("Unverified scheduler clock or attribution")
+        raise ValueError("Measurement source lifetime changed")
     if window.clock_alignment not in ("same_host", "source_host_only"):
         raise ValueError("Unsupported clock alignment claim")
     start, end = _integer(window.start_monotonic_ns), _integer(window.end_monotonic_ns)
@@ -109,19 +104,32 @@ def project_window(window: SchedulerWindow, token: SchedulerToken, *, previous_e
     uncertainty = _integer(window.clock_mapping_uncertainty_ns)
     if anchor_mono < end:
         raise ValueError("Source clock calibration precedes the completed window")
-    counts, loss = _counts(window.counts), _loss(window)
     offset = anchor_unix - anchor_mono
     if offset + start < 0:
         raise ValueError("Invalid scheduler Unix clock mapping")
     return {
-        "schema_version": "1", "source": "linux_tracefs_sched_switch",
-        "status": "available", "summary_id": window.summary_id,
+        "schema_version": "1", "status": "available",
         "observation_id": token.observation_id, "measurement_id": token.measurement_id,
         "resource_id": token.resource_id, "resource_id_scheme": "oci_container_id_sha256_128_v1",
-        "coverage": "verified_kernel_trace_window", "clock_alignment": window.clock_alignment,
+        "clock_alignment": window.clock_alignment,
         "window_start_monotonic_ns": start, "window_end_monotonic_ns": end,
         "window_start_unix_ns": offset + start, "window_end_unix_ns": offset + end,
         "window_duration_ns": end - start, "clock_mapping_uncertainty_ns": uncertainty,
-        "timestamp_resolution_ns": 1000, "counts": counts, "trace_loss": loss,
+    }
+
+
+def project_window(window: SchedulerWindow, token: SchedulerToken, *, previous_end_ns: int = 0) -> dict:
+    """Validate a disjoint, loss-free window without exporting PID/cgroup identities."""
+    if not isinstance(window.summary_id, str) or not 1 <= len(window.summary_id) <= 64:
+        raise ValueError("Invalid scheduler summary ID")
+    uuid.UUID(window.summary_id)
+    if window.source_clock != "mono" or window.attribution_verified is not True:
+        raise ValueError("Unverified scheduler clock or attribution")
+    counts, loss = _counts(window.counts), _loss(window)
+    return {
+        **project_timing(window, token, previous_end_ns=previous_end_ns),
+        "source": "linux_tracefs_sched_switch", "summary_id": window.summary_id,
+        "coverage": "verified_kernel_trace_window", "timestamp_resolution_ns": 1000,
+        "counts": counts, "trace_loss": loss,
         "events_involving_container": counts["switch_in"] + counts["switch_out"] - counts["within_container"],
     }

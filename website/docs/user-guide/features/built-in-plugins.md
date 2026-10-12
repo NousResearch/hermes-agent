@@ -221,47 +221,21 @@ gateway:
 
 Both defaults preserve one session scope for the full session. Rotated spans retain the same `session_id` and add `hermes.session.segment` plus `hermes.session.segment_reason` (`compaction` or `max_turns`).
 
-#### Docker resource samples
+#### Externally measured Docker resources
 
-With a Relay exporter enabled, you can optionally attach CPU, CPU-pressure,
-quota-throttling, and sampled memory measurements to the Docker lifecycle scope:
+A trusted in-process adapter can attach externally collected CPU/memory windows
+and Linux scheduler summaries to the existing Docker lifecycle scope. Hermes
+does not collect hardware counters, start kernel tracing, or request root access.
+There is no additional sampling configuration or collector service in Hermes.
 
-```yaml
-gateway:
-  telemetry:
-    execution_environment:
-      resource_sampling:
-        enabled: true
-        interval_seconds: 2.0
-```
-
-This setting also applies to CLI and cron sessions. It is off by default and
-requires Hermes and its Docker daemon to run on the same Linux cgroup-v2 host.
-Docker Desktop, macOS, Windows, remote daemons, and unreadable counters report
-unavailable measurements; they do not report zero usage. No sampling process
-runs inside the measured container, and tools do not wait for measurements.
-
-Resource events include the opaque container ID, measurement window, availability,
-and cumulative/interval CPU counters. The closing scope includes a summary of
-observed windows, missed publications, and the largest sampled memory reading.
-Tool spans remain under their turns and join through the same resource ID.
-Container totals include overlapping tools and background processes, so they
-are not per-tool CPU measurements or complete lifetime totals. CPU pressure is
-not Hermes queue wait. The CPU reader does not collect kernel switches or GPU usage.
-
-A trusted harness adapter can separately submit verified measurement windows from
-an independently run Linux scheduler collector. Hermes does not start privileged
-tracing or request root access. The window must match the original observation and
-container lifetime, have complete attribution and zero known trace-buffer loss,
-and not overlap an accepted window. Accepted windows appear as
-`hermes.execution_environment.scheduler_window` events on the same sandbox scope;
-the closing resource summary includes their counts and observed duration.
-
-Switch-outs, switch-ins, and direct switches between measured containers are
-distinct counts. They are not container restarts, CPU waiting time, or measured
-switch overhead. Without an external collector, scheduler status remains
-`not_collected`. A cross-host collector must also report clock-alignment limits;
-source-clock calibration alone does not establish exact overlap with tool spans.
+The adapter must verify the container lifetime before and after measurement.
+Hermes checks its observation binding, clock fields, non-overlapping windows,
+and scheduler accounting and trace-loss evidence before bounded publication.
+Tools keep their turn parents and share the same opaque resource ID.
+Closing summaries cover admitted windows only, with pending/failed publications
+reported separately—not complete container lifetimes or per-tool CPU attribution.
+Scheduler switches are not container restarts or switch-overhead measurements.
+GPU usage is not collected. Cross-host clock alignment must be reported explicitly.
 
 ### google_meet
 

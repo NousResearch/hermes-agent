@@ -33,7 +33,7 @@ export interface NamingKit {
   stableOf(el: Element): string
   /** The handle stem for a role: `btn`, `inp`, `lnk` … */
   stemOf(role: string): string
-  /** A form control's current value, or its checked state. */
+  /** A form control's current value or checked state; password values are redacted. */
   valueOf(el: Element): string
 }
 
@@ -59,7 +59,14 @@ export function namingKit(doc: Document): NamingKit {
       return clamp(text, 80)
     }
 
-    for (const attr of ['placeholder', 'title', 'alt', 'name', 'value']) {
+    const passwordInput =
+      el.tagName.toLowerCase() === 'input' && (el.getAttribute('type') || '').toLowerCase() === 'password'
+
+    const attrs = passwordInput
+      ? ['placeholder', 'title', 'alt', 'name']
+      : ['placeholder', 'title', 'alt', 'name', 'value']
+
+    for (const attr of attrs) {
       const value = el.getAttribute(attr)
 
       if (value) {
@@ -179,6 +186,13 @@ export function namingKit(doc: Document): NamingKit {
 
   const valueOf = (el: Element): string => {
     const control = el as HTMLInputElement
+    const kind = (control.type || '').toLowerCase()
+
+    // Password controls can be prefilled by a manager; never disclose their
+    // contents through the page inventory or its change deltas.
+    if (kind === 'password') {
+      return '[redacted]'
+    }
 
     // Tickable controls answer with their state, and are asked FIRST: a
     // checkbox's `.value` is the string "on" unless the page sets one, so
@@ -186,8 +200,6 @@ export function namingKit(doc: Document): NamingKit {
     // the agent — the one thing about a checkbox worth reporting. Gated on the
     // input's TYPE, not on `checked` being defined, which it is (as false) on
     // every input including text fields.
-    const kind = (control.type || '').toLowerCase()
-
     if (kind === 'checkbox' || kind === 'radio') {
       return control.checked ? 'checked' : 'unchecked'
     }

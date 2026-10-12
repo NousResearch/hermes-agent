@@ -487,3 +487,209 @@ def test_registry_advertises_snapshot_through_extension_when_legacy_backend_is_d
     assert [definition["function"]["name"] for definition in definitions] == [
         "browser_snapshot"
     ]
+
+
+# --- cloud-ticket-ws: controller scopes are keyed by the LIVE ui session id ---------------------
+# ``browser.controller.register`` stores ``session_id`` = the live ``_sessions`` key (the id the
+# dashboard client holds), while the agent's HERMES_SESSION_ID is the durable ``agent.session_id``.
+# The lane lookup must therefore use HERMES_UI_SESSION_ID for that transport family.
+
+
+def _bind(tokens_kwargs):
+    from gateway.session_context import set_session_vars
+
+    return set_session_vars(**tokens_kwargs)
+
+
+def test_cloud_lane_uses_live_ui_session_id_when_it_differs_from_agent_session_id(monkeypatch):
+    from gateway import browser_control_broker
+    from gateway.session_context import clear_session_vars
+    from tools import browser_extension_router
+
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture")
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
+    monkeypatch.setattr(browser_control_broker, "get_browser_control_broker", lambda: broker)
+    tokens = _bind(dict(
+        session_id="20260929_140422_71132d",  # durable agent.session_id
+        ui_session_id="fce62d56",  # live session id used at controller registration
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="cloud-ticket-ws",
+    ))
+    try:
+        assert browser_extension_router.extension_controller_available("browser_snapshot") is True
+    finally:
+        clear_session_vars(tokens)
+
+    assert broker.calls[0] == (
+        "scope",
+        {"session_id": "fce62d56", "principal_id": "principal-fixture", "transport_family": "cloud-ticket-ws"},
+    )
+
+
+def test_cloud_lane_finds_real_broker_scope_registered_under_live_session_id(monkeypatch):
+    from gateway.browser_control_broker import BrowserControlBroker, ControllerScope
+    from gateway.session_context import clear_session_vars
+    from tools import browser_extension_router
+
+    broker = BrowserControlBroker(command_timeout=0.1)
+    broker.attach(
+        ControllerScope(
+            principal_id="principal-fixture", profile_id="default", session_id="fce62d56",
+            controller_id="controller-fixture", browser_profile_id="browser-profile-fixture",
+            transport_family="cloud-ticket-ws", capabilities=frozenset({"browser_snapshot"}),
+        ),
+        lambda _frame: None, owner="socket-fixture",
+    )
+    monkeypatch.setattr("gateway.browser_control_broker.browser_control_enabled", lambda: True)
+    monkeypatch.setattr("gateway.browser_control_broker.get_browser_control_broker", lambda: broker)
+    tokens = _bind(dict(
+        session_id="20260929_140422_71132d", ui_session_id="fce62d56",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="cloud-ticket-ws",
+    ))
+    try:
+        assert browser_extension_router.extension_controller_available("browser_snapshot") is True
+        assert browser_extension_router.extension_controller_available("browser_click") is False
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_cloud_lane_without_ui_session_id_keeps_agent_session_id(monkeypatch):
+    from gateway import browser_control_broker
+    from gateway.session_context import clear_session_vars
+    from tools import browser_extension_router
+
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture")
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
+    monkeypatch.setattr(browser_control_broker, "get_browser_control_broker", lambda: broker)
+    tokens = _bind(dict(
+        session_id="session-fixture",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="cloud-ticket-ws",
+    ))
+    try:
+        assert browser_extension_router.extension_controller_available("browser_snapshot") is True
+    finally:
+        clear_session_vars(tokens)
+
+    assert broker.calls[0][1]["session_id"] == "session-fixture"
+
+
+def test_non_cloud_family_ignores_ui_session_id(monkeypatch):
+    from gateway import browser_control_broker
+    from gateway.session_context import clear_session_vars
+    from tools import browser_extension_router
+
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture")
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
+    monkeypatch.setattr(browser_control_broker, "get_browser_control_broker", lambda: broker)
+    tokens = _bind(dict(
+        session_id="session-fixture", ui_session_id="ui-fixture",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="local-api",
+    ))
+    try:
+        assert browser_extension_router.extension_controller_available("browser_snapshot") is True
+    finally:
+        clear_session_vars(tokens)
+
+    assert broker.calls[0][1]["session_id"] == "session-fixture"
+
+
+def test_cloud_routed_handler_dispatches_through_live_session_scope(monkeypatch):
+    from gateway import browser_control_broker
+    from gateway.session_context import clear_session_vars
+
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture", result="controller-result")
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
+    monkeypatch.setattr(browser_control_broker, "get_browser_control_broker", lambda: broker)
+    tokens = _bind(dict(
+        session_id="20260929_140422_71132d", ui_session_id="fce62d56",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="cloud-ticket-ws",
+    ))
+    try:
+        result = routed_browser_handler("browser_snapshot", {}, fallback=lambda: "unsafe-legacy-result")
+    finally:
+        clear_session_vars(tokens)
+
+    assert result == "controller-result"
+    assert broker.calls[0][1]["session_id"] == "fce62d56"
+
+
+# --- execution path: registry handlers pass kw session_id (= agent.session_id); cloud lane must still use the live id ---
+
+
+def _cloud_bound(monkeypatch, broker):
+    from gateway import browser_control_broker
+
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
+    monkeypatch.setattr(browser_control_broker, "get_browser_control_broker", lambda: broker)
+    return _bind(dict(
+        session_id="20260929_140422_71132d", ui_session_id="fce62d56",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="cloud-ticket-ws",
+    ))
+
+
+def test_cloud_execution_ignores_agent_session_id_passed_by_the_registry(monkeypatch):
+    from gateway.session_context import clear_session_vars
+
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture", result="controller-result")
+    tokens = _cloud_bound(monkeypatch, broker)
+    try:
+        result = routed_browser_handler(
+            "browser_snapshot", {}, fallback=lambda: "unsafe-legacy-result",
+            session_id="20260929_140422_71132d",  # what registry handlers forward from the agent
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert result == "controller-result"
+    assert broker.calls[0][1]["session_id"] == "fce62d56"
+
+
+def test_cloud_execution_never_falls_back_to_legacy_when_lane_registered_under_live_id(monkeypatch):
+    from gateway.browser_control_broker import BrowserControlBroker, ControllerScope, ControllerTimeout
+    from gateway.session_context import clear_session_vars
+
+    broker = BrowserControlBroker(command_timeout=0.1)
+    broker.attach(
+        ControllerScope(
+            principal_id="principal-fixture", profile_id="default", session_id="fce62d56",
+            controller_id="controller-fixture", browser_profile_id="browser-profile-fixture",
+            transport_family="cloud-ticket-ws", capabilities=frozenset({"browser_snapshot"}),
+        ),
+        lambda _frame: None, owner="socket-fixture",
+    )
+    tokens = _cloud_bound(monkeypatch, broker)
+    fallbacks = []
+    try:
+        with pytest.raises(ControllerTimeout):  # routed to the controller (which times out), not legacy
+            routed_browser_handler(
+                "browser_snapshot", {}, fallback=lambda: fallbacks.append(True) or "legacy",
+                session_id="20260929_140422_71132d",
+            )
+    finally:
+        clear_session_vars(tokens)
+
+    assert fallbacks == []
+
+
+def test_non_cloud_execution_keeps_explicit_session_id_precedence(monkeypatch):
+    from gateway import browser_control_broker
+    from gateway.session_context import clear_session_vars
+
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture", result="ok")
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
+    monkeypatch.setattr(browser_control_broker, "get_browser_control_broker", lambda: broker)
+    tokens = _bind(dict(
+        session_id="env-session", ui_session_id="ui-fixture",
+        browser_control_principal="principal-fixture", browser_control_transport_family="local-api",
+    ))
+    try:
+        routed_browser_handler("browser_snapshot", {}, fallback=lambda: "legacy", session_id="explicit-session")
+    finally:
+        clear_session_vars(tokens)
+
+    assert broker.calls[0][1]["session_id"] == "explicit-session"

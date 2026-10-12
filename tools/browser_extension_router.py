@@ -26,15 +26,29 @@ from typing import Any, Callable, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+# Transport family whose controllers register under the LIVE dashboard session id.
+_CLOUD_TRANSPORT_FAMILY = "cloud-ticket-ws"
+
+
 def _bound_identity() -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """(session_id, principal_id, transport_family) from the session context."""
+    """(session_id, principal_id, transport_family) from the session context.
+
+    ``browser.controller.register`` stores the scope under the live ``_sessions`` key the dashboard
+    client holds, which is bound here as HERMES_UI_SESSION_ID; HERMES_SESSION_ID is the durable
+    ``agent.session_id`` and differs for cloud-ticket-ws sessions, so the exact-lane lookup would
+    never match. Use the live id for that family only; every other family (and any context without a
+    live id) keeps HERMES_SESSION_ID unchanged.
+    """
     from gateway.session_context import get_session_env
 
-    return tuple(  # type: ignore[return-value]
+    session_id, principal_id, transport_family = (
         get_session_env(key, "") or None
         for key in ("HERMES_SESSION_ID", "HERMES_BROWSER_CONTROL_PRINCIPAL",
                     "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
     )
+    if transport_family == _CLOUD_TRANSPORT_FAMILY:
+        session_id = get_session_env("HERMES_UI_SESSION_ID", "") or session_id
+    return session_id, principal_id, transport_family
 
 
 def _controller_unavailable(message: str) -> Exception:
@@ -129,6 +143,10 @@ def routed_browser_handler(
     except Exception:
         env_session = env_principal = env_transport = None
 
+    # Registry handlers forward the agent's durable session id; the cloud lane is keyed by the live id that
+    # _bound_identity() already resolved, so it must win there (other families keep explicit precedence).
+    if env_transport == _CLOUD_TRANSPORT_FAMILY and env_session:
+        session_id = env_session
     return route_browser_tool(
         action, args, fallback=fallback, broker=get_browser_control_broker(), enabled=True,
         session_id=session_id or env_session, task_id=task_id, principal_id=principal_id or env_principal,

@@ -399,9 +399,14 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     # Native handoffs were staged under the attempt ref for stable attempts
     # (identical for canary, where tag == payload_tag).
     legs = native_legs(accepted)
-    log(f"Fetching native handoffs for {', '.join(legs)} from releases/tag/{tag}/")
-    handoff.fetch(tag, commit, list(legs), root,
-                  ["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"], public_base=publisher.public_base)
+    # Stable trusts the receipt sha256s of an accepted candidate: only metadata and
+    # the per-arch feed legs are downloaded, never the multi-GB packages.
+    local_bytes = accepted is None
+    includes = (["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"] if local_bytes
+                else ["metadata-*.json", "*-mac.yml"])
+    log(f"Fetching native handoffs for {', '.join(legs)} from releases/tag/{tag}/ "
+        f"({'packages' if local_bytes else 'metadata and feed legs only'})")
+    handoff.fetch(tag, commit, list(legs), root, includes, public_base=publisher.public_base)
     native = read_native_receipts(root, tag, commit, legs, payload_tag=payload_tag)
     log(f"Native receipts verified: {len(native['packages'])} packages, {len(native['files'])} files")
     windows = next(row for row in native["packages"] if row["platform"] == "windows")
@@ -433,7 +438,7 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
                                            identity=identity, policy=policy, release_gate=release_gate,
                                            archive_ref=tag if parsed else None)
     manifest, feeds = assemble(request, native, root, artifact_prefix=f"releases/tag/{tag}/",
-                               targets=_leg_targets(legs))
+                               targets=_leg_targets(legs), local_bytes=local_bytes)
     if accepted is not None:
         match_accepted_packages(manifest, accepted)
     prefix = build_prefix(request["buildId"])
@@ -448,7 +453,8 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     def qualified(pinned: dict, actual: dict) -> bool:
         # Rehash local receipt-bound bytes rather than trusting caller-supplied claims.
         expected, _ = assemble(pinned, read_native_receipts(root, tag, commit, legs, payload_tag=payload_tag), root,
-                               artifact_prefix=f"releases/tag/{tag}/", targets=_leg_targets(legs))
+                               artifact_prefix=f"releases/tag/{tag}/", targets=_leg_targets(legs),
+                               local_bytes=local_bytes)
         if accepted is not None:
             match_accepted_packages(expected, accepted)
 

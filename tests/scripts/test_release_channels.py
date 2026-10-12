@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -460,6 +461,12 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
                         name = f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.{suffix}"
                         files[name] = (name + " fixture bytes").encode()
                     metadata["filename"] = f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.zip"
+                    # The per-arch electron feed leg, as the macOS build stages it.
+                    leg = {"version": "2.0.0", "files": [
+                        {"url": name, "size": len(files[name]),
+                         "sha512": base64.b64encode(hashlib.sha512(files[name]).digest()).decode("ascii")}
+                        for name in (f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.{ext}" for ext in ("zip", "dmg"))]}
+                    files[f"{arch}-stable-mac.yml"] = canonical_json(leg)
                 else:
                     metadata.update(publisher="CN=Fixture", applicationId=identity["appNamePascal"])
                     files[f"{identity['artifactNamePascal']}-2.0.0-win-{arch}.msix"] = b"fixture msix"

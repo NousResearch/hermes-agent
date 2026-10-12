@@ -256,6 +256,9 @@ success_response(
 )
 ```
 
+A backend that returns several images in one request puts the first in `image` and the rest, as absolute
+paths, in `extra={"additional_images": [...]}`. Messaging-gateway delivery attaches every one of them.
+
 **Error:**
 ```python
 error_response(

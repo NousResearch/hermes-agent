@@ -18,6 +18,7 @@ from typing import Any
 
 from agent.memory_provider import spawn_context_thread
 from agent.relay_resource_cgroup import CgroupSample, read_sample, sample_data
+from agent.relay_resource_scheduler import COUNT_KEYS, SCHEDULER_EVENT, SchedulerToken, SchedulerWindow, project_window
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.execution_observability import opaque_docker_resource_id
 
@@ -57,6 +58,8 @@ class _Entry:
     observers: list[weakref.ReferenceType] = field(default_factory=list)
     measurement_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     previous: CgroupSample | None = None
+    source_epoch_identity: tuple | None = None
+    source_observation_start_ns: int | None = None
     pending: Any = None
     next_read: float = 0.0
     samples: int = 0
@@ -66,6 +69,13 @@ class _Entry:
     cpu_usage_us: int = 0
     measured_ns: int = 0
     memory_sample_peak_bytes: int | None = None
+    scheduler_windows: int = 0
+    scheduler_rejected_windows: int = 0
+    scheduler_duration_ns: int = 0
+    scheduler_last_end_ns: int = 0
+    scheduler_counts: dict[str, int] = field(default_factory=dict)
+    scheduler_source_identity: tuple | None = None
+    scheduler_last_summary_id: str | None = None
 
     def active(self) -> list[Any]:
         observers = [ref() for ref in self.observers]
@@ -80,17 +90,25 @@ class _Entry:
             "baseline_samples": self.baselines, "omitted_publications": self.omitted_publications,
             "pending_publications": int(self.pending is not None and not self.pending.done()),
             "scheduler_switches_status": "not_collected", "coverage": "observed_windows_only",
+            "scheduler_rejected_windows": self.scheduler_rejected_windows,
         }
         if self.measured_ns:
             data.update(cpu_usage_us=self.cpu_usage_us, measured_duration_ns=self.measured_ns,
                         average_cpu_cores=self.cpu_usage_us * 1000 / self.measured_ns)
         if self.memory_sample_peak_bytes is not None:
             data["memory_sample_peak_bytes"] = self.memory_sample_peak_bytes
+        if self.scheduler_windows:
+            data.update(scheduler_switches_status="available", scheduler_windows=self.scheduler_windows,
+                        scheduler_duration_ns=self.scheduler_duration_ns, scheduler_counts=dict(self.scheduler_counts),
+                        scheduler_coverage="verified_windows_only")
         return data
 
     def record(self, current: CgroupSample) -> dict[str, Any]:
         data = sample_data(current, self.previous)
         self.samples += 1
+        if current.status == "available" and current.source_identity != self.source_epoch_identity:
+            self.source_epoch_identity = current.source_identity
+            self.source_observation_start_ns = current.cpu_ended_ns
         if current.status != "available":
             self.unavailable += 1
         elif data["cpu_interval_status"] == "available":
@@ -135,6 +153,14 @@ class ResourceObservation:
         self.active = False
         self.stop_resource()
         return self.last_summary
+
+    def scheduler_token(self) -> SchedulerToken | None:
+        """Capture the original observation and a verified container lifetime before tracing."""
+        return self.sampler.scheduler_token(self)
+
+    def submit_scheduler_window(self, token: SchedulerToken, window: SchedulerWindow) -> bool:
+        """Admit a trusted collector's final window without waiting for native export."""
+        return self.sampler.submit_scheduler_window(self, token, window)
 
 
 class ResourceSampler:
@@ -235,25 +261,29 @@ class ResourceSampler:
                 return
             self._publish(entry, observer, data)
 
-    def _publish(self, entry: _Entry, observer: ResourceObservation, data: dict) -> None:
+    def _publish(self, entry: _Entry, observer: ResourceObservation, data: dict,
+                 *, event_name: str = RESOURCE_EVENT) -> bool:
         pending = self.pending.get(entry.native_id)
         if pending is not None and not pending.done():
             entry.omitted_publications += 1
-            return
+            return False
         owner = observer.owner()
         if owner is None or owner.scope.closed or not self.slots.acquire(blocking=False):
             entry.omitted_publications += 1
-            return
+            return False
         runtime = owner.scope.runtime()
         operation = None
         try:
             if runtime is None or runtime._closing:
                 entry.omitted_publications += 1
                 self.slots.release()
-                return
+                return False
             operation = runtime.acquire_operation_lease()
             context = owner.scope.context.copy()
-            entry.pending = self.publisher.submit(context.run, self._emit, owner, data)
+            if event_name == RESOURCE_EVENT:
+                entry.pending = self.publisher.submit(context.run, self._emit, owner, data)
+            else:
+                entry.pending = self.publisher.submit(context.run, self._emit_named, owner, data, event_name)
             self.pending[entry.native_id] = entry.pending
         except Exception as exc:
             logger.debug("Sandbox resource submission failed (%s)", type(exc).__name__, exc_info=True)
@@ -261,7 +291,7 @@ class ResourceSampler:
             if operation is not None:
                 operation.release()
             entry.omitted_publications += 1
-            return
+            return False
 
         def completed(future):
             try:
@@ -280,9 +310,14 @@ class ResourceSampler:
                 self.slots.release()
 
         entry.pending.add_done_callback(completed)
+        return True
 
     @staticmethod
     def _emit(owner: Any, data: dict) -> bool:
+        return ResourceSampler._emit_named(owner, data, RESOURCE_EVENT)
+
+    @staticmethod
+    def _emit_named(owner: Any, data: dict, event_name: str) -> bool:
         scope = owner.scope
         runtime = scope.runtime()
         with scope.lock:
@@ -290,9 +325,51 @@ class ResourceSampler:
         if handle is not None and runtime is not None:
             # An explicit handle attaches the event without mutating the physical stack,
             # taking its close lock, or inheriting a concurrently active tool's parent.
-            runtime.relay.scope.event(RESOURCE_EVENT, handle=handle, data=data)
+            runtime.relay.scope.event(event_name, handle=handle, data=data)
             return True
         return False
+
+    def scheduler_token(self, observer: ResourceObservation) -> SchedulerToken | None:
+        with self.lock:
+            entry = self.entries.get(observer.native_id)
+            owner = observer.owner()
+            if (not observer.active or entry is None or owner is None or owner.scope.closed
+                    or not entry.active() or entry.active()[0] is not observer):
+                return None
+            sample = entry.previous
+            if sample is None or sample.status != "available" or sample.source_identity is None:
+                return None
+            return SchedulerToken(owner.scope.lease_id, entry.measurement_id,
+                                  opaque_docker_resource_id(entry.native_id), entry.source_observation_start_ns,
+                                  sample.source_identity)
+
+    def submit_scheduler_window(self, observer: ResourceObservation, token: SchedulerToken,
+                                window: SchedulerWindow) -> bool:
+        with self.lock:
+            current = self.scheduler_token(observer)
+            if current is None or not isinstance(token, SchedulerToken) or not isinstance(window, SchedulerWindow):
+                return False
+            if current != token:
+                return False
+            entry = self.entries[observer.native_id]
+            if window.summary_id == entry.scheduler_last_summary_id:
+                return False
+            previous_end = entry.scheduler_last_end_ns if entry.scheduler_source_identity == token.source_identity else 0
+            try:
+                data = project_window(window, token, previous_end_ns=previous_end)
+            except (ValueError, TypeError, AttributeError):
+                entry.scheduler_rejected_windows += 1
+                return False
+            if not self._publish(entry, observer, data, event_name=SCHEDULER_EVENT):
+                return False
+            entry.scheduler_source_identity = token.source_identity
+            entry.scheduler_last_summary_id = window.summary_id
+            entry.scheduler_last_end_ns = window.end_monotonic_ns
+            entry.scheduler_windows += 1
+            entry.scheduler_duration_ns += data["window_duration_ns"]
+            for key in COUNT_KEYS:
+                entry.scheduler_counts[key] = entry.scheduler_counts.get(key, 0) + data["counts"][key]
+            return True
 
 
 _SAMPLER: ResourceSampler | None = None

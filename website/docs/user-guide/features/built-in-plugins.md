@@ -247,8 +247,21 @@ observed windows, missed publications, and the largest sampled memory reading.
 Tool spans remain under their turns and join through the same resource ID.
 Container totals include overlapping tools and background processes, so they
 are not per-tool CPU measurements or complete lifetime totals. CPU pressure is
-not Hermes queue wait. Kernel context-switch counts and GPU usage are explicitly
-not collected by this sampler.
+not Hermes queue wait. The CPU reader does not collect kernel switches or GPU usage.
+
+A trusted harness adapter can separately submit verified measurement windows from
+an independently run Linux scheduler collector. Hermes does not start privileged
+tracing or request root access. The window must match the original observation and
+container lifetime, have complete attribution and zero known trace-buffer loss,
+and not overlap an accepted window. Accepted windows appear as
+`hermes.execution_environment.scheduler_window` events on the same sandbox scope;
+the closing resource summary includes their counts and observed duration.
+
+Switch-outs, switch-ins, and direct switches between measured containers are
+distinct counts. They are not container restarts, CPU waiting time, or measured
+switch overhead. Without an external collector, scheduler status remains
+`not_collected`. A cross-host collector must also report clock-alignment limits;
+source-clock calibration alone does not establish exact overlap with tool spans.
 
 ### google_meet
 

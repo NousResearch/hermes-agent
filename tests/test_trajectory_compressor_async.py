@@ -153,7 +153,6 @@ async def test_process_directory_does_not_gather_one_task_per_entry(tmp_path):
 @pytest.mark.asyncio
 async def test_process_directory_timeout_skips_and_error_keeps_original(tmp_path):
     """Timeouts are omitted; unexpected errors keep the original row."""
-    import asyncio
     import json
 
     from trajectory_compressor import (
@@ -178,7 +177,7 @@ async def test_process_directory_timeout_skips_and_error_keeps_original(tmp_path
 
     async def fake_process(entry):
         if entry["tag"] == "timeout":
-            raise asyncio.TimeoutError
+            raise TimeoutError
         if entry["tag"] == "error":
             raise RuntimeError("boom")
         return {**entry, "ok": True}, TrajectoryMetrics()

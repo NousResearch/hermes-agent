@@ -625,7 +625,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         batch_size = max(1, int(self.config.max_concurrent_requests))
         total_entries = 0
         for file_path in jsonl_files:
-            with open(file_path, "r", encoding="utf-8") as handle:
+            with open(file_path, "r", encoding="utf-8") as handle:  # noqa: ASYNC230 -- local CLI input, read incrementally rather than retained in RAM
                 total_entries += sum(1 for line in handle if line.strip())
 
         console.print(f"\n{'='*60}")
@@ -654,9 +654,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             for file_path in jsonl_files:
                 output_path = output_dir / file_path.name
                 tmp_path = output_path.with_name(output_path.name + ".tmp")
-                batch: List[tuple[int, Dict]] = []
+                batch: list[tuple[int, dict]] = []
                 try:
-                    with open(tmp_path, "w", encoding="utf-8") as out:
+                    with open(tmp_path, "w", encoding="utf-8") as out:  # noqa: ASYNC230 -- local CLI output, written incrementally in bounded batches
 
                         async def flush_batch() -> None:
                             if not batch:
@@ -669,7 +669,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                                     out.write(json.dumps(outcome[0], ensure_ascii=False) + "\n")
                             batch.clear()
 
-                        with open(file_path, "r", encoding="utf-8") as handle:
+                        with open(file_path, "r", encoding="utf-8") as handle:  # noqa: ASYNC230 -- local CLI input, read incrementally in bounded batches
                             for line_num, line in enumerate(handle):
                                 stripped = line.strip()
                                 if not stripped:

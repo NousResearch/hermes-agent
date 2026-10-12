@@ -309,11 +309,12 @@ def _strip_auth_headers(request: Any) -> None:
         request.headers.pop(header_name, None)
 
 
-def build_bearer_http_client(token_provider: Callable[[], str], **httpx_kwargs: Any) -> Any:
+def build_bearer_http_client(token_provider: Callable[[], str], *, sends_as_api_key: Callable[[str], bool] | None = None, **httpx_kwargs: Any) -> Any:
     """``httpx.Client`` minting a fresh Entra bearer JWT per outbound request. The Anthropic SDK computes
     ``Authorization`` once at construction, so per-request refresh needs a ``request`` hook: mint (cheap —
     azure-identity caches), strip pre-set auth headers, set ``Authorization: Bearer``. ``httpx_kwargs`` are
-    forwarded verbatim (``timeout``, ``transport``...)."""
+    forwarded verbatim (``timeout``, ``transport``...). ``sends_as_api_key(token)`` True puts the minted
+    token in ``x-api-key`` instead (a ``key_cmd`` printing a native Anthropic Console key)."""
     if not is_token_provider(token_provider):
         raise ValueError("build_bearer_http_client requires a zero-arg callable token provider")
     import httpx
@@ -331,7 +332,10 @@ def build_bearer_http_client(token_provider: Callable[[], str], **httpx_kwargs: 
             _strip_auth_headers(request)
             return
         _strip_auth_headers(request)
-        request.headers["Authorization"] = f"Bearer {token}"
+        if sends_as_api_key is not None and sends_as_api_key(token):
+            request.headers["x-api-key"] = token
+        else:
+            request.headers["Authorization"] = f"Bearer {token}"
 
     return httpx.Client(event_hooks={"request": [_inject_bearer]}, **httpx_kwargs)
 

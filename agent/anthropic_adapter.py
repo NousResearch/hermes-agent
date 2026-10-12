@@ -14,7 +14,7 @@ import subprocess
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
-from utils import normalize_proxy_env_vars
+from utils import base_url_hostname, normalize_proxy_env_vars
 
 from agent.anthropic_credentials import _is_oauth_token
 from agent.anthropic_endpoints import (
@@ -409,7 +409,13 @@ def _build_anthropic_client_with_bearer_hook(
     normalize_proxy_env_vars()
     from agent.azure_identity_adapter import build_bearer_http_client
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
-    kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
+    # A key_cmd on the native host can print a Console API key, which (as in the static path's
+    # _auth_style) belongs in x-api-key; OAuth tokens and Azure/third-party routes keep Bearer.
+    native_host = not base_url or base_url_hostname(str(base_url)) == "api.anthropic.com"
+    kwargs["http_client"] = build_bearer_http_client(
+        token_provider, timeout=kwargs["timeout"],
+        sends_as_api_key=(lambda token: not _is_oauth_token(token)) if native_host else None,
+    )
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
     from agent.anthropic_credentials import anthropic_route_is_oauth

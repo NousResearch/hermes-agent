@@ -415,6 +415,19 @@ def _worktree_add(repo_root: str, wt_path: Path, branch_name: str, base_ref: str
     return base_ref, base_label
 
 
+def _record_branch_owner(repo_root: str, branch_name: str) -> None:
+    """Record the creating session on the branch, so the pruner can key on it later.
+
+    Without this the branch has no owner and falls back to the age gate. Best effort:
+    an unrecorded branch is kept, never lost.
+    """
+    session_id = (os.environ.get("HERMES_SESSION_ID") or "").strip()
+    if not session_id:
+        return
+    _git_quiet(["config", f"branch.{branch_name}.hermes-session", session_id], repo_root,
+               log="Failed to record the owning session on the branch")
+
+
 def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
                     name: Optional[str] = None) -> Optional[dict[str, str]]:
     """Create an isolated git worktree -> ``{path, branch, repo_root, base}``, or None on failure.
@@ -456,6 +469,9 @@ def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
         return None
     base_ref, base_label = added
     _copy_worktree_includes(repo_root, wt_path)
+    # Bind the branch to this session now: the association has to outlive the tree,
+    # which is gone by the time the pruner comes to reap the branch.
+    _record_branch_owner(repo_root, branch_name)
 
     # Lock so other processes (and `git worktree remove`) see it is in use; fail-soft.
     try:
@@ -1033,14 +1049,88 @@ def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
         logger.debug("worktree summary failed", exc_info=True)
 
 
+def _branch_owner_sessions(repo_root: str) -> dict:
+    """Branch -> owning session id, as recorded by :func:`_record_branch_owner`. {} on failure.
+
+    The association lives in the branch's own config, so it outlives the worktree (the
+    tree is usually gone by the time the pruner comes to reap the branch) and
+    ``git branch -D`` cleans it up with the ref.
+    """
+    # ``git config`` lower-cases the key it prints (the subsection keeps its case), so
+    # match on the lowered form and slice the name out of the original.
+    suffix = ".hermes-session"
+    try:
+        listing = _git_out(["config", "--get-regexp", r"^branch\..*\.hermes-session$"], repo_root)
+    except Exception:
+        return {}
+    owners: dict = {}
+    for line in (listing or "").splitlines():
+        key, _, value = line.partition(" ")
+        lowered = key.lower()
+        if lowered.startswith("branch.") and lowered.endswith(suffix) and value.strip():
+            name = key[len("branch."):-len(suffix)]
+            if name:
+                owners[name] = value.strip()
+    return owners
+
+
+def _session_is_gone(session_id: str) -> bool:
+    """Whether the session store no longer counts *session_id* as live.
+
+    Gone means archived, or never recorded there. Fails SAFE toward False: a store we
+    cannot read is never the reason a branch is deleted.
+    """
+    try:
+        from hermes_state import SessionDB
+
+        row = SessionDB().get_session(session_id)
+    except Exception:
+        return False
+    if row is None:
+        return True
+    return bool(row.get("archived"))
+
+
+def _branch_tip_dates(repo_root: str) -> dict:
+    """Branch -> age in unix seconds; an absent entry is kept. {} when undatable.
+
+    Age is the branch's newest activity: ``max(tip commit date, last ref update)``. The
+    commit date alone dates the BASE it was cut from, so a lane branched moments ago off
+    a quiet repo's main (or a ``pr-*`` head fetched from an old commit) reads as days old.
+    The age gate's only input: a branch that cannot be dated is never reaped on the timer.
+    """
+    try:
+        refs = _git_out(["for-each-ref", "--format=%(refname:short)%09%(committerdate:unix)",
+                         "refs/heads"], repo_root)
+        common_dir = _git_out(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo_root)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if not refs or not common_dir:
+        return {}
+    dates: dict = {}
+    for line in refs.split("\n"):
+        name, _, stamp = line.partition("\t")
+        name, stamp = name.strip(), stamp.strip()
+        if not name or not stamp.isdigit():
+            continue
+        reflog = Path(common_dir) / "logs" / "refs" / "heads" / name
+        try:
+            dates[name] = max(int(stamp), reflog.stat().st_mtime)
+        except OSError:
+            dates[name] = int(stamp)
+    return dates
+
+
 def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None,
                              max_age_hours: int = 24) -> None:
     """Delete local ``hermes/hermes-*`` and ``pr-*`` branches with no worktree, except *protect*.
 
-    Age-gated: only a branch whose tip commit is older than *max_age_hours* is reaped. A
-    branch is briefly worktree-less while its work is live (the ref is created before its
-    tree, and a tree can be reaped on an earlier pass), so reaping every orphan on sight
-    destroys work that was created seconds earlier. An undatable branch is kept.
+    Session-associated first: a branch is reaped when the session recorded on it (see
+    :func:`_branch_owner_sessions`) is gone from the session store, whatever its age — a
+    branch then lives exactly as long as the work that made it. Branches with no recorded
+    owner fall back to the age gate (*max_age_hours*), which also protects work that is
+    only briefly worktree-less: the ref is created before its tree, and a tree can be
+    reaped on an earlier pass. Undatable branches are kept.
     """
     try:
         listing = _git_out(["branch", "--format=%(refname:short)"], repo_root)
@@ -1074,30 +1164,19 @@ def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None,
     if not orphaned:
         return
 
-    # A branch's age is its newest activity: the tip commit OR the last ref update (its reflog
-    # file's mtime). The commit date alone dates the BASE, so a branch cut seconds ago from an
-    # old commit (a quiet repo, a fetched `pr-*` head) reads as days old. Undatable = kept.
-    try:
-        refs = _git_out(["for-each-ref", "--format=%(refname:short)%09%(committerdate:unix)",
-                         "refs/heads"], repo_root)
-        common_dir = _git_out(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo_root)
-    except (OSError, subprocess.SubprocessError):
-        return
-    if not refs or not common_dir:
-        return
-    ages = {}
-    for line in refs.split("\n"):
-        name, _, stamp = line.partition("\t")
-        name, stamp = name.strip(), stamp.strip()
-        if name and stamp.isdigit():
-            reflog = Path(common_dir) / "logs" / "refs" / "heads" / name
-            try:
-                ages[name] = max(int(stamp), reflog.stat().st_mtime)
-            except OSError:
-                ages[name] = int(stamp)
-
+    owners = _branch_owner_sessions(repo_root)
+    ages = _branch_tip_dates(repo_root)
     cutoff = time.time() - (max_age_hours * 3600)
-    stale = [b for b in orphaned if ages.get(b, float("inf")) <= cutoff]
+    stale = []
+    for b in orphaned:
+        owner = owners.get(b)
+        if owner is not None:
+            # Session-associated: the ref lives exactly as long as its session does.
+            if _session_is_gone(owner):
+                stale.append(b)
+        elif ages.get(b, float("inf")) <= cutoff:
+            # Nothing recorded an owner: the age gate is the only signal left.
+            stale.append(b)
     if not stale:
         return
     for i in range(0, len(stale), 50):

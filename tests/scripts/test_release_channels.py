@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -460,6 +461,12 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
                         name = f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.{suffix}"
                         files[name] = (name + " fixture bytes").encode()
                     metadata["filename"] = f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.zip"
+                    # The per-arch electron feed leg, as the macOS build stages it.
+                    leg = {"version": "2.0.0", "files": [
+                        {"url": name, "size": len(files[name]),
+                         "sha512": base64.b64encode(hashlib.sha512(files[name]).digest()).decode("ascii")}
+                        for name in (f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.{ext}" for ext in ("zip", "dmg"))]}
+                    files[f"{arch}-stable-mac.yml"] = canonical_json(leg)
                 else:
                     metadata.update(publisher="CN=Fixture", applicationId=identity["appNamePascal"])
                     files[f"{identity['artifactNamePascal']}-2.0.0-win-{arch}.msix"] = b"fixture msix"
@@ -694,3 +701,34 @@ def test_stable_requests_name_the_attempt_archive_only_when_given():
         assert pub.request(bare["buildId"]) == bare
         with pytest.raises(ChannelError, match="(?i)archive ref"):
             allocate("c" * 40, "2.2.0", "rc.2-v2.9.9")
+
+
+def test_stable_receipts_bind_the_attempt_ref_while_metadata_binds_the_payload_tag(tmp_path):
+    """Stable stages handoffs under rc.N-vX.Y.Z but record() stamps vX.Y.Z."""
+    from scripts.releases import channel_releases
+    from scripts.releases.handoff import receipt_name
+    from hermes_cli.release_channels import ChannelError, canonical_json
+    attempt, payload, commit = "rc.15-v2.0.0", "v2.0.0", "e" * 40
+    legs = ("darwin-arm64", "win32-arm64", "win32-x64")
+
+    def stage(metadata_tag):
+        for leg in legs:
+            platform, arch = leg.split("-")
+            native = "macos" if platform == "darwin" else "windows"
+            name = f"metadata-{native}-{arch}.json"
+            body = canonical_json({"platform": native, "arch": arch, "tag": metadata_tag, "commit": commit})
+            (tmp_path / name).write_bytes(body)
+            rows = [{"path": name, "size": len(body), "sha256": hashlib.sha256(body).hexdigest()}]
+            receipt = {"schema": 1, "tag": attempt, "commit": commit, "name": leg, "files": rows}
+            (tmp_path / receipt_name(leg)).write_bytes(canonical_json(receipt))
+
+    stage(payload)
+    native = channel_releases.read_native_receipts(tmp_path, attempt, commit, legs, payload_tag=payload)
+    assert {row["tag"] for row in native["packages"]} == {payload}
+    # Without the payload tag the rows are held to the attempt ref and refused.
+    with pytest.raises(ChannelError, match="identity mismatch"):
+        channel_releases.read_native_receipts(tmp_path, attempt, commit, legs)
+    # A row stamped with the attempt ref is not the published payload.
+    stage(attempt)
+    with pytest.raises(ChannelError, match="identity mismatch"):
+        channel_releases.read_native_receipts(tmp_path, attempt, commit, legs, payload_tag=payload)

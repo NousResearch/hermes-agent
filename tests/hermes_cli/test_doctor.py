@@ -1637,7 +1637,7 @@ def test_cron_store_check_reports_writability_and_low_space(
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
 def test_profile_alias_status_follows_the_wrapper_the_profile_really_has(monkeypatch, tmp_path, platform):
     """#131753: doctor said "no alias" for every Windows profile (``.bat`` wrapper) and for any
-    profile reachable only through a custom alias name."""
+    profile reachable only through a custom alias name; a bare pre-``.bat`` wrapper still counts."""
     import hermes_cli.gateway_migrate as gm
     from hermes_cli import profiles
 
@@ -1646,17 +1646,18 @@ def test_profile_alias_status_follows_the_wrapper_the_profile_really_has(monkeyp
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     monkeypatch.setattr(gm, "duplicate_credential_findings", list)
     monkeypatch.setattr(profiles, "sys", SimpleNamespace(**{**vars(sys), "platform": platform}))
-    for name in ("dev", "ops", "work"):
+    for name in ("dev", "ops", "work", "old"):
         (tmp_path / ".hermes" / "profiles" / name).mkdir(parents=True)
         (tmp_path / ".hermes" / "profiles" / name / "config.yaml").write_text("model: m\n", encoding="utf-8")
     profiles.create_wrapper_script("dev")
     profiles.create_wrapper_script("w", target="work")
+    (tmp_path / ".local" / "bin" / "old").write_text('#!/bin/sh\nexec hermes -p old "$@"\n', encoding="utf-8")
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         doctor_state._check_profiles(False)
     lines = out.getvalue().splitlines()
-    status = {name: next(ln for ln in lines if f" {name}:" in ln) for name in ("dev", "ops", "work")}
+    status = {name: next(ln for ln in lines if f" {name}:" in ln) for name in ("dev", "ops", "work", "old")}
 
-    assert "no alias" not in status["dev"] and "no alias" not in status["work"]
+    assert not any("no alias" in status[n] for n in ("dev", "work", "old"))
     assert "no alias" in status["ops"]

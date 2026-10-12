@@ -627,10 +627,8 @@ def build_alias_map() -> dict[str, str]:
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
             continue
-        # Our wrappers are named after the alias and (on Windows only) carry .bat.
-        if is_windows and entry.suffix != ".bat":
-            continue
-        if not is_windows and entry.suffix:
+        # Our wrappers are named after the alias; Windows ones carry .bat (none before #34796).
+        if entry.suffix and not (is_windows and entry.suffix == ".bat"):
             continue
         try:
             with open(entry, "r", encoding="utf-8-sig", errors="strict") as f:
@@ -1031,9 +1029,7 @@ def _profile_info(name: str, path: Path, *, is_default: bool, alias_name: Option
     model, provider = _read_config_model(path)
     dist_name, dist_version, dist_source = _read_distribution_meta(path)
     meta = read_profile_meta(path)
-    alias_path = _wrapper_path(alias_name) if alias_name else None
-    if alias_path is not None and not alias_path.exists():
-        alias_path = None
+    alias_path = next((p for p in _wrapper_candidates(alias_name) if p.exists()), None) if alias_name else None
     gateway_running = _check_gateway_running(path)
     if not is_default:
         gateway_running = gateway_running or _served_by_running_multiplexer(name)
@@ -1832,7 +1828,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
     canon, profile_dir = _existing_profile_dir(canon)
     gw_running = _check_gateway_running(profile_dir)
-    wrapper_path = next((p for p in _wrapper_candidates(canon) if p.exists()), None)
+    wrapper_path = next((p for p in _wrapper_candidates(canon) if p.exists() and _is_our_wrapper(p)), None)
     _print_delete_summary(canon, profile_dir, gw_running, wrapper_path)
     if not yes:
         print()

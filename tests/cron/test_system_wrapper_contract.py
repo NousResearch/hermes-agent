@@ -11,8 +11,8 @@ import os
 import subprocess
 from unittest import mock
 
-from agent.system_wrappers import (BOT_CHAT_DELIVERY_PREFIX, CRON_HINT_PREFIX,
-    WRAPPER_END, strip_system_wrappers)
+from agent.system_wrappers import (BOT_CHAT_DELIVERY_PREFIX, CONTEXT_BLOCK_HEADING,
+    CRON_HINT_PREFIX, WRAPPER_END, strip_system_wrappers)
 from cron import scheduler_delivery as sched_delivery
 from cron.scheduler_delivery import _deliver_to_bot_chat
 
@@ -30,6 +30,25 @@ def test_cron_hint_recognizer_matches_the_build_site():
     first_para, sep, _ = hint.partition("\n\n")
     assert sep and first_para.endswith("]")
     assert strip_system_wrappers(hint + "the job prompt") == "the job prompt"
+
+
+def test_context_block_recognizer_matches_the_build_site():
+    """``_prepend_context_block`` frames a previous run's output AHEAD of the job prompt; the
+    recognizer must reduce the real frame to exactly the prompt, both raw and flattened."""
+    from cron import scheduler_prompt
+    prompt = "Summarize the week."
+    block = scheduler_prompt._prepend_context_block(
+        prompt, "Your previous run's output",
+        scheduler_prompt._SELF_CONTEXT_INTRO, "the archived previous output")
+    assert block.startswith(CONTEXT_BLOCK_HEADING)
+    assert strip_system_wrappers(block) == prompt
+    flat = block.replace("\n", " ").replace("\r", " ")
+    assert strip_system_wrappers(flat) == prompt
+    # The stacked shape a skills-job persists: hint, then block, then prompt.
+    stacked = scheduler_prompt._CRON_HINT + block
+    assert strip_system_wrappers(stacked) == prompt
+    flat_stacked = stacked.replace("\n", " ").replace("\r", " ")
+    assert strip_system_wrappers(flat_stacked) == prompt
 
 
 def test_bot_chat_banner_recognizer_matches_the_build_site():

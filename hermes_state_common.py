@@ -14,8 +14,9 @@ from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
 from agent.skill_commands import (AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT,
     SKILL_SCAFFOLD_SQL_LIKE, _SINGLE_SKILL_INSTRUCTION, describe_skill_invocation)
-from agent.system_wrappers import (BOT_CHAT_DELIVERY_PREFIX, CRON_HINT_PREFIX,
-    SYSTEM_WRAPPER_PREFIXES, WRAPPER_END_FLATTENED, strip_system_wrappers)
+from agent.system_wrappers import (BOT_CHAT_DELIVERY_PREFIX, CONTEXT_BLOCK_HEADING,
+    CRON_HINT_PREFIX, FENCE, SYSTEM_WRAPPER_PREFIXES, WRAPPER_END_FLATTENED,
+    strip_system_wrappers)
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
 
@@ -137,24 +138,45 @@ _PREVIEW_WRAPPED_SQL = _sql_starts_with("m.content", SYSTEM_WRAPPER_PREFIXES)
 
 
 def _sql_strip_wrapper(expression: str) -> str:
-    """``expression`` with a leading flattened wrapper paragraph cut off; unchanged when the
-    terminator is absent (a truncated excerpt or a reworded build site — never guess)."""
+    """``expression`` with a leading flattened wrapper paragraph cut off. Scoped to text that
+    actually opens with a wrapper prefix; unchanged when the terminator is absent (a truncated
+    excerpt or a reworded build site — never guess)."""
     term = _sql_literal(WRAPPER_END_FLATTENED)
     cut = f"SUBSTR({expression}, INSTR({expression}, {term}) + {len(WRAPPER_END_FLATTENED)})"
-    return f"(CASE WHEN INSTR({expression}, {term}) > 0 THEN {cut} ELSE {expression} END)"
+    openers = " OR ".join(
+        f"SUBSTR({expression}, 1, {len(p)}) = {_sql_literal(p)}" for p in SYSTEM_WRAPPER_PREFIXES)
+    return (f"(CASE WHEN ({openers})"
+        f" AND INSTR({expression}, {term}) > 0 THEN {cut} ELSE {expression} END)")
+
+
+def _sql_strip_context_block(expression: str) -> str:
+    """``expression`` with a leading fenced previous-run context block
+    (``_prepend_context_block``) cut off, landing on the job prompt behind it. Flattened, the
+    block's two fences are the only ones the frame itself emits, so the cut is positional:
+    after the second ```` ``` ````, skipping the blank-line spaces. Scoped to rows opening
+    with the block heading; unchanged when a fence is missing (never guess)."""
+    fence = _sql_literal(FENCE)
+    heading = _sql_literal(CONTEXT_BLOCK_HEADING)
+    after_open = f"SUBSTR({expression}, INSTR({expression}, {fence}) + {len(FENCE)})"
+    return (f"(CASE WHEN SUBSTR({expression}, 1, {len(CONTEXT_BLOCK_HEADING)}) = {heading}"
+        f" AND INSTR({expression}, {fence}) > 0 AND INSTR({after_open}, {fence}) > 0"
+        f" THEN LTRIM(SUBSTR({expression}, INSTR({expression}, {fence}) + {len(FENCE)}"
+        f" + INSTR({after_open}, {fence}) + {len(FENCE)}), {_SQL_WHITESPACE})"
+        f" ELSE {expression} END)")
 
 
 # A cron job with skills embeds the volatile prompt (cron hint + job prompt) after the skill body
 # behind ``_SINGLE_SKILL_INSTRUCTION``; without this cut the 63-char head window only ever reaches
-# the skill body and the row previews as the bare ``/skill`` slug. Cut to the instruction, then
-# strip the cron hint that leads it. Scoped to rows carrying the cron hint so interactive ``/skill``
-# sessions keep their existing ``/work — typed instruction`` preview.
+# the skill body and the row previews as the bare ``/skill`` slug. Cut sequence (innermost first):
+# the cron hint leading the instruction, then the fenced previous-run context block sitting
+# between the hint and the job prompt. Scoped to rows carrying the cron hint so interactive
+# ``/skill`` sessions keep their existing ``/work — typed instruction`` preview.
 _PREVIEW_CRON_SKILL_SQL = (f"(m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
     f" AND INSTR(m.content, {_sql_literal(CRON_HINT_PREFIX)}) > 0"
     f" AND INSTR(m.content, {_sql_literal(_SINGLE_SKILL_INSTRUCTION)}) > 0)")
-_PREVIEW_CRON_SKILL_CUT_SQL = _sql_strip_wrapper(
+_PREVIEW_CRON_SKILL_CUT_SQL = _sql_strip_context_block(_sql_strip_wrapper(
     f"SUBSTR({_PREVIEW_CONTENT_SQL}, INSTR({_PREVIEW_CONTENT_SQL},"
-    f" {_sql_literal(_SINGLE_SKILL_INSTRUCTION)}) + {len(_SINGLE_SKILL_INSTRUCTION)})")
+    f" {_sql_literal(_SINGLE_SKILL_INSTRUCTION)}) + {len(_SINGLE_SKILL_INSTRUCTION)})"))
 
 # Pure compaction rows are ineligible; force-user-leading and merged carriers only when authentic content survives.
 # A display_kind="hidden" row is model-facing scaffolding the gateway never paints; the preview must not paint it either.

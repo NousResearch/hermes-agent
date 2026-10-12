@@ -24,6 +24,21 @@ BOT_CHAT_DELIVERY_PREFIX = '[Cronjob "'
 
 SYSTEM_WRAPPER_PREFIXES = (CRON_HINT_PREFIX, BOT_CHAT_DELIVERY_PREFIX)
 
+# ``cron.scheduler_prompt._prepend_context_block`` frames a previous/upstream run's output as a
+# fenced block that sits AHEAD of the job prompt (after the cron hint). Pinned to the build site
+# by contract test; the block always opens with the self-context heading (upstream-context rows
+# are cron-run rows that open with the hint and are cut by it first).
+CONTEXT_BLOCK_HEADING = "## Your previous run's output"
+# ``_prepend_context_block`` emits ``## heading\n{intro}\n\n```\n{body}\n```\n\n{prompt}``.
+# Unflattened, the opening fence is the first ``\n\n```\n`` and the closing fence the next
+# ``\n```\n\n``. Once a listing query flattens newlines to spaces the fences are indistinguishable
+# by spacing alone, so the flattened cut finds the FIRST fence pair positionally: opening =
+# first "```" after the heading, closing = first "```" after the block body, then skip the
+# blank-line space pair that precedes the job prompt.
+FENCE = "```"
+FENCE_OPEN = "\n\n```\n"
+FENCE_BLOCK_END = "\n```\n\n"
+
 # A wrapper is a bracketed paragraph: it ends at the first blank line whose last character is the
 # closing bracket. Cutting at the first ``]`` instead would land mid-wrapper — the cron hint quotes
 # ``[SILENT]`` and ``[CRON_FAILURE]`` inside itself.
@@ -39,19 +54,22 @@ def is_system_wrapper(text: str) -> bool:
 
 
 def strip_system_wrappers(text: str) -> str:
-    """Cut leading machine-authored wrapper paragraphs, returning the content behind them.
+    """Cut leading machine-authored wrappers, returning the content behind them.
 
-    Nested/stacked wrappers are cut in sequence (a bot-chat row can carry a cron-hint-wrapped
-    payload). A wrapper whose terminator is missing — a truncated excerpt, or a reworded build
-    site the recognizers no longer match end-to-end — is left alone rather than guessed at:
-    showing half a wrapper is wrong, but silently deleting the whole message is worse.
+    Cuts in sequence: wrapper paragraphs (cron hint, bot-chat banner — they can stack) and the
+    fenced previous-run context block (``_prepend_context_block``), which sits between the hint
+    and the job prompt. A construct whose terminator is missing — a truncated excerpt, or a
+    reworded build site the recognizers no longer match end-to-end — is left alone rather than
+    guessed at: showing half a wrapper is wrong, but silently deleting the whole message is worse.
     """
     current = (text or "").strip()
-    for _ in range(len(SYSTEM_WRAPPER_PREFIXES) * 4):  # bounded: each pass must remove one or stop
-        stripped = _strip_one_wrapper(current)
-        if stripped == current:
+    for _ in range(12):  # bounded: each pass must remove one construct or the loop stops
+        cut = _strip_one_wrapper(current)
+        if cut == current:
+            cut = _strip_one_context_block(current)
+        if cut == current:
             break
-        current = stripped
+        current = cut
     return current
 
 
@@ -65,4 +83,28 @@ def _strip_one_wrapper(text: str) -> str:
     if end == -1:
         return text
     remainder = stripped[end + len(WRAPPER_END):].strip()
+    return remainder if remainder else text
+
+
+def _strip_one_context_block(text: str) -> str:
+    stripped = text.lstrip()
+    if not stripped.startswith(CONTEXT_BLOCK_HEADING):
+        return text
+    open_idx = stripped.find(FENCE_OPEN)
+    if open_idx != -1:
+        close = stripped.find(FENCE_BLOCK_END, open_idx + len(FENCE_OPEN))
+        if close == -1:
+            return text
+        remainder = stripped[close + len(FENCE_BLOCK_END):].strip()
+        return remainder if remainder else text
+    # Flattened (listing queries): newlines are gone, so the two fences are only distinguishable
+    # positionally — first is the opening, second the closing; the blank line after it is now
+    # spaces, absorbed by lstrip.
+    first = stripped.find(FENCE)
+    if first == -1:
+        return text
+    second = stripped.find(FENCE, first + len(FENCE))
+    if second == -1:
+        return text
+    remainder = stripped[second + len(FENCE):].lstrip()
     return remainder if remainder else text

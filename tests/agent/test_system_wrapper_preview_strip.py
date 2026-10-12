@@ -108,6 +108,25 @@ def test_cron_skill_session_previews_the_job_prompt_not_the_slug(db):
     assert "personal-brain-vault" not in preview
 
 
+def test_cron_skill_session_with_context_block_previews_the_job_prompt(db):
+    """The real weekly-review shape: skill body, instruction, cron hint, THEN a fenced
+    previous-run block ahead of the job prompt. The preview must land on the prompt."""
+    from agent.skill_commands import _SINGLE_SKILL_INSTRUCTION
+    from cron import scheduler_prompt
+    block = scheduler_prompt._prepend_context_block(
+        "Summarize what landed in the vault this week.", "Your previous run's output",
+        scheduler_prompt._SELF_CONTEXT_INTRO, "the archived previous run's output")
+    db.create_session("cronskillctx", source="cron")
+    db.append_message("cronskillctx", role="user", content=(
+        '[IMPORTANT: The user has invoked the "personal-brain-vault" skill, indicating they '
+        "want you to follow its instructions. The full skill content is loaded below.]\n\n"
+        + _LONG_BODY + "\n" + _SINGLE_SKILL_INSTRUCTION + scheduler_prompt._CRON_HINT + block))
+    preview = _preview(db, "cronskillctx")
+    assert preview.startswith("Summarize what landed in the vault this week")
+    assert "previous run" not in preview.lower()
+    assert "personal-brain-vault" not in preview
+
+
 def test_interactive_skill_session_keeps_its_described_preview(db):
     """Control: the cron-skill cut is scoped to cron-hint rows; interactive /skill previews
     keep the existing ``/slug — typed instruction`` shape."""

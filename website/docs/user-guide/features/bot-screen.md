@@ -66,14 +66,18 @@ reverse proxy's access log may record an already-spent ticket.
 
   | Distro | Packages |
   |---|---|
-  | Debian / Ubuntu | `tigervnc-standalone-server xfce4-panel xfwm4 xfdesktop4 xfce4-settings xfce4-terminal dbus-x11 x11-xserver-utils x11-utils xauth fonts-dejavu-core` |
-  | Fedora | `tigervnc-x11-server xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal dbus-daemon xsetroot xset xdpyinfo xprop xorg-x11-xauth setxkbmap dejavu-sans-fonts` |
-  | Arch | `tigervnc xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal xorg-xsetroot xorg-xset xorg-xdpyinfo xorg-xprop xorg-xauth xorg-setxkbmap ttf-dejavu` |
+  | Debian / Ubuntu | `tigervnc-standalone-server xfce4-panel xfwm4 xfdesktop4 xfce4-settings xfce4-terminal dbus-x11 x11-xserver-utils x11-utils xauth fonts-dejavu-core at-spi2-core` |
+  | Fedora | `tigervnc-x11-server xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal dbus-daemon xsetroot xset xdpyinfo xprop xorg-x11-xauth setxkbmap dejavu-sans-fonts at-spi2-core` |
+  | Arch | `tigervnc xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal xorg-xsetroot xorg-xset xorg-xdpyinfo xorg-xprop xorg-xauth xorg-setxkbmap ttf-dejavu at-spi2-core` |
 
   On Fedora the `Xvnc` binary is in `tigervnc-x11-server` (not
   `tigervnc-server-minimal`) and `dbus-run-session` comes from `dbus-daemon`.
   Deliberately **not** the `xfce4` metapackage: it pulls in the screensaver,
   power manager and polkit agent that lock or prompt a headless desktop.
+  `at-spi2-core` provides the AT-SPI bus (`org.a11y.Bus`) that cua-driver's
+  accessibility tree needs: without it `hermes computer-use doctor` reports
+  `ax_capability: ❌` and `get_window_state` returns empty trees, while screen
+  capture and input injection keep working.
 - [Computer Use](./computer-use.md) enabled for the bot (cua-driver installed).
 - Memory. Measured in the official image: the gateway idles at ~300 MB, Xvnc +
   Xfce add ~220 MB, and the headed Chromium a human opens during a takeover adds

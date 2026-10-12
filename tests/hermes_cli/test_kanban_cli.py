@@ -99,6 +99,18 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_kanban_show_text_renders_legacy_iso_completed_at(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="legacy stamp")
+        kb.complete_task(conn, task_id, result="ok", force=True)
+        conn.execute("UPDATE tasks SET completed_at = '2026-09-30T14:22:11' WHERE id = ?", (task_id,))
+        conn.commit()
+
+    output = kc.run_slash(f"show {task_id}")
+
+    assert "completed: 2026-09-30 14:22" in " ".join(output.split())
+
+
 def test_kanban_edit_updates_documented_task_fields(kanban_home):
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="old title", body="old body", priority=2)

@@ -5076,7 +5076,19 @@ class TestPluginAPIRuntimeReload:
 
         web_server._dashboard_plugins_cache = None
         web_server._get_dashboard_plugins(force_rescan=True)
+        pre_mount = set(map(id, web_server.app.router.routes))
         web_server._mount_plugin_api_routes()
+        # include_router appends example2's routes to the END of the table,
+        # behind the hot-mount fallback route (registered at import time,
+        # before the SPA catch-all). The fallback sees example2 as already
+        # mounted and 404s its paths — same match-order race the
+        # _install_example_plugin fixture documents and works around.
+        # Move the freshly appended routes ahead of the fallback.
+        fresh = [r for r in web_server.app.router.routes if id(r) not in pre_mount]
+        for route in fresh:
+            web_server.app.router.routes.remove(route)
+        for offset, route in enumerate(fresh):
+            web_server.app.router.routes.insert(offset, route)
 
         # Both plugins serve before the reload.
         assert self.client.get("/api/plugins/example/hello").status_code == 200

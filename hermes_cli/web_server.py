@@ -1063,6 +1063,22 @@ app.include_router(_shared_metrics_routes.router)
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
 # routes are always mounted — the gate middleware decides enforcement.
+# The reload endpoint registers BEFORE the plugin sweep: the hot-mount fallback
+# route (``/api/plugins/{name}/{path:path}``, registered by the sweep) matches
+# ``/reload`` first otherwise and 404s for already-mounted plugins. Its handler
+# and the reload machinery are defined below (after the sweep) — the route
+# only needs the name bound at registration time.
+async def _reload_plugin_api_endpoint(plugin_name: str):
+    """POST /api/plugins/{name}/reload — see ``_reload_plugin_api_routes``."""
+    return _reload_plugin_api_routes(plugin_name)
+
+
+app.add_api_route(
+    "/api/plugins/{plugin_name}/reload",
+    _reload_plugin_api_endpoint,
+    methods=["POST"],
+    include_in_schema=False,
+)
 _mount_plugin_api_routes()
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router
 
@@ -1162,10 +1178,17 @@ def _mount_plugin_router(router, plugin_name: str) -> int:
         dependencies=[Depends(_plugin_route_secret_scope)],
     )
     new_routes = [r for r in app.router.routes if r not in existing]
+    # Splice ahead of the EARLIEST route that would shadow the plugin's
+    # paths: upstream's per-plugin API fallback (``/api/plugins/{name}/
+    # {path:path}``, registered after every mount) answers unmatched
+    # plugin paths with a JSON 404 and sits before the SPA catch-all —
+    # splicing only ahead of the catch-all would leave the reload's new
+    # routes unreachable behind that fallback.
+    shadowing = {"/api/plugins/{name}/{path:path}", "/{full_path:path}"}
     catch_all_idx = next(
         (
             i for i, r in enumerate(app.router.routes)
-            if getattr(r, "path", None) == "/{full_path:path}"
+            if getattr(r, "path", None) in shadowing
         ),
         len(app.router.routes),
     )
@@ -1271,21 +1294,6 @@ def _reload_plugin_api_routes(plugin_name: str) -> Dict[str, Any]:
     except Exception as exc:
         _log.warning("Plugin %s: runtime API reload failed: %s", plugin_name, exc)
         return {"ok": False, "plugin": plugin_name, "error": str(exc)}
-
-
-@app.post("/api/plugins/{plugin_name}/reload")
-async def reload_plugin_api_routes(plugin_name: str):
-    """Re-import and re-mount a plugin's backend API routes without a restart.
-
-    Lets a plugin author iterate on ``dashboard/plugin_api.py`` against a
-    running dashboard.  Auth is enforced by the same middleware stack that
-    guards the plugin's own routes, and ``_plugin_api_runtime_gate``
-    rejects disabled/unknown plugins before this handler runs, so the
-    endpoint inherits the existing policy instead of re-implementing it.
-    The reload itself never raises — a broken plugin file yields a
-    structured error, not a 500.
-    """
-    return _reload_plugin_api_routes(plugin_name)
 
 
 def _no_auth_provider_message(host: str) -> str:

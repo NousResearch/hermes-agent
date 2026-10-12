@@ -68,6 +68,16 @@ function mulberry32(seed: number) {
 const LONG_CORPUS = Array.from({ length: 6 }, () => CORPUS).join('\n')
 
 describe('parseMarkdownIntoBlocksCached', () => {
+  it('evicts old exact results when retained source text exceeds the character budget', () => {
+    const firstText = `weighted-cache-a:${'a'.repeat(600_000)}`
+    const secondText = `weighted-cache-b:${'b'.repeat(600_000)}`
+    const first = parseMarkdownIntoBlocksCached(firstText)
+
+    parseMarkdownIntoBlocksCached(secondText)
+
+    expect(parseMarkdownIntoBlocksCached(firstText)).not.toBe(first)
+  })
+
   it('matches a full lex at every random streaming cut (property)', () => {
     for (let seed = 1; seed <= 5; seed++) {
       const rand = mulberry32(seed)

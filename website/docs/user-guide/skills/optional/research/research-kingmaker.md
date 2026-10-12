@@ -16,7 +16,7 @@ Use when picking or ranking a cloud LLM by cost per task.
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/kingmaker` |
 | Path | `optional-skills/research/kingmaker` |
-| Version | `0.1.0` |
+| Version | `0.2.0` |
 | Author | Sean Alt (Salt-555), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
@@ -28,83 +28,120 @@ Use when picking or ranking a cloud LLM by cost per task.
 The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
-# Kingmaker Skill
+# Kingmaker
 
-Keeps the main model on the highest-scoring Hermes Index model whose measured
-average $/task is strictly under a per-task budget the user chooses. Setup
-installs a no_agent cron job; a tick then costs nothing.
+Keeps your main model on the best-value model in the Hermes Index: the smartest
+you can get without passing a per-task budget you set, re-checked on a schedule.
+A tick runs a script only, so checking costs nothing.
 
-## First-time setup
+The tuning knob is one number: what a point of intelligence is worth to you in
+dollars. A cheaper model wins whenever its dollars-per-point is under that number.
 
-One run: show the live board, ask, install, record, create the job.
+## When to Use
 
-1. **Sample the live board.** `terminal(command="python3
-   ${HERMES_SKILL_DIR}/references/kingmaker-job.py --sample", timeout=120)`
-   prints every ranked model with its Hermes Index score and measured `$/task`,
-   then budget spans (the price ranges over which one model stays best). Quote
-   nothing from memory: names and prices churn.
-   *Done when:* the live table and budget spans are in front of the user.
-2. **Ask the budget**, with the spans visible: "What do you want to spend per
-   task?" Accept a dollar figure or "no limit". If the answer excludes every
-   usable model, say so and let them adjust.
-   *Done when:* the number selects at least one non-provisional model with an
-   exact provider id, and the user has confirmed it.
-3. **Ask apply vs notify.** `apply` switches the main model when the best
-   in-budget option changes; `notify` reports the change and never writes config.
-   *Done when:* the user has chosen one.
-4. **Ask the cadence.** Presets: daily `0 7 * * *`, twice daily `0 7,19 * * *`,
-   weekly `0 7 * * 1`, monthly `0 7 1 * *`; a custom expression is fine.
-   *Done when:* the user has confirmed a cron expression.
-5. **Install the script.** Copy `references/kingmaker-job.py` to
-   `$HERMES_HOME/scripts/kingmaker-job.py` and `chmod +x`. It installs as
-   shipped; the answers are a file, not constants to edit.
-   *Done when:* the file exists there, is executable, and runs with no output.
-6. **Record the answers.** Run `--setup --cap <n|none> --mode <apply|notify>
-   --cadence "<cron>" --deliver <route>` (see Commands); it writes
-   `answers.json` beside `SKILL.md`. Re-running merges and never loses the job id.
+- Setting up, once, a job that keeps the main model on the best cost/quality
+  point of the Hermes Index; it maintains itself afterwards.
+- Reconciling it: re-ask the questions below and re-record the answers.
+- Don't use for: picking a model for one task, or anything that needs our own
+  benchmarks. Selection is ex-ante by design: leaderboard numbers only.
+
+## Setup
+
+Walk the user through these in plain language, with the board in front of both of
+you. Show it first (the loader fills in the path):
+
+    terminal(command="python3 $&#123;HERMES_SKILL_DIR&#125;/references/kingmaker-job.py --sample", timeout=120)
+
+It prints the ranked board, the Pareto frontier with each model's `$/point`, and
+today's pick. Never quote names or prices from memory; they churn.
+
+Ask, and say what each answer does for them:
+
+1. **Budget.** "What's the most you'll spend per task? I never go above it, so a
+   pricey model can't run up your bill." Dollars, or "no limit."
+   *Done when:* the cap admits at least one non-provisional model with an exact
+   provider id, and the user confirms the figure.
+2. **The point price.** "How much is one point of intelligence worth to you, in
+   dollars? This is the whole tuning knob. Set it low and I favor cheap models;
+   set it high and I favor smart ones; say 'none' and I always take the smartest
+   I can afford. It's what lets me catch a model that's nearly as smart for half
+   the price." Suggest a starting number from the board's `$/point` column, show
+   what it would pick and what that saves and gives up, and let them tune it.
+   *Done when:* the user gives a $/point figure or "none".
+3. **Act or report.** "When a better deal appears, should I switch your model
+   myself, or just tell you?" `apply` switches; `notify` never writes config.
+   *Done when:* the user picks one.
+4. **How often.** "How often should I check? Daily, twice daily, weekly, monthly,
+   or a custom schedule." Presets: `0 7 * * *`, `0 7,19 * * *`, `0 7 * * 1`,
+   `0 7 1 * *`.
+   *Done when:* the user confirms a cron expression.
+5. **Where notices go.** "Where should updates land: this chat, saved locally, or
+   a specific channel?"
+   *Done when:* a delivery route is chosen (`origin`, `local`, or `platform:chat_id`).
+
+Then install and arm it:
+
+6. Copy `references/kingmaker-job.py` to `$HERMES_HOME/scripts/kingmaker-job.py`;
+   `chmod +x`.
+   *Done when:* the file exists, is executable, and runs with no output.
+7. Record the answers: `--setup --cap <n|none> --usd-per-point <n|none>
+   --mode <apply|notify> --cadence "<cron>" --deliver <route>`. Writes
+   `answers.json` beside `SKILL.md`; re-running merges and keeps the job id.
    *Done when:* the command prints the answers it wrote.
-7. **Create the job** from `references/cron-job.md` with `cronjob_manage`
-   (`action: create`): `no_agent`, that script, the chosen schedule, the chosen
-   delivery route (`origin`, `local`, or `platform:chat_id`).
-   *Done when:* the call returns a job id and reports the job as scheduled.
-8. **Record the job id** with `--setup --cron-job <job_id>`, so a later
-   reconfigure updates that job instead of creating a second one.
+8. Create the job from `references/cron-job.md` with `cronjob_manage`
+   (`action: create`: `no_agent`, this script, the schedule and delivery above).
+   *Done when:* the call returns a job id and reports it scheduled.
+9. Record the id: `--setup --cron-job <job_id>`, so a reconfigure updates that
+   job rather than creating a second one.
    *Done when:* `--setup` shows that `cron_job_id`.
-9. **Verify the tick.** Fire the job once with `cronjob_manage` (`action: run`).
-   *Done when:* the run reports ok with empty output: a silent tick, since the
-   chosen model either already matches the configured one or was applied.
+10. Fire once with `cronjob_manage` (`action: run`).
+    *Done when:* the run reports ok with empty output: the pick already matches the
+    configured model or was applied.
 
-## Where the answers live
+## How it picks
 
-`answers.json` beside `SKILL.md` is this install's only storage; the tick reads
-it. The only Hermes config this skill ever writes is the main model, via
-`hermes config set model.default`. Derived state (`latest.json`, `apply_state.json`,
-`apply_receipt.json`, `ledger.jsonl`) lives in `$HERMES_HOME/data/kingmaker/`.
+Utility is `index - ($/task)/(point price)`; the pick is the highest-utility model
+that is under the budget cap, non-provisional, and mapped to a real provider id
+(unmapped names and provisional `*` rows never qualify). The cap is a hard ceiling
+on measured `$/task`; the point price is the only preference, and `none` makes a
+point free so the rule degrades to plain max index. At any price the pick lands on
+the board's Pareto frontier. Math and traps: `references/selection-policy.md`.
 
-## Commands
+## Quick Reference
 
-```
-python3 $HERMES_HOME/scripts/kingmaker-job.py          the bare run cron executes
-python3 $HERMES_HOME/scripts/kingmaker-job.py --sample live table of models, scores, $/task
-python3 $HERMES_HOME/scripts/kingmaker-job.py --setup --cap 0.30 --mode apply \
-        --cadence "0 7 * * *" --deliver origin         record the answers
-python3 $HERMES_HOME/scripts/kingmaker-job.py --setup  print the answers
-python3 $HERMES_HOME/scripts/kingmaker-job.py --setup --cron-job <id>   record the job id
-```
+    python3 $HERMES_HOME/scripts/kingmaker-job.py          the scheduled run
+    ... --sample                                           board, frontier, pick
+    ... --setup --cap 2 --usd-per-point 0.02 --mode apply \
+        --cadence "0 7 * * *" --deliver origin             record answers
+    ... --setup                                            print answers
+    ... --setup --cron-job &lt;id>                            record the job id
 
-One-off overrides on any run: `--cap 0.25`, `--cap none`, `--apply-main`, `--notify`.
+One-off overrides: `--cap <n|none>`, `--usd-per-point <n|none>`, `--apply-main`,
+`--notify`.
+
+## Storage
+
+`answers.json` beside `SKILL.md` holds `cap_per_task_usd`, `usd_per_point`
+(`null` = no trade), `mode`, `cadence`, `deliver`, and `cron_job_id`. The only
+Hermes setting written is the main model, via `hermes config set model.default`.
+Run state lives in `$HERMES_HOME/data/kingmaker/`.
 
 ## Pitfalls
 
 - Map a leaderboard name to a provider id on family AND version evidence, never
-  string similarity; an unmapped-but-stronger in-budget row blocks the switch and
-  is surfaced, never silently skipped.
-- Provisional rows marked with `*` never qualify.
-- The budget is measured `$/task`, strictly under, not a token price; the pick
-  maximizes index score inside the cap.
+  string similarity; a stronger in-budget row we can't map blocks the switch and
+  is surfaced, never silently skipped. Provisional rows never qualify.
+- The index is a frozen point estimate (no CI; identical across daily snapshots),
+  so a capability tolerance is a user preference, not a measured sigma. Choose the
+  point price with the board in view; two neighbours can straddle it.
 - Decided outcomes (page changed, no eligible model, refused smoke or apply,
   concurrent manual change) print a notice and exit 0, so the job delivers a
-  message rather than reporting a broken job. Only exit 1 is a failure.
-- A run that exits 2 means the leaderboard page shape changed: re-derive the
-  row-shape constants (`ROW_SHAPES`) in the script rather than loosening the
-  sanity gate.
+  message rather than looking broken. Only exit 1 is a real failure.
+- Exit 2 means the leaderboard page shape changed: re-derive `ROW_SHAPES` in the
+  script rather than loosening the sanity gate.
+
+## Verification
+
+`--setup` prints the recorded answers, and `cronjob_manage` (`action: list`) shows
+it scheduled. Fire `cronjob_manage` (`action: run`): ok with empty output is a
+quiet tick, meaning the pick already matches the configured model or was applied.

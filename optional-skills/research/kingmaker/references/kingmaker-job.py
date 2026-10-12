@@ -21,10 +21,13 @@ Modes (explicit flag > saved config > collector-only):
   (neither)      use the saved mode; unconfigured runs collect and say so
 
 Selection policy: among nous-catalog models whose Hermes-measured average cost
-per task is STRICTLY UNDER the cap (--cap, default $0.30/task), pick the highest
-Hermes Index score. NOT the score/$ sort leader. Usable = exact provider model id
-resolved from the current nous catalog via the curated benchmark-name mapping
-(NOUS_MODEL_IDS); unknown mappings are never guessed. Provisional (*)
+per task is STRICTLY UNDER the cap (--cap), pick the highest UTILITY, where
+utility = Hermes Index - (avg $/task) / (--usd-per-point). The cap is a hard
+ceiling; the point price is the single preference that trades cost against
+capability, priced in index points. --usd-per-point none drops the trade and
+reduces the rule to plain max Hermes Index under the cap. Usable = exact provider
+model id resolved from the current nous catalog via the curated benchmark-name
+mapping (NOUS_MODEL_IDS); unknown mappings are never guessed. Provisional (*)
 leaderboard entries never qualify. Missing/non-finite values cannot qualify a
 candidate.
 
@@ -41,12 +44,14 @@ Decided outcomes (2-6) print their notice and exit 0, because the cron job
 delivers stdout and treats a non-zero exit as a broken job. Only an undecided
 failure (1) rides the failure channel. Empty output means nothing to report.
 
-Usage: python3 kingmaker-job.py [--cap 0.30|none] [--out snapshot.json] [--quiet]
-                                [--force] [--apply-main|--notify] [--sample]
+Usage: python3 kingmaker-job.py [--cap 0.30|none] [--usd-per-point 0.02|none]
+                                [--out snapshot.json] [--quiet] [--force]
+                                [--apply-main|--notify] [--sample]
                                 [--setup --cron-job <id>]
-This install's answers (budget, mode, cadence) live in answers.json beside
-SKILL.md; the constants below are the shipped defaults. The only Hermes setting
-this script writes is the main model, through `hermes config set model.default`.
+This install's answers (budget, point price, mode, cadence) live in answers.json
+beside SKILL.md; the constants below are the shipped defaults. The only Hermes
+setting this script writes is the main model, through `hermes config set
+model.default`.
 Runtime state (latest.json, apply_state.json, apply_receipt.json, ledger.jsonl)
 goes to $HERMES_HOME/data/kingmaker/, never inside the
 skill.
@@ -93,11 +98,15 @@ CONFIG_TIMEOUT_S = 120
 FAILED_CANDIDATE_COOLDOWN_S = 86400  # one daily tick: no re-attempt, no flip-flop
 COOLDOWN_HOURS = 24
 
-# Selection policy: the sole decision metrics are the Hermes Index score and the
-# Hermes-measured average cost per task. A candidate qualifies only when its avg
-# cost per task is STRICTLY UNDER the cap; the highest Hermes Index score among
-# qualified nous models is the crown.
+# Selection policy: two declared numbers choose the crown among eligible nous
+# models (in-cap, non-provisional, exactly mapped). CAP_PER_TASK_USD is a HARD
+# ceiling on avg $/task (strictly under). USD_PER_POINT is the price of one
+# capability point: a candidate's utility is  index - cost / USD_PER_POINT,
+# measured in index points, and the highest utility wins. USD_PER_POINT=None
+# removes the trade and restores the legacy "max Hermes Index under the cap".
+# The cap and the point price are the whole policy; everything else is derived.
 CAP_PER_TASK_USD = 0.30      # shipped default; answers.json overrides (None = no ceiling)
+USD_PER_POINT = 0.02         # shipped default $/index-point; answers.json overrides (None = max index)
 BENCH_URL = "https://portal.nousresearch.com/bench"
 BENCH_SOURCE = ("portal.nousresearch.com/bench (Hermes Index, pass@1, "
                 "Hermes Agent harness)")
@@ -342,11 +351,25 @@ def attach_provider_identity(rows, catalog):
     return rows
 
 
-def pick_crown(rows, usable_ids=None, exclude=None):
-    """Selection policy: the smartest model under the cost cap (max Hermes Index
-    among in-cap, non-provisional rows), restricted to ACTUAL usable provider
-    models. That is THE crown. It is NOT the score/$ sort leader (that is just a
-    diagnostic). Zero-cost rows never qualify."""
+def utility(row, usd_per_point):
+    """Capability left after charging the row's cost at the declared point price,
+    measured in index points:  index - cost / usd_per_point.  usd_per_point None
+    means a point is free, so utility is just the index (legacy max-index rule)."""
+    idx = finite_number(row.get("index"))
+    idx = idx if idx is not None else float("-inf")
+    if usd_per_point is None:
+        return idx
+    cost = finite_number(row.get("avg_cost_per_task")) or 0.0
+    return idx - cost / usd_per_point
+
+
+def pick_crown(rows, usable_ids=None, exclude=None, usd_per_point=USD_PER_POINT):
+    """Selection policy: the highest-utility ELIGIBLE model. Eligible = in-cap
+    (Hermes-measured avg $/task strictly under the cap), non-provisional, priced
+    above zero, mapped to an exact provider model id, not cooling down. Utility
+    trades Hermes Index against cost at the declared $/point. usd_per_point None
+    reduces this to the plain highest Hermes Index under the cap. Tie-break:
+    higher index, then lower cost, then provider id."""
     ban = set(exclude or ())
     pool = [r for r in rows if r.get("in_cap") and not r.get("provisional")
             and finite_number(r.get("index")) is not None
@@ -355,7 +378,8 @@ def pick_crown(rows, usable_ids=None, exclude=None):
             and (r.get("provider_model_id") or "") not in ban]
     if not pool:
         return None
-    return max(pool, key=lambda r: (r["index"], -(r.get("avg_cost_per_task") or 0),
+    return max(pool, key=lambda r: (utility(r, usd_per_point), r["index"],
+                                    -(r.get("avg_cost_per_task") or 0),
                                     r.get("provider_model_id") or ""))
 
 
@@ -413,6 +437,7 @@ def load_config():
     """The answers in force: the skill's answers.json over the shipped defaults.
     Nothing is read from Hermes config."""
     cfg = {"cap_per_task_usd": CAP_PER_TASK_USD,
+           "usd_per_point": USD_PER_POINT,
            "mode": DEFAULT_MODE,
            "cadence": DEFAULT_CADENCE}
     cfg.update(load_answers())
@@ -437,6 +462,26 @@ def cap_label(cap):
     return "no cap" if cap is None else "$%s/task" % ("%g" % cap)
 
 
+def parse_usd_per_point(text):
+    """'none'/'off'/'unlimited' -> None (no point-price preference; plain max
+    index); otherwise a positive float of USD per one Hermes Index point."""
+    t = str(text).strip().lower()
+    if t in ("none", "off", "unlimited", "no-limit", "nolimit"):
+        return None
+    try:
+        value = float(t)
+    except ValueError:
+        raise SystemExit("invalid --usd-per-point %r: use USD per index point, "
+                         "or 'none' to disable the trade" % text)
+    if value <= 0:
+        raise SystemExit("invalid --usd-per-point %r: must be greater than zero" % text)
+    return value
+
+
+def point_price_label(usd_per_point):
+    return "max index" if usd_per_point is None else "$%g/point" % usd_per_point
+
+
 def usable_rows(rows):
     """Rows a user could actually run: mapped to a real provider model, priced,
     and not provisional."""
@@ -452,6 +497,60 @@ def best_under(usable, cap):
     return max(pool, key=lambda r: (r["index"], -r["avg_cost_per_task"]))
 
 
+def pareto_frontier(usable):
+    """Cost-ascending Pareto frontier: a row stays only if its index beats every
+    cheaper usable row. These are the undominated choices, independent of any
+    preference; the decision rule simply walks this set."""
+    front, best = [], float("-inf")
+    for r in sorted(usable, key=lambda r: (r["avg_cost_per_task"], -r["index"])):
+        if r["index"] > best:
+            front.append(r)
+            best = r["index"]
+    return front
+
+
+def crown_record(row):
+    """The snapshot/receipt projection of a chosen row (None passes through)."""
+    if not row:
+        return None
+    return {"model_id": row["provider_model_id"], "bench_name": row["name"],
+            "index": row["index"], "avg_cost_per_task": row["avg_cost_per_task"]}
+
+
+def select_reason(snap, crown):
+    """One-line justification for a receipt, naming the exact objective."""
+    k = snap.get("usd_per_point")
+    if k is None:
+        return ("highest Hermes Index (%s) among usable nous models with "
+                "Hermes-measured avg cost $%s/task strictly under the $%s/task cap "
+                "(point price disabled)"
+                % (crown.get("index"), crown.get("avg_cost_per_task"),
+                   snap.get("cap_per_task_usd")))
+    return ("highest utility (Hermes Index %s minus $%s/task charged at %s per index "
+            "point) among usable nous models with avg cost strictly under the "
+            "$%s/task cap"
+            % (crown.get("index"), crown.get("avg_cost_per_task"),
+               point_price_label(k), snap.get("cap_per_task_usd")))
+
+
+def trade_line(snap, crown):
+    """What the pick gave up against the smartest in-cap model, in one clause.
+    Empty when nothing was given up or no reference exists."""
+    ref = snap.get("reference")
+
+    def name(x):
+        x = x or {}
+        return x.get("bench_name") or x.get("name")
+
+    if not crown or not ref or name(ref) == name(crown):
+        return ""
+    di = (ref.get("index") or 0) - (crown.get("index") or 0)
+    dc = (ref.get("avg_cost_per_task") or 0) - (crown.get("avg_cost_per_task") or 0)
+    pct = (100.0 * dc / ref["avg_cost_per_task"]) if ref.get("avg_cost_per_task") else 0.0
+    return ("vs %s: -%.2f index points, -$%.4f/task (%.1f%% cheaper)"
+            % (name(ref), di, dc, pct))
+
+
 def render_sample(snap, rows):
     """Live budget sample for the setup wizard. Every name and price here comes
     from the page fetched during THIS run — nothing is hardcoded, so the sample
@@ -464,7 +563,8 @@ def render_sample(snap, rows):
                       "P" if r["provisional"] else ""))
     usable = usable_rows(rows)
     out.append("")
-    out.append("Budget lines — best usable nous model at or under each price point:")
+    out.append("Budget lines — best usable nous model at or under each price point "
+               "(point price off):")
     if usable:
         lo = min(r["avg_cost_per_task"] for r in usable)
         hi = max(r["avg_cost_per_task"] for r in usable)
@@ -489,6 +589,34 @@ def render_sample(snap, rows):
                       top["avg_cost_per_task"]))
     else:
         out.append("  (no usable nous model on this leaderboard right now)")
+
+    out.append("")
+    out.append("Pareto frontier (cheapest first; every point here is undominated):")
+    if usable:
+        for r in pareto_frontier(usable):
+            per_point = (r["avg_cost_per_task"] / r["index"]) if r["index"] else 0.0
+            out.append("  %-22s index %5.2f   $%.4f/task   $%.4f/point"
+                       % (r["name"][:22], r["index"], r["avg_cost_per_task"], per_point))
+    else:
+        out.append("  (none)")
+
+    out.append("")
+    crown = snap.get("crown")
+    k = snap.get("usd_per_point")
+    if crown:
+        out.append("Decision at %s, cap %s: %s (index %.2f, $%.4f/task)"
+                   % (point_price_label(k), cap_label(snap.get("cap_per_task_usd")),
+                      crown["bench_name"], crown["index"], crown["avg_cost_per_task"]))
+        ref_name = (snap.get("reference") or {}).get("bench_name")
+        if k is None:
+            out.append("  point price disabled -> plain max Hermes Index under the cap")
+        else:
+            t = trade_line(snap, crown)
+            out.append("  smartest in-cap model: %s%s"
+                       % (ref_name or "(none)", ("; " + t) if t else ""))
+    else:
+        out.append("Decision: no eligible model at cap %s with point price %s."
+                   % (cap_label(snap.get("cap_per_task_usd")), point_price_label(k)))
     excluded = [r["name"] for r in rows if r.get("provisional")]
     unmapped = [r["name"] for r in rows
                 if not r.get("provisional") and not r.get("provider_model_id")]
@@ -500,11 +628,13 @@ def render_sample(snap, rows):
     return "\n".join(out)
 
 
-def build_snapshot(rows, crown, cap):
+def build_snapshot(rows, crown, cap, usd_per_point=None, reference=None):
     ts = _now()
+    bar = utility(crown, usd_per_point) if crown else None
     unresolved = []
     for r in rows:
-        if not r.get("in_cap") or (crown and r["index"] <= crown["index"]):
+        if not r.get("in_cap") or (bar is not None
+                                   and utility(r, usd_per_point) <= bar):
             continue
         if r.get("provisional"):
             unresolved.append({"name": r["name"],
@@ -516,13 +646,11 @@ def build_snapshot(rows, crown, cap):
             unresolved.append({"name": r["name"],
                                "reason": "unmapped benchmark identity"})
     return {"date": _iso(ts)[:10], "timestamp": _iso(ts), "cap_per_task_usd": cap,
+            "usd_per_point": usd_per_point,
             "source": BENCH_SOURCE, "rows": rows,
             "unresolved_candidates": unresolved,
-            "crown": ({"model_id": crown["provider_model_id"],
-                       "bench_name": crown["name"],
-                       "index": crown["index"],
-                       "avg_cost_per_task": crown["avg_cost_per_task"]}
-                      if crown else None)}
+            "crown": crown_record(crown),
+            "reference": crown_record(reference)}
 
 
 # --------------------------------------------------------------- apply state
@@ -929,18 +1057,20 @@ def apply_main(snap, catalog):
     rec["previous"] = {"model": cur, "provider": prov}
     rec["chosen"] = {"model_id": chosen, "bench_name": crown.get("bench_name"),
                      "index": crown.get("index"),
-                     "avg_cost_per_task": crown.get("avg_cost_per_task")}
-    rec["reason"] = ("highest Hermes Index (%s) among nous-catalog models with "
-                     "Hermes-measured avg cost $%s/task strictly under the "
-                     "$%s/task cap (not the score/$ sort leader)"
-                     % (crown.get("index"), crown.get("avg_cost_per_task"),
-                        snap.get("cap_per_task_usd")))
+                     "avg_cost_per_task": crown.get("avg_cost_per_task"),
+                     "usd_per_point": snap.get("usd_per_point"),
+                     "trade": trade_line(snap, crown) or None}
+    rec["reference"] = snap.get("reference")
+    rec["reason"] = select_reason(snap, crown)
     rec["source"] = {"bench_source": snap.get("source"),
                      "bench_name": crown.get("bench_name"),
                      "bench_snapshot_date": snap.get("date"),
                      "bench_timestamp": snap.get("timestamp"),
                      "catalog_source": catalog.get("source"),
-                     "selector": "max Hermes Index under cap among usable nous models"}
+                     "selector": ("max utility (index - cost/usd_per_point) under cap "
+                                  "among usable nous models"
+                                  if snap.get("usd_per_point") is not None else
+                                  "max Hermes Index under cap among usable nous models")}
 
     def finish(status, code, lines):
         rec["status"] = status
@@ -1057,18 +1187,22 @@ def apply_main(snap, catalog):
     state["last_good"] = {"model_id": chosen, "at": _now()}
     (state.get("failed") or {}).pop(chosen, None)
     save_state(state)
+    trade = trade_line(snap, crown)
     return finish("applied", 0, [
         "KINGMAKER MAIN MODEL SWITCH: %s -> %s (Hermes Index %s, $%s/task). Applied "
         "via `hermes config set model.default`; provider %r unchanged. Applies "
         "to future runs only - running chats keep their current model. Verified: "
-        "the effective config now reads %s. Reason: %s." % (
+        "the effective config now reads %s. %sReason: %s." % (
             cur, chosen, "%.2f" % (crown.get("index") or 0),
-            crown.get("avg_cost_per_task"), prov or "nous", chosen, rec["reason"])])
+            crown.get("avg_cost_per_task"), prov or "nous", chosen,
+            (trade + ". ") if trade else "", rec["reason"])])
 
 
 # ---------------------------------------------------------------- collector mode
 def render_table(snap):
-    out = [f"kingmaker snapshot {snap['date']} (Hermes Index, cap {cap_label(snap['cap_per_task_usd'])}, "
+    out = [f"kingmaker snapshot {snap['date']} (Hermes Index, cap "
+           f"{cap_label(snap['cap_per_task_usd'])}, point price "
+           f"{point_price_label(snap.get('usd_per_point'))}, "
            f"{len(snap['rows'])} models)"]
     out.append(f"{'model':26} {'index':>6} {'$/task':>7}  cap prov mapped")
     for r in snap["rows"]:
@@ -1101,17 +1235,20 @@ def _collector_watchdog(snap, rows, a, notify=False):
         print(render_table(snap))
         return 0
     cur = snap.get("crown")
-    pcap = [r for r in prev.get("rows", []) if r.get("in_cap")]
-    prev_leader = max(pcap, key=lambda r: r["index"])["name"] if pcap else None
-    if cur and prev_leader and prev_leader != cur["bench_name"]:
-        print("KINGMAKER BEST-IN-BUDGET CHANGE (%s -> %s): %s -> %s (index %.2f, "
-              "$%s/task)"
-              % (prev.get("date", "?"), snap["date"], prev_leader,
-                 cur["bench_name"], cur["index"], cur["avg_cost_per_task"]))
-        cap_sorted = sorted([r for r in rows if r["in_cap"]],
-                            key=lambda r: -r["index"])[:5]
-        print("Top 5 in budget by Hermes Index: " + ", ".join(
-            "%s (%.2f)" % (r["name"], r["index"]) for r in cap_sorted))
+    prev_crown = prev.get("crown")
+    prev_name = prev_crown.get("bench_name") if prev_crown else None
+    if cur and prev_name and prev_name != cur["bench_name"]:
+        k = snap.get("usd_per_point")
+        print("KINGMAKER CROWN CHANGE (%s -> %s): %s -> %s (index %.2f, $%s/task, %s)"
+              % (prev.get("date", "?"), snap["date"], prev_name,
+                 cur["bench_name"], cur["index"], cur["avg_cost_per_task"],
+                 point_price_label(k)))
+        usable = [r for r in rows if r["in_cap"] and not r["provisional"]
+                  and r.get("provider_model_id")]
+        top = sorted(usable, key=lambda r: (-utility(r, k), -r["index"]))[:5]
+        print("Top 5 in budget by utility: " + ", ".join(
+            "%s (%.2f, $%.4f)" % (r["name"], r["index"], r["avg_cost_per_task"])
+            for r in top))
         if notify:
             print("Notify-only mode: nothing was changed. To switch now, run "
                   "`python3 %s --apply-main`." % os.path.abspath(__file__))
@@ -1126,6 +1263,8 @@ def _run_setup(a):
     updates = {}
     if a.cap is not None:
         updates["cap_per_task_usd"] = parse_cap(a.cap)
+    if a.usd_per_point is not None:
+        updates["usd_per_point"] = parse_usd_per_point(a.usd_per_point)
     if a.mode:
         updates["mode"] = a.mode
     if a.cadence:
@@ -1148,6 +1287,10 @@ def main(argv=None, page_text=None):
     ap.add_argument("--cap", default=None,
                     help="max Hermes-measured avg $/task, strictly under; a number "
                          "or 'none' for no ceiling (overrides saved config)")
+    ap.add_argument("--usd-per-point", default=None,
+                    help="USD you are willing to pay per Hermes Index point; the "
+                         "utility is index - cost/point. A number, or 'none' to "
+                         "disable the trade (plain max index). Overrides saved config")
     ap.add_argument("--out", default=os.path.join(DATA_DIR, "latest.json"))
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--force", action="store_true",
@@ -1173,6 +1316,8 @@ def main(argv=None, page_text=None):
 
     cfg = load_config()
     cap = parse_cap(a.cap) if a.cap is not None else cfg["cap_per_task_usd"]
+    k = (parse_usd_per_point(a.usd_per_point) if a.usd_per_point is not None
+         else cfg.get("usd_per_point"))
     mode = ("apply" if a.apply_main
             else "notify" if a.notify
             else cfg.get("mode") or DEFAULT_MODE)
@@ -1202,9 +1347,12 @@ def main(argv=None, page_text=None):
     catalog = load_nous_catalog()
     attach_provider_identity(rows, catalog)
     state = load_state()
-    crown = pick_crown(rows, usable_ids=set(catalog.get("ids") or []),
-                       exclude=cooldown_excluded(state))
-    snap = build_snapshot(rows, crown, cap)
+    usable_ids = set(catalog.get("ids") or [])
+    ban = cooldown_excluded(state)
+    crown = pick_crown(rows, usable_ids=usable_ids, exclude=ban, usd_per_point=k)
+    reference = pick_crown(rows, usable_ids=usable_ids, exclude=ban,
+                           usd_per_point=None)
+    snap = build_snapshot(rows, crown, cap, usd_per_point=k, reference=reference)
     atomic_write_json(a.out, snap)
     with open(LEDGER, "a") as f:
         f.write(json.dumps(snap) + "\n")

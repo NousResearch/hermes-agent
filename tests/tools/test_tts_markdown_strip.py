@@ -195,3 +195,139 @@ class TestTextToSpeechToolMarkdownStrip:
 
         assert "**" not in captured["text"]
         assert "bold" in captured["text"]
+
+
+def _command_tts_config(**provider_overrides):
+    provider = {
+        "type": "command",
+        "command": "echo {input_path} > {output_path}",
+        "output_format": "wav",
+        **provider_overrides,
+    }
+    return {"provider": "ssml-cmd", "providers": {"ssml-cmd": provider}}
+
+
+class TestSkipMarkdownStripBooleanSemantics:
+    """Review blocker: the opt-out must follow the repository's shared boolean
+    config semantics (like the adjacent ``voice_compatible``) — a quoted
+    false-like value must keep stripping ENABLED."""
+
+    @pytest.mark.parametrize("false_like", ["false", "0", "no", "off", "False", ""])
+    def test_false_like_strings_keep_stripping_enabled(self, tmp_path, false_like):
+        captured = {}
+
+        def fake_command(text, output_path, provider_name, config, tts_config):
+            captured["text"] = text
+            from pathlib import Path
+            Path(output_path).write_bytes(b"fake-wav")
+            return output_path
+
+        cfg = _command_tts_config(skip_markdown_strip=false_like)
+        with patch("tools.tts_tool._generate_command_tts", side_effect=fake_command), \
+             patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            text_to_speech_tool(
+                text="This is **bold** text",
+                output_path=str(tmp_path / "out.wav"),
+            )
+
+        # A false-like string is DISABLED: markdown is stripped as by default.
+        assert "**" not in captured["text"]
+        assert "bold" in captured["text"]
+
+    @pytest.mark.parametrize("true_like", [True, "true", "1", "yes"])
+    def test_true_like_values_enable_the_opt_out(self, tmp_path, true_like):
+        captured = {}
+
+        def fake_command(text, output_path, provider_name, config, tts_config):
+            captured["text"] = text
+            from pathlib import Path
+            Path(output_path).write_bytes(b"fake-wav")
+            return output_path
+
+        cfg = _command_tts_config(skip_markdown_strip=true_like)
+        with patch("tools.tts_tool._generate_command_tts", side_effect=fake_command), \
+             patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            text_to_speech_tool(
+                text="This is **bold** text",
+                output_path=str(tmp_path / "out.wav"),
+            )
+
+        # Raw markdown passes through untouched.
+        assert "**bold**" in captured["text"]
+
+
+class TestRawMarkupIsNeverSplit:
+    """Review blocker: raw markup (SSML) must not be fed through the plain-text
+    splitter — each dispatched payload must stay valid markup."""
+
+    SSML = (
+        '<speak><prosody rate="slow">'
+        "This sentence is deliberately long enough to cross a tiny "
+        "configured provider limit several times over, so a naive "
+        "whitespace splitter would cut it into non-XML fragments."
+        "</prosody></speak>"
+    )
+
+    def test_over_limit_raw_markup_is_refused_not_fragmented(self, tmp_path):
+        calls = []
+
+        def fake_command(text, output_path, provider_name, config, tts_config):
+            calls.append(text)
+            from pathlib import Path
+            Path(output_path).write_bytes(b"fake-wav")
+            return output_path
+
+        cfg = _command_tts_config(skip_markdown_strip=True, max_text_length=48)
+        with patch("tools.tts_tool._generate_command_tts", side_effect=fake_command), \
+             patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            result = json.loads(text_to_speech_tool(
+                text=self.SSML,
+                output_path=str(tmp_path / "out.wav"),
+            ))
+
+        # Nothing malformed was dispatched, and the caller gets a clear error.
+        assert calls == []
+        assert result.get("success") is False
+        assert "max_text_length" in (result.get("error") or "")
+
+    def test_under_limit_raw_markup_is_sent_as_one_valid_chunk(self, tmp_path):
+        calls = []
+
+        def fake_command(text, output_path, provider_name, config, tts_config):
+            calls.append(text)
+            from pathlib import Path
+            Path(output_path).write_bytes(b"fake-wav")
+            return output_path
+
+        cfg = _command_tts_config(skip_markdown_strip=True, max_text_length=5000)
+        with patch("tools.tts_tool._generate_command_tts", side_effect=fake_command), \
+             patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            text_to_speech_tool(
+                text=self.SSML,
+                output_path=str(tmp_path / "out.wav"),
+            )
+
+        assert calls == [self.SSML]
+
+    def test_normal_text_still_splits_into_ordered_chunks(self, tmp_path):
+        """The no-split contract is scoped to the raw-markup opt-out: default
+        providers keep the long-form chunking behavior."""
+        calls = []
+
+        def fake_command(text, output_path, provider_name, config, tts_config):
+            calls.append(text)
+            from pathlib import Path
+            Path(output_path).write_bytes(b"fake-wav")
+            return output_path
+
+        cfg = _command_tts_config(max_text_length=48)
+        long_plain = "One sentence here. " * 10
+        with patch("tools.tts_tool._generate_command_tts", side_effect=fake_command), \
+             patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            text_to_speech_tool(
+                text=long_plain,
+                output_path=str(tmp_path / "out.wav"),
+            )
+
+        assert len(calls) > 1
+        assert all(len(c) <= 48 for c in calls)

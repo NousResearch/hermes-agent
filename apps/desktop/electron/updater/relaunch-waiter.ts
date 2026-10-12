@@ -210,7 +210,9 @@ export async function startRelaunchWaiter(
       detached: wrapped.detached,
       stdio: 'ignore',
       windowsHide: true,
-      cwd: staging.stageDir
+      // A working directory pins its folder: keep it out of the package, which
+      // the swap replaces, and out of the stage dir, which the script deletes.
+      cwd: os.tmpdir()
     })
   } catch (error) {
     log(`[updates] relaunch waiter: spawning ${POWERSHELL_PATH} threw: ${errorText(error)}`)

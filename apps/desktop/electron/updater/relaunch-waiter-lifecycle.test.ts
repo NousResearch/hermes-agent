@@ -43,13 +43,13 @@ for (const mode of [
     const cleanupError: Error = new Error('fixture staging cleanup refused')
 
     const start: SpawnWaiter = (command: string, args: string[], options: Parameters<SpawnWaiter>[2]): ChildProcess => {
-      stage = options.cwd
+      stage = path.dirname(args[args.indexOf('-ReadyFile') + 1])
       const readyFile: string = path.join(stage, 'ready.txt')
       assert.equal(
         command,
         path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'cmd.exe')
       )
-      assert.deepEqual(options, { cwd: stage, detached: false, stdio: 'ignore', windowsHide: true })
+      assert.deepEqual(options, { cwd: os.tmpdir(), detached: false, stdio: 'ignore', windowsHide: true })
       assert.notEqual(stage, path.dirname(scriptPath))
       assert.deepEqual(fs.readFileSync(path.join(stage, 'update-relaunch-waiter.ps1')), fs.readFileSync(scriptPath))
       assert.deepEqual(args, [

@@ -37,7 +37,7 @@ it.runIf(process.platform === 'win32')(
 )
 
 it.runIf(process.platform === 'win32').each([false, true])(
-  'a real hidden PowerShell waiter survives parent exit unless cancelled (cancel=%s)',
+  'a real hidden PowerShell waiter survives parent exit unless cancelled and leaves no stage dir (cancel=%s)',
   async cancel => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'waiter native '))
     const script = path.join(root, 'waiter.ps1')
@@ -49,12 +49,16 @@ it.runIf(process.platform === 'win32').each([false, true])(
       `
 param([int]$ProcessId, [long]$ProcessStartTimeMs, [string]$IdentityName, [string]$ReadyFile, [int]$TimeoutSeconds)
 Set-Content -LiteralPath ($IdentityName + '.pid') -Value $PID
+Set-Content -LiteralPath ($IdentityName + '.stage') -Value $PSScriptRoot
 Set-Content -LiteralPath $ReadyFile -Value 'ready'
 $deadline = (Get-Date).AddSeconds(20)
 while (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
   if ((Get-Date) -gt $deadline) { exit 3 }
   Start-Sleep -Milliseconds 100
 }
+# The same exit cleanup as update-relaunch-waiter.ps1.
+Set-Location $env:TEMP
+Remove-Item -LiteralPath $PSScriptRoot -Recurse -Force -ErrorAction SilentlyContinue
 Set-Content -LiteralPath $IdentityName -Value 'parent exited'
 `
     )
@@ -100,6 +104,10 @@ const { startRelaunchWaiter } = require(${JSON.stringify(bundle)});
         await expect.poll(() => fs.existsSync(completed), { timeout: 10_000 }).toBe(true)
         expect(fs.readFileSync(completed, 'utf8').trim()).toBe('parent exited')
       }
+
+      const stage = fs.readFileSync(completed + '.stage', 'utf8').trim()
+      expect(path.basename(stage)).toMatch(/^hermes-relaunch-/)
+      expect(fs.existsSync(stage), `${stage} is left behind`).toBe(false)
     } finally {
       if (fs.existsSync(completed + '.pid')) {
         const workerPid = Number(fs.readFileSync(completed + '.pid', 'utf8').trim())

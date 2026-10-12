@@ -535,6 +535,9 @@ class SessionMessagesMixin:
                 return False
             conn.execute("UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
                 (_scrub_surrogates(display_kind), self._encode_display_metadata(display_metadata), row[0]))
+            # display_kind is a display-identity column too: the same trigger NULLs the row's
+            # display_order/identity, so re-fold here instead of leaving the session half-indexed (#136914).
+            self._reconcile_display_orders(conn, session_id)
             return True
         return self._execute_write(_do)
 
@@ -1132,9 +1135,19 @@ class SessionMessagesMixin:
         raw keystrokes, and the turn must not append a second row for the same input."""
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
-        return self._write_rowcount(
-            "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-            (self._encode_content(content), row_id, session_id))
+        def _do(conn):
+            count = conn.execute(
+                "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
+                (self._encode_content(content), row_id, session_id)).rowcount
+            if count is None or count < 0:
+                count = conn.execute("SELECT changes()").fetchone()[0]
+            if count:
+                # content is a display-identity column: the update trigger NULLs the row's
+                # display_order/identity, and only the compacted display read backfills — a session read
+                # through the timeline probes stays half-indexed forever (#136914). Re-fold in this txn.
+                self._reconcile_display_orders(conn, session_id)
+            return count
+        return self._execute_write(_do)
 
     def deactivate_message(self, session_id: str, row_id: int) -> int:
         """Deactivate ONE known row (id-addressed, idempotent; returns the affected row count). Used by

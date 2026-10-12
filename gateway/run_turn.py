@@ -1589,52 +1589,9 @@ class GatewayTurnMixin:
                 )
         return response, _intentional_silence, agent_messages
 
-    # reasoning_style → (header catalog key, per-line quote prefix for blank / non-blank lines)
-    _REASONING_QUOTE_STYLES = {
-        "subtext": ("gateway.reasoning.quote_label_discord", "-# ", "-#"),
-        "blockquote": ("gateway.reasoning.quote_label_md", "> ", ">"),
-    }
-
     def _hmwa_prepend_reasoning(self, agent_result, response, source, _intentional_silence):
-        """Prepend the last reasoning block when show_reasoning is on for this platform. Mattermost
-        requires an explicit per-platform opt-in (scratch text, not final-answer content)."""
-        from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
-        try:
-            _show_reasoning_effective = _resolve_gateway_display_bool(
-                _load_gateway_config(), _platform_config_key(source.platform), "show_reasoning",
-                default=bool(getattr(self, "_show_reasoning", False)), platform=source.platform,
-                require_platform_override_for={Platform.MATTERMOST},
-            )
-        except Exception:
-            _show_reasoning_effective = (
-                False if source.platform == Platform.MATTERMOST else getattr(self, "_show_reasoning", False)
-            )
-        last_reasoning = agent_result.get("last_reasoning")
-        if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
-            return response
-        from gateway.stream_consumer_fences import escape_code_fences_for_display
-        # Collapse long reasoning to keep messages readable
-        lines = last_reasoning.strip().splitlines()
-        if len(lines) > 15:
-            display_reasoning = "\n".join(lines[:15]) + t("gateway.reasoning.more_lines", count=len(lines) - 15)
-        else:
-            display_reasoning = last_reasoning.strip()
-        # Per-platform render style: Discord defaults to "-# " subtext, others keep the code block.
-        try:
-            from gateway.display_config import resolve_display_setting
-            _reasoning_style = resolve_display_setting(
-                _load_gateway_config(), _platform_config_key(source.platform), "reasoning_style", "code",
-            )
-        except Exception:
-            _reasoning_style = "code"
-        _quote = self._REASONING_QUOTE_STYLES.get(_reasoning_style)
-        if _quote:
-            header_key, prefix, empty = _quote
-            _quoted = "\n".join(f"{prefix}{ln}" if ln else empty for ln in display_reasoning.splitlines())
-            return f"{t(header_key)}\n{_quoted}\n\n{response}"
-        # Escape ``` inside reasoning so inner fences don't break the outer code block.
-        display_reasoning = escape_code_fences_for_display(display_reasoning)
-        return t("gateway.reasoning.block", reasoning=display_reasoning, response=response)
+        from gateway.run_turn_stream_final import render_reasoning
+        return render_reasoning(self, agent_result, response, source, _intentional_silence)
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default

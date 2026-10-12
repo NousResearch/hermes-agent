@@ -980,27 +980,18 @@ class ToolRegistry:
         """Seconds this call may legitimately block for, as the tool itself declares it, or
         ``None`` when it declares nothing. Callers raise their generic deadline to it.
 
-        Never raises and never returns a non-positive or non-finite value: a broken
-        declaration must degrade to "no floor" rather than take tool dispatch down with it.
+        Plugin tools can declare one too, so a declaration that raises or returns junk degrades
+        to "no floor" instead of taking tool dispatch down.
         """
         declare = self._attr(name, "deadline_floor")
         if declare is None:
             return None
         try:
-            value = declare(args if isinstance(args, dict) else {})
+            value = float(declare(args if isinstance(args, dict) else {}) or 0)
         except Exception:
-            logger.warning("Tool %s: deadline_floor() raised; ignoring", name, exc_info=True)
+            logger.warning("Tool %s: deadline_floor() failed; ignoring", name, exc_info=True)
             return None
-        if value is None:
-            return None
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            logger.warning("Tool %s: deadline_floor() returned non-numeric %r; ignoring", name, value)
-            return None
-        if value != value or value == float("inf") or value <= 0:
-            return None
-        return value
+        return value if 0 < value < float("inf") else None
 
     def get_all_tool_names(self) -> list[str]:
         return sorted(entry.name for entry in self._snapshot_entries())

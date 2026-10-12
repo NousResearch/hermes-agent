@@ -94,6 +94,7 @@ jobs:
       bootstrap: ${{ steps.gate-lanes.outputs.bootstrap }}
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
+      remote_backends: ${{ steps.gate-lanes.outputs.remote_backends }}
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
@@ -248,6 +249,16 @@ jobs:
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['rust-tests'] }}
     uses: ./.github/workflows/rust-tests.yml
 
+  remote-backends:
+    name: Remote terminal backends
+    needs: detect
+    # The SSH and Docker terminal backends against a real sshd container and the
+    # runner's Docker daemon. Only PRs that touch the backends / terminal tool /
+    # their real tests start it (and every push to main); it runs in parallel with
+    # the other lanes and is required whenever detect selects it.
+    if: needs.detect.outputs.remote_backends == 'true'
+    uses: ./.github/workflows/remote-backends.yml
+
   bootstrap-installer:
     name: Bootstrap installer
     needs: detect
@@ -353,6 +364,11 @@ jobs:
     if: github.repository != 'mekenthompson/hermes-agent'
     uses: ./.github/workflows/case-collision-check.yml
 
+  blob-size-check:
+    name: Check no large binaries
+    needs: detect
+    uses: ./.github/workflows/blob-size-check.yml
+
   lazy-deps-guard:
     name: No production imports of the tools.lazy_deps stub
     needs: detect
@@ -364,6 +380,14 @@ jobs:
     needs: detect
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['lockfile-diff'] }}
     uses: ./.github/workflows/lockfile-diff.yml
+
+  # Advisory summary of the committed prompt-surface snapshot's diff. A stdlib-only job over two
+  # committed directories: cheap enough to run on every Python PR, and silent when nothing moved.
+  prompt-surface-diff:
+    name: Prompt surface diff
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.python == 'true'
+    uses: ./.github/workflows/prompt-surface-diff.yml
 
   docker-lint:
     name: Lint Docker scripts
@@ -404,9 +428,14 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped.
-  # Release gate: selected_jobs decides which lanes must succeed. A skipped
+  # Fork gate: selected_jobs decides which lanes must succeed. A skipped
   # unselected lane is success. The OSV scan's findings are advisory, but its
   # execution is required. Deferred Desktop E2E may skip.
+  #
+  # Upstream release mode (non-fork only): every required job must be
+  # success. A skipped required lane fails that gate; only the PR-only jobs
+  # (history-check, lockfile-diff, prompt-surface-diff, supply-chain,
+  # review-labels) and the deferred Desktop E2E may skip.
   #
   # Branch protection should require ONLY this check.
   #
@@ -428,6 +457,7 @@ jobs:
       - js-tests
       - installer-tests
       - rust-tests
+      - remote-backends
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core
@@ -438,8 +468,10 @@ jobs:
       - uv-lockfile
       - infographic-check
       - case-collision-check
+      - blob-size-check
       - lazy-deps-guard
       - lockfile-diff
+      - prompt-surface-diff
       - docker-lint
       - profile-artifact-check
       - icons-freshness-check
@@ -502,6 +534,7 @@ jobs:
       - supply-chain
       - osv-scanner
       - review-labels
+      - remote-backends
     if: always() && github.repository == 'mekenthompson/hermes-agent' && inputs.release != true
     runs-on: ubuntu-latest
     permissions:

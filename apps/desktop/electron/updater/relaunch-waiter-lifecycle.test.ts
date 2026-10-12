@@ -260,6 +260,9 @@ test('every failed start tells the log why it failed', async (): Promise<void> =
       log,
       pollMs: 20,
       handshakeTimeoutMs: 200,
+      kill: child => {
+        child.kill()
+      },
       spawn: (_command, _args, options): ChildProcess =>
         spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { ...options, stdio: 'ignore' })
     }

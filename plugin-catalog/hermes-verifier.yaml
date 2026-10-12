@@ -1,6 +1,6 @@
 name: hermes-verifier
 repo: https://github.com/am423/hermes-verifier
-sha: 911ee57e8a5f701a4352e8535490181ba0585fd7
+sha: 75ceccef8d0fae0a9e84c62e4cfddf9bada4ddb5
 description: >-
   Attach an independent verifier (advisor) model to your Hermes session: it reviews each
   primary-agent turn delta, raises findings (note / caution / blocker), and can steer a
@@ -11,17 +11,25 @@ description: >-
   off by default. Disclosure — enabling the advisor sends session material (the rendered
   transcript delta) to the advisor model's provider on that provider's terms and billing; a
   tool-granted advisor can read any file the session can read, and those reads also go to
-  the advisor model's provider. No telemetry, no stored credentials, no shell commands.
+  the advisor model's provider. Optional engagement and pre-tool phase gates send bounded,
+  redacted context or tool arguments to that provider; the phase gate can block a tool
+  call. Findings, reasoning, delta excerpts and gate decisions are logged under
+  HERMES_HOME/plugin-data/hermes-verifier with rotation. Adds a dashboard API and Desktop
+  UI. Development scripts run only when explicitly invoked: provider experiments use
+  process-environment keys or host-owned CLI authentication, and offline analysis reads
+  the active profile's session database and decision logs. No runtime shell execution,
+  telemetry or direct access to Hermes's stored credentials.
 maintainer: am423
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/am423/hermes-verifier#readme
-version: "0.4.0"
+version: "0.4.1"
 capabilities:
   provides_tools: []
   provides_hooks:
     - post_llm_call
+    - pre_tool_call
     - pre_llm_call
     - pre_verify
     - on_session_reset

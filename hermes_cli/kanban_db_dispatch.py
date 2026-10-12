@@ -87,6 +87,21 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Event kinds that record an OPERATOR deliberately re-queuing the card, which
+# therefore overrides a duplicate-work guard: a human asked for this run, so
+# holding it silently for the whole window is the bug (same reading the
+# ``recent_success`` branch applies via its own list).
+#
+#   * ``status``          — a board/dashboard move (``todo<->ready``, ``done->ready``)
+#   * ``promoted_manual`` — ``hermes kanban promote``
+#   * ``unblocked``       — ``hermes kanban unblock``
+#
+# Deliberately NOT ``promoted``: that kind is written by ``recompute_ready`` on a
+# dependency release or a failure retry — automatic, so re-spawning could open
+# the duplicate PR the guard exists to prevent. NOT ``reclaimed`` either: a crash
+# or stale-claim recovery is infrastructure, not an operator decision (#111910).
+_RESPAWN_GUARD_REQUEUE_KINDS = ("status", "promoted_manual", "unblocked")
+
 
 @dataclass
 class DispatchResult:
@@ -1538,8 +1553,9 @@ def check_respawn_guard(
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
+    handoff event followed the comment: the named profile must work on that PR,
+    or an operator re-queue followed it: ``_RESPAWN_GUARD_REQUEUE_KINDS``). The
+    review lane skips the last two: they are the *inputs* to a review
     handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
     passes own those.
     """
@@ -1620,12 +1636,16 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
-    #    now work on THAT PR — a closer or the implementer finishing it, not a
-    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
-    #    so the worker that opened the PR is still not re-spawned against it.
+    #    Exceptions: an operator RE-QUEUE or a handoff AFTER the newest PR
+    #    comment. The re-queue kinds are the same "run it again" signal the
+    #    ``recent_success`` branch honours — a manual promote/unblock/status move
+    #    must not sit silently held for the whole window. The handoff kinds
+    #    (operator reassign, reviewer changes_requested, review reopen) name the
+    #    profile that must now work on THAT PR — a closer or the implementer
+    #    finishing it, not a duplicate implementation (#111910). Automatic
+    #    re-queues are excluded: see ``_RESPAWN_GUARD_REQUEUE_KINDS``.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    lift_kinds = ("assigned", "changes_requested", "review_reopened", *_RESPAWN_GUARD_REQUEUE_KINDS)
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
@@ -1634,14 +1654,18 @@ def check_respawn_guard(
         body = _kb._lossy_text(c["body"])
         if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
             continue
+        placeholders = ", ".join("?" for _ in lift_kinds)
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
-            "SELECT kind, payload FROM task_events "
-            "WHERE task_id = ? AND created_at > ? "
-            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, int(c["created_at"] or 0)),
+            f"SELECT kind, payload FROM task_events "
+            f"WHERE task_id = ? AND created_at > ? AND kind IN ({placeholders})",
+            (task_id, int(c["created_at"] or 0), *lift_kinds),
         ).fetchall()
-        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+        if any(
+            e["kind"] in _RESPAWN_GUARD_REQUEUE_KINDS
+            or _is_handoff_event(e["kind"], e["payload"])
+            for e in events
+        ):
             return None
         return "active_pr"
 

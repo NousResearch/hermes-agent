@@ -30,8 +30,14 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "MAX_SAFE_TIMEOUT_S", "BoundedResult", "DeadlineExpired", "clamp_timeout", "resolve_timeout",
-    "run_bounded_async", "run_bounded_sync", "kill_process_tree",
+    "MAX_SAFE_TIMEOUT_S",
+    "BoundedResult",
+    "DeadlineExpired",
+    "clamp_timeout",
+    "kill_process_tree",
+    "resolve_timeout",
+    "run_bounded_async",
+    "run_bounded_sync",
 ]
 
 # Upper bound for any timeout handed to platform wait primitives.
@@ -189,7 +195,7 @@ def resolve_timeout(key: str, *, default: Optional[float], env_var: Optional[str
 # timer dumps all thread stacks when the loop provably failed to process the expiry — the one piece of
 # information loop-blocked hangs otherwise never surface.
 # ---------------------------------------------------------------------------
-def _consume_abandoned(task: "asyncio.Future[Any]") -> None:
+def _consume_abandoned(task: asyncio.Future[Any]) -> None:
     """Observe an abandoned task's outcome so it never logs 'never retrieved'."""
     try:
         if not task.cancelled():
@@ -198,7 +204,7 @@ def _consume_abandoned(task: "asyncio.Future[Any]") -> None:
         pass
 
 
-def _abandon(task: "asyncio.Future[Any]") -> None:
+def _abandon(task: asyncio.Future[Any]) -> None:
     """Cancel ``task`` and never await it; its outcome is consumed so it stays unobserved-safe."""
     task.cancel()
     task.add_done_callback(_consume_abandoned)
@@ -247,7 +253,7 @@ async def run_bounded_async(
 
     task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
-    deadline: "asyncio.Future[None]" = loop.create_future()
+    deadline: asyncio.Future[None] = loop.create_future()
     loop_processed_expiry = threading.Event()
 
     def _mark_expired() -> None:
@@ -431,7 +437,7 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
         try:
             proc = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True, timeout=15, check=False, creationflags=creationflags,
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=15, check=False, creationflags=creationflags,
             )
             # taskkill exits non-zero for not-found / access-denied (False = nothing terminated).
             return proc.returncode == 0

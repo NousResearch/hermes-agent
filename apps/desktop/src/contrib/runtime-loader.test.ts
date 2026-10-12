@@ -1187,3 +1187,95 @@ describe('manual "Reload desktop plugins" (#91503)', () => {
     }
   })
 })
+
+describe('linked dev package: the source checkout drives the desktop half', () => {
+  it('watches the SOURCE plugin.js and a save there re-syncs the copy and reloads it', async () => {
+    const root = '/local/.hermes/desktop-plugins'
+    const sourceDir = '/local/.hermes/plugins/devpkg/desktop'
+    desktopPluginsRoot.mockResolvedValue(root)
+    readDir.mockImplementation(async dir => {
+      if (dir === root) {
+        return { entries: [{ isDirectory: true, name: 'devpkg', path: `${root}/devpkg` }] }
+      }
+
+      if (dir === `${root}/devpkg`) {
+        return {
+          entries: [
+            { isDirectory: false, name: '.hermes-package.json', path: `${root}/devpkg/.hermes-package.json` },
+            { isDirectory: false, name: 'plugin.js', path: `${root}/devpkg/plugin.js` }
+          ]
+        }
+      }
+
+      return { entries: [] }
+    })
+
+    const registerV1 = vi.fn()
+    const registerV2 = vi.fn()
+    Object.assign(globalThis, { __devV1: registerV1, __devV2: registerV2 })
+    let copy = 'export default { id: "devpkg", register: globalThis.__devV1 }'
+    readFileText.mockImplementation(async file =>
+      file.endsWith('.hermes-package.json')
+        ? { text: JSON.stringify({ linked: true, package: 'devpkg', source: sourceDir, sourceMtimeMs: 1 }) }
+        : { text: copy }
+    )
+    watchPreviewFile.mockImplementation(async file => ({ id: `w:${file}` }))
+
+    // Electron's reconcile is the one writer of the copy: it lands the new bytes.
+    const reconcileDesktopPlugins = vi.fn(async () => {
+      copy = 'export default { id: "devpkg", register: globalThis.__devV2 }'
+
+      return [`${root}/devpkg`]
+    })
+
+    Object.assign((window as unknown as { hermesDesktop: object }).hermesDesktop, { reconcileDesktopPlugins })
+
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    // watchRuntimePlugins is once-per-module and an earlier test already ran it;
+    // a fresh module graph gives this test its own change listener.
+    vi.resetModules()
+    const loader = await import('./runtime-loader')
+    const store = await import('./plugins-store')
+
+    try {
+      loader.watchRuntimePlugins()
+      await vi.waitFor(() => expect(watchPreviewFile).toHaveBeenCalledWith(`${sourceDir}/plugin.js`))
+      await store.setPluginEnabled('devpkg', true)
+      expect(registerV1).toHaveBeenCalledTimes(1)
+
+      // The developer saves the checkout, not the copy.
+      const onChange = onPreviewFileChanged.mock.calls[0][0] as (event: { id: string }) => void
+      onChange({ id: `w:${sourceDir}/plugin.js` })
+
+      await vi.waitFor(() => expect(registerV2).toHaveBeenCalledTimes(1))
+      expect(reconcileDesktopPlugins).toHaveBeenCalledTimes(1)
+      // The replaced copy's watch is re-bound to the new inode.
+      expect(stopPreviewFileWatch).toHaveBeenCalledWith(`w:${root}/devpkg/plugin.js`)
+    } finally {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+      loader.unloadRuntimePlugin('devpkg')
+      delete (globalThis as unknown as { __devV1?: unknown }).__devV1
+      delete (globalThis as unknown as { __devV2?: unknown }).__devV2
+    }
+  })
+})

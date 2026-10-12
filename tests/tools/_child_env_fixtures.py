@@ -29,14 +29,20 @@ def child_env(monkeypatch, tmp_path):
     from tools.environments import local
     monkeypatch.setattr(local, "_read_terminal_shell_init_config", lambda: ([], False))
     monkeypatch.setattr(env_passthrough, "_config_passthrough", {})
-    token = env_passthrough._allowed_env_vars_var.set(set())
+    # The skill-registered allowlist is a process-wide set (see #90004): the
+    # registration must survive tool dispatch's copy_context() snapshots, so
+    # a ContextVar cannot back it. Save/restore the set contents instead of a
+    # ContextVar token so each test starts from an empty allowlist.
+    saved_allowed = set(env_passthrough._allowed_env_vars)
+    env_passthrough._allowed_env_vars.clear()
     with patch.dict(os.environ, seed, clear=True):
         try:
             yield tmp_path
         finally:
             from tools.code_kernel import shutdown_all_kernels
             shutdown_all_kernels()
-            env_passthrough._allowed_env_vars_var.reset(token)
+            env_passthrough._allowed_env_vars.clear()
+            env_passthrough._allowed_env_vars.update(saved_allowed)
 
 
 @pytest.fixture
@@ -100,5 +106,5 @@ class RunToCompletionEnv:
     def execute(self, command, cwd=None, timeout=30, stdin_data=None):
         result = subprocess.run([self.bash, "-c", command], cwd=cwd or self.root,
                                 env=self.env, input=stdin_data or "", timeout=timeout,
-                                capture_output=True, text=True, encoding="utf-8")
+                                capture_output=True, text=True, encoding="utf-8", check=False)
         return {"returncode": result.returncode, "output": result.stdout + result.stderr}

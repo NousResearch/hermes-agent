@@ -21,8 +21,10 @@ from tools.tts_command_provider import (
     _named_provider_config, _resolve_command_config, command_env_passthrough as _command_stt_env_passthrough,
     command_failure_detail, render_command_template as _render_command_stt_template,
     run_command_provider as _run_command_stt)
+from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, _error_result, _log_prompt_unsupported, _ok_result)
+from utils import is_truthy_value
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
@@ -65,19 +67,39 @@ def _read_command_stt_output(output_path: Path, stdout: str, fmt: str) -> str:
     raise RuntimeError(f"Command STT provider wrote no output file at {output_path} and produced no stdout")
 
 
+def _normalize_command_stt_input(audio: Path, tmpdir: str, provider_name: str,
+                                 config: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """Resolve the file handed to a command STT provider. ``stt.providers.<name>.normalize``
+    (default off) transcodes to 16 kHz mono m4a first — desktop voice notes arrive as
+    WebM/Opus 48 kHz and providers with container/sample-rate contracts (Tencent 16k_zh)
+    reject the raw container. Failure is an error, not a silent pass-through: the user
+    opted into normalization, so feeding the raw file would reproduce the bug. Returns
+    ``(input_path, None)`` or ``(None, error)``."""
+    if not is_truthy_value(config.get("normalize"), default=False):
+        return str(audio.resolve()), None
+    converted_path, transcode_error = _transcode_audio_for_stt(str(audio.resolve()), tmpdir)
+    if transcode_error or not converted_path:
+        return None, (f"stt.providers.{provider_name}.normalize: true but the audio could not be "
+                      f"normalized for the command provider: {transcode_error or 'unknown ffmpeg failure'}")
+    logger.info("Normalized %s to 16 kHz mono for command STT provider '%s'",
+                audio.name, provider_name)
+    return converted_path, None
+
+
 def _transcribe_command_stt(
-    file_path: str, provider_name: str, config: Dict[str, Any], stt_config: Dict[str, Any],
+    file_path: str, provider_name: str, config: dict[str, Any], stt_config: dict[str, Any],
     model_override: Optional[str] = None, language_override: Optional[str] = None,
-    prompt: Optional[str] = None) -> Dict[str, Any]:
+    prompt: Optional[str] = None) -> dict[str, Any]:
     """Transcribe via a user-declared ``stt.providers.<name>: type: command``. Placeholders
-    (shell-quote-aware; ``{{``/``}}`` stay literal): ``{input_path}``, ``{output_path}`` (transcript
-    file), ``{output_dir}``, ``{format}`` txt/json/srt/vtt, ``{language}`` (default ``en``),
+    (shell-quote-aware; ``{{``/``}}`` stay literal): ``{input_path}`` (the original file, or a
+    16 kHz mono m4a when ``normalize: true``), ``{output_path}`` (transcript file),
+    ``{output_dir}``, ``{format}`` txt/json/srt/vtt, ``{language}`` (default ``en``),
     ``{model}`` (empty when unset)."""
     from tools.transcription_tools import _resolve_stt_language
     if prompt:
         _log_prompt_unsupported(f"Command STT provider '{provider_name}'")
 
-    def fail(error: str) -> Dict[str, Any]:
+    def fail(error: str) -> dict[str, Any]:
         return _error_result(error, provider=provider_name)
     command_template = str(config.get("command") or "").strip()
     if not command_template:
@@ -91,9 +113,12 @@ def _transcribe_command_stt(
                 or _resolve_stt_language(provider_name, stt_config) or DEFAULT_COMMAND_STT_LANGUAGE)
     try:
         with tempfile.TemporaryDirectory(prefix=f"hermes-cmd-stt-{provider_name}-") as tmpdir:
+            input_path, normalize_error = _normalize_command_stt_input(audio, tmpdir, provider_name, config)
+            if normalize_error:
+                return fail(normalize_error)
             output_path = Path(tmpdir) / f"transcript.{output_format}"
             command = _render_command_stt_template(command_template, {
-                "input_path": str(audio.resolve()), "output_path": str(output_path),
+                "input_path": input_path, "output_path": str(output_path),
                 "output_dir": str(output_path.parent), "format": output_format,
                 "language": str(language), "model": str(model_override or config.get("model") or ""),
             })
@@ -114,7 +139,7 @@ def _transcribe_command_stt(
     return _ok_result(transcript_text, provider_name)
 
 
-def _unregistered_stt_provider_error(provider: str) -> Dict[str, Any]:
+def _unregistered_stt_provider_error(provider: str) -> dict[str, Any]:
     key = str(provider or "").strip()
     return _error_result(
         f"stt.provider='{key}' is set but no built-in, command, or plugin "
@@ -129,9 +154,9 @@ def _unregistered_stt_provider_error(provider: str) -> Dict[str, Any]:
 # (issue follow-up to #30398 — STT pluggability)
 # ---------------------------------------------------------------------------
 def _dispatch_to_plugin_provider(
-    file_path: str, provider: str, stt_config: Optional[Dict[str, Any]] = None, *,
+    file_path: str, provider: str, stt_config: Optional[dict[str, Any]] = None, *,
     model: Optional[str] = None, language: Optional[str] = None, prompt: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Route to a plugin-registered transcription provider; None when no plugin claims the name.
     Invariants re-verified here so a caller refactor can't break them: built-in names never reach
     the registry; a same-name command provider wins over a plugin. A matched plugin with
@@ -152,7 +177,7 @@ def _dispatch_to_plugin_provider(
             # was patched in or config changed — retry once with a forced refresh.
             _ensure_plugins_discovered(force=True)
             plugin_provider = get_provider(key)
-    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
+    except Exception as exc:
         logger.debug("STT plugin dispatch skipped (discovery failed): %s", exc)
         return None
     if plugin_provider is None:
@@ -161,7 +186,7 @@ def _dispatch_to_plugin_provider(
     # a buggy plugin can't break dispatch for everyone.
     try:
         available = plugin_provider.is_available()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "STT plugin provider '%s' is_available() raised: %s — treating as unavailable", key, exc, exc_info=True,
         )
@@ -174,10 +199,10 @@ def _dispatch_to_plugin_provider(
     logger.info("Transcribing with plugin STT provider '%s'...", key)
     # The prompt travels via the ABC's ``**extra`` kwargs and is only sent when
     # set, so pre-prompt providers see byte-identical calls on the no-prompt path.
-    extra_kwargs: Dict[str, Any] = {} if prompt is None else {"prompt": prompt}
+    extra_kwargs: dict[str, Any] = {} if prompt is None else {"prompt": prompt}
     try:
         result = plugin_provider.transcribe(file_path, model=model, language=language, **extra_kwargs)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("STT plugin provider '%s' raised: %s", key, exc, exc_info=True)
         return _error_result(f"STT plugin '{key}' raised: {exc}", provider=key)
     if not isinstance(result, dict):
@@ -229,7 +254,7 @@ def _apply_pre_transcription_hook(
         hook_results = invoke_hook(
             "pre_transcription", file_path=file_path, provider=provider,
             model=model, language=language, prompt=prompt, source=source)
-        overrides: Dict[str, Any] = {}
+        overrides: dict[str, Any] = {}
         for hook_result in hook_results:
             for key, value in (hook_result.items() if isinstance(hook_result, dict) else ()):
                 if key == "file_path":
@@ -248,6 +273,6 @@ def _apply_pre_transcription_hook(
         if "prompt" in overrides:
             prompt = overrides["prompt"] or None
         return overrides.get("model", model), overrides.get("language") or None, prompt
-    except Exception as _hook_err:  # noqa: BLE001 — hook plumbing is fail-open
+    except Exception as _hook_err:
         logger.debug("pre_transcription hook error: %s", _hook_err)
         return model, None, prompt

@@ -18,6 +18,7 @@ vi.mock('@/hermes', async importOriginal => ({
   getProfiles: async () => ({ profiles: [] })
 }))
 
+import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
 import {
   $pluginInstallRequest,
@@ -27,7 +28,7 @@ import {
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
-import { PluginActions } from '../capabilities/plugins/plugins-tab'
+import { PluginsTab } from '../capabilities/plugins/plugins-tab'
 
 import { PluginInstallModal } from './plugin-install-modal'
 
@@ -38,7 +39,7 @@ const renderFlow = () =>
   render(
     <MemoryRouter initialEntries={['/capabilities?tab=plugins']}>
       <QueryClientProvider client={queryClient}>
-        <PluginActions profile={null} />
+        <PluginsTab profile={null} />
         <PluginInstallModal />
       </QueryClientProvider>
     </MemoryRouter>
@@ -225,6 +226,36 @@ describe('Unified package desktop half on a local backend', () => {
 
     expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false })
     expect(reconcileDesktopPlugins).not.toHaveBeenCalled()
+  })
+
+  it('turns the desktop half on with the agent half: one "Enable after install" covers the package', async () => {
+    // The half lands opt-in (marker => defaultEnabled false). Before, the
+    // dialog enabled only the agent half and the Desktop switch stayed off.
+    $connection.set({ mode: 'local' } as NonNullable<ReturnType<typeof $connection.get>>)
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install'
+        ? { ok: true, plugin_name: 'pkg', enabled: true }
+        : { plugins: [] }
+    )
+    reconcileDesktopPlugins.mockImplementation(async () => {
+      publishPlugin(
+        { id: 'pkg-ui', name: 'Pkg', kind: 'disk', status: 'disabled', packageName: 'pkg' },
+        { activate: () => patchPlugin('pkg-ui', { status: 'loaded' }), deactivate: () => undefined }
+      )
+
+      return ['/app/desktop-plugins/pkg']
+    })
+    vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+
+    await waitFor(() => expect($pluginRecords.get()['pkg-ui']?.status).toBe('loaded'))
+    expect($pluginDecisions.get()['pkg-ui']).toBe(true)
+    dropPlugin('pkg-ui')
+    $pluginDecisions.set({})
   })
 
   it('does not start the desktop half or offer a retry when the agent install outcome is unknown', async () => {

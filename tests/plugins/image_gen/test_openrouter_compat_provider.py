@@ -442,7 +442,7 @@ class TestImageApiSurface:
         import plugins.image_gen.openrouter as mod
 
         mod._CATALOG_CACHE.clear()
-        monkeypatch.setattr(mod, "_load_image_gen_config", lambda: {})
+        monkeypatch.setattr(mod, "_load_image_gen_config", dict)
         for knob in ("QUALITY", "BACKGROUND", "RESOLUTION", "SEED", "N",
                      "ASPECT_RATIO", "TIMEOUT", "SURFACE"):
             monkeypatch.delenv(f"OPENROUTER_IMAGE_API_{knob}", raising=False)

@@ -124,7 +124,7 @@ def _run_row(entrypoint: str, root: Path) -> Row:
             f"  host exit code: {result.extra.get('exit_code')}\n"
             f"  host stderr tail: {stderr_tail[-1500:]}"
         )
-    except Exception as exc:  # noqa: BLE001 - reported per row
+    except Exception as exc:
         row.error = f"{type(exc).__name__}: {exc}"[:4000]
     finally:
         if ph is not None:
@@ -147,8 +147,7 @@ def matrix(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Row]:
     out = os.environ.get("PARITY_TABLE_OUT")
     if out:
         with open(out, "a", encoding="utf-8") as fh:
-            for row in rows.values():
-                fh.write(json.dumps({**asdict(row), "detail": None}) + "\n")
+            fh.writelines(json.dumps({**asdict(row), "detail": None}) + "\n" for row in rows.values())
     return rows
 
 

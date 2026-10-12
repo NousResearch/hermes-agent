@@ -141,8 +141,11 @@ Supported tokens:
 - `NO_REPLY`
 - `NO REPLY`
 - `[静默]` / `静默` and `[沉默]` / `沉默` — the Chinese renderings a model produces when it translates the sentinel instead of emitting it literally
+- `[审核]` / `审核` — the label a lane drifts to when it answers "reviewed, nothing new" instead of emitting the sentinel
 
-Whitespace and case are normalized, but the whole final response must be the token. A sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
+Whitespace and case are normalized, and whitespace *inside* the brackets is ignored too, so `[ SILENT ]`, `[SILENT ]` and `[ SILENT]` all silence. The whole final response still has to be the token — a sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
+
+Invisible *format* characters (zero-width space, zero-width joiner, BOM, bidi marks — Unicode category `Cf`) are ignored wherever they appear, so a token a model wrote as `[<U+200B>SILENT]` still silences instead of reaching the chat.
 
 Silence is a delivery decision only. Hermes keeps the assistant silence turn in the session transcript, so the conversation still alternates normally:
 

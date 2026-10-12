@@ -1,7 +1,6 @@
 """Tests for tui_gateway.event_replay — per-session event seq + replay ring."""
 
 import threading
-import time
 
 import pytest
 
@@ -323,17 +322,21 @@ def test_stamped_frames_reach_the_transport_in_seq_order_under_concurrency(monke
 
     server._sessions[sid] = {"transport": _Recorder()}
     first_stamped = threading.Event()
+    second_landed = threading.Event()
 
     real_project = room.project_room_member_activity
 
-    def project_with_one_slow_first_writer(obj, sessions):
+    def project_with_first_writer_parked(obj, sessions):
         payload = (obj.get("params") or {}).get("payload") or {}
         if payload.get("mark") == "A":
             first_stamped.set()
-            time.sleep(0.3)
+            # Park the first writer inside its stamp→enqueue window: unfixed, the
+            # second writer lands during the wait; fixed, the session lock blocks
+            # it and the wait times out. Nothing races the scheduler either way.
+            second_landed.wait(3.0)
         real_project(obj, sessions)
 
-    monkeypatch.setattr(room, "project_room_member_activity", project_with_one_slow_first_writer)
+    monkeypatch.setattr(room, "project_room_member_activity", project_with_first_writer_parked)
 
     def emit(mark: str):
         server.write_json(
@@ -343,6 +346,9 @@ def test_stamped_frames_reach_the_transport_in_seq_order_under_concurrency(monke
                 "params": {"type": "tool.start", "session_id": sid, "payload": {"mark": mark}},
             }
         )
+
+        if mark == "B":
+            second_landed.set()
 
     try:
         first = threading.Thread(target=emit, args=("A",))

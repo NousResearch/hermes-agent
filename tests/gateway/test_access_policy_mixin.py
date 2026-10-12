@@ -30,6 +30,7 @@ def _scope(secrets):
 def _hosts():
     """One bare instance per own-policy class, attributes set exactly as the adapters do."""
     from gateway.platforms.qqbot.adapter import QQAdapter
+    from gateway.platforms.signal import SignalAdapter
     from gateway.platforms.weixin import WeixinAdapter
     from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
     from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
@@ -40,6 +41,7 @@ def _hosts():
         "weixin": object.__new__(WeixinAdapter),
         "wecom": object.__new__(WeComAdapter),
         "qqbot": object.__new__(QQAdapter),
+        "signal": object.__new__(SignalAdapter),
         "whatsapp": WhatsAppBehaviorMixin(),
         "whatsapp_cloud": object.__new__(WhatsAppCloudAdapter),
         "yuanbao": AccessPolicy("open", [], "open", []),
@@ -67,9 +69,10 @@ def _verdicts(host, name, dm_policy, group_policy):
 # would pass with a host whose prefix is missing — that is exactly how WeCom regressed once.
 PLATFORM_OPT_IN = {"weixin": "WEIXIN_ALLOW_ALL_USERS", "wecom": "WECOM_ALLOW_ALL_USERS",
                    "qqbot": "QQ_ALLOW_ALL_USERS", "whatsapp": "WHATSAPP_ALLOW_ALL_USERS",
-                   "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOW_ALL_USERS", "yuanbao": "YUANBAO_ALLOW_ALL_USERS"}
+                   "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOW_ALL_USERS", "yuanbao": "YUANBAO_ALLOW_ALL_USERS",
+                   "signal": "SIGNAL_ALLOW_ALL_USERS"}
 # Hosts whose allowlists document ``*`` (weixin/yuanbao match literally, as before).
-WILDCARD_HOSTS = ("wecom", "qqbot", "whatsapp", "whatsapp_cloud")
+WILDCARD_HOSTS = ("wecom", "qqbot", "whatsapp", "whatsapp_cloud", "signal")
 
 
 def _all_agree(hosts, opt_in_for, label):

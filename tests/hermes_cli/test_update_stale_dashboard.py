@@ -1096,5 +1096,5 @@ class TestSiblingHomeBackends:
     def test_unreadable_home_keeps_todays_behaviour(self, tmp_path, monkeypatch):
         """Ownership unknown (environment unreadable) is not evidence of a sibling: the scope
         filter upstream already spares those, so anything reaching here is treated as before."""
-        result, signalled, respawn, _ = self._run(tmp_path, monkeypatch, {7004: None})
+        result, signalled, _respawn, _ = self._run(tmp_path, monkeypatch, {7004: None})
         assert 7004 in signalled and result["spared"] == []

@@ -1091,6 +1091,20 @@ auxiliary:
 ```
 Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 
+**Local main model, cloud summarizer** (`local_override`): when your chat model is a local/LAN endpoint, summarizing its own long context on that same box is slow and wasteful — `local_override` swaps in a different route *only while the live main runtime matches the list*:
+```yaml
+auxiliary:
+  compression:
+    provider: auto              # base route for every other main model
+    local_override:
+      provider: openrouter
+      model: "google/gemini-2.5-flash"
+      base_urls:
+        - "http://myhost:8000/v1"
+        - "http://myhost:8000"
+```
+The gate needs BOTH conditions: the main provider is a local family (`custom`, `ollama`, `lmstudio`, `vllm`, or `custom:<name>`) **and** the main runtime's `base_url` exactly matches one of `base_urls` (trailing `/` ignored — list each spelling your runtime may report, e.g. both `.../v1` and the bare `host:port`). The override block carries its own `provider`/`model`/`base_url`/`api_key` (or `key_env`)/`api_mode`, so it can name any route. The check is evaluated per call against the live runtime, so a mid-session `/model` switch — or a gateway session on a different model — routes correctly without reloading the config. When the main model is not on the list, compaction follows the base `provider`/`model` as usual.
+
 ### How the three knobs interact
 
 | `auxiliary.compression.provider` | `auxiliary.compression.base_url` | Result |
@@ -1570,6 +1584,14 @@ auxiliary:
   # Context compression timeout (separate from compression.* config)
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
+    # local_override:         # Optional: route compaction to its own route ONLY while the main
+    #   provider: openrouter  # chat model is one of the listed local/LAN endpoints. Every other
+    #   model: "google/gemini-2.5-flash"   # main model keeps the base compression route above.
+    #   base_urls:                         # Gate: BOTH must hold — the live main provider is
+    #     - "http://myhost:8000/v1"        # custom/ollama/lmstudio/vllm/custom:* AND the live
+    #     - "http://myhost:8000"           # base_url exactly matches an entry (trailing "/"
+    #                                      # ignored — list each spelling you use). Checked per
+    #                                      # call, so /model switches route correctly.
     # no_progress_timeout: 60   # seconds a streamed summary may go without a substantive chunk
     #                           # before the attempt fails fast into retry/fallback
     # fallback_chain:           # Optional — providers to try on rate-limit / connectivity failure

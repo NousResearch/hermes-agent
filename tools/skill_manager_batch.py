@@ -242,11 +242,14 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     if err is not None:
         return err
     if not _smt._skill_gate_bypass.get():
-        # Approval gate for the WHOLE batch as one pending write.
+        # Approval gate for the WHOLE batch as one pending write. The payload carries
+        # ``name`` so the approval replay resolves op names the same way staging did —
+        # without it, ops relying on the top-level name fallback would fail replay with
+        # "needs a 'name'" no matter when the user approves.
         def _staging(wa):
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
-            return {"action": "batch", "operations": operations}, gist
+            return {"action": "batch", "name": default_name, "operations": operations}, gist
         staged = _smt._run_write_gate(_staging)
         if staged is not None:
             return staged

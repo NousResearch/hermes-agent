@@ -40,6 +40,7 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
+import { dropComposerReasoningForProfile, migrateComposerReasoningForProfile } from './composer-reasoning-effort'
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
@@ -2800,6 +2801,7 @@ export function dropTilesForProfile(
   const name = normalizeProfileKey(profile)
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
+  dropComposerReasoningForProfile(name, route)
   // Route fields go through the SAME canonicalization as `name` below — a
   // source-scoped delete must not be defeated by stray whitespace around a
   // profile name that a non-route delete trims away.
@@ -2901,11 +2903,8 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
     return
   }
 
-  const isLocal = (owner: SessionProfileRoute | undefined) =>
-    Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'
-
   const renamedOwner = (owner: SessionProfileRoute | undefined): SessionProfileRoute | undefined => {
-    if (!owner || !isLocal(owner)) {
+    if (!owner || (String(owner.connectionId ?? '').trim() || 'local') !== 'local') {
       return owner
     }
 
@@ -2946,6 +2945,7 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   migrateSessionOwnerHintsForProfile(from, to)
   migratePreviewArtifactsForProfile(from, to)
   migrateStatusDrawersForProfile(from, to)
+  migrateComposerReasoningForProfile(from, to)
   // Sibling family: the rail's profile-keyed buckets move with the rename, or
   // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)

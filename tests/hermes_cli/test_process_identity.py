@@ -253,6 +253,21 @@ def test_ledger_entries_excludes_a_killed_but_unreaped_process(tmp_path):
         child.wait()
 
 
+def test_pid_alive_matches_skips_the_slow_status_probe_on_windows(monkeypatch):
+    """Windows has no zombies and psutil status() costs tens of ms per call there, while the
+    strict branch runs for every ledger entry on each /api/status poll via
+    shared_profile_warning → ledger_entries(verified_only=True) (#137045): both branches must
+    short-circuit before status() on Windows without weakening create_time identity."""
+    fake = _fake_psutil({700: 7.0})
+    proc = fake.Process(700)
+    monkeypatch.setattr(pi.os, "name", "nt")
+    with patch.dict(sys.modules, {"psutil": fake}):
+        assert pi._pid_alive_matches(700, 7.0, strict=True) is True
+        assert pi._pid_alive_matches(700, 999.0, strict=True) is False  # exact create_time still enforced
+        assert pi._pid_alive_matches(700, 7.0) is True
+    proc.status.assert_not_called()
+
+
 def test_spawner_is_dead_tristate():
     fake = _fake_psutil({500: 5.0})
     with patch.dict(sys.modules, {"psutil": fake}):

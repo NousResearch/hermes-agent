@@ -478,6 +478,10 @@ def _dispatch_quick(rid, params, session, name, arg):
     qc = _load_cfg().get("quick_commands", {}).get(name)
     if qc is None:
         return None
+    if qc.get("type") == "prompt":
+        msg = _tools_mod("hermes_cli.quick_commands").render_prompt_quick_command(qc, arg)
+        return _ok(rid, {"type": "send", "message": msg}) if msg else _err(
+            rid, 4018, f"quick command /{name} has no prompt defined")
     if qc.get("type") == "exec":
         # Sanitized env: the TUI server process holds every API key in os.environ.
         env = _tools_mod("tools.environments.local").build_subprocess_env()
@@ -595,6 +599,13 @@ def _dispatch_plugin(rid, params, session, name, arg):
             return _ok(rid, {"type": "plugin", "output": _run_plugin_command(
                 handler, arg, session, params.get("session_id", ""))})
     return None
+
+
+def _is_prompt_quick_command(name: str) -> bool:
+    """``type: prompt`` quick commands answer a ``send`` directive, so slash.exec reroutes them to
+    command.dispatch — the slash worker would queue the prompt on its own, never-drained CLI input."""
+    qc = (_load_cfg().get("quick_commands") or {}).get(name)
+    return isinstance(qc, dict) and qc.get("type") == "prompt"
 
 
 def _bundle_key_for(name: str):
@@ -1048,7 +1059,7 @@ def _(rid, params: dict) -> dict:
     # Pending-input built-ins route straight to command.dispatch (some clients fail the
     # error-then-retry fallback); bundles go the same way under their resolved key.
     with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
-        target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
+        target = base if base in _PENDING_INPUT_COMMANDS or _is_prompt_quick_command(base) else _bundle_key_for(base)
     if target is not None:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     # Recognized skills keep the 4018 gate so clients command.dispatch. A scan

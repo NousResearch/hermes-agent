@@ -60,6 +60,15 @@ class TestCLIQuickCommands:
 
 
 
+    def test_prompt_command_queues_rendered_prompt_as_the_turn(self):
+        """type: prompt sends the configured text (with {args}) to the agent instead of running anything."""
+        import queue
+        cli = self._make_cli({"rn": {"type": "prompt", "prompt": "Draft release notes for {args}."}})
+        cli._pending_input = queue.Queue()
+        assert cli.process_command("/rn v2.3") is True
+        assert cli._pending_input.get_nowait() == "Draft release notes for v2.3."
+        cli.console.print.assert_not_called()
+
     def test_quick_command_takes_priority_over_skill_commands(self):
         """Quick commands must be checked before skill slash commands."""
         cli = self._make_cli({"mygif": {"type": "exec", "command": "echo overridden"}})
@@ -175,3 +184,18 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_prompt_command_rewrites_event_into_agent_turn(self):
+        """Messaging platforms: the prompt replaces the slash text and dispatch falls through to the agent."""
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"rn": {"type": "prompt", "prompt": "Draft release notes."}}}
+        runner._draining = False
+        runner._check_slash_access = MagicMock(return_value=None)
+        event = self._make_event("rn", "v2.3")
+
+        handled, result, command = await runner._hm_dispatch_quick_and_plugin_commands(event, event.source, "rn")
+
+        assert (handled, result, command) == (False, None, None)
+        assert event.text == "Draft release notes.\n\nv2.3"

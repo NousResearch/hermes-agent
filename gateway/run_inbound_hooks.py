@@ -226,6 +226,14 @@ class GatewayInboundHooksMixin:
             if _denied is not None:
                 return True, _denied, command
             qtype = qcmd.get("type")
+            if qtype == "prompt":
+                # The configured prompt becomes this turn's user message; fall through to the agent.
+                from hermes_cli.quick_commands import render_prompt_quick_command
+                msg = render_prompt_quick_command(qcmd, event.get_command_args())
+                if not msg:
+                    return True, t("gateway.quick_command.no_prompt", command=command), command
+                event.text = msg
+                return False, None, None
             if qtype == "exec":
                 exec_cmd = qcmd.get("command", "")
                 if not exec_cmd:

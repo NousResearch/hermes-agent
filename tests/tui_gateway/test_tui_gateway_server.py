@@ -12338,6 +12338,22 @@ def test_snapshot_restore_is_blocked_from_tui_worker():
     )
 
 
+def test_prompt_quick_command_reaches_the_agent_and_marks_review_button(monkeypatch):
+    """slash.exec answers a send directive (never the slash worker's dead CLI queue); the catalog flags
+    ``review_button`` so the Desktop Review pane can render it."""
+    cfg = {"quick_commands": {"rn": {"type": "prompt", "prompt": "Notes for {args}", "review_button": "Release notes"}}}
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    server._sessions["sid"] = _session()
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "slash.exec", "params": {"session_id": "sid", "command": "rn v2.3"}})
+        assert resp["result"] == {"type": "send", "message": "Notes for v2.3"}
+        catalog = server.handle_request({"id": "2", "method": "commands.catalog", "params": {}})["result"]
+        assert catalog["commands"]["/rn"]["review_button"] == "Release notes"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     monkeypatch.setattr(
         server,

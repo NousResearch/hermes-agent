@@ -1238,6 +1238,14 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
                 return self.process_command(f"{target} {user_args}".strip(), redispatch=True)
             self._console_print(f"[bold red]{_t('cli.quick.no_target', command=base_cmd)}[/]")
             return True
+        if qtype == "prompt":
+            from hermes_cli.quick_commands import render_prompt_quick_command
+            msg = render_prompt_quick_command(qcmd, user_args)
+            if msg:
+                self._queue_skill_message(msg)
+            else:
+                self._console_print(f"[bold red]{_t('cli.quick.no_prompt', command=base_cmd)}[/]")
+            return True
         if qtype != "exec":
             self._console_print(f"[bold red]{_t('cli.quick.unsupported_type', command=base_cmd)}[/]")
             return True

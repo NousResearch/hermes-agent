@@ -14,10 +14,16 @@ from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_connectors import tool_batch_fields
 
 from tests.hermes_cli.test_relay_shared_metrics import _schema_validator
-from tests.hermes_cli.test_relay_shared_metrics_runtime import direct_runtime  # noqa: F401  (fixture)
+from tests.hermes_cli import test_relay_shared_metrics_runtime as runtime_tests
 
 _RESOURCE = {"architecture": "x86_64", "hermes_version": "0.0.0", "install_method": "git", "os_family": "linux"}
 _ROUTE = {"model": "m", "provider": "openrouter"}
+@pytest.fixture
+def fake_relay(tmp_path, monkeypatch):
+    """The runtime tests' fake Relay, so lifecycle hooks drive the real metrics runtime."""
+    yield from runtime_tests.direct_runtime.__wrapped__(tmp_path, monkeypatch)
+
+
 _BASE = {"session_id": "s1", "task_id": "t1", "turn_id": "turn-1", "api_request_id": "r1", "platform": "cli"}
 
 
@@ -96,7 +102,7 @@ def _end_turn():
     lifecycle.finalize_session(session_id="s1")
 
 
-def test_a_connector_batch_counts_each_entry_once_and_not_the_wrapper(direct_runtime):  # noqa: F811
+def test_a_connector_batch_counts_each_entry_once_and_not_the_wrapper(fake_relay):
     lifecycle.invoke_hook("pre_llm_call", **_BASE)
     _connector_batch_hooks([
         ("connectors__gmail__SEND_EMAIL", None),
@@ -104,29 +110,29 @@ def test_a_connector_batch_counts_each_entry_once_and_not_the_wrapper(direct_run
     ])
     _end_turn()
 
-    ends = [event[2] for event in direct_runtime.events if event[0] == "tool.call_end"]
+    ends = [event[2] for event in fake_relay.events if event[0] == "tool.call_end"]
     assert [(end["tool_name"], end["tool_category"], end["outcome"], end["error_class"]) for end in ends] == [
         ("connector", "connector", "success", "none"),
         ("connector", "connector", "failed", "connection_required"),
     ]
-    [task_end] = [event[2]["output"] for event in direct_runtime.events
+    [task_end] = [event[2]["output"] for event in fake_relay.events
                   if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"]
     assert task_end["tool_call_count_bucket"] == "2"
 
 
-def test_a_batch_rejected_before_any_entry_still_counts_as_tool_call(direct_runtime):  # noqa: F811
+def test_a_batch_rejected_before_any_entry_still_counts_as_tool_call(fake_relay):
     lifecycle.invoke_hook("pre_llm_call", **_BASE)
     lifecycle.invoke_hook(
         "post_tool_call", **_BASE, tool_call_id="tc1", tool_name="tool_call", status="error",
         error_type="tool_error", result=json.dumps({"error": "too many calls"}),
         args={"calls": [{"name": "connectors__gmail__SEND_EMAIL", "arguments": {}}]})
     _end_turn()
-    [end] = [event[2] for event in direct_runtime.events if event[0] == "tool.call_end"]
+    [end] = [event[2] for event in fake_relay.events if event[0] == "tool.call_end"]
     assert (end["tool_name"], end["outcome"]) == ("tool_call", "failed")
 
 
 def test_chain_row_counts_searches_since_the_last_execute_and_whether_the_tool_was_described(
-    direct_runtime,  # noqa: F811
+    fake_relay,
 ):
     lifecycle.invoke_hook("pre_llm_call", **_BASE)
     for n, (name, args) in enumerate([
@@ -140,7 +146,7 @@ def test_chain_row_counts_searches_since_the_last_execute_and_whether_the_tool_w
         lifecycle.invoke_hook("pre_tool_call", **call)
         lifecycle.invoke_hook("post_tool_call", **call, result="{}", status="ok")
     _end_turn()
-    data = [event[2]["data"] for event in direct_runtime.events
+    data = [event[2]["data"] for event in fake_relay.events
             if event[0] == "scope.event" and event[1] == contract.CONNECTOR_CHAIN_MARK]
     assert data == [
         {"described_first": "yes", "outcome": "success", "searches_before_bucket": "2"},

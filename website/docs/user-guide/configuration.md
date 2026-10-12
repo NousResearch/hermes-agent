@@ -3126,6 +3126,14 @@ approvals:
 
 ### Deny rules
 
+`approvals.allow_reboot` and `approvals.allow_shutdown` (both default `false`) let an always-on, self-hosted agent reboot or power off its own host. Each one removes its category from the hardline blocklist; the command still goes through the normal approval flow above and is never auto-run unless yolo / `mode: off` is active. See [Security — Opt-in: letting the agent reboot or power off its host](./security.md#opt-in-letting-the-agent-reboot-or-power-off-its-host).
+
+```yaml
+approvals:
+  allow_reboot: false
+  allow_shutdown: false
+```
+
 `approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:
 
 ```yaml

@@ -15,7 +15,7 @@ import uuid
 from tools import approval_context as _ctx
 from utils import unlink_files_older_than
 from tools.approval_detection import (
-    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
+    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants, hardline_opt_in_setting)
 
 logger = logging.getLogger("tools.approval")
 
@@ -100,6 +100,15 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
         "approvals.mode=off, or cron approve mode. If you genuinely "
         "need to run it, run it yourself in a terminal outside the agent."
     )
+    # Opt-in categories (host reboot / shutdown) name the config key that lifts them, so an operator
+    # of an always-on host knows the switch exists; enabling it still requires normal approval.
+    setting = hardline_opt_in_setting(description)
+    if setting:
+        message += (
+            f" The operator can allow this category by setting {setting}: true in config.yaml "
+            f"(`hermes config set {setting} true`); the command then goes through the normal "
+            "dangerous-command approval flow instead of being hard-blocked."
+        )
     # The parser-limit block is almost always a giant inline payload, not a forbidden operation, and is typically
     # followed by blind rephrase retries — point at the saved script (or the write_file recipe).
     if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION):

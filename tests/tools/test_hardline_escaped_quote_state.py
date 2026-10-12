@@ -31,11 +31,11 @@ def test_escaped_quotes_in_a_valid_grep_pattern_are_not_malformed(command):
 
 @pytest.mark.parametrize(("command", "description"), [
     (r'cat "f\"n.txt"; rm -rf --no-preserve-root /', "recursive delete of root filesystem"),
-    (r'echo "a\"b"; reboot', "system shutdown/reboot"),
+    (r'echo "a\"b"; reboot', "system reboot"),
     (r'echo "a\"b" && rm -rf ~', "recursive delete of home directory"),
     (r'echo "a\"b"; rm${IFS}-rf${IFS}/', "recursive delete of root filesystem"),
-    (r'grep -n "prefix \"quoted\" suffix" input.txt; reboot', "system shutdown/reboot"),
-    ("printf \\\\\nreboot", "system shutdown/reboot"),
+    (r'grep -n "prefix \"quoted\" suffix" input.txt; reboot', "system reboot"),
+    ("printf \\\\\nreboot", "system reboot"),
     ("grep 'unterminated", "command parser limit or malformed executable payload"),
 ])
 def test_escaped_quote_before_a_hardline_command_does_not_hide_it(command, description):

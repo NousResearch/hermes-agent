@@ -291,6 +291,19 @@ def _get_approval_config() -> dict:
         return {}
 
 
+def _get_hardline_opt_ins() -> frozenset:
+    """Opt-in hardline categories enabled in config: ``"reboot"`` when ``approvals.allow_reboot``
+    and ``"shutdown"`` when ``approvals.allow_shutdown`` is true (both default false). An enabled
+    category leaves the unconditional floor but still goes through the normal approval flow."""
+    cfg = _get_approval_config()
+    enabled = set()
+    if is_truthy_value(cfg.get("allow_reboot", False)):
+        enabled.add("reboot")
+    if is_truthy_value(cfg.get("allow_shutdown", False)):
+        enabled.add("shutdown")
+    return frozenset(enabled)
+
+
 def _get_approval_mode() -> str:
     """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config)."""
     try:

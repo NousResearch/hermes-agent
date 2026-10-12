@@ -67,12 +67,16 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
         )
 
     # 2. Hardline blocklist — never bypassable, even under yolo.
-    is_hardline, hardline_desc = approval_detection.detect_hardline_command(command)
+    #    approvals.allow_reboot / allow_shutdown lift only those categories, exactly as at runtime.
+    is_hardline, hardline_desc = approval_detection.detect_hardline_command(
+        command, approval_context._get_hardline_opt_ins())
     if is_hardline:
+        setting = approval_detection.hardline_opt_in_setting(hardline_desc)
         return result(
             "hardline-deny", rule=hardline_desc,
             detail="matches the hardline blocklist (never bypassable, "
-                   "blocked even under --yolo / approvals.mode=off)",
+                   "blocked even under --yolo / approvals.mode=off)"
+                   + (f"; opt in with {setting}: true" if setting else ""),
         )
 
     # 3. Sudo stdin guard — unconditional, like the hardline floor.

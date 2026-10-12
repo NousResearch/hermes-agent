@@ -146,7 +146,7 @@ Some commands are so catastrophic — irreversible filesystem wipes, fork bombs,
 - Cron jobs running in headless `approve` mode
 - User explicitly clicking "allow always"
 
-The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
+The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag (the one exception: host reboot/shutdown, which you can opt into, see below). Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
 
 | Pattern | Why it's hardline |
 |---|---|
@@ -156,8 +156,22 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 | `mkfs.*` on a mounted root device | Formats the live system |
 | `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
 | Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
+| `reboot`, `shutdown -r`, `systemctl reboot`/`kexec`, `init 6` / `telinit 6` | Reboots the host (opt-in: `approvals.allow_reboot`) |
+| `shutdown [-h\|-P\|-H]`, `poweroff`, `halt`, `systemctl poweroff`/`halt`, `init 0` / `telinit 0` | Powers off the host (opt-in: `approvals.allow_shutdown`) |
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
+
+#### Opt-in: letting the agent reboot or power off its host
+
+Host reboot and shutdown are the only hardline classes with an opt-in. A self-hosted, always-on agent can have a real need to reboot its own machine, for example after a kernel update or to recover wedged USB hardware. Two independent settings, both `false` by default, lift one category each off the floor:
+
+```yaml
+approvals:
+  allow_reboot: true     # reboot, shutdown -r, systemctl reboot/kexec, init/telinit 6
+  allow_shutdown: false  # shutdown [-h|-P|-H], poweroff, halt, systemctl poweroff/halt, init/telinit 0
+```
+
+Enabling a category does **not** auto-run its commands. They leave the hardline floor and go through the normal dangerous-command approval flow: a prompt in `manual` mode, the guardian in `smart` mode, `cron_mode` / `single_query_mode` / `unattended_mode` in headless contexts. Only `--yolo` / `mode: off` runs them without asking, as it does any other dangerous command. A spelling that could either halt or reboot (`shutdown -rh`, `reboot -p`, `poweroff --reboot`) stays blocked unless **both** settings are on. No other hardline class is affected. While a category is off, its block message names the setting that would enable it (`hermes config set approvals.allow_reboot true`).
 
 The floor also fails closed on a command whose shell quoting cannot be parsed (`grep 'unterminated`): the error says `malformed executable payload`. Quoting is judged on the command exactly as written, so shell-valid escapes inside a quoted pattern (`grep -o "[^\"]*" file`) are not malformed, and an escaped quote before a separator (`echo "a\"b"; reboot`) does not hide the command that follows it.
 

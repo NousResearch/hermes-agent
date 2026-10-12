@@ -1673,6 +1673,16 @@ DEFAULT_CONFIG = {
         # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
         # --force*".
         "deny": [],
+        # Opt-in exceptions to the hardline floor for host power-state commands. Off by default: the
+        # agent can never reboot / power off its host. Self-hosted always-on agents may need to
+        # (kernel updates, recovering wedged USB hardware). True lifts ONLY that category off the
+        # unconditional blocklist; the command still goes through the normal dangerous-command
+        # approval flow (prompt / smart guardian / yolo per approvals.mode, cron_mode, ...).
+        # allow_reboot: reboot, shutdown -r, systemctl reboot/kexec, init/telinit 6.
+        # allow_shutdown: shutdown [-h|-P|-H], poweroff, halt, systemctl poweroff/halt, init/telinit 0.
+        # Ambiguous spellings (`shutdown -rh`, `reboot -p`) need both.
+        "allow_reboot": False,
+        "allow_shutdown": False,
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
         # so the next message re-sends full input). "Always Approve" → false.
         "mcp_reload_confirm": True,

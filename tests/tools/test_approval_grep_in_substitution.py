@@ -52,7 +52,7 @@ class TestExecutableSubstitutionBodiesStayExecutable:
     ])
     def test_hardline_command_inside_a_quoted_substitution_blocks_as_itself(self, cmd):
         blocked, reason = detect_hardline_command(cmd)
-        assert blocked and reason == "system shutdown/reboot"
+        assert blocked and reason in {"system reboot", "system shutdown/poweroff/halt"}
 
     def test_public_guard_blocks_without_offering_approval(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))

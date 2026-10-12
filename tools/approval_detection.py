@@ -121,6 +121,52 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
+# ---- Host power-state (reboot / shutdown) rules -------------------------------------------
+# `shutdown` reboots only with -r/--reboot; -h/-H/-P/--halt/--poweroff (or no flag) halt the host.
+# Variants are fully lowercased before matching, so -[a-z]*[hp] also covers -H/-P. Real ;/&/|
+# separators are already newlines here, so [^\n]* scans only this command's arguments.
+_SHUTDOWN_REBOOT_FLAG = r'(?=[^\n]*\s(?:-[a-z]*r[a-z]*|--reboot)\b)'
+_SHUTDOWN_HALT_FLAG = r'(?=[^\n]*\s(?:-[a-z]*[hp][a-z]*|--halt|--poweroff)\b)'
+# systemctl global flags may precede the verb (`systemctl --force reboot`, `systemctl -i poweroff`).
+_SYSTEMCTL_PREFIX = _CMDPOS + r'systemctl\s+(?:-[^\s]+\s+)*'
+_REBOOT_DESC = "system reboot"
+_REBOOT_INIT_DESC = "init/telinit 6 (reboot)"
+_REBOOT_SYSTEMCTL_DESC = "systemctl reboot/kexec"
+_SHUTDOWN_DESC = "system shutdown/poweroff/halt"
+_SHUTDOWN_INIT_DESC = "init/telinit 0 (shutdown)"
+_SHUTDOWN_SYSTEMCTL_DESC = "systemctl poweroff/halt (shutdown)"
+_POWER_STATE_PATTERNS = [
+    # reboot category
+    (_CMDPOS + r'reboot\b', _REBOOT_DESC),
+    (_CMDPOS + r'shutdown\b' + _SHUTDOWN_REBOOT_FLAG, _REBOOT_DESC),
+    (_CMDPOS + r'(?:halt|poweroff)\b[^\n]*\s--reboot\b', _REBOOT_DESC),
+    (_CMDPOS + r'(?:tel)?init\s+6\b', _REBOOT_INIT_DESC),
+    (_SYSTEMCTL_PREFIX + r'(?:reboot|kexec)\b', _REBOOT_SYSTEMCTL_DESC),
+    # shutdown / poweroff / halt category
+    (_CMDPOS + r'(?:halt|poweroff)\b', _SHUTDOWN_DESC),
+    # Plain `shutdown` (no -r) or any shutdown carrying a halt/poweroff flag.
+    (_CMDPOS + r'shutdown\b(?:(?!' + _SHUTDOWN_REBOOT_FLAG + r')|' + _SHUTDOWN_HALT_FLAG + r')', _SHUTDOWN_DESC),
+    (_CMDPOS + r'reboot\b[^\n]*\s(?:-[a-z]*p[a-z]*|--poweroff|--halt)\b', _SHUTDOWN_DESC),
+    (_CMDPOS + r'(?:tel)?init\s+0\b', _SHUTDOWN_INIT_DESC),
+    (_SYSTEMCTL_PREFIX + r'(?:poweroff|halt)\b', _SHUTDOWN_SYSTEMCTL_DESC),
+]
+# Hardline descriptions an operator may opt out of the floor, keyed to their category. An opted-in
+# category is NOT auto-run: the same patterns sit in DANGEROUS_PATTERNS, so the command falls through
+# to the normal approval flow (manual prompt / smart guardian / yolo, per approvals.mode).
+HARDLINE_OPT_IN_CATEGORIES = {
+    _REBOOT_DESC: "reboot", _REBOOT_INIT_DESC: "reboot", _REBOOT_SYSTEMCTL_DESC: "reboot",
+    _SHUTDOWN_DESC: "shutdown", _SHUTDOWN_INIT_DESC: "shutdown", _SHUTDOWN_SYSTEMCTL_DESC: "shutdown",
+}
+# config.yaml key (under ``approvals``) that opts each category out of the hardline floor.
+HARDLINE_OPT_IN_SETTINGS = {"reboot": "approvals.allow_reboot", "shutdown": "approvals.allow_shutdown"}
+
+
+def hardline_opt_in_setting(description: str) -> str | None:
+    """Config key that would lift this hardline block (``None`` for non-opt-in rules)."""
+    category = HARDLINE_OPT_IN_CATEGORIES.get(description)
+    return HARDLINE_OPT_IN_SETTINGS.get(category) if category else None
+
+
 HARDLINE_PATTERNS = [
     # Root path: any root-anchored path whose components collapse to "/" in the shell ("/", "//",
     # "/.", "/./", "/../..", optional trailing glob). Each inter-slash segment must be exactly "."
@@ -150,10 +196,11 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
-    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
-    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
-    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    # Host power-state rules, split into two opt-in categories (approvals.allow_reboot /
+    # approvals.allow_shutdown, see HARDLINE_OPT_IN_CATEGORIES). A command that could plausibly do
+    # either (`shutdown -r -h`, `reboot -p`, `poweroff --reboot`) matches BOTH categories, so it stays
+    # blocked unless both are enabled — classification ambiguity never widens the opt-in.
+    *_POWER_STATE_PATTERNS,
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out
@@ -362,8 +409,12 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
-def detect_hardline_command(command: str) -> tuple:
-    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
+def detect_hardline_command(command: str, allow_categories=()) -> tuple:
+    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description).
+
+    ``allow_categories`` names opt-in categories (``"reboot"`` / ``"shutdown"``, from
+    HARDLINE_OPT_IN_CATEGORIES) the operator enabled via config; their rules are skipped here so
+    the command reaches the normal dangerous-command approval flow. Every other rule is unaffected."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
@@ -377,6 +428,8 @@ def detect_hardline_command(command: str) -> tuple:
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+            if allow_categories and HARDLINE_OPT_IN_CATEGORIES.get(description) in allow_categories:
+                continue
             if quote_masked and masked_lower is None:
                 # Positionless rules see quoted prose as DATA, except under shell carriers
                 # (sh -c, eval, source) whose quoted argument is code — those scan raw. bash -c
@@ -510,6 +563,10 @@ DANGEROUS_PATTERNS = [
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
+    # Host reboot/shutdown: hardline by default, so these only fire once the operator opts a
+    # category out of the floor (approvals.allow_reboot / allow_shutdown) — the command must then
+    # still be approved like any other dangerous command rather than run silently.
+    *_POWER_STATE_PATTERNS,
     (r'\bpkill\s+-9\b', "force kill processes"),
     # killall with SIGKILL (-9 / -KILL / -s KILL / -SIGKILL) and `killall -r <regex>` broad sweeps
     # that can wipe unrelated processes.

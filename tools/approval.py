@@ -1158,7 +1158,9 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     can run, #58748)."""
     from agent.runtime_self_protection import command_deletes_runtime
 
-    is_hardline, hardline_desc = detect_hardline_command(command)
+    # approvals.allow_reboot / allow_shutdown lift ONLY those categories off the floor; the command
+    # then meets the dangerous-pattern layer and the normal approval flow like any other.
+    is_hardline, hardline_desc = detect_hardline_command(command, approval_context._get_hardline_opt_ins())
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc, command)

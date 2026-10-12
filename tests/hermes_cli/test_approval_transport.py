@@ -253,7 +253,7 @@ def _configure_manual_guard(monkeypatch, approval_module, manager, *, fallback=N
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(approval_module, "_is_interactive_cli", lambda: True)
     monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
-    monkeypatch.setattr(approval_module, "detect_hardline_command", lambda command: (False, ""))
+    monkeypatch.setattr(approval_module, "detect_hardline_command", lambda command, *_a, **_k: (False, ""))
     monkeypatch.setattr(approval_module, "_check_sudo_stdin_guard", lambda command: (False, ""))
     monkeypatch.setattr(approval_module, "_match_user_deny_rule", lambda command: None)
     monkeypatch.setattr(approval_module, "_command_matches_permanent_allowlist", lambda command: False)
@@ -556,12 +556,12 @@ def test_hardline_blocks_before_selected_transport(monkeypatch):
     monkeypatch.setattr(
         approval,
         "detect_hardline_command",
-        lambda command: (True, "recursive delete of root filesystem"),
+        lambda command, *_a, **_k: (True, "recursive delete of root filesystem"),
     )
     monkeypatch.setattr(
         approval_detection,
         "detect_hardline_command",
-        lambda command: (True, "recursive delete of root filesystem"),
+        lambda command, *_a, **_k: (True, "recursive delete of root filesystem"),
     )
 
     result = approval.check_all_command_guards("rm -rf /", "local")

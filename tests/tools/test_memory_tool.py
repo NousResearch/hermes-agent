@@ -590,6 +590,48 @@ class TestMemoryBatch:
         assert result["success"] is False
         assert "legit fact" not in store.memory_entries
 
+    def test_batch_with_non_dict_entry_is_rejected_not_crashed(self, store):
+        # A provider that loosely serializes the batch shape can emit a bare
+        # string where an op object belongs. Pre-fix, destructive_ops() ran
+        # "(op or {}).get(...)" on the string and raised AttributeError, which
+        # killed the calling agent turn. The call must return an actionable
+        # error and leave the store untouched. The payload arrives over the wire,
+        # so build it exactly as a loose provider would (JSON, untyped).
+        operations = json.loads('["remove", {"action": "add", "content": "never written"}]')
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=operations,
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "operations entries must" in result["error"]
+        assert "never written" not in store.memory_entries
+
+    def test_batch_with_none_entry_is_rejected_not_crashed(self, store):
+        # JSON null inside the list hits the same non-object path.
+        operations = json.loads('[null, {"action": "add", "content": "also never written"}]')
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=operations,
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "operations entries must" in result["error"]
+        assert "also never written" not in store.memory_entries
+
+    def test_store_apply_batch_rejects_non_dict_entry_directly(self, store):
+        # The store is also reachable past the tool entry point via the staged
+        # approval replay (apply_memory_pending -> store.apply_batch), so it must
+        # defend itself: a bare string entry returns a structured error and writes
+        # nothing instead of raising AttributeError ("'str' object has no
+        # attribute 'get'") from the op.get(...) batch loop.
+        result = store.apply_batch(
+            "memory", json.loads('["remove", {"action": "add", "content": "never written"}]')
+        )
+        assert result["success"] is False
+        assert "operations entries must" in result["error"]
+        assert "never written" not in store.memory_entries
+
 
 # =========================================================================
 # External drift guard (#26045)

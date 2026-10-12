@@ -12,10 +12,12 @@ process runner and the generic ``<section>.providers.<name>`` readers, re-import
 from __future__ import annotations
 
 import os
+import logging
 import queue
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -23,8 +25,18 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional
 
+from tools.tts_command_error_facts import (
+    CommandFailureEvent,
+    CommandFailureFacts,
+    CommandOperation,
+    CommandStream,
+    command_failure_facts,
+    set_command_failure_facts,
+)
+from tools.tts_command_process import CommandProcessScope
 from utils import is_truthy_value
 
+logger = logging.getLogger(__name__)
 
 def shell_quote_context(command_template: str, position: int) -> Optional[str]:
     """Return the shell quote char (``'``/``"``) active right before *position*, or None."""
@@ -111,7 +123,7 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
             proc.kill()
         return
     try:
-        import psutil  # type: ignore
+        import psutil
     except ImportError:
         psutil = None
     # Without psutil only the shell itself is signalled (children may survive).
@@ -155,16 +167,210 @@ def provider_popen_group_kwargs(os_name: str) -> dict[str, Any]:
     return {"start_new_session": True}
 
 
+class _CommandOutput:
+    def __init__(self) -> None:
+        self.queue: queue.Queue[tuple[str, str | CommandFailureEvent | None]] = queue.Queue()
+        self.chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
+        self.readers: dict[str, threading.Thread] = {}
+        self.failures: list[CommandFailureEvent] = []
+
+    def _read_stream(self, name: str, stream: Any) -> None:
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        read1 = getattr(getattr(stream, "buffer", None), "read1", None)
+        try:
+            while True:
+                chunk = (
+                    stream.read(65536)
+                    if read1 is None
+                    else read1(65536).decode(encoding, errors="replace")
+                )
+                if not chunk:
+                    break
+                self.queue.put((name, chunk))
+        except (OSError, ValueError) as exc:
+            self.queue.put(
+                (
+                    name,
+                    CommandFailureEvent(
+                        exc, CommandOperation.READ, CommandStream(name)
+                    ),
+                )
+            )
+        finally:
+            try:
+                stream.close()
+            except (OSError, ValueError) as exc:
+                self.queue.put(
+                    (
+                        name,
+                        CommandFailureEvent(
+                            exc, CommandOperation.CLOSE, CommandStream(name)
+                        ),
+                    )
+                )
+            finally:
+                self.queue.put((name, None))
+
+    def _record(self, name: str, chunk: str | CommandFailureEvent | None) -> None:
+        if isinstance(chunk, CommandFailureEvent):
+            self.failures.append(chunk)
+            return
+        if chunk:
+            self.chunks[name].append(chunk)
+
+    def _raise_failure(self) -> None:
+        if not self.failures:
+            return
+        first = self.failures[0]
+        error = first.error
+        previous = command_failure_facts(error)
+        facts = CommandFailureFacts(
+            first.operation,
+            first.stream,
+            previous.cleanup_events if previous is not None else (),
+        ).with_cleanup(*self.failures[1:])
+        set_command_failure_facts(error, facts)
+        for failure in self.failures[1:]:
+            note = f"Command-provider {failure.stream} {failure.operation} failed: {type(failure.error).__name__}"
+            if failure.error is not error and note not in getattr(
+                error, "__notes__", ()
+            ):
+                error.add_note(note)
+        raise error
+
+    def start(self, proc: subprocess.Popen) -> None:
+        from agent.memory_provider import spawn_context_thread
+
+        for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+            reader = spawn_context_thread(self._read_stream, args=(name, stream), name=f"tts-command-{name}")
+            self.readers[name] = reader
+            reader.start()
+
+    def receive(self, proc: subprocess.Popen, scope: Optional[CommandProcessScope], timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        open_streams = {"stdout", "stderr"}
+        while open_streams:
+            if scope is not None and scope.exited():
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            try:
+                name, chunk = self.queue.get(timeout=min(0.05, remaining))
+            except queue.Empty:
+                continue
+            self._record(name, chunk)
+            self._raise_failure()
+            if chunk is None:
+                open_streams.discard(name)
+                continue
+            deadline = time.monotonic() + timeout
+        if scope is None:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                return True
+            return False
+        while not scope.exited():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            time.sleep(min(0.05, remaining))
+        return False
+
+    def finish(self, proc: subprocess.Popen, timeout: float) -> tuple[str, str]:
+        deadline = time.monotonic() + timeout
+        for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+            reader = self.readers.get(name)
+            if reader is not None and reader.ident is not None:
+                reader.join(timeout=max(0.0, deadline - time.monotonic()))
+            elif stream is not None:
+                try:
+                    stream.close()
+                except (OSError, ValueError) as exc:
+                    self.failures.append(
+                        CommandFailureEvent(
+                            exc, CommandOperation.CLOSE, CommandStream(name)
+                        )
+                    )
+        stdout, stderr = self.result()
+        self._raise_failure()
+        if any(reader.is_alive() for reader in self.readers.values()):
+            error = subprocess.TimeoutExpired(
+                proc.args, timeout, output=stdout, stderr=stderr
+            )
+            set_command_failure_facts(
+                error, CommandFailureFacts(CommandOperation.OUTPUT_DRAIN)
+            )
+            raise error
+        return stdout, stderr
+
+    def result(self) -> tuple[str, str]:
+        while not self.queue.empty():
+            name, chunk = self.queue.get_nowait()
+            self._record(name, chunk)
+        return "".join(self.chunks["stdout"]), "".join(self.chunks["stderr"])
+
+
+def _command_failure(
+    command: str,
+    timeout: float,
+    returncode: Optional[int],
+    timed_out: bool,
+    stdout: Optional[str] = None,
+    stderr: Optional[str] = None,
+) -> Optional[subprocess.TimeoutExpired | subprocess.CalledProcessError]:
+    if timed_out:
+        failure = subprocess.TimeoutExpired(
+            command, timeout, output=stdout, stderr=stderr
+        )
+        failure.__cause__ = subprocess.TimeoutExpired(command, timeout)
+        set_command_failure_facts(
+            failure, CommandFailureFacts(CommandOperation.NATIVE_TIMEOUT)
+        )
+        return failure
+    if returncode:
+        failure = subprocess.CalledProcessError(
+            returncode, command, output=stdout, stderr=stderr
+        )
+        set_command_failure_facts(
+            failure, CommandFailureFacts(CommandOperation.NATIVE_EXIT)
+        )
+        return failure
+    return None
+
+
+def _record_command_cleanup(
+    primary: BaseException, error: BaseException, operation: CommandOperation
+) -> None:
+    facts = command_failure_facts(primary) or CommandFailureFacts()
+    observed = command_failure_facts(error)
+    stream = None
+    if operation == CommandOperation.OUTPUT_DRAIN and observed is not None:
+        operation = observed.root_operation or operation
+        stream = observed.root_stream
+    event = CommandFailureEvent(error, operation, stream)
+    set_command_failure_facts(primary, facts.with_cleanup(event))
+
+
 def run_command_provider(
-    command: str, timeout: float, env_passthrough: Optional[list] = None,
+    command: str,
+    timeout: float,
+    env_passthrough: Optional[list] = None,
+    *,
+    keep_children: bool = False,
 ) -> subprocess.CompletedProcess:
-    """Run a command-provider shell command with process-tree idle cleanup.
-    ``timeout`` is an IDLE timeout, reset whenever the command emits output — a slow-but-alive
-    provider survives, a silently stalled one is killed. Child env is scrubbed of Hermes secrets
-    while propagating delegated-child lineage markers."""
+    """Run a provider with an output-reset idle timeout and bounded cleanup.
+
+    Finite POSIX commands clean their session group on every exit. After exit, output
+    must drain within ``timeout`` before a result can be returned. Warm hooks may keep
+    service children after normal completion; timeouts and interruptions still clean up.
+    Child env is scrubbed of Hermes secrets and propagates delegated-child lineage markers.
+    """
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.env_passthrough import resolve_passthrough_value
     from tools.environments.local import hermes_subprocess_env
+
     scrubbed = hermes_subprocess_env(inherit_credentials=False)
     for key in env_passthrough or []:
         # Under the multiplexer os.environ is the LAUNCH profile's .env: resolve through the served
@@ -177,64 +383,105 @@ def run_command_provider(
     # flashes a window on windowless hosts). Lossy UTF-8 decode: locale-mismatched bytes
     # must not raise in the reader threads.
     group = provider_popen_group_kwargs(os.name)
-    proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),
-                            stdin=subprocess.DEVNULL, **group)
-    output_queue: queue.Queue[tuple[str, Optional[str]]] = queue.Queue()
-    chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
-    open_streams = {"stdout", "stderr"}
-
-    def read_stream(name: str, stream: Any) -> None:
-        encoding = getattr(stream, "encoding", None) or "utf-8"
-        read1 = getattr(getattr(stream, "buffer", None), "read1", None)
-        try:
-            while True:
-                chunk = stream.read(65536) if read1 is None else read1(65536).decode(encoding, errors="replace")
-                if not chunk:
-                    break
-                output_queue.put((name, chunk))
-        finally:
-            output_queue.put((name, None))
-
-    readers = [threading.Thread(target=read_stream, args=(name, stream), daemon=True)
-               for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr))]
-    for reader in readers:
-        reader.start()
-    deadline = time.monotonic() + timeout
+    output = _CommandOutput()
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=delegated_child_subprocess_env(scrubbed),
+        stdin=subprocess.DEVNULL,
+        **group,
+    )
+    scope = None
+    completed = False
     timed_out = False
-    while open_streams:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            timed_out = True
-            break
+    failure = None
+    try:
+        if os.name == "posix" and proc.returncode is None:
+            scope = CommandProcessScope(proc)
+        output.start(proc)
+        timed_out = output.receive(proc, scope, timeout)
+        if keep_children and not timed_out:
+            output.finish(proc, timeout)
+        completed = not timed_out
+    finally:
+        primary_error = sys.exception()
         try:
-            name, chunk = output_queue.get(timeout=min(0.05, remaining))
-        except queue.Empty:
-            continue
-        if chunk is None:
-            open_streams.discard(name)
-            continue
-        chunks[name].append(chunk)
-        deadline = time.monotonic() + timeout
-    if not timed_out:
-        try:
-            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            timed_out = True
-    if timed_out:
-        terminate_command_process_tree(proc)
-        for reader in readers:
-            reader.join(timeout=0.5)
-        while not output_queue.empty():
-            name, chunk = output_queue.get_nowait()
-            if chunk:
-                chunks[name].append(chunk)
-    stdout, stderr = "".join(chunks["stdout"]), "".join(chunks["stderr"])
-    if timed_out:
-        raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from (
-            subprocess.TimeoutExpired(command, timeout))
-    if proc.returncode:
-        raise subprocess.CalledProcessError(proc.returncode, command, output=stdout, stderr=stderr)
+            if scope is not None:
+                scope.close(preserve_children=keep_children and completed)
+            else:
+                if not completed:
+                    terminate_command_process_tree(proc)
+                proc.wait(timeout=2)
+        except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+            failure = _command_failure(command, timeout, proc.returncode, timed_out)
+            if primary_error is None:
+                primary_error = failure
+            if primary_error is None:
+                set_command_failure_facts(
+                    exc, CommandFailureFacts(CommandOperation.PROCESS_CLEANUP)
+                )
+                raise
+            _record_command_cleanup(
+                primary_error, exc, CommandOperation.PROCESS_CLEANUP
+            )
+            primary_error.add_note(
+                f"Command-provider process cleanup failed: {type(exc).__name__}"
+            )
+            logger.warning(
+                "Command-provider process cleanup failed for PID %s: %s",
+                proc.pid,
+                type(exc).__name__,
+            )
+        finally:
+            failure = failure or _command_failure(
+                command, timeout, proc.returncode, timed_out
+            )
+            pending_error = sys.exception()
+            if pending_error is None:
+                pending_error = failure
+            try:
+                stdout, stderr = output.finish(proc, timeout)
+            except (
+                OSError,
+                subprocess.SubprocessError,
+                RuntimeError,
+                ValueError,
+            ) as exc:
+                if pending_error is None:
+                    if command_failure_facts(exc) is None:
+                        set_command_failure_facts(
+                            exc, CommandFailureFacts(CommandOperation.OUTPUT_DRAIN)
+                        )
+                    raise
+                if exc is not pending_error:
+                    _record_command_cleanup(
+                        pending_error, exc, CommandOperation.OUTPUT_DRAIN
+                    )
+                    pending_error.add_note(
+                        f"Command-provider output cleanup failed: {type(exc).__name__}"
+                    )
+                    logger.warning(
+                        "Command-provider output cleanup failed for PID %s: %s",
+                        proc.pid,
+                        type(exc).__name__,
+                    )
+                stdout, stderr = output.result()
+    if failure is not None:
+        complete = _command_failure(
+            command, timeout, proc.returncode, timed_out, stdout, stderr
+        )
+        assert complete is not None
+        facts = command_failure_facts(failure)
+        if facts is not None:
+            set_command_failure_facts(complete, facts)
+        for note in getattr(failure, "__notes__", ()):
+            complete.add_note(note)
+        raise complete
     return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
 

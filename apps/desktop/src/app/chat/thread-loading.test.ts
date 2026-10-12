@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 
-import { lastVisibleMessageIsUser, routedSessionIsLoading, threadLoadingState } from './thread-loading'
+import {
+  composerStaysMounted,
+  lastVisibleMessageIsUser,
+  routedSessionIsLoading,
+  threadLoadingState
+} from './thread-loading'
 
 function message(id: string, role: ChatMessage['role'], hidden = false): ChatMessage {
   return {
@@ -58,6 +63,38 @@ describe('routedSessionIsLoading', () => {
       routedSessionIsLoading({
         ...base,
         messagesEmpty: true
+      })
+    ).toBe(false)
+  })
+})
+
+describe('composerStaysMounted', () => {
+  it('keeps the composer mounted through a transient loader on the settled route', () => {
+    expect(
+      composerStaysMounted({
+        hideComposer: false,
+        loadingSession: true,
+        routedSessionId: 'stored-1',
+        settledRoutedSessionId: 'stored-1'
+      })
+    ).toBe(true)
+  })
+
+  it('hides the composer while a different route is still loading', () => {
+    expect(
+      composerStaysMounted({
+        hideComposer: false,
+        loadingSession: true,
+        routedSessionId: 'stored-2',
+        settledRoutedSessionId: 'stored-1'
+      })
+    ).toBe(false)
+    expect(
+      composerStaysMounted({
+        hideComposer: true,
+        loadingSession: false,
+        routedSessionId: 'stored-1',
+        settledRoutedSessionId: 'stored-1'
       })
     ).toBe(false)
   })

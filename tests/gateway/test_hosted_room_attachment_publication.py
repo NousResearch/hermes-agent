@@ -154,18 +154,21 @@ def test_append_validates_after_entering_its_sql_write_transaction(
 
 @pytest.mark.parametrize("invalid", ["room", "event", "metadata", "private", "expired"])
 def test_append_requires_exact_live_room_visible_commitment(tmp_path, invalid):
-    db, store, manifest, args = _staged(tmp_path, viewer=invalid != "private")
-    if invalid == "room":
+    db, _store, _manifest, args = _staged(tmp_path, viewer=invalid != "private")
+    def wrong_room():
         hosted_rooms.create_room(
             db, room_id="other", name="Other", members=[], authority_gateway_id="home"
         )
         args["room_id"] = "other"
-    elif invalid == "event":
-        args["event_id"] = "other"
-    elif invalid == "metadata":
-        args["payload"]["attachments"][0]["name"] = "different.txt"
-    elif invalid == "expired":
-        args["now"] = 1000.0 + UNCOMMITTED_TTL_SECONDS
+
+    mutations = {
+        "room": wrong_room,
+        "event": lambda: args.update(event_id="other"),
+        "metadata": lambda: args["payload"]["attachments"][0].update(name="different.txt"),
+        "expired": lambda: args.update(now=1000.0 + UNCOMMITTED_TTL_SECONDS),
+        "private": lambda: None,
+    }
+    mutations[invalid]()
     with pytest.raises(hosted_rooms.EventCursorConflictError):
         hosted_rooms.append_event(db, **args)
     assert hosted_rooms.room_state(db, room_id=args["room_id"])["latest_seq"] == 0

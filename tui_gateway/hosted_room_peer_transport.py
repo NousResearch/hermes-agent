@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -15,6 +16,8 @@ from gateway.hosted_room_driver import TaskIdentity
 from gateway.hosted_room_peer import HostedMemberDispatch, PROTOCOL_VERSION, attachment_manifest_digest
 from tui_gateway.hosted_room_driver import (
     ROOM_SESSION_SOURCE, HostedRoomBinding, InternalSessionRPC, room_session_title)
+
+logger = logging.getLogger(__name__)
 
 
 class HostedRoomPeerClient(Protocol):
@@ -233,8 +236,9 @@ class PeerHostedRoomTransport(InternalSessionRPC):
 
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str = "",
     ) -> Mapping[str, Any]:
+        del member_id  # the signed route already names the member
         self._validate_coordinates(profile=profile, source=source)
         if self._session_id not in {None, session_id}:
             raise ValueError("peer room session changed during admission")
@@ -268,7 +272,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
                     exc.not_admitted = True
                     exc.ambiguous = False
                 except Exception:
-                    pass
+                    logger.exception("Could not annotate rejected room dispatch")
                 raise
         try:
             result = self.client.dispatch(dispatch=dispatch.as_mapping(), grant=self.route.grant)
@@ -355,6 +359,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
                 grant=self.route.grant,
             )
         except Exception:
+            logger.exception("Could not discard terminal room attachments")
             # Terminal observation retries this cleanup; target TTL and quotas
             # remain the crash backstop.
             return

@@ -105,7 +105,7 @@ def _proof(store, task, **overrides) -> state.OwnerDeathProof:
 # --- the column ---------------------------------------------------------------
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("proven", [False, True])
 def test_not_admitted_deferral_clears_only_its_proven_attempt(store, proven):
     from gateway.hosted_room_owner_probe import ALIVE, probe_owner_incarnation
@@ -167,7 +167,7 @@ def test_admission_stamps_the_descriptor_and_the_stamp_together(store):
     assert descriptor["task_id"] == store["identity"].task_id
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("legacy", [True, False], ids=["v1", "current"])
 @pytest.mark.parametrize("drift", [-3600.0, 3600.0])
 def test_live_owner_clock_drift_cannot_authorize_recovery(store, monkeypatch, legacy, drift):

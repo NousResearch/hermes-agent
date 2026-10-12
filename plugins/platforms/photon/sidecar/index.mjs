@@ -69,6 +69,7 @@ import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
 import {
   classifyProbeRejection,
+  createProbeMessageId,
   shouldProbe,
   isZombieSuspect,
 } from "./stream-staleness.mjs";
@@ -267,7 +268,7 @@ console.log = (...args) => {
 // half-open ("zombie") one. `space.get` is purely local in shared/dedicated
 // mode (no chat is created or messaged); only the message read hits the wire.
 const PROBE_SPACE_ID = process.env.PHOTON_PROBE_SPACE_ID || "any;-;+10000000000";
-const PROBE_MSG_PREFIX = "hermes-liveness-probe-";
+
 
 if (!projectId || !projectSecret || !sharedToken) {
   console.error(
@@ -571,6 +572,24 @@ async function normalizeContent(content) {
       targetText: reactionTargetText(target),
     };
   }
+  // iMessage threaded (swipe) reply: spectrum 12.x wraps it as
+  // {type: "reply", content: <inner Content>, target: <Message>}. Normalise the
+  // inner content with the normal ladder and carry a light pointer to the
+  // quoted message, so Python can unwrap it instead of dropping the user's
+  // words as "content type not handled" (#100663).
+  if (content.type === "reply") {
+    const target = content.target;
+    return {
+      type: "reply",
+      content:
+        content.content && typeof content.content === "object"
+          ? await normalizeContent(content.content)
+          : { type: "unknown" },
+      targetMessageId: target?.id ?? null,
+      targetDirection: target?.direction ?? null,
+      targetText: reactionTargetText(target),
+    };
+  }
   // A user tapping a poll choice arrives as `poll_option` carrying the chosen
   // option title + whether it was selected (true) or deselected (false). This
   // is how a native iMessage poll's vote streams back — Python turns a
@@ -730,8 +749,7 @@ async function probeUpstream() {
   if (typeof app?.stop !== "function") {
     return { alive: false, hung: false, reason: "spectrum app not constructed" };
   }
-  const probeId =
-    PROBE_MSG_PREFIX + Date.now() + "-" + Math.random().toString(36).slice(2);
+  const probeId = createProbeMessageId();
   let timer = null;
   const timeout = new Promise((resolve) => {
     timer = setTimeout(

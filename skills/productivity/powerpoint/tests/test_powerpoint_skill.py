@@ -18,7 +18,7 @@ def run(script, *args):
     env = dict(os.environ, LC_ALL="C", PYTHONIOENCODING="utf-8")
     proc = subprocess.run(
         [sys.executable, os.path.join(SCRIPTS, script), *args],
-        capture_output=True, text=True, encoding="utf-8", env=env)
+        capture_output=True, text=True, encoding="utf-8", env=env, check=False)
     assert proc.returncode == 0, f"{script} failed: {proc.stderr}"
     return json.loads(proc.stdout)
 
@@ -231,7 +231,7 @@ def test_edit_swap_image(deck, workdir):
         "YPj/HwADAgH/p5UronAAAAAASUVORK5CYII=")
     blue_path = workdir / "blue.png"
     blue_path.write_bytes(blue)
-    outline = run("pptx_read.py", deck)
+    run("pptx_read.py", deck)
     # find picture shape name via python-pptx directly
     sys.path.insert(0, SCRIPTS)
     from pptx import Presentation
@@ -253,7 +253,7 @@ def test_help_flags():
                    "pptx_from_template.py"):
         proc = subprocess.run(
             [sys.executable, os.path.join(SCRIPTS, script), "--help"],
-            capture_output=True, text=True, encoding="utf-8")
+            capture_output=True, text=True, encoding="utf-8", check=False)
         assert proc.returncode == 0 and "usage" in proc.stdout.lower()
 
 
@@ -266,7 +266,7 @@ def run_raw(script, *args):
     env = dict(os.environ, LC_ALL="C", PYTHONIOENCODING="utf-8")
     return subprocess.run(
         [sys.executable, os.path.join(SCRIPTS, script), *args],
-        capture_output=True, text=True, encoding="utf-8", env=env)
+        capture_output=True, text=True, encoding="utf-8", env=env, check=False)
 
 
 def test_render_all_slides(workdir):

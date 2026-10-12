@@ -224,7 +224,7 @@ async def test_native_recovery_failures_use_bounded_backoff(monkeypatch, owner, 
 
             if starts["count"] == 1:
                 monkeypatch.setattr(cancel, "wait", wait)
-                return None
+                return
         raise RuntimeError("worker unavailable")
 
     monkeypatch.setattr(methods_groups, "start_hosted_room_service", fail_start)
@@ -314,11 +314,11 @@ async def test_native_initial_configuration_failure_is_isolated(
             runner._start_heartbeat_poller.assert_called_once()
             runner.hooks.emit.assert_awaited_once_with("gateway:startup", {"platforms": []})
             runner._send_update_notification.assert_awaited_once()
-            async with asyncio.timeout(5):
-                while (not calls.called or (invalid and runner._background_tasks)
-                       or (not invalid and configuration != "unbound"
-                           and methods_groups.get_hosted_room_service() is None)):
-                    await asyncio.sleep(0.01)
+            from tests.waiting import async_wait_until
+            await async_wait_until(lambda: not (
+                not calls.called or (invalid and runner._background_tasks)
+                or (not invalid and configuration != "unbound"
+                    and methods_groups.get_hosted_room_service() is None)), timeout=5)
             if invalid:
                 assert calls.call_count == 3
                 assert delays == [1, 2]
@@ -332,11 +332,11 @@ async def test_native_initial_configuration_failure_is_isolated(
             from hermes_cli import web_server
             monkeypatch.setattr(web_server, "_warm_gateway_module", lambda: None)
             with TestClient(web_server.app):
-                async with asyncio.timeout(5):
-                    while not (any("Hosted Group Chat startup failed" in r.message for r in caplog.records)
-                               if invalid else calls.called if configuration == "unbound"
-                               else methods_groups.get_hosted_room_service() is not None):
-                        await asyncio.sleep(0.01)
+                from tests.waiting import async_wait_until
+                await async_wait_until(
+                    lambda: any("Hosted Group Chat startup failed" in r.message for r in caplog.records)
+                    if invalid else calls.called if configuration == "unbound"
+                    else methods_groups.get_hosted_room_service() is not None, timeout=5)
                 if invalid:
                     await asyncio.to_thread(threads[0].join, 2)
                     assert not threads[0].is_alive()
@@ -445,7 +445,7 @@ async def test_native_owners_recover_companion_without_retargeting(tmp_path, mon
     from plugins.platforms.telegram import hosted_room_transport as telegram
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    service, rpc = _service(tmp_path / "state.db", profiles=("default", "ops"))
+    service, rpc = _service(tmp_path / "shared-state.db", profiles=("default", "ops"))
     service.create_room(room_id="room", name="Room", members=[
         {"member_id": "default", "profile": "default", "handle": "hermes"},
         {"member_id": "ops", "profile": "ops", "handle": "ops"}])
@@ -497,9 +497,8 @@ async def test_native_owners_recover_companion_without_retargeting(tmp_path, mon
     monkeypatch.setattr(rpc, "submit", accept)
 
     async def until(predicate):
-        async with asyncio.timeout(10):
-            while not predicate():
-                await asyncio.sleep(0.01)
+        from tests.waiting import async_wait_until
+        await async_wait_until(predicate, timeout=10)
 
     try:
         if owner == "gateway":
@@ -585,7 +584,6 @@ async def test_cancelled_native_start_cannot_revive_after_shutdown(tmp_path, mon
     def blocked_binding():
         entered.set()
         assert release.wait(10)
-        return None
 
     monkeypatch.setattr(telegram, "hosted_room_binding_path", blocked_binding)
     cancellation = []

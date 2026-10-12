@@ -9,8 +9,8 @@ import threading
 import pytest
 
 from gateway import hosted_room_attachments as files, hosted_room_driver as driver, hosted_rooms
-from tests.tui_gateway.test_hosted_room_native_phase1 import native as native, WAIT
-from tests.tui_gateway.test_hosted_room_produced_media import room as room, ROOM_ID
+from tests.tui_gateway.test_hosted_room_native_phase1 import native as native, WAIT  # noqa: PLC0414 -- pytest fixture export
+from tests.tui_gateway.test_hosted_room_produced_media import room as room, ROOM_ID  # noqa: PLC0414 -- pytest fixture export
 from tests.tui_gateway.test_hosted_room_history_context import archive, prepare, cold
 from tui_gateway import hosted_room_history_context as history
 
@@ -101,20 +101,19 @@ def test_failed_extra_context_rolls_back_native_staging(native, room, monkeypatc
     native.record(sid)["attached_images"] = ["preexisting-image-sentinel"]
     observed = capture_staging(room)
     original = room.rpc.stage_attachment
-    if boundary == "prompt":
-        monkeypatch.setattr(driver, "MAX_PROMPT_BYTES", len(task["payload"]["prompt"].encode()) + len(index.encode()))
-    elif boundary == "index":
-        room.runtime.history_context_loader = lambda *_: ("x" * (history.MAX_HISTORY_INDEX_BYTES + 1), history_manifest, history_bytes)
-    elif boundary == "count":
-        monkeypatch.setattr(files, "MAX_TASK_ATTACHMENTS", len(task["payload"]["attachments"]))
-    elif boundary == "bytes":
-        monkeypatch.setattr(files, "MAX_TASK_ATTACHMENT_BYTES", mandatory["size"] + history_manifest["size"] - 1)
-    else:
-        def fail_history(**kwargs):
-            if kwargs["attachment"]["attachment_id"] == history_manifest["attachment_id"]:
-                raise RuntimeError("injected second attachment failure")
-            return original(**kwargs)
-        room.rpc.stage_attachment = fail_history
+    def fail_history(**kwargs):
+        if kwargs["attachment"]["attachment_id"] == history_manifest["attachment_id"]:
+            raise RuntimeError("injected second attachment failure")
+        return original(**kwargs)
+
+    mutations = {
+        "prompt": (driver, "MAX_PROMPT_BYTES", len(task["payload"]["prompt"].encode()) + len(index.encode())),
+        "index": (room.runtime, "history_context_loader", lambda *_: ("x" * (history.MAX_HISTORY_INDEX_BYTES + 1), history_manifest, history_bytes)),
+        "count": (files, "MAX_TASK_ATTACHMENTS", len(task["payload"]["attachments"])),
+        "bytes": (files, "MAX_TASK_ATTACHMENT_BYTES", mandatory["size"] + history_manifest["size"] - 1),
+        "stage": (room.rpc, "stage_attachment", fail_history),
+    }
+    monkeypatch.setattr(*mutations[boundary])
     room.runtime._process_room(binding)
     durable = driver.get_task(room.db_path, task["identity"])
     assert durable["status"] == "failed", (boundary, durable)
@@ -192,7 +191,7 @@ def test_in_workspace_archive_stays_bounded_through_native_preprocessing(native,
     binding, task = prepare(room)
     context = history.load_history_context(room, binding, task)
     assert context is not None
-    index, manifest, data = context
+    index, _manifest, data = context
     native.record(room.session_id)["cwd"] = str(native.home.parent)
     native.record(room.session_id)["explicit_cwd"] = True
     staged = capture_staging(room)

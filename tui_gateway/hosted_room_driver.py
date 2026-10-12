@@ -10,6 +10,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 from __future__ import annotations
 
 import threading
+import logging
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -20,6 +21,8 @@ from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
 from gateway.hosted_room_owner_probe import probe_owner_incarnation
+
+logger = logging.getLogger(__name__)
 
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
@@ -48,7 +51,7 @@ class InternalSessionRPC(Protocol):
     def resume(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
     ) -> Mapping[str, Any]: ...
     def history(
         self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]: ...
@@ -805,51 +808,8 @@ class HostedRoomRuntime:
                         **_session_kw(profile, session_id), execution_generation=attempt.execution_generation)
                     attachment_staging_active = True
                     attachment_session_id = session_id
-                    expected_ids = [str(attachment.get("attachment_id") or "") for attachment in manifests]
-                    from itertools import chain
-                    loaded = (self.attachment_loader(binding, task)
-                              if manifests and self.attachment_loader is not None else ())
-                    if history:
-                        from gateway.hosted_room_attachments import validate_task_manifest
-                        validate_task_manifest([*manifests, dict(history[1])])
-                        expected_ids.append(history[1]["attachment_id"])
-                        loaded = chain(loaded, [(history[1], history[2])])
-                    file_refs = []
-                    history_ref = ""
-                    media_notes = []
-                    loaded_count = 0
-                    for loaded_count, (attachment, data) in enumerate(loaded, start=1):
-                        if (loaded_count > len(expected_ids)
-                                or str(attachment.get("attachment_id") or "") != expected_ids[loaded_count - 1]):
-                            raise RuntimeError("hosted attachment ownership did not match the task manifest")
-                        staged = transport.stage_attachment(
-                            **_session_kw(profile, session_id), attachment=attachment, data=data,
-                            execution_generation=attempt.execution_generation)
-                        if history and attachment["attachment_id"] == history[1]["attachment_id"]:
-                            from tui_gateway.hosted_room_history_context import history_file_reference
-                            history_ref = history_file_reference(staged)
-                            continue  # Do not inline history through native @file preprocessing.
-                        if attachment.get("kind") == "file":
-                            ref = str(staged.get("ref_text") or "").strip()
-                            if not ref and transport is self.rpc:
-                                raise RuntimeError("hosted file attachment returned no staged reference")
-                            if ref:
-                                file_refs.append(f"{attachment['name']}: {ref}")
-                            derived = str(staged.get("derived_text") or "").strip()
-                            if derived:
-                                media_notes.append(f"{attachment['name']}: {derived}")
-                    if loaded_count != len(expected_ids):
-                        raise RuntimeError("hosted attachment ownership did not match the task manifest")
-                    if file_refs:
-                        prompt = f"{prompt}\n\nAttached files staged in your session workspace:\n" + "\n".join(file_refs)
-                    prompt = _with_staged_media_text(prompt, media_notes)
-                    if history:
-                        from tui_gateway.hosted_room_history_context import MAX_HISTORY_INDEX_BYTES
-                        if len(history[0].encode("utf-8")) > MAX_HISTORY_INDEX_BYTES:
-                            raise RuntimeError("legacy history index exceeds its byte limit")
-                        prompt = f"{prompt}\n\n{history[0]}\n{history_ref}"
-                        if len(prompt.encode("utf-8")) > state.MAX_PROMPT_BYTES:
-                            raise RuntimeError("legacy history references exceed the remaining prompt budget")
+                    prompt = self._stage_attempt_files(
+                        binding, task, attempt, transport, session_id, manifests, history, prompt)
                 # Captured before the fence and written BY it: the descriptor and `admitted_at`
                 # land in the same CAS, so a rejected admission stores neither and submits
                 # nothing. An invalid target raises here, still before any dispatch.
@@ -877,7 +837,8 @@ class HostedRoomRuntime:
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=prompt,
                     task=attempt.identity, execution_generation=attempt.execution_generation,
-                    on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
+                    on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt),
+                    member_id=_member_id(task))
                 if attachment_staging_active:
                     transport.commit_attachment_staging(
                         **_session_kw(profile, session_id), execution_generation=attempt.execution_generation)
@@ -1278,6 +1239,55 @@ class HostedRoomRuntime:
             self._last_error = message
 
 
+    def _stage_attempt_files(self, binding, task, attempt, transport, session_id, manifests, history, prompt):
+        from itertools import chain
+
+        profile = task["payload"]["target_profile"]
+        expected_ids = [str(attachment.get("attachment_id") or "") for attachment in manifests]
+        loaded = (self.attachment_loader(binding, task)
+                  if manifests and self.attachment_loader is not None else ())
+        if history:
+            from gateway.hosted_room_attachments import validate_task_manifest
+            validate_task_manifest([*manifests, dict(history[1])])
+            expected_ids.append(history[1]["attachment_id"])
+            loaded = chain(loaded, [(history[1], history[2])])
+        file_refs, media_notes = [], []
+        history_ref = ""
+        loaded_count = 0
+        for loaded_count, (attachment, data) in enumerate(loaded, start=1):
+            if (loaded_count > len(expected_ids)
+                    or str(attachment.get("attachment_id") or "") != expected_ids[loaded_count - 1]):
+                raise RuntimeError("hosted attachment ownership did not match the task manifest")
+            staged = transport.stage_attachment(
+                **_session_kw(profile, session_id), attachment=attachment, data=data,
+                execution_generation=attempt.execution_generation)
+            if history and attachment["attachment_id"] == history[1]["attachment_id"]:
+                from tui_gateway.hosted_room_history_context import history_file_reference
+                history_ref = history_file_reference(staged)
+                continue  # History must not be inlined by native @file preprocessing.
+            if attachment.get("kind") == "file":
+                ref = str(staged.get("ref_text") or "").strip()
+                if not ref and transport is self.rpc:
+                    raise RuntimeError("hosted file attachment returned no staged reference")
+                if ref:
+                    file_refs.append(f"{attachment['name']}: {ref}")
+                derived = str(staged.get("derived_text") or "").strip()
+                if derived:
+                    media_notes.append(f"{attachment['name']}: {derived}")
+        if loaded_count != len(expected_ids):
+            raise RuntimeError("hosted attachment ownership did not match the task manifest")
+        if file_refs:
+            prompt = f"{prompt}\n\nAttached files staged in your session workspace:\n" + "\n".join(file_refs)
+        prompt = _with_staged_media_text(prompt, media_notes)
+        if history:
+            from tui_gateway.hosted_room_history_context import MAX_HISTORY_INDEX_BYTES
+            if len(history[0].encode("utf-8")) > MAX_HISTORY_INDEX_BYTES:
+                raise RuntimeError("legacy history index exceeds its byte limit")
+            prompt = f"{prompt}\n\n{history[0]}\n{history_ref}"
+            if len(prompt.encode("utf-8")) > state.MAX_PROMPT_BYTES:
+                raise RuntimeError("legacy history references exceed the remaining prompt budget")
+        return prompt
+
     def _finish_attachment_staging_after_error(
         self,
         *,
@@ -1309,6 +1319,7 @@ class HostedRoomRuntime:
                 execution_generation=execution_generation,
             )
         except Exception as cleanup_error:
+            logger.exception("Room attachment staging cleanup failed")
             self._record_error(
                 "attachment staging cleanup failed for "
                 f"session {session_id}: {cleanup_error}"
@@ -1391,17 +1402,6 @@ def _info_identifies_attempt(info: Mapping[str, Any], task: Mapping[str, Any]) -
         and int(info.get("execution_generation") or 0) == int(task["execution_generation"]))
 
 
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import contextlib  # noqa: F401,E402
-
-@contextlib.contextmanager
-def null_turn_lock(_profile: str) -> Any:
-    """Provide an explicit no-op lock for narrow embedding tests."""
-    yield
-# ---- END PLUGIN-COMPAT ----
 
 
 class MemberTransportUnavailable(RuntimeError):

@@ -13,6 +13,7 @@ from tui_gateway.hosted_room_service import HostedRoomService
 def service(tmp_path, monkeypatch):
     home = tmp_path / "runtime"
     (home / "profiles" / "planner").mkdir(parents=True)
+    (home / "profiles" / "planner" / "config.yaml").write_text("{}")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     service = HostedRoomService(ModuleType("test_server"), db_path=home / "state.db")
@@ -34,6 +35,7 @@ def test_profiles_and_turn_locks_share_the_selected_root(tmp_path, monkeypatch, 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     root = tmp_path / "native-home" if separate_root else home
     (root / "profiles" / "planner").mkdir(parents=True)
+    (root / "profiles" / "planner" / "config.yaml").write_text("{}")
     if separate_root:
         (home / "profiles" / "decoy").mkdir(parents=True)
     kwargs = {"profiles_root": root} if separate_root else {}
@@ -78,7 +80,7 @@ def test_trusted_actor_persists_and_participates_in_idempotency(service, actor_i
 
 
 def test_groups_send_cannot_override_desktop_actor(service, monkeypatch):
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     monkeypatch.setattr(server, "get_hosted_room_service", lambda: service)
     result = server._methods["groups.send"](1, {

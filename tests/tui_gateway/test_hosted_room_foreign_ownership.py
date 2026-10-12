@@ -157,7 +157,7 @@ def test_retry_refuses_to_requeue_an_attempt_another_process_admitted(
     """An empty session registry in this process is not evidence about the original execution."""
     clock = [time.time()]
     identity = _identity()
-    owner_lease, attempt = _foreign_attempt(db, lambda: clock[0], identity, admitted=True)
+    owner_lease, _attempt = _foreign_attempt(db, lambda: clock[0], identity, admitted=True)
     clock[0] = owner_lease.expires_at + 1.0
     # Cold resume: the same durable session id, idle here because this process never ran it.
     observer_rpc = SessionRegistry()

@@ -12,6 +12,7 @@ from tui_gateway.hosted_room_service import HostedRoomService
 def room(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "profiles" / "ops").mkdir(parents=True)
+    (tmp_path / "profiles" / "ops" / "config.yaml").write_text("{}\n")
     service = HostedRoomService(server, db_path=tmp_path / "state.db")
     service.create_room(room_id="room", name="Local room", members=[
         {"member_id": name, "profile": name, "handle": name} for name in ("default", "ops")])

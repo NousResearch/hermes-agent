@@ -114,7 +114,7 @@ def wire(application, adapter) -> bool:
                         message.message_id, sender.id, text, reply.message_id if reply else None,
                         message.message_thread_id, time.time(), json.dumps(media) if media else None))
             log.info("Hosted room ingress accepted chat=%s message=%s", chat_id, message.message_id)
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- ingress errors can contain private message data; log only the error type
             log.error("Hosted room ingress failed closed: %s", type(exc).__name__)
         finally:
             raise ApplicationHandlerStop

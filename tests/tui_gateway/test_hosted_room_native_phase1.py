@@ -293,7 +293,7 @@ def waited(predicate: Callable[[], bool], timeout: float) -> bool:
 def hosted_task(task_id: str = "phase1-task", *, generation: int = 1) -> dict:
     return {
         "room_id": ROOM_ID, "task_id": task_id, "thread_id": "thread-a",
-        "turn_id": f"turn-{task_id}", "execution_generation": generation}
+        "turn_id": f"turn-{task_id}", "execution_generation": generation, "member_id": "worker"}
 
 
 BACKEND_NAME = "tui_gateway.server"
@@ -316,7 +316,7 @@ def _load_backend(monkeypatch):
         "classes in place, so a pre-existing import would silently share handlers")
     import atexit
 
-    import hermes_cli.banner as banner
+    from hermes_cli import banner
     monkeypatch.setattr(banner, "prefetch_update_check", lambda *a, **k: None, raising=False)
 
     registered: list = []
@@ -433,6 +433,9 @@ def native(tmp_path, monkeypatch):
         return agent
 
     monkeypatch.setattr(srv, "_make_agent", fake_make_agent)
+    from hermes_cli import _early_recovery
+    # Agent imports must not inspect or repair the developer checkout's update journal.
+    monkeypatch.setattr(_early_recovery, "restore_interrupted_pull", lambda: False)
     import run_agent
 
     def no_real_agent(*args, **kwargs):
@@ -698,7 +701,7 @@ def test_a_stale_interrupt_parked_before_its_session_wait_cannot_reach_a_later_a
     marker_key_before = native.record(sid).get("_active_turn_marker_key")
     # A pending client prompt and a pending approval that belong to B's turn.
     pending_event = threading.Event()
-    native.srv._pending["rid-b-pending"] = (sid, pending_event)
+    native.monkeypatch.setattr(native.srv, "_clear_pending", lambda *_: pending_event.set())
     approvals: list = []
     import tools.approval as approval_module
 
@@ -718,7 +721,6 @@ def test_a_stale_interrupt_parked_before_its_session_wait_cannot_reach_a_later_a
     assert read_turn_marker(native.home, session_key) == marker_before
     assert native.record(sid).get("_active_turn_marker_key") == marker_key_before
     assert not pending_event.is_set(), "a stale Stop released the successor's pending prompt"
-    assert native.srv._answers.get("rid-b-pending") is None
     assert approvals == [], "a stale Stop denied the successor's approvals"
 
 
@@ -856,7 +858,7 @@ def test_a_native_turn_settles_its_room_task_through_the_real_callback(native):
     identity = state.TaskIdentity(ROOM_ID, "native-task", "thread-a", "turn-a")
     task = state.admit_task(
         db, identity,
-        payload={"target_profile": PROFILE, "prompt": "offline fixture", "source_event_seq": 1},
+        payload={"target_profile": PROFILE, "target_member_id": PROFILE, "prompt": "offline fixture", "source_event_seq": 1},
         clock=time.time)
     title = room_session_title(ROOM_ID)
     sid = native.create_session(title)
@@ -864,7 +866,7 @@ def test_a_native_turn_settles_its_room_task_through_the_real_callback(native):
     durable = native.resolves_by_title(title)
     assert durable == native.record(sid)["session_key"]
     assert native.resume_handle(durable) == sid
-    agent = native.make_agent("room")
+    native.ready_agent(sid)
 
     locks: list[Path] = []
 
@@ -884,7 +886,12 @@ def test_a_native_turn_settles_its_room_task_through_the_real_callback(native):
 
     native.spawn("room-worker", lambda: runtime._execute_attempt(binding, task, attempt))
     native.build_gate.release()
-    wait_until(agent.turn_running.is_set, "the native room turn never started")
+    wait_until(lambda: any(agent.turn_running.is_set() for agent in native.agents)
+               or state.get_task(db, identity)["status"] != "running",
+               "the native room turn never started")
+    running_agents = [agent for agent in native.agents if agent.turn_running.is_set()]
+    assert len(running_agents) == 1, state.get_task(db, identity)
+    agent = running_agents[0]
     assert locks and locks[0].exists(), "the real profile turn lock was not taken"
     agent.release_turn.set()
     wait_until(
@@ -977,10 +984,10 @@ def test_a_retired_submit_cannot_replace_the_successor_or_lose_its_receipt(nativ
     gate = native.barrier("submit-before-publication")
     original_persist = native.srv._persist_session_row_for_submit
 
-    def park_attempt_a_inside_its_submit(rid, session):
+    def park_attempt_a_inside_its_submit(rid, session, *args, **kwargs):
         if threading.current_thread().name == "submit-A":
             gate.wait_here()
-        return original_persist(rid, session)
+        return original_persist(rid, session, *args, **kwargs)
 
     native.monkeypatch.setattr(
         native.srv, "_persist_session_row_for_submit", park_attempt_a_inside_its_submit)
@@ -1099,7 +1106,8 @@ def test_the_real_hard_interrupt_never_runs_under_the_session_lock(native):
     agent.release_turn.set()
     wait_until(lambda: len(receipts) == 1, "the interrupted turn never reported")
     assert receipts[0]["status"] in {"settled", "cancelled"}
-    assert native.record(sid).get("running") is False
+    wait_until(lambda: native.record(sid).get("running") is False,
+               "the interrupted turn never released its running state")
 
 
 @pytest.mark.parametrize("hosted", [False, True])
@@ -1211,11 +1219,11 @@ def test_every_retired_pending_submit_keeps_its_own_cancelled_outcome(native):
     gates = {name: native.barrier(f"persist-{name}") for name in ("submit-A", "submit-B")}
     original_persist = native.srv._persist_session_row_for_submit
 
-    def park_pending_submit(rid, session):
+    def park_pending_submit(rid, session, *args, **kwargs):
         gate = gates.get(threading.current_thread().name)
         if gate is not None:
             gate.wait_here()
-        return original_persist(rid, session)
+        return original_persist(rid, session, *args, **kwargs)
 
     native.monkeypatch.setattr(
         native.srv, "_persist_session_row_for_submit", park_pending_submit)

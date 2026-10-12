@@ -1015,11 +1015,11 @@ def _validate_target_scope(claims: Mapping[str, Any], profile: str) -> None:
 
 async def _handle_room_attachment_manifest(
     self,
-    request: "web.Request",
+    request: web.Request,
     *,
     _openai_error,
     _api_request_profile,
-) -> "web.Response":
+) -> web.Response:
     body, error = await self._read_json_body(request)
     if error:
         return error
@@ -1094,11 +1094,11 @@ async def _handle_room_attachment_manifest(
 
 async def _handle_room_attachment_upload(
     self,
-    request: "web.Request",
+    request: web.Request,
     *,
     _openai_error,
     _api_request_profile,
-) -> "web.Response":
+) -> web.Response:
     try:
         claims = self._room_grant_claims(request, permission="attachment.stage")
         _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
@@ -1167,11 +1167,11 @@ async def _handle_room_attachment_upload(
 
 async def _handle_room_attachment_discard(
     self,
-    request: "web.Request",
+    request: web.Request,
     *,
     _openai_error,
     _api_request_profile,
-) -> "web.Response":
+) -> web.Response:
     """Retire one exact terminal run's private target-side bytes."""
 
     try:
@@ -1218,7 +1218,7 @@ async def _validate_dispatch_attachments(
     normalized: Any,
     *,
     _openai_error,
-) -> tuple[Any, "web.Response | None"]:
+) -> tuple[Any, web.Response | None]:
     if not isinstance(normalized, Mapping):
         return normalized, None
     raw_dispatch = normalized.get("hosted_room_dispatch")
@@ -1277,6 +1277,7 @@ async def _validate_dispatch_attachments(
             status=409,
         )
     except Exception:
+        logger.exception("Could not prepare RoomLink dispatch attachments")
         return normalized, web.json_response(
             _openai_error(
                 "The Group Chat files could not be prepared on this gateway.",

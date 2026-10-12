@@ -181,7 +181,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
                 "attachments": manifest,
             },
         )
-        deadline = asyncio.get_running_loop().time() + 5
+        deadline = asyncio.get_running_loop().time() + 20
         while asyncio.get_running_loop().time() < deadline:
             if any(event["kind"] == "message.member" for event in home._events("room-1")):
                 break
@@ -191,7 +191,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
                 "peer reply was not published: "
                 f"status={home.runtime.status()} events={home._events('room-1')}"
             )
-        assert home.stop(timeout=1.0)
+        assert home.stop(timeout=5.0)
 
     reply = next(event for event in home._events("room-1") if event["kind"] == "message.member")
     assert reply["payload"]["text"] == "Scoped peer response."

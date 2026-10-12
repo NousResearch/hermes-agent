@@ -61,6 +61,7 @@ def room(tmp_path: Path, monkeypatch):
     home = tmp_path / ".hermes"
     for member in MEMBERS:
         (home / "profiles" / member["profile"]).mkdir(parents=True, exist_ok=True)
+        (home / "profiles" / member["profile"] / "config.yaml").write_text("{}")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -127,7 +128,7 @@ def _receipt(room, identity, attempt, *, status: str = "settled", text: str = "R
 @pytest.mark.parametrize("foreign", [False, True], ids=["same-owner", "foreign-owner"])
 def test_a_late_receipt_publishes_after_its_discussion_completed(room, foreign: bool):
     service, db = room["service"], room["db"]
-    binding, identity, attempt = _deferred_task(room, foreign=foreign)
+    _binding, identity, attempt = _deferred_task(room, foreign=foreign)
     _receipt(room, identity, attempt)
 
     resolved = service.retry_room_task(ROOM_ID, task_id=identity.task_id)
@@ -210,7 +211,7 @@ def _settle_without_retry(room, binding, identity, *, text: str = "Recovered res
 def test_later_input_in_the_same_thread_supersedes_a_late_result(room):
     """Stale prose must not appear under a newer user message, even across the transcript window."""
     service, db = room["service"], room["db"]
-    binding, identity, attempt = _deferred_task(room, foreign=True)
+    binding, identity, _attempt = _deferred_task(room, foreign=True)
     # Hold the roster so the follow-up messages cannot dispatch new work, then roll the thread
     # transcript well past its retained window (MAX_THREAD_TRANSCRIPT_EVENTS).
     service.send(room_id=ROOM_ID, event_id="stop-all", payload={"text": "@all stop", "thread_id": THREAD})

@@ -15,13 +15,13 @@ Throwaway HTML mockups: 2-3 design variants to compare.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/sketch` |
-| Path | `optional-skills/creative\sketch` |
+| Path | `optional-skills/creative/sketch` |
 | Version | `1.0.1` |
 | Author | Hermes Agent (adapted from gsd-build/get-shit-done) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `sketch`, `mockup`, `design`, `ui`, `prototype`, `html`, `variants`, `exploration`, `wireframe`, `comparison` |
-| Related skills | [`spike`](/docs/user-guide/skills/bundled/software-development/software-development-spike), [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs), [`excalidraw`](/docs/user-guide/skills/optional/creative/creative-excalidraw) |
+| Related skills | [`spike`](../../bundled/software-development/software-development-spike.md), [`claude-design`](../../bundled/creative/creative-claude-design.md), [`popular-web-designs`](../../bundled/creative/creative-popular-web-designs.md), [`excalidraw`](../../optional/creative/creative-excalidraw.md) |
 
 ## Reference: full SKILL.md
 

@@ -436,13 +436,7 @@ def test_corrupt_or_inaccessible_metadata_does_not_become_discoverable(
     db, store = _create_catalog(tmp_path)
     _seed_events(db, total_events=2, records={1: ["good.bin"], 2: ["bad.bin"]})
     with sqlite3.connect(db) as conn:
-        if corruption == "actor":
-            conn.execute("UPDATE hosted_room_events SET actor_json='{}' WHERE seq=2")
-        elif corruption == "payload":
-            conn.execute(
-                "UPDATE hosted_room_events SET payload_json='not-json' WHERE seq=2"
-            )
-        elif corruption == "manifest":
+        if corruption == "manifest":
             payload = json.loads(
                 conn.execute(
                     "SELECT payload_json FROM hosted_room_events WHERE seq=2"
@@ -453,28 +447,18 @@ def test_corrupt_or_inaccessible_metadata_does_not_become_discoverable(
                 "UPDATE hosted_room_events SET payload_json=? WHERE seq=2",
                 (json.dumps(payload),),
             )
-        elif corruption == "recipient-only":
-            conn.execute(
-                "UPDATE hosted_room_attachments SET viewer_access=0 WHERE event_id='event-2'"
-            )
-        elif corruption == "recipients":
-            conn.execute(
-                "UPDATE hosted_room_attachments SET recipient_member_ids_json='invalid' WHERE event_id='event-2'"
-            )
-        elif corruption == "wrong-room":
-            conn.execute(
-                "UPDATE hosted_room_attachments SET room_id='other-room' WHERE event_id='event-2'"
-            )
-        elif corruption == "missing-event":
-            conn.execute("DELETE FROM hosted_room_events WHERE seq=2")
-        elif corruption == "epoch":
-            conn.execute(
-                "UPDATE hosted_room_events SET authority_epoch='invalid' WHERE seq=2"
-            )
         else:
-            conn.execute(
-                "UPDATE hosted_room_attachments SET sha256='invalid' WHERE event_id='event-2'"
-            )
+            mutations = {
+                "actor": "UPDATE hosted_room_events SET actor_json='{}' WHERE seq=2",
+                "payload": "UPDATE hosted_room_events SET payload_json='not-json' WHERE seq=2",
+                "recipient-only": "UPDATE hosted_room_attachments SET viewer_access=0 WHERE event_id='event-2'",
+                "recipients": "UPDATE hosted_room_attachments SET recipient_member_ids_json='invalid' WHERE event_id='event-2'",
+                "wrong-room": "UPDATE hosted_room_attachments SET room_id='other-room' WHERE event_id='event-2'",
+                "missing-event": "DELETE FROM hosted_room_events WHERE seq=2",
+                "epoch": "UPDATE hosted_room_events SET authority_epoch='invalid' WHERE seq=2",
+            }
+            conn.execute(mutations.get(
+                corruption, "UPDATE hosted_room_attachments SET sha256='invalid' WHERE event_id='event-2'"))
 
     assert [item["name"] for item in _all_items(store)] == ["good.bin"]
 

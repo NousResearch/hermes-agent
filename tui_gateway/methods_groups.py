@@ -221,17 +221,15 @@ def _api_server_key(profile: str | None = None) -> str:
 
 
 def _profile_execution_policy(profile: str) -> dict:
-    """Resolve execution policy under the exact multiplexed profile home."""
+    """Resolve execution policy under the exact multiplexed profile's FULL runtime scope: the policy
+    reads provider credentials (``_xai_credentials_present`` -> ``get_env_value``), which under a
+    home-only override resolved from the launch process env (or raised once hosting fails closed)."""
     from gateway.hosted_room_execution_policy import execution_policy_mapping
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    token = None
-    if _bound_server is not None and profile not in {_current_profile(), _profile_name()}:
-        token = set_hermes_home_override(str(_foreign_profile_home(profile)))
-    try:
+    if _bound_server is None:
         return execution_policy_mapping(target_profile=profile)
-    finally:
-        if token is not None:
-            reset_hermes_home_override(token)
+    home = None if profile in {_current_profile(), _profile_name()} else _foreign_profile_home(profile)
+    with _bound_server._session_profile_runtime_scope({"profile_home": str(home) if home else None}):
+        return execution_policy_mapping(target_profile=profile)
 
 
 def _room_link_run_storage_durable() -> bool:
@@ -393,7 +391,7 @@ def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
         _default_spool().discard_scope(claims)
     except Exception:
         # Revocation is durable; bounded expiry backs up failed spool cleanup.
-        pass
+        logger.exception("Could not clean up revoked room grant files")
     return _ok(rid, {"revoked": True})
 
 
@@ -663,6 +661,7 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(rid, {"attachment": attachment})
     except Exception as exc:
+        logger.exception("Room attachment upload failed")
         return _err(rid, 4140, str(exc))
 
 @method("groups.attachment.read")
@@ -692,6 +691,7 @@ def _(rid, params: dict) -> dict:
             },
         )
     except Exception as exc:
+        logger.exception("Room attachment read failed")
         return _err(rid, 4141, str(exc))
 
 
@@ -727,4 +727,5 @@ def _(rid, params: dict) -> dict:
             },
         )
     except Exception as exc:
+        logger.exception("Room attachment catalog read failed")
         return _err(rid, 4142, str(exc))

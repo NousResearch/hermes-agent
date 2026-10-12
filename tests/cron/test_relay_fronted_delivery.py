@@ -102,6 +102,7 @@ class TestConfigHomeChannelFallback:
             "platform": "discord",
             "chat_id": "1517373704248758474",
             "thread_id": None,
+            "_resolved_from": "home",
         }]
 
 
@@ -131,13 +132,13 @@ class TestRelayDeliveryGate:
             future = Future()
             try:
                 future.set_result(asyncio.run(coro))
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 future.set_exception(e)
             return future
 
         router = MagicMock()
 
-        async def _deliver_to_platform(target, content, metadata):
+        async def _deliver_to_platform(target, content, metadata, transport=None):
             return {"success": True, "raw_response": None}
 
         router._deliver_to_platform = _deliver_to_platform

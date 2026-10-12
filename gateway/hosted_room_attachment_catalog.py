@@ -289,6 +289,37 @@ def _published_event_attachments(
     return result
 
 
+def _catalog_room_members(raw_json: str) -> dict[str, str]:
+    try:
+        raw_members = json.loads(raw_json)
+        if not isinstance(raw_members, list) or len(raw_members) > MAX_MEMBERS:
+            raise ValueError
+        room_members = {}
+        for member in raw_members:
+            if not isinstance(member, Mapping):
+                raise ValueError
+            member_id = _identifier(member.get("member_id"), label="member_id")
+            member_label = (
+                member.get("display_name") or member.get("handle") or member.get("profile") or member_id)
+            if not isinstance(member_label, str) or len(member_label) > MAX_ACTOR_LABEL_CHARS:
+                raise ValueError
+            room_members[member_id] = member_label.strip()
+        return room_members
+    except (AttachmentError, TypeError, ValueError, json.JSONDecodeError):
+        raise AttachmentNotFoundError("attachment catalogue room metadata is invalid") from None
+
+
+def _catalog_producer_filter(producer_member_id):
+    if producer_member_id is None:
+        return ""
+    if not isinstance(producer_member_id, str):
+        raise AttachmentError("producer_member_id must be a string")
+    if len(producer_member_id) > MAX_IDENTIFIER_CHARS:
+        raise AttachmentError("invalid producer_member_id")
+    producer_member_id = producer_member_id.strip()
+    return _identifier(producer_member_id, label="producer_member_id") if producer_member_id else ""
+
+
 def list_published(
     self,
     *,
@@ -319,15 +350,7 @@ def list_published(
         raise AttachmentError("authority_epoch must be a positive integer")
     limit = _catalog_limit(limit)
     folded_query = _catalog_query(query)
-    if producer_member_id is None:
-        producer_member_id = ""
-    if not isinstance(producer_member_id, str):
-        raise AttachmentError("producer_member_id must be a string")
-    if len(producer_member_id) > MAX_IDENTIFIER_CHARS:
-        raise AttachmentError("invalid producer_member_id")
-    producer_member_id = producer_member_id.strip()
-    if producer_member_id:
-        producer_member_id = _identifier(producer_member_id, label="producer_member_id")
+    producer_member_id = _catalog_producer_filter(producer_member_id)
     recipient_member_id = (
         _identifier(recipient_member_id, label="recipient_member_id")
         if recipient_member_id is not None
@@ -355,31 +378,7 @@ def list_published(
                 "attachment catalogue is unavailable for this room authority"
             )
         snapshot_seq = int(room["next_seq"]) - 1
-        try:
-            raw_members = json.loads(str(room["members_json"]))
-            if not isinstance(raw_members, list) or len(raw_members) > MAX_MEMBERS:
-                raise ValueError
-            room_members = {}
-            for member in raw_members:
-                if not isinstance(member, Mapping):
-                    raise ValueError
-                member_id = _identifier(member.get("member_id"), label="member_id")
-                member_label = (
-                    member.get("display_name")
-                    or member.get("handle")
-                    or member.get("profile")
-                    or member_id
-                )
-                if (
-                    not isinstance(member_label, str)
-                    or len(member_label) > MAX_ACTOR_LABEL_CHARS
-                ):
-                    raise ValueError
-                room_members[member_id] = member_label.strip()
-        except (AttachmentError, TypeError, ValueError, json.JSONDecodeError):
-            raise AttachmentNotFoundError(
-                "attachment catalogue room metadata is invalid"
-            ) from None
+        room_members = _catalog_room_members(str(room["members_json"]))
 
         last_seq: int | None = None
         last_attachment_id: str | None = None

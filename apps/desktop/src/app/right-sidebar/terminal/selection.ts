@@ -1,6 +1,7 @@
 import type { ITheme, Terminal } from '@xterm/xterm'
 import type { CSSProperties } from 'react'
 
+import { isComposerChord } from '@/lib/keybinds/chords'
 import { isMacPlatform } from '@/lib/platform'
 import type { DesktopTerminalPalette } from '@/themes/types'
 
@@ -99,6 +100,13 @@ export function resolveSurfaceColor(fallback: string): string {
 }
 
 export { isMacPlatform }
+
+/** Whether this terminal session should own a global ⌘/Ctrl+L keydown.
+ *  `active` gates the fanout: every open tab stays mounted, so an inactive
+ *  tab must never claim the press (#76116). */
+export function shouldOwnAddSelectionShortcut(event: KeyboardEvent, opts: { active: boolean; hasSelection: boolean }) {
+  return opts.active && opts.hasSelection && isComposerChord(event)
+}
 
 export function terminalSelectionLabel(term: Terminal, shellName: string, text: string) {
   const pos = term.getSelectionPosition()

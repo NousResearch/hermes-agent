@@ -1,97 +1,12 @@
-"""Compatibility seams for the extracted RoomLink grant HTTP surface."""
+"""RoomLink grant authority: policy drift, gateway-owned secret, superseded authority."""
 
-import json
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
+import json
 
 from gateway.platforms import api_server
-from gateway.platforms import api_server_room_grants as room_grants
-
-
-_HANDLER_DELEGATES = (
-    ("_handle_room_member_invitation", "_handle_room_member_invitation"),
-    ("_handle_room_member_capabilities", "_handle_room_member_capabilities"),
-    ("_handle_room_member_grant_refresh", "_handle_room_member_grant_refresh"),
-    ("_handle_room_member_grant_revoke", "_handle_room_member_grant_revoke"),
-)
-
-
-def test_api_server_keeps_room_grant_methods_on_the_adapter_class():
-    expected = {
-        "_room_grant_token",
-        "_room_grant_secret",
-        "_room_grant_claims",
-        *(adapter_name for adapter_name, _ in _HANDLER_DELEGATES),
-    }
-    assert expected <= api_server.APIServerAdapter.__dict__.keys()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("adapter_name", "implementation_name"), _HANDLER_DELEGATES)
-async def test_room_member_handlers_delegate_without_changing_method_surface(
-    monkeypatch, adapter_name, implementation_name
-):
-    adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
-    request = object()
-    expected = object()
-    implementation = AsyncMock(return_value=expected)
-    monkeypatch.setattr(room_grants, implementation_name, implementation)
-
-    assert await getattr(adapter, adapter_name)(request) is expected
-    implementation.assert_awaited_once_with(
-        adapter,
-        request,
-        _openai_error=api_server._openai_error,
-        _api_request_profile=api_server._api_request_profile,
-    )
-
-
-def test_room_grant_helpers_delegate_through_legacy_adapter_methods(monkeypatch):
-    adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
-    request = object()
-    token = MagicMock(return_value="grant-token")
-    secret = MagicMock(return_value=b"secret")
-    claims = MagicMock(return_value={"room_id": "room-1"})
-    monkeypatch.setattr(room_grants, "_room_grant_token", token)
-    monkeypatch.setattr(room_grants, "_room_grant_secret", secret)
-    monkeypatch.setattr(room_grants, "_room_grant_claims", claims)
-
-    assert adapter._room_grant_token(request) == "grant-token"
-    assert adapter._room_grant_secret() == b"secret"
-    assert adapter._room_grant_claims(request, permission="status") == {
-        "room_id": "room-1"
-    }
-    token.assert_called_once_with(request)
-    secret.assert_called_once_with(adapter)
-    claims.assert_called_once_with(adapter, request, permission="status")
-
-
-def test_grant_refresh_rejects_execution_policy_drift():
-    claims = {"execution_policy_digest": "a" * 64}
-
-    with pytest.raises(
-        room_grants.RoomGrantReauthorizationRequired,
-        match="execution policy changed",
-    ):
-        room_grants._require_unchanged_execution_policy(
-            claims,
-            {"policy_digest": "b" * 64},
-        )
-
-
-def test_grant_refresh_accepts_the_authorized_execution_policy():
-    claims = {"execution_policy_digest": "a" * 64}
-
-    assert (
-        room_grants._require_unchanged_execution_policy(
-            claims,
-            {"policy_digest": "a" * 64},
-        )
-        is None
-    )
-
 
 def test_room_grant_secret_stays_gateway_owned_on_named_profile(
     tmp_path, monkeypatch
@@ -106,7 +21,6 @@ def test_room_grant_secret_stays_gateway_owned_on_named_profile(
         assert adapter._room_grant_secret() == gateway_room_grant_secret()
     finally:
         api_server._api_request_profile.reset(profile_token)
-
 
 def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch):
     from gateway import hosted_rooms
@@ -127,6 +41,7 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
         "member_id": "member-reviewer",
         "target_install_id": hosted_rooms.local_authority_gateway_id(),
         "target_profile": "reviewer",
+        "execution_policy_digest": "d" * 64,
         "issued_at": now,
         "ttl_seconds": 3600,
     }

@@ -127,7 +127,7 @@ def test_startup_backlog_policy_uses_wired_binding(binding_env, monkeypatch, mod
     monkeypatch.setattr(adapter, "_delete_webhook_best_effort", AsyncMock())
     monkeypatch.setattr(adapter, "_start_polling_resilient", starter)
     monkeypatch.setattr(type(app.updater), "start_webhook", starter)
-    monkeypatch.setattr("agent.secret_scope.get_secret", lambda name: "offline-secret")
+    monkeypatch.setattr("plugins.platforms.telegram.adapter._get_scoped_secret", lambda name: "offline-secret")
     if mode == "polling":
         asyncio.run(adapter._start_polling_mode(is_reconnect=is_reconnect))
     else:
@@ -286,7 +286,7 @@ finally:
 """
         result = subprocess.run([sys.executable, "-c", code, str(service.db_path), json.dumps(binding)],
                                 cwd=Path(__file__).resolve().parents[1], env=os.environ.copy(),
-                                capture_output=True, text=True, timeout=15)
+                                capture_output=True, text=True, timeout=15, check=False)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "EXCLUDED"
         with owner.db() as db:

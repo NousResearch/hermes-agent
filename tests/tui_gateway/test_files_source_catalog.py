@@ -27,6 +27,7 @@ from tests.gateway.test_hosted_room_attachment_catalog import (
 def service(tmp_path, monkeypatch):
     home = tmp_path / "hermes-home"
     (home / "profiles" / "ops").mkdir(parents=True)
+    (home / "profiles" / "ops" / "config.yaml").write_text("{}\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
     fake_server = SimpleNamespace(
@@ -105,7 +106,7 @@ def test_authority_claim_lookup_stays_bounded_after_index_repair(tmp_path, monke
 
 
 def test_old_database_reopen_keeps_bad_record_pages_bounded_and_reachable(tmp_path):
-    db, store = _create_catalog(tmp_path)
+    db, _store = _create_catalog(tmp_path)
     _seed_events(
         db, total_events=50000, records={i: [f"file-{i}.txt"] for i in range(1, 50001)}
     )
@@ -235,7 +236,7 @@ def test_slow_file_discovery_does_not_block_stop(service, monkeypatch):
 
 
 def test_real_rpc_lists_and_reads_only_the_viewer_surface(service, monkeypatch):
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tui_gateway import methods_groups
 
     item, event_id = publish(service)

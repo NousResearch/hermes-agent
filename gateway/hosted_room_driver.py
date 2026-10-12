@@ -559,7 +559,7 @@ def _transition(
 
 def _requeue_ownership(
     row: sqlite3.Row, lease: DriverLease, identity: TaskIdentity,
-    proof: "OwnerDeathProof | None") -> None:
+    proof: OwnerDeathProof | None) -> None:
     """Who may return an admitted attempt to the queue, in three cases.
 
     Requeueing clears the admission stamp and the run owner, which is what makes a later Stop take
@@ -598,7 +598,7 @@ def _generation_transition(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, name: str, execution_generation: int,
     cancel_generation: int, *, now: float, set_params: tuple[Any, ...],
     replay: Callable[[sqlite3.Row], Any] | None = None,
-    owner_death_proof: "OwnerDeathProof | None" = None,
+    owner_death_proof: OwnerDeathProof | None = None,
     death_stop_intent: bool = False, death_cancel_id: str | None = None) -> dict[str, Any]:
     """Lease-first transition from ``_GENERATION_TRANSITIONS`` fenced on status + both generations.
 
@@ -1090,7 +1090,7 @@ def settle_task(
 def settle_stopping_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
-    death_authorized: bool = False, owner_death_proof: "OwnerDeathProof | None" = None
+    death_authorized: bool = False, owner_death_proof: OwnerDeathProof | None = None
 ) -> dict[str, Any]:
     """Commit a completion that won the race with an unacknowledged Stop.
 
@@ -1120,7 +1120,7 @@ def resolve_indeterminate_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
     from_status: str = "indeterminate", death_authorized: bool = False,
-    owner_death_proof: "OwnerDeathProof | None" = None) -> dict[str, Any]:
+    owner_death_proof: OwnerDeathProof | None = None) -> dict[str, Any]:
     """Commit a verified historical receipt under the current room lease.
 
     ``from_status`` names which uncertain state the receipt resolves: a deferred attempt carries
@@ -1140,7 +1140,7 @@ def resolve_indeterminate_cancellation(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, cancel_id: Any, clock: Clock,
     from_status: str = "indeterminate", death_authorized: bool = False,
-    owner_death_proof: "OwnerDeathProof | None" = None) -> dict[str, Any]:
+    owner_death_proof: OwnerDeathProof | None = None) -> dict[str, Any]:
     """Commit a verified terminal cancellation for an uncertain attempt.
 
     ``death_authorized`` states that the CALLER's only cessation evidence is owner death; the proof
@@ -1164,7 +1164,7 @@ def resolve_indeterminate_cancellation(
 def requeue_indeterminate_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, clock: Clock,
-    owner_death_proof: "OwnerDeathProof | None" = None) -> dict[str, Any]:
+    owner_death_proof: OwnerDeathProof | None = None) -> dict[str, Any]:
     """Explicitly retry uncertain work after an operator accepts at-least-once risk.
 
     No ``death_authorized`` flag is needed here: ``_requeue_ownership`` refuses outright when the
@@ -1196,7 +1196,7 @@ def defer_indeterminate_task(
 def requeue_deferred_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, clock: Clock,
-    owner_death_proof: "OwnerDeathProof | None" = None) -> dict[str, Any]:
+    owner_death_proof: OwnerDeathProof | None = None) -> dict[str, Any]:
     """Explicitly retry a fenced deferred turn under a new generation.
 
     No ``death_authorized`` flag is needed here: ``_requeue_ownership`` refuses outright when the
@@ -1267,7 +1267,7 @@ def begin_task_cancel(
 
 def complete_task_cancel(
     db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
-    death_authorized: bool = False, owner_death_proof: "OwnerDeathProof | None" = None
+    death_authorized: bool = False, owner_death_proof: OwnerDeathProof | None = None
 ) -> dict[str, Any]:
     """Commit cancellation after the transport acknowledges exact Stop, or the owner is proven gone.
 
@@ -1354,17 +1354,6 @@ def prune_published_terminal_tasks(
             f"DELETE FROM hosted_room_driver_tasks WHERE room_id=? AND task_id IN ({','.join('?' * len(candidates))})",
             (room_id, *candidates))
         return max(0, int(deleted.rowcount))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Iterator  # noqa: F401,E402
-from pathlib import Path  # noqa: F401,E402
-from contextlib import contextmanager  # noqa: F401,E402
-import re  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----
 
 
 def defer_not_admitted_task(

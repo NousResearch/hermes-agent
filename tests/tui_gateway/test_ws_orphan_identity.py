@@ -98,13 +98,13 @@ def test_native_reattach_paths_share_orphan_ownership(orphan, monkeypatch, entry
     session, transport = orphan.session, object()
     monkeypatch.setattr(server, "current_transport", lambda: transport)
     monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *args: None)
-    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", dict)
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda *args: False)
     monkeypatch.setattr(server, "_child_run_active", lambda *args: False)
     monkeypatch.setattr(server, "_resolve_model", lambda: "offline-test")
     monkeypatch.setattr(server, "_attach_todo_state", lambda payload, session: payload)
     # Avoid DB reads; transport rebinding itself must still use the real lifecycle helper.
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     server._schedule_ws_orphan_reap("sid")
     timer = orphan.timers[-1]
     if state == "settling":
@@ -115,7 +115,7 @@ def test_native_reattach_paths_share_orphan_ownership(orphan, monkeypatch, entry
     monkeypatch.setattr(server, "_sess", lambda *args: (session, None))
     ctx = SimpleNamespace(
         rid=1, owns_db=False, profile=None, cols=80, omit_messages=True, target="stored",
-        defer_history=False, messages=lambda history: [])
+        defer_history=False, inline_images=True, messages=lambda history: [])
     if entry == "activate":
         result = server._methods["session.activate"](1, {"session_id": "sid", "omit_messages": True})
     elif entry == "submit":

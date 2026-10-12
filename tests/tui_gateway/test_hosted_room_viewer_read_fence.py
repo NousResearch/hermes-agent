@@ -11,7 +11,7 @@ import pytest
 from gateway import hosted_rooms
 from gateway.hosted_room_attachments import AttachmentError
 from tui_gateway.hosted_room_service import HostedRoomService
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 class ViewerRPCRejected(RuntimeError):

@@ -86,7 +86,7 @@ def load_binding(path: Path, *, include_disabled: bool = False) -> dict[str, Any
     The same document every participating gateway reads. A malformed one is an error: a gateway
     told to serve a room must not fall back to serving nothing.
     """
-    binding = json.loads(Path(path).read_text())
+    binding = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(binding, dict):
         raise ValueError("hosted room binding must be an object")
     if type(binding.get("enabled")) is not bool:
@@ -218,7 +218,8 @@ class Transport:
             raise RuntimeError("hosted room transport binding is already owned") from exc
         self._mutex = handle
         initialize_queue(self.path, recover=True)
-        self.thread = threading.Thread(target=self._run, name="hosted-room-telegram", daemon=True)
+        from agent.memory_provider import spawn_context_thread
+        self.thread = spawn_context_thread(self._run, name="hosted-room-telegram", daemon=True)
         self.thread.start()
         if not self.ready.wait(40):
             self.halt.set()
@@ -229,7 +230,7 @@ class Transport:
     def _run(self) -> None:
         try:
             asyncio.run(self.run())
-        except BaseException as exc:
+        except BaseException as exc:  # health: allow BLE001 -- transport exceptions can contain bot tokens; log only the error type
             self.error = type(exc).__name__
             logger.error("hosted room transport stopped: %s", self.error)
         finally:
@@ -665,14 +666,14 @@ class Transport:
                         except Exception:
                             check_delivery = True
                             raise
-                except Exception as exc:
+                except Exception as exc:  # health: allow BLE001 -- transport exceptions can contain bot tokens; log only the error type
                     logger.error("hosted room transport iteration failed: %s", type(exc).__name__)
                 await asyncio.sleep(2 if check_delivery else 0.25)
         finally:
             for bot in bots.values():
                 try:
                     await asyncio.wait_for(bot.shutdown(), timeout=5)
-                except Exception as exc:
+                except Exception as exc:  # health: allow BLE001 -- cleanup exceptions can retain credential-bearing exception chains
                     logger.error("hosted room bot cleanup failed: %s", type(exc).__name__)
 
     def stop(self, *, timeout: float = 5.0) -> bool:

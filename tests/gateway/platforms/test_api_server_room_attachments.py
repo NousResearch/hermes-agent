@@ -141,7 +141,7 @@ def test_spool_is_idempotent_and_survives_restart(tmp_path: Path):
     assert Path(materialized[0]["path"]).read_bytes() == b"hello"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("fail_sync", [False, True])
 def test_spool_directory_is_durable_before_stored_commit(tmp_path, monkeypatch, fail_sync):
     spool = room_attachments.RoomAttachmentSpool(tmp_path / "state.db", root=tmp_path / "spool")
@@ -182,7 +182,7 @@ def test_spool_directory_is_durable_before_stored_commit(tmp_path, monkeypatch, 
     assert not list(spool.root.glob(".tmp-*"))
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_spool_preserves_file_sync_and_restart_recovery(tmp_path, monkeypatch):
     spool = room_attachments.RoomAttachmentSpool(tmp_path / "state.db", root=tmp_path / "spool")
     manifest = _manifest()

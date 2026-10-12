@@ -67,6 +67,7 @@ class _FakeRPC:
         task,
         execution_generation,
         on_terminal,
+        member_id=None,
     ):
         self.calls.append(("submit", {"profile": profile, "prompt": prompt}))
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
@@ -726,18 +727,23 @@ def test_attachment_catalog_reprobe_persists_peer_upgrade_or_downgrade(
     stored_support: bool,
     live_support: bool,
 ):
+    from gateway.hosted_room_execution_policy import execution_policy_mapping
+
+    policy = execution_policy_mapping(target_profile="reviewer", config={})
     db = tmp_path / "state.db"
     stored_catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
             installation_id="install-peer",
             persistent_process=True,
             attachments=stored_support,
+            target_profile="reviewer", execution_policy=policy,
         )
     )
     live_catalog = catalog_mapping(
         installation_id="install-peer",
         persistent_process=True,
         attachments=live_support,
+        target_profile="reviewer", execution_policy=policy,
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -782,12 +788,16 @@ def test_attachment_catalog_reprobe_persists_peer_upgrade_or_downgrade(
 
 
 def test_peer_attachment_recovery_replays_the_same_execution_generation(tmp_path: Path):
+    from gateway.hosted_room_execution_policy import execution_policy_mapping
+
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
             installation_id="install-peer",
             persistent_process=True,
             attachments=True,
+            target_profile="reviewer",
+            execution_policy=execution_policy_mapping(target_profile="reviewer", config={}),
         )
     )
     route = PeerMemberRoute(

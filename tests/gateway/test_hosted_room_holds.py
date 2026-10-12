@@ -272,7 +272,7 @@ def test_an_existing_checkpoint_backfills_holds_from_its_own_log(room_db):
 
 
 def test_backfill_preserves_the_thread_transcript_it_already_had(room_db):
-    db, room = room_db
+    db, _room = room_db
     _user(db, event_id="user-1", text="@impl first request")
     checkpoint = HostedRoomPolicyCheckpoint(db)
     latest = int(hosted_rooms.room_state(db, room_id=ROOM_ID)["latest_seq"])

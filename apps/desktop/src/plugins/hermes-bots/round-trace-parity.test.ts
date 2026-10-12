@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as groupActivity from './group-activity'
 import type * as groupChat from './group-chat'
 import { groupMemberKey } from './group-membership'
+import type * as groupRoundMembers from './group-round-members'
 import type * as groupRounds from './group-rounds'
 import { createGroupGateway, drain, runTimersInline, scriptedStorage } from './group-test-utils'
 import type { GatewayOptions, ScriptedGateway } from './group-test-utils'
@@ -13,12 +14,13 @@ import type * as groupTurns from './group-turns'
 import type { GroupMember } from './types'
 
 // The same scripted rooms the hosted-room policy runs in tests/gateway/test_hosted_room_rounds.py.
-// Both drivers answer them with their real round loop, so "who speaks next" and "what a resumed
-// member sees" cannot come to mean two different things depending on which frontend was used.
+// Both drivers answer them with their real round loop. Explicit Desktop expectations retain
+// upstream's broadcast wake-up (#97740) and addressed-pass nudge (#129443).
 // Whole traces on purpose: equal caps and equal rotation helpers do not make equal conversations.
 
-const { host, observed } = vi.hoisted(() => ({
+const { host, observed, phase } = vi.hoisted(() => ({
   host: {} as Record<string, unknown>,
+  phase: { continuation: false },
   /** Ordered runtime observations: 'harvest' opens each ordinary round, 'turn' is one dispatch. */
   observed: [] as Array<{ kind: 'harvest' | 'turn'; member: string; ordinary: boolean }>
 }))
@@ -31,8 +33,27 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
 // Read-only wrappers over the REAL turn module. Nothing is replaced: each call is recorded and
 // delegated. The two runtime facts they expose are the drive's own, not an inference — every
-// ordinary round opens by harvesting each member, and only the ordinary dispatch passes the
-// round's delta images (group-rounds.ts:646 against its recovery call at :813).
+// ordinary round opens by harvesting each member. The continuation entry point scopes the
+// phase marker because both phases now share the same member-turn implementation.
+function installRoundPhaseSpy() {
+  vi.doMock('./group-round-members', async () => {
+  const actual = await vi.importActual<typeof groupRoundMembers>('./group-round-members')
+
+  return {
+    ...actual,
+    runGroupContinuationMembers: async (...args: Parameters<typeof actual.runGroupContinuationMembers>) => {
+      phase.continuation = true
+
+      try {
+        return await actual.runGroupContinuationMembers(...args)
+      } finally {
+        phase.continuation = false
+      }
+    }
+  }
+  })
+}
+
 vi.mock('./group-turns', async () => {
   const actual = await vi.importActual<typeof groupTurns>('./group-turns')
 
@@ -47,7 +68,7 @@ vi.mock('./group-turns', async () => {
     },
     runGroupChatMemberTurn: (...args: Parameters<typeof actual.runGroupChatMemberTurn>) => {
       observed.push({
-        kind: 'turn', member: (args[1] as { name: string })?.name, ordinary: args.length >= 5
+        kind: 'turn', member: (args[1] as { name: string })?.name, ordinary: !phase.continuation
       })
 
       return actual.runGroupChatMemberTurn(...args)
@@ -74,6 +95,7 @@ interface Scenario {
    *  index) when a scenario needs a member's answer to belong to a specific discussion. */
   replies: Record<string, Record<string, string[]> | string[]>
   speakers: string[]
+  desktop?: { speakers?: string[]; dispatch?: string[]; phases?: Array<[string, string, number]> }
   /** Every member the drive actually asked for a turn, in submission order — passes included,
    *  because a silent recovery turn leaves no trace in the log at all. */
   dispatch?: string[]
@@ -100,6 +122,7 @@ interface Room {
 
 async function loadRoom(options: GatewayOptions = {}): Promise<Room> {
   vi.resetModules()
+  installRoundPhaseSpy()
   const gateway = createGroupGateway(options)
 
   for (const key of Object.keys(host)) {
@@ -210,6 +233,8 @@ async function runScenario(scenario: Scenario) {
     // The room's own stored state: the held skip writes these marks, so what a paused member
     // has and has not read is observable here rather than only in the other engine.
     watermarks: stored.watermarks || {},
+    heldMessages: stored.heldMessages || {},
+    entryIds: log.map(entry => entry.id),
     texts: log.map(entry => entry.text),
     thread,
     speakers: log.filter(entry => entry.from.kind === 'member').map(entry => entry.from.name),
@@ -252,7 +277,7 @@ describe('shared round traces', () => {
     // A drive that was still running when the harness stopped draining did not settle; its
     // trace is truncated, not a contract.
     expect(actual.exhausted, evidence).toEqual([])
-    expect(actual.speakers, evidence).toEqual(scenario.speakers)
+    expect(actual.speakers, evidence).toEqual(scenario.desktop?.speakers ?? scenario.speakers)
 
     const dispatch = actual.diagnostics.turns.map(turn => turn.profile)
 
@@ -264,13 +289,13 @@ describe('shared round traces', () => {
     if (scenario.dispatch || scenario.outcome) {
       // Who was ASKED, not only who spoke, and how the drive ended.
       expect({ dispatch, outcome }, evidence).toEqual({
-        dispatch: scenario.dispatch ?? dispatch, outcome: scenario.outcome ?? outcome
+        dispatch: scenario.desktop?.dispatch ?? scenario.dispatch ?? dispatch, outcome: scenario.outcome ?? outcome
       })
     }
 
     if (scenario.phases) {
       // Round and ordinary/recovery phase per dispatch, read from the drive's own calls.
-      expect(actual.phases, evidence).toEqual(scenario.phases.map(entry => [...entry]))
+      expect(actual.phases, evidence).toEqual((scenario.desktop?.phases ?? scenario.phases).map(entry => [...entry]))
     }
 
     // One conversation: a scenario that silently forked into a second thread would compare
@@ -286,7 +311,14 @@ describe('shared round traces', () => {
       expect([read, waiting].every(index => index >= 0), evidence).toBe(true)
       // Its skips consumed the earlier entry; the later one is still ahead of its mark.
       expect(mark, evidence).toBeGreaterThan(read)
-      expect(mark, evidence).toBeLessThanOrEqual(waiting)
+
+      // Desktop can consume a held delta into its durable backlog rather than leaving
+      // the watermark behind. Either representation must preserve the unread message.
+      if (mark > waiting) {
+        expect(actual.heldMessages[scenario.unread.member], evidence).toContain(actual.entryIds[waiting])
+      } else {
+        expect(mark, evidence).toBeLessThanOrEqual(waiting)
+      }
     }
 
     if (scenario.resumed_delta) {

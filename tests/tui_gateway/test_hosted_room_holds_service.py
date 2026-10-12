@@ -36,7 +36,6 @@ class _SessionlessRPC:
 
     def resolve_exact(self, *, profile, title, source):
         self.calls.append("resolve_exact")
-        return None
 
     def create(self, **kwargs):
         raise AssertionError("these tests must never create a room session")
@@ -63,6 +62,7 @@ def service(tmp_path, monkeypatch) -> HostedRoomService:
     home = tmp_path / "runtime"
     for member in MEMBERS:
         (home / "profiles" / member["profile"]).mkdir(parents=True)
+        (home / "profiles" / member["profile"] / "config.yaml").write_text("{}")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     service = HostedRoomService(ModuleType("test_server"), db_path=home / "state.db")
@@ -100,16 +100,15 @@ def _crash_stop(service: HostedRoomService, *, cancel_id: str) -> dict:
 def _foreign_admitted_attempt(service: HostedRoomService, task: dict, *, ttl_seconds: float = 0.05):
     """Start ``task`` under another process's lease and stamp its admission fence."""
     room = hosted_rooms.room_state(service.db_path, room_id=ROOM_ID)
+    admitted_at = time.time() - ttl_seconds - 1
+    clock = lambda: admitted_at
     lease = driver.acquire_lease(
         service.db_path, room_id=ROOM_ID, gateway_id=str(room["authority_gateway_id"]),
         authority_epoch=int(room["authority_epoch"]), process_generation="paused-owner",
-        ttl_seconds=ttl_seconds, clock=time.time)
+        ttl_seconds=ttl_seconds, clock=clock)
     attempt = driver.start_task(
-        service.db_path, task["identity"], lease, expected_cancel_generation=0, clock=time.time)
-    driver.fence_task_admission(service.db_path, attempt, clock=time.time)
-    deadline = time.monotonic() + 2.0
-    while time.time() < lease.expires_at and time.monotonic() < deadline:
-        time.sleep(0.01)
+        service.db_path, task["identity"], lease, expected_cancel_generation=0, clock=clock)
+    driver.fence_task_admission(service.db_path, attempt, clock=clock)
     return attempt
 
 

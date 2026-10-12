@@ -14,11 +14,13 @@ from gateway import hosted_rooms
 from gateway.hosted_room_policy_checkpoint import (
     HostedRoomPolicyCheckpoint, MAX_THREAD_TRANSCRIPT_EVENTS, MAX_TRANSCRIPT_POLICY_EVENTS,
 )
-from tests.tui_gateway.test_hosted_room_native_phase1 import native as native
+from tests.tui_gateway.test_hosted_room_native_phase1 import native as native  # noqa: PLC0414 -- pytest fixture export
 from tests.tui_gateway.test_hosted_room_produced_media import room as native_room
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_service import HostedRoomService
+
+__all__ = ["native_room"]  # imported pytest fixture
 
 
 def test_legacy_admission_does_not_gain_previously_omitted_member_files():
@@ -39,7 +41,7 @@ class RefusingRPC(_FakeRPC):
         raise PeerRunsHTTPError("synthetic unavailable", not_admitted=True, retryable=True)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("handoff", [False, True])
 def test_native_not_admitted_deferral_retries_with_live_owner(native, native_room, monkeypatch, handoff):
     from gateway.hosted_room_owner_probe import ALIVE, probe_owner_incarnation

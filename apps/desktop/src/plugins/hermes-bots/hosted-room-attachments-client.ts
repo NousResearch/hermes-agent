@@ -172,6 +172,13 @@ export async function stageHostedMessageAttachments(
 }
 
 /** Fetch one committed attachment's bytes, verified against the metadata already in the log. */
+function validHostedBytes(content: string, size: unknown, mime: string) {
+  return content.length <= MAX_BASE64_CHARS && validBase64(content) &&
+    /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(mime) &&
+    typeof size === 'number' && Number.isSafeInteger(size) && size >= 0 &&
+    size <= MAX_ATTACHMENT_BYTES && decodedSize(content) === size
+}
+
 export async function readHostedMessageAttachment(
   request: RequestHostedConnection,
   route: ProfileRoute,
@@ -208,15 +215,8 @@ export async function readHostedMessageAttachment(
     // of the manifest rather than trusted from the log copy alone.
     receipt?.kind !== attachment.kind ||
     (attachment.name !== undefined && receiptName !== attachment.name) ||
-    contentBase64.length > MAX_BASE64_CHARS ||
-    !validBase64(contentBase64) ||
-    !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(mime) ||
+    !validHostedBytes(contentBase64, receiptSize, mime) ||
     (attachment.mime !== undefined && mime !== attachment.mime) ||
-    typeof receiptSize !== 'number' ||
-    !Number.isSafeInteger(receiptSize) ||
-    receiptSize < 0 ||
-    receiptSize > MAX_ATTACHMENT_BYTES ||
-    decodedSize(contentBase64) !== receiptSize ||
     (attachment.size !== undefined && receiptSize !== attachment.size)
   ) {
     // Upstream raises its GroupFileError('verification', …); this branch has no such class.

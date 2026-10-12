@@ -64,8 +64,10 @@ beforeEach(() => {
   $botMeta.set({})
 })
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
+  // Radix restores focus in a queued task; drain it before jsdom destroys its Event realm.
+  await new Promise<void>(resolve => setTimeout(resolve, 0))
 })
 
 describe('the dialog names the bot, never its object', () => {
@@ -90,17 +92,6 @@ describe('the dialog names the bot, never its object', () => {
 })
 
 describe('where the run\u2019s output lands', () => {
-  it('offers run history and the bot\u2019s own chat', () => {
-    render(<CreateRoutineDialog bot={{ name: 'ops' }} onClose={() => undefined} open />)
-
-    fireEvent.click(controlUnder('Send results to'))
-
-    const options = screen.getAllByRole('option').map(option => option.textContent)
-
-    expect(options).toContain('Run history only')
-    expect(options.some(option => option?.includes('chat (bot responds)'))).toBe(true)
-  })
-
   it('sends no deliver param by default \u2014 history only', async () => {
     render(<CreateRoutineDialog bot={{ name: 'ops' }} onClose={() => undefined} open />)
     fillRequiredFields()

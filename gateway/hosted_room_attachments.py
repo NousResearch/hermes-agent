@@ -987,7 +987,7 @@ class HostedRoomAttachmentStore:
                         for item in payload.get("attachments", [])
                         if isinstance(item, Mapping)
                     }
-                except Exception:
+                except (ValueError, TypeError, AttributeError):
                     continue
                 if str(row["attachment_id"]) not in ids:
                     continue
@@ -1311,25 +1311,25 @@ class HostedRoomAttachmentStore:
 
 __all__ = [
     "ATTACHMENT_LIST_EVENT_SCAN_LIMIT",
-    "AttachmentCursorError",
+    "CLASSIC_ATTACHMENT_TTL_SECONDS",
     "DEFAULT_ATTACHMENT_LIST_LIMIT",
+    "DISBANDED_GRACE_SECONDS",
+    "MAX_ATTACHMENTS_PER_MESSAGE",
+    "MAX_ATTACHMENT_BYTES",
     "MAX_ATTACHMENT_LIST_LIMIT",
     "MAX_ATTACHMENT_LIST_RESPONSE_BYTES",
+    "MAX_MESSAGE_ATTACHMENT_BYTES",
+    "MAX_TASK_ATTACHMENTS",
+    "MAX_TASK_ATTACHMENT_BYTES",
+    "UNCOMMITTED_TTL_SECONDS",
     "AttachmentConflictError",
+    "AttachmentCursorError",
     "AttachmentData",
     "AttachmentError",
     "AttachmentIntegrityError",
     "AttachmentNotFoundError",
     "AttachmentQuotaError",
-    "CLASSIC_ATTACHMENT_TTL_SECONDS",
-    "DISBANDED_GRACE_SECONDS",
     "HostedRoomAttachmentStore",
-    "MAX_ATTACHMENT_BYTES",
-    "MAX_ATTACHMENTS_PER_MESSAGE",
-    "MAX_MESSAGE_ATTACHMENT_BYTES",
-    "MAX_TASK_ATTACHMENT_BYTES",
-    "MAX_TASK_ATTACHMENTS",
-    "UNCOMMITTED_TTL_SECONDS",
     "decode_content_base64",
     "default_attachment_root",
     "encode_content_base64",

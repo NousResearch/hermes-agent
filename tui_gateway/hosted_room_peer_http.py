@@ -350,7 +350,7 @@ class PeerRunsHTTPClient:
             raise PeerRunsHTTPError("peer room source must be bot_room")
         self._require_room_grant(grant)
         logical_session = "roomlink_" + hashlib.sha256(
-            f"{room_id}\0{profile}".encode("utf-8")).hexdigest()[:32]
+            f"{room_id}\0{profile}".encode()).hexdigest()[:32]
         if expected_session_id and expected_session_id != logical_session:
             raise PeerRunsHTTPError("peer room session identity changed")
         return {"session_id": logical_session, "title": f"Group: {room_id}", "source": source}
@@ -672,6 +672,7 @@ class PeerRunsHTTPClient:
                     deadline=deadline,
                 ).decode("utf-8", "replace")[:500]
             except Exception:
+                logger.debug("Could not read peer upload error response", exc_info=True)
                 detail = ""
             error_code = _response_error_code(detail)
             logger.debug(
@@ -830,7 +831,7 @@ def _open_roomlink_url(
         # Preserve the shared credentialed opener's CA bundle, proxy, TLS,
         # cookie, and instrumentation policy while rejecting even same-origin
         # redirects: grants and bytes must never be replayed automatically.
-        policy_opener = urllib_security._secure_opener_from_installed_policy(  # noqa: SLF001
+        policy_opener = urllib_security._secure_opener_from_installed_policy(
             request.full_url
         )
         for name, value in getattr(

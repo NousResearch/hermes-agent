@@ -34,6 +34,7 @@ def test_run_launch_keeps_file_transcript_override_and_current_ownership(persist
         return {"final_response": "Reviewed"}
 
     owner = SimpleNamespace(
+        _memory_sessions=SimpleNamespace(checkin=lambda agent: None),
         _profile_scope=profile_scope,
         _bind_api_server_session=lambda **scope: calls.append(("session", scope)),
     )
@@ -50,13 +51,14 @@ def test_run_launch_keeps_file_transcript_override_and_current_ownership(persist
         declared_selected=False,
         user_message="Review the brief at /private/staging/brief.txt",
         conversation_history=[{"role": "assistant", "content": "Ready"}],
+        session_history_delivery=None,
         agent_kwargs={"room_dispatch": {"task_id": "task-files"}, "room_execution_policy": policy},
         request_profile="reviewer",
         browser_control_principal=None,
         browser_control_transport_family=None,
         room_persist_user_message=persisted,
     )
-    result, _usage = _run_agent_sync(
+    result, _usage, _delivery = _run_agent_sync(
         owner, run, SimpleNamespace(run_conversation=converse), lambda event: None, _api_server=api,
     )
 

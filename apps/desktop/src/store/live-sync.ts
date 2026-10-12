@@ -19,6 +19,7 @@ export const $changeEventsAvailable = atom(false)
 export const $cronChangeTick = atom(0)
 export const $sessionsChangeTick = atom(0)
 export const $platformsChangeTick = atom(0)
+export const $projectsChangeTick = atom(0)
 export const $pairingChangeTick = atom(0)
 
 /** `pet.info.meta`-shaped payload carried on `pet.changed` — lets the pet skip
@@ -32,6 +33,20 @@ export interface PetChangeMeta {
 }
 
 export const $petChange = atom<{ meta?: PetChangeMeta; tick: number }>({ tick: 0 })
+
+/** `setup.ready` — the boot bootstrap (free-tier identity + provider resolution)
+ *  finished, so inference readiness and the free-tier verdict may have just
+ *  changed. One-shot: the status snapshot re-reads both legs once instead of
+ *  waiting for its next ambient tick. */
+export const $setupReadyTick = atom(0)
+
+/** Monotonic clock for "how fresh is this backend boot?" — bumped on every
+ *  `setup.ready` from the active source and on every gateway switch/wipe, so
+ *  onboarding can tell a round that answered inside the boot window (secrets
+ *  may still be hydrating; a `runtime_check` ok:false is not yet evidence)
+ *  from a steady-state one. Kept here, beside the tick, so both come from the
+ *  same lifecycle seam. */
+export const $gatewayBootGeneration = atom(0)
 
 export function setChangeEventsAvailable(available: boolean): void {
   $changeEventsAvailable.set(available)
@@ -53,8 +68,17 @@ export function notifyPlatformsChanged(): void {
   $platformsChangeTick.set($platformsChangeTick.get() + 1)
 }
 
+export function notifyProjectsChanged(): void {
+  $projectsChangeTick.set($projectsChangeTick.get() + 1)
+}
+
 export function notifyPairingChanged(): void {
   $pairingChangeTick.set($pairingChangeTick.get() + 1)
+}
+
+export function notifySetupReady(): void {
+  $setupReadyTick.set($setupReadyTick.get() + 1)
+  $gatewayBootGeneration.set($gatewayBootGeneration.get() + 1)
 }
 
 /** Reset on gateway wipe/reconnect — a new backend re-advertises capability on
@@ -62,4 +86,5 @@ export function notifyPairingChanged(): void {
  *  the wipe just cleared. */
 export function resetLiveSync(): void {
   $changeEventsAvailable.set(false)
+  $gatewayBootGeneration.set($gatewayBootGeneration.get() + 1)
 }

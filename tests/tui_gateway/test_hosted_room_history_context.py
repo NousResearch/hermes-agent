@@ -8,8 +8,8 @@ import pytest
 from gateway import hosted_room_driver as driver, hosted_rooms
 from tui_gateway.hosted_room_history_context import ADOPTION_EVENT_ID, load_history_context
 from tui_gateway.hosted_room_service import HostedRoomService
-from tests.tui_gateway.test_hosted_room_native_phase1 import WAIT, native as native
-from tests.tui_gateway.test_hosted_room_produced_media import ROOM_ID, room as room
+from tests.tui_gateway.test_hosted_room_native_phase1 import WAIT, native as native  # noqa: PLC0414 -- pytest fixture export
+from tests.tui_gateway.test_hosted_room_produced_media import ROOM_ID, room as room  # noqa: PLC0414 -- pytest fixture export
 
 
 def archive(service, *, change=None):

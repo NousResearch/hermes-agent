@@ -49,6 +49,7 @@
     {
       "name": "a held member does not take the slot rotation gives it",
       "group": "Order",
+      "desktop": {"speakers": ["a", "b", "c", "d", "b", "c", "d"]},
       "members": ["a", "b", "c", "d"],
       "user": ["@a stop", "@all discuss"],
       "replies": {
@@ -84,6 +85,10 @@
         "discussion's turns."
       ],
       "group": "Recovery",
+      "desktop": {
+        "dispatch": ["a", "b", "a", "a", "b"],
+        "phases": [["a", "ordinary", 0], ["b", "ordinary", 1], ["a", "ordinary", 0], ["a", "ordinary", 0], ["b", "continuation", 0]]
+      },
       "members": ["a", "b"],
       "user": ["@a lead this", "@a status?"],
       "replies": {
@@ -101,6 +106,10 @@
     {
       "name": "a productive recovery answers the old citation and the room continues",
       "group": "Recovered",
+      "desktop": {
+        "dispatch": ["a", "b", "a", "a", "b", "a", "a"],
+        "phases": [["a", "ordinary", 0], ["b", "ordinary", 1], ["a", "ordinary", 0], ["a", "ordinary", 0], ["b", "continuation", 0], ["a", "ordinary", 1], ["a", "ordinary", 1]]
+      },
       "members": ["a", "b"],
       "user": ["@a lead this", "@a status?"],
       "replies": {
@@ -126,6 +135,10 @@
         "quiet. Neither engine may give it that turn while the hold stands."
       ],
       "group": "HeldRecovery",
+      "desktop": {
+        "dispatch": ["a", "a", "a"],
+        "phases": [["a", "ordinary", 0], ["a", "ordinary", 0], ["a", "ordinary", 0]]
+      },
       "members": ["a", "b"],
       "user": ["@b stop", "@a lead this", "@a status?"],
       "replies": {"a": {"2": ["@b please confirm"], "3": ["(pass)"]}, "b": {}},
@@ -143,6 +156,10 @@
         "recovery turn exactly where the explicit-citation vector does."
       ],
       "group": "Broadcast",
+      "desktop": {
+        "dispatch": ["a", "b", "a", "a"],
+        "phases": [["a", "ordinary", 0], ["b", "ordinary", 1], ["a", "ordinary", 0], ["a", "ordinary", 0]]
+      },
       "members": ["a", "b"],
       "user": ["@a lead this", "@a status?"],
       "replies": {"a": {"1": ["@all thanks everyone"], "2": ["(pass)"]}, "b": {}},

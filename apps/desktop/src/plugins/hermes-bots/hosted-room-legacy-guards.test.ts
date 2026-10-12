@@ -28,7 +28,7 @@ it('rejects hosted identities at every legacy coordinator/session entry without 
   expect(() => rounds.sendToGroupChat(key, [member], 'Mock input')).toThrow(/groups.send/)
   await expect(rounds.runGroupChatRounds(key, [member], 'mock-thread')).rejects.toThrow(/Desktop coordinator/)
   await expect(rounds.stopGroupThread(key, 'mock-thread', [member])).rejects.toThrow(/groups.stop/)
-  await expect(turns.ensureGroupChatSession(key, member)).rejects.toThrow(/Desktop member sessions/)
+  await expect(turns.ensureGroupChatSession(key, member, 'mock-thread')).rejects.toThrow(/Desktop member sessions/)
 
   expect(chat.$groupChats.get()).toBe(before)
   expect(gateway.rpc).toEqual([])

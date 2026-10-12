@@ -8,8 +8,8 @@ import { applyGroupHoldDirective, parseGroupChatMentions } from './group-rounds'
 import type { GroupMember } from './types'
 
 // The same vectors the hosted-room policy runs in tests/gateway/test_hosted_room_holds.py. Both
-// implementations answer them with their real helpers, so "stop" and "resume" cannot come to mean
-// two different things depending on which frontend the user typed into.
+// implementations answer them with their real helpers. Explicit Desktop expectations preserve
+// upstream's Unicode tokenization and broadcast wake-up behavior; hosted holds stay conservative.
 function repoFile(relative: string): string {
   // The renderer suite runs under jsdom, where import.meta.url is an http URL: walk up from the
   // working directory instead so the path holds however the runner is invoked.
@@ -26,7 +26,8 @@ const vectors = JSON.parse(
   readFileSync(repoFile('tests/fixtures/hosted_room_hold_directives.json'), 'utf8')
 ) as {
   members: Array<{ member_id: string; display_name: string; handle: string }>
-  cases: Array<{ name: string; text: string; hold: string[]; release: string[] }>
+  cases: Array<{ name: string; text: string; hold: string[]; release: string[];
+    desktop?: { hold: string[]; release: string[] } }>
 }
 
 // Member keys are names here, so both mention resolvers address the same members. The renamed
@@ -62,9 +63,10 @@ describe('shared hold-directive vectors', () => {
   })
 
   it.each(vectors.cases.map(one => [one.name, one] as const))('%s', (_name, one) => {
+    const expected = one.desktop ?? one
     expect(nativeEffect(one.text)).toEqual({
-      hold: [...one.hold].sort(),
-      release: [...one.release].sort()
+      hold: [...expected.hold].sort(),
+      release: [...expected.release].sort()
     })
   })
 })

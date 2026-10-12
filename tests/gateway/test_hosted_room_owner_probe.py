@@ -120,7 +120,7 @@ def test_an_unreadable_process_is_unknown_not_ended(domain, monkeypatch):
     assert probe.probe_owner_incarnation(domain) == probe.UNKNOWN
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("failure", ["denied", "readonly", "missing", "malformed"])
 def test_unreadable_kernel_ticks_never_authorize_death(domain, monkeypatch, failure):
     import errno

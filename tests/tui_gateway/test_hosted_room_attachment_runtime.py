@@ -42,7 +42,7 @@ from tests.tui_gateway.test_hosted_room_driver_runtime import (
     _identity,
     _runtime,
     _wait_for,
-    db,
+    db as db,  # noqa: PLC0414 -- pytest fixture export
 )
 
 
@@ -178,6 +178,7 @@ class FakeSessionRPC:
         task: state.TaskIdentity,
         execution_generation: int,
         on_terminal,
+        member_id=None,
     ):
         self._assert_lock(profile)
         params = {

@@ -5,6 +5,7 @@ import {
   $hostedDirectories, $hostedRooms, approveHostedTask, discardHostedInput, discoverHostedRooms, fetchHostedAttachment, invalidateHostedRoom,
   refreshHostedRoom, resolveHostedTelegramDelivery, retryHostedTask, sendHostedInput, stopHostedRoom
 } from './hosted-room-client'
+import type { HostedRoomCache } from './hosted-room-client'
 import { hostedHolds, hostedPendingActions } from './hosted-room-protocol'
 import type { HostedTelegramDelivery } from './hosted-room-protocol'
 import { useBots } from './i18n'
@@ -109,6 +110,60 @@ export function HostedRoomAttachment({ attachment, eventId, roomKey }: {
   )
 }
 
+interface HostedTelegramRecoveryProps {
+  roomKey: string
+  cache?: HostedRoomCache
+}
+
+function HostedTelegramRecovery({ roomKey, cache }: HostedTelegramRecoveryProps) {
+  const b = useBots()
+  const [telegramId, setTelegramId] = useState('')
+
+  const [resolution, setResolution] = useState<{
+    roomKey: string; chatId: number; delivery: HostedTelegramDelivery; decision: 'retry' | 'confirmed-delivered'; messageId?: number
+  } | null>(null)
+
+  const telegram = cache?.telegramStatus
+  const delivery = telegram?.attention
+  const messageId = /^\d+$/.test(telegramId.trim()) ? Number(telegramId.trim()) : NaN
+
+  return <>
+    {delivery ? (
+      <div className="grid min-w-0 gap-1" role="status">
+        <p className="break-words">{b.hosted.deliveryDetail(telegram.chat_id, delivery.profile, delivery.event_id, delivery.chunk_index + 1, delivery.attempt, b.hosted.deliveryStatus[delivery.status])}</p>
+        {delivery.retry_after ? <p>{b.hosted.telegramCooldown(new Date(delivery.retry_after * 1000).toLocaleString())}</p> : null}
+        {telegram.blocked ? <p>{b.hosted.telegramReadback}</p> : null}
+        {telegram.blocked && !cache?.capabilities?.telegramRecovery ? <p>{b.hosted.noTelegramRecovery}</p> : null}
+        {telegram.blocked && cache?.capabilities?.telegramRecovery ? (
+          <>
+            <label className="grid gap-1">
+              {b.hosted.telegramMessageId}
+              <input className="min-w-0 rounded border border-(--ui-stroke-secondary) p-1" disabled={cache.busy} inputMode="numeric" onChange={event => setTelegramId(event.target.value)} value={telegramId} />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={cache.busy || !Number.isSafeInteger(messageId) || messageId <= 0} onClick={() => setResolution({ roomKey, chatId: telegram.chat_id, delivery, decision: 'confirmed-delivered', messageId })} size="xs" variant="secondary">{b.hosted.markDelivered}</Button>
+              <Button disabled={cache.busy || Boolean(delivery.retry_after && delivery.retry_after * 1000 > Date.now())} onClick={() => setResolution({ roomKey, chatId: telegram.chat_id, delivery, decision: 'retry' })} size="xs" variant="ghost">{b.hosted.authorizeDeliveryRetry}</Button>
+            </div>
+          </>
+        ) : null}
+      </div>
+    ) : null}
+    <ConfirmDialog
+      confirmLabel={resolution?.decision === 'retry' ? b.hosted.retryPart : b.hosted.confirmDelivered}
+      description={resolution ? `${b.hosted.deliveryConfirmation(resolution.chatId, resolution.delivery.profile, resolution.delivery.event_id, resolution.delivery.chunk_index + 1, resolution.delivery.attempt)} ${resolution.decision === 'retry'
+        ? b.hosted.retryPartWarning
+        : b.hosted.confirmDeliveredWarning(resolution.messageId!)}` : ''}
+      destructive={resolution?.decision === 'retry'}
+      onClose={() => setResolution(null)}
+      onConfirm={async () => {
+        if (resolution) {await resolveHostedTelegramDelivery(resolution.roomKey, resolution.delivery, resolution.decision, resolution.messageId)}
+      }}
+      open={resolution !== null}
+      title={b.hosted.reconcileDeliveryTitle}
+    />
+  </>
+}
+
 /** Polling only observes the server. Parking/closing this view never stops or
  * resubmits work, and a transport failure waits for explicit recovery. */
 export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
@@ -117,11 +172,6 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
   const cache = useValue($hostedRooms)[roomKey]
   const gateway = useValue(host.state.gateway)
   const [discard, setDiscard] = useState<{ roomKey: string; eventId: string } | null>(null)
-  const [telegramId, setTelegramId] = useState('')
-
-  const [resolution, setResolution] = useState<{
-    roomKey: string; chatId: number; delivery: HostedTelegramDelivery; decision: 'retry' | 'confirmed-delivered'; messageId?: number
-  } | null>(null)
 
   useEffect(() => {
     if (!visible) {return}
@@ -148,8 +198,6 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
 
   const driver = cache?.driverStatus
   const telegram = cache?.telegramStatus
-  const delivery = telegram?.attention
-  const messageId = /^\d+$/.test(telegramId.trim()) ? Number(telegramId.trim()) : NaN
   const status = telegram?.blocked ? b.hosted.telegramBlocked : !driver?.running ? b.hosted.workerUnavailable : driver.blocked ? b.hosted.blocked : driver.working ? t.sidebar.statusDivider.working : b.hosted.idle
   const actions = hostedPendingActions(driver)
   const reported = Array.isArray(driver?.pending_actions) ? driver.pending_actions.length : 0
@@ -168,26 +216,7 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
         <Button disabled={cache?.busy} onClick={() => void refreshHostedRoom(roomKey)} size="xs" variant="ghost">{b.hosted.refreshRoom}</Button>
         <Button disabled={cache?.busy || !driver?.running} onClick={() => void stopHostedRoom(roomKey)} size="xs" variant="ghost">{b.hosted.stopRoomWork}</Button>
       </div>
-      {delivery ? (
-        <div className="grid min-w-0 gap-1" role="status">
-          <p className="break-words">{b.hosted.deliveryDetail(telegram.chat_id, delivery.profile, delivery.event_id, delivery.chunk_index + 1, delivery.attempt, b.hosted.deliveryStatus[delivery.status])}</p>
-          {delivery.retry_after ? <p>{b.hosted.telegramCooldown(new Date(delivery.retry_after * 1000).toLocaleString())}</p> : null}
-          {telegram.blocked ? <p>{b.hosted.telegramReadback}</p> : null}
-          {telegram.blocked && !cache?.capabilities?.telegramRecovery ? <p>{b.hosted.noTelegramRecovery}</p> : null}
-          {telegram.blocked && cache?.capabilities?.telegramRecovery ? (
-            <>
-              <label className="grid gap-1">
-                {b.hosted.telegramMessageId}
-                <input className="min-w-0 rounded border border-(--ui-stroke-secondary) p-1" disabled={cache.busy} inputMode="numeric" onChange={event => setTelegramId(event.target.value)} value={telegramId} />
-              </label>
-              <div className="flex flex-wrap gap-2">
-                <Button disabled={cache.busy || !Number.isSafeInteger(messageId) || messageId <= 0} onClick={() => setResolution({ roomKey, chatId: telegram.chat_id, delivery, decision: 'confirmed-delivered', messageId })} size="xs" variant="secondary">{b.hosted.markDelivered}</Button>
-                <Button disabled={cache.busy || Boolean(delivery.retry_after && delivery.retry_after * 1000 > Date.now())} onClick={() => setResolution({ roomKey, chatId: telegram.chat_id, delivery, decision: 'retry' })} size="xs" variant="ghost">{b.hosted.authorizeDeliveryRetry}</Button>
-              </div>
-            </>
-          ) : null}
-        </div>
-      ) : null}
+      <HostedTelegramRecovery cache={cache} roomKey={roomKey} />
       {holds.length ? (
         <p role="status">
           {b.hosted.pausedByYou(holds.map(hold => hold.label).join(', '), holds[0].handle)}
@@ -230,19 +259,6 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
           <Button disabled={cache.busy} onClick={() => setDiscard({ roomKey, eventId: cache.pending!.eventId })} size="xs" variant="ghost">{b.group.discardSavedInput}</Button>
         </div>
       ) : null}
-      <ConfirmDialog
-        confirmLabel={resolution?.decision === 'retry' ? b.hosted.retryPart : b.hosted.confirmDelivered}
-        description={resolution ? `${b.hosted.deliveryConfirmation(resolution.chatId, resolution.delivery.profile, resolution.delivery.event_id, resolution.delivery.chunk_index + 1, resolution.delivery.attempt)} ${resolution.decision === 'retry'
-          ? b.hosted.retryPartWarning
-          : b.hosted.confirmDeliveredWarning(resolution.messageId!)}` : ''}
-        destructive={resolution?.decision === 'retry'}
-        onClose={() => setResolution(null)}
-        onConfirm={async () => {
-          if (resolution) {await resolveHostedTelegramDelivery(resolution.roomKey, resolution.delivery, resolution.decision, resolution.messageId)}
-        }}
-        open={resolution !== null}
-        title={b.hosted.reconcileDeliveryTitle}
-      />
       <ConfirmDialog
         confirmLabel={b.group.discardLocalInput}
         description={b.group.discardSavedWarning}

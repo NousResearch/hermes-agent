@@ -11,11 +11,15 @@ logger = logging.getLogger("tools.process_registry")
 
 
 class ProcessCheckpointMixin:
+    def _detached_host_fate(self, pid: Optional[int], expected_start: Optional[int]) -> str:
+        """Subclass supplies the live PID decision. See ProcessRegistry."""
+        raise NotImplementedError
+
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self, extra_entries: Optional[List[Dict[str, Any]]] = None):
+    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
         """Write running process metadata to the checkpoint file atomically."""
-        from tools.process_registry import CHECKPOINT_PATH, _CHECKPOINT_FIELDS
+        from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
         try:
             with self._lock:
@@ -39,7 +43,7 @@ class ProcessCheckpointMixin:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
             from utils import atomic_json_write
-            atomic_json_write(CHECKPOINT_PATH, entries)
+            atomic_json_write(_checkpoint_path(), entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
@@ -47,37 +51,48 @@ class ProcessCheckpointMixin:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
         were recovered as detached sessions."""
         from tools.process_registry import (
-            CHECKPOINT_PATH, ProcessSession, _CHECKPOINT_FIELDS,
+            ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
         )
 
-        if not CHECKPOINT_PATH.exists():
+        checkpoint_path = _checkpoint_path()
+        if not checkpoint_path.exists():
             return 0
         try:
-            entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
+            entries = json.loads(checkpoint_path.read_text(encoding="utf-8-sig"))
         except Exception:
             return 0
         recovered = 0
-        unresolved_scope_entries: List[Dict[str, Any]] = []
+        unresolved_scope_entries: list[dict[str, Any]] = []
         for entry in entries:
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
+                continue
+            # The registry is process-global, so every profile's checkpoint carries every live
+            # process; a multiplexer recovering several homes must adopt each session once.
+            with self._lock:
+                already_tracked = entry.get("session_id") in self._running
+            if already_tracked:
                 continue
             if pid_scope != "host":  # in-sandbox PIDs mean nothing once the env handle is gone
                 logger.info(
                     "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
                     entry.get("command", "unknown")[:60], pid, pid_scope)
                 continue
-            # Alive AND the same process: across a restart the kernel may have
-            # recycled the PID onto a stranger, and adopting it would let a later
-            # kill tree-kill e.g. a browser.
-            if not self._host_pid_is_ours(pid, entry.get("host_start_time")):
-                if self._is_host_pid_alive(pid):
-                    logger.info(
-                        "Not recovering session %s: pid %d is alive but its "
-                        "start time no longer matches — PID was recycled onto "
-                        "an unrelated process; refusing to adopt it.",
-                        entry.get("session_id", "?"), pid)
+            # Alive and still ours: re-attach. A start-time probe that cannot
+            # be read is not proof the PID was reused — dropping it would leave
+            # a live child unsupervised, and marking it exited would invent a
+            # completion. A positive mismatch means the number was recycled:
+            # do not adopt it and do not signal it.
+            fate = self._detached_host_fate(pid, entry.get("host_start_time"))
+            if fate == "reused":
+                logger.info(
+                    "Not recovering session %s: pid %d is alive but its "
+                    "start time no longer matches — PID was recycled onto "
+                    "an unrelated process; refusing to adopt or signal it.",
+                    entry.get("session_id", "?"), pid)
+                continue
+            if fate != "running":
                 systemd_unit = entry.get("systemd_unit", "")
                 if systemd_unit and not _stop_systemd_unit(systemd_unit):
                     logger.warning(

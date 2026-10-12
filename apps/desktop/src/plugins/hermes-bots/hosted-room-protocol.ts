@@ -363,6 +363,14 @@ export function hostedMembers(room: HostedRoomSummary): GroupMember[] {
 
 /** Imported records are a read-only archive, not native turns or planner input.
  * Keep source order and isolate thread/entry identities across independent histories. */
+function validateLegacyRecord(record: Record<string, unknown>, kind: unknown, duplicate: boolean) {
+  if (duplicate || !['user', 'member'].includes(String(kind)) || typeof record.text !== 'string' ||
+      typeof record.at !== 'number' || !Number.isFinite(record.at) ||
+      ('images' in record && (!Array.isArray(record.images) || record.images.length))) {
+    throw new Error('Invalid legacy history record')
+  }
+}
+
 function legacyHistoryTranscript(event: Pick<HostedEvent, 'kind' | 'payload' | 'event_id' | 'seq'>): GroupMessage[] {
   if (event.kind !== 'room.created' || !('legacy_history' in event.payload)) {return []}
   const history = hostedRecord(event.payload.legacy_history)
@@ -390,10 +398,7 @@ function legacyHistoryTranscript(event: Pick<HostedEvent, 'kind' | 'payload' | '
       const id = text(record.id)
       const name = text(author.name)
 
-      if (ids.has(id) || !['user', 'member'].includes(String(author.kind)) || typeof record.text !== 'string' ||
-          typeof record.at !== 'number' || !Number.isFinite(record.at) || ('images' in record && (!Array.isArray(record.images) || record.images.length))) {
-        throw new Error('Invalid legacy history record')
-      }
+      validateLegacyRecord(record, author.kind, ids.has(id))
 
       ids.add(id)
 
@@ -410,7 +415,7 @@ function legacyHistoryTranscript(event: Pick<HostedEvent, 'kind' | 'payload' | '
       if (!threads.has(thread)) {threads.set(thread, threads.size)}
 
       result.push({
-        id: JSON.stringify([event.event_id, surface, id]), at: record.at,
+        id: JSON.stringify([event.event_id, surface, id]), at: record.at as number,
         from: { kind: author.kind as 'user' | 'member', name, source: `Imported ${provenance}` },
         text: `[Imported ${provenance} history, not a native turn]\n\n${record.text}`,
         thread: `legacy-history:${event.seq}:${surface}:${threads.get(thread)}`

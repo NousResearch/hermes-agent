@@ -18,14 +18,14 @@ import wave
 from pathlib import Path
 from typing import Any
 
-import yaml
+import hermes_yaml as yaml
 
 import hermes_constants
-import tools.transcription_tools as transcription_tools
+from tools import transcription_tools
 from agent.secret_scope import current_secret_scope
 from gateway import media_text
 
-from tests.tui_gateway.test_hosted_room_native_phase1 import native  # noqa: F401  (fixture)
+from tests.tui_gateway.test_hosted_room_native_phase1 import native as native  # noqa: PLC0414 -- pytest fixture export
 
 
 ROOM_TITLE = "Group: media-room"
@@ -58,7 +58,7 @@ def _profile(home: Path, name: str, *, stt_enabled: bool, api_key: str) -> Path:
     root = home / "profiles" / name
     root.mkdir(parents=True)
     (root / "config.yaml").write_text(
-        yaml.dump({"stt": {"enabled": stt_enabled}}), encoding="utf-8")
+        yaml.safe_dump({"stt": {"enabled": stt_enabled}}), encoding="utf-8")
     (root / ".env").write_text(f"GROQ_API_KEY={api_key}\n", encoding="utf-8")
     return root
 
@@ -172,9 +172,8 @@ def test_video_is_staged_for_the_media_tools_and_never_transcribed(native):
 def test_failed_transcription_keeps_the_native_agent_reference(native):
     """A turn carrying a voice message reaches the model either as words or as one marker.
 
-    ``_attachment_ref_path`` is workspace-relative for an attachment inside the session
-    workspace and absolute for one outside it; the marker carries whichever reference the
-    agent can actually open, and says nothing about providers or setup.
+    Native uploads live in the session workspace. The marker carries the reference the
+    agent can open, and says nothing about providers or setup.
     """
     profile_home = _profile(native.home, "alpha", stt_enabled=True, api_key="alpha-not-a-real-key")
     audio = _wav_bytes()
@@ -194,9 +193,9 @@ def test_failed_transcription_keeps_the_native_agent_reference(native):
         for advice in ("STT", "provider", "refused", "install", "configure", "API key"):
             assert advice not in staged["derived_text"]
 
-    # Both native reference shapes, taken from the sessions' genuine workspace settings.
+    # Native staging copies uploads into each session's workspace.
     assert not Path(inside["ref_path"]).is_absolute()
-    assert Path(outside["ref_path"]).is_absolute()
+    assert not Path(outside["ref_path"]).is_absolute()
 
 
 def test_empty_transcription_is_a_sentinel_the_model_can_act_on(native):

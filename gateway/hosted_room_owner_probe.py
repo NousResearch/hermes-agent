@@ -22,11 +22,13 @@ their epoch mismatch is ``unknown``, while verified absence or zombie status sti
 from __future__ import annotations
 
 import math
+import logging
 import os
 from pathlib import Path
 from typing import Any, Mapping, TypeGuard
 
 DESCRIPTOR_VERSION = 2
+logger = logging.getLogger(__name__)
 
 # Only legacy epoch equality uses tolerance. An epoch mismatch is not evidence of PID reuse:
 # Linux btime (and therefore psutil create_time) can shift while the process remains alive.
@@ -74,6 +76,7 @@ def capture_local_domain() -> dict[str, Any] | None:
         process_start = float(psutil.Process(pid).create_time())
         process_start_ticks = _proc_start_ticks(pid)
     except Exception:
+        logger.debug("Could not capture room owner incarnation", exc_info=True)
         return None  # a descriptor that cannot be probed later is worse than none at all
     domain = {
         "descriptor_version": DESCRIPTOR_VERSION, "host": os.uname().nodename,
@@ -153,6 +156,7 @@ def probe_owner_incarnation(descriptor: Mapping[str, Any] | None) -> str:
     try:
         import psutil
     except Exception:
+        logger.debug("Process inspection is unavailable", exc_info=True)
         return UNKNOWN
     pid = int(descriptor["pid"])
     try:
@@ -172,6 +176,7 @@ def probe_owner_incarnation(descriptor: Mapping[str, Any] | None) -> str:
     except Exception:
         # AccessDenied, a zombie racing collection, an unexpected OSError: all unreadable, and an
         # unreadable process has NOT been shown to have ended.
+        logger.debug("Could not inspect room owner incarnation", exc_info=True)
         return UNKNOWN
     if not math.isfinite(started) or started <= 0:
         return UNKNOWN

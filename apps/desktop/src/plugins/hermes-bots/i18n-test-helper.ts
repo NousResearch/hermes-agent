@@ -9,7 +9,9 @@
 
 import { BOTS_LOCALES } from './i18n'
 
-export function botsTranslator(locale: 'en' | 'ja' | 'zh' | 'zh-hant') {
+/** The same resolver against another shipped locale, for a test that has to
+ *  tell a catalog string from an English literal that happens to match `en`. */
+export function translateBotsIn(locale: keyof typeof BOTS_LOCALES) {
   return (key: string, ...args: unknown[]): string => {
     const value = key
       .split('.')
@@ -26,4 +28,4 @@ export function botsTranslator(locale: 'en' | 'ja' | 'zh' | 'zh-hant') {
   }
 }
 
-export const translateBots = botsTranslator('en')
+export const translateBots = translateBotsIn('en')

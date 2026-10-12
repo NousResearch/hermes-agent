@@ -113,6 +113,25 @@ async function negotiate(route: ProfileRoute, identity?: HostedRoomIdentity): Pr
 
 /** Discovery uses the ordinary registered connection, not renderer-local imports
  * or hand-written storage. Old saved identities remain openable during outages. */
+function restoreHostedBookmarks(
+  connectionId: string,
+  saved: Array<{ identity: HostedRoomIdentity; name: string }>,
+  keys: string[]
+) {
+  for (const bookmark of Array.isArray(saved) ? saved : []) {
+    if (bookmark?.identity?.connectionId !== connectionId || !bookmark.identity.authorityGatewayId || !bookmark.identity.roomId) {continue}
+    const key = hostedRoomKey(bookmark.identity)
+
+    if (!$hostedRooms.get()[key]) {
+      $hostedRooms.set({ ...$hostedRooms.get(), [key]: { ...bookmark, cursor: 0, events: [], busy: false, loading: false } })
+    }
+
+    if (!keys.includes(key)) {keys = [...keys, key]}
+  }
+
+  return keys
+}
+
 export async function discoverHostedRooms(connectionId: string): Promise<void> {
   const generation = (discoveries.get(connectionId) || 0) + 1
   discoveries.set(connectionId, generation)
@@ -131,16 +150,7 @@ export async function discoverHostedRooms(connectionId: string): Promise<void> {
 
     if (!current()) {return}
 
-    for (const bookmark of Array.isArray(saved) ? saved : []) {
-      if (bookmark?.identity?.connectionId !== connectionId || !bookmark.identity.authorityGatewayId || !bookmark.identity.roomId) {continue}
-      const key = hostedRoomKey(bookmark.identity)
-
-      if (!$hostedRooms.get()[key]) {
-        $hostedRooms.set({ ...$hostedRooms.get(), [key]: { ...bookmark, cursor: 0, events: [], busy: false, loading: false } })
-      }
-
-      if (!keys.includes(key)) {keys = [...keys, key]}
-    }
+    keys = restoreHostedBookmarks(connectionId, saved, keys)
 
     publish({ keys, loading: true })
     const route = await routeFor(connectionId)
@@ -271,6 +281,67 @@ function sameAttachments(saved: Attachment[], picked: Attachment[]): boolean {
 
 /** One unresolved input per room. An uncertain acceptance is NOT a new input;
  * retry its exact persisted id, bytes and payload, even after a renderer restart. */
+async function preparePendingInput(key: string, text?: string, threadId?: string | null, attachments?: Attachment[]) {
+  const pending = await readPendingInput(key, storage())
+
+  if (pending) {
+    if (text !== undefined && (pending.text !== text.trim() || pending.threadId !== threadId ||
+        (attachments !== undefined && !sameAttachments(pending.attachments || [], attachments)))) {
+      throw new Error('Resolve the pending input before sending another message')
+    }
+
+    return pending
+  }
+
+  const picked = attachments || []
+
+  if (!text?.trim() && !picked.length) {throw new Error('Enter a message or attach a file')}
+  const prepared = prepareHostedMessageAttachments(picked)
+
+  // Freeze ids and bytes before the first network call; retries reuse the same uploads.
+  const created: PendingInput = {
+    eventId: crypto.randomUUID(), text: text?.trim() || '', threadId: threadId || crypto.randomUUID(),
+    ...(picked.length ? {
+      attachments: picked.map((entry, index) => ({ ...entry, name: prepared[index].name, uploadId: entry.uploadId || crypto.randomUUID() }))
+    } : {})
+  }
+
+  await writePendingInput(key, created)
+
+  return created
+}
+
+function verifiedInputAcknowledgement(
+  result: Record<string, unknown>, roomId: string, pending: PendingInput, manifest: unknown
+) {
+  const event = hostedRecord(result.event)
+  const payload = hostedRecord(event.payload)
+
+  if (result.accepted !== true || result.client_event_id !== pending.eventId || event.room_id !== roomId ||
+      event.kind !== 'message.user' || payload.text !== pending.text || payload.thread_id !== pending.threadId ||
+      manifestKey(payload.attachments) !== manifestKey(manifest) ||
+      typeof event.event_id !== 'string' || typeof event.seq !== 'number' || !Number.isSafeInteger(event.seq) || event.seq < 1) {
+    throw new Error('Invalid hosted input acknowledgement; retry the saved input')
+  }
+
+  return { ...event, seq: event.seq }
+}
+
+function verifyCommittedInput(
+  proof: HostedReplay, event: Record<string, unknown>, pending: PendingInput, manifest: unknown
+) {
+  const committed = proof.events[0]
+  const actor = hostedRecord(event.actor)
+
+  if (proof.events.length !== 1 || committed.event_id !== event.event_id || committed.kind !== 'message.user' ||
+      committed.payload.text !== pending.text || committed.payload.thread_id !== pending.threadId ||
+      manifestKey(committed.payload.attachments) !== manifestKey(manifest) ||
+      committed.actor.kind !== 'user' || committed.actor.id !== actor.id ||
+      committed.created_at !== event.created_at || committed.authority_epoch !== event.authority_epoch) {
+    throw new Error('Hosted input acknowledgement was not found in the committed log')
+  }
+}
+
 export async function sendHostedInput(
   key: string, text?: string, threadId?: string | null, attachments?: Attachment[], onQueued?: () => void
 ): Promise<boolean> {
@@ -283,29 +354,7 @@ export async function sendHostedInput(
   let sent = false
 
   try {
-    let pending = await readPendingInput(key, storage())
-
-    if (pending && text !== undefined && (pending.text !== text.trim() || pending.threadId !== threadId ||
-        (attachments !== undefined && !sameAttachments(pending.attachments || [], attachments)))) {
-      throw new Error('Resolve the pending input before sending another message')
-    }
-
-    if (!pending) {
-      const picked = attachments || []
-
-      if (!text?.trim() && !picked.length) {throw new Error('Enter a message or attach a file')}
-      const prepared = prepareHostedMessageAttachments(picked)
-      // Ids and bytes are frozen HERE, before the first network call: a retry re-stages the
-      // same uploads (idempotent on the host) rather than minting a second set.
-      pending = {
-        eventId: crypto.randomUUID(), text: text?.trim() || '', threadId: threadId || crypto.randomUUID(),
-        ...(picked.length ? {
-          attachments: picked.map((entry, index) => ({ ...entry, name: prepared[index].name, uploadId: entry.uploadId || crypto.randomUUID() }))
-        } : {})
-      }
-      // Failure to persist is fatal: never risk minting a second id on reload.
-      await writePendingInput(key, pending)
-    }
+    let pending = await preparePendingInput(key, text, threadId, attachments)
 
     patchRoom(key, { pending })
     // Retire the originating composer only after verified persistence, while admission
@@ -351,15 +400,7 @@ export async function sendHostedInput(
       }
     }))
 
-    const event = hostedRecord(result.event)
-    const payload = hostedRecord(event.payload)
-
-    if (result.accepted !== true || result.client_event_id !== pending.eventId || event.room_id !== cache.identity.roomId ||
-        event.kind !== 'message.user' || payload.text !== pending.text || payload.thread_id !== pending.threadId ||
-        manifestKey(payload.attachments) !== manifestKey(manifest) ||
-        typeof event.event_id !== 'string' || typeof event.seq !== 'number' || !Number.isSafeInteger(event.seq) || event.seq < 1) {
-      throw new Error('Invalid hosted input acknowledgement; retry the saved input')
-    }
+    const event = verifiedInputAcknowledgement(result, cache.identity.roomId, pending, manifest)
 
     // Verify the exact committed event, without jumping over intervening events
     // or treating a write acknowledgement as the transcript.
@@ -370,16 +411,7 @@ export async function sendHostedInput(
     // Reuse replay validation for authority, sequence and high-water marks.
     // This targeted proof never advances the transcript's replay cursor.
     const proof = applyHostedPage({ cursor: event.seq - 1, events: [] }, page, room)
-    const committed = proof.events[0]
-    const actor = hostedRecord(event.actor)
-
-    if (proof.events.length !== 1 || committed.event_id !== event.event_id || committed.kind !== 'message.user' ||
-        committed.payload.text !== pending.text || committed.payload.thread_id !== pending.threadId ||
-        manifestKey(committed.payload.attachments) !== manifestKey(manifest) ||
-        committed.actor.kind !== 'user' || committed.actor.id !== actor.id ||
-        committed.created_at !== event.created_at || committed.authority_epoch !== event.authority_epoch) {
-      throw new Error('Hosted input acknowledgement was not found in the committed log')
-    }
+    verifyCommittedInput(proof, event, pending, manifest)
 
     await writePendingInput(key, null)
     patchRoom(key, { pending: undefined })

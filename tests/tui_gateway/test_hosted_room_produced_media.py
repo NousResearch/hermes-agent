@@ -24,8 +24,8 @@ from gateway.hosted_room_attachments import AttachmentIntegrityError
 from tui_gateway.hosted_room_driver import room_session_title
 from tui_gateway.hosted_room_service import HostedRoomService
 
-from tests.tui_gateway.test_hosted_room_native_phase1 import (  # noqa: F401  (fixture)
-    WAIT, hosted_task, native, wait_until,
+from tests.tui_gateway.test_hosted_room_native_phase1 import (
+    WAIT, hosted_task, native as native, wait_until,  # noqa: PLC0414 -- pytest fixture export
 )
 
 
@@ -286,27 +286,39 @@ def test_refusal_is_durable_and_keeps_accepted_content(room, tmp_path, monkeypat
     rejected.write_bytes(b"%PDF-1.7\n" if failure == "poppler" else b"not an image")
     paths = [kept, rejected]
     expected_count = 1
-    if failure == "poppler":
+    def without_poppler():
         monkeypatch.setattr("tui_gateway.hosted_room_service.shutil.which", lambda _: None)
-    elif failure == "quota":
+        return [kept, rejected], 1
+
+    def over_quota():
         room.attachments.room_quota_count = 1
-        rejected = tmp_path / "quota.txt"
-        rejected.write_bytes(b"over quota")
-        paths = [kept, rejected]
-    elif failure == "only_refused":
-        paths = [rejected]
-        expected_count = 0
-    elif failure in {"count", "refused"}:
+        quota_file = tmp_path / "quota.txt"
+        quota_file.write_bytes(b"over quota")
+        return [kept, quota_file], 1
+
+    def many_files():
         paths = [kept, *(tmp_path / f"file-{i}.txt" for i in range(10))]
         if failure == "count":
             for path in paths[1:]:
                 path.write_bytes(b"more bytes")
-            expected_count = 8
-    elif failure == "bytes":
+        return paths, 8 if failure == "count" else 1
+
+    def oversized_files():
         paths = [kept, tmp_path / "large.txt", tmp_path / "overflow.txt"]
         paths[1].write_bytes(b"a" * 15_000_000)
         paths[2].write_bytes(b"b" * 10_000_000)
-        expected_count = 2
+        return paths, 2
+
+    cases = {
+        "mime": lambda: ([kept, rejected], 1),
+        "poppler": without_poppler,
+        "quota": over_quota,
+        "only_refused": lambda: ([rejected], 0),
+        "count": many_files,
+        "refused": many_files,
+        "bytes": oversized_files,
+    }
+    paths, expected_count = cases[failure]()
     room.send(room_id=ROOM_ID, event_id="user-1",
               payload={"text": "@default produce files", "thread_id": "thread-1"})
     _settle(room, "Accepted text.\n" + "\n".join(f"MEDIA:{path}" for path in paths))
@@ -345,13 +357,13 @@ def test_refusal_is_durable_and_keeps_accepted_content(room, tmp_path, monkeypat
                for task in driver.list_tasks(reopened.db_path, room_id=ROOM_ID, status="queued"))
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("swap", ["file", "ancestor"])
 @pytest.mark.parametrize("validation_number", [1, 2])
 def test_source_swap_after_validation_never_reads_substituted_bytes(
     room, tmp_path, monkeypatch, swap, validation_number,
 ):
-    import gateway.platforms.base as base
+    from gateway.platforms import base
 
     parent = tmp_path / "output"
     parent.mkdir()

@@ -3,7 +3,32 @@
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from tui_gateway import server
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_obsolete_agent_build_failure_cannot_fail_successor(monkeypatch, cancelled):
+    session = {"history_lock": threading.RLock(), "running": True}
+    old = server._new_turn_attempt(session)
+    if cancelled:
+        session["_pending_attempt_outcomes"][old] = "cancelled"
+    successor = server._new_turn_attempt(session)
+    inflight = {"user": "successor", "status": "running"}
+    session["inflight_turn"] = dict(inflight)
+    events, receipts = [], []
+    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *args: {"error": {"message": "build failed"}})
+    monkeypatch.setattr(server, "_emit", lambda *args: events.append(args))
+    server._run_after_agent_ready("rid", "sid", session, "old", None, None, receipts.append, attempt=old)
+    assert session["running"] is True
+    assert session["inflight_turn"] == inflight
+    assert session["_turn_attempt"] == successor
+    assert session["_pending_attempt_outcomes"] == {successor: None}
+    expected = {"status": "cancelled", "text": ""} if cancelled else {
+        "status": "failed", "text": "", "error": "The turn was replaced before it started"}
+    assert receipts == [expected]
+    assert events == []
 
 
 def test_facade_binds_current_merge_helpers_to_its_own_namespace():

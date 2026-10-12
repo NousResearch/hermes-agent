@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type * as Client from './hosted-room-client'
 import type * as Controls from './hosted-room-controls'
 import { hostedPendingActions, hostedRoomKey } from './hosted-room-protocol'
-import { botsTranslator } from './i18n-test-helper'
+import { translateBotsIn } from './i18n-test-helper'
 import type { Attachment } from './types'
 
 const { host, language } = vi.hoisted(() => ({
@@ -27,7 +27,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     ...await pluginSdkMock(host),
     useValue: useStore,
     useI18n: (await import('../../i18n/context')).useI18n,
-    usePluginI18n: () => botsTranslator(language.locale),
+    usePluginI18n: () => translateBotsIn(language.locale),
     ConfirmDialog: (await import('../../components/ui/confirm-dialog')).ConfirmDialog,
     Button: ({ size: _size, variant: _variant, ...props }: ComponentProps<'button'> & { size?: string, variant?: string }) => <button type="button" {...props} />,
     RowButton: (props: ComponentProps<'button'>) => <button type="button" {...props} />,
@@ -269,7 +269,7 @@ it.each([
   ['zh', '托管群聊'], ['zh-hant', '託管群組聊天']
 ] as const)('renders %s discovery and attachment accessible names without translating filenames', async (locale, heading) => {
   language.locale = locale
-  const b = botsTranslator(locale)
+  const b = translateBotsIn(locale)
   const { TRANSLATIONS } = await import('../../i18n/catalog')
   const discover = vi.spyOn(client, 'discoverHostedRooms').mockResolvedValue(undefined)
   const onOpen = vi.fn()
@@ -301,7 +301,7 @@ it.each([
 
 it.each(['en', 'ja', 'zh', 'zh-hant'] as const)('renders %s recovery copy and accessible dialogs while preserving exact actions and raw errors', async locale => {
   language.locale = locale
-  const b = botsTranslator(locale)
+  const b = translateBotsIn(locale)
   const { TRANSLATIONS } = await import('../../i18n/catalog')
   const t = TRANSLATIONS[locale]
   const delivery = { event_id: 'output', chunk_index: 1, attempt: 2, profile: 'helper', thread_id: 'thread', status: 'uncertain' as const }

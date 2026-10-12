@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # STT reads the container from the file extension, so bytes whose stored name
 # carries none — a voice note uploaded as "voice", a Desktop drop renamed by the
 # user — are transcribed through a temporary copy named after their declared MIME.
-_MIME_SUFFIXES: Dict[str, str] = {
+_MIME_SUFFIXES: dict[str, str] = {
     "audio/aac": ".aac", "audio/flac": ".flac", "audio/x-flac": ".flac",
     "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/mpeg": ".mp3", "audio/mp3": ".mp3",
     "audio/ogg": ".ogg", "audio/opus": ".opus", "audio/vorbis": ".ogg",
@@ -62,11 +62,11 @@ def is_audio_mime(mime: Any) -> bool:
 
 def transcribe_clip(
     path: str,
-    transcribe_audio: Callable[..., Dict[str, Any]],
-    transcribe_audio_local_fallback: Callable[..., Dict[str, Any]],
+    transcribe_audio: Callable[..., dict[str, Any]],
+    transcribe_audio_local_fallback: Callable[..., dict[str, Any]],
     *,
     agent_path: Optional[str] = None,
-) -> Tuple[Optional[str], str]:
+) -> tuple[Optional[str], str]:
     """``(transcript_or_None, note)`` for one clip via configured STT with local fallback.
 
     Blocking: inbound callers own the thread hop.  ``agent_path`` names the clip the way the
@@ -139,5 +139,5 @@ def transcribe_media_file(path: str, *, mime: Any, agent_path: str) -> str:
                 clip, transcribe_audio, transcribe_audio_local_fallback, agent_path=agent_path)
         return note
     except Exception as exc:
-        logger.error("Transcription error: %s", exc)
+        logger.error("Transcription error: %s", exc, exc_info=True)
         return untranscribed_note(agent_path)

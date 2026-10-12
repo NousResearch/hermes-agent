@@ -135,6 +135,8 @@ class TestLegacyClarifyResults:
         c.compress(messages, force=True)
         assert requests, "exercise the public compression path, not a no-op window"
         dispatched = json.dumps(requests[0])
+        # Clarify is the exception: the semantic prune preserves real selections but filters
+        # headless-control notices before the source reaches the summarizer.
         assert json.dumps(expected_summary)[1:-1] in dispatched
         if expected is None or expected != answer:
             assert "using your own judgment" not in dispatched
@@ -3241,10 +3243,12 @@ class TestSummaryPromptBounding:
 
     _ELISION_MARKER = re.compile(r"\n*\.\.\.\[[^\]]*elided[^\n]*\.\.\.\n*")
 
-    def test_lean_sampling_keeps_record_boundaries(self):
-        """Lean sampling must elide whole serialized records: no section between elision markers
-        may start mid-record, and every retained record must be complete — including records
-        whose body contains blank lines, which are not record delimiters."""
+    def test_lean_large_input_is_not_silently_sampled(self):
+        """Above the bounded multi-call budget, preserve the canonical history and report failure.
+
+        The direct sampling helper still has its own diagnostic tests below, but it must not be
+        used to claim a complete checkpoint from an incomplete input.
+        """
         compressor = ContextCompressor(
             model="test/model", threshold_percent=0.85, protect_first_n=2, protect_last_n=2,
             quiet_mode=True, tail_mode="lean",
@@ -3257,29 +3261,12 @@ class TestSummaryPromptBounding:
         resp.choices[0].message.content = "## Historical Task Snapshot\nDone."
         telemetry = compressor._begin_compression_telemetry(current_tokens=1_000_000)
         with patch("agent.context_compressor.call_llm", return_value=resp) as mock_call:
-            assert compressor._generate_summary(messages) is not None
-        assert mock_call.call_count == 1
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
-        assert "chars elided" in prompt
-
-        transcript = prompt[prompt.index("[USER]: record-"):]
-        sections = [sec for sec in self._ELISION_MARKER.split(transcript) if "record-" in sec]
-        assert sections
-        for section in sections:
-            assert section.startswith("[USER]: record-"), section[:60]
-        whole = re.findall(r"\[USER\]: record-\d{4} " + re.escape(body) + r"(?=\n\n|\n*$)", transcript)
-        assert len(whole) == transcript.count("[USER]: record-") > 8
-        # Newest record anchors the tail and both ends of the history are represented.
-        assert whole[-1].startswith("[USER]: record-1199 ")
-        assert whole[0].startswith("[USER]: record-0000 ")
-        # Coverage telemetry describes exactly what the prompt shows, in records and record chars.
-        assert telemetry["summary_input_record_count"] == 1200
-        assert telemetry["summary_input_sampled_record_count"] == len(whole)
-        assert telemetry["summary_input_elided_record_count"] == 1200 - len(whole)
-        assert telemetry["summary_input_sampled_chars"] == sum(map(len, whole))
-        assert telemetry["summary_input_chars"] == (
-            telemetry["summary_input_sampled_chars"] + telemetry["summary_input_omitted_chars"]
-        )
+            assert compressor._generate_summary(messages) is None
+        assert mock_call.call_count == compressor._MAX_COMPLETE_SUMMARY_CHUNKS
+        assert compressor._previous_summary is None
+        assert compressor._last_summary_truncated_failure is True
+        assert telemetry["failure_class"] == "summary_input_uncovered"
+        assert telemetry.get("summary_input_omitted_chars") is None
 
     def test_lean_sampling_oversized_middle_record_does_not_evict_tail(self):
         """A record larger than one region's share is bounded inside itself, not allowed to consume
@@ -3344,13 +3331,13 @@ class TestSummaryPromptBounding:
         with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
             summary = c._generate_summary(messages)
 
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
-        assert summary.startswith(SUMMARY_PREFIX)
-        # previous summary block + new-turns block each capped, plus the
-        # fixed template: well under 3x the cap (unbounded would be ~800K).
-        assert len(prompt) < 2 * cap + 30_000
-        assert "PREV_HEAD" in prompt
-        assert "PREV_TAIL" in prompt
+        # The rehydrated previous checkpoint alone fills the old cap; a prompt with no room
+        # for new turns must fail closed rather than silently elide both histories.
+        assert summary is None
+        mock_call.assert_not_called()
+        assert c._last_summary_truncated_failure is True
+        assert c._previous_summary.startswith("PREV_HEAD ")
+        assert c._previous_summary.endswith(" PREV_TAIL")
 
     def test_marker_does_not_collide_with_summary_classifier(self):
         """The omitted-middle marker must never make bounded content classify

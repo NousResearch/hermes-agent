@@ -1,14 +1,8 @@
-"""Lean compaction makes EXACTLY ONE auxiliary LLM request per attempt.
+"""Lean compaction uses one auxiliary call when its complete redacted source fits.
 
-Contract (#96603 — the per-chunk digest loop made up to 28 extra aux calls
-and pushed compactions to 7-11 minutes on slow aux routes):
-
-(a) exactly one ``call_llm`` per compaction attempt in lean mode;
-(b) the single response's detailed-session-log section lands in the summary;
-(c) an oversized region is EVEN-SAMPLED into the one request's input (with
-    explicit elision markers), never split into extra requests;
-(d) the LLM-free anchor index and the session_search recovery footer are
-    still appended.
+Contract: one call for a covered small input; for oversized input, at most eight
+chronological calls during the same major compression, or an explicit failure.
+The anchor index and recovery footer remain part of accepted summaries.
 """
 
 from unittest.mock import patch, MagicMock
@@ -80,7 +74,7 @@ SUMMARY_BODY = (
 class TestLeanSingleAuxiliaryCall:
     def test_exactly_one_call_llm_per_lean_attempt(self):
         c = _mk_compressor()
-        turns = _big_region()
+        turns = _big_region(n_rounds=5)
         with patch(
             "agent.context_compressor.call_llm",
             return_value=_llm_response(SUMMARY_BODY),
@@ -90,7 +84,7 @@ class TestLeanSingleAuxiliaryCall:
         ) as aux_call:
             summary = c._generate_summary(turns)
         assert summary is not None
-        # THE contract: one auxiliary request per compaction attempt, total.
+        # A complete small input uses the one-call fast path.
         assert main_call.call_count + aux_call.call_count == 1
 
     def test_session_log_heading_lands_in_summary(self):
@@ -116,19 +110,21 @@ class TestLeanSingleAuxiliaryCall:
         assert _LEAN_RECOVERY_HEADING in summary
         assert "session_search" in summary
 
-    def test_oversized_region_sampled_not_split_into_more_requests(self):
+    def test_oversized_region_uses_bounded_complete_requests(self):
         c = _mk_compressor()
-        turns = _big_region(n_rounds=120, tool_chars=6_000)  # ~720K chars raw
+        turns = _big_region(n_rounds=120, tool_chars=6_000)
+        source = c._serialize_for_summary(turns)
         with patch(
             "agent.context_compressor.call_llm",
             return_value=_llm_response(SUMMARY_BODY),
         ) as mock_call:
-            c._generate_summary(turns)
-        assert mock_call.call_count == 1
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
-        # Bounded input with explicit elision markers, not a second request.
-        assert len(prompt) <= c._SUMMARY_INPUT_MAX_CHARS + 20_000
-        assert "chars elided" in prompt
+            assert c._generate_summary(turns) is not None
+        assert 1 < mock_call.call_count <= c._MAX_COMPLETE_SUMMARY_CHUNKS
+        prompts = [item.kwargs["messages"][0]["content"] for item in mock_call.call_args_list]
+        assert all(len(prompt) <= c._SUMMARY_INPUT_MAX_CHARS for prompt in prompts)
+        assert source[:100] in prompts[0]
+        assert source[-100:] in prompts[-1]
+        assert not any("chars elided" in prompt for prompt in prompts)
 
 
 class TestSampledSummaryInput:
@@ -150,17 +146,19 @@ class TestSampledSummaryInput:
         # The newest record anchors the last slice, so its token must be present outright.
         assert "<seg09>" in out
 
-    def test_legacy_mode_keeps_head_tail_bound(self):
+    def test_legacy_mode_also_preserves_full_source_with_bounded_calls(self):
         c = _mk_compressor(tail_mode="legacy")
         turns = _big_region(n_rounds=120, tool_chars=6_000)
         with patch(
             "agent.context_compressor.call_llm",
             return_value=_llm_response("## Historical Task Snapshot\nNone."),
         ) as mock_call:
-            c._generate_summary(turns)
-        assert mock_call.call_count == 1
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
-        assert "summary input truncated" in prompt
+            assert c._generate_summary(turns) is not None
+        assert 1 < mock_call.call_count <= c._MAX_COMPLETE_SUMMARY_CHUNKS
+        assert all(len(item.kwargs["messages"][0]["content"]) <= c._SUMMARY_INPUT_MAX_CHARS
+                   for item in mock_call.call_args_list)
+        assert not any("summary input truncated" in item.kwargs["messages"][0]["content"]
+                       for item in mock_call.call_args_list)
 
 
 if __name__ == "__main__":

@@ -120,9 +120,21 @@ class MicroCompactionMixin:
         """Micro-summarize one exchange into the rolling summary via the aux LLM (None on failure)."""
         from agent.auxiliary_client import aux_interrupt_protection, call_llm
 
+        messages = self._build_micro_summary_prompt(self._micro_compact_rolling_summary, exchange_text)
+        # Same route-independent transport ceiling as the batch summary prompt, checked on the WHOLE prompt
+        # before any dispatch: call_llm's recovery ladder re-sends these exact messages to a fallback route,
+        # so a later check would come too late. A refusal is an ordinary failure: the exchange stays in the
+        # transcript (skipped after repeated strikes) and batch compression handles it in bounded chunks.
+        prompt_chars = sum(len(message["content"]) for message in messages)
+        if prompt_chars > self._SUMMARY_INPUT_MAX_CHARS:
+            logger.warning(
+                "micro-summarization prompt has %s characters, over the %s-character transport ceiling — not sent",
+                f"{prompt_chars:,}", f"{self._SUMMARY_INPUT_MAX_CHARS:,}",
+            )
+            return None
         call_kwargs = {
             "task": "compression",
-            "messages": self._build_micro_summary_prompt(self._micro_compact_rolling_summary, exchange_text),
+            "messages": messages,
             "max_tokens": min(1500, self.max_summary_tokens or 1500),
             "temperature": 0.1,
         }

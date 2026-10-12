@@ -10,6 +10,7 @@ from agent.verification_evidence import (
     record_terminal_result,
 )
 from agent.verification_stop import (
+    _verification_snapshot,
     build_verify_on_stop_nudge,
     verify_on_stop_enabled,
 )
@@ -105,6 +106,11 @@ def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
     linked_temp = tmp_path / "linked-temp"
     linked_temp.symlink_to(real_temp, target_is_directory=True)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(linked_temp))
+    # The workspace must have a recorded edit for a nudge to fire: an unverified
+    # workspace with an empty changed_paths ledger is now skipped entirely.
+    mark_workspace_edited(
+        session_id="s1", cwd=project, paths=[str(project / "src" / "app.ts")]
+    )
 
     nudge = build_verify_on_stop_nudge(
         session_id="s1",
@@ -166,3 +172,72 @@ def test_mixed_doc_and_code_edit_still_nudges(tmp_path, monkeypatch):
     # The doc path is filtered out of the reported set; the code path remains.
     assert code in nudge
     assert doc not in nudge
+
+# ---------------------------------------------------------------------------
+# Fix D: a workspace that was never edited (`unverified` + empty ledger) is
+# proof-complete, not outstanding.  It must not trip the nudge on its own, and
+# it must not be resurrected as a fallback when every candidate is skipped.
+# ---------------------------------------------------------------------------
+
+def test_snapshot_none_for_lone_never_edited_workspace(tmp_path, monkeypatch):
+    """No state row at all → verification_status() reports unverified with
+    changed_paths: [] → _verification_snapshot returns None, no nudge fires."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    project = tmp_path / "project"
+    _make_project(project)
+    changed = str(project / "src" / "app.ts")
+
+    assert _verification_snapshot(session_id="s1", changed_paths=[changed]) is None
+    assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
+
+def test_snapshot_none_when_all_candidates_skipped(tmp_path, monkeypatch):
+    """proj_a verified(passed) + proj_b unverified with an empty ledger → no
+    candidate needs proof → None, and the pre-filter snapshot is NOT returned
+    as a fallback."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    proj_a = tmp_path / "a"
+    proj_b = tmp_path / "b"
+    _make_project(proj_a)
+    _make_project(proj_b)
+    changed_a = str(proj_a / "src" / "app.ts")
+    changed_b = str(proj_b / "src" / "app.ts")
+
+    record_terminal_result(
+        command="pnpm test", cwd=proj_a, session_id="s1", exit_code=0, output="green",
+    )
+    mark_workspace_edited(session_id="s1", cwd=proj_b, paths=[])
+
+    assert _verification_snapshot(
+        session_id="s1", changed_paths=[changed_a, changed_b]
+    ) is None
+    assert build_verify_on_stop_nudge(
+        session_id="s1", changed_paths=[changed_a, changed_b]
+    ) is None
+
+def test_snapshot_still_returns_workspace_with_pending_edits(tmp_path, monkeypatch):
+    """Over-skip guard: an empty-ledger workspace alongside a genuinely edited
+    one must not suppress the nudge, and the *edited* workspace must be the one
+    selected (the nudge body lists every changed path, so the discriminator is
+    the returned status, not the nudge text)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    proj_clean = tmp_path / "clean"
+    proj_edited = tmp_path / "edited"
+    _make_project(proj_clean)
+    _make_project(proj_edited)
+    changed_clean = str(proj_clean / "src" / "app.ts")
+    changed_edited = str(proj_edited / "src" / "app.ts")
+
+    mark_workspace_edited(session_id="s1", cwd=proj_edited, paths=[changed_edited])
+
+    snapshot = _verification_snapshot(
+        session_id="s1", changed_paths=[changed_clean, changed_edited]
+    )
+    assert snapshot is not None
+    status, _facts = snapshot
+    assert status.get("changed_paths"), (
+        "the edited workspace (non-empty ledger) must be the snapshot selected, "
+        f"got {status!r}"
+    )
+    assert build_verify_on_stop_nudge(
+        session_id="s1", changed_paths=[changed_clean, changed_edited]
+    ) is not None

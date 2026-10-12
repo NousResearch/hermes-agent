@@ -1231,8 +1231,8 @@ def _spawn_bash_posix(argv: list[str], env: dict, stdin_data: str | None = None)
 
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host: every execute() spawns a fresh bash;
-    the session snapshot preserves env vars across calls; CWD persists via the
-    stdout marker."""
+    the session snapshot preserves exported env vars across calls (unless
+    ``persistent=False``); CWD persists via the stdout marker."""
 
     _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
@@ -1251,8 +1251,8 @@ class LocalEnvironment(BaseEnvironment):
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None):
-        super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
+        super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
         self.init_session()
 
     def get_temp_dir(self) -> str:

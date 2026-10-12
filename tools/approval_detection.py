@@ -310,7 +310,7 @@ DANGEROUS_PATTERNS = [
     (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
     # _CMDPOS-anchored like the hardline twins: quoted prose mentioning mkfs/dd must not require approval to echo.
     # See #93392.
-    (_CMDPOS + _cmd_name(r'mkfs'), "format filesystem"),
+    (_CMDPOS + _cmd_name(r'mkfs(?:\.[a-z0-9]+)?'), "format filesystem"),
     (_CMDPOS + _cmd_name(r'dd') + r'\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),

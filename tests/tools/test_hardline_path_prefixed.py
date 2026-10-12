@@ -82,8 +82,9 @@ def test_path_mentions_do_not_hit_hardline(command):
     assert not blocked, f"false hardline block for {command!r}: {desc}"
 
 
-def test_path_prefixed_mkfs_is_dangerous_too():
-    is_dangerous, _key, desc = detect_dangerous_command("/sbin/mkfs /dev/sdb1")
+@pytest.mark.parametrize("command", ["/sbin/mkfs /dev/sdb1", "/sbin/mkfs.ext4 /dev/sdb1"])
+def test_path_prefixed_mkfs_is_dangerous_too(command):
+    is_dangerous, _key, desc = detect_dangerous_command(command)
     assert is_dangerous
     assert desc == "format filesystem"
 

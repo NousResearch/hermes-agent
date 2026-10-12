@@ -74,3 +74,21 @@ def test_custom_argument_name():
 def test_malformed_block_opts_nothing_in(block):
     assert parse_session_origin_config("srv", {"session_origin": block}) is None
     assert "_hermesOrigin" not in _call(_server({"session_origin": block}), "watch_chat", {})
+
+
+def test_gateway_binds_the_session_id_every_turn():
+    """A turn on a cached agent never calls ``set_current_session_id``; the id must come from the routing entry."""
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionContext, SessionSource
+    from gateway.session_context import clear_session_vars, get_session_env
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001", chat_type="group", thread_id="42")
+    context = SessionContext(source=source, connected_platforms=[], home_channels={},
+                             session_key="agent:main:telegram:group:-1001:42", session_id="session-1")
+    tokens = GatewayRunner._set_session_env(SimpleNamespace(adapters={}), context)
+    try:
+        assert get_session_env("HERMES_SESSION_ID") == "session-1"
+        assert get_session_env("HERMES_SESSION_KEY") == "agent:main:telegram:group:-1001:42"
+    finally:
+        clear_session_vars(tokens)

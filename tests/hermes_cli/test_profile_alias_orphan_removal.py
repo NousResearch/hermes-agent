@@ -32,6 +32,7 @@ def _alias(profile, *, remove, name=None):
     profile_cmd._profile_alias(SimpleNamespace(profile_name=profile, remove=remove, alias_name=name))
 
 
+@pytest.mark.platforms("any")  # the wrapper name differs per host (.bat on Windows)
 def test_doctor_names_the_command_that_removes_an_orphan_alias(isolated_home, capsys):
     keep = isolated_home / ".hermes" / "profiles" / "keep"  # doctor's section needs one live profile
     keep.mkdir(parents=True)

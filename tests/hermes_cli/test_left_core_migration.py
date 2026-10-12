@@ -33,13 +33,35 @@ def _home(tmp_path: Path, name: str = "home", *, env: str = "", config: str = ""
     return home
 
 
+# The uncommented platform_toolsets block cli-config.yaml.example carried (the homeassistant row from
+# 1aa7badb3c until fb9fc8a3dd). The installers (install.sh, install.ps1, the Docker hook) and
+# `hermes doctor` seed config.yaml from that file, so the block alone says nothing about use.
+_EXAMPLE_PLATFORM_TOOLSETS = (
+    "platform_toolsets:\n"
+    "  cli: [hermes-cli]\n"
+    "  telegram: [hermes-telegram]\n"
+    "  discord: [hermes-discord]\n"
+    "  whatsapp: [hermes-whatsapp]\n"
+    "  slack: [hermes-slack]\n"
+    "  signal: [hermes-signal]\n"
+    "  homeassistant: [hermes-homeassistant]\n"
+    "  qqbot: [hermes-qqbot]\n"
+    "  yuanbao: [hermes-yuanbao]\n"
+    "  teams: [hermes-teams]\n"
+    "  google_chat: [hermes-google_chat]\n"
+)
+
+
 @pytest.mark.parametrize(("env", "config"), [
     ("HASS_TOKEN=abc\n", ""),
     ("", "platforms:\n  homeassistant:\n    enabled: true\n"),
     ("", "gateway:\n  platforms:\n    homeassistant:\n      enabled: true\n"),
     ("", "platforms:\n  homeassistant:\n    token: inline-token\n"),
     ("", "platform_toolsets:\n  cli: [hermes-cli, homeassistant]\n"),
-    ("", "platform_toolsets:\n  homeassistant: [hermes-homeassistant]\n"),
+    ("", "toolsets: [hermes-cli, homeassistant]\n"),
+    # The Home Assistant row counts once the platform itself is on.
+    ("", "platforms:\n  homeassistant:\n    enabled: true\n"
+         "platform_toolsets:\n  homeassistant: [hermes-homeassistant]\n"),
 ])
 def test_homeassistant_in_use_matches_what_core_activated(tmp_path, env, config):
     assert lcm.homeassistant_in_use(_home(tmp_path, env=env, config=config)) is True
@@ -51,6 +73,9 @@ def test_homeassistant_in_use_matches_what_core_activated(tmp_path, env, config)
     ("", "platforms:\n  homeassistant:\n    enabled: false\n    token: t\n"),
     ("", "platform_toolsets:\n  cli: [hermes-cli]\n"),
     ("OPENAI_API_KEY=sk\n", "platforms:\n  telegram:\n    enabled: true\n"),
+    # The platform's own row only scoped Home Assistant's own sessions, which need the platform on.
+    ("", "platform_toolsets:\n  homeassistant: [hermes-homeassistant]\n"),
+    ("", _EXAMPLE_PLATFORM_TOOLSETS),
 ])
 def test_homeassistant_not_in_use(tmp_path, env, config):
     assert lcm.homeassistant_in_use(_home(tmp_path, env=env, config=config)) is False
@@ -278,6 +303,45 @@ def test_a_failed_startup_install_backs_off_and_reports_one_line(tmp_path, monke
     assert lookups == ["homeassistant"] and len(said) == 1
     assert lcm.migrate_home(home, install=failing, say=said.append) == []
     assert lookups == ["homeassistant", "homeassistant"]
+
+
+def test_repeated_startup_failures_back_off_exponentially(tmp_path, monkeypatch):
+    """A home whose install can never succeed (version gate, root-owned plugins dir, no route to
+    GitHub) is retried after 1h, 2h, 4h ... up to a week, not every hour forever."""
+    import os
+    import time
+
+    import hermes_cli.memory_provider_migration as mpm
+    import pm.install
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
+    attempts = []
+    monkeypatch.setattr(lcm, "_install_into", lambda h: lambda n: attempts.append(n) or {"ok": False, "error": "x"})
+    stamp = mpm._failure_stamp(home, "homeassistant")
+
+    def start_after(hours: float) -> None:
+        then = time.time() - hours * 3600
+        os.utime(stamp, (then, then))
+        lcm._attempted.clear()  # a fresh agent/gateway process
+        lcm.recover_at_startup(say=lambda _m: None)
+
+    lcm.recover_at_startup(say=lambda _m: None)          # failure 1 → next try after 1h
+    start_after(1.5)                                     # failure 2 → next try after 2h
+    assert len(attempts) == 2
+    start_after(1.5)                                     # inside the 2h window: no network
+    assert len(attempts) == 2
+    start_after(2.5)                                     # failure 3 → 4h
+    start_after(3.5)
+    assert len(attempts) == 3
+    stamp.write_text("40", encoding="utf-8")             # capped at a week, never overflows
+    start_after(24 * 6.9)
+    assert len(attempts) == 3
+    start_after(24 * 7.1)
+    assert len(attempts) == 4
+    stamp.write_text("", encoding="utf-8")               # an older Hermes's empty stamp counts once
+    start_after(1.5)
+    assert len(attempts) == 5
 
 
 @pytest.mark.parametrize(("auth_json", "config", "in_use"), [

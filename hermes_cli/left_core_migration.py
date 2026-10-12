@@ -10,8 +10,9 @@ reuses; memory is not a row because its plugin name comes from ``memory.provider
 * Agent start and gateway start retry once per process for the active home (Desktop users update
   through the app and never run ``hermes update``), honouring ``security.allow_lazy_installs``.
 * After a failed attempt (catalog miss or unreachable, failed install) starts skip the row for
-  :data:`STARTUP_RETRY_SECONDS`, so an offline machine pays the network round trip once, not on every
-  ``hermes chat``; ``hermes update`` always retries.
+  an hour, doubling with each further failure up to a week, so an offline
+  machine pays the network round trip once, not on every ``hermes chat``, and a home whose install
+  cannot succeed stops failing every hour; ``hermes update`` always retries.
 * A home gets the plugin automatically at most once (``_left_core_installed`` in its config.yaml):
   ``hermes plugins remove`` afterwards is the user's choice and sticks.
 
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from hermes_cli.memory_provider_migration import (
-    STARTUP_RETRY_SECONDS, _failed_recently, _home_consent, _home_label, _install_command, _interactive,
+    _failed_recently, _home_consent, _home_label, _install_command, _interactive,
     _note_failure, _unattended_consent,
 )
 
@@ -68,10 +69,15 @@ def platform_configured_on(home: Path, name: str) -> bool:
     return platform.enabled or ("enabled" not in block and bool(str(platform.token or "").strip()))
 
 
-def _toolset_listed(config: dict, names: frozenset[str]) -> bool:
-    """A toolset in *names* is selected in ``platform_toolsets`` or the top-level ``toolsets`` list."""
-    selections = list((config.get("platform_toolsets") or {}).values()) if isinstance(
-        config.get("platform_toolsets"), dict) else []
+def _toolset_listed(config: dict, names: frozenset[str], *, own_platform: str = "") -> bool:
+    """A toolset in *names* is selected in ``platform_toolsets`` or the top-level ``toolsets`` list.
+
+    *own_platform*'s row is skipped: it scopes that platform's own sessions, which only exist once the
+    platform is on (:func:`platform_configured_on`). The installers copy cli-config.yaml.example into
+    config.yaml, and it carried ``homeassistant: [hermes-homeassistant]`` until Home Assistant left core,
+    so that row alone is not use."""
+    rows = config.get("platform_toolsets")
+    selections = [sel for platform, sel in rows.items() if platform != own_platform] if isinstance(rows, dict) else []
     selections.append(config.get("toolsets"))
     return any(isinstance(sel, list) and any(str(item) in names for item in sel) for sel in selections)
 
@@ -79,9 +85,9 @@ def _toolset_listed(config: dict, names: frozenset[str]) -> bool:
 def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
     """What made core run Home Assistant for *home*: ``HASS_TOKEN`` in its ``.env`` (it enabled both
     the gateway platform and the tools), the platform on in its gateway config
-    (:func:`platform_configured_on`), or the ``homeassistant`` / ``hermes-homeassistant`` toolset selected for a
-    platform. *process_env* (the active home at startup only) also counts a ``HASS_TOKEN`` the
-    process received from its environment (systemd unit, Docker, shell export)."""
+    (:func:`platform_configured_on`), or the ``homeassistant`` / ``hermes-homeassistant`` toolset selected for
+    another platform or in the top-level ``toolsets`` list. *process_env* (the active home at startup only)
+    also counts a ``HASS_TOKEN`` the process received from its environment (systemd unit, Docker, shell export)."""
     from agent.secret_scope import load_env_file
     if (load_env_file(home / ".env").get("HASS_TOKEN") or "").strip():
         return True
@@ -94,7 +100,8 @@ def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
             pass
     if platform_configured_on(home, "homeassistant"):
         return True
-    return _toolset_listed(_read_config(home), frozenset({"homeassistant", "hermes-homeassistant"}))
+    return _toolset_listed(
+        _read_config(home), frozenset({"homeassistant", "hermes-homeassistant"}), own_platform="homeassistant")
 
 
 def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
@@ -299,8 +306,8 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         if present:
             continue
         if backoff and _failed_recently(home, feature.plugin):
-            logger.info("%s plugin install failed recently for %s; retrying after %ds or on `hermes update`",
-                        feature.label, home, STARTUP_RETRY_SECONDS)
+            logger.info("%s plugin install failed recently for %s; retrying later or on `hermes update`",
+                        feature.label, home)
             continue
         if catalog_source(feature.plugin) is None:
             _note_failure(home, feature.plugin)

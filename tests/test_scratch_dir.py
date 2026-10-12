@@ -424,6 +424,42 @@ def test_midprune_resumed_write_is_rescued(tmp_path: Path) -> None:
     assert f"removed {str(entry)!r} (" not in log, log
 
 
+def test_midprune_nested_overwrite_is_rescued_by_descending_recheck(tmp_path: Path) -> None:
+    """Greptile P2 on #134173: the mid-prune re-validation must descend the whole
+    subtree, and the original rescue test could not pin that — a fresh file created
+    directly in ``entry`` also bumps the entry directory's own mtime, so a shallow
+    re-check that never looked below the top level would rescue it too. This case
+    holds every directory mtime ancient and touches only an existing file deep in
+    an old nested tree (an overwrite bumps the file's mtime alone), so a top-level
+    re-check sees idle and deletes real work while the descending walk rescues it.
+    Red against a shallow (lstat-only) re-validation; green against the subtree walk."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "nested-resume-lane"
+    deep = entry / "lane" / "wt"  # three levels, every directory aged below
+    deep.mkdir(parents=True)
+    payload = deep / "old-output.md"
+    payload.write_text("stale content\n", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (payload, deep, deep.parent, entry):
+        os.utime(path, (ancient, ancient))
+
+    def overwrite_during_reap(root, doomed, *args, **kwargs):
+        # The resumed writer overwrites an existing file inside the old nested
+        # tree: no directory mtime changes — only the file's own timestamp moves.
+        payload.write_text("FRESH OVERWRITE, DEEP\n", encoding="utf-8")
+        return 0
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", overwrite_during_reap):
+        assert prune_scratch_dir(scratch) == 0  # rescued — not counted as removed
+    assert payload.read_text(encoding="utf-8") == "FRESH OVERWRITE, DEEP\n", (
+        "deep mid-prune overwrite was destroyed"
+    )
+    assert entry.exists()
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"rescued {str(entry)!r} " in log, log
+    assert f"removed {str(entry)!r} (" not in log, log
+
+
 def test_midprune_vanished_entry_is_recorded_not_counted(tmp_path: Path) -> None:
     """The third state beside rescued and kept: an entry deleted by an outside actor
     during the reap window is recorded as vanished — not a rescue (no touch happened),

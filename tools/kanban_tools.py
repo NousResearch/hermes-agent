@@ -1148,9 +1148,17 @@ def _handle_create(args: dict, **kw) -> str:
             initial_status=str(args.get("initial_status") or "running"),
             created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
-        wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
+        events = kb.list_events(conn, new_tid)
+        wait = [e for e in events if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
-        return _ok(task_id=new_tid, **landed, **gate,
+        # Creation may have rewritten an unusable PR contract (see kanban_db.
+        # settle_contract): say so in the caller's own result, so the downgrade
+        # is seen when the card is declared, not at completion.
+        downgrade = next((e.payload["contract_downgrade"] for e in events
+                          if (e.payload or {}).get("contract_downgrade")), None)
+        rewritten = ({"completion_contract": "local-only",
+                      "contract_downgrade": downgrade} if downgrade else {})
+        return _ok(task_id=new_tid, **landed, **gate, **rewritten,
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 

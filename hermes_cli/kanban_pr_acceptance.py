@@ -11,10 +11,16 @@ org's private repos (#122689).
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
+import shutil
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import quote
+
+logger = logging.getLogger(__name__)
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
@@ -102,6 +108,112 @@ def _assignee_profile_home(assignee: str | None) -> str | None:
         return resolve_profile_env(normalize_profile_name(assignee))
     except (FileNotFoundError, ValueError):
         raise _GateAuthError(f"assignee profile {assignee!r} cannot be resolved") from None
+
+
+_PROBE_TTL_SECONDS = 300
+_probe_cache: dict[tuple[str, str | None], tuple[float, bool, str]] = {}
+
+
+def _required_checks(repo: str, profile_home: str | None) -> tuple[str, int]:
+    """``(default_branch, required_check_count)`` for *repo*, counted exactly as
+    :func:`collect_acceptance` counts them: the base ref's branch protection plus
+    every ``required_status_checks`` rule on that branch. Raises on anything that
+    is not a clean reading, so an unexpected shape never reads as "zero"."""
+    owner, name = repo.split("/")
+    query = (f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)})'
+             "{defaultBranchRef{name branchProtectionRule"
+             "{requiredStatusChecks{context}}}}}}")
+    repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
+    if not isinstance(repository, dict):
+        raise _GateAuthError(f"repository {repo} is not visible to this login")
+    ref = repository.get("defaultBranchRef")
+    if not isinstance(ref, dict) or not ref.get("name"):
+        raise ValueError(f"default branch of {repo} is unavailable")
+    branch = ref["name"]
+    protection = ref.get("branchProtectionRule") or {}
+    required = len(protection.get("requiredStatusChecks") or [])
+    pages = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                 paginate=True, profile_home=profile_home)
+    for page in pages:
+        for rule in page:
+            if rule.get("type") == "required_status_checks":
+                required += len(rule["parameters"]["required_status_checks"])
+    return branch, required
+
+
+def _gate_path(profile_home: str | None) -> str:
+    """The ``PATH`` the gate's own ``gh`` spawn resolves against, so a missing gh
+    is judged in the environment completion would really use — never the ambient
+    shell's."""
+    env = _gh_env(profile_home)
+    return (env or os.environ).get("PATH") or os.environ.get("PATH", "")
+
+
+def _probe_contract(contract: str, assignee: str | None) -> tuple[bool, str]:
+    """The uncached probe behind :func:`contract_is_usable`."""
+    try:
+        profile_home = _assignee_profile_home(assignee)
+    except _GateAuthError as exc:
+        return True, f"unverified: {exc}"
+    if shutil.which("gh", path=_gate_path(profile_home)) is None:
+        return False, ("PR acceptance evidence is read with the gh CLI, which the "
+                       "gate's environment cannot find, so no PR-form contract can "
+                       "ever pass here")
+    declared = _PR.fullmatch(contract)
+    repo = declared[1] if declared else contract
+    try:
+        branch, required = _required_checks(repo, profile_home)
+    except _GateAuthError as exc:
+        return True, f"unverified: {exc}"
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
+        # A transient failure is not evidence of a broken contract.
+        return True, "unverified: the required-check probe could not complete"
+    if not required:
+        return False, (f"repository {repo} configures no required status checks on its "
+                       f"default branch {branch!r}, so PR acceptance has no evidence to "
+                       "gate on; declare local-only and verify by hand, or add the checks")
+    return True, ""
+
+
+def settle_contract(contract: str | None, assignee: str | None = None) -> tuple[str, dict]:
+    """``(contract, payload)`` for card creation. A PR form that can never pass
+    acceptance is rewritten to ``local-only`` and ``payload`` carries the
+    ``contract_downgrade`` note for the ``created`` event; a usable declaration
+    returns an empty payload. A failed probe is never allowed to fail creation."""
+    contract = validate_contract(contract)
+    if contract == "local-only":
+        return contract, {}
+    try:
+        usable, reason = contract_is_usable(contract, assignee)
+    except Exception:  # health: allow BLE001 -- creation must survive a failed probe
+        logger.exception("completion-contract probe failed; keeping %r", contract)
+        return contract, {}
+    if usable:
+        return contract, {}
+    note = {"from": contract, "to": "local-only", "reason": reason}
+    return "local-only", {"contract_downgrade": note}
+
+
+def contract_is_usable(contract: str, assignee: str | None = None) -> tuple[bool, str]:
+    """Can a PR-form *contract* ever pass acceptance? Returns ``(usable, reason)``.
+
+    Only a DEFINITIVE negative counts, because the caller rewrites the declaration
+    on ``False``: this host has no ``gh`` to collect evidence with, or the repo
+    configures no required status checks at all. Anything uncertain — a transient
+    API failure, a login that cannot see the repo, an unexpected response shape —
+    fails open (``True``), leaving the completion gate to report the real reason
+    rather than silently discarding a creator's explicit contract.
+    """
+    if contract == "local-only":
+        return True, ""
+    key = (contract, assignee)
+    cached = _probe_cache.get(key)
+    now = time.monotonic()
+    if cached and now - cached[0] < _PROBE_TTL_SECONDS:
+        return cached[1], cached[2]
+    usable, reason = _probe_contract(contract, assignee)
+    _probe_cache[key] = (now, usable, reason)
+    return usable, reason
 
 
 def collect_acceptance(contract: str, published_pr: str | None,

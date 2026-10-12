@@ -1212,9 +1212,9 @@ def create_task(
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
-    from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_cli.kanban_pr_acceptance import settle_contract
 
-    completion_contract = validate_contract(completion_contract)
+    completion_contract, contract_note = settle_contract(completion_contract, assignee)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1326,7 +1326,7 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
-                        "provider_override": provider_override,
+                        "provider_override": provider_override, **contract_note,
                     },
                 )
                 if task_status == "blocked":

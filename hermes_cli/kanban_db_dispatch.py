@@ -71,7 +71,11 @@ _RESPAWN_BLOCKER_RE = re.compile(
 )
 
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
-_RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
+# Overridable from ``kanban.respawn_guard_success_window_seconds``; the module
+# constant is the default the config read falls back to (see
+# :func:`resolve_respawn_guard_windows`).
+RESPAWN_GUARD_SUCCESS_WINDOW_DEFAULT = 3600  # 1 hour
+_RESPAWN_GUARD_SUCCESS_WINDOW = RESPAWN_GUARD_SUCCESS_WINDOW_DEFAULT
 
 # Cooldown after a rate-limited (quota-wall) requeue before re-spawning. Without
 # it the task would re-spawn on the very next tick and bounce off the same quota
@@ -79,8 +83,11 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
-# Within this window a GitHub PR URL in a comment blocks re-spawn.
-_RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
+# Within this window a GitHub PR URL in a comment blocks re-spawn. Overridable
+# from ``kanban.respawn_guard_pr_window_seconds`` (same fallback shape as the
+# success window above).
+RESPAWN_GUARD_PR_WINDOW_DEFAULT = 86400  # 24 hours
+_RESPAWN_GUARD_PR_WINDOW = RESPAWN_GUARD_PR_WINDOW_DEFAULT
 
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
@@ -1523,7 +1530,12 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 
 
 def check_respawn_guard(
-    conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    lane: str = "ready",
+    success_window: Optional[int] = None,
+    pr_window: Optional[int] = None,
 ) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -1542,6 +1554,11 @@ def check_respawn_guard(
     PR). The review lane skips the last two: they are the *inputs* to a review
     handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
     passes own those.
+
+    ``success_window`` / ``pr_window`` come from the dispatch boundary
+    (:func:`resolve_respawn_guard_windows`); ``None`` means "not threaded
+    through" and falls back to the module defaults, so a direct call keeps
+    today's behavior.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1600,7 +1617,7 @@ def check_respawn_guard(
     #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is
     #    a deliberate "run it again" — otherwise a manual done→ready would sit
     #    silently held until the window elapses.
-    cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
+    cutoff = now - (success_window if success_window is not None else _RESPAWN_GUARD_SUCCESS_WINDOW)
     recent_completed = conn.execute(
         "SELECT ended_at FROM task_runs "
         "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
@@ -1625,7 +1642,7 @@ def check_respawn_guard(
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    pr_cutoff = now - (pr_window if pr_window is not None else _RESPAWN_GUARD_PR_WINDOW)
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
@@ -1877,6 +1894,61 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def resolve_respawn_guard_windows(
+    success_window: Optional[int] = None,
+    pr_window: Optional[int] = None,
+    *,
+    kanban_cfg: Optional[Mapping[str, Any]] = None,
+) -> tuple[int, int]:
+    """``(success_window, pr_window)`` seconds for the respawn guard.
+
+    Resolved at the dispatch BOUNDARY (gateway boot / daemon tick / CLI
+    dispatch), never inside :func:`check_respawn_guard`, which runs per ready
+    row: a config read there would be unbound and silently leak the launch
+    profile's values on a multiplex gateway (root AGENTS.md § Code Shape
+    Rules). ``None`` means "not passed" and reads
+    ``kanban.respawn_guard_success_window_seconds`` /
+    ``kanban.respawn_guard_pr_window_seconds`` from config, falling back to the
+    module defaults on unset, unparseable, or non-positive values — a window of
+    0 or less would guard every card forever, so it is not a legal value here.
+    Pass ``kanban_cfg`` when the caller already holds this profile's
+    ``kanban`` section (the gateway reads it once at boot).
+    """
+    if success_window is not None and pr_window is not None:
+        return success_window, pr_window
+    cfg: Mapping[str, Any] = kanban_cfg if kanban_cfg is not None else _read_kanban_cfg()
+    if success_window is None:
+        success_window = _positive_window(
+            cfg.get("respawn_guard_success_window_seconds"),
+            RESPAWN_GUARD_SUCCESS_WINDOW_DEFAULT,
+        )
+    if pr_window is None:
+        pr_window = _positive_window(
+            cfg.get("respawn_guard_pr_window_seconds"),
+            RESPAWN_GUARD_PR_WINDOW_DEFAULT,
+        )
+    return success_window, pr_window
+
+
+def _read_kanban_cfg() -> Mapping[str, Any]:
+    """This process's ``kanban`` config section, or ``{}`` when unreadable."""
+    from hermes_cli.config import load_config_readonly
+
+    try:
+        return (load_config_readonly() or {}).get("kanban", {}) or {}
+    except Exception:
+        return {}
+
+
+def _positive_window(value: Any, default: int) -> int:
+    """``kanban.<key>`` seconds when a positive int, else *default*."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 
@@ -1964,6 +2036,8 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    respawn_guard_success_window_seconds: Optional[int] = None,
+    respawn_guard_pr_window_seconds: Optional[int] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1973,6 +2047,10 @@ def dispatch_once(
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
     """
+    respawn_guard_windows = resolve_respawn_guard_windows(
+        respawn_guard_success_window_seconds, respawn_guard_pr_window_seconds,
+    )
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,
@@ -1987,6 +2065,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            respawn_guard_windows=respawn_guard_windows,
         )
 
     try:
@@ -2036,6 +2115,7 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    respawn_guard_windows: Optional[tuple[int, int]] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2070,7 +2150,11 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
-    guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+    success_window, pr_window = respawn_guard_windows or (None, None)
+    guard_reason = check_respawn_guard(
+        conn, task_id, lane=lane,
+        success_window=success_window, pr_window=pr_window,
+    )
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
         # Event so ``hermes kanban tail`` shows why the task looks stuck.
@@ -2281,6 +2365,7 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    respawn_guard_windows: Optional[tuple[int, int]] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
@@ -2294,6 +2379,7 @@ def _any_spawnable_review(
         return False
     profile_exists = _profile_exists_fn()
     running = per_profile_running or {}
+    success_window, pr_window = respawn_guard_windows or (None, None)
     for row in review_rows:
         assignee = row["assignee"]
         if not assignee:
@@ -2302,7 +2388,10 @@ def _any_spawnable_review(
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
-        if check_respawn_guard(conn, row["id"], lane="review") is None:
+        if check_respawn_guard(
+            conn, row["id"], lane="review",
+            success_window=success_window, pr_window=pr_window,
+        ) is None:
             return True
     return False
 
@@ -2339,6 +2428,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    respawn_guard_windows: Optional[tuple[int, int]] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2388,12 +2478,14 @@ def _dispatch_once_locked(
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        respawn_guard_windows=respawn_guard_windows,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        respawn_guard_windows=respawn_guard_windows,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2988,9 +3080,10 @@ def run_daemon(
 
     Calls :func:`dispatch_once` every ``interval`` seconds; exits cleanly on
     SIGINT / SIGTERM so it is systemd-friendly. ``stop_event`` and ``on_tick``
-    are test hooks. Each tick resolves ``kanban.max_in_progress`` exactly like
-    the gateway dispatcher and ``hermes kanban dispatch`` — the standalone
-    daemon must not be the one uncapped entry point.
+    are test hooks. Each tick resolves ``kanban.max_in_progress`` and the
+    ``kanban.respawn_guard_*_window_seconds`` windows exactly like the gateway
+    dispatcher and ``hermes kanban dispatch`` — the standalone daemon must not
+    be the one uncapped entry point.
     """
     import threading
 
@@ -3014,12 +3107,15 @@ def run_daemon(
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            guard_success_window, guard_pr_window = resolve_respawn_guard_windows()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    respawn_guard_success_window_seconds=guard_success_window,
+                    respawn_guard_pr_window_seconds=guard_pr_window,
                 )
             if on_tick is not None:
                 with contextlib.suppress(Exception):

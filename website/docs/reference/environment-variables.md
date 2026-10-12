@@ -275,7 +275,6 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_SSH_USER` | SSH username |
 | `TERMINAL_SSH_PORT` | SSH port (default: 22) |
 | `TERMINAL_SSH_KEY` | Path to private key |
-| `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
 ## Container Resources (Docker, Singularity, Modal, Daytona)
 
@@ -289,11 +288,13 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 
 ## Persistent Shell
 
+Exported env vars carry from one command to the next while on; the working directory always carries. See [Persistent Shell](../user-guide/configuration.md#persistent-shell).
+
 | Variable | Description |
 |----------|-------------|
-| `TERMINAL_PERSISTENT_SHELL` | Enable persistent shell for non-local backends (default: `true`). Also settable via `terminal.persistent_shell` in config.yaml |
-| `TERMINAL_LOCAL_PERSISTENT` | Enable persistent shell for local backend (default: `false`) |
-| `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH backend (default: follows `TERMINAL_PERSISTENT_SHELL`) |
+| `TERMINAL_PERSISTENT_SHELL` | SSH backend: carry exported env vars between commands (default: `true`). Also settable via `terminal.persistent_shell` in config.yaml |
+| `TERMINAL_SSH_PERSISTENT` | SSH backend override; wins over `TERMINAL_PERSISTENT_SHELL` (default: follows it) |
+| `TERMINAL_LOCAL_PERSISTENT` | Local backend: carry exported env vars between commands (default: `true`) |
 
 ## Egress proxy (sandbox-injected)
 

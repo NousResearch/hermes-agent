@@ -3026,16 +3026,16 @@ def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
     shell PATH is deliberately NOT scraped: WSL appends every Windows PATH entry (Desktop app,
     git, node dirs under ``/mnt/``) ahead of the interop defaults, and persisting those into the
     unit makes the gateway open 9p (Plan 9 interop) connections to each of them at start — enough
-    to exhaust the 9p server connection limit (#73163). Interop tools don't need them."""
+    to exhaust the 9p server connection limit (#73163). Interop tools don't need them.
+
+    which() is only a fallback for tools the System32 family doesn't provide (Windows not on
+    ``C:``): it resolves against the invoking shell's PATH, which carries the Windows entries in an
+    interactive shell but not under systemd/cron, so consulting it unconditionally made the
+    generated unit differ by caller and ``systemd_unit_is_current()`` flap."""
     if not is_wsl():
         return []
 
-    candidates: list[str] = []
-    for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
-        resolved = shutil.which(executable)
-        if resolved:
-            candidates.append(str(Path(resolved).parent))
-    candidates += [
+    candidates = [
         entry
         for entry in (
             "/mnt/c/WINDOWS/system32",
@@ -3046,6 +3046,13 @@ def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
         )
         if Path(entry).exists()
     ]
+    system32_family = list(candidates)
+    for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
+        if any((Path(entry) / executable).exists() for entry in system32_family):
+            continue
+        resolved = shutil.which(executable)
+        if resolved:
+            candidates.append(str(Path(resolved).parent))
 
     result: list[str] = []
     seen = set(path_entries)

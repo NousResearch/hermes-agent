@@ -60,6 +60,21 @@ def test_body_flag_stores_the_same_comment_as_the_positional_text(kanban_home, c
     assert len(bodies[2]) <= 40
 
 
+def test_a_flag_before_the_positional_text_is_not_order_sensitive(kanban_home, capsys):
+    tid = _new_task()
+    # `comment <id> --author NAME "text"` puts an option ahead of the positional
+    # text: the alias must resolve identically whatever the option/positional order.
+    assert _comment([tid, "--author", "alice", "ship", "the", "2026", "schema"]) == 0
+    # ... and an option ahead of it still reaches the same trim path.
+    assert _comment([tid, "--max-len", "40", "--author", "bob", "y" * 200]) == 0
+    capsys.readouterr()
+    with kbc.connect_closing() as conn:
+        comments = kb.list_comments(conn, tid)
+    assert [(c.author, c.body) for c in comments][0] == ("alice", "ship the 2026 schema")
+    assert comments[1].author == "bob"
+    assert len(comments[1].body) <= 40
+
+
 def test_two_bodies_at_once_are_refused_and_nothing_is_stored(kanban_home, capsys):
     tid = _new_task()
     # Flag + positional together is two bodies, not one: refuse the call outright.

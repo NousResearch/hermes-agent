@@ -17,6 +17,7 @@ from gateway.turn_context import TurnContext
 from tests.waiting import async_wait_until
 from tests.gateway.test_stale_finalize_suppression import FinalizeCaptureAdapter, _make_runner
 from tests.gateway.test_stream_final_contract import _make_draft_adapter
+from tests.gateway.test_slack_native_streaming import _make_adapter, META
 
 
 class ReasoningAgent:
@@ -79,6 +80,7 @@ async def test_streamed_reasoning_obeys_display_without_duplicate_final(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_slack", [False, True])
 @pytest.mark.parametrize("state, shown", [
     ({"completed": True}, True),
     ({"failed": True}, False),
@@ -86,22 +88,37 @@ async def test_streamed_reasoning_obeys_display_without_duplicate_final(
     ({"completed": False}, False),
     ({"completed": True, "final_response": "[SILENT]"}, False),
 ])
-async def test_native_stream_seals_reasoning_final_with_prefix_stable_drafts(monkeypatch, state, shown):
+async def test_native_stream_seals_reasoning_final_with_prefix_stable_drafts(monkeypatch, state, shown, native_slack):
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"display": {"show_reasoning": True}})
     adapter = _make_draft_adapter()
+    if native_slack:
+        adapter, client = _make_adapter()
     source = SessionSource(platform=Platform.SLACK, chat_id="room", chat_type="dm")
     runner = object.__new__(GatewayRunner)
     runner._show_reasoning = True
     ctx = TurnContext(source=source)
     consumer = GatewayStreamConsumer(adapter, "room", StreamConsumerConfig(
         transport="auto", chat_type="dm", edit_interval=0.01, buffer_threshold=1, cursor="",
-    ))
+    ), metadata=META)
     task = asyncio.create_task(consumer.run())
     consumer.on_delta("Final answer")
-    await async_wait_until(lambda: bool(adapter.draft_calls), timeout=2)
+    await async_wait_until(
+        lambda: bool(client.chat_startStream.await_count if native_slack else adapter.draft_calls), timeout=2,
+    )
     result = {"final_response": "Final answer", "last_reasoning": "Consider the evidence", **state}
     TurnRunner(runner, ctx)._finish_stream_consumer(result, [], consumer)
     await task
+    if native_slack:
+        client.chat_postMessage.assert_not_awaited()
+        client.chat_startStream.assert_awaited_once()
+        if state.get("final_response") != "[SILENT]":
+            client.chat_stopStream.assert_awaited_once()
+        payloads = [call.kwargs.get("text", "") for call in client.chat_update.await_args_list]
+        payloads += [call.kwargs.get("markdown_text", "") for call in client.chat_stopStream.await_args_list]
+        assert any("Consider the evidence" in payload for payload in payloads) is shown
+        if shown:
+            assert consumer.delivered_final_matches(result["final_response"]) is True
+        return
     frames = [call["content"] for call in adapter.draft_calls]
     assert all(right.startswith(left) for left, right in pairwise(frames))
     if state.get("final_response") == "[SILENT]":

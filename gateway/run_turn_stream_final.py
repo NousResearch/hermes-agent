@@ -86,8 +86,11 @@ def finish_stream_consumer(runner, ctx, result, agent_history, stream_consumer):
                     result, fr, ctx.source, runner._is_intentional_silence(result, fr),
                 )
                 if rendered != fr:
+                    # Keep the streamed answer as a prefix, including sealed split heads.
+                    # Reasoning is a trailing display block on streaming transports.
+                    reasoning_block = rendered[:-len(fr)].rstrip()
                     result["_gateway_reasoning_rendered"] = True
-                    result["final_response"] = fr = rendered
+                    result["final_response"] = fr = f"{fr}\n\n{reasoning_block}"
             _final_for_stream = fr
     if _final_for_stream is None:
         stream_consumer.finish()

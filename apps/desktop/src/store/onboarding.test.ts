@@ -378,6 +378,18 @@ describe('refreshOnboarding', () => {
     expect($desktopOnboarding.get().configured).toBe(false)
     expect($desktopOnboarding.get().reason).toContain('No usable credentials found for openrouter.')
     expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+    // Once configured, never a first run: the Simple/Advanced question stays answered.
+    expect(window.localStorage.getItem('hermes-onboarding-mode-chosen-v1')).toBe('1')
+  })
+
+  it('never treats a configured-but-broken install as a first run, even with no onboarded cache', async () => {
+    installApiMock(vi.fn())
+    $desktopOnboarding.set(baseState({ configured: null, modeChosen: false, providers: [], reason: null }))
+
+    await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
+
+    expect($desktopOnboarding.get().modeChosen).toBe(true)
+    expect(window.localStorage.getItem('hermes-onboarding-mode-chosen-v1')).toBe('1')
   })
 
   it('keeps a keyless custom runtime out of setup', async () => {

@@ -23,7 +23,7 @@
 //       - Windows: Windows Terminal when installed, else a `cmd.exe` console.
 //
 // Everything here is pure so it can be unit-tested without Electron; the side
-// effects (writing the script, spawning) live in main.ts.
+// effects (writing the script, spawning) live in external-terminal-launch.ts.
 
 import { backendProfileArg } from './profile-id-guard'
 
@@ -34,6 +34,34 @@ export function tuiResumeArgs(sessionId: string, profile?: string): string[] {
   const head = pinned ? ['--profile', pinned] : []
 
   return [...head, '--tui', '--resume', sessionId]
+}
+
+// CLI sign-ins the desktop may open in a terminal, keyed by OAuth provider id.
+// The argv is fixed here: nothing a renderer or a (possibly remote) backend
+// sends is ever run — the backend's `cli_command` stays display-only.
+const AUTH_IN_TERMINAL_ARGS: Record<string, readonly string[]> = { anthropic: ['auth', 'add', 'anthropic'] }
+
+/** Argv for an allowlisted CLI sign-in, profile-pinned when we know it; null otherwise. */
+export function authInTerminalArgs(providerId: unknown, profile?: unknown): string[] | null {
+  if (typeof providerId !== 'string' || !Object.hasOwn(AUTH_IN_TERMINAL_ARGS, providerId)) {
+    return null
+  }
+
+  const pinned = backendProfileArg(profile)
+
+  return [...(pinned ? ['--profile', pinned] : []), ...AUTH_IN_TERMINAL_ARGS[providerId]]
+}
+
+// What a sign-in's first chat turn needs installed, run (best effort) before the
+// login so a checkout install downloads it here, visibly and patiently, instead of
+// lazily inside the first turn. Venvs are per install, so no profile.
+const AUTH_PREPARE_ARGS: Record<string, readonly string[]> = { anthropic: ['pm', 'install', '--extra', 'anthropic'] }
+
+/** Argv that prepares an allowlisted CLI sign-in's runtime; null when it needs none. */
+export function authPrepareArgs(providerId: unknown): string[] | null {
+  return typeof providerId === 'string' && Object.hasOwn(AUTH_PREPARE_ARGS, providerId)
+    ? [...AUTH_PREPARE_ARGS[providerId]]
+    : null
 }
 
 /** Single-quote a value for /bin/sh (the POSIX launcher script). */
@@ -80,6 +108,11 @@ export interface TerminalScriptSpec {
   args: string[]
   cwd: string
   env?: Record<string, string>
+  /** A step run first whose failure does not stop the main command. */
+  before?: { args: string[]; command: string }
+  /** Keep the window open after a failed run so its error stays readable (a
+   *  one-shot sign-in, not the TUI). Linux emulators close on exit otherwise. */
+  holdOnFailure?: boolean
   platform?: NodeJS.Platform
 }
 
@@ -87,7 +120,15 @@ export interface TerminalScriptSpec {
  * The launcher script contents. `exec` on POSIX so the terminal window belongs
  * to the TUI itself rather than an idle shell wrapping it.
  */
-export function buildTerminalScript({ command, args, cwd, env = {}, platform = process.platform }: TerminalScriptSpec) {
+export function buildTerminalScript({
+  command,
+  args,
+  before,
+  cwd,
+  env = {},
+  holdOnFailure = false,
+  platform = process.platform
+}: TerminalScriptSpec) {
   const entries = Object.entries(env)
 
   if (platform === 'win32') {
@@ -95,16 +136,21 @@ export function buildTerminalScript({ command, args, cwd, env = {}, platform = p
       '@echo off',
       `cd /d ${windowsQuote(cwd)}`,
       ...entries.map(([key, value]) => `set ${windowsQuote(`${key}=${value}`)}`),
+      // `call`: a `hermes.cmd` launcher run bare would never return to the login line.
+      ...(before ? [`call ${[before.command, ...before.args].map(windowsQuote).join(' ')}`] : []),
       [command, ...args].map(windowsQuote).join(' '),
       ''
     ].join('\r\n')
   }
 
+  const run = [command, ...args].map(posixQuote).join(' ')
+
   return [
     '#!/bin/sh',
     `cd ${posixQuote(cwd)} || exit 1`,
     ...entries.map(([key, value]) => `export ${key}=${posixQuote(value)}`),
-    `exec ${[command, ...args].map(posixQuote).join(' ')}`,
+    ...(before ? [[before.command, ...before.args].map(posixQuote).join(' ')] : []),
+    holdOnFailure ? `${run} || { printf '\\nPress Return to close this window.'; read _; exit 1; }` : `exec ${run}`,
     ''
   ].join('\n')
 }

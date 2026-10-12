@@ -1,6 +1,9 @@
+import type { InterfaceTier } from '@/store/interface-mode'
+
 interface ConfigSubpageDefinition {
   id: string
   labelKey: string
+  tier?: InterfaceTier
   fields?: string[]
   prefixes?: string[]
 }
@@ -75,8 +78,8 @@ const CONFIG_SUBPAGE_DEFINITIONS: Record<string, ConfigSubpageDefinition[]> = {
       fields: ['voice.voice_chat_mode', 'voice.max_recording_seconds', 'voice.client_direct'],
       prefixes: ['voice.gpt_live.']
     },
-    { id: 'transcription', labelKey: 'voiceTranscription', prefixes: ['stt.'] },
-    { id: 'speech', labelKey: 'voiceSpeech', fields: ['voice.auto_tts'], prefixes: ['tts.'] }
+    { id: 'transcription', labelKey: 'voiceTranscription', tier: 'advanced', prefixes: ['stt.'] },
+    { id: 'speech', labelKey: 'voiceSpeech', tier: 'advanced', fields: ['voice.auto_tts'], prefixes: ['tts.'] }
   ],
   advanced: [
     { id: 'desktop', labelKey: 'advancedDesktop', prefixes: ['updates.'] },
@@ -93,12 +96,13 @@ const CONFIG_SUBPAGE_DEFINITIONS: Record<string, ConfigSubpageDefinition[]> = {
 }
 
 /** Ordered child pages; labelKey indexes t.settings.subpages. */
-export const CONFIG_SUBPAGES: Record<string, { id: string; labelKey: string }[]> = Object.fromEntries(
-  Object.entries(CONFIG_SUBPAGE_DEFINITIONS).map(([sectionId, pages]) => [
-    sectionId,
-    pages.map(({ id, labelKey }) => ({ id, labelKey }))
-  ])
-)
+export const CONFIG_SUBPAGES: Record<string, { id: string; labelKey: string; tier?: InterfaceTier }[]> =
+  Object.fromEntries(
+    Object.entries(CONFIG_SUBPAGE_DEFINITIONS).map(([sectionId, pages]) => [
+      sectionId,
+      pages.map(({ id, labelKey, tier }) => ({ id, labelKey, tier }))
+    ])
+  )
 
 /** Resolve a schema/config field to the same child page that renders it. */
 export function configSubpageForField(sectionId: string, field: string): string | undefined {

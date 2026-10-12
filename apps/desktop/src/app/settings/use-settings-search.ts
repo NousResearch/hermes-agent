@@ -8,6 +8,7 @@ import { getEnvVars, getHermesConfigSchema } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type IconComponent, Monitor, Package, Settings2, Wrench } from '@/lib/icons'
 import { $agentPlugins, isDesktopRelevantPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { $interfaceMode } from '@/store/interface-mode'
 import { $gatewayState } from '@/store/session'
 
 import { useHermesConfigRecord } from '../hooks/use-config-record'
@@ -16,8 +17,13 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { SECTIONS } from './constants'
 import { OTHER_SUBPAGES } from './other-subpages'
 import { settingSearchTargets } from './settings-manifest'
-import { buildConfigSearchEntries, buildCredentialSearchEntries, type SettingsSearchEntry } from './settings-search'
-import { settingsSubpages } from './subpages'
+import {
+  buildConfigSearchEntries,
+  buildCredentialSearchEntries,
+  type SettingsSearchEntry,
+  settingsSearchTargetShown
+} from './settings-search'
+import { settingsSubpages } from './settings-visibility'
 import type { SettingsView } from './types'
 
 /** An installed plugin row, deep-linkable as `/capabilities?tab=plugins&plugin=<id>`. */
@@ -35,10 +41,12 @@ export interface PluginSearchEntry {
  * The granular settings-search catalog (appearance controls, config fields,
  * credentials) for the command palette's Settings page. Page destinations stay
  * on the palette side — it already owns section/page rows — this hook only
- * contributes the deep, schema-driven targets.
+ * contributes the deep, schema-driven targets. Every settings target is
+ * filtered to the pages the current interface mode shows.
  */
 export function useSettingsSearchCatalog(enabled: boolean) {
   const { t } = useI18n()
+  const mode = useStore($interfaceMode)
   const configQuery = useHermesConfigRecord()
 
   const schemaQuery = useQuery({
@@ -107,6 +115,8 @@ export function useSettingsSearchCatalog(enabled: boolean) {
   // Never expose stale profile-scoped targets while a catalog is refreshing.
   // Field/key results wait for the current profile's data rather than briefly
   // pointing into the previous one.
+  const shown = (entry: SettingsSearchEntry) => settingsSearchTargetShown(entry.target, mode)
+
   const configEntries =
     configQuery.isFetching || schemaQuery.isFetching || configQuery.isError || schemaQuery.isError
       ? []
@@ -114,7 +124,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
           fieldDescriptions: t.settings.fieldDescriptions,
           fieldLabels: t.settings.fieldLabels,
           sections: t.settings.sections
-        })
+        }).filter(shown)
 
   const credentialEntries = buildCredentialSearchEntries(
     envVarsFetching || envVarsError ? null : envVars,
@@ -123,7 +133,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       tools: t.settings.nav.keysTools
     },
     { settings: Settings2, tools: Wrench }
-  )
+  ).filter(shown)
 
   const pageLabels: Record<string, string> = t.settings.nav
 
@@ -145,7 +155,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
 
   // Every hand-built settings row, straight from the manifest that also
   // routes and ids them — the palette cannot drift from the pages.
-  const settingEntries: SettingsSearchEntry[] = settingSearchTargets(t).map(({ id, view, ...entry }) => {
+  const settingEntries: SettingsSearchEntry[] = settingSearchTargets(t, mode).map(({ id, view, ...entry }) => {
     const parent = parentOf(view)
 
     return {
@@ -163,7 +173,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
 
   const subpageEntries: SettingsSearchEntry[] = parents
     .flatMap(parent =>
-      settingsSubpages(parent.view).map(page => ({
+      settingsSubpages(parent.view, mode).map(page => ({
         context: parent.label,
         icon: parent.icon,
         id: `settings-page:${parent.view}:${page.id}`,
@@ -172,7 +182,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
         target: { view: parent.view, subpage: page.id }
       }))
     )
-    .filter(entry => !settingLabels.has(`${entry.context}\u0000${entry.label}`))
+    .filter(entry => shown(entry) && !settingLabels.has(`${entry.context}\u0000${entry.label}`))
 
   return {
     subpageEntries,

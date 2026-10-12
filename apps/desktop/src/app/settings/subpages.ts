@@ -28,17 +28,12 @@ import {
   Volume2,
   Wrench
 } from '@/lib/icons'
+import type { InterfaceMode } from '@/store/interface-mode'
 
-import { APPEARANCE_SUBPAGES } from './appearance-subpages'
-import { CONFIG_SUBPAGES, configSubpageForField } from './config-subpages'
-import { OTHER_SUBPAGES } from './other-subpages'
+import { configSubpageForField } from './config-subpages'
 import { settingDefinition } from './settings-manifest'
+import { type SettingsSubpage, settingsSubpages } from './settings-visibility'
 import type { SettingsView } from './types'
-
-export interface SettingsSubpage {
-  id: string
-  labelKey: string
-}
 
 const SUBPAGE_ICONS: Record<string, IconComponent> = {
   appearanceTheme: Palette,
@@ -92,18 +87,6 @@ export function settingsSubpageIcon(page: SettingsSubpage, fallback: IconCompone
   return SUBPAGE_ICONS[page.labelKey] ?? fallback
 }
 
-export function settingsSubpages(view: SettingsView): readonly SettingsSubpage[] {
-  if (view === 'config:appearance') {
-    return APPEARANCE_SUBPAGES
-  }
-
-  if (view.startsWith('config:')) {
-    return CONFIG_SUBPAGES[view.slice('config:'.length)] ?? []
-  }
-
-  return OTHER_SUBPAGES[view] ?? []
-}
-
 /** Shared by search serialization and saved links that predate subpages. */
 export function settingsSubpageForTarget(view: SettingsView, field?: string, setting?: string): string | undefined {
   if (setting) {
@@ -131,8 +114,13 @@ export function settingsSubpageForLegacyLink(view: SettingsView, params: URLSear
     : settingsSubpageForTarget(view, params.get('field') ?? undefined, params.get('setting') ?? undefined)
 }
 
-export function resolveSettingsSubpage(view: SettingsView, params: URLSearchParams): string | undefined {
-  const pages = settingsSubpages(view)
+/** Hidden (Simple-mode) or unknown child pages resolve to the view's first visible one. */
+export function resolveSettingsSubpage(
+  view: SettingsView,
+  params: URLSearchParams,
+  mode: InterfaceMode
+): string | undefined {
+  const pages = settingsSubpages(view, mode)
   const requested = settingsSubpageForLegacyLink(view, params) ?? params.get('page')
 
   return pages.find(page => page.id === requested)?.id ?? pages[0]?.id

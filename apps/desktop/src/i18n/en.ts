@@ -13,6 +13,7 @@ import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
+import { enSimpleMode } from './en_simple_mode'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
@@ -484,6 +485,8 @@ export const en: Translations = {
   },
 
   ...enNotices,
+
+  ...enSimpleMode,
 
   ...enBilling,
 
@@ -4458,20 +4461,6 @@ export const en: Translations = {
       commentTitle: n => `Comment ${n}`,
       saveComment: 'Save',
       cancelComment: 'Cancel comment'
-    }
-  },
-
-  interfaceMode: {
-    title: 'Interface mode',
-    hint: 'Changes what is shown, not what Hermes can do.',
-    sessionNote: 'Set by Simple mode. A change here lasts for this session; switch to Advanced to make it yours.',
-    simple: {
-      label: 'Simple',
-      description: 'For talking to Hermes. Sidebar and chat; no terminal, file or diff panes.'
-    },
-    advanced: {
-      label: 'Advanced',
-      description: 'For developers. Terminal, files, diffs, statusbar and layouts, as you set them.'
     }
   },
 

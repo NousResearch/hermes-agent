@@ -23,6 +23,7 @@ import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 }
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
@@ -172,6 +173,8 @@ function OAuthPicker({
   const { t } = useI18n()
   const p = t.settings.providers
   const [showAll, setShowAll] = useState(false)
+  // Simple is account sign-ins only: API-key and local-model doors are Advanced.
+  const advanced = useStore($showsAdvancedChrome)
   const ordered = useMemo(() => sortProviders(providers), [providers])
 
   if (ordered.length === 0) {
@@ -197,15 +200,17 @@ function OAuthPicker({
     <section className="mb-5 grid gap-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
         <SettingsCategoryHeading icon={KeyRound} title={p.connectAccount} />
-        <Button
-          className="text-[length:var(--conversation-caption-font-size)]"
-          onClick={onWantApiKey}
-          size="inline"
-          type="button"
-          variant="textStrong"
-        >
-          {p.haveApiKey}
-        </Button>
+        {advanced && (
+          <Button
+            className="text-[length:var(--conversation-caption-font-size)]"
+            onClick={onWantApiKey}
+            size="inline"
+            type="button"
+            variant="textStrong"
+          >
+            {p.haveApiKey}
+          </Button>
+        )}
       </div>
       <p className="-mt-2 mb-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {p.intro}
@@ -213,7 +218,7 @@ function OAuthPicker({
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
       {/* Slot #2 — the no-account path, matching onboarding. Behind the
           --local launch flag like every local-models surface. */}
-      {$localModelsEnabled.get() && <LocalModelsProviderRow onClick={onWantLocalModels} />}
+      {advanced && $localModelsEnabled.get() && <LocalModelsProviderRow onClick={onWantLocalModels} />}
       {connected.length > 0 && (
         <>
           <GroupLabel>{p.connected}</GroupLabel>
@@ -235,8 +240,8 @@ function OAuthPicker({
           {others.map(p => (
             <ProviderRow key={p.id} onSelect={select} provider={p} />
           ))}
-          <FireworksProviderRow onClick={onWantApiKey} />
-          <OpenRouterProviderRow onClick={onWantApiKey} />
+          {advanced && <FireworksProviderRow onClick={onWantApiKey} />}
+          {advanced && <OpenRouterProviderRow onClick={onWantApiKey} />}
         </>
       )}
       {collapsible && (

@@ -58,6 +58,7 @@ export const jaOnboarding: TranslationOverrides['onboarding'] = {
   signInExpired:
     '承認待ちでタイムアウトしました。多くの場合、開いたタブのサインインページが止まっている（サーバー側の問題）ためです。そのページでサインインを完了してから再試行してください。解決しない場合は API キーまたは CLI を利用してください。',
   pickDifferentProvider: '別のプロバイダーを選択',
+  pickDifferentAccount: '別のアカウントを選択',
   signInWith: provider => `${provider} でサインイン`,
   openedBrowser: provider => `${provider} をブラウザーで開きました。`,
   authorizeThere: 'そこで Hermes を承認してください。',
@@ -78,5 +79,27 @@ export const jaOnboarding: TranslationOverrides['onboarding'] = {
   price: (input, output) => `${input} 入力 / ${output} 出力 per Mtok`,
   change: '変更',
   startChatting: '始める',
-  docs: provider => `${provider} ドキュメント`
+  docs: provider => `${provider} ドキュメント`,
+  modeChoiceTitle: 'Hermes をどのように使いますか？',
+  modeChoiceDesc: 'しっくりくる方を選んでください。設定からいつでも切り替えられます。',
+  modeChoiceSimpleDesc: 'Hermes と話すだけ。最適な設定は Hermes が選びます。',
+  modeChoiceAdvancedDesc: 'すべての設定に加えて、ターミナル、ファイル、コードレビューも使えます。',
+  simpleHeaderDesc: 'お持ちのアカウントでサインインしてください。あとは Hermes が準備します。',
+  simpleTiles: {
+    nous: '無料アカウント',
+    chatgpt: 'ChatGPT Plus または Pro が必要です',
+    grok: 'SuperGrok または X Premium+ が必要です',
+    claude: 'Claude Max が必要です。Anthropic からは追加利用分として請求されます。'
+  },
+  simpleDeviceCodeOpened: 'ブラウザーが開きました。そこで Hermes を承認してから、ここに戻ってきてください。',
+  simpleDeviceCodeCopied: 'コードを求められたら、これを貼り付けてください。すでにコピーされています。',
+  terminalSignInOpened: (paste, enter) =>
+    `ターミナルウィンドウが開きました。ブラウザーで Hermes を承認し、表示されたコードをコピーしてください。次にターミナルウィンドウをクリックして ${paste} と ${enter} を押し、ここに戻ってきてください。`,
+  openTerminalAgain: 'ターミナルをもう一度開く',
+  simpleSignInNotFinished: provider =>
+    `Hermes はまだ ${provider} のサインインを確認できません。サインインを完了してからもう一度お試しいただくか、別のアカウントを選んでください。`,
+  simpleNoSignIns: 'Hermes がサインイン方法を読み込めませんでした。少ししてからもう一度お試しください。',
+  simpleDefaultsFailed: 'シンプルモードの安全設定をオンにできませんでした',
+  simpleDefaultsRemote:
+    'Hermes は別のコンピューターで動作しているため、シンプルモードの安全設定はそこに追加されませんでした。'
 }

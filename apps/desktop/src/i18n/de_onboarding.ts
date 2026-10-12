@@ -76,6 +76,7 @@ export const deOnboarding: TranslationOverrides['onboarding'] = {
   useApiKeyInstead: 'API-Key verwenden',
   errorDetails: 'Details',
   pickDifferentProvider: 'Einen anderen Anbieter wählen',
+  pickDifferentAccount: 'Ein anderes Konto wählen',
   signInWith: provider => `Mit ${provider} anmelden`,
   openedBrowser: provider => `Wir haben ${provider} in Ihrem Browser geöffnet.`,
   authorizeThere: 'Autorisieren Sie Hermes dort.',
@@ -96,5 +97,27 @@ export const deOnboarding: TranslationOverrides['onboarding'] = {
   price: (input, output) => `${input} rein / ${output} raus pro Mtok`,
   change: 'Ändern',
   startChatting: 'Loslegen',
-  docs: provider => `${provider}-Doku`
+  docs: provider => `${provider}-Doku`,
+  modeChoiceTitle: 'Wie möchten Sie Hermes nutzen?',
+  modeChoiceDesc: 'Wählen Sie, was sich für Sie richtig anfühlt. Sie können jederzeit in den Einstellungen wechseln.',
+  modeChoiceSimpleDesc: 'Einfach mit Hermes sprechen. Hermes wählt die besten Einstellungen für Sie.',
+  modeChoiceAdvancedDesc: 'Alle Einstellungen, dazu Terminal, Dateien und Code-Review.',
+  simpleHeaderDesc: 'Melden Sie sich mit einem Konto an, das Sie schon haben. Den Rest richtet Hermes ein.',
+  simpleTiles: {
+    nous: 'Kostenloses Konto',
+    chatgpt: 'Erfordert ChatGPT Plus oder Pro',
+    grok: 'Erfordert SuperGrok oder X Premium+',
+    claude: 'Erfordert Claude Max. Anthropic rechnet das als zusätzliche Nutzung ab.'
+  },
+  simpleDeviceCodeOpened: 'Ihr Browser wurde geöffnet. Bestätigen Sie Hermes dort und kommen Sie dann hierher zurück.',
+  simpleDeviceCodeCopied: 'Falls nach einem Code gefragt wird, fügen Sie diesen ein. Er ist bereits kopiert.',
+  terminalSignInOpened: (paste, enter) =>
+    `Ein Terminalfenster wurde geöffnet. Bestätigen Sie Hermes in Ihrem Browser und kopieren Sie den angezeigten Code. Klicken Sie dann in das Terminalfenster, drücken Sie ${paste} und ${enter} und kommen Sie hierher zurück.`,
+  openTerminalAgain: 'Terminal erneut öffnen',
+  simpleSignInNotFinished: provider =>
+    `Hermes sieht Ihre Anmeldung bei ${provider} noch nicht. Schließen Sie sie ab und versuchen Sie es erneut, oder wählen Sie ein anderes Konto.`,
+  simpleNoSignIns: 'Hermes konnte die Anmeldeoptionen nicht laden. Versuchen Sie es gleich noch einmal.',
+  simpleDefaultsFailed: 'Die Sicherheitseinstellungen des Modus „Einfach“ konnten nicht aktiviert werden',
+  simpleDefaultsRemote:
+    'Hermes läuft auf einem anderen Computer, daher wurden die Sicherheitseinstellungen des Modus „Einfach“ dort nicht hinzugefügt.'
 }

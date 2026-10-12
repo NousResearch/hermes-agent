@@ -53,6 +53,7 @@ export const zhOnboarding: TranslationOverrides['onboarding'] = {
   signInExpired:
     '等待授权超时。通常是因为登录页面在打开的标签页中卡住（服务端问题）——请在该页面完成登录后重试。若仍失败，请改用 API 密钥或 CLI 方式。',
   pickDifferentProvider: '选择其他提供方',
+  pickDifferentAccount: '选择其他账号',
   signInWith: provider => `使用 ${provider} 登录`,
   openedBrowser: provider => `已在浏览器中打开 ${provider}。`,
   authorizeThere: '请在那里授权 Hermes。',
@@ -72,5 +73,25 @@ export const zhOnboarding: TranslationOverrides['onboarding'] = {
   price: (input, output) => `${input} 输入 / ${output} 输出每 Mtok`,
   change: '更改',
   startChatting: '开始',
-  docs: provider => `${provider} 文档`
+  docs: provider => `${provider} 文档`,
+  modeChoiceTitle: '你想怎样使用 Hermes？',
+  modeChoiceDesc: '选你觉得合适的就好。之后随时可以在设置中切换。',
+  modeChoiceSimpleDesc: '直接和 Hermes 对话，它会为你选好最合适的设置。',
+  modeChoiceAdvancedDesc: '全部设置，外加终端、文件和代码审查。',
+  simpleHeaderDesc: '用你已有的账号登录，其余的交给 Hermes 来设置。',
+  simpleTiles: {
+    nous: '免费账号',
+    chatgpt: '需要 ChatGPT Plus 或 Pro',
+    grok: '需要 SuperGrok 或 X Premium+',
+    claude: '需要 Claude Max，Anthropic 会按额外用量计费。'
+  },
+  simpleDeviceCodeOpened: '浏览器已打开。请在那里授权 Hermes，然后回到这里。',
+  simpleDeviceCodeCopied: '如果要求输入代码，粘贴这个即可，它已经复制好了。',
+  terminalSignInOpened: (paste, enter) =>
+    `已打开一个终端窗口。请在浏览器中授权 Hermes，并复制显示的代码。然后点击终端窗口，按 ${paste} 和 ${enter}，再回到这里。`,
+  openTerminalAgain: '再次打开终端',
+  simpleSignInNotFinished: provider => `Hermes 还没有检测到你的 ${provider} 登录。请完成登录后重试，或换一个账号。`,
+  simpleNoSignIns: 'Hermes 无法加载登录选项，请稍后重试。',
+  simpleDefaultsFailed: '无法开启简洁模式的安全设置',
+  simpleDefaultsRemote: 'Hermes 运行在另一台电脑上，因此没有在那里添加简洁模式的安全设置。'
 }

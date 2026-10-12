@@ -3,12 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { I18nProvider } from '@/i18n'
+import { $approvalModes } from '@/store/approval-mode'
 import { $hudMode } from '@/store/hud'
+import { setInterfaceMode } from '@/store/interface-mode'
+import { $yoloActive } from '@/store/session'
 import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
 
 import { ComposerControls } from './controls'
 
 vi.mock('./model-pill', () => ({ ModelPill: () => null }))
+vi.mock('@/store/gateway', () => ({ requestGatewayForProfile: vi.fn(() => new Promise(() => undefined)) }))
 
 const state: ChatBarState = {
   model: { canSwitch: false, model: '', provider: '' },
@@ -59,6 +63,9 @@ async function expectShortcutTooltip(label: string, shortcut: string) {
 afterEach(() => {
   cleanup()
   $hudMode.set(false)
+  $yoloActive.set(false)
+  $approvalModes.set({})
+  setInterfaceMode('advanced')
 })
 
 // The HUD is a Spotlight bar a few hundred pixels wide: the voice controls
@@ -223,4 +230,35 @@ describe('wake-word ear visibility', () => {
     const ear = screen.getByLabelText('Wake word: "hey hermes" — paused during voice chat')
     expect((ear as HTMLButtonElement).disabled).toBe(true)
   })
+})
+
+// Simple hides the statusbar and the ⌘K yolo row; an armed bypass must still show.
+it('shows the YOLO chip only in Simple while YOLO is armed', () => {
+  const label = 'YOLO armed for this chat'
+  $yoloActive.set(true)
+  renderControls()
+  expect(screen.queryByLabelText(label)).toBeNull()
+
+  cleanup()
+  setInterfaceMode('simple')
+  renderControls()
+  expect(screen.getByLabelText(label)).toBeTruthy()
+
+  cleanup()
+  $yoloActive.set(false)
+  renderControls()
+  expect(screen.queryByLabelText(label)).toBeNull()
+})
+
+// A profile-level `approvals.mode: off` lives in the statusbar Simple hides.
+it('shows the YOLO chip in Simple when the profile approval mode is off', () => {
+  const label = 'Approval mode: Off'
+  $approvalModes.set({ default: 'off' })
+  renderControls()
+  expect(screen.queryByLabelText(label)).toBeNull()
+
+  cleanup()
+  setInterfaceMode('simple')
+  renderControls()
+  expect(screen.getByLabelText(label)).toBeTruthy()
 })

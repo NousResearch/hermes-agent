@@ -8,6 +8,7 @@ import { translateNow } from '@/i18n'
 import { settlePendingClarifyToolCall, textPart } from '@/lib/chat-messages'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { normalizeConnectionRequest, setConnectionRequest, updateConnectionRequest } from '@/store/connection-request'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import {
@@ -31,6 +32,16 @@ import type { GatewayEventContext } from './types'
 
 /** Settings → Safety, where `approvals.timeout` lives (settings/constants.ts). */
 const SAFETY_SETTINGS_ROUTE = '/settings?tab=config:safety'
+
+// Simple hides the Safety page, so its toast keeps the message without a
+// dead-end button. Outside the handler, which is at its complexity cap.
+const safetySettingsAction = () =>
+  $showsAdvancedChrome.get()
+    ? {
+        label: translateNow('assistant.approval.openSafetySettings'),
+        onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
+      }
+    : undefined
 
 type ConnectionRequestEvent = GatewayEvent<'connection.request'> & { payload: ConnectionRequestPayload }
 type ConnectionUpdateEvent = GatewayEvent<'connection.update'> & { payload: ConnectionUpdatePayload }
@@ -164,10 +175,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       notify({
         kind: 'warning',
         message: line,
-        action: {
-          label: translateNow('assistant.approval.openSafetySettings'),
-          onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
-        }
+        action: safetySettingsAction()
       })
     }
   } else if ($sudoRequests.get()[key]?.requestId === id) {

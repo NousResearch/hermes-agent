@@ -309,6 +309,7 @@ export const arBoot = {
     signInExpired:
       'انتهت مهلة انتظار التفويض. السبب الأكثر شيوعًا هو تعطّل صفحة تسجيل الدخول في تبويب المتصفح (مشكلة من جهة الخادم) — أكمل تسجيل الدخول هناك ثم أعد المحاولة. إذا استمر الفشل، استخدم مفتاح API أو واجهة سطر الأوامر بدلاً من ذلك.',
     pickDifferentProvider: 'اختر مزوداً آخر',
+    pickDifferentAccount: 'اختر حساباً آخر',
     signInWith: provider => `تسجيل الدخول عبر ${provider}`,
     openedBrowser: provider => `فتحنا ${provider} في المتصفح.`,
     authorizeThere: 'صرّح لـ Hermes هناك.',
@@ -329,7 +330,28 @@ export const arBoot = {
     price: (input, output) => `${input} إدخال / ${output} إخراج لكل مليون رمز`,
     change: 'تغيير',
     startChatting: 'ابدأ',
-    docs: provider => `وثائق ${provider}`
+    docs: provider => `وثائق ${provider}`,
+    modeChoiceTitle: 'كيف تريد استخدام Hermes؟',
+    modeChoiceDesc: 'اختر ما يناسبك. يمكنك التبديل في أي وقت من الإعدادات.',
+    modeChoiceSimpleDesc: 'تحدّث مع Hermes فحسب، وهو يختار لك أفضل الإعدادات.',
+    modeChoiceAdvancedDesc: 'كل الإعدادات، بالإضافة إلى الطرفية والملفات ومراجعة الكود.',
+    simpleHeaderDesc: 'سجّل الدخول بحساب لديك بالفعل، وسيتولى Hermes إعداد الباقي.',
+    simpleTiles: {
+      nous: 'حساب مجاني',
+      chatgpt: 'يتطلب ChatGPT Plus أو Pro',
+      grok: 'يتطلب SuperGrok أو X Premium+',
+      claude: 'يتطلب Claude Max، وتحتسبه Anthropic كاستخدام إضافي.'
+    },
+    simpleDeviceCodeOpened: 'فُتح متصفحك. وافق على Hermes هناك، ثم عُد إلى هنا.',
+    simpleDeviceCodeCopied: 'إذا طُلب منك رمز، فألصق هذا الرمز. لقد نسخناه لك بالفعل.',
+    terminalSignInOpened: (paste, enter) =>
+      `فُتحت نافذة طرفية. وافق على Hermes في متصفحك وانسخ الرمز الذي يظهر لك. ثم انقر على نافذة الطرفية واضغط ${paste} ثم ${enter}، وبعدها عُد إلى هنا.`,
+    openTerminalAgain: 'فتح الطرفية مرة أخرى',
+    simpleSignInNotFinished: provider =>
+      `لا يرى Hermes تسجيل دخولك إلى ${provider} بعد. أكمِله ثم حاول مرة أخرى، أو اختر حسابًا آخر.`,
+    simpleNoSignIns: 'تعذّر على Hermes تحميل خيارات تسجيل الدخول. حاول مرة أخرى بعد قليل.',
+    simpleDefaultsFailed: 'تعذّر تشغيل إعدادات الأمان الخاصة بالوضع البسيط',
+    simpleDefaultsRemote: 'يعمل Hermes على جهاز كمبيوتر آخر، لذا لم تُضَف إعدادات الأمان الخاصة بالوضع البسيط هناك.'
   }
 } satisfies Pick<
   TranslationOverrides,

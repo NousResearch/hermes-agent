@@ -14,7 +14,8 @@ import {
   settingSearchTargets
 } from './settings-manifest'
 import { settingsSearchTargetQuery } from './settings-search'
-import { resolveSettingsSubpage, settingsSubpages } from './subpages'
+import { settingsSubpages } from './settings-visibility'
+import { resolveSettingsSubpage } from './subpages'
 import type { SettingsView } from './types'
 
 const views: SettingsView[] = [
@@ -25,17 +26,17 @@ const views: SettingsView[] = [
 describe('settings subpage routing', () => {
   it('opens the first ordered child for parents and keeps explicit child destinations', () => {
     for (const view of views) {
-      const pages = settingsSubpages(view)
+      const pages = settingsSubpages(view, 'advanced')
       expect(pages.length).toBeGreaterThan(0)
-      expect(resolveSettingsSubpage(view, new URLSearchParams())).toBe(pages[0].id)
-      expect(resolveSettingsSubpage(view, new URLSearchParams({ page: 'missing' }))).toBe(pages[0].id)
+      expect(resolveSettingsSubpage(view, new URLSearchParams(), 'advanced')).toBe(pages[0].id)
+      expect(resolveSettingsSubpage(view, new URLSearchParams({ page: 'missing' }), 'advanced')).toBe(pages[0].id)
 
       if (pages.some(page => page.id === 'general')) {
         expect(pages[0].id).toBe('general')
       }
 
       for (const page of pages) {
-        expect(resolveSettingsSubpage(view, new URLSearchParams({ page: page.id }))).toBe(page.id)
+        expect(resolveSettingsSubpage(view, new URLSearchParams({ page: page.id }), 'advanced')).toBe(page.id)
 
         for (const locale of Object.values(TRANSLATIONS)) {
           expect(locale.settings.subpages[page.labelKey]).toBeTruthy()
@@ -66,7 +67,7 @@ describe('settings subpage routing', () => {
         const view = `config:${section.id}` as SettingsView
         const params = new URLSearchParams(settingsSearchTargetQuery({ view, field }))
         expect(params.get('page')).toBe(owner)
-        expect(resolveSettingsSubpage(view, params)).toBe(owner)
+        expect(resolveSettingsSubpage(view, params, 'advanced')).toBe(owner)
       }
     }
 
@@ -84,14 +85,14 @@ describe('settings subpage routing', () => {
     ]
 
     for (const [view, search, expected] of cases) {
-      expect(resolveSettingsSubpage(view, new URLSearchParams(search))).toBe(expected)
+      expect(resolveSettingsSubpage(view, new URLSearchParams(search), 'advanced')).toBe(expected)
     }
   })
 
   it('makes every manifest row a routed, translated palette hit on a real page', () => {
     for (const viewKey of Object.keys(SETTINGS_MANIFEST) as ManifestViewKey[]) {
       const view = manifestView(viewKey)
-      const subpages = settingsSubpages(view).map(page => page.id)
+      const subpages = settingsSubpages(view, 'advanced').map(page => page.id)
       expect(views).toContain(view)
 
       for (const [key, setting] of Object.entries(SETTINGS_MANIFEST[viewKey])) {
@@ -103,7 +104,11 @@ describe('settings subpage routing', () => {
         if (setting.subpage) {
           expect(subpages).toContain(setting.subpage)
           expect(
-            resolveSettingsSubpage(view, new URLSearchParams(settingsSearchTargetQuery({ view, setting: id })))
+            resolveSettingsSubpage(
+              view,
+              new URLSearchParams(settingsSearchTargetQuery({ view, setting: id })),
+              'advanced'
+            )
           ).toBe(setting.subpage)
         }
 
@@ -116,7 +121,7 @@ describe('settings subpage routing', () => {
     // Platform-gated rows aside, the whole manifest reaches the palette.
     const definitions = Object.values(SETTINGS_MANIFEST).flatMap(rows => Object.values(rows))
     const gated = definitions.filter(setting => 'available' in setting).length
-    const targets = settingSearchTargets(TRANSLATIONS.en)
+    const targets = settingSearchTargets(TRANSLATIONS.en, 'advanced')
     expect(targets.length).toBeGreaterThanOrEqual(definitions.length - gated)
     expect(new Set(targets.map(target => target.id)).size).toBe(targets.length)
     expect(targets.map(target => target.label)).toEqual(

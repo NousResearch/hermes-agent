@@ -4,13 +4,16 @@
  * with an `action` id render that action's live keybind as their hotkey hint.
  */
 
+import { useStore } from '@nanostores/react'
+
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { IconComponent } from '@/lib/icons'
+import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 
 export const PALETTE_AREA = 'palette'
 
-/** Payload of a `palette` data contribution. */
-export interface PaletteContribution {
+/** Payload of a `palette` data contribution. `tier: 'advanced'` rests the row in Simple. */
+export interface PaletteContribution extends Tiered {
   id: string
   label: string
   /** Keybind action id — its live combo renders as the hotkey hint. */
@@ -30,11 +33,13 @@ export interface PaletteContribution {
   keepOpen?: boolean
 }
 
-/** Contributed palette rows, with stable render keys. */
+/** Contributed palette rows the current interface mode shows, with stable render keys. */
 export function usePaletteContributions(): Array<PaletteContribution & { key: string }> {
+  const shown = shownInMode(useStore($interfaceMode))
+
   return useContributions(PALETTE_AREA)
     .map(c => ({ key: `${c.source ?? 'core'}:${c.id}`, ...(c.data as PaletteContribution) }))
-    .filter(item => Boolean(item.label && item.run))
+    .filter(item => Boolean(item.label && item.run) && shown(item))
 }
 
 /**

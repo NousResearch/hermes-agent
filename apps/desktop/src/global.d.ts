@@ -97,6 +97,9 @@ declare global {
         sessionId: string,
         opts?: { cwd?: string; profile?: string }
       ) => Promise<{ ok: boolean; error?: string }>
+      // Hermes' own CLI sign-in (`hermes auth add <provider>`) in that terminal;
+      // Electron main maps allowlisted provider ids to a fixed argv.
+      openAuthInTerminal: (providerId: string, opts?: { profile?: string }) => Promise<{ ok: boolean; error?: string }>
       // Open a new full-chrome app window — a peer instance of the primary that
       // renders the complete app on an explicit connection/profile, or inherits
       // the calling window's route when no options are supplied.

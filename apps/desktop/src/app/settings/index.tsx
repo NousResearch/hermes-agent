@@ -33,6 +33,7 @@ import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-pal
 import { confirm } from '@/store/confirm'
 import { $activeConnectionId } from '@/store/connections'
 import { recordFeatureUse, settingsArea } from '@/store/desktop-metrics'
+import { $interfaceMode, type InterfaceMode, shownInMode } from '@/store/interface-mode'
 import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
@@ -64,8 +65,10 @@ import {
 import { SettingsBreadcrumbContext } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
+import { resolveSettingsView, settingsSubpages, settingsViewShown } from './settings-visibility'
+import { SimpleSettingsFooter } from './simple-settings-footer'
 import { SettingsSubpageHeader } from './subpage-navigation'
-import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
+import { resolveSettingsSubpage, settingsSubpageIcon } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 import { vaultOwnerKey, VaultSettings } from './vault-settings'
 
@@ -98,10 +101,41 @@ const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: st
   notifications: NotificationsSettings
 }
 
+// Canonical `page` for the active view, plus whether the URL must be rewritten
+// (hidden view redirected, or sub-page missing/stale).
+function resolveSubpageRoute(
+  activeView: SettingsViewId,
+  requestedView: SettingsViewId,
+  search: string,
+  mode: InterfaceMode
+) {
+  const params = new URLSearchParams(search)
+  const requestedSubpage = params.get('page')
+
+  if (activeView !== requestedView) {
+    params.set('tab', activeView)
+
+    for (const key of ['page', 'field', 'setting']) {
+      params.delete(key)
+    }
+  }
+
+  const subpage = resolveSettingsSubpage(activeView, params, mode)
+  const needsSubpageRedirect = activeView !== requestedView || Boolean(subpage && subpage !== requestedSubpage)
+  const subpageSearch = new URLSearchParams(params)
+
+  if (subpage) {
+    subpageSearch.set('page', subpage)
+  }
+
+  return { needsSubpageRedirect, subpage, subpageSearch }
+}
+
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
   const { t } = useI18n()
+  const mode = useStore($interfaceMode)
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
 
@@ -117,18 +151,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }, [navigate, search])
 
-  const [activeView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  const [requestedView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  // Simple mode hides some pages; a link (or a mode flip) onto one lands on a
+  // visible page via the same redirect that resolves sub-pages.
+  const activeView = resolveSettingsView(requestedView, mode)
 
   useEffect(() => recordFeatureUse(settingsArea(activeView)), [activeView])
-  const params = new URLSearchParams(search)
-  const requestedSubpage = params.get('page')
-  const subpage = resolveSettingsSubpage(activeView, params)
-  const needsSubpageRedirect = Boolean(subpage && subpage !== requestedSubpage)
-  const subpageSearch = new URLSearchParams(search)
-
-  if (subpage) {
-    subpageSearch.set('page', subpage)
-  }
+  const { needsSubpageRedirect, subpage, subpageSearch } = resolveSubpageRoute(activeView, requestedView, search, mode)
 
   const openSettingsPage = useCallback(
     (view: SettingsViewId, page?: string) => {
@@ -139,7 +168,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       }
 
       next.set('tab', view)
-      const destination = page ?? settingsSubpages(view)[0]?.id
+      const destination = page ?? settingsSubpages(view, mode)[0]?.id
 
       if (destination) {
         next.set('page', destination)
@@ -147,7 +176,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
       navigate({ hash, pathname, search: `?${next}` }, { replace: true })
     },
-    [hash, navigate, pathname, search]
+    [hash, mode, navigate, pathname, search]
   )
 
   const setActiveView = useCallback((view: SettingsViewId) => openSettingsPage(view), [openSettingsPage])
@@ -161,7 +190,9 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   }, [activeView, setActiveView])
   // Providers subnav (Accounts vs API keys) lives in its own param so each
   // sub-view is deep-linkable and survives a refresh.
-  const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
+  const [routeProviderView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
+  // Simple shows only Accounts; other provider sub-views are Advanced doors.
+  const providerView = mode === 'simple' ? 'accounts' : routeProviderView
   const [keysView] = useRouteEnumParam<KeysView>('kview', KEYS_VIEWS, 'tools')
   const [billingView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
   const billingState = useBillingState()
@@ -322,14 +353,16 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
                 icon: KeyRound,
                 id: 'pview:keys',
                 label: t.settings.nav.providerApiKeys,
-                onSelect: () => openProviderView('keys')
+                onSelect: () => openProviderView('keys'),
+                tier: 'advanced' as const
               },
               {
                 active: activeView === 'providers' && providerView === 'custom-endpoints',
                 icon: Globe,
                 id: 'pview:custom-endpoints',
                 label: t.settings.nav.providerCustomEndpoints,
-                onSelect: () => openProviderView('custom-endpoints')
+                onSelect: () => openProviderView('custom-endpoints'),
+                tier: 'advanced' as const
               },
               // Local models ships behind the --local launch flag: no flag, no
               // nav entry (the pane itself also refuses to render, so a stale
@@ -342,11 +375,12 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
                       icon: Cpu,
                       id: 'pview:local',
                       label: t.settings.nav.providerLocalModels,
-                      onSelect: () => openProviderView('local')
+                      onSelect: () => openProviderView('local'),
+                      tier: 'advanced' as const
                     }
                   ]
                 : [])
-            ],
+            ].filter(shownInMode(mode)),
             gapBefore: true,
             icon: Zap,
             id: 'providers',
@@ -415,28 +449,31 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             onSelect: () => setActiveView('about')
           }
         ] as OverlayNavGroup[]
-      ).map(group => {
-        const view = group.id as SettingsViewId
-        const children = settingsSubpages(view)
+      )
+        .filter(group => settingsViewShown(group.id as SettingsViewId, mode))
+        .map(group => {
+          const view = group.id as SettingsViewId
+          const children = settingsSubpages(view, mode)
 
-        return children.length
-          ? {
-              ...group,
-              children: children.map(page => ({
-                active: group.active && subpage === page.id,
-                icon: settingsSubpageIcon(page, group.icon),
-                id: `${view}:${page.id}`,
-                label: t.settings.subpages[page.labelKey],
-                onSelect: () => openSettingsPage(view, page.id)
-              }))
-            }
-          : group
-      }),
+          return children.length
+            ? {
+                ...group,
+                children: children.map(page => ({
+                  active: group.active && subpage === page.id,
+                  icon: settingsSubpageIcon(page, group.icon),
+                  id: `${view}:${page.id}`,
+                  label: t.settings.subpages[page.labelKey],
+                  onSelect: () => openSettingsPage(view, page.id)
+                }))
+              }
+            : group
+        }),
     [
       activeView,
       billingView,
       canViewPlans,
       keysView,
+      mode,
       plugins,
       providerView,
       subpage,
@@ -504,7 +541,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     </button>
   )
 
-  const navFooter = (
+  const configNavFooter = (
     <>
       <Tip label={t.settings.exportConfig}>
         <OverlayIconButton onClick={() => void exportConfig()}>
@@ -534,6 +571,9 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       </Tip>
     </>
   )
+
+  // Config import/export/reset are technical doors; Simple swaps them for the way back.
+  const navFooter = mode === 'simple' ? <SimpleSettingsFooter /> : configNavFooter
 
   const SubpageView = SUBPAGE_VIEWS[activeView]
 

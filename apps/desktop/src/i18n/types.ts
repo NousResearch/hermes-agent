@@ -19,6 +19,7 @@ import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { SimpleModeTranslations } from './types_simple_mode'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
 import type { UpdateChannelCopy } from './types_update_channel'
 
@@ -76,7 +77,7 @@ interface ModeOptionCopy {
   description: string
 }
 
-export interface Translations extends NoticeTranslations {
+export interface Translations extends NoticeTranslations, SimpleModeTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
   appTour: AppTourTranslations
@@ -3890,14 +3891,6 @@ export interface Translations extends NoticeTranslations {
       saveComment: string
       cancelComment: string
     }
-  }
-
-  interfaceMode: {
-    title: string
-    hint: string
-    sessionNote: string
-    simple: { label: string; description: string }
-    advanced: { label: string; description: string }
   }
 
   zones: {

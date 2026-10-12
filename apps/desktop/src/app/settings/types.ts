@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import type { IconComponent } from '@/lib/icons'
+import type { Tiered } from '@/store/interface-mode'
 import type { EnvVarInfo } from '@/types/hermes'
 
 export type SettingsView =
@@ -33,7 +34,7 @@ export interface ProviderGroup {
   hasAnySet: boolean
 }
 
-export interface DesktopConfigSection {
+export interface DesktopConfigSection extends Tiered {
   id: string
   label: string
   icon: IconComponent

@@ -11,6 +11,7 @@ import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
+import { esSimpleMode } from './es_simple_mode'
 import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
@@ -492,6 +493,7 @@ export const esOverrides = {
     }
   },
   ...esNotices,
+  ...esSimpleMode,
   billingBlock: {
     titleNous: 'Sin créditos de Nous',
     titleProvider: provider => `Sin créditos — ${provider}`,
@@ -4891,21 +4893,6 @@ export const esOverrides = {
       commentTitle: (n: number) => `Comentario ${n}`,
       saveComment: 'Guardar',
       cancelComment: 'Cancelar comentario'
-    }
-  },
-  interfaceMode: {
-    title: 'Modo de interfaz',
-    hint: 'Cambia lo que se muestra, no lo que Hermes puede hacer.',
-    sessionNote:
-      'Definido por el modo Simple. Un cambio aquí dura esta sesión; cambia a Avanzado para que sea permanente.',
-    simple: {
-      label: 'Simple',
-      description: 'Para hablar con Hermes. Barra lateral y chat; sin paneles de terminal, archivos ni diferencias.'
-    },
-    advanced: {
-      label: 'Avanzado',
-      description:
-        'Para desarrolladores. Terminal, archivos, diferencias, barra de estado y diseños, como los configures.'
     }
   },
   zones: {

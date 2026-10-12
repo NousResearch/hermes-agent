@@ -1,7 +1,10 @@
+import type { InterfaceTier } from '@/store/interface-mode'
+
 // Pages with separate tasks expose content-only subpages. Billing keeps its
 // existing capability-gated bview=overview|plans flow rather than adding a
 // second route parameter that could disagree with a pending financial action.
-export const OTHER_SUBPAGES: Record<string, { id: string; labelKey: string }[]> = {
+// `tier: 'advanced'` hides a page in Simple mode (settings-visibility.ts).
+export const OTHER_SUBPAGES: Record<string, { id: string; labelKey: string; tier?: InterfaceTier }[]> = {
   gateway: [
     { id: 'connection', labelKey: 'gatewayConnection' },
     { id: 'devices', labelKey: 'gatewayDevices' },
@@ -18,7 +21,7 @@ export const OTHER_SUBPAGES: Record<string, { id: string; labelKey: string }[]> 
   ],
   sessions: [
     { id: 'archived', labelKey: 'archivedSessions' },
-    { id: 'default-directory', labelKey: 'defaultDirectory' }
+    { id: 'default-directory', labelKey: 'defaultDirectory', tier: 'advanced' }
   ],
   vault: [
     { id: 'credentials', labelKey: 'vaultCredentials' },

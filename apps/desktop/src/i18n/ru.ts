@@ -8,6 +8,7 @@ import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
+import { ruSimpleMode } from './ru_simple_mode'
 import { ruUpdateChannel } from './ru_update_channel'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
@@ -264,6 +265,8 @@ export const ruOverrides = {
     }
   },
   ...ruNotices,
+
+  ...ruSimpleMode,
 
   billingBlock: {
     titleNous: 'Кредиты Nous закончились',
@@ -3629,20 +3632,6 @@ export const ruOverrides = {
       unreachableDescription: 'Страница предпросмотра недоступна.',
       openTarget: url => `Открыть ${url}`,
       fallbackTitle: 'Предпросмотр'
-    }
-  },
-  interfaceMode: {
-    title: 'Режим интерфейса',
-    hint: 'Меняет то, что показано, а не то, что умеет Hermes.',
-    sessionNote:
-      'Задано простым режимом. Изменение здесь действует до конца сеанса; переключитесь в расширенный, чтобы сделать его своим.',
-    simple: {
-      label: 'Простой',
-      description: 'Для общения с Hermes. Боковая панель и чат; без терминала, файлов и панелей diff.'
-    },
-    advanced: {
-      label: 'Расширенный',
-      description: 'Для разработчиков. Терминал, файлы, diff, строка состояния и раскладки — как вы их настроили.'
     }
   },
   zones: {

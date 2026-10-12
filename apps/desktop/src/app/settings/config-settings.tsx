@@ -24,6 +24,7 @@ import {
 import { recordSettingsSaved } from '@/store/desktop-metrics'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $alwaysExternalLinks, setAlwaysExternalLinks } from '@/store/external-links'
+import { $interfaceMode } from '@/store/interface-mode'
 import { $keepAwakeMode, type KeepAwakeMode, setKeepAwakeMode } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
@@ -56,6 +57,7 @@ import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } fro
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { settingShownInMode } from './settings-visibility'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
@@ -105,6 +107,7 @@ function ConfigSettingsInner({
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwakeMode = useStore($keepAwakeMode)
+  const interfaceMode = useStore($interfaceMode)
 
   const keepAwakeOptions = [
     { id: 'off', label: c.keepAwakeOff },
@@ -306,7 +309,9 @@ function ConfigSettingsInner({
   }, [schema, config])
 
   const fields = (sectionFields.get(activeSectionId) ?? []).filter(
-    ([key]) => subpage === undefined || configSubpageForField(activeSectionId, key) === subpage
+    ([key]) =>
+      settingShownInMode(key, interfaceMode) &&
+      (subpage === undefined || configSubpageForField(activeSectionId, key) === subpage)
   )
 
   const showModelSettings =

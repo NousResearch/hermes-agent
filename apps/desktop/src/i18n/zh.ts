@@ -10,6 +10,7 @@ import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhSimpleMode } from './zh_simple_mode'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
@@ -267,6 +268,8 @@ export const zhOverrides = {
   },
 
   ...zhNotices,
+
+  ...zhSimpleMode,
 
   billingBlock: {
     titleNous: 'Nous 额度已用尽',
@@ -4317,20 +4320,6 @@ export const zhOverrides = {
       commentTitle: n => `批注 ${n}`,
       saveComment: '保存',
       cancelComment: '取消批注'
-    }
-  },
-
-  interfaceMode: {
-    title: '界面模式',
-    hint: '只改变显示的内容，不改变 Hermes 的能力。',
-    sessionNote: '由简洁模式设定。此处的更改仅在本次会话内生效；切换到高级模式即可保留为你的设置。',
-    simple: {
-      label: '简洁',
-      description: '用于与 Hermes 对话。只有侧边栏和聊天；没有终端、文件或差异面板。'
-    },
-    advanced: {
-      label: '高级',
-      description: '面向开发者。终端、文件、差异、状态栏和布局，按你的设置显示。'
     }
   },
 

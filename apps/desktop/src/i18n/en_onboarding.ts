@@ -64,6 +64,7 @@ export const enOnboarding: Translations['onboarding'] = {
   useApiKeyInstead: 'Use an API key',
   errorDetails: 'Details',
   pickDifferentProvider: 'Pick a different provider',
+  pickDifferentAccount: 'Pick a different account',
   signInWith: provider => `Sign in with ${provider}`,
   openedBrowser: provider => `We opened ${provider} in your browser.`,
   authorizeThere: 'Authorize Hermes there.',
@@ -84,5 +85,26 @@ export const enOnboarding: Translations['onboarding'] = {
   price: (input, output) => `${input} in / ${output} out per Mtok`,
   change: 'Change',
   startChatting: 'Begin',
-  docs: provider => `${provider} docs`
+  docs: provider => `${provider} docs`,
+  modeChoiceTitle: 'How do you want to use Hermes?',
+  modeChoiceDesc: 'Pick what feels right. You can switch any time in Settings.',
+  modeChoiceSimpleDesc: 'Just talk to Hermes. It picks the best settings for you.',
+  modeChoiceAdvancedDesc: 'Every setting, plus terminal, files and code review.',
+  simpleHeaderDesc: 'Sign in with an account you already have. Hermes sets up the rest.',
+  simpleTiles: {
+    nous: 'Free account',
+    chatgpt: 'Needs ChatGPT Plus or Pro',
+    grok: 'Needs SuperGrok or X Premium+',
+    claude: 'Needs Claude Max. Anthropic bills it as extra usage.'
+  },
+  simpleDeviceCodeOpened: 'Your browser opened. Approve Hermes there, then come back here.',
+  simpleDeviceCodeCopied: "If it asks for a code, paste this one. It's already copied.",
+  terminalSignInOpened: (paste, enter) =>
+    `A Terminal window opened. Approve Hermes in your browser and copy the code it shows. Then click the Terminal window, press ${paste} and ${enter}, and come back here.`,
+  openTerminalAgain: 'Open terminal again',
+  simpleSignInNotFinished: provider =>
+    `Hermes doesn't see your ${provider} sign-in yet. Finish it, then try again, or pick a different account.`,
+  simpleNoSignIns: "Hermes couldn't load the sign-in options. Try again in a moment.",
+  simpleDefaultsFailed: "Couldn't turn on Simple mode's safety settings",
+  simpleDefaultsRemote: "Hermes runs on another computer, so Simple's safety settings weren't added there."
 }

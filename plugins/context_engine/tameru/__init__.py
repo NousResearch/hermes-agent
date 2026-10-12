@@ -10,6 +10,7 @@ from .hermes_extractive_engine import (
     bulky_tools_dropped,
     query_facts_lost,
 )
+from .transcript import last_user_text
 
 
 class ExtractiveContextEngine(ContextCompressor):
@@ -36,11 +37,7 @@ class ExtractiveContextEngine(ContextCompressor):
         super().__init__(model=model, **kwargs)
 
     def prune_tool_results_only(self, messages, current_tokens=None):
-        query = ""
-        for msg in reversed(messages or []):
-            if msg.get("role") == "user":
-                query = str(msg.get("content") or "")
-                break
+        query = last_user_text(messages)
         pruned, changed = apply_extractive_tool_prune(messages, query)
         more, parent_changed = super().prune_tool_results_only(pruned, current_tokens)
         return more, changed + parent_changed
@@ -52,13 +49,9 @@ class ExtractiveContextEngine(ContextCompressor):
         focus_topic=None,
         force=False,
         memory_context="",
+        **kwargs: Any,
     ):
-        query = focus_topic or ""
-        if not query:
-            for msg in reversed(messages or []):
-                if msg.get("role") == "user":
-                    query = str(msg.get("content") or "")
-                    break
+        query = focus_topic or last_user_text(messages)
         pruned, _changed = apply_extractive_tool_prune(messages, query)
         summarised = super().compress(
             pruned,
@@ -66,6 +59,7 @@ class ExtractiveContextEngine(ContextCompressor):
             focus_topic=focus_topic,
             force=force,
             memory_context=memory_context,
+            **kwargs,
         )
         if query_facts_lost(messages, summarised, query) or bulky_tools_dropped(
             pruned, summarised

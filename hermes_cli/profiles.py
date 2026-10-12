@@ -306,6 +306,11 @@ def _wrapper_path(alias: str) -> Path:
     return _get_wrapper_dir() / (f"{alias}.bat" if sys.platform == "win32" else alias)
 
 
+def _wrapper_candidates(alias: str) -> list[Path]:
+    """Paths a wrapper for *alias* may occupy: :func:`_wrapper_path`, then a pre-``.bat`` Windows one."""
+    return [_wrapper_path(alias), _get_wrapper_dir() / alias] if sys.platform == "win32" else [_wrapper_path(alias)]
+
+
 def _is_our_wrapper(path: Path) -> bool:
     """True when *path* reads as a Hermes-generated wrapper (contains ``hermes -p``)."""
     try:
@@ -566,11 +571,7 @@ def remove_wrapper_script(name: str) -> bool:
     except ValueError:
         return False
 
-    # Both the extensionless path (POSIX) and .bat (Windows)
-    candidates = [_get_wrapper_dir() / canon]
-    if sys.platform == "win32":
-        candidates.insert(0, _get_wrapper_dir() / f"{canon}.bat")
-    for wrapper_path in candidates:
+    for wrapper_path in _wrapper_candidates(canon):
         if wrapper_path.exists() and _is_our_wrapper(wrapper_path):
             with contextlib.suppress(Exception):
                 wrapper_path.unlink()
@@ -1831,17 +1832,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
     canon, profile_dir = _existing_profile_dir(canon)
     gw_running = _check_gateway_running(profile_dir)
-    wrapper_dir = _get_wrapper_dir()
-    wrapper_candidates = (
-        wrapper_dir / canon,
-        wrapper_dir / f"{canon}.bat",
-    )
-    wrapper_path = next(
-        (candidate for candidate in wrapper_candidates if candidate.exists()),
-        wrapper_candidates[0],
-    )
-    has_wrapper = wrapper_path.exists()
-    _print_delete_summary(canon, profile_dir, gw_running, wrapper_path if has_wrapper else None)
+    wrapper_path = next((p for p in _wrapper_candidates(canon) if p.exists()), None)
+    _print_delete_summary(canon, profile_dir, gw_running, wrapper_path)
     if not yes:
         print()
         try:
@@ -1906,7 +1898,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
 
     # 3. Remove wrapper script
-    if has_wrapper and remove_wrapper_script(canon):
+    if wrapper_path and remove_wrapper_script(canon):
         print(f"✓ Removed {wrapper_path}")
 
     # 4. Remove profile directory

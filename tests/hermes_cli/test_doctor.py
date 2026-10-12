@@ -1634,53 +1634,29 @@ def test_cron_store_check_reports_writability_and_low_space(
     assert len(finding.issues) == len(issues) and all(any(s in i for i in finding.issues) for s in issues)
 
 
-class TestCheckProfilesAlias:
-    """#131753: doctor must look for the wrapper name the writer actually creates
-    (``<alias>.bat`` on Windows), not the bare POSIX name on every platform."""
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_profile_alias_status_follows_the_wrapper_the_profile_really_has(monkeypatch, tmp_path, platform):
+    """#131753: doctor said "no alias" for every Windows profile (``.bat`` wrapper) and for any
+    profile reachable only through a custom alias name."""
+    import hermes_cli.gateway_migrate as gm
+    from hermes_cli import profiles
 
-    @staticmethod
-    def _run(monkeypatch, capsys, tmp_path, platform, wrappers):
-        import hermes_cli.profiles as profiles_mod
-        import hermes_cli.gateway_migrate as gateway_migrate
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    monkeypatch.setattr(gm, "duplicate_credential_findings", list)
+    monkeypatch.setattr(profiles, "sys", SimpleNamespace(**{**vars(sys), "platform": platform}))
+    for name in ("dev", "ops", "work"):
+        (tmp_path / ".hermes" / "profiles" / name).mkdir(parents=True)
+        (tmp_path / ".hermes" / "profiles" / name / "config.yaml").write_text("model: m\n", encoding="utf-8")
+    profiles.create_wrapper_script("dev")
+    profiles.create_wrapper_script("w", target="work")
 
-        wrapper_dir = tmp_path / "bin"
-        wrapper_dir.mkdir()
-        for name in wrappers:
-            target = name[: -len(".bat")] if name.endswith(".bat") else name
-            (wrapper_dir / name).write_text(
-                f"@echo off\r\nhermes -p {target} %*\r\n", encoding="utf-8")
-
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / "config.yaml").write_text("model: m\n", encoding="utf-8")
-        (home / ".env").write_text("K=v\n", encoding="utf-8")
-
-        profiles = [
-            SimpleNamespace(name="dev", path=home, is_default=False,
-                            gateway_running=True, model="deepseek-v4.1-flash"),
-            # ops never gets a wrapper: a genuinely missing alias must stay reportable
-            SimpleNamespace(name="ops", path=home, is_default=False,
-                            gateway_running=True, model="deepseek-v4.1-flash"),
-        ]
-        monkeypatch.setattr(profiles_mod, "list_profiles", lambda **kw: profiles)
-        monkeypatch.setattr(profiles_mod, "_get_wrapper_dir", lambda: wrapper_dir)
-        monkeypatch.setattr(profiles_mod, "profile_exists", lambda name: True)
-        monkeypatch.setattr(gateway_migrate, "duplicate_credential_findings", lambda: [])
-        monkeypatch.setattr(sys, "platform", platform)
-
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
         doctor_state._check_profiles(False)
-        return capsys.readouterr().out
+    lines = out.getvalue().splitlines()
+    status = {name: next(ln for ln in lines if f" {name}:" in ln) for name in ("dev", "ops", "work")}
 
-    def test_windows_bat_wrapper_is_not_reported_missing(self, monkeypatch, capsys, tmp_path):
-        out = self._run(monkeypatch, capsys, tmp_path, "win32", ["dev.bat"])
-        dev_line = next(ln for ln in out.splitlines() if "dev:" in ln)
-        assert "no alias" not in dev_line
-        ops_line = next(ln for ln in out.splitlines() if "ops:" in ln)
-        assert "no alias" in ops_line
-
-    def test_posix_bare_wrapper_still_matches(self, monkeypatch, capsys, tmp_path):
-        out = self._run(monkeypatch, capsys, tmp_path, "darwin", ["dev"])
-        dev_line = next(ln for ln in out.splitlines() if "dev:" in ln)
-        assert "no alias" not in dev_line
-        ops_line = next(ln for ln in out.splitlines() if "ops:" in ln)
-        assert "no alias" in ops_line
+    assert "no alias" not in status["dev"] and "no alias" not in status["work"]
+    assert "no alias" in status["ops"]

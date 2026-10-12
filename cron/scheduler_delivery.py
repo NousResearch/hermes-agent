@@ -876,19 +876,35 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     # The running install first (same trust order as gateway.run._resolve_hermes_bin): the
     # scheduler lives in the long-running gateway, so a PATH-first lookup would hand delivery
     # to whatever `hermes` PATH names — another install, or a planted one — instead of this one.
+    # Store Python exception (#122620), same as gateway.run._resolve_hermes_bin and
+    # kanban_db_dispatch._resolve_hermes_argv: the store interpreter has no application
+    # packages, so the bare module form re-execs into ModuleNotFoundError — build the
+    # child through the sanctioned launcher prelude instead.
     try:
-        import importlib.util as _ilu
-        found = _ilu.find_spec("hermes_cli") is not None
+        from hermes_cli._launchers import running_on_store_python
+
+        on_store_python = running_on_store_python()
     except Exception:
-        found = False
-    if found:
-        argv = [sys.executable, "-m", "hermes_cli.main"]
+        on_store_python = False
+    if on_store_python:
+        import hermes_cli._launchers as _launchers
+
+        root = Path(_launchers.__file__).resolve().parents[1]
+        argv = _launchers.runtime_command(root)
     else:
-        hermes_bin = shutil.which("hermes")
-        if not hermes_bin:
-            return ("Hermes could not deliver this result to Bot Chat: the `hermes` command was not found. "
-                    "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
-        argv = [hermes_bin]
+        try:
+            import importlib.util as _ilu
+            found = _ilu.find_spec("hermes_cli") is not None
+        except Exception:
+            found = False
+        if found:
+            argv = [sys.executable, "-m", "hermes_cli.main"]
+        else:
+            hermes_bin = shutil.which("hermes")
+            if not hermes_bin:
+                return ("Hermes could not deliver this result to Bot Chat: the `hermes` command was not found. "
+                        "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
+            argv = [hermes_bin]
 
     def _fail(msg: str, **log_kwargs) -> str:
         logger.warning("Job '%s': %s", job_id, msg, **log_kwargs)

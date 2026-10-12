@@ -209,27 +209,38 @@ class TestOpenCodeGoRelayEffortVocabulary:
         assert kwargs["reasoning_effort"] == "medium"
 
     @pytest.mark.parametrize(
-        ("model", "expected_top_level"),
+        ("model", "effort", "expected_top_level"),
         [
             # Thinking-only on the relay: any disable form 400s, so the server default must hold.
-            ("kimi-k2.7-code", {}),
-            ("glm-5.3", {}),
-            ("space-bunny-free", {}),
+            ("kimi-k2.7-code", None, {}),
+            ("glm-5.3", None, {}),
+            ("space-bunny-free", None, {}),
             # Models whose relay vocabulary has "none" get the disable on the wire.
-            ("kimi-k3", {"reasoning_effort": "none"}),
-            ("mimo-v2.6-flash", {"reasoning_effort": "none"}),
+            ("kimi-k3", None, {"reasoning_effort": "none"}),
+            ("mimo-v2.6-flash", None, {"reasoning_effort": "none"}),
+            ("mimo-v2.5-pro", None, {"reasoning_effort": "none"}),
+            # Flash must match before the wider GLM-5.3 row, whose vocabulary has no "none".
+            ("glm-5.3-flash", None, {"reasoning_effort": "none"}),
+            # One out-of-range level per relay vocabulary clamps to the nearest supported level.
+            ("glm-5.3", "minimal", {"reasoning_effort": "low"}),
+            ("glm-5.3", "max", {"reasoning_effort": "max"}),
+            ("mimo-v2.6-flash", "xhigh", {"reasoning_effort": "high"}),
+            ("space-bunny-free", "minimal", {"reasoning_effort": "minimal"}),
+            ("space-bunny-free", "xhigh", {"reasoning_effort": "xhigh"}),
         ],
     )
-    def test_disable_never_sends_a_rejected_value(self, opencode_go_profile, model, expected_top_level):
+    def test_effort_lands_in_the_relay_vocabulary(self, opencode_go_profile, model, effort, expected_top_level):
+        """``effort=None`` is a disable; any other effort is an enabled request at that level."""
+        reasoning_config = {"enabled": False} if effort is None else {"enabled": True, "effort": effort}
         extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False}, model=model,
+            reasoning_config=reasoning_config, model=model,
         )
         assert extra_body == {}
         assert top_level == expected_top_level
 
 
-class TestOpenCodeGoGLM52Reasoning:
-    """GLM-5.2 takes the relay's GLM reasoning_effort vocabulary on OpenCode Go."""
+class TestOpenCodeGoGLMAliases:
+    """GLM-5.2 alias spellings take the relay's GLM reasoning_effort vocabulary on OpenCode Go."""
 
 
     @pytest.mark.parametrize("model", ["glm-5-2", "glm-5p2"])

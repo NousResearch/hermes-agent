@@ -184,8 +184,8 @@ gateway:
     choice_normal: "normal — Standardverarbeitung"
     choice_auto: "auto — schnell in den ersten Sekunden jedes Zugs"
     choice_cold: "cold — schnell nur im ersten Zug einer Sitzung"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 6-facher Preis)"
-    ultrafast_not_supported: "⚡ Ultrafast ist nur für GPT-6 Astra verfügbar (aktuelles Modell: `{model}`)."
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast, 6-facher Preis"
+    ultrafast_not_supported: "⚡ Ultrafast ist für `{model}` mit diesem Konto oder dieser Route nicht verfügbar."
   footer:
     status: "📎 Laufzeit-Fußzeile: **{state}**\nFelder: `{fields}`\nPlattform: `{platform}`"
     usage: "Verwendung: `/footer [on|off|status]`"
@@ -2279,6 +2279,7 @@ cli:
     failed: "Verbindung fehlgeschlagen"
     authorized_no_tools: "Autorisiert. Tools nicht verfügbar."
     connected: "Verbunden"
+    named_account: "Hermes hat dieses {name}-Konto {alias} genannt. Du kannst es jederzeit umbenennen."
     waiting: "Warten…"
   editor:
     only_interactive: "Der externe Editor ist nur in der interaktiven CLI verfügbar."
@@ -2660,7 +2661,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast ist nur für GPT-6 Astra verfügbar (aktuelles Modell: {model})."
+      ultrafast_not_supported: "(._.) Ultrafast ist für {model} mit diesem Konto oder dieser Route nicht verfügbar."
       usage: "Verwendung: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} auf {value} gesetzt {scope}"

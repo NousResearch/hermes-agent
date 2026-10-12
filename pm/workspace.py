@@ -129,43 +129,57 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         import tomli_w
 
         document = tomllib.loads(core_text)
-        _core_release_quarantine(document, source / "uv.lock")
+        _trust_core_lock(document, source / "uv.lock")
         document.setdefault("tool", {}).setdefault("uv", {})["workspace"] = {"members": sorted(members)}
         text = tomli_w.dumps(document)
     else:
-        # Byte-identical to core: a member-less generation syncs frozen against core's own lock.
+        # A member-less generation syncs frozen against core's own lock.
         text = core_text.rstrip("\n") + "\n"
     target = root / "pyproject.toml"
+    text = _without_release_age(text)
     _copy_core_inputs(source, root)
     target.write_text(text, encoding="utf-8")
 
 
-def _core_release_quarantine(document: dict, core_lock: Path) -> None:
-    """Scope core's ``exclude-newer`` to the packages in core's own lock.
+def _without_release_age(text: str) -> str:
+    """Drop ``[tool.uv] exclude-newer`` from a generated root's pyproject text.
 
-    The quarantine covers Hermes's own dependencies only; a plugin's dependencies
-    follow the plugin's own policy, so a catalog pin floored on a fresh release still
-    installs. A global cutoff would filter plugin-only packages too, so it moves onto
-    every registry package core locks. A plugin still cannot drag one of those past
-    the window, and core's own ``= false`` exemptions stay as written.
+    The lock already holds checked versions; on the user's machine the cutoff only gates the
+    build tools uv fetches for source builds (setuptools for Hermes itself), and a mirror that
+    serves no upload times rejects all of them (#135589). Text-level so the pre-3.11 bootstrap
+    python, which has no tomllib, can run it.
     """
     import re
+
+    return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
+
+
+def _trust_core_lock(document: dict, core_lock: Path) -> None:
+    """Hold core's packages at the versions core's lock already vetted.
+
+    Release age is checked when Hermes locks (``exclude-newer`` in pyproject.toml, which
+    CI's lock check enforces), not on the user's machine: many package mirrors publish no
+    upload times, and uv rejects a file it cannot date ("X==V has no publish time",
+    #135589). So the generated root drops the cutoff and constrains every core-locked
+    registry package to its locked version instead; a plugin cannot drag one to an
+    unvetted release, and plugin-only packages follow the plugin's own policy. A package
+    the lock forks by platform (psutil: PyPI everywhere, git on Android) is left to the
+    resolver, which the seed lock already steers.
+    """
     import tomllib
+    from collections import defaultdict
 
-    settings = document.get("tool", {}).get("uv", {})
-    cutoff = settings.pop("exclude-newer", None)
-    if cutoff is None:
-        return
-
-    def normalized(name: str) -> str:
-        return re.sub(r"[-_.]+", "-", name).lower()
-
-    per_package = {normalized(name): value
-                   for name, value in settings.get("exclude-newer-package", {}).items()}
+    settings = document.setdefault("tool", {}).setdefault("uv", {})
+    settings.pop("exclude-newer", None)
+    settings.pop("exclude-newer-package", None)
+    if not core_lock.is_file():
+        return  # nothing vetted to hold; the resolver keeps core's declared ranges
+    entries = defaultdict(list)
     for package in tomllib.loads(core_lock.read_text(encoding="utf-8-sig")).get("package", []):
-        if "registry" in package.get("source", {}):
-            per_package.setdefault(normalized(package["name"]), cutoff)
-    settings["exclude-newer-package"] = per_package
+        entries[package["name"]].append(package)
+    pins = [f"{name}=={rows[0]['version']}" for name, rows in sorted(entries.items())
+            if len(rows) == 1 and "registry" in rows[0].get("source", {})]
+    settings["constraint-dependencies"] = [*settings.get("constraint-dependencies", []), *pins]
 
 
 def _is_member_candidate(plugin_dir: Path) -> bool:
@@ -377,6 +391,9 @@ def lock_and_sync(
         # snapshotted members and their exact lock travel with the workspace.
         # Use the snapshot's exclusions: build/ may hold an in-tree backend.
         shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
+        # A generation recorded before the cutoff left the user's machine still carries it.
+        manifest = root / "pyproject.toml"
+        manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")
         frozen = True
 
     environment.sync(root, extras=extras, frozen=frozen)

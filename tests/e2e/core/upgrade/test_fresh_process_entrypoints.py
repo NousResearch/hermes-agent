@@ -148,7 +148,7 @@ def _dist_is_optional_here(dist: str) -> bool:
 
 def _git(*args: str, cwd: Path = WORKTREE) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
-                          stdin=subprocess.DEVNULL, timeout=120)
+                          stdin=subprocess.DEVNULL, timeout=120, check=False)
 
 
 def _tracked(prefix: str = "") -> set[str] | None:
@@ -592,7 +592,7 @@ def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     archive = subprocess.run(["git", "archive", "--format=tar", tag, "--", *old_entries], cwd=str(WORKTREE),
-                             capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
+                             capture_output=True, stdin=subprocess.DEVNULL, timeout=120, check=False)
     assert archive.returncode == 0, archive.stderr.decode(errors="replace")
     subprocess.run(["tar", "-x", "-C", str(checkout)], input=archive.stdout, check=True, timeout=120)
     roots = [n for n in _root_py_modules() if not n.startswith("_test_")]

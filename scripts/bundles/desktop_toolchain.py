@@ -82,6 +82,7 @@ def run_preparation(source: Path, work: Path, cache: Path, request_file: Path,
          str(source), str(cache), str(request_file.resolve()), str(Path(__file__).resolve()),
          str(worker or source / "scripts/bundles/desktop_prepare.py")],
         cwd=source, env=environment, stdin=subprocess.DEVNULL,
+        check=False,
     ).returncode
 
 
@@ -166,7 +167,7 @@ def native_cache_path(cache: Path, env: Mapping[str, str]) -> Path:
     for command in commands:
         try:
             result = subprocess.run(command, env=dict(env), capture_output=True, text=True, encoding="utf-8",
-                                    errors="replace", timeout=30, stdin=subprocess.DEVNULL)
+                                    errors="replace", timeout=30, stdin=subprocess.DEVNULL, check=False)
             output = result.stdout + result.stderr
             # cl /Bv reports its identity and exits 2 when no source is supplied.
             valid = result.returncode in ((0, 2) if command == ["cl", "/Bv"] else (0,)) and bool(output.strip())

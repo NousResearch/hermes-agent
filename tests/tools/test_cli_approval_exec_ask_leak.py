@@ -246,6 +246,7 @@ print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
                 "HERMES_HOME": str(hermes_home),
             },
             timeout=60,
+            check=False,
         )
         assert proc.returncode == 0, proc.stderr
         assert "EXEC_ASK=None" in proc.stdout, proc.stdout + proc.stderr

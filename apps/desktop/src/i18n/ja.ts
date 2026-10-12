@@ -11,6 +11,7 @@ import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
 import { jaRepoScanDescriptions, jaRepoScanLabels } from './ja_repo_scan'
 import { jaSharedMetrics } from './ja_shared_metrics'
+import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
   externalOpenFailed: {
@@ -976,9 +977,7 @@ export const jaOverrides = {
           'アプリから Hermes 自身を更新するとき、ローカルのソース変更を保持するか破棄するかを選びます。ターミナル更新では常に確認されます。'
       }
     }),
-    about: {
-      updates: '更新'
-    },
+    about: { updates: '更新', channel: jaUpdateChannel },
     config: {
       minimizeToTrayTitle: 'トレイに最小化',
       minimizeToTrayDesc:

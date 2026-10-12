@@ -28,12 +28,11 @@ def claims(token):
 records=[]
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        raw_body=self.rfile.read(int(self.headers.get('Content-Length',0)))
+        self.rfile.read(int(self.headers.get('Content-Length',0)))
         if self.path == '/api/oauth/token':
             records.append({'path':self.path,'refresh':True})
             raw=json.dumps({'access_token':refresh_reply,'refresh_token':'fixture-rotated','expires_in':3600,'token_type':'Bearer','scope':'inference:invoke'}).encode()
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
-        body=json.loads(raw_body or '{}')
         bearer=self.headers.get('Authorization','').removeprefix('Bearer ')
         records.append({'path':self.path,'sub':claims(bearer).get('sub') if bearer else None})
         if bearer and claims(bearer)['exp'] < time.time():

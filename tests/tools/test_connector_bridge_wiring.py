@@ -513,7 +513,7 @@ def _connectors_on(monkeypatch, client_factory):
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
-    monkeypatch.setattr(bridge, "_default_client_factory", client_factory)
+    monkeypatch.setattr(bridge, "_default_client_factory", lambda call=None: client_factory())
     invalidate_check_fn_cache()
 
 
@@ -595,26 +595,16 @@ class _FakeResponse:
 
 
 class _RecordingTransport:
-    """Records every outgoing request; answers each with `data` echoes."""
+    """Records every outgoing request; answers each single call with a `data` echo."""
 
     def __init__(self):
         self.requests = []
 
     def request(self, method, url, *, headers=None, json=None, timeout=None):
         self.requests.append({"method": method, "url": url, "json": json})
-        tools = (json or {}).get("tools") or []
-        results = [
-            {"index": i, "connector": t.get("connector"), "tool": t.get("tool"), "data": "ok"}
-            for i, t in enumerate(tools)
-        ]
+        call = (json or {}).get("call") or {}
         return _FakeResponse(
-            {
-                "results": results,
-                "successCount": len(results),
-                "errorCount": 0,
-                "totalCount": len(results),
-            }
-        )
+            {"result": {"connector": call.get("connector"), "tool": call.get("tool"), "data": "ok"}})
 
 
 def _recording_client_factory(transport):
@@ -628,8 +618,7 @@ def _recording_client_factory(transport):
 
 
 def _sent_tools(transport):
-    assert len(transport.requests) == 1
-    return transport.requests[0]["json"]["tools"]
+    return [request["json"]["call"] for request in transport.requests]
 
 
 def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(monkeypatch):

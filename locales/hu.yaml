@@ -187,8 +187,8 @@ gateway:
     choice_normal: "normal — normál feldolgozás"
     choice_auto: "auto — gyors minden kör első másodperceiben"
     choice_cold: "cold — gyors csak a munkamenet első körében"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, hatszoros ár)"
-    ultrafast_not_supported: "⚡ Az Ultrafast csak a GPT-6 Astra modellhez érhető el (jelenlegi modell: `{model}`)."
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast, hatszoros ár"
+    ultrafast_not_supported: "⚡ Az Ultrafast nem érhető el a(z) `{model}` modellhez ezen a fiókon vagy útvonalon."
   footer:
     status: "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"
     usage: "Használat: `/footer [on|off|status]`"
@@ -2296,6 +2296,7 @@ cli:
     failed: "A kapcsolódás nem sikerült"
     authorized_no_tools: "Engedélyezve. Az eszközök nem érhetők el."
     connected: "Csatlakozva"
+    named_account: "A Hermes {alias} nevet adta ennek a(z) {name}-fióknak. Bármikor átnevezheted."
     waiting: "Várakozás…"
   editor:
     only_interactive: "A külső szerkesztő csak az interaktív CLI-ben érhető el."
@@ -2677,7 +2678,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Az Ultrafast csak a GPT-6 Astra modellhez érhető el (jelenlegi modell: {model})."
+      ultrafast_not_supported: "(._.) Az Ultrafast nem érhető el a(z) {model} modellhez ezen a fiókon vagy útvonalon."
       usage: "Használat: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} beállítva: {value} {scope}"

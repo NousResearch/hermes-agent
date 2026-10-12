@@ -45,5 +45,5 @@ assert not errors, errors
 assert os.environ['TERMINAL_CWD'] == before
 """
     result = subprocess.run([sys.executable, "-c", script, str(repo)], env=env,
-                            cwd=tmp_path, capture_output=True, text=True, timeout=45)
+                            cwd=tmp_path, capture_output=True, text=True, timeout=45, check=False)
     assert result.returncode == 0, result.stdout + result.stderr

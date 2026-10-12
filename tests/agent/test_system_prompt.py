@@ -248,7 +248,7 @@ class TestCodingContextBlock:
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
         parts = _prompt_parts(agent)
         assert "coding agent" in parts["stable"]
-        assert "Workspace" in parts["context"]
+        assert "Workspace" in parts["volatile"]
 
     def test_absent_when_off(self, monkeypatch, tmp_path):
         _init_code_repo(tmp_path)
@@ -489,7 +489,9 @@ def test_build_system_prompt_records_stable_prefix():
 
 
 def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
-    """Keep workspace guidance intact after the shared context."""
+    """Keep workspace guidance intact after the shared context. The worktree snapshot itself
+    is the last prose block (a moved repo rewrites those bytes, so nothing shared may sit
+    behind them)."""
     from agent import system_prompt
 
     agent = _make_agent(
@@ -520,10 +522,10 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
         "CODING_STABLE",
         "SYSTEM_MESSAGE",
         "CONTEXT_FILES",
-        "WORKSPACE",
         "Operator instructions (from config):\nOPERATOR",
         expected_profile,
         "Conversation started: Friday, January 02, 2026",
+        "WORKSPACE",
     ))
 
     with (

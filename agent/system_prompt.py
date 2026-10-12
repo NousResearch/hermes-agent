@@ -669,9 +669,9 @@ def _coding_parts(agent: Any) -> tuple[list[str], list[str], list[str]]:
     """``(prefix, workspace, trailing)`` coding-posture blocks; all empty
     without tools or when probing fails (it must never block prompt build).
 
-    The workspace block is a live git probe after project context, ahead of the whole
-    volatile band; re-probing at the compaction rebuild re-emits different bytes for any
-    repo that moved and defeats the keep-prompt fast path.  So the bytes are pinned per
+    The workspace block is a live git probe at the tail of the volatile band; re-probing at
+    the compaction rebuild re-emits different bytes for any repo that moved and defeats the
+    keep-prompt fast path.  So the bytes are pinned per
     session on the agent, keyed by the probed cwd (a gateway serves many cwds), seeded from
     the session's existing prompt when this agent did not build it, and replayed on
     rebuilds; ``reset_session_state`` drops the pin at a session boundary.
@@ -698,7 +698,7 @@ def _coding_parts(agent: Any) -> tuple[list[str], list[str], list[str]]:
 
 
 def _post_workspace_parts(agent: Any) -> list[str]:
-    """Blocks that follow the worktree-specific context: environment probe
+    """Blocks that follow the shared project context: environment probe
     (config.yaml agent.environment_probe; one line, nothing when clean, skipped
     for remote backends), bot-mode protocol, platform hint."""
     parts: list[str] = []
@@ -738,11 +738,12 @@ def _join_tier(parts: list[Optional[str]]) -> str:
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (identity,
     guidance and the coding brief), ``context`` (caller ``system_message``, project
-    context files, workspace snapshot and remaining workspace guidance) and
-    ``volatile`` (skills index, memory, user profile, external memory block,
-    timestamp line, runtime environment hints).  Worktree-dependent blocks follow project context so a
-    shared context file can remain in the longest common prefix across worktrees.
-    Never re-rendered mid-session."""
+    context files and the remaining workspace guidance) and ``volatile`` (skills index,
+    memory, user profile, external memory block, timestamp line, the worktree snapshot,
+    runtime environment hints).  Worktree-dependent blocks follow project context so a
+    shared context file can remain in the longest common prefix across worktrees; the
+    snapshot itself rides at the END of the band, because its bytes are the ones a repo
+    that moved rewrites.  Never re-rendered mid-session."""
     # Model context window scales the context-file caps; stable per conversation.
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
@@ -776,7 +777,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         context_parts.append(system_message)
     context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
     if coding_workspace_parts:
-        context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
+        context_parts.extend([*coding_trailing_parts, *post_workspace_parts])
     else:
         # Preserve the stable placement for non-workspace sessions; there is no
         # worktree snapshot whose later position would improve their prefix.
@@ -792,6 +793,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # prefix then stays byte-identical across every profile (and home) on the host.
     volatile_parts.append(_active_profile_line(agent))
     volatile_parts.append(_timestamp_line(agent))
+    # The worktree snapshot is a live git probe (branch, dirty count, last commits), so its bytes
+    # move whenever the repo does.  It rides at the END of the volatile band — behind the skills
+    # index, memory and plugin sections whose bytes the previous session still shares — so a repo
+    # that moved re-prefills the snapshot and the runtime anchor alone, never the whole tail.
+    volatile_parts.extend(coding_workspace_parts)
     # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
     # host examples cannot shadow it during persisted-prompt validation.
     if environment_hints:

@@ -462,6 +462,28 @@ describe('renderRpcResult', () => {
     })
   })
 
+  describe('config.set display toggles (/focus, /verbose)', () => {
+    it('renders the /focus envelope with its effective tool-progress mode', () => {
+      expect(renderRpcResult({ key: 'focus', value: 'on', tool_progress: 'off' }, 'focus')).toBe(
+        'Focus view: on · tool progress: off'
+      )
+    })
+
+    it('renders the /focus status query without inventing a tool-progress line', () => {
+      expect(renderRpcResult({ key: 'focus', value: 'off', tool_progress: 'all' }, 'focus')).toBe(
+        'Focus view: off · tool progress: all'
+      )
+    })
+
+    it('renders the /verbose cycle result', () => {
+      expect(renderRpcResult({ key: 'verbose', value: 'new' }, 'verbose')).toBe('Tool progress: new')
+    })
+
+    it('falls back to the raw key for any other config.set envelope', () => {
+      expect(renderRpcResult({ key: 'density', value: 'on' }, 'density')).toBe('density: on')
+    })
+  })
+
   describe('session.usage', () => {
     it('formats all usage counters in the host locale', () => {
       const format = new Intl.NumberFormat().format

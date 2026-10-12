@@ -109,3 +109,19 @@ def test_symlinks_are_not_followed(tmp_path):
     except OSError:
         pytest.skip("symlinks unsupported")
     assert _scan(tmp_path) == []
+
+
+def test_git_checkout_judges_the_commit_not_bytecode_validate_wrote(tmp_path):
+    """The catalog gate imports the plugin (validate) before scanning, which writes
+    untracked __pycache__; only bytecode the pinned commit tracks fails rule 17."""
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "__init__.py").write_text("x = 1\n")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "src"], check=True)
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "__init__.cpython-314.pyc").write_bytes(b"\x00" * 16)
+    assert _scan(tmp_path) == []
+    subprocess.run([*git, "add", "-f", "__pycache__"], check=True)
+    subprocess.run([*git, "commit", "-qm", "bytecode"], check=True)
+    assert any("committed Python bytecode" in f for f in _scan(tmp_path))

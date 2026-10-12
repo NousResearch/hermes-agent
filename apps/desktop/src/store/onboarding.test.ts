@@ -8,6 +8,7 @@ import type { OAuthProvider } from '@/types/hermes'
 import {
   $desktopOnboarding,
   completeDesktopOnboarding,
+  confirmOnboardingModel,
   type DesktopOnboardingState,
   type OnboardingContext,
   refreshOnboarding,
@@ -158,7 +159,11 @@ describe('refreshOnboarding', () => {
       await startProviderOAuth(makeOAuthProvider('fixture'), ctx)
       await vi.waitFor(() => expect($desktopOnboarding.get().flow.status).toBe('confirming_model'), { timeout: 5000 })
       expect(requests.slice(startAt).some(r => r.path.includes('/poll/'))).toBe(true)
-      expect(requests.slice(startAt).some(r => r.path === '/api/model/set')).toBe(true)
+      // Manual flows defer the global-default flip to the confirm card (#102829):
+      // no /api/model/set lands between the OAuth poll and the confirm card.
+      // Lifetime/profile pinning is still asserted: everything that DID fire
+      // stayed on the initiating profile.
+      expect(requests.slice(startAt).some(r => r.path === '/api/model/set')).toBe(false)
       expect(requests.slice(startAt).every(r => r.profile === 'beta')).toBe(true)
     } finally {
       closeManualOnboarding()
@@ -642,6 +647,136 @@ describe('OAuth onboarding', () => {
     expect(state.flow.status).toBe('error')
     expect(state.flow.status === 'error' ? state.flow.message : '').toContain('Confirm this expensive model.')
     expect(requestGatewayMock).not.toHaveBeenCalledWith('setup.runtime_check', expect.anything())
+  })
+})
+
+describe('manual onboarding (Settings / Add provider on an already-configured install)', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  it('does not flip the global default until the user confirms on the confirm card', async () => {
+    const model = 'nous/hermes-5'
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/oauth/nous/submit') {
+        return { ok: true, status: 'approved' }
+      }
+
+      if (path.startsWith('/api/model/options')) {
+        return { providers: [{ name: 'Nous Portal', slug: 'nous', models: [model] }] }
+      }
+
+      if (path.startsWith('/api/model/recommended-default?')) {
+        return { provider: 'nous', model, free_tier: false }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'nous', model, gateway_tools: [] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const requestGateway: OnboardingContext['requestGateway'] = async (method, params) => {
+      if (method === 'reload.env') {
+        return {} as never
+      }
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        // Still validated against the just-connected provider, not the
+        // (unchanged) config default — this is what makes deferring the
+        // persist safe.
+        expect(params).toEqual({ provider: 'nous' })
+
+        return { ok: true } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    // The user already has a working, different default configured — the
+    // exact scenario from the bug report (anthropic default, connecting Nous
+    // Portal as an *additional* provider from Settings).
+    $desktopOnboarding.set(
+      baseState({
+        manual: true,
+        flow: {
+          status: 'awaiting_user',
+          provider: makeOAuthProvider('nous', 'Nous Portal'),
+          start: {
+            auth_url: 'https://portal.example/auth',
+            expires_in: 600,
+            flow: 'pkce',
+            session_id: 'portal-session'
+          },
+          code: 'fresh-code'
+        },
+        requested: true
+      })
+    )
+
+    await submitOnboardingCode(onboardingContext(requestGateway))
+
+    const state = $desktopOnboarding.get()
+    expect(state.flow.status).toBe('confirming_model')
+
+    // OAuth succeeded and the confirm card is showing the new provider's
+    // model, but nothing has been written to config yet.
+    expect(calls.some(c => c.path === '/api/model/set')).toBe(false)
+
+    // Dismissing here (closeManualOnboarding) leaves the previous default
+    // untouched precisely because this call never fires.
+  })
+
+  it('persists the confirmed model only when the user clicks Begin', async () => {
+    const model = 'nous/hermes-5'
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'nous', model, gateway_tools: [] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    $desktopOnboarding.set(
+      baseState({
+        manual: true,
+        configured: true,
+        flow: {
+          status: 'confirming_model',
+          providerSlug: 'nous',
+          currentModel: model,
+          label: 'Nous Portal',
+          saving: false
+        }
+      })
+    )
+
+    const onCompleted = vi.fn()
+    await confirmOnboardingModel({ requestGateway: vi.fn(), onCompleted })
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({ scope: 'main', provider: 'nous', model })
+    expect(onCompleted).toHaveBeenCalledTimes(1)
   })
 })
 

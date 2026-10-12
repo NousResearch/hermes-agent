@@ -179,6 +179,28 @@ def test_author_credits_the_human_first():
     assert "@" in author, "the human's GitHub handle is expected upstream"
 
 
+def test_prose_names_native_tools_not_shell_utilities():
+    """Authoring standard 2: prose points at wrapped tools, never the shell ones.
+
+    Fenced blocks are exempt — those are commands a human pastes.
+    """
+    banned = re.compile(r"\b(grep|cat|sed|awk|find|ls|head|tail)\b", re.IGNORECASE)
+    fence = re.compile(r"^\s*(`{3,}|~{3,})")
+    offenders = []
+    for path in (SKILL_MD, REFERENCE):
+        inside = False
+        for i, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
+            if fence.match(line):
+                inside = not inside
+                continue
+            if inside:
+                continue
+            match = banned.search(line)
+            if match:
+                offenders.append(f"{path.name}:{i}: {match.group(0)}")
+    assert not offenders, offenders
+
+
 def test_no_machine_local_paths_or_secrets():
     for path in (SKILL_MD, REFERENCE):
         text = path.read_text(encoding="utf-8-sig")

@@ -59,7 +59,7 @@ no network. The hosted-instance half (step 6) needs the platform's token, which
 |---|---|
 | Process alive? | `hermes gateway status`; `state/gateway.heartbeat` freshness |
 | Platform link? | `platforms.<name>.state` in `gateway_state.json` (`connected` / `retrying`) |
-| Provider/auth failures? | `hermes` log, `grep` for `401` / `403` / `429` |
+| Provider/auth failures? | the `hermes` log, via `search_files`, for `401` / `403` / `429` |
 | Restart loop? | Pairs of gateway starts seconds apart in `gateway-starts.log` |
 | Clean or forced exit? | `Received <sig> — initiating shutdown` vs `did not exit after SIGTERM, sending SIGKILL` |
 | Hosted-instance refusal | REST `/api/agents` `status` + `dashboardUrl` (see reference) |
@@ -205,6 +205,6 @@ agreeing (see the reference) plus a healthy `/api/health`.
 ## References
 
 - `references/platform-lifecycle-and-dashboard-access.md` — hosted-instance
-  lifecycle triage: attribution greps, the outside-in health proof, the
+  lifecycle triage: attribution searches, the outside-in health proof, the
   portal REST read, the drain-marker contract and safe-cancel recipe,
   restart-leftover forensics, and the escalation ladder

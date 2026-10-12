@@ -534,8 +534,11 @@ def _settle_interrupted_update() -> None:
             if recovery.restore_interrupted_pull(_root):
                 recovery.relaunch_after_restore()
         finally:
-            for name in [n for n in sys.modules if n == "hermes_cli" or n.startswith("hermes_cli.")]:
-                del sys.modules[name]
+            # Same atomic-snapshot eviction as plugins_loader._evict_modules: a comprehension
+            # walks the live dict and can race a concurrent import (#132259).
+            for name in list(sys.modules):
+                if name == "hermes_cli" or name.startswith("hermes_cli."):
+                    sys.modules.pop(name, None)
         return
     if recovery.restore_interrupted_pull(_root):
         recovery.relaunch_after_restore()

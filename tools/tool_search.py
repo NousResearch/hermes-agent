@@ -222,9 +222,8 @@ def _bridge_schema(name: str, description: str, properties: dict[str, Any],
 
 
 _CONNECTIONS_HINT = (
-    " Names starting with `connectors__` are tools of remote connector accounts "
-    "(Gmail, Linear, Notion, ...); `manage_connections` checks whether an account "
-    "is connected and gets the authorization link when it is not.")
+    " `connectors__` names are tools of the user's app accounts (Gmail, Linear, ...); "
+    "`manage_connections` checks or authorizes an account.")
 
 
 def _search_description(deferred_count: int, listing: Optional[str], listing_form: str,
@@ -236,17 +235,9 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
     desc = (
         (f"Search {deferred_count} additional tools that are loaded on demand. "
          if deferred_count else "Search remote connector tools (email, calendars, issue trackers, and more). ")
-        + "Takes a list of queries searched in parallel against the same "
-        "catalog; send one query per distinct capability you need. Queries are "
-        "keyword searches, not questions: the app or service name plus an action "
-        "and object, no filler words (`gmail send email`, `nvidia driver status`, "
-        "not `what's my GPU driver version?`); a word no tool contains makes the "
-        "query return nothing. Returns "
-        "matching tool names grouped per query plus a shared map with each "
-        "tool's description. Follow with "
-        f"`{TOOL_DESCRIBE_NAME}` to load full parameter schemas, "
-        f"then `{TOOL_CALL_NAME}` to invoke. Tools listed at the top of this "
-        "system prompt are already available and do not need to be searched."
+        + "Send one keyword query per capability you need; returns matching tool names "
+        f"and descriptions. Then `{TOOL_DESCRIBE_NAME}` loads schemas and `{TOOL_CALL_NAME}` "
+        "invokes. Tools already in your tool list need no search."
         + (_CONNECTIONS_HINT if connections_granted else ""))
     if not listing:
         return desc
@@ -258,10 +249,8 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
             "not substitute a generic tool (terminal/browser) without "
             "searching.\n\n" + listing)
     desc += (
-        "\n\nEvery deferred capability is listed below. If a tool name "
-        "appears here, do NOT claim it is unavailable — load it with "
-        f"`{TOOL_DESCRIBE_NAME}` (skip `{TOOL_SEARCH_NAME}` when you "
-        "already see the exact name).")
+        "\n\nEvery tool listed below exists: never call it unavailable, and go straight to "
+        f"`{TOOL_DESCRIBE_NAME}` when you see the exact name.")
     if listing_form == "mixed":
         desc += (
             " For servers marked 'names not listed', the tools exist "
@@ -283,11 +272,11 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
                 "queries": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Keyword queries, one per capability: app or service name + action + object (e.g. ['github create issue', 'slack send message', 'gmail fetch emails']). Not questions or sentences: every word must appear in tool text, or the query returns nothing. Searched in parallel; results come back grouped per query. A single string is accepted and treated as one query.",
+                    "description": "One query per capability: service + action + object keywords (e.g. ['gmail send email', 'github create issue']), never a question; every word must match tool text. Searched in parallel.",
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of matches per query. Defaults to 5 and is clamped to the configured maximum (25 by default).",
+                    "description": "Max matches per query (default 5).",
                 },
             },
             ["queries"],
@@ -308,13 +297,9 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
         ),
         _bridge_schema(
             TOOL_CALL_NAME,
-            "Invoke deferred tools. Takes `calls`, an array of {name, arguments} "
-            "— one entry per invocation; a single call is an array of one. "
-            "Independent calls may be batched together. Local entries are split "
-            "into individual tool calls by the agent and follow each tool's "
-            "concurrency policy. Results are returned in input order. "
-            f"Argument shapes match each tool's schema (see `{TOOL_DESCRIBE_NAME}`). "
-            "Policy, hooks, and approvals run as for directly-listed tools.",
+            "Invoke deferred tools: `calls` is an array of {name, arguments}, one entry per "
+            "invocation (batch independent calls; results come back in order). Arguments match "
+            f"the schema from `{TOOL_DESCRIBE_NAME}`; approvals and hooks apply as usual.",
             {
                 "calls": {
                     "type": "array",

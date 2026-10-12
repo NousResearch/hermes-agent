@@ -1,0 +1,21 @@
+name: tameru
+title: Tameru
+repo: https://github.com/0xWhiteMage/hermes-tameru-plugin
+sha: 9a3642f6c0aa76ea7f10cb59cf604890c1ed4100
+subdir: hermes_tameru_plugin
+version: "1.4.1"
+description: Deterministic, local context compaction with query-aware tool-result extraction and recovery.
+maintainer: 0xWhiteMage
+tier: community
+category: memory
+docs_url: https://github.com/0xWhiteMage/hermes-tameru-plugin
+readme: false
+platforms: [linux]
+known_issues:
+  - Full archive recovery requires plugins.isolation to be in_process; host mode limits recovery.
+  - Overrides private ContextCompressor signatures and falls back when the host contract changes.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

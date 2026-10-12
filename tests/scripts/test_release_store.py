@@ -23,9 +23,10 @@ class _Cli:
             uploaded = any(kind == "submit" for kind, _ in self.events)
             # Before the upload: the last submission (in flight or published). After: the new draft.
             status = "PendingCommit" if uploaded else ("Certification" if self.pending else "Published")
+            # The CLI serializes .NET property names (rc.13-v0.21.7: '{"Id": ..., "ApplicationCategory": ...').
             return json.dumps({
-                "status": status, "targetPublishMode": "Immediate",
-                "friendlyName": "Submission 2", "listings": {}})
+                "Status": status, "TargetPublishMode": "Immediate",
+                "FriendlyName": "Submission 2", "Listings": {}})
         if argv[:3] == ["msstore", "submission", "delete"]:
             self.events.append(("delete-pending", name))
             return ""
@@ -76,7 +77,8 @@ def test_submit_turns_auto_publish_off():
 
     cli = _Cli(pending=False)
     submit("verified/Store-1.2.3.msixbundle", product_id="9NTEST", run=cli)
-    assert cli.updated["targetPublishMode"] == "Manual"
+    assert cli.updated["TargetPublishMode"] == "Manual"
+    assert "targetPublishMode" not in cli.updated
 
 
 def test_submit_commits_the_held_submission():
@@ -237,3 +239,21 @@ def test_check_from_env_passes_the_configured_credentials():
     token = next(r for r in api.requests if r["url"].endswith("/token"))
     assert token["form"]["client_id"] == "CLIENT"
     assert token["form"]["client_secret"] == "SECRET"
+
+
+def test_submit_reads_and_writes_the_keys_as_the_submission_spells_them():
+    """The CLI emits PascalCase; a camelCase (REST-shaped) submission keeps its own keys."""
+    from scripts.releases.store import submit
+
+    class _CamelCli(_Cli):
+        def __call__(self, argv):
+            out = super().__call__(argv)
+            if argv[:3] == ["msstore", "submission", "get"]:
+                data = json.loads(out)
+                return json.dumps({k[0].lower() + k[1:]: v for k, v in data.items()})
+            return out
+
+    cli = _CamelCli(pending=True)
+    submit("verified/Store-1.2.3.msixbundle", product_id="9NTEST", run=cli)
+    assert any(name.startswith("msstore submission delete") for name in cli.names())
+    assert cli.updated["targetPublishMode"] == "Manual" and "TargetPublishMode" not in cli.updated

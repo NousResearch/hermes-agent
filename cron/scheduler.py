@@ -1581,7 +1581,7 @@ def _apply_monitor_gate(
     unchanged tick costs no LLM/delivery. Returns ``(early_result | None, extra_prompt,
     monitor_context, pending_outcome)``. Monitor context is runtime data, distinct from a
     user-authored ``extra_prompt`` so the prompt scanner keeps its strict user-input boundary.
-    A changed outcome is not persisted here; ``run_job`` commits it once the run is admitted.
+    A changed outcome is not persisted here; ``run_job`` commits it once the agent is constructed.
     """
     from cron.monitor import check_monitor, job_has_monitor
 
@@ -2316,7 +2316,13 @@ def _prepare_job_prompt(
             runtime_data_prompt=monitor_context,
         )
     except CronPromptInjectionBlocked as block_exc:
-        # Injection scanner tripped: refuse this tick and tell the operator WHY.
+        # Injection scanner tripped: refuse this tick and tell the operator WHY. The content was
+        # judged, so consume the monitor change: the same blocked payload must not fail every
+        # tick until the remote source changes.
+        if pending_monitor is not None:
+            from cron.monitor import commit_monitor
+
+            commit_monitor(job, pending_monitor)
         logger.warning(
             "Job '%s' (ID: %s): blocked by prompt-injection scanner — %s", job_name, job_id, block_exc,
         )
@@ -2614,18 +2620,19 @@ def run_job(
             return setup.blocked
         model = setup.model
 
-        # Admitted past every pre-inference gate: consume the monitor change. A refusal above
-        # leaves it for the next tick; an inference failure below must not re-alert forever.
-        if pending_monitor is not None:
-            from cron.monitor import commit_monitor
-
-            commit_monitor(job, pending_monitor)
-
         # Open state.db only after every early-return gate has passed.
         _session_db = _open_cron_session_db(job)
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
+
+        # The agent exists, so nothing before inference can refuse the run any more: consume the
+        # monitor change. A refusal above (gate, state.db open, agent construction) leaves it for
+        # the next tick; an inference failure below must not re-alert forever.
+        if pending_monitor is not None:
+            from cron.monitor import commit_monitor
+
+            commit_monitor(job, pending_monitor)
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(

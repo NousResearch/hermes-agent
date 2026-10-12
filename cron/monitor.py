@@ -128,9 +128,10 @@ def job_has_monitor(job: dict) -> bool:
 def check_monitor(job: dict, *, persist: bool = True) -> MonitorOutcome:
     """Run the monitor source and decide whether the agent should run.
 
-    On change (or first run) the new hash + snapshot are persisted BEFORE the agent runs — detection
-    time is the state boundary, so a failed agent run doesn't re-alert on the same content forever.
-    On failure nothing is persisted. ``persist=False`` defers the write to :func:`commit_monitor`.
+    On change (or first run) the new hash + snapshot are persisted BEFORE the agent runs, so a failed
+    agent run doesn't re-alert on the same content forever. On failure nothing is persisted.
+    ``persist=False`` defers that write to :func:`commit_monitor`: the scheduler commits once the
+    run can no longer be refused before inference, so a refused tick keeps the change.
     """
     job_id = str(job.get("id") or "")
     ok, output = _run_monitor_source(job)

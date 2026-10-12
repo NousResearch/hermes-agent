@@ -389,7 +389,7 @@ class MCPOAuthManager:
             count = len(self._entries)
             self._entries.clear()
         if count:
-            logger.info("MCP OAuth: cleared %d cached provider(s) after the MCP loop stopped", count)
+            logger.info("MCP OAuth: cleared %d cached provider(s) with the MCP loop they were bound to", count)
         return count
 
     async def invalidate_if_disk_changed(self, server_name: str, *, hermes_home: str | Path | None = None) -> bool:

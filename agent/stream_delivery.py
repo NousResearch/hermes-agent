@@ -9,6 +9,7 @@ import threading
 from typing import Any, Dict, List
 
 from agent.memory_manager import sanitize_context
+from agent.redact import redact_sensitive_text
 from agent.message_content import flatten_message_text
 from agent.history_commentary import visible_commentary
 
@@ -35,6 +36,52 @@ class StreamDeliveryMixin:
         results = [self._call_quietly(cb, text) for cb in (self.stream_delta_callback, self._stream_callback)]
         return any(results)
 
+    def _pre_delivery_stream_gate_active(self) -> bool:
+        """Return whether this turn must retain every model-authored stream until approval."""
+        cached = getattr(self, "_pre_delivery_gate_active", None)
+        if isinstance(cached, bool):
+            return cached
+        try:
+            from hermes_cli.plugins import has_hook
+
+            active = bool(has_hook("pre_delivery"))
+        except Exception:
+            # Uncertainty on a content-emission boundary is not permission to publish.
+            logger.warning("pre_delivery stream-gate lookup failed; retaining stream", exc_info=True)
+            active = True
+        self._pre_delivery_gate_active = active
+        return active
+
+    def _release_pre_delivery_text(self, text: Any) -> bool:
+        """Publish only a final candidate that the pre-delivery gate allowed or replaced."""
+        if not isinstance(text, str) or not text:
+            return False
+        strip_think = getattr(self, "_strip_think_blocks", None)
+        visible = strip_think(text) if callable(strip_think) else text
+        if not isinstance(visible, str):
+            return False
+        visible = redact_sensitive_text(sanitize_context(visible)).lstrip("\n")
+        if not visible:
+            return False
+        if getattr(self, "_pre_delivery_stream_released_text", None) == visible:
+            return False
+        self._pre_delivery_stream_released_text = visible
+        delivered = self._deliver_to_stream_callbacks(visible)
+        self._enqueue_stream_hook("on_stream_delta", delta=visible, kind="text", approved=True)
+        pending_end = getattr(self, "_pre_delivery_stream_end_pending", None)
+        if isinstance(pending_end, dict):
+            self._enqueue_stream_hook(
+                "on_stream_end",
+                final_text=visible,
+                finished=bool(pending_end.get("finished", True)),
+                error=pending_end.get("error"),
+            )
+            self._pre_delivery_stream_end_pending = None
+        if delivered:
+            self._record_streamed_assistant_text(visible)
+            self._response_was_previewed = True
+        return delivered
+
     def _enqueue_stream_hook(self, event: str, *, label: str | None = None, **fields: Any) -> None:
         """Best-effort plugin stream hook enqueue; never raises into the stream path."""
         try:
@@ -59,7 +106,7 @@ class StreamDeliveryMixin:
         self._stream_reasoning_hooks_enabled = None
 
         def deliver(tail: str) -> None:
-            if tail:
+            if tail and not self._pre_delivery_stream_gate_active():
                 self._deliver_to_stream_callbacks(tail)
                 self._record_streamed_assistant_text(tail)
 
@@ -187,6 +234,8 @@ class StreamDeliveryMixin:
 
     def _fire_streamed_codex_commentary(self, text: str) -> None:
         """Deliver a completed live Codex commentary message immediately."""
+        if self._pre_delivery_stream_gate_active():
+            return
         if getattr(self, "interim_assistant_callback", None) is None or not isinstance(text, str):
             return
         visible = self._visible_commentary(text)
@@ -198,7 +247,7 @@ class StreamDeliveryMixin:
         """Surface a real mid-turn assistant commentary message to the UI layer. Does NOT set
         ``_response_was_previewed`` ("the final response was shown") — the CLI would then suppress a
         different final summary."""
-        if not isinstance(assistant_msg, dict):
+        if self._pre_delivery_stream_gate_active() or not isinstance(assistant_msg, dict):
             return
         commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
         # Dedup within this message and against earlier deliveries, first occurrence wins.
@@ -290,13 +339,35 @@ class StreamDeliveryMixin:
         }
 
     def _emit_stream_start(self) -> None:
+        self._pre_delivery_stream_end_pending = None
+        self._pre_delivery_stream_released_text = None
         self._enqueue_stream_hook("on_stream_start")
 
     def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
+        if self._pre_delivery_stream_gate_active() and not error:
+            approved = getattr(self, "_pre_delivery_stream_released_text", None)
+            if isinstance(approved, str) and approved:
+                self._enqueue_stream_hook(
+                    "on_stream_end",
+                    final_text=approved,
+                    finished=finished,
+                    error=None,
+                )
+                return
+            self._pre_delivery_stream_end_pending = {
+                "finished": finished,
+                "error": None,
+            }
+            return
+        if self._pre_delivery_stream_gate_active():
+            final_text = ""
+            error = "protected_stream_error" if error else None
         self._enqueue_stream_hook("on_stream_end", final_text=final_text, finished=finished, error=error)
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        if self._pre_delivery_stream_gate_active():
+            return
         # A superseded stream must not interleave its tokens alongside the retry that replaced it.
         if self._stream_writer_superseded():
             # See #65991.
@@ -315,7 +386,11 @@ class StreamDeliveryMixin:
             think_scrubber = getattr(self, "_stream_think_scrubber", None)
             # See #5719.
             scrubber = getattr(self, "_stream_context_scrubber", None)
-            text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
+            strip_think = getattr(self, "_strip_think_blocks", None)
+            scrubbed_text = think_scrubber.feed(text) if think_scrubber is not None else (
+                strip_think(text) if callable(strip_think) else text
+            )
+            text = scrubbed_text if isinstance(scrubbed_text, str) else ""
             # Providers that inline reasoning (MiniMax-M3 <think>…</think>) send no reasoning delta, so the
             # live reasoning pane would stay empty; forward what the scrubber stripped instead (#89647).
             hidden = think_scrubber.last_hidden if think_scrubber is not None else ""
@@ -338,6 +413,8 @@ class StreamDeliveryMixin:
 
         ``inline`` marks text recovered from ``<think>`` blocks in content; any other call is a native
         provider reasoning delta and stops inline forwarding for the rest of this model response."""
+        if self._pre_delivery_stream_gate_active():
+            return
         if not inline:
             self._native_reasoning_streamed = True
         if self._stream_writer_superseded():
@@ -363,7 +440,8 @@ class StreamDeliveryMixin:
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify the display layer that the model is generating tool call arguments (spinner for large payloads)."""
-        self._call_quietly(self.tool_gen_callback, tool_name)
+        if not self._pre_delivery_stream_gate_active():
+            self._call_quietly(self.tool_gen_callback, tool_name)
 
     def _has_stream_consumers(self) -> bool:
         """Return True if any streaming consumer is registered."""

@@ -19,6 +19,12 @@ from agent.title_generator import (
 from hermes_state import SessionDB
 
 
+@pytest.fixture(autouse=True)
+def _disable_jev_extraction():
+    with patch("agent.title_generator._jev_extract_title", return_value=None):
+        yield
+
+
 class TestGenerateTitle:
     """Unit tests for generate_title()."""
 

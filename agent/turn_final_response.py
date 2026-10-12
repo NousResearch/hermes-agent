@@ -12,7 +12,6 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
-from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
@@ -60,7 +59,7 @@ def finish_text_response(
     _preflight_compression_blocked: Any, codex_ack_continuations: Any,
     truncated_response_parts: Any, length_continue_retries: Any,
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
-    effective_task_id: Any,
+    effective_task_id: Any = "", turn_id: str = "", original_user_message: Any = None,
 ) -> FinalResponseVerdict:
     """Finish (or defer) a text-only assistant response in the original guard order. Every
     continuation path sets ``final_response = None`` so an acknowledgment never suppresses
@@ -85,43 +84,10 @@ def finish_text_response(
             result=result,
         )
 
-    # Reasoning-only clean stop on a trusted route (elsewhere reasoning is private and takes the
-    # ladder): some parsers (vLLM nemotron_v3 past ~500K prompt tokens) file the whole answer as
-    # reasoning when the closing delimiter is missing; ``stop`` means generation is complete, so
-    # promote it BEFORE the ladder. ``length`` (cut off mid-thought) stays on the continuation path.
-    # The promoted text is RETURNED as the answer but never written into the assistant
-    # row's ``content``: chain-of-thought stored as ordinary content is indistinguishable
-    # from a real reply on every history surface (#111761). The row keeps ``content``
-    # empty with the text in its reasoning fields and carries the promoted text as the
-    # ``api_content`` sidecar, so the next turn still replays it byte-identically.
-    # Anthropic thinking (signed ``thinking`` block, or a plugin's ``*.native_assistant`` carrier
-    # of native Claude turns) is a summary written by a separate model, never the answer: it
-    # takes the empty-response continuation below instead.
-    _content = assistant_message.content
-    _promoted = None
-    if (
-        finish_reason == "stop"
-        and not assistant_message.tool_calls
-        and (_content is None or (isinstance(_content, str) and not _content.strip()))
-        and not any(
-            isinstance(d, dict) and (
-                (d.get("type") in ("thinking", "redacted_thinking") and (d.get("signature") or d.get("data")))
-                or str(d.get("type") or "").endswith(".native_assistant")
-            )
-            for d in getattr(assistant_message, "reasoning_details", None) or ()
-        )
-        and answer_in_reasoning_capability(agent)
-    ):
-        _promoted = agent._extract_reasoning(assistant_message) or None
-        if _promoted:
-            # WARNING, not INFO: a model that keeps ending turns this way is stalled
-            # (planning monologue, zero tool calls) while the turn reports "complete".
-            logger.warning(
-                "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
-                "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
-                len(_promoted), agent.model, agent.provider, api_call_count,
-                sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
-            )
+    from agent.turn_final_response_reasoning import promote_final_reasoning
+    _promoted = promote_final_reasoning(
+        agent, assistant_message, finish_reason, messages, api_call_count, logger,
+    )
     final_response = _promoted or assistant_message.content or ""
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
@@ -334,12 +300,19 @@ def finish_text_response(
         conversation_history=conversation_history,
         pending_verification_response=_pending_verification_response,
         pending_verification_response_previewed=_pending_verification_response_previewed,
+        effective_task_id=effective_task_id,
+        turn_id=turn_id or getattr(agent, "_current_turn_id", "") or "",
+        original_user_message=original_user_message if original_user_message is not None else user_message,
     )
     _pending_verification_response = _sg.pending_verification_response
     _pending_verification_response_previewed = _sg.pending_verification_response_previewed
     if _sg.continue_turn:
         final_response = None
         return _verdict("continue")
+
+    final_response = _sg.final_response
+    if _promoted and final_msg.get("api_content") is not None:
+        final_msg["api_content"] = final_response
 
     # Plugins rewrite the reply BEFORE it is appended and flushed: SQLite treats a non-blank
     # assistant row as settled, so a transform after this write would reach the user but never
@@ -361,7 +334,8 @@ def finish_text_response(
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps
     # _persist_session idempotent). Failure must NOT abort the turn: finalize retries.
     try:
-        agent._flush_messages_to_session_db(messages, conversation_history)
+        if getattr(agent, "_pre_delivery_gate_active", False) is not True:
+            agent._flush_messages_to_session_db(messages, conversation_history)
     except Exception:
         logger.warning(
             "final text-turn flush failed (session=%s) — reply is "

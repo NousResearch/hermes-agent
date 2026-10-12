@@ -465,6 +465,8 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         )
         if is_delta or is_item:
             agent_cb("_touch_activity", "_touch_activity raised", args=(f"codex app-server: {method}",))
+        if getattr(agent, "_pre_delivery_gate_active", False) is True:
+            return
         handler = handlers.get(method)
         if handler is not None:
             handler(params)
@@ -741,12 +743,24 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
             model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model),
             service_tier=_codex_turn_service_tier(agent))
     except Exception as exc:
+        if getattr(agent, "_pre_delivery_gate_active", False) is True:
+            logger.warning("protected codex provider turn failed (%s)", type(exc).__name__)
+            _close_codex_session(agent)
+            return _turn_result(
+                _consume_user_interrupt(agent), messages, api_calls=0, completed=False,
+                error="pre_delivery_provider_error", final_response=None,
+            )
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)
         return _turn_result(
             _consume_user_interrupt(agent), messages, api_calls=0, completed=False, error=str(exc),
             final_response=f"Codex app-server turn failed: {exc}. Fall back to default runtime with `/codex-runtime auto`.",
         )
+    from agent.codex_delivery import certify_codex_turn
+    turn, api_calls = certify_codex_turn(
+        agent, turn, original_user_message=original_user_message,
+        messages=messages, effective_task_id=effective_task_id,
+    )
     interrupt = _consume_user_interrupt(agent, turn.interrupted)
     # Wedged client (turn deadline blown, OAuth refresh died, subprocess exited): retire it. Post-tool
     # silence alone no longer retires — it only logs a warning (#112928).
@@ -760,10 +774,12 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
     )
+    from agent.clinical_trace import snapshot
     return _turn_result(
-        interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
+        interrupt, messages, api_calls=api_calls, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
         final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        **({"clinical_delivery_trace": snapshot(agent)} if snapshot(agent) is not None else {}),
         **usage_result,
     )
 

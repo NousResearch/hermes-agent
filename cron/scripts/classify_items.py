@@ -14,12 +14,20 @@ Usage: cat items.json | python classify_items.py --threshold 7 --criteria "Urgen
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
+from agent.jev_runtime import is_jev_enabled
+import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 _ID_KEYS = ("id", "guid", "message_id", "url", "link")
 _VIEW_KEYS = ("title", "subject", "summary", "text", "body", "from", "sender", "url")
+
+# Shadow-mode comparison log: `jev` (TypeSafe CLI) scores the same batch alongside the
+# production LLM classifier below, purely for later diffing. See _jev_shadow_classify.
+_JEV_SHADOW_LOG = Path("jev-shadow-classify.jsonl")
 
 
 def _eprint(*args: Any) -> None:
@@ -110,6 +118,96 @@ def _render_text(surfaced: list) -> str:
     return "\n\n".join(blocks)
 
 
+def _jev_view_text(item: dict[str, Any]) -> str:
+    view = {k: item[k] for k in _VIEW_KEYS if k in item} or item
+    return json.dumps(view, ensure_ascii=False)[:1200]
+
+
+def _append_jev_shadow_log(records: list[dict[str, Any]]) -> None:
+    """Append JSON lines to the shadow log. Never raises: a log-write failure must not affect
+    the caller, which is itself already inside a best-effort shadow path."""
+    try:
+        from hermes_constants import get_hermes_home
+        log_path = get_hermes_home() / "logs" / _JEV_SHADOW_LOG
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.writelines(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
+    # health: allow BLE001 -- Shadow log writes must never abort classification; exception text may contain protected item data.
+    except Exception as e:  # pragma: no cover - best-effort logging only
+        _eprint(f"classify_items: jev shadow log write failed (non-fatal): {type(e).__name__}")
+
+
+def _jev_shadow_classify(
+    items: list[dict[str, Any]], criteria: str, llm_scores: dict[int, dict[str, Any]], threshold: int,
+) -> None:
+    """Best-effort: score the same batch with the `jev` CLI (TypeSafe) alongside the LLM
+    classifier above, and log both side by side for later comparison. Shadow mode only -- this
+    NEVER influences which items get surfaced, and any failure here (no `jev` on PATH, no
+    credentials, timeout, malformed output) is logged and swallowed, never raised.
+    """
+    if not is_jev_enabled("classify_items"):
+        return
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+    try:
+        rows = "\n".join(
+            json.dumps({"id": _item_id(item, i), "text": _jev_view_text(item)}, ensure_ascii=False)
+            for i, item in enumerate(items)
+        )
+        instructions = f"Score urgency 1-10 given this criteria: {criteria}"
+        cmd = [
+            "jev", "batch", "ask", "-i", "-", "--format", "json",
+            "--", "--score", f"urgency={instructions}|1,2,3,4,5,6,7,8,9,10",
+        ]
+        from tools.environments.local import served_profile_child_env
+        proc = subprocess.run(cmd, input=rows, capture_output=True, text=True, encoding="utf-8", errors="replace", env=served_profile_child_env(inherit_credentials=True), timeout=60, check=False)
+        # `jev batch` exits 1 when any individual row errored; still parse whatever it printed.
+        rows_out = json.loads(proc.stdout) if proc.stdout.strip() else []
+        if not isinstance(rows_out, list):
+            raise ValueError(f"unexpected jev batch output shape: {type(rows_out).__name__}")
+    # health: allow BLE001 -- Optional subprocess judgments must not affect delivery; tracebacks may contain protected input/output.
+    except Exception as e:
+        _append_jev_shadow_log([{
+            "timestamp": now, "batch_size": len(items), "jev_call_failed": True, "error": type(e).__name__,
+        }])
+        return
+
+    jev_by_id: dict[str, dict[str, Any]] = {}
+    for row in rows_out:
+        if not isinstance(row, dict):
+            continue
+        rid = row.get("id")
+        if not isinstance(rid, str):
+            continue
+        if not row.get("ok"):
+            jev_by_id[rid] = {"error": "jev_row_failed"}
+            continue
+        try:
+            urgency = row["result"]["answers"]["urgency"]
+            legend = urgency["legend"]
+            idx = min(max(round(urgency["score"]), 0), len(legend) - 1)
+            jev_by_id[rid] = {"score": int(legend[str(idx)]), "confidence": urgency.get("confidence")}
+        except (KeyError, TypeError, ValueError, OverflowError):
+            jev_by_id[rid] = {"error": "unexpected jev response shape"}
+
+    records = []
+    for i, item in enumerate(items):
+        item_id = _item_id(item, i)
+        llm = llm_scores.get(i)
+        llm_score = llm.get("score") if isinstance(llm, dict) else None
+        llm_surfaced = isinstance(llm_score, int) and llm_score >= threshold
+        jev = jev_by_id.get(item_id, {"error": "no jev result for this item"})
+        record: dict[str, Any] = {
+            "timestamp": now, "item_id": item_id, "llm_score": llm_score, "llm_surfaced": llm_surfaced,
+            "jev": jev,
+        }
+        if "score" in jev:
+            jev_surfaced = jev["score"] >= threshold
+            record["jev_surfaced"] = jev_surfaced
+            record["agree"] = llm_surfaced == jev_surfaced
+        records.append(record)
+    _append_jev_shadow_log(records)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Classify items by urgency; emit only urgent ones.")
     parser.add_argument("--criteria", required=True, help="Plain-language importance criteria.")
@@ -144,6 +242,16 @@ def main() -> int:
         return 4
 
     scores = _parse_scores(content, len(items))
+
+    # Shadow mode (see module docstring / _jev_shadow_classify): compute jev's own urgency
+    # scoring alongside the LLM and log it next to the LLM's, purely for comparison. Best-effort and
+    # non-blocking to the production decision below -- double-guarded against ever raising.
+    try:
+        _jev_shadow_classify(items, args.criteria, scores, args.threshold)
+    # health: allow BLE001 -- Last-resort shadow boundary preserves production classification; tracebacks may expose protected items.
+    except Exception as e:  # pragma: no cover - _jev_shadow_classify already swallows its own errors
+        _eprint(f"classify_items: jev shadow classify raised unexpectedly (non-fatal): {type(e).__name__}")
+
     surfaced = []
     for i, item in enumerate(items):
         s = scores.get(i)

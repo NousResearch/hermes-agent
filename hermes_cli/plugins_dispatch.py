@@ -41,7 +41,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 # gates/flushes.
 _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
-    "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
+    "pre_delivery", "pre_delivery_scope", "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
     "post_gateway_admission",
@@ -56,6 +56,26 @@ _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
 _HOOK_MAX_ABANDONED_WORKERS = 3
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
+
+PRE_DELIVERY_FAIL_CLOSED_MESSAGE = (
+    "No puedo entregar una respuesta clínica específica porque la evidencia de este turno "
+    "no pudo certificarse de forma completa."
+)
+_PRE_DELIVERY_ACTIONS = {"allow", "replace", "block"}
+
+# System-prompt sections are tightly bounded: they become high-trust prompt bytes charged every turn.
+SYSTEM_PROMPT_SECTION_POSITIONS = frozenset({"after_memory"})
+
+
+def _normalize_pre_delivery_directive(ret: Any) -> dict[str, Any]:
+    valid = (isinstance(ret, dict) and isinstance(ret.get("action"), str)
+             and ret["action"] in _PRE_DELIVERY_ACTIONS)
+    if valid and ret["action"] in {"replace", "block"}:
+        key = "response_text" if ret["action"] == "replace" else "message"
+        valid = isinstance(ret.get(key), str) and bool(ret[key].strip())
+    return ret if valid else {
+        "action": "block", "message": PRE_DELIVERY_FAIL_CLOSED_MESSAGE, "reason": "invalid_result",
+    }
 
 
 def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> dict[str, str]:
@@ -225,23 +245,40 @@ class PluginDispatchMixin:
         results: list[Any] = []
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
-        fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS or hook_name == "pre_delivery"
         for cb in self._hooks.get(hook_name, []):
             try:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            results.append(
+                                {"action": "block", "message": PRE_DELIVERY_FAIL_CLOSED_MESSAGE, "reason": "timeout"}
+                                if hook_name == "pre_delivery" else
+                                {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
+                            )
+                        elif hook_name == "pre_delivery_scope":
+                            results.append(True)
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
-                if ret is not None:
+                if hook_name == "pre_delivery":
+                    results.append(_normalize_pre_delivery_directive(ret))
+                elif hook_name == "pre_delivery_scope":
+                    results.append(ret if isinstance(ret, bool) else True)
+                elif ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:
-                self._report_hook_failure(hook_name, cb, kwargs, exc)
-                if fail_closed:  # a guard that raised made no decision: same veto as a timeout
-                    results.append(_policy_error_block_directive(hook_name, cb, exc))
+                if hook_name in {"pre_delivery", "pre_delivery_scope"}:
+                    logger.warning("Hook '%s' callback raised %s", hook_name, type(exc).__name__)
+                    results.append(
+                        {"action": "block", "message": PRE_DELIVERY_FAIL_CLOSED_MESSAGE, "reason": "callback_error"}
+                        if hook_name == "pre_delivery" else True
+                    )
+                else:
+                    self._report_hook_failure(hook_name, cb, kwargs, exc)
+                    if fail_closed:
+                        results.append(_policy_error_block_directive(hook_name, cb, exc))
         return results
 
     def _report_hook_failure(
@@ -482,6 +519,19 @@ class PluginDispatchMixin:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
 
+    def pre_delivery_scope_covers_gates(self) -> bool:
+        """A policy without its own scope probe must retain even an otherwise ordinary turn."""
+        gate_count = 0
+        for registrations in self._ownership_ledger.values():
+            hooks = [r.key for r in registrations if r.active and r.kind == "hook"]
+            if "pre_delivery" not in hooks:
+                continue
+            if "pre_delivery_scope" not in hooks:
+                return False
+            gate_count += hooks.count("pre_delivery")
+        # Unowned/legacy callbacks cannot inherit another plugin's opt-out.
+        return gate_count == len(self._hooks.get("pre_delivery", [])) and gate_count > 0
+
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.
 
@@ -499,25 +549,54 @@ class PluginDispatchMixin:
         results: list[Any] = []
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
-        fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS or hook_name == "pre_delivery"
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
-                ret = cb(**self._hook_callback_kwargs(cb, kwargs))
+                if hook_name in {"pre_delivery", "pre_delivery_scope"} and not inspect.iscoroutinefunction(cb):
+                    ret = await asyncio.to_thread(
+                        self._run_hook_callback_bounded if use_timeout else self._invoke_hook_callback,
+                        *([hook_name, cb, kwargs, timeout] if use_timeout else [cb, kwargs]),
+                    )
+                    if ret is _HOOK_SKIPPED:
+                        results.append(
+                            {"action": "block", "message": PRE_DELIVERY_FAIL_CLOSED_MESSAGE, "reason": "timeout"}
+                            if hook_name == "pre_delivery" else True
+                        )
+                        continue
+                else:
+                    ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
-                if ret is not None:
+                if hook_name == "pre_delivery":
+                    results.append(_normalize_pre_delivery_directive(ret))
+                elif hook_name == "pre_delivery_scope":
+                    results.append(ret if isinstance(ret, bool) else True)
+                elif ret is not None:
                     results.append(ret)
             except TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
-                    results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                    results.append(
+                        {"action": "block", "message": PRE_DELIVERY_FAIL_CLOSED_MESSAGE, "reason": "timeout"}
+                        if hook_name == "pre_delivery" else
+                        {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
+                    )
+                elif hook_name == "pre_delivery_scope":
+                    results.append(True)
             except (Exception, SystemExit) as exc:
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).
-                self._report_hook_failure(hook_name, cb, kwargs, exc)
-                if fail_closed:
-                    results.append(_policy_error_block_directive(hook_name, cb, exc))
+                if hook_name in {"pre_delivery", "pre_delivery_scope"}:
+                    logger.warning("Hook '%s' callback raised %s", hook_name, type(exc).__name__)
+                    results.append(
+                        {"action": "block", "message": PRE_DELIVERY_FAIL_CLOSED_MESSAGE, "reason": "callback_error"}
+                        if hook_name == "pre_delivery" else True
+                    )
+                else:
+                    self._report_hook_failure(hook_name, cb, kwargs, exc)
+                    if fail_closed:
+                        results.append(_policy_error_block_directive(hook_name, cb, exc))
         return results
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:

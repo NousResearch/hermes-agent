@@ -10,7 +10,7 @@ import os
 import platform
 import subprocess
 import sys
-from typing import Dict
+from typing import Any, Dict
 
 # Logger name kept as the origin module's so existing log expectations hold.
 logger = logging.getLogger("tools.code_execution_tool")
@@ -302,3 +302,12 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
         if candidate and os.path.isdir(candidate):
             return candidate
     return staging_dir
+
+
+def _resolve_max_tool_calls(cfg: dict[str, Any]) -> int:
+    """Explicit null disables the local ceiling; absent keys retain the legacy default."""
+    from tools.code_execution_tool import DEFAULT_MAX_TOOL_CALLS
+    from hermes_cli.config import resolve_local_limit
+    if "max_tool_calls" not in cfg:
+        return DEFAULT_MAX_TOOL_CALLS
+    return resolve_local_limit(cfg["max_tool_calls"], default=DEFAULT_MAX_TOOL_CALLS)

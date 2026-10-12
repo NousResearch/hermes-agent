@@ -1612,6 +1612,12 @@ def _run_conversation_turn(
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
+    from agent.pre_delivery_scope import retain_stream_for_turn
+    _pre_delivery_gate_active = retain_stream_for_turn(
+        agent, user_message=_ctx.original_user_message,
+        conversation_history=conversation_history, turn_id=_ctx.turn_id,
+    )
+
     # Voice turns may run on auxiliary.voice_chat: bound after the prompt/row/compaction were settled
     # against the main model, undone in finalize_turn (and run_conversation's finally on early exits).
     from agent.voice_turn_route import begin_voice_turn_route
@@ -1631,6 +1637,16 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    agent._pre_delivery_failed = False
+    agent._pre_delivery_repair_attempts = 0
+    agent._pre_delivery_output_cache = None
+    agent._pre_delivery_gate_active = _pre_delivery_gate_active
+    from agent.clinical_trace import begin_trace
+    begin_trace(
+        agent,
+        protected=_pre_delivery_gate_active,
+        platform=getattr(agent, "platform", "") or "",
+    )
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

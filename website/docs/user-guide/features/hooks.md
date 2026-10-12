@@ -1684,6 +1684,24 @@ Pairs with `transform_tool_result`, which runs afterward for every tool, includi
 
 ---
 
+### `pre_delivery_scope` and `pre_delivery`
+
+Register `pre_delivery` for a policy that must approve a final response before delivery. Each callback must return one directive:
+
+```python
+{"action": "allow"}
+{"action": "replace", "response_text": "approved replacement"}
+{"action": "block", "message": "private contract marker", "reason": "private policy reason"}
+```
+
+Block wins over replacement. Missing or malformed results, callback exceptions and timeouts fail closed in synchronous and asynchronous dispatch. Block messages and reasons stay private; they are never rendered as assistant text.
+
+The agent normally retains all model streaming when a delivery policy is installed. A policy may also register `pre_delivery_scope`, returning a boolean for each turn. Streaming resumes only when every policy owner supplies its own scope hook and every hook returns `False`. A policy without a scope hook, an unowned policy callback, failed scope hook or malformed scope result retains the stream. The scope hook receives `session_id`, `user_message`, `conversation_history`, `platform` and `turn_id`.
+
+The final hook receives `response_text`, `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `model` and `platform`. Transformation runs before certification. Standard and Codex app-server turns can regenerate a blocked candidate up to four times. The repair directives and rejected candidates are excluded from durable history and trajectories. Exhaustion ends the turn as failed with a fixed, content-free message. Interruption or provider failure never approves a partial candidate. Recovery responses and host suffixes also pass the gate before delivery; an unrepairable finalization rejection fails the turn.
+
+The bundled `clinical-evidence-guard` is a concrete consumer. Enable it with `plugins.enabled: [clinical-evidence-guard]`. It tracks evidence in memory per profile/session/turn and checks retrieved passages against clinical drafts. Its lexical checks do not prove clinical truth or current-source validity. Its optional Jev classifier is an observation only and cannot allow a blocked response.
+
 ### `transform_llm_output`
 
 Fires **once per turn** after the tool-calling loop completes and the model has produced a final response, **before** that response is delivered to the user (CLI, gateway, or programmatic caller) and **before** the assistant row is persisted — the replacement is what the session stores, what `/resume` shows and what the next turn replays, so the transcript never diverges from what the user saw. Hermes' own trailers (the file-mutation warning, the abnormal-exit note) are appended afterwards and are not part of `response_text`. Lets a plugin rewrite the assistant's final text using classical-programming methods — no extra inference tokens burned on SOUL flavor text or a skill-driven transform.

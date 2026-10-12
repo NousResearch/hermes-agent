@@ -55,7 +55,8 @@ from hermes_cli.plugins_dispatch import (
     MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
     SYSTEM_PROMPT_SECTION_POSITIONS, _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
     _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
-    _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
+    _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PRE_DELIVERY_FAIL_CLOSED_MESSAGE, PluginDispatchMixin,
+    PluginSystemPromptSection,
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
     is_valid_system_prompt_section_id,
 )
@@ -64,6 +65,7 @@ from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
+from hermes_cli.plugins_commands import resolve_plugin_command_result
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -110,6 +112,14 @@ VALID_HOOKS: set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
+    # pre_delivery_scope: per-turn probe; callbacks return bool (True means retain streaming).
+    "pre_delivery_scope",
+    # pre_delivery: final, behavior-changing output gate. Every callback must return exactly one
+    # directive: {"action": "allow"}, {"action": "replace", "response_text": str}, or
+    # {"action": "block", "message": str, "reason"?: str}. Unlike observer hooks, timeout,
+    # exception, and malformed results fail closed. The agent may use a block directive to run a
+    # bounded evidence-repair loop before delivering the directive's specific degradation.
+    "pre_delivery",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
@@ -2187,40 +2197,6 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
-
-
-def resolve_plugin_command_result(result: Any) -> Any:
-    """Resolve a plugin command result, awaiting async handlers: ``asyncio.run`` when no loop is
-    running, else a helper thread with its own loop (30s bound so a hung handler cannot wedge the
-    terminal)."""
-    if not inspect.isawaitable(result):
-        return result
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(result)
-    outcome: dict[str, Any] = {}
-    failure: dict[str, BaseException] = {}
-    done = threading.Event()
-
-    def _runner() -> None:
-        try:
-            outcome["value"] = asyncio.run(result)
-        except BaseException as exc:  # pragma: no cover - re-raised below
-            failure["exc"] = exc
-        finally:
-            done.set()
-
-    # copy_context: the helper thread must see the caller's profile/secret scope, else an
-    # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
-    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
-                     name="hermes-plugin-command-await", daemon=True).start()
-    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
-        raise TimeoutError("Plugin command async handler did not complete within "
-                           f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
-    if "exc" in failure:
-        raise failure["exc"]
-    return outcome.get("value")
 
 
 def get_plugin_commands() -> dict[str, dict]:

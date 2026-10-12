@@ -7,6 +7,7 @@ import re
 # Single source of truth shared with the install-time scanner (skills_guard): a narrower
 # cron-local copy once let obfuscated directives slip past this runtime tripwire.
 from tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
+from tools.threat_patterns import _jev_screen_shadow as _cron_jev_screen_shadow
 
 # Logger parity with the origin module (these functions used to log there).
 logger = logging.getLogger("tools.cronjob_tools")
@@ -127,7 +128,11 @@ def _scan_cron_prompt(prompt: str) -> str:
     for char in _CRON_INVISIBLE_CHARS:
         if f"U+{ord(char):04X}" in removed:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
-    return _first_pattern_error(prompt_to_scan, _CRON_THREAT_PATTERNS, _CRON_EXFIL_COMMAND_PATTERNS)
+    error = _first_pattern_error(prompt_to_scan, _CRON_THREAT_PATTERNS, _CRON_EXFIL_COMMAND_PATTERNS)
+    # Second, purely informational signal (see _jev_screen_shadow): never blocks, never changes
+    # `error` — this regex cascade remains the only real authority over cron prompts.
+    _cron_jev_screen_shadow(prompt_to_scan, "cron_prompt", [] if not error else [error])
+    return error
 
 
 def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:

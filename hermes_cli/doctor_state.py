@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_info, check_ok, check_warn, doctor_check, ensure_dir,
@@ -638,7 +639,7 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
 
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
+    from hermes_cli.profiles import _PROFILE_ID_RE, list_profiles, _get_wrapper_dir, profile_exists
     import re as _re
     named_profiles = [p for p in list_profiles() if not p.is_default]
     if not named_profiles:
@@ -660,9 +661,9 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
             with warn_on_error(""):
                 _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8-sig"))
                 if _m and not profile_exists(_m.group(1)):
-                    alias = wrapper.stem if wrapper.suffix == ".bat" else wrapper.name
-                    check_warn(f"Orphan alias: {alias} → profile '{_m.group(1)}' no longer exists",
-                               f"(remove with: hermes profile alias {alias} --remove)")
+                    alias = wrapper.stem if sys.platform == "win32" and wrapper.suffix == ".bat" else wrapper.name
+                    fix = f"hermes profile alias {alias} --remove" if _PROFILE_ID_RE.match(alias) else f"delete {wrapper}"
+                    check_warn(f"Orphan alias: {alias} → profile '{_m.group(1)}' no longer exists", f"(remove with: {fix})")
     # Same helper as the multiplex migration preflight, so doctor names the duplicates that make
     # `hermes gateway migrate --multiplex` refuse (and made pre-multiplex standalone gateways race).
     from hermes_cli.gateway_migrate import duplicate_credential_findings

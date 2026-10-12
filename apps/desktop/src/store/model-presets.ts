@@ -8,6 +8,7 @@ import {
   $currentFastMode,
   $currentReasoningEffort,
   $currentServiceTier,
+  pickCurrentReasoningEffort,
   setCurrentFastMode,
   setCurrentReasoningEffort,
   setCurrentServiceTier
@@ -115,7 +116,7 @@ export async function applyModelPreset(
 
   if (primary) {
     if (effort !== undefined) {
-      setCurrentReasoningEffort(effort)
+      pickCurrentReasoningEffort(effort)
     }
 
     if (fast !== undefined) {

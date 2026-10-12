@@ -67,6 +67,7 @@ import {
   getSessionOwnerHint,
   knownSessionOwner,
   ownerLookupSessionRows,
+  pickCurrentReasoningEffort,
   sessionMatchesStoredId,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -1448,12 +1449,12 @@ describe('createBackendSessionForSend profile routing', () => {
   })
 
   // Effort and fast mode are independent of the model-override decision.
-  it('keeps sending reasoning effort even when the model is omitted', async () => {
+  it('keeps sending a picked reasoning effort even when the model is omitted', async () => {
     const params = await createWith(() => {
       setCurrentModel('openai/gpt-5.6-sol')
       setCurrentProvider('openai-codex')
       setCurrentModelSource('default')
-      setCurrentReasoningEffort('high')
+      pickCurrentReasoningEffort('high')
     })
 
     expect(params).not.toHaveProperty('model')
@@ -1515,11 +1516,10 @@ describe('createBackendSessionForSend profile routing', () => {
 
     setCurrentModel('anthropic/claude-sonnet-4.6')
     setCurrentProvider('anthropic')
-    // A real composer pick marks the selection manual; this test drives the
-    // atoms directly, so set the source explicitly. Only a manual selection
-    // rides along as a per-session override.
+    // Drive the atoms as a real composer pick would: only a manual model and a
+    // picked effort ride along as per-session overrides.
     setCurrentModelSource('manual')
-    setCurrentReasoningEffort('high')
+    pickCurrentReasoningEffort('high')
     setCurrentFastMode(true)
     // Priority rides as `fast` alone: a pre-Ultrafast backend rejects `service_tier`.
     setCurrentServiceTier('priority')
@@ -6100,7 +6100,7 @@ describe('openNewSessionTile workspace target', () => {
     setCurrentModel('ambient-model')
     setCurrentProvider('ambient-provider')
     setCurrentModelSource('manual')
-    setCurrentReasoningEffort('high')
+    pickCurrentReasoningEffort('high')
     setCurrentFastMode(true)
 
     let createParams: Record<string, unknown> | undefined

@@ -69,6 +69,7 @@ import {
   $defaultReasoningEffort,
   $selectedStoredSessionId,
   markComposerSelectionManual,
+  pickCurrentReasoningEffort,
   setCurrentReasoningEffort,
   setModelPickerOpen
 } from '@/store/session'
@@ -248,7 +249,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     }
 
     markComposerSelectionManual()
-    setCurrentReasoningEffort(next)
+    pickCurrentReasoningEffort(next)
 
     if (!sessionId) {
       return

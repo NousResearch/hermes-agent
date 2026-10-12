@@ -35,6 +35,7 @@ const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
+const COMPOSER_EFFORT_SOURCE_KEY = 'hermes.desktop.composer.reasoning-effort-source'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 const COMPOSER_SERVICE_TIER_KEY = 'hermes.desktop.composer.service-tier'
 
@@ -1722,10 +1723,22 @@ export const markComposerSelectionManual = (): void => {
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
+  persistString(COMPOSER_EFFORT_SOURCE_KEY, null)
   // The wire level is only meaningful for the effort the gateway computed it
   // for; an optimistic pick clears it until the next session.info re-stamps.
   $currentReasoningEffortWire.set('')
 }
+
+// An explicit composer pick (picker, keybind). Only a picked level rides
+// session.create as a per-session override: a level seeded from config or
+// restored from another session would outrank per-model reasoning_overrides.
+export const pickCurrentReasoningEffort = (next: Updater<string>) => {
+  setCurrentReasoningEffort(next)
+  persistString(COMPOSER_EFFORT_SOURCE_KEY, 'manual')
+}
+
+export const getPickedReasoningEffort = (): string =>
+  storedString(COMPOSER_EFFORT_SOURCE_KEY) === 'manual' ? $currentReasoningEffort.get() : ''
 
 /** The level the route actually sends for `$currentReasoningEffort`
  *  (`session.info.reasoning_effort_wire`): '' when unknown, equal when verbatim,

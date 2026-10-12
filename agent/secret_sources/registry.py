@@ -413,6 +413,21 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     # Mapped outranks bulk regardless of list order.
     ordered = [s for s in enabled if s.shape == "mapped"] + [s for s in enabled if s.shape == "bulk"]
 
+    # A caller-passed environ is a per-profile view (hydrate_profile_secret_sources seeds only
+    # global vars plus the profile's own files), which used to drop the vault bootstrap token a
+    # deployment injects through the shell / systemd / compose: `op read` then failed "No accounts
+    # configured" for every reference while `hermes secrets onepassword status` still reported
+    # success (#137458). The bootstrap credential authenticates the deployment's vault — it is not
+    # a profile secret — so seed it from the process env. setdefault: a value the caller's environ
+    # already holds (the profile's own .env / .op.env) wins.
+    for source in ordered:
+        try:
+            bootstrap_env = source.token_env(_section(secrets_cfg, source.name))
+        except Exception:  # health: allow BLE001 -- plugin sources may override token_env(); a bad override must not skip the other sources
+            continue
+        if bootstrap_env and bootstrap_env in os.environ:
+            env.setdefault(bootstrap_env, os.environ[bootstrap_env])
+
     fetches: list[tuple[SecretSource, dict, FetchResult]] = []
     protected: dict[str, str] = {}  # var → source that protects it
     for source in ordered:

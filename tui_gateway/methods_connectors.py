@@ -316,13 +316,23 @@ def _account_home(request):
 
 
 @contextlib.contextmanager
+def _desktop_page_vars():
+    """Bind the session vars of a sessionless request from the desktop Connectors page. Only that
+    page sends account-owned and account RPCs, so the surface comes from the request: the backend's
+    ``HERMES_DESKTOP`` is absent on a URL or cloud backend and would name the caller ``tui``."""
+    from gateway.session_context import set_session_vars
+
+    tokens = set_session_vars(source="desktop", profile=_current_profile_name(), cron_session="")
+    try:
+        yield
+    finally:
+        _clear_session_context(tokens)
+
+
+@contextlib.contextmanager
 def _account_scope(request):
-    with _session_profile_runtime_scope({"profile_home": _account_home(request)}):
-        tokens = _set_session_context("")
-        try:
-            yield
-        finally:
-            _clear_session_context(tokens)
+    with _session_profile_runtime_scope({"profile_home": _account_home(request)}), _desktop_page_vars():
+        yield
 
 
 def _operation_for_request(rid, request, session):

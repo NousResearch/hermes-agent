@@ -21,22 +21,23 @@ def _account_method(params_model=None, *, invalid="", invalid_reason=ConnectorEr
             from pydantic import ValidationError
             from tools.connectors.gateway.errors import GatewayAuthError
 
-            if gate_error := _account_gate_closed(rid) or _account_identity_error(rid):
-                return gate_error
-            try:
-                request = params if params_model is None else params_model.model_validate(params)
-            except ValidationError:
-                return _connector_rpc_error(rid, 4000, invalid_reason, invalid)
-            try:
-                return fn(rid, request)
-            except GatewayAuthError as exc:
-                return _connector_auth_error(rid, exc)
-            except Exception as exc:
-                if getattr(exc, "code", None) == "org_required":
-                    return _connector_rpc_error(
-                        rid, 4090, ConnectorErrorReason.org_required, "Select an organization to manage connector rules."
-                    )
-                return _connector_rpc_error(rid, 5034, unavailable, unavailable_message)
+            with _desktop_page_vars():
+                if gate_error := _account_gate_closed(rid) or _account_identity_error(rid):
+                    return gate_error
+                try:
+                    request = params if params_model is None else params_model.model_validate(params)
+                except ValidationError:
+                    return _connector_rpc_error(rid, 4000, invalid_reason, invalid)
+                try:
+                    return fn(rid, request)
+                except GatewayAuthError as exc:
+                    return _connector_auth_error(rid, exc)
+                except Exception as exc:
+                    if getattr(exc, "code", None) == "org_required":
+                        return _connector_rpc_error(
+                            rid, 4090, ConnectorErrorReason.org_required, "Select an organization to manage connector rules."
+                        )
+                    return _connector_rpc_error(rid, 5034, unavailable, unavailable_message)
 
         return handler
 

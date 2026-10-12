@@ -2426,6 +2426,9 @@ jobs:
     name: Submit the verified Store package
     needs: [validate, stable-publish]
     if: inputs.release-phase == 'publish'
+    # The Store is not a release gate: a failed submission leaves the release publishable
+    # and the summary names the Store package for a manual Partner Center upload.
+    continue-on-error: true
     runs-on: windows-latest-32-core
     environment: release-signing
     timeout-minutes: 60
@@ -2461,6 +2464,16 @@ jobs:
           # Auto-publish stays off: the submission is committed with
           # targetPublishMode Manual and is released by the publication pass.
           python -m scripts.releases.store submit "${files[0]}"
+      - name: Name the Store package for a manual upload
+        if: failure()
+        shell: bash
+        run: |
+          name=$(cd verified 2>/dev/null && ls Store-*.msixbundle 2>/dev/null | head -1)
+          base="${CLOUDFLARE_R2_PUBLIC_URL%/}/releases/tag/$HERMES_ARCHIVE_TAG"
+          url="$base/${name:-handoff-windows-universal.json}"
+          msg="Store submission failed; the release is still publishable. Upload this package in Partner Center: $url"
+          echo "::warning title=Microsoft Store::$msg"
+          { echo "## Microsoft Store: manual upload needed"; echo; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
 
   stable-phase-result:
     name: Stable bundle phase completed

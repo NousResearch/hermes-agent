@@ -193,8 +193,13 @@ def test_legacy_member_is_generated_only_inside_workspace(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("exact", [False, True])
-def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_path, monkeypatch, exact):
-    import os
+def test_plugin_cannot_move_any_core_locked_package(tmp_path, monkeypatch, exact):
+    """Core's lock is the vetted set: a plugin moves neither a core pin nor a transitive one.
+
+    Release age is checked when Hermes locks, so a version core's lock never held was never
+    age-checked; a user's machine cannot check it either, since mirrors may serve no upload
+    times (#135589). Before, a transitive core package could move within core's ranges.
+    """
     import tomllib
 
     core = tmp_path / "core"
@@ -216,8 +221,9 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
     baseline, first_env = tmp_path / "baseline", tmp_path / "first-env"
     workspace.lock_and_sync([], [], root=baseline, source=core, seed_lock=None,
                             environment=managed_environment(first_env))
-    first_lock = (baseline / "uv.lock").read_bytes()
-    assert next(p["version"] for p in tomllib.loads(first_lock.decode())["package"] if p["name"] == "pkgb") == "1.2"
+    (core / "uv.lock").write_bytes((baseline / "uv.lock").read_bytes())
+    assert next(p["version"] for p in tomllib.loads((core / "uv.lock").read_text())["package"]
+                if p["name"] == "pkgb") == "1.2"
     _fixtures._wheel(wheels, "pkgb", "1.3")
     plugin = tmp_path / "plugin"
     plugin.mkdir()
@@ -225,21 +231,9 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
         '[project]\nname="plugin-proof"\nversion="1"\nrequires-python=">=3.11"\ndependencies=["pkgb==1.3"]\n',
         encoding="utf-8",
     )
-    extended, candidate = tmp_path / "extended", tmp_path / "candidate"
-    if exact:
-        with pytest.raises(workspace.ResolutionConflict):
-            workspace.lock_and_sync([plugin], [], root=extended, source=core, seed_lock=baseline / "uv.lock",
-                                    environment=managed_environment(candidate))
-    else:
-        workspace.lock_and_sync([plugin], [], root=extended, source=core, seed_lock=baseline / "uv.lock",
-                                    environment=managed_environment(candidate))
-        installed = tomllib.loads((extended / "uv.lock").read_text(encoding="utf-8"))["package"]
-        assert next(p["version"] for p in installed if p["name"] == "pkgb") == "1.3"
-        python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        result = subprocess.run([str(python), "-c", "import pkga, pkgb; print(pkga.__version__, pkgb.__version__)"],
-                                capture_output=True, text=True, check=True, timeout=30)
-        assert result.stdout.strip() == "1.0 1.3"
-    assert (baseline / "uv.lock").read_bytes() == first_lock
+    with pytest.raises(workspace.ResolutionConflict):
+        workspace.lock_and_sync([plugin], [], root=tmp_path / "extended", source=core,
+                                seed_lock=core / "uv.lock", environment=managed_environment(tmp_path / "candidate"))
 
 
 def test_member_uv_lock_travels_with_its_member(tmp_path):

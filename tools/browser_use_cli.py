@@ -559,7 +559,7 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
 
 
 def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
-    """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault_fill`` has
+    """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault`` fill has
     a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
     endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
     cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
@@ -761,7 +761,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         return tool_result(dispatched)
     proc = dispatched["proc"]
 
-    # browser_vault_fill registers injected values with this forced model-egress
+    # browser_vault fill registers injected values with this forced model-egress
     # boundary. Preserve raw stdout only for screenshot-path detection below.
     result = {
         "success": proc.returncode == 0,

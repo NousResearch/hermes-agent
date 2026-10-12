@@ -31,7 +31,7 @@ MUTATOR_ROUTE_TABLE: dict[str, str] = {
     "slash.personality": "idle-gated", "slash.prompt": "idle-gated", "slash.compress": "idle-gated",
     "slash.refine": "idle-gated",
     "session.reset": "idle-gated", "session.history.reload": "idle-gated",
-    "slash.retry": "idle-gated"}
+    "slash.retry": "idle-gated", "tools.configure": "idle-gated"}
 
 _REGISTRY_NAME = "dashboard-compute-host.json"
 _RESPAWN_WINDOW_SECS = 300.0

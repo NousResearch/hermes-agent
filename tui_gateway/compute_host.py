@@ -54,7 +54,8 @@ _FLUSH_RESERVE_SECS = 1.0
 
 # Fallback control.error text when a routed server method returns an error without a message.
 _CONTROL_FAILURES = {
-    "session.save": "session save failed", "session.compress": "session compression failed"}
+    "session.save": "session save failed", "session.compress": "session compression failed",
+    "tools.configure": "tools configuration failed"}
 
 
 class ComputeHost:
@@ -467,8 +468,8 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         route_name = str(frame.get("route_name") or "")
         command = str(frame.get("command") or "")
-        if route_name in {"session.save", "session.compress"}:
-            params = {"session_id": sid}
+        if route_name in {"session.save", "session.compress", "tools.configure"}:
+            params = {**(frame.get("params") or {}), "session_id": sid}
             if route_name == "session.compress":
                 focus_topic = command.removeprefix("/compress").strip()
                 if focus_topic:

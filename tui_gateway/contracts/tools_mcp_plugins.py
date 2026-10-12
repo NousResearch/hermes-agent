@@ -74,7 +74,7 @@ class ToolsAction(WireEnum):
 
 class ToolsConfigureParams(Params):
     """``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's
-    profile is authoritative and its agent is rebuilt."""
+    profile is authoritative. Its agent is rebuilt when the effective selection changes."""
 
     action: ToolsAction
     names: list[str]
@@ -92,7 +92,7 @@ class ToolsConfigureResult(Result):
 
 
 method("tools.configure", params=ToolsConfigureParams, result=ToolsConfigureResult,
-       doc="Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now.")
+       doc="Persist a toolset / MCP enable-disable change and rebuild the session agent when the effective selection changes.")
 
 
 # ── reload ────────────────────────────────────────────────────────────────────────────────────

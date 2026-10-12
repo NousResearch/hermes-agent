@@ -1671,8 +1671,8 @@ DEFAULT_CONFIG = {
         # Case-insensitive fnmatch globs on terminal commands; a match blocks even under --yolo / mode=off.
         # Quote in YAML when starting with * or containing {}/!/: e.g. "git push --force*".
         "deny": [],
-        # Opt-in reboot / shutdown off the hardline floor (see security.md): ALWAYS needs a human prompt.
-        "allow_reboot": False, "allow_shutdown": False,
+        # Opt-in reboot/shutdown off the hardline floor (security.md): allow_<cat> = human approves EVERY time; plus <cat>_without_approval = no prompt in interactive sessions (ignored without allow_<cat>; cron/-q/webhook always deny).
+        "allow_reboot": False, "allow_shutdown": False, "reboot_without_approval": False, "shutdown_without_approval": False,
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
         # so the next message re-sends full input). "Always Approve" → false.
         "mcp_reload_confirm": True,

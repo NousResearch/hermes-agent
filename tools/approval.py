@@ -30,7 +30,8 @@ from tools.approval_context import (
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys, detect_dangerous_command,
-    detect_hardline_command, detect_power_state_command,
+    detect_hardline_command, HARDLINE_NO_APPROVAL_SETTINGS, detect_power_state_categories,
+    detect_power_state_command,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _matching_permanent_allowlist_entry, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -1137,6 +1138,11 @@ def _run_approval_gate(
 # it. They never widen into automatic approval: the gate runs right after the floor, before yolo / approvals.mode=off,
 # the permanent command_allowlist, session approvals and the smart guardian, and resolves a chained command
 # (`sync; reboot`) through this stricter path as a whole.
+# Second level: approvals.reboot_without_approval / shutdown_without_approval (each needs its allow_* too) let an
+# INTERACTIVE session run that category with no prompt; a command touching both categories needs both. Contexts with
+# nobody present (cron, -q, unattended platforms, headless) still deny: there is no third "unattended" setting on
+# purpose, so a scheduled job or webhook payload can never power-cycle the host on its own. yolo / mode=off change
+# nothing here: the command runs unprompted only when the without_approval level is on.
 
 _HUMAN_ONLY_NO_SURFACE = (
     "BLOCKED: {description} requires a live human approval every time (approvals.allow_reboot / "
@@ -1147,10 +1153,12 @@ _HUMAN_ONLY_NO_SURFACE = (
 
 
 def _power_command_gate(command: str, approval_callback=None) -> dict | None:
-    """Human-only decision for a host reboot/shutdown command that passed the floor (its category is
-    opted in), else ``None``. Smart mode, allowlists, session/"always" approvals, yolo / mode=off and
-    unattended approve-modes cannot approve it; with nobody to ask (cron, -q, unattended platforms,
-    headless runs) it is DENIED."""
+    """Decision for a host reboot/shutdown command that passed the floor (its category is opted in),
+    else ``None``. With nobody present (cron, -q, unattended platforms, headless runs) it is DENIED,
+    whatever the settings. In an interactive session it runs WITHOUT a prompt only when every category
+    it touches has ``approvals.<cat>_without_approval`` (plus ``allow_<cat>``) on; otherwise a live human
+    is asked every time: smart mode, allowlists, session/"always" approvals, yolo / mode=off and
+    unattended approve-modes cannot approve it."""
     description = detect_power_state_command(command)
     if description is None:
         return None
@@ -1165,6 +1173,16 @@ def _power_command_gate(command: str, approval_callback=None) -> dict | None:
             "unattended setting can approve it. Do NOT retry, rephrase, or attempt the same outcome "
             "another way; ask the user to run it themselves.",
             pattern_key=description, description=description)
+    categories = detect_power_state_categories(command)
+    # "Interactive" = a person can see this session right now: the CLI, a gateway chat, or an ask-mode
+    # client with a registered notifier. A bare HERMES_EXEC_ASK with no notifier is not a person.
+    someone_present = is_cli or is_gateway or (is_ask and _gateway_notify_cb(get_current_session_key()) is not None)
+    if (someone_present and categories
+            and categories <= approval_context._get_power_no_approval_categories()):
+        settings = ", ".join(HARDLINE_NO_APPROVAL_SETTINGS[c] for c in sorted(categories))
+        logger.warning("Power command running WITHOUT approval (%s): %s (command: %s)",
+                       settings, description, command[:200])
+        return {"approved": True, "message": None, "description": description, "power_no_approval": True}
     return _human_decision(
         _COMMAND_GATE, command=command, description=description,
         pattern_key=description, pattern_keys=[description],

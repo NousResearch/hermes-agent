@@ -180,6 +180,12 @@ HARDLINE_OPT_IN_CATEGORIES = {
 }
 # config.yaml key (under ``approvals``) that opts each category out of the hardline floor.
 HARDLINE_OPT_IN_SETTINGS = {"reboot": "approvals.allow_reboot", "shutdown": "approvals.allow_shutdown"}
+# Second, separate level per category: with BOTH approvals.allow_<cat> and approvals.<cat>_without_approval
+# true, an interactive session runs that category without a prompt. The without_approval key alone has
+# no effect (the category stays on the hardline floor), and unattended contexts still deny.
+HARDLINE_NO_APPROVAL_SETTINGS = {
+    "reboot": "approvals.reboot_without_approval", "shutdown": "approvals.shutdown_without_approval",
+}
 
 
 def hardline_opt_in_setting(description: str) -> str | None:
@@ -447,6 +453,19 @@ def detect_power_state_command(command: str) -> str | None:
             if pattern_re.search(variant_lower):
                 return description
     return None
+
+
+def detect_power_state_categories(command: str) -> frozenset:
+    """EVERY power-state category (``"reboot"`` / ``"shutdown"``) that any rule matches in any
+    chained segment or de-obfuscated variant of *command*. A command can carry both (`reboot -p`,
+    `sync; reboot; poweroff`); the no-approval level applies only when it is enabled for all of them."""
+    found = set()
+    for command_variant in _command_detection_variants(command):
+        variant_lower = command_variant.lower()
+        for pattern_re, description in _POWER_STATE_COMPILED:
+            if pattern_re.search(variant_lower):
+                found.add(HARDLINE_OPT_IN_CATEGORIES[description])
+    return frozenset(found)
 
 
 def detect_hardline_command(command: str, allow_categories=()) -> tuple:

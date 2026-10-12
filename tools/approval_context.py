@@ -304,6 +304,20 @@ def _get_hardline_opt_ins() -> frozenset:
     return frozenset(enabled)
 
 
+def _get_power_no_approval_categories() -> frozenset:
+    """Power categories allowed to run WITHOUT a prompt in interactive sessions: ``"reboot"`` only when
+    BOTH ``approvals.allow_reboot`` and ``approvals.reboot_without_approval`` are true, ``"shutdown"``
+    only when BOTH ``approvals.allow_shutdown`` and ``approvals.shutdown_without_approval`` are true
+    (all default false). ``<cat>_without_approval`` alone has no effect: the category stays hardline."""
+    cfg = _get_approval_config()
+    enabled = set()
+    for category in ("reboot", "shutdown"):
+        if (is_truthy_value(cfg.get(f"allow_{category}", False))
+                and is_truthy_value(cfg.get(f"{category}_without_approval", False))):
+            enabled.add(category)
+    return frozenset(enabled)
+
+
 def _get_approval_mode() -> str:
     """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config)."""
     try:

@@ -173,6 +173,30 @@ approvals:
 
 Enabling a category does **not** auto-run its commands. They leave the hardline floor and require a **live human approval every time**: the prompt offers only *once* or *deny*, and nothing is remembered. The `smart` guardian is never consulted for them, `command_allowlist` entries and session/"always" approvals do not pre-approve them, and `--yolo` / `mode: off` do not skip the prompt — the opt-in is a narrow escape from the hardline floor, not a way back to auto-approval. Where there is nobody to ask (cron jobs, `hermes chat -q`, unattended platforms such as webhooks, headless runs with no approval surface) the command is **denied**, whatever `cron_mode` / `single_query_mode` / `unattended_mode` say. A chained command (`sync; sudo reboot`, `make && reboot`) takes this path as a whole. A spelling that could either halt or reboot (`shutdown -rh`, `reboot -p`, `poweroff --reboot`) stays blocked unless **both** settings are on. No other hardline class is affected. While a category is off, its block message names the setting that would enable it (`hermes config set approvals.allow_reboot true`).
 
+##### Second level: running without approval
+
+Each category also has a separate no-prompt level, `false` by default:
+
+```yaml
+approvals:
+  allow_reboot: true
+  reboot_without_approval: true     # reboot category runs with no prompt (interactive sessions only)
+  allow_shutdown: true
+  shutdown_without_approval: false  # shutdown category still asks a human every time
+```
+
+| `allow_<cat>` | `<cat>_without_approval` | Interactive session (CLI, gateway chat) | Cron, `-q`, webhook, headless |
+|---|---|---|---|
+| `false` | `false` | Hardline block | Hardline block |
+| `false` | `true` | Hardline block (the second key alone has no effect) | Hardline block |
+| `true` | `false` | Human approval every time (once/deny) | Denied |
+| `true` | `true` | Runs without a prompt, logged at `WARNING` | Denied |
+
+- Reboot and shutdown are never combined. A command that touches both categories, whether one ambiguous spelling (`shutdown -rh`, `reboot -p`) or a chain (`reboot; poweroff`), runs without a prompt only when **both** categories are at the second level. If only one is, a human is asked; if either category is not allowed at all, the floor blocks it.
+- `--yolo` and `approvals.mode: off` add nothing: an opted-in power command runs unprompted only at the second level, and is otherwise asked about exactly as above.
+- Contexts with nobody present still **deny**, even at the second level. There is deliberately no third "unattended" setting: a cron job, a `-q` one-shot or a webhook payload is exactly where a confused or injected instruction would power-cycle the host with nobody watching, and a reboot/shutdown cannot be undone from inside the agent. If you need a scheduled reboot, schedule it outside the agent (systemd timer, `shutdown -r 03:00` from your own shell).
+- `hermes approvals test -- sudo reboot` reports which level applies: `runs without approval (approvals.reboot_without_approval)` (verdict `allow`) or `requires human approval every time` (verdict `ask-approval`).
+
 The floor also fails closed on a command whose shell quoting cannot be parsed (`grep 'unterminated`): the error says `malformed executable payload`. Quoting is judged on the command exactly as written, so shell-valid escapes inside a quoted pattern (`grep -o "[^\"]*" file`) are not malformed, and an escaped quote before a separator (`echo "a\"b"; reboot`) does not hide the command that follows it.
 
 ### User-Defined Deny Rules (`approvals.deny`)

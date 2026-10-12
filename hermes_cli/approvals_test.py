@@ -6,7 +6,8 @@ order the runtime guard (``check_all_command_guards``) applies them:
 
 1. container-skip gate (isolated backends bypass all guards), 2. hardline blocklist (never
 bypassable, fires before yolo/off), 3. sudo-stdin guard (unconditional), 4. user ``approvals.deny``
-rules (fire before yolo/off), 4b. opted-in reboot/shutdown (human prompt every time), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
+rules (fire before yolo/off), 4b. opted-in reboot/shutdown (human prompt every time, or no prompt in
+interactive sessions when ``approvals.<cat>_without_approval`` is also on), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
 ``command_allowlist``, 7. dangerous-pattern detection (would prompt).
 """
 
@@ -97,6 +98,16 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     #     yolo / mode=off / allowlist / smart, exactly as at runtime.
     power_desc = approval_detection.detect_power_state_command(command)
     if power_desc is not None:
+        categories = approval_detection.detect_power_state_categories(command)
+        if categories and categories <= approval_context._get_power_no_approval_categories():
+            settings = " + ".join(
+                approval_detection.HARDLINE_NO_APPROVAL_SETTINGS[c] for c in sorted(categories))
+            return result(
+                "allow", rule=power_desc,
+                detail=f"opted-in host power command: runs without approval ({settings}) in "
+                       "interactive sessions; still denied in cron, -q and unattended sessions "
+                       "with no one present",
+            )
         return result(
             "ask-approval", rule=power_desc,
             detail="opted-in host power command: requires human approval every time "

@@ -482,3 +482,230 @@ def test_path_prefixed_reboot_opted_in_goes_to_human_only_gate(guard_env, intera
 def test_path_lookalikes_are_not_power_commands(cmd):
     assert detect_power_state_command(cmd) is None
     assert detect_hardline_command(cmd) == (False, None)
+
+
+# ---- Second level: approvals.<cat>_without_approval ------------------------------------------------
+
+def test_no_approval_defaults_are_false():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from tools.approval_detection import HARDLINE_NO_APPROVAL_SETTINGS
+    assert DEFAULT_CONFIG["approvals"]["reboot_without_approval"] is False
+    assert DEFAULT_CONFIG["approvals"]["shutdown_without_approval"] is False
+    assert HARDLINE_NO_APPROVAL_SETTINGS == {
+        "reboot": "approvals.reboot_without_approval", "shutdown": "approvals.shutdown_without_approval"}
+
+
+@pytest.mark.parametrize("cfg, expected", [
+    ({}, frozenset()),
+    ({"reboot_without_approval": True}, frozenset()),
+    ({"allow_reboot": True}, frozenset()),
+    ({"allow_reboot": True, "reboot_without_approval": True}, frozenset({"reboot"})),
+    ({"allow_shutdown": True, "shutdown_without_approval": "true"}, frozenset({"shutdown"})),
+    ({"allow_reboot": True, "shutdown_without_approval": True}, frozenset()),
+    ({"allow_reboot": True, "allow_shutdown": True, "reboot_without_approval": True,
+      "shutdown_without_approval": True}, frozenset(BOTH)),
+])
+def test_no_approval_categories_need_both_keys(monkeypatch, cfg, expected):
+    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: cfg)
+    assert approval_context._get_power_no_approval_categories() == expected
+
+
+@pytest.mark.parametrize("cmd, expected", [
+    ("sudo reboot", {"reboot"}), ("poweroff", {"shutdown"}), ("sync; reboot", {"reboot"}),
+    ("reboot -p", BOTH), ("shutdown -rh now", BOTH), ("poweroff --reboot", BOTH),
+    ("reboot; poweroff", BOTH), ("make && shutdown -r now || halt", BOTH), ("ls", set()),
+])
+def test_power_state_categories(cmd, expected):
+    from tools.approval_detection import detect_power_state_categories
+    assert detect_power_state_categories(cmd) == frozenset(expected)
+
+
+# (allow_<cat>, <cat>_without_approval) -> expected interactive outcome for that category.
+_LEVELS = [
+    (False, False, "hardline"),
+    (False, True, "hardline"),   # the second key alone has no effect
+    (True, False, "prompt"),
+    (True, True, "run"),
+]
+
+
+def _assert_outcome(result, prompt, outcome):
+    if outcome == "hardline":
+        assert result["approved"] is False and result.get("hardline") is True
+        assert prompt.calls == []
+    elif outcome == "prompt":
+        assert len(prompt.calls) == 1 and result["approved"] is False and not result.get("hardline")
+    else:
+        assert prompt.calls == [] and result["approved"] is True and result.get("power_no_approval") is True
+
+
+@pytest.mark.parametrize("allow, no_approval, outcome", _LEVELS)
+@pytest.mark.parametrize("category, cmds", [
+    ("reboot", ["sudo reboot", "systemctl reboot", "sync; /sbin/reboot", "foo && shutdown -r now"]),
+    ("shutdown", ["poweroff", "shutdown -h now", "ls; systemctl poweroff", "true || init 0"]),
+])
+def test_every_combination_per_category(guard_env, interactive, monkeypatch, allow, no_approval, outcome,
+                                        category, cmds):
+    guard_env(**{f"allow_{category}": allow, f"{category}_without_approval": no_approval, "mode": "manual"})
+    for cmd in cmds:
+        for guard in (check_all_command_guards, check_dangerous_command):
+            prompt = _Prompt("deny")
+            _assert_outcome(guard(cmd, "local", approval_callback=prompt), prompt, outcome)
+
+
+@pytest.mark.parametrize("other_allow", [False, True])
+@pytest.mark.parametrize("other_no_approval", [False, True])
+def test_categories_are_independent(guard_env, interactive, other_allow, other_no_approval):
+    """reboot at level 2 never lends anything to shutdown, whatever shutdown's own keys say."""
+    guard_env(allow_reboot=True, reboot_without_approval=True,
+              allow_shutdown=other_allow, shutdown_without_approval=other_no_approval, mode="manual")
+    prompt = _Prompt("deny")
+    _assert_outcome(check_all_command_guards("sudo reboot", "local", approval_callback=prompt), prompt, "run")
+    expected = dict(((a, n), o) for a, n, o in _LEVELS)[(other_allow, other_no_approval)]
+    prompt = _Prompt("deny")
+    _assert_outcome(check_all_command_guards("poweroff", "local", approval_callback=prompt), prompt, expected)
+
+
+@pytest.mark.parametrize("cmd", ["reboot -p", "shutdown -rh now", "reboot; poweroff", "sync && reboot; halt"])
+@pytest.mark.parametrize("cfg, outcome", [
+    ({"allow_reboot": True, "reboot_without_approval": True}, "hardline"),
+    ({"allow_shutdown": True, "shutdown_without_approval": True}, "hardline"),
+    ({"allow_reboot": True, "allow_shutdown": True}, "prompt"),
+    ({"allow_reboot": True, "allow_shutdown": True, "reboot_without_approval": True}, "prompt"),
+    ({"allow_reboot": True, "allow_shutdown": True, "shutdown_without_approval": True}, "prompt"),
+    ({"allow_reboot": True, "allow_shutdown": True, "reboot_without_approval": True,
+      "shutdown_without_approval": True}, "run"),
+])
+def test_mixed_category_command_needs_both_categories(guard_env, interactive, cmd, cfg, outcome):
+    guard_env(mode="manual", **cfg)
+    prompt = _Prompt("deny")
+    _assert_outcome(check_all_command_guards(cmd, "local", approval_callback=prompt), prompt, outcome)
+
+
+def test_no_approval_run_is_logged_at_warning(guard_env, interactive, caplog):
+    import logging
+    guard_env(allow_reboot=True, reboot_without_approval=True)
+    with caplog.at_level(logging.WARNING, logger="tools.approval"):
+        assert check_all_command_guards("sync; sudo reboot", "local", approval_callback=_Prompt("deny"))["approved"]
+    records = [r for r in caplog.records if "WITHOUT approval" in r.getMessage()]
+    assert records and records[0].levelno == logging.WARNING
+    assert "sync; sudo reboot" in records[0].getMessage()
+    assert "approvals.reboot_without_approval" in records[0].getMessage()
+
+
+def test_no_approval_skips_guardian_in_smart_mode(guard_env, interactive, monkeypatch):
+    guard_env(allow_shutdown=True, shutdown_without_approval=True, mode="smart")
+    guardian = _guardian(monkeypatch, "deny")
+    prompt = _Prompt("deny")
+    result = check_all_command_guards("poweroff", "local", approval_callback=prompt)
+    assert result["approved"] is True and guardian.call_count == 0 and prompt.calls == []
+
+
+def test_gateway_session_runs_without_card(guard_env, monkeypatch):
+    guard_env(allow_reboot=True, reboot_without_approval=True)
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.setattr(approval, "_await_gateway_decision",
+                        mock.Mock(side_effect=AssertionError("card shown")))
+    assert check_all_command_guards("sudo reboot", "local")["approved"] is True
+
+
+_ALL_ON = dict(allow_reboot=True, allow_shutdown=True, reboot_without_approval=True, shutdown_without_approval=True)
+
+
+@pytest.mark.parametrize("cfg_mode", ["approve", "deny"])
+def test_no_approval_still_denied_in_cron(guard_env, monkeypatch, cfg_mode):
+    guard_env(mode="off", **_ALL_ON)
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: cfg_mode)
+    for cmd in ("sync; sudo reboot", "poweroff"):
+        for guard in (check_all_command_guards, check_dangerous_command):
+            result = guard(cmd, "local")
+            assert result["approved"] is False and "human approval" in result["message"]
+
+
+@pytest.mark.parametrize("cfg_mode", ["approve", "deny"])
+def test_no_approval_still_denied_in_single_query(guard_env, monkeypatch, cfg_mode):
+    guard_env(**_ALL_ON)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(approval, "_is_single_query_approval_context", lambda: True)
+    monkeypatch.setattr(approval_context, "_get_single_query_approval_mode", lambda: cfg_mode)
+    assert check_all_command_guards("sudo reboot", "local", approval_callback=_Prompt("once"))["approved"] is False
+
+
+def test_no_approval_still_denied_on_unattended_platform(guard_env, monkeypatch):
+    guard_env(**_ALL_ON)
+    monkeypatch.setattr(approval, "_is_unattended_platform_approval_context", lambda: True)
+    monkeypatch.setattr(approval, "_get_session_platform", lambda: "webhook")
+    monkeypatch.setattr(approval_context, "_get_unattended_approval_mode", lambda: "approve")
+    assert check_all_command_guards("poweroff", "local")["approved"] is False
+
+
+def test_no_approval_still_denied_headless(guard_env):
+    guard_env(**_ALL_ON)
+    enable_session_yolo("power_opt_in_test")
+    assert check_all_command_guards("sudo reboot", "local")["approved"] is False
+
+
+def test_no_approval_ask_mode_without_notifier_denies(guard_env, monkeypatch):
+    guard_env(**_ALL_ON)
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.setattr(approval, "_should_fall_through_to_cli_approval", lambda **_k: False)
+    assert check_all_command_guards("sudo reboot", "local")["approved"] is False
+
+
+@pytest.mark.parametrize("no_approval, outcome", [(False, "prompt"), (True, "run")])
+@pytest.mark.parametrize("mode", ["off", "smart", "manual"])
+def test_yolo_follows_the_without_approval_level(guard_env, interactive, monkeypatch, mode, no_approval, outcome):
+    guard_env(allow_reboot=True, reboot_without_approval=no_approval, mode=mode)
+    _guardian(monkeypatch, "approve")
+    enable_session_yolo("power_opt_in_test")
+    prompt = _Prompt("deny")
+    _assert_outcome(check_all_command_guards("sudo reboot", "local", approval_callback=prompt), prompt, outcome)
+
+
+def test_yolo_cannot_lift_no_approval_without_allow(guard_env, interactive):
+    guard_env(reboot_without_approval=True, mode="off")
+    enable_session_yolo("power_opt_in_test")
+    prompt = _Prompt("once")
+    _assert_outcome(check_all_command_guards("sudo reboot", "local", approval_callback=prompt), prompt, "hardline")
+
+
+# ---- hermes approvals test wording -------------------------------------------------------------
+
+def _approvals_test(monkeypatch, cfg, cmd):
+    from hermes_cli import approvals_test
+    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: cfg)
+    monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: set())
+    monkeypatch.setattr(approval, "_permanent_set", lambda: set())
+    return approvals_test.evaluate_command(cmd)
+
+
+@pytest.mark.parametrize("category, cmd", [("reboot", "sync; sudo reboot"), ("shutdown", "poweroff")])
+def test_approvals_test_reports_no_approval_level(monkeypatch, category, cmd):
+    v = _approvals_test(monkeypatch, {f"allow_{category}": True, f"{category}_without_approval": True}, cmd)
+    assert v["verdict"] == "allow" and v["exit_code"] == 0
+    assert f"runs without approval (approvals.{category}_without_approval)" in v["detail"]
+    assert "denied in cron" in v["detail"]
+
+
+@pytest.mark.parametrize("category, cmd", [("reboot", "sync; sudo reboot"), ("shutdown", "poweroff")])
+def test_approvals_test_reports_human_level(monkeypatch, category, cmd):
+    v = _approvals_test(monkeypatch, {f"allow_{category}": True}, cmd)
+    assert v["verdict"] == "ask-approval" and "requires human approval every time" in v["detail"]
+
+
+def test_approvals_test_no_approval_alone_stays_hardline(monkeypatch):
+    v = _approvals_test(monkeypatch, {"reboot_without_approval": True}, "sudo reboot")
+    assert v["verdict"] == "hardline-deny" and "approvals.allow_reboot" in v["detail"]
+
+
+@pytest.mark.parametrize("cfg, verdict", [
+    ({"allow_reboot": True, "allow_shutdown": True, "reboot_without_approval": True}, "ask-approval"),
+    (_ALL_ON, "allow"),
+])
+def test_approvals_test_mixed_category(monkeypatch, cfg, verdict):
+    v = _approvals_test(monkeypatch, cfg, "reboot -p")
+    assert v["verdict"] == verdict
+    if verdict == "allow":
+        assert "approvals.reboot_without_approval + approvals.shutdown_without_approval" in v["detail"]

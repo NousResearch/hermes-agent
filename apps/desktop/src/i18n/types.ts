@@ -4345,6 +4345,10 @@ export interface Translations extends NoticeTranslations {
     clipboard: string
     noClipboardImage: string
     clipboardPasteFailed: string
+    carouselPlay: string
+    carouselPause: string
+    carouselPrevious: string
+    carouselNext: string
     dropFiles: string
     handoff: {
       pickPlatform: string

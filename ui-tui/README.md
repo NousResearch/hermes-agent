@@ -252,6 +252,23 @@ These are stateful UI branches in `app.tsx`, not separate screens.
 
 The following commands are handled directly by the TUI client. Unrecognized commands fall through to the Python gateway via `slash.exec` and `command.dispatch`.
 
+### Browser and preview surfaces
+
+The TUI can use the normal `browser` toolset and its `/browser connect` command to attach
+the session to a Chromium-family browser through a Chrome DevTools Protocol (CDP) endpoint.
+That path lets the agent navigate, inspect, and drive the connected browser, but it does not
+render an embedded browser in the terminal.
+
+The desktop app's preview pane is a separate, desktop-only surface. Its
+`desktop_preview` tool (with `action` set to `open`, `close`, or `read`), plus
+`drive_preview` and `annotate_preview`, act on the pane rendered beside the desktop chat;
+they are not exposed to CLI or TUI sessions. A session's available tools come from its source
+when it is created. If the same conversation is opened in the TUI, the TUI does not render or
+inherit the desktop preview pane; keep the desktop surface open to use its pane, or use
+`/browser connect <url>` in the TUI to drive a browser reachable from the gateway through CDP.
+
+For browser requirements and connection options, see the [browser toolset](../website/docs/reference/tools-reference.md#browser-toolset) and [Browser Automation](../website/docs/user-guide/features/browser.md).
+
 ### Core (`core.ts`)
 `/help`, `/quit` (alias `/exit`), `/update`, `/clear` (alias `/new`),
 `/density`, `/copy`, `/paste`, `/details` (alias `/detail`),

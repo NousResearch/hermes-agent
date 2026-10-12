@@ -253,6 +253,13 @@ TOOLSET_SESSION_PLATFORMS = {name: spec["platforms"] for name, spec in TOOLSETS.
 BUILTIN_TOOL_NAMES = frozenset(tool for spec in TOOLSETS.values() for tool in spec["tools"])
 BUILTIN_TOOLSET_NAMES = frozenset(TOOLSETS)
 
+# Toolsets carrying the full core tool set (CLI, cron, every messaging platform), derived from membership
+# so a new platform built on _HERMES_CORE_TOOLS joins automatically. Tools registered with
+# ``include_in_messaging_toolsets=True`` are unioned into exactly these at resolve time. Excluded by
+# construction: hermes-webhook (untrusted input) and the curated hermes-acp / hermes-api-server sets.
+HERMES_CORE_FAMILY = frozenset(
+    name for name, spec in TOOLSETS.items() if set(_HERMES_CORE_TOOLS) <= set(spec["tools"]))
+
 
 def _registry():
     """Live tool registry, or None when tools.registry can't be imported."""
@@ -274,6 +281,11 @@ def _registry_call(method: str, default):
 def _registry_generation() -> tuple[int, int]:
     reg = _registry()
     return (id(reg), getattr(reg, "_generation", 0)) if reg is not None else (0, 0)
+
+
+def messaging_optin_tool_names() -> set[str]:
+    """Registered tools that opted into the core/messaging family (empty without a registry)."""
+    return set(_registry_call("get_messaging_optin_tool_names", ()))
 
 
 def get_toolset(name: str, *, include_registry: bool = True) -> Optional[dict[str, Any]]:
@@ -357,7 +369,8 @@ def _plugin_platform_bundle(name: str) -> list[str]:
             return []
     except Exception:
         return []
-    tools = set(_HERMES_CORE_TOOLS)
+    # Plugin platforms get the built-in messaging surface, opt-in tools included.
+    tools = set(_HERMES_CORE_TOOLS) | messaging_optin_tool_names()
     try:
         tools.update(e.name for e in _registry_call("get_all_entries", ()) if e.toolset == platform_name)
     except Exception:
@@ -403,6 +416,9 @@ def resolve_toolset(name: str, visited: set[str] | None = None, *, include_regis
     tools = set(toolset.get("tools", []))
     for included_name in toolset.get("includes", []):
         tools.update(resolve_toolset(included_name, visited, include_registry=include_registry))
+    # Registry-derived, so merged view only: the static view must stay pure TOOLSETS (#49622).
+    if include_registry and name in HERMES_CORE_FAMILY:
+        tools |= messaging_optin_tool_names()
 
     result = sorted(tools)
     if external_call:

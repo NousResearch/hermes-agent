@@ -281,7 +281,7 @@ def _tool_defs_cache_key(
 
 def _apply_toolset_selection(tools: set, names: list[str], quiet_mode: bool, *, disable: bool) -> None:
     """Add (or subtract) every toolset in *names* to/from *tools*, printing the selection unless quiet."""
-    from toolsets import bundle_non_core_tools, get_toolset
+    from toolsets import bundle_non_core_tools, get_toolset, messaging_optin_tool_names
     verb, icon = ("Disabled", "🚫") if disable else ("Enabled", "✅")
     for name in names:
         if validate_toolset(name):
@@ -303,6 +303,11 @@ def _apply_toolset_selection(tools: set, names: list[str], quiet_mode: bool, *, 
         elif name in _LEGACY_TOOLSET_MAP:
             label = f"{verb} legacy toolset"
             resolved = _LEGACY_TOOLSET_MAP[name]
+        elif name in messaging_optin_tool_names():
+            # Opt-in plugin tools (include_in_messaging_toolsets=True) are addressable by bare tool name
+            # (see tools_config._carry_messaging_optin_tools): exactly that tool, never its whole toolset.
+            label = f"{verb} messaging opt-in tool"
+            resolved = [name]
         else:
             if not quiet_mode:
                 print(f"⚠️  Unknown toolset: {name}")

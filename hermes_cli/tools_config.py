@@ -643,9 +643,44 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         disabled_names = [name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()]
         enabled_toolsets = _prune_toolsets_stripped_by_disabled(enabled_toolsets, disabled_names)
 
+    # Runtime-only names: include_default_mcp_servers=False is the config-editing variant (#3252), whose
+    # result _save_platform_tools persists. An explicit empty selection means no tools at all.
+    if include_default_mcp_servers and not (explicitly_configured and not toolset_names):
+        _carry_messaging_optin_tools(
+            enabled_toolsets, config, platform, toolset_names, plugin_ts_keys, disabled_toolsets)
+
     if explicitly_configured and toolset_names:
         _warn_all_invalid_platform_toolsets(platform, toolset_names)
     return enabled_toolsets
+
+
+def _carry_messaging_optin_tools(
+    enabled_toolsets: set[str], config: dict, platform: str, toolset_names: list[str],
+    plugin_ts_keys: set[str], disabled_toolsets,
+) -> None:
+    """Add, by bare tool name, each ``include_in_messaging_toolsets=True`` tool whose owning toolset missed the
+    effective set, on surfaces whose default composite carries the full core tool set (never hermes-webhook /
+    hermes-api-server; ACP never comes through here). The reverse mapping above yields toolset names only, so
+    without this an opt-in tool would drop off ordinary CLI/gateway/cron sessions even though
+    resolve_toolset() unions it into the platform composites. A user disable always wins: an unchecked plugin
+    toolset, a default-off toolset, or the owner/tool name in ``agent.disabled_toolsets``."""
+    from agent.skill_utils import parse_config_string_list
+    from toolsets import _HERMES_CORE_TOOLS, messaging_optin_tool_names, resolve_toolset
+    from tools.registry import registry
+
+    # Membership, not a list: plugin platforms' implicit hermes-<platform> bundles qualify too.
+    if not set(_HERMES_CORE_TOOLS) <= set(resolve_toolset(_platform_default_toolset(platform))):
+        return
+    enabled_plugin = _enabled_plugin_toolsets(config, platform, toolset_names, plugin_ts_keys)
+    disabled = {name.strip() for name in parse_config_string_list(disabled_toolsets)}
+    for tool_name in sorted(messaging_optin_tool_names()):
+        entry = registry.get_entry(tool_name)
+        owner = entry.toolset if entry else None
+        if owner in enabled_toolsets or owner in disabled or tool_name in disabled:
+            continue
+        if owner in _DEFAULT_OFF_TOOLSETS or (owner in plugin_ts_keys and owner not in enabled_plugin):
+            continue
+        enabled_toolsets.add(tool_name)
 
 
 def _prune_toolsets_stripped_by_disabled(enabled_toolsets: set[str], disabled_names: list[str]) -> set[str]:

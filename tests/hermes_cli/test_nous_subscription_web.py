@@ -74,3 +74,18 @@ def test_gateway_selection_suppresses_direct_search_credentials(web_profile, bac
     assert web.managed_by_nous is gateway_ready
     assert web.direct_override is False
     assert web.current_provider == "firecrawl"
+
+
+@pytest.mark.parametrize("backend,credentials", [
+    ("brave-free", "BRAVE_SEARCH_API_KEY=brave-test\n"),
+    ("searxng", "SEARXNG_URL=https://search.example.test\n"),
+])
+@pytest.mark.parametrize("shared", [{"backend": "nous"}, {"backend": "firecrawl", "use_gateway": True}])
+def test_search_pin_keeps_direct_search_vendor_under_gateway_selection(web_profile, backend, credentials, shared):
+    # web_search obeys a web.search_backend vendor pin before the managed selection, so the
+    # pinned vendor's own credential still makes web usable while the gateway is down.
+    web = web_profile({**shared, "search_backend": backend}, credentials=credentials)
+    assert web.available is True
+    assert web.active is True
+    assert web.direct_override is True
+    assert web.managed_by_nous is False

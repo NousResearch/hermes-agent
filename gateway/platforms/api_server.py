@@ -4205,13 +4205,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
         provider/model must match or the turn fails; ``runtime`` metadata is attached.
         ``session_history_delivery`` declares #98619 session-id provenance and default-denies: only audited
-        producers whose client can address the id again pass "1" (see
-        ``_bind_api_server_session``).
+        producers pass "1" (see ``_bind_api_server_session``).
         ``turn_author`` only labels the turn for memory attribution. It grants nothing.
-        ``resume_unanswered_turn`` marks a policy-gated re-run of a turn whose user row the failed attempt
-        already persisted: the transcript's unanswered tail row is adopted from ``conversation_history``
-        as THIS turn's user message instead of being appended a second time
-        (``agent.session_persistence.adopt_unanswered_turn``; #115325)."""
+        ``resume_unanswered_turn`` marks a policy-gated re-run whose user row the failed attempt already
+        persisted: the transcript's unanswered tail is adopted from ``conversation_history`` as THIS turn's
+        user message (``agent.session_persistence.adopt_unanswered_turn``; #115325)."""
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
@@ -4327,13 +4325,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         _clear_turn_process_ownership(agent)
                         self._shutdown_interruptible_agents.pop(id(agent), None)
                         self._memory_sessions.checkin(agent)
-                        # Bind the declared key to the row the turn actually ended on
-                        # (agent.session_id carries a mid-turn rotation). Opt-in per route.
-                        # Record the declared conversation on the row the turn actually ended on —
-                        # ``agent.session_id`` already carries a mid-turn compression rotation (#16938), so
-                        # the next reply resolves the live transcript rather than its retired parent.
-                        # Opt-in: only the routes that resolve their session id from the declared key
-                        # (/v1/responses, /v1/runs) record one, so no other caller's rows change shape.
+                        # Fresh agent per request, dropped after the turn: its LLM clients — the Codex
+                        # app-server child in particular — leak for the gateway's life unless released
+                        # here (#137451). After checkin(): release_clients() keeps the parked manager.
+                        with suppress(Exception):
+                            agent.release_clients()
+                        # Bind the declared key to the row the turn actually ended on — ``agent.session_id``
+                        # carries a mid-turn compression rotation (#16938), so the next reply resolves the
+                        # live transcript. Opt-in: /v1/responses and /v1/runs only; other rows don't change.
                         if bind_declared_conversation:
                             self._bind_declared_conversation(
                                 getattr(agent, "session_id", None) or session_id, gateway_session_key)

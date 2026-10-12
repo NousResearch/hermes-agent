@@ -306,15 +306,17 @@ def _wrapper_path(alias: str) -> Path:
     return _get_wrapper_dir() / (f"{alias}.bat" if sys.platform == "win32" else alias)
 
 
-def _wrapper_candidates(alias: str) -> list[Path]:
-    """Paths a wrapper for *alias* may occupy: :func:`_wrapper_path`, then a pre-``.bat`` Windows one."""
-    return [_wrapper_path(alias), _get_wrapper_dir() / alias] if sys.platform == "win32" else [_wrapper_path(alias)]
+def _find_our_wrapper(alias: str) -> Optional[Path]:
+    """The Hermes wrapper for *alias*: :func:`_wrapper_path`, else a pre-``.bat`` bare Windows one."""
+    candidates = [_wrapper_path(alias), _get_wrapper_dir() / alias] if sys.platform == "win32" else [_wrapper_path(alias)]
+    return next((p for p in candidates if _is_our_wrapper(p)), None)
 
 
 def _is_our_wrapper(path: Path) -> bool:
-    """True when *path* reads as a Hermes-generated wrapper (contains ``hermes -p``)."""
+    """True when *path* reads as a Hermes-generated wrapper (``hermes -p`` in its head)."""
     try:
-        return "hermes -p" in path.read_text(encoding="utf-8-sig")
+        with open(path, encoding="utf-8-sig") as f:
+            return "hermes -p" in f.read(_WRAPPER_READ_LIMIT)
     except Exception:
         return False
 
@@ -571,11 +573,12 @@ def remove_wrapper_script(name: str) -> bool:
     except ValueError:
         return False
 
-    for wrapper_path in _wrapper_candidates(canon):
-        if wrapper_path.exists() and _is_our_wrapper(wrapper_path):
-            with contextlib.suppress(Exception):
-                wrapper_path.unlink()
-                return True
+    wrapper_path = _find_our_wrapper(canon)
+    if wrapper_path is None:
+        return False
+    with contextlib.suppress(Exception):
+        wrapper_path.unlink()
+        return True
     return False
 
 
@@ -1029,7 +1032,7 @@ def _profile_info(name: str, path: Path, *, is_default: bool, alias_name: Option
     model, provider = _read_config_model(path)
     dist_name, dist_version, dist_source = _read_distribution_meta(path)
     meta = read_profile_meta(path)
-    alias_path = next((p for p in _wrapper_candidates(alias_name) if p.exists() and _is_our_wrapper(p)), None) if alias_name else None
+    alias_path = _find_our_wrapper(alias_name) if alias_name else None
     gateway_running = _check_gateway_running(path)
     if not is_default:
         gateway_running = gateway_running or _served_by_running_multiplexer(name)
@@ -1828,7 +1831,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
     canon, profile_dir = _existing_profile_dir(canon)
     gw_running = _check_gateway_running(profile_dir)
-    wrapper_path = next((p for p in _wrapper_candidates(canon) if p.exists() and _is_our_wrapper(p)), None)
+    wrapper_path = _find_our_wrapper(canon)
     _print_delete_summary(canon, profile_dir, gw_running, wrapper_path)
     if not yes:
         print()

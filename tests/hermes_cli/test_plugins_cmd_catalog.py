@@ -208,6 +208,25 @@ def test_in_tree_sidecar_cannot_forge_catalog_provenance(world, tmp_path):
     assert cat.catalog_annotation(real) == f"catalog:community@{world['sha1'][:8]}"
 
 
+def test_url_install_of_an_archived_handoff_repo_is_repinned_to_its_catalog_entry(world, tmp_path, monkeypatch):
+    """A provider that left core was first handed off through a Nous repo that is now archived; a URL install of
+    it has no catalog record, so `update` would keep pulling the archive. It is adopted as the catalog entry that
+    superseded it, and `update` re-pins it to the maintained repo at the reviewed sha."""
+    archived = tmp_path / "archived"
+    target = _install_url(archived, "cat-plugin", {"ARCHIVED.md": "moved\n"})
+    assert cat.read_catalog_sidecar(target) is None  # control: an unknown repo stays a plain URL install
+    monkeypatch.setitem(cat._HANDOFF_REPOS, pc_cat._normalize_repo(archived.as_uri()), "cat-plugin")
+    assert cat.read_catalog_sidecar(target)["catalog_name"] == "cat-plugin"
+    seen = {}
+    real_scan = pc._scan_plugin_tree
+    monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: seen.update(k) or real_scan(*a, **k))
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["ok"] and result["unchanged"] is False and _head(target) == world["sha1"]
+    assert seen["reviewed_pin"] is True  # the re-pinned tree IS the reviewed sha: caution findings don't block it
+    record = pc._read_install_metadata()["cat-plugin"]
+    assert record["source"] == world["repo"].as_uri() and record["catalog"]["repo"] == world["repo"].as_uri()
+
+
 def test_ref_install_records_installed_sha_so_update_is_offered(world):
     """`install NAME --ref X` checks out X, not the reviewed pin; provenance must say X so list/TUI flag the
     drift and `update` re-pins instead of answering 'already at catalog pin'."""

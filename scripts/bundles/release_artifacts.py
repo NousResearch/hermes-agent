@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PureWindowsPath
 
+from scripts.releases import optional_platforms
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
 
 
@@ -159,17 +160,28 @@ def validate_windows_bundle(bundle: Path, windows: list[dict]) -> None:
         raise ValueError("Universal bundle must cover both architectures")
 
 
+ALL_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64", "termux", "windows-universal")
+OPTIONAL_HANDOFFS = optional_platforms.HANDOFFS  # opt-in handoff -> manifest target
+
+
 def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
-             *, smoke_results: dict, release_epoch: int, archive: str) -> dict:
+             *, smoke_results: dict, release_epoch: int, archive: str,
+             handoffs: tuple[str, ...] = ALL_HANDOFFS) -> dict:
     """Bind the native metadata to files already staged by their build jobs.
 
     `tag` stays the plain payload identity; `archive` is the attempt ref the
-    manifest and every artifact URL are keyed under."""
+    manifest and every artifact URL are keyed under. `handoffs` names the
+    groups this release built: the opt-in darwin-x64 and termux groups may be
+    left out, and then their targets must be absent from the manifest."""
     from scripts.releases.handoff import receipt_name, validate_receipt
     from scripts.releases.r2 import put, staging_key_for
 
-    smoke_results = accepted_smoke_results(smoke_results)
-    expected = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64", "termux", "windows-universal")
+    expected = tuple(handoffs)
+    if (len(set(expected)) != len(expected) or not set(expected) <= set(ALL_HANDOFFS)
+            or not set(ALL_HANDOFFS) - set(OPTIONAL_HANDOFFS) <= set(expected)):
+        raise ValueError(f"Invalid candidate handoff set: {', '.join(expected)}")
+    absent = frozenset(target for name, target in OPTIONAL_HANDOFFS.items() if name not in expected)
+    smoke_results = accepted_smoke_results(smoke_results, absent=absent)
     by_name = {}
     for name in expected:
         file = root / receipt_name(name)
@@ -200,7 +212,9 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
     by_name = {item["path"]: item for item in files}
     packages = []
     for row in rows:
-        stamp_matches(row, tag, commit)
+        # record() verified each package's own stamp; a row is metadata and carries no baseVersion.
+        if row.get("commit") != commit or row.get("tag") != tag:
+            raise ValueError("Built package provenance does not match the release")
         filename = universal_name if row["platform"] == "windows" else row["filename"]
         item = by_name[filename]
         packages.append({k: v for k, v in {**row, "artifact": {"url": item["url"], "sha256": item["sha256"]}}.items() if k != "filename"})
@@ -208,8 +222,10 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
               "archive": archive,
               "packages": packages, "files": files, "smoke_results": smoke_results}
     validate_candidates(result, tag, commit, public_base, release_epoch, archive=archive)
-    if not any(row["platform"] == "termux" for row in packages):
-        raise ValueError("Missing Termux candidate")
+    present = {f"{row['platform']}/{row['arch']}" for row in packages}
+    for name, target in OPTIONAL_HANDOFFS.items():
+        if (target in present) != (name in expected):
+            raise ValueError(f"Candidate {target} row differs from the built handoffs")
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     put(tag=archive, key="release-candidates.json", file=out, immutable=True)
     return result
@@ -318,11 +334,19 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
     apt = root / "apt"
     indexes = sorted(p for p in apt.rglob("*") if p.is_file() and not p.relative_to(apt).as_posix().startswith("pool/") and "/by-hash/" not in p.relative_to(apt).as_posix())
     indexes.sort(key=lambda p: p.name == "InRelease")
-    if not any(p.name == "InRelease" for p in indexes):
+    # Termux is opt-in: a release that did not build it leaves the APT channel
+    # on the previous Termux release, and ships no indexes to publish.
+    termux = any(row["platform"] == "termux" for row in manifest["packages"])
+    if termux and not any(p.name == "InRelease" for p in indexes):
         raise ValueError("Missing signed APT index")
+    if not termux and indexes:
+        raise ValueError("APT indexes staged for a release without a Termux candidate")
     # Every package and index must exist before the first channel write.
     # The merged feed points at the attempt archive; the version stays plain.
-    finalize(tag=manifest["tag"], dir=root, archive=manifest["archive"])
+    # macOS Intel is opt-in: without it the feed carries the arm64 leg alone.
+    arches = tuple(arch for arch in ("arm64", "x64")
+                   if any(row["platform"] == "macos" and row["arch"] == arch for row in manifest["packages"]))
+    finalize(tag=manifest["tag"], dir=root, archive=manifest["archive"], arches=arches)
     def publish_pointer(key, file):
         put(tag=manifest["tag"], key=key, file=file, key_is_full=True)
         digest = hashlib.sha256()

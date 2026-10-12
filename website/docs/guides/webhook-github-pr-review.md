@@ -258,7 +258,7 @@ deliver_extra:
 
 The target platform must also be enabled and connected in the gateway. If `chat_id` is omitted, the response is sent to that platform's configured home channel.
 
-Valid `deliver` values: `log` · `github_comment` · `telegram` · `discord` · `slack` · `signal` · `sms`
+Valid `deliver` values: `log` · `github_comment` · `telegram` · `discord` · `slack` · `signal` · `sms` · `email` · `whatsapp` · `qqbot` · local/file targets where configured
 
 ---
 

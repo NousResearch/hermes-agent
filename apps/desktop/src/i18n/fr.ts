@@ -975,6 +975,7 @@ export const frOverrides = {
       appearance: 'Apparence',
       workspace: 'Espace de travail',
       safety: 'Sécurité',
+      browser: 'Navigateur',
       memory: 'Mémoire et contexte',
       voice: 'Voix',
       advanced: 'Avancé'

@@ -45,6 +45,10 @@
               "properties": {},
               "required": [],
               "type": "object"
+            },
+            "repo_root": {
+              "description": "Absolute path of the git checkout this child may edit. Omit for review, gh, or research. When set, the child gets one linked worktree under that repo (shared object store, not a clone). A path that is not a git checkout fails the spawn with a named error.",
+              "type": "string"
             }
           },
           "required": [

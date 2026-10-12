@@ -16,6 +16,7 @@ from hermes_cli.release_channels import (
 from scripts.bundles.channel_artifacts import assemble
 from scripts.releases import handoff, optional_platforms, r2, stable
 from scripts.releases.channels import ChannelPublisher, R2ChannelStore
+from scripts.releases.progress import log
 from scripts.releases.versioning import parse_attempt_ref
 
 NATIVE_LEGS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "windows-universal")
@@ -79,7 +80,14 @@ def _leg_targets(legs: tuple[str, ...]) -> list[tuple[str, str]]:
 
 
 def read_native_receipts(root: Path, tag: str, commit: str,
-                         legs: tuple[str, ...] = NATIVE_LEGS) -> dict:
+                         legs: tuple[str, ...] = NATIVE_LEGS, *,
+                         payload_tag: str | None = None) -> dict:
+    """Receipts bind the archive tag; metadata rows bind the payload tag.
+
+    For stable those differ: the handoffs are staged under the attempt ref
+    (``rc.N-vX.Y.Z``) while record() stamps each package with ``vX.Y.Z``.
+    """
+    payload_tag = payload_tag or tag
     files = {}
     for name in legs:
         receipt = json.loads((root / handoff.receipt_name(name)).read_text(encoding="utf-8-sig"))
@@ -97,7 +105,7 @@ def read_native_receipts(root: Path, tag: str, commit: str,
         if name not in files or not (root / name).is_file():
             raise ChannelError(f"Missing receipt-bound native metadata: {name}")
         row = json.loads((root / name).read_text(encoding="utf-8-sig"))
-        if any(row.get(k) != v for k, v in {"platform": platform, "arch": arch, "tag": tag, "commit": commit}.items()):
+        if any(row.get(k) != v for k, v in {"platform": platform, "arch": arch, "tag": payload_tag, "commit": commit}.items()):
             raise ChannelError("Native metadata release identity mismatch")
         rows.append(row)
     return {"packages": rows, "files": files}
@@ -261,6 +269,8 @@ def advance_stable(env: dict, release: dict, root: Path) -> dict:
     public_base = r2.public_base_url()
     key = f"releases/tag/{release['claim_tag']}/release-candidates.json"
     digest = hashlib.sha256(read_archive_bytes(key)).hexdigest()
+    log(f"Candidate manifest {key}: sha256 {digest} "
+        f"(receipt {release.get('candidate_manifest_sha256')})")
     if digest != release.get("candidate_manifest_sha256"):
         raise ChannelError("Stable candidate manifest differs from the final release receipt")
     scoped_env = {
@@ -369,6 +379,8 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
                                  r2.public_base_url(), authorize=lambda action, record:
                                  admit_transaction(policy, env, require_published=True))
     name = select_channel(publisher, policy)
+    log(f"Channel advance: policy={policy} channel={name} archive={tag} payload={payload_tag} "
+        f"commit={commit[:10]}")
     identity = product_identity(payload_tag)
     current = publisher._read(name)
     if current:
@@ -387,9 +399,16 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     # Native handoffs were staged under the attempt ref for stable attempts
     # (identical for canary, where tag == payload_tag).
     legs = native_legs(accepted)
-    handoff.fetch(tag, commit, list(legs), root,
-                  ["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"], public_base=publisher.public_base)
-    native = read_native_receipts(root, tag, commit, legs)
+    # Stable trusts the receipt sha256s of an accepted candidate: only metadata and
+    # the per-arch feed legs are downloaded, never the multi-GB packages.
+    local_bytes = accepted is None
+    includes = (["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"] if local_bytes
+                else ["metadata-*.json", "*-mac.yml"])
+    log(f"Fetching native handoffs for {', '.join(legs)} from releases/tag/{tag}/ "
+        f"({'packages' if local_bytes else 'metadata and feed legs only'})")
+    handoff.fetch(tag, commit, list(legs), root, includes, public_base=publisher.public_base)
+    native = read_native_receipts(root, tag, commit, legs, payload_tag=payload_tag)
+    log(f"Native receipts verified: {len(native['packages'])} packages, {len(native['files'])} files")
     windows = next(row for row in native["packages"] if row["platform"] == "windows")
     if policy == "canary-release":
         expected_windows = canary_windows_version(tag)
@@ -412,15 +431,18 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
         return True
 
     source_version = payload_tag[1:].split("+", 1)[0]
+    log(f"Allocating a protected build on {name} for {payload_tag[1:]} "
+        f"(windows {windows['version']})")
     request = publisher.allocate_protected(name, commit, source_version, release_tag=payload_tag,
                                            version=payload_tag[1:], windows_version=windows["version"],
                                            identity=identity, policy=policy, release_gate=release_gate,
                                            archive_ref=tag if parsed else None)
     manifest, feeds = assemble(request, native, root, artifact_prefix=f"releases/tag/{tag}/",
-                               targets=_leg_targets(legs))
+                               targets=_leg_targets(legs), local_bytes=local_bytes)
     if accepted is not None:
         match_accepted_packages(manifest, accepted)
     prefix = build_prefix(request["buildId"])
+    log(f"Build {request['buildId']}: writing {len(feeds)} immutable feeds under {prefix}")
     for file in feeds:
         key = prefix + file.relative_to(root).as_posix()
         r2.put(tag=tag, key=key, file=str(file), key_is_full=True, immutable=True)
@@ -430,8 +452,9 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 
     def qualified(pinned: dict, actual: dict) -> bool:
         # Rehash local receipt-bound bytes rather than trusting caller-supplied claims.
-        expected, _ = assemble(pinned, read_native_receipts(root, tag, commit, legs), root,
-                               artifact_prefix=f"releases/tag/{tag}/", targets=_leg_targets(legs))
+        expected, _ = assemble(pinned, read_native_receipts(root, tag, commit, legs, payload_tag=payload_tag), root,
+                               artifact_prefix=f"releases/tag/{tag}/", targets=_leg_targets(legs),
+                               local_bytes=local_bytes)
         if accepted is not None:
             match_accepted_packages(expected, accepted)
 
@@ -439,11 +462,14 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 
     publisher.verify_build = qualified
     if accepted is not None:
+        log("Writing releases/stable/release-candidates.json and promoting the stable feeds")
         publisher._write("releases/stable/release-candidates.json", accepted)
         if publisher.reader.read_bytes("releases/stable/release-candidates.json") != canonical_json(accepted):
             raise ChannelError("Stable candidate pointer read-back differs")
         promote_stable_feeds(accepted, root, publisher.public_base)
+    log(f"Promoting build {request['buildId']} to the {name} head")
     result = publisher.promote_protected(request["buildId"], policy=policy, release_gate=release_gate)
+    log(f"Channel {name} head is build {request['buildId']}")
     return result
 
 

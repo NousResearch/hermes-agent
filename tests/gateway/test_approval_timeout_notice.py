@@ -42,8 +42,12 @@ def test_non_timeout_reasons_never_post(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_text_prompt_is_never_edited_in_place():
-    """card_message_id=None (the text-fallback path) must send a new message, not rewrite the prompt."""
+async def test_timeout_notice_always_sends_a_new_message():
+    """The notice must NEVER edit the button card in place: the card was sent as platform-native
+    markup (Telegram HTML <pre>/<b>), and re-formatting that with the MarkdownV2 formatter escapes
+    the tags into literal \\<pre\\> — the visible "no formatting / literal backticks" artifact.
+    A fresh send goes through the same markdown pipeline as the final reply and renders cleanly.
+    Both the text-fallback path (card_message_id=None) and the button-card path must send."""
     calls = []
 
     class _Adapter:
@@ -57,6 +61,6 @@ async def test_text_prompt_is_never_edited_in_place():
 
     ctx = SimpleNamespace(_status_adapter=_Adapter(), _status_chat_id="c", _status_thread_metadata=None)
     await settle_mod._post_timeout_notice(ctx, "ls", None, 300)
-    assert [kind for kind, _ in calls] == ["send"]
-    await settle_mod._post_timeout_notice(ctx, "ls", "card-9", 300)
-    assert ("edit", "card-9") in calls
+    await settle_mod._post_timeout_notice(ctx, "systemctl --user restart x", "card-9", 300)
+    assert [kind for kind, _ in calls] == ["send", "send"]
+    assert all("edit" not in kind for kind, _ in calls)

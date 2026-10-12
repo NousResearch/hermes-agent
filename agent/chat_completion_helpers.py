@@ -32,6 +32,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
+from agent.chat_completion_helpers_timeouts import _inline_nonstream_hard_timeout, _read_within_stale_budget
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
@@ -877,22 +878,6 @@ def _resolve_direct_stale_timeout(agent, api_kwargs: dict) -> float:
     if getattr(agent, "api_mode", None) == "codex_responses" and not (base_url and is_local_endpoint(base_url)):
         return _bound_openai_codex_stale_timeout(float(value), estimate_request_context_tokens(api_kwargs))
     return float(value)
-
-
-def _inline_nonstream_hard_timeout(stale_timeout: float):
-    """Socket-level backstop for inline non-streaming calls (#85252): the keepalive
-    client uses ``read=None`` and the stranger-thread abort must not ``close()`` the
-    FD (#29507), so a hung provider otherwise waits until TCP dies. Returns an
-    ``httpx.Timeout`` with read == stale budget, a float if httpx is unavailable,
-    or ``None`` when the watchdog is disarmed (non-finite budget)."""
-    if not math.isfinite(stale_timeout) or stale_timeout <= 0:
-        return None
-    conn_cap = min(stale_timeout, 60.0)
-    try:
-        import httpx as _httpx
-        return _httpx.Timeout(connect=conn_cap, read=stale_timeout, write=conn_cap, pool=conn_cap)
-    except Exception:
-        return stale_timeout
 
 
 class _InlineRequest:
@@ -2908,13 +2893,14 @@ class _StreamingCall(StreamingWaitMonitor):
         """``(write, read, connect/pool)`` socket timeouts. Per-provider
         ``request_timeout_seconds`` wins over HERMES_API_TIMEOUT (1800s) and
         HERMES_STREAM_READ_TIMEOUT (120s); connect/pool cover the handshake, not
-        inference: 30s, or capped at 60s when configured."""
+        inference: 30s, or capped at 60s when configured. The read timeout never
+        outlasts the stale detector (:func:`_read_within_stale_budget`)."""
         cfg = get_provider_request_timeout(self.agent.provider, self.agent.model)
         base = cfg if cfg is not None else env_float("HERMES_API_TIMEOUT", 1800.0)
-        if cfg is not None:
-            return base, cfg, min(base, 60.0)
-        read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
         stale = self._stream_stale_timeout
+        if cfg is not None:
+            return base, _read_within_stale_budget(cfg, stale), min(base, 60.0)
+        read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
         if read == 120.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
             read = base  # local providers prefill for minutes
             logger.debug("Local provider detected (%s) — stream read timeout raised to %.0fs", self.agent.base_url, read)
@@ -2923,7 +2909,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # tolerates that, so the raw read timeout must not fire first.
             read = stale
             logger.debug("Cloud reasoning stream — read timeout raised to %.0fs to match stale-stream detector", read)
-        return base, read, 30.0
+        return base, _read_within_stale_budget(read, stale), 30.0
 
     @staticmethod
     def _choiceless_chunk(chunk, finish_reason):

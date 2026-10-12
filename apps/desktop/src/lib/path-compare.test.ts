@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
-import { cleanPath, comparisonPath, isUnderPath } from './path-compare'
+import { cleanPath, comparisonPath, isUnderPath, isWindowsAbsolutePath } from './path-compare'
+
+describe('isWindowsAbsolutePath', () => {
+  it.each(['C:\\Users\\me', 'd:/work', '\\\\server\\share'])('accepts %s', path => {
+    expect(isWindowsAbsolutePath(path)).toBe(true)
+  })
+
+  it.each(['/home/me', './out', 'out\\report.html', 'C:relative', 'https://x.com'])('rejects %s', path => {
+    expect(isWindowsAbsolutePath(path)).toBe(false)
+  })
+})
 
 describe('cleanPath', () => {
   it('unifies separators and drops trailing slashes', () => {

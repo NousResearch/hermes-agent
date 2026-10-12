@@ -79,7 +79,7 @@ export function HostedToolsPanel({
       onRetry={tools.retry}
       onRetryRules={onRetryRules}
       onSignIn={onSignIn}
-      preview={card.ways.hosted?.connected !== true}
+      preview={!settled(card.ways.hosted)}
       readOnly={readOnly}
       rulesSignedOut={rulesSignedOut}
       signedOut={tools.signedOut}
@@ -87,6 +87,9 @@ export function HostedToolsPanel({
     />
   )
 }
+
+const settled = (way: ConnectorCardModel['ways']['hosted']): boolean =>
+  way !== null && way.connected && (way.state === 'connected' || way.state === 'off')
 
 export interface LocalToolsPanelProps {
   card: ConnectorCardModel

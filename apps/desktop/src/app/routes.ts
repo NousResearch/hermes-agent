@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
+import type { InterfaceTier } from '@/store/interface-mode'
 
 type NavigateLike = (to: string, options?: { replace?: boolean }) => void
 
@@ -133,6 +134,27 @@ export interface SidebarNavContribution {
   label: string
   /** Route to navigate to (usually a contributed page's path). */
   path: string
+  /** `'advanced'` keeps the row out of Simple mode; unset shows it everywhere. */
+  tier?: InterfaceTier
+}
+
+// ── Contributed profile-group header — the `sidebar.profileGroup.header` area ─
+// A RENDER contribution mounted at the top of each gateway/profile group in the
+// Sessions sidebar (above its session rows) while the group is expanded. The
+// contribution's `data` is a `ProfileGroupHeaderContribution`; core calls
+// `render(route)` with the group's connection + profile so one contribution
+// serves every group. First consumer: the Bots plugin's Screen portal.
+
+export const SIDEBAR_PROFILE_GROUP_HEADER_AREA = 'sidebar.profileGroup.header'
+
+export interface ProfileGroupRoute {
+  connectionId: null | string
+  profile: string
+}
+
+/** Payload of a `sidebar.profileGroup.header` data contribution. */
+export interface ProfileGroupHeaderContribution {
+  render: (route: ProfileGroupRoute) => ReactNode
 }
 
 // Views that render as a full-screen modal card (OverlayView) over the shell.

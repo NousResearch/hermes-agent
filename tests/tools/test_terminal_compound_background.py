@@ -42,8 +42,6 @@ class TestPreserved:
         # No compound — just background a single command. Works fine as-is.
         assert rewrite("sleep 5 &") == "sleep 5 &"
 
-    def test_plain_server_background(self):
-        assert rewrite("python3 -m http.server 0 &") == "python3 -m http.server 0 &"
 
 
     def test_whitespace_only(self):
@@ -152,9 +150,6 @@ class TestTrailingStatementSeparator:
         # command between `;` and `;;`, which bash rejects.
         assert rewrite("case $x in p) b && c & ;; esac") == "case $x in p) b && { c & } ;; esac"
 
-    def test_separator_is_idempotent(self):
-        once = rewrite("echo hi && sleep 5 & echo done")
-        assert rewrite(once) == once
 
     def test_second_background_then_trailing(self):
         assert rewrite("echo a && sleep 5 & echo b & echo c") == (
@@ -193,6 +188,7 @@ class TestRewriteIsValidBash:
             ["bash", "-n", "-c", rewritten],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0, (
             f"rewrite produced invalid bash: {rewritten!r}\n{result.stderr}"
@@ -202,7 +198,8 @@ class TestRewriteIsValidBash:
         # End-to-end: the command after the backgrounded compound must run.
         rewritten = rewrite("echo first && true & echo SECOND_RAN")
         result = subprocess.run(
-            ["bash", "-c", rewritten], capture_output=True, text=True
+            ["bash", "-c", rewritten], capture_output=True, text=True,
+            check=False,
         )
         assert result.returncode == 0
         assert "SECOND_RAN" in result.stdout

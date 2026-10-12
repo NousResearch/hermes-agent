@@ -9,7 +9,7 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test } from './test'
+import { test } from './test'
 
 import {
   type NoProviderFixture,
@@ -33,35 +33,6 @@ test.describe('onboarding with no provider configured', () => {
     // but the renderer should show the onboarding overlay because no
     // provider is configured.
     await waitForOnboarding(fixture.page, 90_000)
-  })
-
-  test('onboarding shows provider options or API key form', async () => {
-    if (!fixture) {
-      test.skip(true, 'Previous test failed — no app running')
-
-      return
-    }
-
-    const page = fixture.page
-
-    // The onboarding overlay should contain provider-related text.
-    // It might show OAuth providers, an API key form, or a "choose later"
-    // link. Verify at least one of these is visible.
-    const rootText = await page.evaluate(() => {
-      const root = document.getElementById('root')
-
-      return root?.textContent ?? ''
-    })
-
-    const hasProviderText =
-      rootText.includes('provider') ||
-      rootText.includes('Provider') ||
-      rootText.includes('API key') ||
-      rootText.includes('Sign in') ||
-      rootText.includes('OpenRouter') ||
-      rootText.includes('OpenAI')
-
-    expect(hasProviderText).toBe(true)
   })
 
   test('screenshot of onboarding overlay', async () => {

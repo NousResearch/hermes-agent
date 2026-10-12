@@ -59,8 +59,23 @@ def _(rid, params):
     live = _visible_subagent_records(session_id, transport, owner)
     return _ok(rid, {
         "subagents": [{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS} for r in live],
-        "delegations": [],
+        "delegations": _failed_delegations(session_id, owner),
     })
+
+
+def _failed_delegations(session_id, owner):
+    """Recently failed async delegation tasks for this session from the durable store (the live
+    roster forgets ended children and dies with a renderer reload, #97202). Read under the session's
+    profile home, where its delegations were persisted; a store error degrades to no rows."""
+    from tools.async_delegation import failed_delegations_for_session
+
+    agent_session_id = str(getattr(owner.get("agent"), "session_id", "") or "")
+    try:
+        with _session_home_scope(owner):
+            return failed_delegations_for_session(session_id, agent_session_id)
+    except Exception:
+        logger.debug("subagent.list: failed-delegation read failed for %s", session_id, exc_info=True)
+        return []
 
 
 @method("subagent.interrupt")

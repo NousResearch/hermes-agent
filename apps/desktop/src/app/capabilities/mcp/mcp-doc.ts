@@ -27,8 +27,6 @@ export function parseServersDoc(raw: string): McpServers {
   return Object.fromEntries(Object.entries(map).map(([name, entry]) => [name, normalizeEntry(entry)]))
 }
 
-export const serverEnabled = (server: McpServerEntry) => server.enabled !== false
-
 export function withEnabled(server: McpServerEntry, enabled: boolean): McpServerEntry {
   const next = { ...server }
 

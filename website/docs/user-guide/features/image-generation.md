@@ -77,7 +77,7 @@ image is billed; models without a `num_images` input ignore it):
 ```yaml
 image_gen:
   fal:
-    num_images: 4
+    num_images: 4   # default 1: unset keeps single-image requests
 ```
 
 The equivalents are `image_gen.openrouter.n` and `image_gen.openai.n` (the latter also

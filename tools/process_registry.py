@@ -37,6 +37,12 @@ from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
+from tools.process_registry_scope import (
+    _build_systemd_scope_argv,
+    _default_user_runtime_dir,
+    _secure_user_runtime_dir,
+    _systemd_scope_unavailable_detail,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +115,9 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
+# Why the cached False verdict happened, so the degrade message can name a missing binary
+# instead of always blaming the user bus (#137222). Cleared on True alongside the verdict.
+_SYSTEMD_SCOPE_UNAVAILABLE_REASON: Optional[str] = None
 # Both verdicts expire: the user bus can vanish after a True (session logout without linger,
 # #110803) and reappear after a False (linger enabled later, #104893).
 _SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
@@ -188,25 +197,6 @@ def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> list[str]:
     ]
 
 
-def _default_user_runtime_dir() -> Path:
-    """``/run/user/<uid>``; a function so tests can point it at a temp dir with a real socket."""
-    return Path(f"/run/user/{os.getuid()}")  # windows-footgun: ok — only reached behind the _IS_LINUX gate in systemd_user_bus_env
-
-
-def _secure_user_runtime_dir(path: Path) -> bool:
-    """Accept only an absolute, owned, non-writable real directory."""
-    try:
-        metadata = path.lstat()
-        return (
-            path.is_absolute()
-            and stat.S_ISDIR(metadata.st_mode)
-            and metadata.st_uid == os.getuid()  # windows-footgun: ok — only reached behind the _IS_LINUX gate in systemd_user_bus_env
-            and metadata.st_mode & 0o022 == 0
-        )
-    except OSError:
-        return False
-
-
 def systemd_user_bus_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """Build an environment that can reach this user's lingering systemd manager.
 
@@ -261,6 +251,7 @@ def _systemd_run_user_scope_available() -> bool:
     Use ``/bin/sh -c 'exit 0'``: NixOS provides ``/bin/sh`` but not ``/bin/true``
     (#105365), regardless of the gateway service's PATH."""
     global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT, _SYSTEMD_RUN_NO_EXPAND
+    global _SYSTEMD_SCOPE_UNAVAILABLE_REASON
     verdict = _systemd_scope_cached()
     if verdict is not None:
         return verdict
@@ -271,12 +262,17 @@ def _systemd_run_user_scope_available() -> bool:
         if verdict is not None:
             return verdict
         available = False
+        unavailable_reason: Optional[str] = None
         if _IS_LINUX:
             try:
                 import shutil
 
                 binary = shutil.which("systemd-run")
-                if binary:
+                if binary is None:
+                    unavailable_reason = (
+                        "systemd-run was not found on PATH "
+                        f"(PATH={os.environ.get('PATH') or '<empty>'})")
+                else:
                     # Unique unit avoids collisions; the timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
                     for _attempt in range(2):
@@ -294,14 +290,23 @@ def _systemd_run_user_scope_available() -> bool:
                         _SYSTEMD_RUN_NO_EXPAND = False
                     available = result.returncode == 0
                     if not available:
+                        unavailable_reason = (
+                            "the scope probe failed "
+                            f"(rc={result.returncode}): "
+                            f"{(result.stderr or b'').decode('utf-8', 'replace').strip()}"
+                        )
                         logger.debug(
                             "systemd-run --user --scope probe failed (rc=%s): %s",
                             result.returncode, (result.stderr or b"").decode("utf-8", "replace").strip(),
                         )
             except Exception as exc:
+                unavailable_reason = f"the scope probe errored: {exc}"
                 logger.debug("systemd-run --user --scope probe error: %s", exc)
+        else:
+            unavailable_reason = "systemd user scopes are only probed on Linux hosts"
         _SYSTEMD_SCOPE_AVAILABLE = available
         _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
+        _SYSTEMD_SCOPE_UNAVAILABLE_REASON = None if available else unavailable_reason
         return available
 
 
@@ -323,22 +328,6 @@ def _is_supervised_gateway_process() -> bool:
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False
-
-
-def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str) -> list[str]:
-    """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation with its own
-    memory accounting, so an OOM in the worker cannot kill the gateway cgroup.
-
-    ``--collect`` makes the transient scope self-clean after exit; ``--unit`` gives it a recognisable name
-    for ``systemctl --user status`` / journalctl. See #70716.
-    """
-    import shutil
-
-    binary = shutil.which("systemd-run")
-    if binary is None:
-        # Caller should have probed availability; never pass None into Popen anyway.
-        return shell_argv
-    return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
 
 
 _scope_degraded_warned = False
@@ -401,7 +390,7 @@ def scoped_spawn_lost_user_bus(spawn_env: dict[str, str]) -> bool:
     bus address it carried) honours a configured ``XDG_RUNTIME_DIR`` exactly as the spawn did, so
     an unrelated wrapper exit on a host whose bus lives outside ``/run/user/<uid>`` is not
     misread as a lost bus."""
-    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT, _SYSTEMD_SCOPE_UNAVAILABLE_REASON
     base_env = dict(spawn_env)
     base_env.pop("DBUS_SESSION_BUS_ADDRESS", None)
     if "DBUS_SESSION_BUS_ADDRESS" in systemd_user_bus_env(base_env):
@@ -409,6 +398,7 @@ def scoped_spawn_lost_user_bus(spawn_env: dict[str, str]) -> bool:
     with _SYSTEMD_SCOPE_PROBE_LOCK:
         _SYSTEMD_SCOPE_AVAILABLE = False
         _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
+        _SYSTEMD_SCOPE_UNAVAILABLE_REASON = "the user bus disappeared after a scoped spawn"
     return True
 
 
@@ -457,11 +447,7 @@ def restart_safe_gateway_child_argv(
         return GatewayChildDispatch("degraded", command)
 
     if not _systemd_run_user_scope_available():
-        return _degrade(
-            "systemd-run --user --scope is unavailable (usually no reachable user D-Bus session at "
-            f"/run/user/{os.getuid()}/bus). On a system-level service install, run "  # windows-footgun: ok — behind the _IS_LINUX return above
-            "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
-        )
+        return _degrade(_systemd_scope_unavailable_detail())
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:
         return _degrade("systemd-run disappeared after the availability probe")

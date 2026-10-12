@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.provider_projection import splice_provider_projection
+from agent.model_switch_notes import strip_model_switch_note
 from agent.trajectory import has_incomplete_scratchpad
 from agent.turn_truncation import (
     CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
@@ -135,6 +136,8 @@ def normalize_model_response(
 
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
+    if assistant_message.content:
+        assistant_message.content = strip_model_switch_note(assistant_message.content)
 
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.

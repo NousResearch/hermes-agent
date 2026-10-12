@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 from agent.memory_manager import sanitize_context
 from agent.message_content import flatten_message_text
 from agent.history_commentary import visible_commentary
+from agent.model_switch_notes import strip_model_switch_note
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -52,6 +53,7 @@ class StreamDeliveryMixin:
         """
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
+        note_filter = getattr(self, "_stream_model_note_filter", None)
         # Inline <think> text is forwarded to the reasoning pane only while no native reasoning delta
         # arrived for this model response (#89647).
         self._native_reasoning_streamed = False
@@ -59,6 +61,7 @@ class StreamDeliveryMixin:
         self._stream_reasoning_hooks_enabled = None
 
         def deliver(tail: str) -> None:
+            tail = note_filter.feed(tail) if note_filter is not None else strip_model_switch_note(tail)
             if tail:
                 self._deliver_to_stream_callbacks(tail)
                 self._record_streamed_assistant_text(tail)
@@ -77,6 +80,11 @@ class StreamDeliveryMixin:
             deliver(ctx_scrubber.feed(think_tail) if think_tail and ctx_scrubber is not None else think_tail)
         if ctx_scrubber is not None:
             deliver(ctx_scrubber.flush())
+        if note_filter is not None:
+            tail = note_filter.flush()
+            if tail:
+                self._deliver_to_stream_callbacks(tail)
+                self._record_streamed_assistant_text(tail)
         self._current_streamed_assistant_text = ""
 
     @property
@@ -107,7 +115,7 @@ class StreamDeliveryMixin:
         """(visible content, streamed text), both think-stripped and whitespace-normalized."""
         normalize = self._normalize_interim_visible_text
         streamed = getattr(self, "_current_streamed_assistant_text", "") or ""
-        return normalize(self._strip_think_blocks(content or "")), normalize(self._strip_think_blocks(streamed))
+        return normalize(strip_model_switch_note(self._strip_think_blocks(content or ""))), normalize(self._strip_think_blocks(streamed))
 
     def _interim_content_was_streamed(self, content: str) -> bool:
         # Prefix match, not equality: the final may be streamed text plus a trailing delta. The
@@ -147,7 +155,7 @@ class StreamDeliveryMixin:
 
     def _visible_commentary(self, text: str) -> str:
         """Think-stripped, redacted commentary text ("" when nothing visible remains)."""
-        return visible_commentary(text, strip_thinking=self._strip_think_blocks)
+        return strip_model_switch_note(visible_commentary(text, strip_thinking=self._strip_think_blocks))
 
     def _extract_codex_interim_visible_text(self, assistant_msg: dict[str, Any]) -> str:
         """All visible Codex commentary joined, for comparison/fallback."""
@@ -159,7 +167,7 @@ class StreamDeliveryMixin:
         progress leaks the answer early — else top-level content (may be a parts list)."""
         return (
             self._extract_codex_interim_visible_text(assistant_msg)
-            or self._strip_think_blocks(flatten_message_text(assistant_msg.get("content"))).strip()
+            or strip_model_switch_note(self._strip_think_blocks(flatten_message_text(assistant_msg.get("content"))).strip())
         )
 
     def _interim_text_was_delivered(self, text: str) -> bool:
@@ -302,12 +310,6 @@ class StreamDeliveryMixin:
             # See #65991.
             self._note_dropped_stream_writer("_fire_stream_delta")
             return
-        # One paragraph break before the first text delta after a tool iteration, without
-        # stacking blank lines across back-to-back tool iterations.
-        prepended_break = bool(getattr(self, "_stream_needs_break", False) and text and text.strip())
-        if prepended_break:
-            self._stream_needs_break = False
-            text = "\n\n" + text
         if isinstance(text, str):
             # Stateful scrubbers: per-delta regex stripping destroyed downstream state machines when a
             # tag was split across deltas; memory-context spans split across chunks must not leak to
@@ -322,6 +324,13 @@ class StreamDeliveryMixin:
             if hidden and not getattr(self, "_native_reasoning_streamed", False):
                 self._fire_reasoning_delta(hidden, inline=True)
             text = scrubber.feed(text) if scrubber is not None else sanitize_context(text)
+            note_filter = getattr(self, "_stream_model_note_filter", None)
+            text = note_filter.feed(text) if note_filter is not None else strip_model_switch_note(text)
+            # Wait for visible text before consuming the paragraph break after tools.
+            prepended_break = bool(getattr(self, "_stream_needs_break", False) and text.strip())
+            if prepended_break:
+                self._stream_needs_break = False
+                text = "\n\n" + text
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             # Check the parts list, not the joined property (joining per token copies the whole reply).
             if not prepended_break and not getattr(self, "_streamed_assistant_text_parts", None):

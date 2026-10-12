@@ -109,3 +109,32 @@ def test_symlinks_are_not_followed(tmp_path):
     except OSError:
         pytest.skip("symlinks unsupported")
     assert _scan(tmp_path) == []
+
+
+def _git_add_all(d: Path) -> None:
+    subprocess.run(["git", "-C", str(d), "init", "-q"], capture_output=True, check=True)
+    subprocess.run(["git", "-C", str(d), "add", "-A"], capture_output=True, check=True)
+
+
+def test_untracked_interpreter_cache_in_a_checkout_is_ignored(tmp_path):
+    # The catalog CI imports the plugin (`hermes plugins validate`) before scanning;
+    # the __pycache__ bytecode it writes is untracked runner residue, not content
+    # shipped at the pin, so the index-driven scan must not flag it (#137095).
+    (tmp_path / "__init__.py").write_text("x = 1\n")
+    _git_add_all(tmp_path)
+    cache = tmp_path / "__pycache__" / "__init__.cpython-314.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"\x00" * 16)
+    assert _scan(tmp_path) == []
+
+
+def test_tracked_bytecode_in_a_checkout_still_fails(tmp_path):
+    # The index-driven scan must not weaken rule 17: bytecode that really is part
+    # of the pinned tree stays a finding.
+    (tmp_path / "__init__.py").write_text("x = 1\n")
+    evil = tmp_path / "__pycache__" / "evil.cpython-314.pyc"
+    evil.parent.mkdir()
+    evil.write_bytes(b"\x00" * 16)
+    _git_add_all(tmp_path)
+    findings = _scan(tmp_path)
+    assert any("evil.cpython-314.pyc" in f and "bytecode" in f for f in findings), findings

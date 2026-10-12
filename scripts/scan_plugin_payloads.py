@@ -23,6 +23,7 @@ Exit 0 = clean, 1 = a payload was found (lines on stdout), 2 = bad usage.
 from __future__ import annotations
 
 import io
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -131,14 +132,40 @@ def _file_problem(path: Path, rel: str) -> str | None:
     return None
 
 
+def _tracked_files(plugin_dir: Path) -> list[str] | None:
+    """Paths git reports in the checkout's index, or None when not a git repository.
+
+    Rule 17 covers what ships at the pin, so enumeration comes from the git index
+    rather than the working tree: an earlier ``hermes plugins validate`` import
+    writes ``__pycache__/**.pyc`` next to the pinned source, and that interpreter
+    output is untracked runner residue, not shipped content (#137095).
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(plugin_dir), "ls-files", "-z", "--cached"],
+            capture_output=True, check=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return [p.decode("utf-8", "surrogateescape") for p in proc.stdout.split(b"\0") if p]
+
+
 def scan(plugin_dir: Path) -> list[str]:
     findings: list[str] = []
-    for path in sorted(plugin_dir.rglob("*")):
+    rel_paths = _tracked_files(plugin_dir)
+    if rel_paths is None:
+        # Not a git checkout (e.g. an unpacked release tarball): scan the tree on disk.
+        rel_paths = [
+            path.relative_to(plugin_dir).as_posix()
+            for path in sorted(plugin_dir.rglob("*"))
+            if path.is_file() and not path.is_symlink()
+            and "/.git/" not in "/" + path.as_posix()
+        ]
+    for rel in rel_paths:
+        path = plugin_dir / rel
         if path.is_symlink() or not path.is_file():
             continue
-        if "/.git/" in "/" + path.as_posix():
-            continue
-        problem = _file_problem(path, path.relative_to(plugin_dir).as_posix())
+        problem = _file_problem(path, rel)
         if problem:
             findings.append(problem)
     return findings

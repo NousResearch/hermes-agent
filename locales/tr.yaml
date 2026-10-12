@@ -184,8 +184,8 @@ gateway:
     choice_normal: "normal — standart işleme"
     choice_auto: "auto — her turun ilk saniyelerinde hızlı"
     choice_cold: "cold — yalnızca oturumun ilk turunda hızlı"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 6 kat fiyat)"
-    ultrafast_not_supported: "⚡ Ultrafast yalnızca GPT-6 Astra için kullanılabilir (geçerli model: `{model}`)."
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast, 6 kat fiyat"
+    ultrafast_not_supported: "⚡ Ultrafast bu hesapta veya rotada `{model}` için kullanılamıyor."
   footer:
     status: "📎 Çalışma zamanı altbilgisi: **{state}**\nAlanlar: `{fields}`\nPlatform: `{platform}`"
     usage: "Kullanım: `/footer [on|off|status]`"
@@ -2279,6 +2279,7 @@ cli:
     failed: "Bağlantı başarısız oldu"
     authorized_no_tools: "Yetkilendirildi. Araçlar kullanılamıyor."
     connected: "Bağlandı"
+    named_account: "Hermes bu {name} hesabına {alias} adını verdi. İstediğin zaman yeniden adlandırabilirsin."
     waiting: "Bekleniyor…"
   editor:
     only_interactive: "Harici düzenleyici yalnızca etkileşimli CLI içinde kullanılabilir."
@@ -2660,7 +2661,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast yalnızca GPT-6 Astra için kullanılabilir (geçerli model: {model})."
+      ultrafast_not_supported: "(._.) Ultrafast bu hesapta veya rotada {model} için kullanılamıyor."
       usage: "Kullanım: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} {value} olarak ayarlandı {scope}"

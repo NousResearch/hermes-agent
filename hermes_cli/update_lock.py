@@ -208,6 +208,7 @@ def _stdlib_create_time(pid: int) -> float | None:
             ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
             env={"PATH": os.environ.get("PATH") or "/bin:/usr/bin", "LC_ALL": "C", "TZ": "UTC0"},
+            check=False,
         ).stdout.strip()
         if not out:
             return None
@@ -1575,7 +1576,7 @@ class UpdateLock:
             self.acquired = self._claimed = False
             self._drop_checkout()
 
-    def __enter__(self) -> "UpdateLock":
+    def __enter__(self) -> UpdateLock:
         self.acquire()
         return self
 

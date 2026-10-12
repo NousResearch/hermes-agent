@@ -448,7 +448,7 @@ class GatewayAuthorizationMixin:
             return bool(sender_allow.strip())
         return isinstance(sender_allow, (list, tuple, set)) and any(str(item).strip() for item in sender_allow)
 
-    def _pairing_store_for(self, source: "SessionSource"):
+    def _pairing_store_for(self, source: SessionSource):
         """Per-profile PairingStore for a source, else the global ``self.pairing_store``."""
         per_profile = getattr(self, "pairing_stores", None) or {}
         profile = getattr(source, "profile", None)

@@ -497,7 +497,7 @@ class TestBatchedDescribe:
             {}, current_tool_defs=issue_defs, config=cfg))
         assert "error" in json.loads(tool_search.dispatch_tool_describe(
             {"names": []}, current_tool_defs=issue_defs, config=cfg))
-        over = ["n%d" % i for i in range(3)]
+        over = [f'n{i:d}' for i in range(3)]
         parsed = json.loads(tool_search.dispatch_tool_describe(
             {"names": over}, current_tool_defs=issue_defs, config=cfg))
         assert "error" in parsed

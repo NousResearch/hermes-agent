@@ -664,6 +664,27 @@ function Write-StatusLine([string]$Text, [int]$Width) {
     Write-Host ("`r" + $line.PadRight($Width - 1)) -NoNewline -ForegroundColor DarkGray
 }
 
+# The error line of a failed command's output: the first fatal:/error: line (git's
+# cause; later ones are generic), else the last non-empty one. Fail reasons carry it, and Hermes-Setup shows the reason
+# as-is, so the screen names the cause (git's "fatal: ...") and not just the step.
+$script:NativeError = $null
+function Select-ErrorLine($Lines) {
+    $pick = $null; $last = $null
+    foreach ($raw in $Lines) {
+        $line = ("$raw" -split "`r")[-1].Trim()
+        if (-not $line) { continue }
+        $last = $line
+        if (-not $pick -and $line -match '(^|\s)(fatal|error): ') { $pick = $line }
+    }
+    if (-not $pick) { $pick = $last }
+    if ($pick -and $pick.Length -gt 240) { $pick = $pick.Substring(0, 240) }
+    return $pick
+}
+function Get-NativeDetail {
+    if ($script:NativeError) { return ": $($script:NativeError)" }
+    return ""
+}
+
 # Run a native command block like Invoke-Native: $LASTEXITCODE stays the
 # caller's to judge. Quiet mode shows $StatusLabel with the block's newest
 # output line rewritten in place, appends everything to the install log and,
@@ -674,6 +695,7 @@ function Write-StatusLine([string]$Text, [int]$Width) {
 # function's scope, so locals here avoid the names call sites use.
 function Invoke-Logged {
     param([string]$StatusLabel, [scriptblock]$NativeBlock, [switch]$MayFail)
+    $script:NativeError = $null
     $logWriter = $null
     if (Test-QuietOutput) {
         $logPath = Join-Path (Join-Path $HermesHome 'logs') 'install.log'
@@ -687,7 +709,19 @@ function Invoke-Logged {
     }
     if (-not $logWriter) {
         Log $StatusLabel
-        Invoke-Native $NativeBlock | Out-Host
+        # stderr stays on stderr (Hermes-Setup logs it); the lines are kept so a
+        # failure reason can name the cause.
+        # Named -TypeName: a positional New-Object binds to callers' New-Object shims.
+        $outputLines = New-Object -TypeName 'System.Collections.Generic.Queue[string]'
+        Invoke-Native { & $NativeBlock 2>&1 } | ForEach-Object {
+            $outputLines.Enqueue("$_")
+            if ($outputLines.Count -gt 20) { [void]$outputLines.Dequeue() }
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { [Console]::Error.WriteLine("$_") }
+            else { $_ | Out-Host }
+        }
+        $exitCode = $LASTEXITCODE
+        if ($exitCode) { $script:NativeError = Select-ErrorLine $outputLines }
+        $global:LASTEXITCODE = $exitCode
         return
     }
     $columns = 80
@@ -706,6 +740,7 @@ function Invoke-Logged {
             if ($newest) { Write-StatusLine "${StatusLabel}: $newest" $columns }
         }
         $exitCode = $LASTEXITCODE
+        if ($exitCode) { $script:NativeError = Select-ErrorLine $recentLines }
     } finally {
         $logWriter.Dispose()
         Write-Host ("`r" + (' ' * ($columns - 1)) + "`r") -NoNewline
@@ -872,7 +907,7 @@ function Stage-Repository {
             }
         }
         Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
-        if ($LASTEXITCODE) { Fail "git fetch failed" git_fetch_failed }
+        if ($LASTEXITCODE) { Fail "git fetch failed$(Get-NativeDetail)" git_fetch_failed }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty
         # tree that conflicts, and the reset below would discard it. Work that
@@ -899,7 +934,7 @@ function Stage-Repository {
         } else {
             Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout $Branch }
         }
-        if ($LASTEXITCODE) { Fail "git checkout failed" git_checkout_failed }
+        if ($LASTEXITCODE) { Fail "git checkout failed$(Get-NativeDetail)" git_checkout_failed }
         # --no-stat: across a large gap (v2026.7.1 -> today is ~27k lines) the
         # diffstat arrives as one burst. Hermes-Setup.exe forwards every line
         # to its window as a separate event; the burst overflows the Windows
@@ -929,7 +964,7 @@ function Stage-Repository {
                 Log "List them with: git -C `"$InstallDir`" log origin/$Branch..$rescue"
             }
             Invoke-Logged "Resetting to origin/$Branch" { git -C $InstallDir reset --hard "origin/$Branch" }
-            if ($LASTEXITCODE) { Fail "git reset failed" git_reset_failed }
+            if ($LASTEXITCODE) { Fail "git reset failed$(Get-NativeDetail)" git_reset_failed }
             Write-Warn "not fast-forwardable; reset to origin/$Branch"
         }
     } else {
@@ -977,7 +1012,7 @@ function Stage-Repository {
                 Invoke-Logged "Cloning history" { git clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; $deferred = $true }
             }
-            if (-not $cloned) { Fail "git clone failed; no checkout published" git_clone_failed }
+            if (-not $cloned) { Fail "git clone failed; no checkout published$(Get-NativeDetail)" git_clone_failed }
             if ($Commit) {
                 # Pin before publishing: a pinned or deferred clone has no files yet,
                 # and a failure here leaves only the staging dir, which finally removes.
@@ -998,7 +1033,7 @@ function Stage-Repository {
                 }
                 if (-not $materialized) {
                     $what = if ($Commit) { $Commit } else { "the cloned tree" }
-                    Fail "could not check out $what; no checkout published" git_checkout_failed
+                    Fail "could not check out $what; no checkout published$(Get-NativeDetail)" git_checkout_failed
                 }
                 $pinned = [bool]$Commit
             }
@@ -1017,7 +1052,7 @@ function Stage-Repository {
         Invoke-Native { git -C $InstallDir merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
         if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" commit_not_on_branch }
         Invoke-Logged "Pinning $Commit" { git -C $InstallDir checkout $Commit }
-        if ($LASTEXITCODE) { Fail "could not pin commit $Commit" git_checkout_failed }
+        if ($LASTEXITCODE) { Fail "could not pin commit $Commit$(Get-NativeDetail)" git_checkout_failed }
     }
 }
 

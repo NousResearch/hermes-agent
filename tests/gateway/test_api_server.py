@@ -742,7 +742,7 @@ class TestDisconnectedAgentReap:
 
         deadline = time.time() + 1.0
         while not calls and time.time() < deadline:
-            time.sleep(0.01)
+            await asyncio.sleep(0.01)
         assert calls == [("run-stop-sess", frozenset(), "api_server_run_stop")]
         agent.interrupt.assert_called_once()
 

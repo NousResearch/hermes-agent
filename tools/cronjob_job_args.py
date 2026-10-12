@@ -20,7 +20,7 @@ _THREAD_HORIZON_MINUTES = 60
 
 
 def _first_fire_within_thread_horizon(
-    schedule: Union[str, dict[str, Any], None],
+    schedule: str | dict[str, Any] | None,
 ) -> bool:
     """True when the job's first fire is close enough that the creating conversation is still
     alive when it happens. Only near one-shots qualify; recurring jobs and one-shots beyond the
@@ -42,7 +42,7 @@ def _first_fire_within_thread_horizon(
     if not run_at:
         return False
     try:
-        fire_at = datetime.fromisoformat(str(run_at).replace("Z", "+00:00"))
+        fire_at = datetime.fromisoformat(str(run_at))
     except ValueError:
         return False
     now = hermes_time.now()
@@ -57,7 +57,7 @@ def _first_fire_within_thread_horizon(
 
 
 def _origin_from_env(
-    schedule: Union[str, dict[str, Any], None] = None,
+    schedule: str | dict[str, Any] | None = None,
 ) -> Optional[dict[str, str]]:
     from gateway.session_context import async_delivery_supported, get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
@@ -441,7 +441,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
 
 def _apply_continuity(
-    context_from: Optional[Union[str, list[str]]],
+    context_from: Optional[str | list[str]],
     continuity: bool) -> Optional[list[str]]:
     """continuity=True ensures "self" is in context_from; False removes it; others untouched."""
     refs = _clean_str_list(context_from)

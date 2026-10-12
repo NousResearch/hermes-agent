@@ -66,13 +66,17 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
     """Report a release-pinned channel's verdict, or return the branch to compare against.
 
     ``None`` means the verdict is printed (the channel pins a commit); exits 1 when the channel
-    cannot be resolved.
+    cannot be resolved. An install riding its default channel only ever moves forward.
     """
+    from hermes_cli.config import get_config_path, require_readable_config_before_write
     from hermes_cli.source_releases import resolve_source_target
+    from hermes_cli.update_channel import channel_record, rides_default_channel
 
     print(f"→ Update channel: {selected_channel}")
+    record = channel_record(require_readable_config_before_write(get_config_path()), root)
+    forward_only = rides_default_channel(record, selected_channel, root)
     try:
-        target = resolve_source_target(selected_channel, git_cmd, root)
+        target = resolve_source_target(selected_channel, git_cmd, root, forward_only=forward_only)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"✗ Could not resolve the {selected_channel} source channel: {exc}")
         sys.exit(1)
@@ -80,7 +84,9 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
         return target.branch
     if target.retired:
         print(f"→ {selected_channel} retired; source destination: {target.channel}")
-    if _uc()._capture_head_sha(git_cmd, root) == target.commit:
+    if target.ahead:
+        print(f"✓ No newer release: {target.label}.")
+    elif _uc()._capture_head_sha(git_cmd, root) == target.commit:
         print(f"✓ Up to date with the latest release ({target.label}).")
     else:
         print(f"→ Selected release available: {target.label}")
@@ -189,3 +195,47 @@ def report_rev_list_verdict(git_cmd: list[str], root: Path, compare_branch: str)
     from hermes_cli.config import recommended_update_command
 
     print(f"  Run '{recommended_update_command()}' to install.")
+
+
+def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> tuple:
+    """Resolve the update's target before any tree write: ``(target_ref, release_sha,
+    target_is_head, repository)``; records branch/expected_sha/retirement on ``request``.
+
+    ``target_is_head`` means an unchosen default subscription is already past the release,
+    so HEAD itself is the target. Exits 1 (after ``stop()``) when the channel is unresolvable.
+    """
+    from copy import deepcopy
+
+    from hermes_cli.config import require_readable_config_before_write
+    from hermes_cli.release_channels import retrying_reads
+    from hermes_cli.source_releases import resolve_source_target
+    from hermes_cli.update_channel import channel_record, rides_default_channel
+    from hermes_cli.update_cmd_common import _record_stop
+
+    if getattr(args, "branch", None):
+        return f"origin/{branch}", None, False, None
+    root = _uc()._m().PROJECT_ROOT
+    selected = _uc()._update_run_channel(args)
+    original = deepcopy(channel_record(require_readable_config_before_write(
+        Path(request["home"]) / "config.yaml"), root))
+    print(f"→ Update channel: {selected}")
+    try:
+        with retrying_reads():
+            target = resolve_source_target(selected, git_cmd, root,
+                                           forward_only=rides_default_channel(original, selected, root))
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(f"✗ Could not resolve the {selected} source channel: {exc}. No update was applied.")
+        stop()
+        _record_stop("channel_unresolved")
+        sys.exit(1)
+    if target.retired:
+        print(f"→ {selected} retired; source destination: {target.channel}")
+        if not getattr(args, "channel", None) and original.get("channel", "main") == selected:
+            request["channel_retirement"] = {"original": original, "destination": target.channel}
+    if target.commit:
+        print(f"→ {'Release' if target.ahead else 'Latest release'}: {target.label}")
+        request["expected_sha"] = target.commit
+        return target.commit, target.commit, target.ahead, target.repository
+    assert target.branch is not None  # a SourceTarget without a commit names its branch
+    request["branch"] = target.branch
+    return f"origin/{target.branch}", None, False, target.repository

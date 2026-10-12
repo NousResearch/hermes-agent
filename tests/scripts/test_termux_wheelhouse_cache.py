@@ -71,7 +71,7 @@ def test_cache_cli_keeps_commit_and_tag_provenance_distinct(tmp_path):
             '--platform-tag', 'android_24_arm64_v8a', '--python-abi', 'cp314']
     commit = 'a' * 40
     result = subprocess.run([*args, '--commit', commit], cwd=tmp_path,
-                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+                            capture_output=True, text=True, encoding='utf-8', timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     manifest_path = payload / 'index.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
@@ -79,11 +79,11 @@ def test_cache_cli_keeps_commit_and_tag_provenance_distinct(tmp_path):
     assert wheelhouse_cache.is_usable(payload, manifest['inputs'])
     before = manifest_path.read_bytes()
     for flags in (['--commit', 'short'], ['--commit', commit, '--tag', 'v1.2.3']):
-        refused = subprocess.run([*args, *flags], cwd=tmp_path, capture_output=True, timeout=30)
+        refused = subprocess.run([*args, *flags], cwd=tmp_path, capture_output=True, timeout=30, check=False)
         assert refused.returncode != 0
         assert manifest_path.read_bytes() == before
     tagged = subprocess.run([*args, '--tag', 'v1.2.3'], cwd=tmp_path,
-                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+                            capture_output=True, text=True, encoding='utf-8', timeout=30, check=False)
     assert tagged.returncode == 0, tagged.stdout + tagged.stderr
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     assert manifest['tag'] == 'v1.2.3' and 'commit' not in manifest

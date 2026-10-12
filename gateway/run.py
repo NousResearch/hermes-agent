@@ -1652,8 +1652,17 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, Path]]:
     already skips ``active``."""
     from hermes_cli.profiles import get_active_profile_name, get_profile_dir
 
-    homes = _multiplex_profile_homes(config)
     active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
+    # A standalone gateway owns only its launch profile cron store.
+    if active != "default":
+        try:
+            from hermes_cli.profiles import profile_is_standalone
+            active_home = get_profile_dir(active)
+            if profile_is_standalone(active_home):
+                return [(active, active_home)]
+        except Exception:
+            pass
+    homes = _multiplex_profile_homes(config)
     if any(name == active for name, _home in homes):
         return homes
     try:

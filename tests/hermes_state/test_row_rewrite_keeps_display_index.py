@@ -34,15 +34,15 @@ def _make_session(tmp_path):
 
 def test_user_content_rewrite_keeps_the_session_indexed(tmp_path):
     db, sid, _ = _make_session(tmp_path)
-    rows = db.get_messages(sid)
-    user_row = next(m for m in rows if m["role"] == "user" and "@file:" in m["content"])
+    user_id = db._read_one(
+        "SELECT id FROM messages WHERE session_id = ? AND role = 'user' AND content LIKE '%@file:%'",
+        (sid,))[0]
 
-    assert db.set_user_message_content(sid, user_row["_row_id"], "check this [notes.txt expanded]") == 1
+    assert db.set_user_message_content(sid, user_id, "check this [notes.txt expanded]") == 1
 
     assert _indexed(db, sid), "content rewrite left the session on the legacy display path"
-    order = db._read_one(
-        "SELECT display_order FROM messages WHERE id = ?", (user_row["_row_id"],))[0]
-    assert order == user_row["_row_id"], "rewritten row lost its display_order group anchor"
+    order = db._read_one("SELECT display_order FROM messages WHERE id = ?", (user_id,))[0]
+    assert order == user_id, "rewritten row lost its display_order group anchor"
 
 
 def test_display_kind_stamp_keeps_the_session_indexed(tmp_path):
@@ -59,13 +59,19 @@ def test_display_kind_stamp_keeps_the_session_indexed(tmp_path):
 
 
 def test_rewrite_then_compaction_projection_stays_stable(tmp_path):
-    db, sid, ts = _make_session(tmp_path)
-    rows = db.get_messages(sid)
-    user_row = next(m for m in rows if m["role"] == "user" and "@file:" in m["content"])
+    db, sid, _ = _make_session(tmp_path)
+    user_id = db._read_one(
+        "SELECT id FROM messages WHERE session_id = ? AND role = 'user' AND content LIKE '%@file:%'",
+        (sid,))[0]
 
-    db.set_user_message_content(sid, user_row["_row_id"], "check this [notes.txt expanded]")
+    db.set_user_message_content(sid, user_id, "check this [notes.txt expanded]")
 
     live = db.get_messages_as_conversation(sid)
     db.archive_and_compact(sid, [{"role": "user", "content": "[summary]"}] + live[-2:], tail_count=2)
     assert _indexed(db, sid)
-    assert len(db.get_messages(sid, include_compacted=True)) == 3, "rewrite + compaction lost or duplicated a row"
+    projected = db.get_messages(sid, include_compacted=True)
+    # Display history keeps the archived original (the rewritten user row), then the summary row
+    # and the two protected-tail re-clones: four rows, each exactly once.
+    assert [m["content"] for m in projected] == [
+        "check this [notes.txt expanded]", "[summary]", "ok", "and one more"], \
+        "rewrite + compaction lost or duplicated a row"

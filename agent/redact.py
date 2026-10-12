@@ -34,7 +34,6 @@ from agent.redact_vault_values import (  # re-exported: callers import these fro
     clear_vault_redaction_values,
     redact_registered_vault_values,
     register_vault_redaction_value,
-    register_vault_redaction_values,
 )
 
 logger = logging.getLogger(__name__)
@@ -673,6 +672,10 @@ def _is_b64_pem_key(blob: str) -> bool:
     text = decoded[:64]
     return text.startswith(b"-----BEGIN") and b"PRIVATE KEY" in text
 
+# A partial print keeps only one armor line: ``head`` of a key file has BEGIN + body, ``tail``
+# has body + END. The full-block pattern needs both, so those body lines leaked verbatim.
+_PRIVATE_KEY_ARMOR_RE = re.compile(r"-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----")
+_PEM_BODY_LINE_RE = re.compile(r"[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*")
 
 # Database connection strings: protocol://user:PASSWORD@host. The userinfo and
 # password groups forbid whitespace so a match can never span a line break (a
@@ -1088,6 +1091,8 @@ def _redact_private_key_blocks(text: str) -> str:
     ``AccountKey=-----BEGIN`` first would break the PEM header and leave the body visible."""
     if "-----BEGIN" in text and "-----END" in text:  # no END, no match: skip the quadratic scan
         text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+    if "PRIVATE KEY-----" in text:
+        text = _redact_partial_private_keys(text)
     if "LS0tLS1CRUdJTi" in text:
         text = _B64_PEM_RE.sub(
             lambda m: "[REDACTED PRIVATE KEY]" if _is_b64_pem_key(m.group(0)) else m.group(0),
@@ -1531,6 +1536,31 @@ def _mask_network_path_userinfo(m) -> str:
     if _is_userinfo_placeholder(m.group(3)):
         return m.group(0)
     return f"{m.group(1)}{m.group(2)}:***@"
+
+
+def _redact_partial_private_keys(text: str) -> str:
+    """Mask the base64 body run next to a lone BEGIN (forward) or END (backward) armor line.
+
+    Walks lines instead of regex-backtracking over the run, so a megabyte base64 blob with a
+    stray armor line elsewhere stays linear. A body slice with no armor at all is invisible to
+    any shape rule; secret-source values cover that case through exact-line registration.
+    """
+    lines = text.split("\n")
+    drop: set[int] = set()
+    for i, line in enumerate(lines):
+        m = _PRIVATE_KEY_ARMOR_RE.search(line)
+        if not m:
+            continue
+        step = 1 if m.group(1) == "BEGIN" else -1
+        j = i + step
+        while 0 <= j < len(lines) and j not in drop and _PEM_BODY_LINE_RE.fullmatch(lines[j].rstrip("\r")):
+            drop.add(j)
+            j += step
+        if j != i + step:
+            lines[i] = "[REDACTED PRIVATE KEY]"
+    if not drop:
+        return text
+    return "\n".join(line for k, line in enumerate(lines) if k not in drop)
 
 
 def _redact_phone(m):

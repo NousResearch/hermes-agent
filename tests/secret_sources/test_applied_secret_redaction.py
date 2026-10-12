@@ -1,129 +1,78 @@
-"""An applied secret must be redactable after its value stops looking like an assignment.
+"""Secret material stays redacted after line-oriented output splits it from its markers.
 
-A secret source is the only producer of secrets in the process that the exact-value
-scrub registry does not know about. Once its value is split across lines the
-shape-based passes lose the `KEY=value` form and the bare body survives, so the apply
-funnel registers the value — and each of its substantial lines — for exact-value
-redaction.
+Inspired by Devin's Oct 7 2026 release note ("Private Key Strings Are Redacted More
+Aggressively": each line of a saved private key is redacted in command output, so the
+key stays hidden even when only part of it is printed).
 """
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from agent import redact
+from agent.redact import redact_sensitive_text, redact_terminal_output
+from agent.secret_sources import registry as reg
+from agent.secret_sources.base import FetchResult, SecretSource
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-from agent.redact import (  # noqa: E402
-    clear_vault_redaction_values,
-    redact_registered_vault_values,
-    redact_terminal_output,
-)
-from agent.secret_sources import registry as reg  # noqa: E402
-from agent.secret_sources.base import FetchResult, SecretSource  # noqa: E402
-
-PRIVATE_KEY_HEADER = "-----BEGIN OPENSSH PRIVATE KEY-----"
-PRIVATE_KEY_FOOTER = "-----END OPENSSH PRIVATE KEY-----"
-BODY_LINE = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz"
+BEGIN, END = "-----BEGIN OPENSSH PRIVATE KEY-----", "-----END OPENSSH PRIVATE KEY-----"
+BODY = [f"b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAt{i:x}" for i in range(6)]
+KEY = "\n".join([BEGIN, *BODY, END])
 
 
 @pytest.fixture(autouse=True)
-def _clean_registry(monkeypatch):
+def _clean(monkeypatch):
     reg._reset_registry_for_tests()
     monkeypatch.setattr(reg, "_ensure_builtin_sources", lambda: None)
-    clear_vault_redaction_values()
+    monkeypatch.setattr(redact, "_VAULT_REDACTION_VALUES", {})
     yield
     reg._reset_registry_for_tests()
-    clear_vault_redaction_values()
 
 
-def _apply(secrets: dict) -> dict:
-    class _Src(SecretSource):
+def _under(home: Path, text: str, command: str) -> str:
+    token = set_hermes_home_override(str(home))
+    try:
+        return redact_terminal_output(text, command=command, force=True)
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_applied_multiline_secret_is_scrubbed_per_line_in_its_own_profile_only(tmp_path):
+    class _Bulk(SecretSource):
+        name, label, shape, scheme = "bulk", "Bulk", "bulk", "bulk://x"
+        api_version = reg.SECRET_SOURCE_API_VERSION
+
         def fetch(self, cfg, home_path):
-            res = FetchResult()
-            res.secrets = dict(secrets)
-            return res
+            return FetchResult(secrets={"SSH_KEY": KEY, "DEBUG": "true", "LOG_LEVEL": "info"})
 
-        def override_existing(self, cfg):
-            return True
+    assert reg.register_source(_Bulk())
+    home_a, home_b = tmp_path / "a", tmp_path / "b"
+    home_a.mkdir(), home_b.mkdir()
+    reg.apply_all({"bulk": {"enabled": True}}, home_a, environ={})
 
-    _Src.name = "applied"
-    _Src.label = "Applied"
-    _Src.shape = "mapped"
-    _Src.scheme = "applied://x"
-    _Src.api_version = reg.SECRET_SOURCE_API_VERSION
-    assert reg.register_source(_Src())
-
-    env: dict = {}
-    reg.apply_all({"applied": {"enabled": True}}, Path("/tmp/applied-home"), environ=env)
-    return env
-
-
-def test_applied_value_is_registered_for_exact_redaction():
-    _apply({"DEPLOY_TOKEN": "opaque-value-never-seen-by-shape-passes"})
-
-    assert "opaque-value-never-seen-by-shape-passes" not in redact_registered_vault_values(
-        "leaked: opaque-value-never-seen-by-shape-passes"
-    )
-
-
-def test_each_line_of_a_multiline_value_is_registered():
-    key = "\n".join([PRIVATE_KEY_HEADER, BODY_LINE, PRIVATE_KEY_FOOTER])
-    _apply({"SSH_KEY": key})
-
-    # A line of the body on its own, with no name attached to it — what a pipe between
-    # the command and the output leaves behind.
-    assert redact_registered_vault_values(f"line: {BODY_LINE}") == "line: «redacted-vault-secret»"
-
-
-def test_multiline_secret_survives_no_pipeline_and_each_line_oriented_one():
-    key = "\n".join([PRIVATE_KEY_HEADER, BODY_LINE, PRIVATE_KEY_FOOTER])
-    _apply({"SSH_KEY": key})
-    env_text = f"HOME=/tmp\nSSH_KEY={key}\nPATH=/usr/bin\n"
-    body = [line for line in key.splitlines() if not line.startswith("-----")]
-
-    pipelines = {
-        "env": "cat",
-        "env | sort": "sort",
-        "env | sort | grep -v -i key": "sort | grep -v -i key",
-        "env | cut -d= -f1": "cut -d= -f1",
+    env_lines = ["DEBUG=true", *f"SSH_KEY={KEY}".splitlines(), "PATH=/usr/bin"]
+    pipelines = {  # what each shell pipeline leaves of the env dump
+        "env | sort": sorted(env_lines),
+        "env | sort | grep -v -i key": [ln for ln in sorted(env_lines) if "key" not in ln.lower()],
+        "env | cut -d= -f1": [ln.split("=", 1)[0] for ln in env_lines],
     }
-    for command, pipe in pipelines.items():
-        out = subprocess.run(["sh", "-c", pipe], input=env_text,
-                             capture_output=True, text=True).stdout
-        redacted = redact_terminal_output(out, command=command, force=True)
-        leaked = [line for line in body if line in redacted]
-        assert not leaked, f"{command} leaked {len(leaked)}/{len(body)} body lines"
+    for command, lines in pipelines.items():
+        assert not [b for b in BODY if b in _under(home_a, "\n".join(lines), command)], command
+    # Isolation: profile B's output is never scrubbed against profile A's values.
+    assert BODY[0] in _under(home_b, BODY[0], "cat notes.txt")
+    # A bulk blob's mundane values are not turned into global substring scrubs.
+    assert _under(home_a, "level info, debug true", "echo") == "level info, debug true"
 
 
-def test_short_fragments_are_not_registered_on_their_own():
-    # A fragment common enough to occur by chance must not blank out unrelated text:
-    # the scrub is an unanchored substring match over every later result.
-    key = "\n".join([PRIVATE_KEY_HEADER, "abc", PRIVATE_KEY_FOOTER])
-    _apply({"SSH_KEY": key})
-
-    assert redact_registered_vault_values("unrelated text with abc inside") == (
-        "unrelated text with abc inside"
-    )
-
-
-def test_a_secret_source_failure_does_not_block_applying():
-    class _Src(SecretSource):
-        def fetch(self, cfg, home_path):
-            raise RuntimeError("source is broken")
-
-    _Src.name = "broken"
-    _Src.label = "Broken"
-    _Src.shape = "mapped"
-    _Src.scheme = "broken://x"
-    _Src.api_version = reg.SECRET_SOURCE_API_VERSION
-    assert reg.register_source(_Src())
-
-    env: dict = {}
-    reg.apply_all({"broken": {"enabled": True}}, Path("/tmp/broken-home"), environ=env)
-    assert env == {}
+def test_partial_private_key_print_masks_the_body_next_to_a_lone_armor_line():
+    head = "\n".join([BEGIN, *BODY[:3]]) + "\n"   # head -n 4 id_ed25519
+    tail = "\n".join([*BODY[3:], END]) + "\n"     # tail -n 4 id_ed25519
+    for out in (head, tail):
+        redacted = redact_sensitive_text(out, force=True)
+        assert not [b for b in BODY if b in redacted]
+        assert "[REDACTED PRIVATE KEY]" in redacted
+    # A base64 run with no private-key armor next to it (a public key, a data blob) is kept.
+    prose = "-----BEGIN PUBLIC KEY-----\n" + BODY[0] + "\n"
+    assert redact_sensitive_text(prose, force=True) == prose

@@ -230,3 +230,23 @@ def test_termux_chat_shortcut_leaves_subcommands_to_dispatch(monkeypatch, argv):
     monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)
     monkeypatch.setattr(sys, "argv", ["hermes", *argv])
     assert main._try_termux_fast_cli_launch() is False
+
+
+def test_fast_version_installs_os_trust_before_update_check(monkeypatch, capsys):
+    """``--version`` is answered before hermes_cli.main's TLS setup, so the update check sets it up."""
+    import agent.ssl_verify
+    from hermes_cli import _startup_fast, source_check
+
+    calls = []
+    monkeypatch.setattr(agent.ssl_verify, "install_truststore", lambda: calls.append("truststore") or True)
+
+    def check(**kwargs):
+        calls.append("check")
+        return {"behind": 0}
+
+    monkeypatch.setattr(source_check, "check_for_updates", check)
+
+    _startup_fast.print_fast_version_info(check_updates=True)
+
+    assert calls == ["truststore", "check"]
+    assert "Up to date" in capsys.readouterr().out

@@ -97,6 +97,11 @@ class CLIInfoMixin:
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
+        # Prefer the agent's live model — it updates on provider fallback / mid-session
+        # /model switch; self.model is set once at launch and never changes (same
+        # resolution the status bar uses, cli_status_bar_mixin._get_status_bar_snapshot,
+        # so the banner can't show a stale model while the status bar shows the real one).
+        banner_model = getattr(getattr(self, "agent", None), "model", None) or self.model
 
         # Auto-compact for narrow terminals — the full banner needs ~80 columns to avoid wrapping.
         if self.compact or shutil.get_terminal_size().columns < 80:
@@ -115,7 +120,7 @@ class CLIInfoMixin:
                 snapshot = None
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())  # where commands will execute
             banner_kw = dict(
-                console=self.console, model=self.model, cwd=cwd,
+                console=self.console, model=banner_model, cwd=cwd,
                 enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
                 context_length=ctx_len, provider=self.provider)
 

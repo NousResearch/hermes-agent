@@ -88,8 +88,14 @@ class CLILoopsMixin:
             ctx_len = None
             if agent and hasattr(agent, "context_compressor"):
                 ctx_len = agent.context_compressor.context_length
+            # Prefer the agent's live model — it updates on provider fallback / mid-session
+            # /model switch; self.model is set once at launch and never changes (same
+            # resolution the status bar uses, cli_status_bar_mixin._get_status_bar_snapshot,
+            # so a freshly cleared screen can't show a stale model next to a live status bar
+            # reporting the real one).
+            banner_model = getattr(agent, "model", None) or self.model
             build_welcome_banner(
-                console=cc, model=self.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
+                console=cc, model=banner_model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
                 tools=tools, enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
                 context_length=ctx_len, provider=self.provider)
         _cprint(_FRESH_START)

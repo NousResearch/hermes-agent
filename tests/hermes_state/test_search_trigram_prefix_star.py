@@ -68,3 +68,18 @@ def test_near_star_is_a_fragment_not_the_proximity_operator(db):
     # trigram fallback finds it inside "linear" (a literal ``NEAR*`` could not).
     db.append_message("s1", role="user", content="fit a linear regression on the data")
     assert len(db.search_messages("NEAR*", limit=10)) == 1
+
+
+def test_cyrillic_stem_with_trailing_star_reaches_trigram(db):
+    # The retry serves every non-CJK script: a Russian stem after a verb prefix
+    # ("писал*" in "переписал") starts mid-token exactly like ``apability*``.
+    db.append_message("s1", role="user", content="Я переписал конфиг вчера вечером")
+    assert len(db.search_messages("писал", limit=10)) == 1
+    assert len(db.search_messages("писал*", limit=10)) == 1
+
+
+def test_starred_latin_fragment_inside_cjk_text(db):
+    # unicode61 puts no boundary between Latin and adjacent CJK, so "youer" is not a
+    # token of the stored row; the substring retry must find it with the star too.
+    db.append_message("s1", role="user", content="修改youer服务端的配置")
+    assert len(db.search_messages("youer*", limit=10)) == 1

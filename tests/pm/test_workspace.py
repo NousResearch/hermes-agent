@@ -107,6 +107,27 @@ def test_classify_network_failure_stays_generic():
     assert not isinstance(err, ResolutionConflict)
 
 
+def test_undated_index_failure_names_the_index_not_a_conflict():
+    """uv's "has no publish time" is the index omitting upload times (#135589), not a conflict."""
+    from pm.workspace import ResolutionConflict, classify_uv_failure
+
+    seeded = ("  x No solution found when resolving dependencies:\n"
+              "  Because resvg-py==0.4.0 has no publish time and hermes-agent depends on resvg-py==0.4.0, "
+              "we can conclude that hermes-agent's requirements are unsatisfiable.")
+    cold = ("warning: cffi-2.0.0.tar.gz is missing an upload date, but user provided: 2026-09-25T00:00:00Z\n"
+            "  x No solution found when resolving dependencies:\n"
+            "  Because there are no versions of cffi and you require cffi>=2.0.0, we can conclude that "
+            "your requirements are unsatisfiable.\n"
+            "hint: `cffi` was filtered by `exclude-newer` to only include packages uploaded before 2026-09-25")
+    for output in (seeded, cold):
+        err = classify_uv_failure("lock", 1, output)
+        assert not isinstance(err, ResolutionConflict)
+        assert "upload times" in err.remedy and "pypi.org" in err.remedy
+    # A real conflict on a partly undated mirror still reads as a conflict.
+    conflict = cold.splitlines()[0] + "\n  x No solution found: Because a==1 depends on b<2 and c==1 depends on b>=2"
+    assert isinstance(classify_uv_failure("lock", 1, conflict), ResolutionConflict)
+
+
 def test_sync_failure_is_never_a_conflict(layout, monkeypatch):
     from pm.package import InstallError
 

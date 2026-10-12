@@ -97,14 +97,14 @@ def test_provider_without_model_rejected(conn):
 def test_create_task_with_model_and_provider(conn):
     tid = kb.create_task(
         conn, title="t", assignee="worker",
-        model_override="qwen-max", provider_override="openrouter",
+        model_override="qwen/qwen-max", provider_override="openrouter",
     )
     t = kb.get_task(conn, tid)
-    assert t.model_override == "qwen-max"
+    assert t.model_override == "qwen/qwen-max"
     assert t.provider_override == "openrouter"
     # Creation event carries the override for auditability.
     ev = next(e for e in kb.list_events(conn, tid) if e.kind == "created")
-    assert ev.payload["model_override"] == "qwen-max"
+    assert ev.payload["model_override"] == "qwen/qwen-max"
     assert ev.payload["provider_override"] == "openrouter"
 
 
@@ -136,12 +136,12 @@ def _spawn_and_capture(monkeypatch, tmp_path, task):
 def test_spawn_passes_model_and_provider(monkeypatch, tmp_path, conn):
     tid = kb.create_task(
         conn, title="t", assignee="elias",
-        model_override="glm-5", provider_override="openrouter",
+        model_override="z-ai/glm-5", provider_override="openrouter",
     )
     task = kb.get_task(conn, tid)
     cmd = _spawn_and_capture(monkeypatch, tmp_path, task)
     i = cmd.index("-m")
-    assert cmd[i + 1] == "glm-5"
+    assert cmd[i + 1] == "z-ai/glm-5"
     j = cmd.index("--provider")
     assert j == i + 2
     assert cmd[j + 1] == "openrouter"
@@ -231,7 +231,7 @@ def test_reasoning_effort_survives_clearing_the_model(conn):
     not silently reset the thinking depth the operator chose."""
     tid = kb.create_task(
         conn, title="t", assignee="worker",
-        model_override="glm-5", provider_override="openrouter",
+        model_override="z-ai/glm-5", provider_override="openrouter",
         reasoning_effort="ultra",
     )
     assert kb.set_model_override(conn, tid, None)

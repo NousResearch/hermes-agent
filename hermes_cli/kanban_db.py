@@ -1043,6 +1043,13 @@ def _validate_model_override(model: Optional[str], provider: Optional[str]) -> t
     provider = (provider or "").strip() or None
     if provider and not model:
         raise ValueError("provider_override requires a model_override")
+    if model and provider:
+        # Aggregators (nous, openrouter, ...) serve ``vendor/model`` ids only, and the CLI's ``-m``
+        # path hands the id to the wire as typed: a bare ``claude-sonnet-5.5`` 404s every worker
+        # spawn. The provider is pinned here, so repairing the prefix is a lookup, not a guess.
+        from hermes_cli.model_normalize import normalize_model_for_provider
+
+        model = normalize_model_for_provider(model, provider)
     return model, provider
 
 

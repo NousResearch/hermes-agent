@@ -2756,7 +2756,9 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
         if sk:
             cmd.extend(["--skills", sk])
     if task.model_override:
-        cmd.extend(["-m", task.model_override])
+        # Rows written before create/set-model repaired bare aggregator ids still carry them.
+        model, _provider = _kb._validate_model_override(task.model_override, task.provider_override)
+        cmd.extend(["-m", model])
         # Pin the provider too so the worker resolves the model against the
         # intended backend (model X with provider Y is the classic board-stall).
         if task.provider_override:

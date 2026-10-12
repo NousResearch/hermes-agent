@@ -14,7 +14,7 @@ return a note for the tool result; already-exact anchors are left unchanged.
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+from typing import Optional
 
 _BACKSLASH_RUN_RE = re.compile(r"\\+")
 
@@ -32,7 +32,7 @@ def _all_backslash_runs_even(s: str) -> bool:
     return all(len(run) % 2 == 0 for run in _BACKSLASH_RUN_RE.findall(s))
 
 
-def maybe_correct_backslash_doubling(old_string: str, new_string: str, content: str) -> Tuple[str, str]:
+def maybe_correct_backslash_doubling(old_string: str, new_string: str, content: str) -> tuple[str, str]:
     """Halve a verified doubled anchor only when the replacement has no backslashes.
 
     Every old_string run must be even and its halved form must occur in the file.
@@ -84,7 +84,7 @@ def _quote_escapes_all_spurious(*strings: str) -> bool:
     return True
 
 
-def maybe_correct_quote_escaping(old_string: str, new_string: str, content: str) -> Tuple[str, str]:
+def maybe_correct_quote_escaping(old_string: str, new_string: str, content: str) -> tuple[str, str]:
     """Return a corrected ``(old_string, new_string)`` if a spurious backslash-before-quote wire
     artifact is detected AND verified against the file's actual content; otherwise unchanged.
 
@@ -112,7 +112,7 @@ def maybe_correct_quote_escaping(old_string: str, new_string: str, content: str)
     return stripped_old, _strip_spurious_quote_escapes(new_string)
 
 
-def maybe_correct_escape_drift(old_string: str, new_string: str, content: str) -> Tuple[str, str, Optional[str]]:
+def maybe_correct_escape_drift(old_string: str, new_string: str, content: str) -> tuple[str, str, Optional[str]]:
     """Apply whichever escape-drift auto-correction (if any) is verified against the file's
     actual content and report which one fired.
 

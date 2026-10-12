@@ -363,6 +363,11 @@ google-chat = [
 # bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
+# Scanned-PDF OCR renderer: read_file rasterizes the pages anydoc reports as
+# image-only (NeedsOcrError) and transcribes them with the configured auxiliary
+# vision model. pypdfium2 is a small manylinux wheel that bundles libpdfium (no
+# system deps), lazy-installed on the first scanned PDF so lean images stay lean.
+pdf-render = ["pypdfium2==5.13.0"]
 trace-upload = ["huggingface-hub==1.24.0"]
 # Cloud memory providers are opt-in PM extras. They stay outside [all]
 # so a quarantined release cannot break fresh installs.

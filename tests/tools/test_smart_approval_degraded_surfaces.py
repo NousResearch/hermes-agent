@@ -17,11 +17,11 @@ def test_the_gateway_text_fallback_carries_the_notice():
 
     with_notice = _format_exec_approval_fallback(
         "rm -rf /tmp/x", "recursive delete", "/", smart_unavailable="RuntimeError: relay refused")
-    assert "smart approval could not run" in with_notice
+    assert "why you're being asked" in with_notice
     assert "RuntimeError: relay refused" in with_notice
 
     without = _format_exec_approval_fallback("rm -rf /tmp/x", "recursive delete", "/")
-    assert "smart approval could not run" not in without
+    assert "why you're being asked" not in without
 
 
 def test_the_cli_panel_prints_the_notice(capsys, monkeypatch):
@@ -31,7 +31,7 @@ def test_the_cli_panel_prints_the_notice(capsys, monkeypatch):
         "echo hi", "flagged", timeout_seconds=5, smart_unavailable="RuntimeError: relay refused")
     out = capsys.readouterr().out
     assert choice == "deny"
-    assert "smart approval could not run (RuntimeError: relay refused)" in out
+    assert "why you're being asked - RuntimeError: relay refused" in out
 
 
 def test_a_panel_callback_that_accepts_the_keyword_receives_it(monkeypatch):
@@ -76,4 +76,4 @@ def test_the_queued_card_keeps_the_notice_out_when_the_guardian_ran(monkeypatch)
                                    pattern_key="k", pattern_keys=["k"], body=None,
                                    smart_denied=False, smart_unavailable=None)
     assert "smart_unavailable" not in out and "smart_unavailable" not in submitted
-    assert "smart approval could not run" not in out["message"]
+    assert "why you're being asked" not in out["message"]

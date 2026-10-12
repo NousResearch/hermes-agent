@@ -595,8 +595,9 @@ def _format_exec_approval_fallback(
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
     steps a surface without buttons needs.
 
-    ``smart_unavailable`` is set when the guardian could not run, so the operator learns WHY this
-    prompt exists. It announces a degraded state; it never changes the decision, and the
+    ``smart_unavailable`` carries the "why you're being asked" note when there is something to say
+    (guardian failed, manual mode never asked a model, or the verdict came from a fallback route),
+    so the operator learns WHY this prompt exists. It never changes the decision, and the
     fall-back to asking a human is deliberate. Wording is a literal (not a locale key) for the
     same reason as the queued card's NOTE: it is diagnostic detail, not platform copy."""
     from gateway.platforms.base_exec_approval import (
@@ -604,8 +605,8 @@ def _format_exec_approval_fallback(
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
-    notice = (f"\nNOTE: smart approval could not run ({smart_unavailable}) — asking directly "
-              f"instead of a model verdict." if smart_unavailable else "")
+    notice = (f"\nNOTE: why you're being asked - {smart_unavailable}."
+              if smart_unavailable else "")
 
     choices = [t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
     if not smart_denied and allow_session:

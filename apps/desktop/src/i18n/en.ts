@@ -4814,7 +4814,7 @@ export const en: Translations = {
         `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
       alwaysAllow: 'Always allow',
       smartUnavailable: reason =>
-        `Smart approval could not run (${reason}) — asking you directly instead of a model verdict.`
+        `Why you're being asked - ${reason}.`
     },
     clarify: {
       notReady: 'Clarify request is not ready yet',

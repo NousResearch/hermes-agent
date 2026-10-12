@@ -166,10 +166,11 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
         shape = "smart_deny" if once_only else "long" if allow_permanent else "short"
         prompt_key, menu_key = f"approval.prompt_{shape}", f"approval.choose_{shape}"
         header = title or t('approval.dangerous_header', description=display_description)
-        # Announce a degraded guardian, if that is why we are asking at all. Literal text, like
-        # the queued card's NOTE: diagnostic detail rather than locale copy.
-        notice = (f"\n      NOTE: smart approval could not run ({smart_unavailable}) — asking you "
-                  f"directly instead of a model verdict." if smart_unavailable else "")
+        # Announce why we are asking at all: a degraded guardian, manual mode, or a verdict from a
+        # fallback route. Literal text, like the queued card's NOTE: diagnostic detail rather than
+        # locale copy.
+        notice = (f"\n      NOTE: why you're being asked - {smart_unavailable}."
+                  if smart_unavailable else "")
         print(f"\n  {header}{notice}"
               f"\n      {display_command}\n\n{t(menu_key)}\n")
         sys.stdout.flush()

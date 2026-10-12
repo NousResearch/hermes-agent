@@ -99,10 +99,15 @@ class PluginEviction:
             disabled = plugins.get("disabled")
             if disabled is None:
                 disabled = plugins["disabled"] = []
+            enabled = plugins.get("enabled")
             memory = config.get("memory")
             for name in names:
                 if name not in disabled:
                     disabled.append(name)
+                # Remove from enabled so the lists never overlap — disabled wins on load,
+                # but a plugin in both lists is a contradiction that silently disables it.
+                if isinstance(enabled, list) and name in enabled:
+                    enabled.remove(name)
                 # plugins.disabled does not veto memory.provider; the provider joins the union on its own.
                 if isinstance(memory, dict) and str(memory.get("provider") or "").strip() == name:
                     memory["provider"] = ""

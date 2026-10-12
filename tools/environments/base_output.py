@@ -6,11 +6,14 @@ stdout drain thread used by ``BaseEnvironment._wait_for_process``.
 """
 
 import codecs
+import logging
 import os
+import re
 import select
 import subprocess
 import threading
 import time
+import traceback
 from collections import deque
 from pathlib import Path
 from typing import IO, Callable, Protocol
@@ -18,6 +21,8 @@ from typing import IO, Callable, Protocol
 from hermes_constants import get_hermes_home
 from tools.tool_output_truncate import head_tail_split, truncation_notice
 from hermes_cli._subprocess_compat import windows_hide_flags
+
+logger = logging.getLogger(__name__)
 
 # Sentinel capacity for full-fidelity capture: large enough that the collector
 # never evicts, so bounded and unbounded modes share one code path.
@@ -281,6 +286,60 @@ class ProcessHandle(Protocol):
     def returncode(self) -> int | None: ...
 
 
+_BACKEND_ERROR_MAX_CHARS = 2000
+
+# Header-style credentials in a dict, JSON or (name, value) list rendering of request headers
+# ("{'X-Api-Key': '...'}", "[(b'x-api-key', b'...')]", escaped JSON inside a string): Authorization,
+# Proxy-Authorization, X-Api-Key and any *-Token / *-Key / *-Secret; the value is replaced, the
+# key kept. Every alternative is unambiguous and bounded, so matching stays linear (``re`` holds
+# the GIL: a backtracking pattern would stall the whole process on a value cut off mid-escape).
+_HEADER_CREDENTIAL_RE = re.compile(
+    r"""(?P<kb>b?)(?P<kq>\\?["'])"""
+    r"""(?P<key>(?:proxy-)?authorization|x-api-key|[a-z0-9_]{1,64}(?:-[a-z0-9_]{1,64}){0,8}-(?:token|key|secret))"""
+    r"""(?P=kq)(?P<sep>\s{0,64}[:,]\s{0,64})"""
+    r"""(?P<val>b?'(?:[^'\\]|\\.){0,4096}'|b?"(?:[^"\\]|\\.){0,4096}"|\\"(?:[^"\\]|\\[^"]){0,4096}\\")""",
+    re.IGNORECASE,
+)
+
+
+def _mask_value(value: str) -> str:
+    """``value`` (a quoted literal: '...', b"...", \\"...\\") with its contents replaced by ***."""
+    if value.startswith("\\"):
+        return '\\"***\\"'
+    opener = value[:2] if value[0] in "bB" else value[0]
+    return f"{opener}***{value[-1]}"
+
+
+def _mask_header_credentials(text: str) -> str:
+    return _HEADER_CREDENTIAL_RE.sub(
+        lambda m: f"{m['kb']}{m['kq']}{m['key']}{m['kq']}{m['sep']}{_mask_value(m['val'])}", text)
+
+
+def _frames(exc: BaseException) -> str:
+    """The stack frames only: a full traceback ends with the raw message, which can hold credentials."""
+    return "".join(traceback.format_tb(exc.__traceback__))
+
+
+def _backend_error_text(exc: BaseException) -> str:
+    """``[backend error: <Type>: <message>]`` for an SDK call that raised. The exception is raised
+    on the host, so it can carry the host's backend credentials: header-style values masked, the
+    rest force-redacted, then capped."""
+    from agent.redact import redact_sensitive_text
+
+    try:
+        # A cost bound: the forced redaction pass is superlinear on long inputs. Twice the output
+        # cap keeps a credential straddling the cap whole for the patterns; the output keeps only
+        # the first _BACKEND_ERROR_MAX_CHARS.
+        message = redact_sensitive_text(_mask_header_credentials(str(exc)[:2 * _BACKEND_ERROR_MAX_CHARS]), force=True,
+                                        redact_url_credentials=True)
+    except Exception as render_error:  # health: allow BLE001 -- frames only: a traceback would end with the raw message
+        # str() or the redactor failed: the type alone still names the failure.
+        logger.debug("could not render an SDK error message (%s):\n%s", type(render_error).__name__,
+                     _frames(render_error))
+        return f"[backend error: {type(exc).__name__}]"
+    return f"[backend error: {type(exc).__name__}: {message[:_BACKEND_ERROR_MAX_CHARS]}]"
+
+
 class _ThreadedProcessHandle:
     """Adapter for SDK backends (Modal, Daytona) that have no real subprocess: runs a blocking
     ``exec_fn() -> (output_str, exit_code)`` on a background thread behind a ProcessHandle
@@ -290,22 +349,37 @@ class _ThreadedProcessHandle:
         self._cancel_fn = cancel_fn
         self._done = threading.Event()
         self._returncode: int | None = None
+        self._killed = False
 
         # Pipe for stdout — the drain thread in _wait_for_process reads the read end.
         read_fd, write_fd = os.pipe()
         self._stdout = os.fdopen(read_fd, "r", encoding="utf-8-sig", errors="replace")
         self._write_fd = write_fd
 
+        def _emit(text: str) -> None:
+            try:
+                os.write(self._write_fd, text.encode("utf-8", errors="replace"))
+            except OSError:
+                pass
+
         def _worker():
             try:
                 output, exit_code = exec_fn()
                 self._returncode = exit_code
-                try:
-                    os.write(self._write_fd, output.encode("utf-8", errors="replace"))
-                except OSError:
-                    pass
-            except Exception:
+                _emit(output)
+            except Exception as exc:  # health: allow BLE001 -- surfaced as text; frames only at debug (raw message can hold credentials)
                 self._returncode = 1
+                if self._killed:
+                    # kill() ran cancel_fn, which is what stopped the SDK call; the caller reports
+                    # its own timeout or interrupt, so this exception adds nothing.
+                    logger.debug("SDK-backed command raised after kill: %s", type(exc).__name__)
+                else:
+                    # The SDK call itself failed (sandbox gone, network, auth). Its text is the
+                    # only explanation the caller gets; dropped, the command read as an empty exit 1.
+                    text = _backend_error_text(exc)
+                    logger.warning("SDK-backed command failed: %s", text)  # redacted; frames at debug
+                    logger.debug("SDK-backed command failure traceback (%s):\n%s", type(exc).__name__, _frames(exc))
+                    _emit(text)
             finally:
                 try:
                     os.close(self._write_fd)
@@ -327,11 +401,15 @@ class _ThreadedProcessHandle:
         return self._returncode if self._done.is_set() else None
 
     def kill(self):
+        self._killed = True  # set first: the SDK call cancel_fn stops raises in the worker
         if self._cancel_fn:
             try:
                 self._cancel_fn()
-            except Exception:
-                pass
+            except Exception as cancel_error:  # health: allow BLE001 -- frames only: a traceback would end with the raw message
+                # cancel_fn calls the same SDK, so its message gets the same masking.
+                logger.warning("SDK cancel failed; the remote command may still be running: %s",
+                               _backend_error_text(cancel_error))
+                logger.debug("SDK cancel failure traceback (%s):\n%s", type(cancel_error).__name__, _frames(cancel_error))
 
     def wait(self, timeout: float | None = None) -> int:
         self._done.wait(timeout=timeout)

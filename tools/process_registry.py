@@ -1495,7 +1495,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
 
                 check = env.execute(
                     f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
-                check_output = check.get("output", "").strip()
+                check_output = check.get("output", "").strip() if check.get("returncode", 0) in (0, None) else ""  # rc != 0: probe didn't run
                 if check_output and check_output.splitlines()[-1].strip() != "0":
                     # Exited -- read the exit code captured by the wrapper shell.
                     exit_str = env.execute(f"cat {q(exit_path)} 2>/dev/null", timeout=5).get("output", "").strip()

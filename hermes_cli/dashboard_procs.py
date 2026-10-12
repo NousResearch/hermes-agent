@@ -641,11 +641,12 @@ def _kill_stale_dashboard_processes(
     def _launchd_owner(pid: int, cmdline: list[str] | None):
         return _dash._launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
 
-    if restart_managed and sys.platform != "win32":
+    if restart_managed:
         for pid in pids:
-            pid_cgroup[pid] = _dash._get_pid_cgroup_path(pid)
-            pid_service[pid] = _dash._get_systemd_service_for_pid(pid)
-            if pid_service[pid]:
+            if sys.platform != "win32":
+                pid_cgroup[pid] = _dash._get_pid_cgroup_path(pid)
+                pid_service[pid] = _dash._get_systemd_service_for_pid(pid)
+            if pid_service.get(pid):
                 continue
             cmdline = _dash._dashboard_cmdline_for_pid(pid)
             if launchd_jobs and (job := _launchd_owner(pid, cmdline)):

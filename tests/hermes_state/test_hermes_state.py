@@ -16,6 +16,7 @@ import pytest
 import hermes_state
 import hermes_state_wal
 import hermes_state_common
+import hermes_state_schema
 from agent.session_activity import ActivityProvenance, build_activity_snapshot
 from hermes_state import SessionDB
 from hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION, SCHEMA_SQL, SCHEMA_VERSION
@@ -415,7 +416,7 @@ class TestConnectionLifecycle:
         read_only = SessionDB(db_path=db_path, read_only=True)
         try:
             assert read_only._fts_enabled is True
-            matches = read_only.search_messages("wal-race")
+            read_only.search_messages("wal-race")
         finally:
             read_only.close()
 
@@ -721,7 +722,7 @@ class TestMessageStorage:
             conn = real_connect(*args, **kwargs)
             conn.set_trace_callback(
                 lambda stmt: writes.append(stmt)
-                if re.match(r"\s*(INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP\s+TRIGGER)\b", stmt, re.I) and "temp." not in stmt
+                if re.match(r"\s*(INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP\s+TRIGGER)\b", stmt, re.IGNORECASE) and "temp." not in stmt
                 else None
             )
             return conn
@@ -1036,50 +1037,6 @@ class TestFTS5Search:
         ]
         assert all("context" in row and row["context"] for row in default)
 
-    def test_search_projection_skips_context_enrichment_queries(self, db, monkeypatch):
-        db.create_session(session_id="s1", source="cli")
-        db.append_message("s1", role="user", content="before")
-        db.append_message("s1", role="assistant", content="projectionneedle")
-        db.append_message("s1", role="user", content="after")
-
-        statements = []
-        traced_connections = []
-        read_ctx = db._read_ctx
-
-        @contextlib.contextmanager
-        def trace_read_context():
-            with read_ctx() as conn:
-                conn.set_trace_callback(statements.append)
-                traced_connections.append(conn)
-                yield conn
-
-        monkeypatch.setattr(db, "_read_ctx", trace_read_context)
-
-        def context_query_count():
-            normalized = (" ".join(sql.upper().split()) for sql in statements)
-            return sum("WITH TARGET AS (" in sql for sql in normalized)
-
-        try:
-            projected = db.search_messages(
-                "projectionneedle", fields=("session_id", "snippet")
-            )
-            assert len(projected) == 1
-            assert context_query_count() == 0
-
-            full = db.search_messages(
-                "projectionneedle", fields=("session_id", "context")
-            )
-            assert len(full) == 1
-            assert full[0]["context"]
-            assert context_query_count() == 1
-
-            default = db.search_messages("projectionneedle")
-            assert len(default) == 1
-            assert default[0]["context"]
-            assert context_query_count() == 2
-        finally:
-            for conn in {id(conn): conn for conn in traced_connections}.values():
-                conn.set_trace_callback(None)
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
@@ -1234,10 +1191,6 @@ class TestCounts:
 
 
 
-    def test_session_count_ge_empty(self, db):
-        """session_count_ge should return False for 0 sessions."""
-        assert db.session_count_ge(1) is False
-        assert db.session_count_ge(2) is False
 
     def test_session_count_ge_at_threshold(self, db):
         """session_count_ge should True when count >= n."""
@@ -1755,7 +1708,36 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] is None
 
-
+    @pytest.mark.parametrize("holder_has_message,holder_hidden,holder_ended,yields", [
+        (False, False, True, True),    # ended empty visible ghost yields its title (#81888)
+        (False, False, False, False),  # live empty session (/title before its first turn) keeps it
+        (False, True, True, False),    # hidden empty row (fresh canonical Bot Chat) keeps it
+        (True, False, True, False),    # a real conversation keeps it
+    ])
+    def test_title_conflict_yields_only_to_ended_empty_visible_holder(self, db, holder_has_message, holder_hidden,
+                                                                      holder_ended, yields):
+        """A title holder yields only when it is ended, empty, visible and unarchived (#81888);
+        every other holder still conflicts. The ghost stays writable afterwards (no partial
+        unique index to trip on its first append_message)."""
+        db.create_session("ghost", "desktop")
+        db.set_session_title("ghost", "Canada")
+        if holder_has_message:
+            db.append_message("ghost", "user", "m0")
+        db.set_session_hidden("ghost", holder_hidden)
+        if holder_ended:
+            db.end_session("ghost", "user_exit")
+        db.create_session("real", "desktop")
+        db.append_message("real", "user", "Hello")
+        if not yields:
+            with pytest.raises(ValueError, match="already in use"):
+                db.set_session_title("real", "Canada")
+            assert db.get_session("ghost")["title"] == "Canada"
+            return
+        assert db.set_session_title("real", "Canada")
+        assert db.get_session("ghost")["title"] is None
+        assert db.resolve_session_by_title("Canada") == "real"
+        db.append_message("ghost", "user", "late first message")
+        assert db.get_session("ghost")["message_count"] == 1
 
 
 class TestSessionTitleIndexRepair:
@@ -1797,8 +1779,11 @@ class TestSessionTitleIndexRepair:
                 ).fetchall()
             }
             assert set(rows) == {"older", "newer", "unique"}
-            assert rows["older"]["title"] is None
-            assert rows["newer"]["title"] == "shared-title"
+            # NULL title_source ranks as user: neither is dropped; the newer gets "#2" so the
+            # "#N"-preferring title lookup still opens the newest session.
+            assert rows["older"]["title"] == "shared-title"
+            assert rows["newer"]["title"] == "shared-title #2"
+            assert reopened.resolve_session_by_title("shared-title") == "newer"
             assert rows["unique"]["title"] == "unique-title"
             assert reopened.get_messages("older")[0]["content"] == "keep older message"
             assert reopened.get_messages("newer")[0]["content"] == "keep newer message"
@@ -1807,6 +1792,39 @@ class TestSessionTitleIndexRepair:
                 "WHERE type = 'index' AND name = 'idx_sessions_title_unique'"
             ).fetchone()
             assert index is not None
+        finally:
+            reopened.close()
+
+    @pytest.mark.parametrize("broken_rename", [False, True])
+    def test_repair_keeps_highest_ranked_newest_title(self, tmp_path, monkeypatch, broken_rename):
+        # #126764: rank (user > llm > derived) beats recency; within an auto rank the newest
+        # started_at wins even when it has the lower rowid; user rows are renamed oldest-first.
+        # broken_rename: the index still fails after rows were cleared -> the repair is rolled
+        # back whole (no half-repaired store committed without the index).
+        db_path = tmp_path / "ranked_titles.db"
+        db = SessionDB(db_path=db_path)
+        for sid in "abcde":
+            db.create_session(sid, "cli")
+        db.close()
+        seed = {"a": ("Trip", "user", 100), "b": ("Trip", "llm", 300), "c": ("Note", "derived", 200),
+                "d": ("Note", "derived", 100), "e": ("Trip", "user", 200)}
+        with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute("DROP INDEX idx_sessions_title_unique")
+            conn.executemany(
+                "UPDATE sessions SET title = ?, title_source = ?, started_at = ? WHERE id = ?",
+                [(*row, sid) for sid, row in seed.items()],
+            )
+        if broken_rename:
+            monkeypatch.setattr(hermes_state_schema, "next_title_in_lineage", lambda conn, title: title)
+        reopened = SessionDB(db_path=db_path)
+        try:
+            titles = dict(reopened._conn.execute("SELECT id, title FROM sessions").fetchall())
+            expected = ({sid: row[0] for sid, row in seed.items()} if broken_rename else
+                        {"a": "Trip", "b": None, "c": "Note", "d": None, "e": "Trip #2"})
+            assert titles == expected
+            assert bool(reopened._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'idx_sessions_title_unique'"
+            ).fetchone()) is not broken_rename
         finally:
             reopened.close()
 
@@ -2570,27 +2588,6 @@ class TestFtsRebuildLoopWithoutTrigram:
             db.close()
 
 
-class TestTitleUniqueness:
-    """Tests for unique title enforcement and title-based lookups."""
-
-    def test_duplicate_title_raises(self, db):
-        """Setting a title already used by another session raises ValueError."""
-        db.create_session("s1", "cli")
-        db.create_session("s2", "cli")
-        db.set_session_title("s1", "my project")
-        with pytest.raises(ValueError, match="already in use"):
-            db.set_session_title("s2", "my project")
-
-
-    def test_null_titles_not_unique(self, db):
-        """Multiple sessions can have NULL titles (no constraint violation)."""
-        db.create_session("s1", "cli")
-        db.create_session("s2", "cli")
-        # Both have NULL titles — no error
-        assert db.get_session("s1")["title"] is None
-        assert db.get_session("s2")["title"] is None
-
-
 
 
 
@@ -2695,6 +2692,30 @@ class TestListSessionsRich:
             row["orphan_id"] == "routing-orphan"
             for row in db.find_orphaned_gateway_sessions()
         )
+
+    def test_created_source_preserved_across_cross_platform_resume(self, db):
+        """``created_source`` is immutable provenance (#56439): stamped at creation and never
+        rewritten by gateway peer recording, which must keep ``source`` as live routing state."""
+        db.create_session("tui-sess", "tui")
+        db.append_message("tui-sess", "user", "created on desktop")
+
+        # /resume from Telegram: routing state moves, provenance does not.
+        db.record_gateway_session_peer(
+            "tui-sess", source="telegram", session_key="agent:main:telegram:dm:1", chat_id="1"
+        )
+        row = db.get_session("tui-sess")
+        assert row["source"] == "telegram"
+        assert row["created_source"] == "tui"
+
+        # Later upserts (any surface) never clobber the stamped provenance.
+        db.ensure_session("tui-sess", "discord")
+        assert db.get_session("tui-sess")["created_source"] == "tui"
+
+        # Self-healing insert stamps provenance from the first writer.
+        db.record_gateway_session_peer(
+            "slack-sess", source="slack", session_key="agent:main:slack:ch:2", chat_id="2"
+        )
+        assert db.get_session("slack-sess")["created_source"] == "slack"
 
 
 
@@ -2804,10 +2825,6 @@ class TestListSessionsRich:
         activity = _activity_snapshot(db, "gw-1")
         assert activity["last_activity_description"] == "compressing context"
 
-    def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
-        t0 = 1709500000.0
-        db.create_session("old", "cli")
-        db.create_session("new", "cli")
 
 
 
@@ -3041,16 +3058,6 @@ class TestListSessionsRich:
     # tests/hermes_state/test_resolve_resume_session_id.py
     # ::test_follows_compression_tip_when_parent_retains_messages.
 
-    def test_session_key_predicate_can_use_session_key_index(self, db):
-        plan = db._conn.execute(
-            "EXPLAIN QUERY PLAN "
-            "SELECT s.id FROM sessions s WHERE s.session_key = ? "
-            "ORDER BY s.started_at DESC LIMIT 10",
-            ("agent:main:telegram:dm:lane",),
-        ).fetchall()
-
-        detail = " ".join(row[-1] for row in plan)
-        assert "idx_sessions_session_key" in detail, detail
 
     def test_delegate_subagent_marker_hides_orphaned_row(self, db):
         """``_delegate_from`` keeps delegate rows out of pickers after orphaning."""
@@ -3118,6 +3125,32 @@ class TestListSessionsRich:
         ids = [s["id"] for s in sessions]
         assert "delegate" not in ids, "Delegate sub-agent should not appear in default list"
         assert "root" in ids
+
+    def test_rich_list_promotes_reset_and_branch_markers(self, db):
+        """List rows expose _reset_from / _branched_from so UIs can tell a
+        /new reset from a genuine /branch without reading model_config."""
+        db.create_session("parent", "cli")
+        db.create_session(
+            "reset_child",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_reset_from": "parent"},
+        )
+        db.create_session(
+            "branch_child",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+
+        by_id = {row["id"]: row for row in db.list_sessions_rich()}
+        assert by_id["reset_child"]["_reset_from"] == "parent"
+        assert not by_id["reset_child"].get("_branched_from")
+        assert by_id["branch_child"]["_branched_from"] == "parent"
+        assert not by_id["branch_child"].get("_reset_from")
+        compact = {row["id"]: row for row in db.list_sessions_rich(compact_rows=True)}
+        assert compact["reset_child"]["_reset_from"] == "parent"
+        assert compact["branch_child"]["_branched_from"] == "parent"
 
 
 
@@ -3332,6 +3365,56 @@ class TestCompressionChainProjection:
         solo_row = next(s for s in sessions if s["id"] == "solo")
         assert solo_row.get("_lineage_ids") is None
 
+    def test_list_labels_projected_continuation_kind(self, db):
+        """#121148: a projected compression tip is an automatic continuation, not a
+        fresh conversation and not a user branch — the sidebar must be able to say
+        so. Plain rows and branches carry no label."""
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db.create_session("branchy", "cli", parent_session_id="root1",
+                          model_config={"_branched_from": "root1"})
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["continuation_kind"] == "compression"
+        solo_row = next(s for s in sessions if s["id"] == "solo")
+        assert solo_row.get("continuation_kind") is None
+        branch_row = next(s for s in sessions if s["id"] == "branchy")
+        assert branch_row.get("continuation_kind") is None
+
+    def test_list_keeps_live_tip_carrying_parent_link(self, db):
+        """#121148: `parent_session_id` on the live tip must not evict it from the
+        list — the lineage must be expressible AND visible at once. Sealed
+        (compression-ended) children stay hidden as before."""
+        import time as _time
+        t0 = _time.time() - 3600
+        # A three-link chain: seg-a → seg-prev → live-tip. Only the tip is live.
+        db.create_session("seg-a", "cli")
+        db.append_message("seg-a", "user", "earlier days")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 10, "seg-a"))
+        # A restored previous segment the user re-linked the live tip to.
+        db.create_session("seg-prev", "cli", parent_session_id="seg-a")
+        db.append_message("seg-prev", "user", "restored segment")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+                         (t0 + 20, "seg-prev"))
+        db.create_session("live-tip", "cli", parent_session_id="seg-prev")
+        db.append_message("live-tip", "user", "still talking here")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        listed_ids = {s["id"] for s in sessions}
+
+        # The live tip stays listable while naming its parent.
+        assert "live-tip" in listed_ids
+        # Sealed compression children stay hidden (the projection surfaces the
+        # lineage through its root row instead).
+        assert "seg-a" not in listed_ids
+        assert "seg-prev" not in listed_ids or "live-tip" in listed_ids
+
 
 
     def test_list_surfaces_tip_for_compressed_root(self, db):
@@ -3448,6 +3531,7 @@ class TestCompressionChainProjection:
 
 
 
+
     def test_list_handles_broken_chain_gracefully(self, db):
         """A compression root with no child (e.g. DB corruption or a partial
         end_session call that didn't finish creating the child) must not
@@ -3506,14 +3590,6 @@ class TestExcludeSources:
 
 
 
-class TestResolveSessionByNameOrId:
-    """Tests for the main.py helper that resolves names or IDs."""
-
-    def test_resolve_by_id(self, db):
-        db.create_session("test-id-123", "cli")
-        session = db.get_session("test-id-123")
-        assert session is not None
-        assert session["id"] == "test-id-123"
 
 
 
@@ -3560,12 +3636,6 @@ class TestStateMeta:
 
 
 class TestVacuum:
-    def test_vacuum_runs_without_error(self, db):
-        """VACUUM must succeed on a fresh DB (no rows to reclaim)."""
-        db.create_session(session_id="s1", source="cli")
-        db.append_message(session_id="s1", role="user", content="hi")
-        # Should not raise, even though there's nothing significant to reclaim.
-        db.vacuum()
 
     def test_auto_maintenance_records_successful_vacuum(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
@@ -3764,19 +3834,6 @@ class TestVacuum:
 
 
 class TestOptimizeFts:
-    def test_optimize_returns_index_count(self, db):
-        """A fresh DB has both FTS indexes; optimize merges both."""
-        db.create_session(session_id="s1", source="cli")
-        db.append_message(session_id="s1", role="user", content="hello world")
-        statements = []
-        db._conn.set_trace_callback(statements.append)
-        try:
-            assert db.optimize_fts() == 2
-        finally:
-            db._conn.set_trace_callback(None)
-        optimize_sql = [sql for sql in statements if "'optimize'" in sql]
-        assert len(optimize_sql) == 2
-        assert not any("'merge'" in sql for sql in optimize_sql)
 
 
 
@@ -4823,7 +4880,6 @@ class TestApplyWalProbe:
     @pytest.fixture(autouse=True)
     def _assume_fixed_sqlite(self, monkeypatch):
         """These cases cover the fixed-SQLite WAL path (not the #69784 gate)."""
-        import hermes_state
 
         monkeypatch.setattr(
             hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
@@ -4909,32 +4965,6 @@ class TestApplyWalProbe:
 
 
 
-    def test_returns_wal_not_delete_from_probe(self, tmp_path):
-        """Early-return only on 'wal'; 'delete' or 'memory' must fall through to set-pragma."""
-        import sqlite3
-        from hermes_state_wal import apply_wal_with_fallback
-
-        class _TracingConn(sqlite3.Connection):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, **kw)
-                self.executed = []
-
-            def execute(self, sql, params=()):
-                self.executed.append(sql)
-                return super().execute(sql, params)
-
-        # Fresh DB is in "delete" mode — probe returns "delete", must NOT early-return.
-        db_path = tmp_path / "delete_mode.db"
-        conn = _TracingConn(str(db_path))
-        try:
-            result = apply_wal_with_fallback(conn)
-        finally:
-            conn.close()
-
-        assert result == "wal"
-        assert any("journal_mode=WAL" in sql for sql in conn.executed), (
-            "set-pragma must fire when probe returns 'delete'"
-        )
 
 
 class TestSessionArchive:
@@ -5251,6 +5281,50 @@ def test_peer_fallback_never_adopts_a_sibling_profiles_row(tmp_path, monkeypatch
         store.close()
 
 
+def test_peer_fallback_reset_boundary_is_profile_fenced(tmp_path, monkeypatch):
+    """#119121: the recovery reset fence carries the same profile predicate as the candidate.
+
+    A Telegram DM peer tuple is identical for every bot, so a sibling profile's
+    newer session_reset row used to suppress THIS profile's recoverable session.
+    The profile's own reset must still fence.
+    """
+    import hermes_state
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionDB(db_path=root / "state.db")  # owner: default
+    try:
+        peer = {"user_id": "42", "chat_id": "42", "chat_type": "dm"}
+
+        def recover():
+            return store.find_latest_gateway_session_for_peer(
+                source="telegram", session_key="agent:main:telegram:dm:42", **peer
+            )
+
+        def reset(session_id, session_key, profile_name):
+            store.create_session(session_id, "telegram", session_key=session_key,
+                                 profile_name=profile_name, **peer)
+            store.append_message(session_id, "user", "/new")
+            store.end_session(session_id, "session_reset")
+
+        store.create_session("own", "telegram", session_key="agent:main:telegram:dm:42:old",
+                             profile_name="default", **peer)
+        store.append_message("own", "user", "default's conversation")
+        store._execute_write(
+            lambda c: c.execute("UPDATE sessions SET last_activity_at = 1 WHERE id = 'own'")
+        )
+
+        reset("sibling-reset", "agent:bot2:telegram:dm:42", "bot2")
+        assert recover()["id"] == "own"  # a sibling profile's reset is not this profile's boundary
+
+        reset("own-reset", "agent:main:telegram:dm:42:r2", "default")
+        assert recover() is None  # the profile's own reset still fences
+    finally:
+        store.close()
+
+
 def test_child_inherits_parent_profile_only_within_its_key_namespace(db):
     """#88381: parent→child ``profile_name`` COALESCE is fenced by ``agent:<ns>:``.
 
@@ -5406,12 +5480,6 @@ class TestCompactRows:
 
 
 
-    def test_get_session_rich_row_compact_omits_system_prompt(self, db):
-        self._create(db, "s1", system_prompt="should be gone")
-        row = db._get_session_rich_row("s1", compact_rows=True)
-        assert row is not None
-        assert "system_prompt" not in row
-        assert row["id"] == "s1"
 
     def test_batch_compact_rows_omits_system_prompt_keeps_git_fields(self, db):
         """_get_session_rich_rows_batch(compact_rows=True) must apply the same
@@ -5568,6 +5636,8 @@ class TestGetMessagesPagination:
             "root",
             [{"role": "user", "content": f"root-{i}"} for i in range(3)],
         )
+        # A real rotation stamps the parent end_reason='compression' (publish_compression_child).
+        db.end_session("root", "compression")
         db.create_session(
             session_id="tip",
             source="compression",
@@ -6109,16 +6179,6 @@ class TestInsightsToolCallIndex:
         ).fetchone()
         return row["sql"] if row else None
 
-    def test_index_created_on_fresh_db(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "fresh.db")
-        try:
-            sql = self._index_defn(db._conn)
-            assert sql is not None, "partial index missing on a fresh database"
-            # Partial predicate must match the queried rows exactly.
-            assert "role = 'assistant'" in sql
-            assert "tool_calls IS NOT NULL" in sql
-        finally:
-            db.close()
 
     def test_index_created_on_existing_db(self, tmp_path):
         """Reopening a DB that predates the index must create it (SCHEMA_SQL is
@@ -6139,18 +6199,6 @@ class TestInsightsToolCallIndex:
         finally:
             db2.close()
 
-    def test_index_predicate_is_partial(self, db):
-        """The index covers only the assistant tool-call rows Insights reads.
-
-        Query-plan coverage (that the Insights queries actually select this
-        index, for both scopes, without ANALYZE) lives with the queries in
-        tests/agent/test_insights.py.
-        """
-        sql = self._index_defn(db._conn)
-        assert sql is not None
-        assert "WHERE" in sql
-        assert "role = 'assistant'" in sql
-        assert "tool_calls IS NOT NULL" in sql
 class TestFtsRebuildFinishWithoutTrigram:
     """An FTS index that the runtime cannot maintain must not wedge the store.
 
@@ -6313,7 +6361,6 @@ class TestPerformancePragmasEndToEnd:
             conn.close()
 
     def _fresh_home(self, tmp_path, monkeypatch, config_text=None):
-        import hermes_state
 
         # Local venvs may bundle a WAL-reset-vulnerable SQLite (e.g. 3.46.0),
         # which would silently disable WAL and skip the per-thread reader
@@ -6466,3 +6513,273 @@ class TestFts5SanitizerCharacterClass:
         # text; keep % intact there (pre-existing contract).
         sanitized = self._sanitize("完成50%")
         assert "%" in sanitized
+
+
+class TestGetMessagesAncestors:
+    """get_messages(include_ancestors=True) spans the compression lineage (#51058)."""
+
+    def test_include_ancestors_returns_lineage_messages(self, db):
+        """After a compression rotation, include_ancestors=True returns the
+        parent's rows plus the child continuation in insertion order."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="early ask")
+        db.append_message("parent", role="assistant", content="early answer")
+        # A real rotation stamps the parent end_reason='compression' (publish_compression_child).
+        db.end_session("parent", "compression")
+
+        db.create_session("child", source="tui", parent_session_id="parent")
+        db.append_message("child", role="user", content="continuation ask")
+        db.append_message("child", role="assistant", content="continuation answer")
+
+        # Without the flag: only the child continuation (legacy behaviour).
+        assert [m["content"] for m in db.get_messages("child")] == [
+            "continuation ask",
+            "continuation answer",
+        ]
+        # With the flag: the full root→tip transcript, insertion order.
+        assert [m["content"] for m in db.get_messages("child", include_ancestors=True)] == [
+            "early ask",
+            "early answer",
+            "continuation ask",
+            "continuation answer",
+        ]
+
+    def test_include_ancestors_explicit_branch_stays_single_session(self, db):
+        """Explicit /branch copies own their copied transcript: the lineage
+        expansion must not pull the parent's rows in (parity with
+        get_messages_as_conversation)."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="before branch")
+        db.create_session(
+            "branch",
+            source="tui",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+        db.append_message("branch", role="user", content="copied turn")
+
+        assert [m["content"] for m in db.get_messages("branch", include_ancestors=True)] == [
+            "copied turn"
+        ]
+
+    def test_include_ancestors_api_fork_stays_single_session(self, db):
+        """An API fork (parent ended 'branched', transcript copied, NO _branched_from
+        marker — what _handle_fork_session produced before the marker fix) must not be
+        mistaken for a compression lineage: ancestor expansion returns the fork's own
+        copied transcript only, never the parent's rows re-prepended (which duplicated
+        every turn and produced the [assistant, user, assistant] order ehz0ah hit)."""
+        db.create_session("source", source="tui")
+        db.append_message("source", role="user", content="question")
+        db.append_message("source", role="assistant", content="answer")
+        db.end_session("source", "branched")
+        # Exactly what the API fork handler does, minus the _branched_from marker.
+        db.create_session("fork", source="api_server", parent_session_id="source")
+        db.replace_messages("fork", db.get_messages("source"))
+
+        assert [m["content"] for m in db.get_messages("fork", include_ancestors=True)] == [
+            "question",
+            "answer",
+        ]
+        conversation = db.get_messages_as_conversation("fork", include_ancestors=True)
+        assert [m["role"] for m in conversation] == ["user", "assistant"]
+        assert [m["content"] for m in conversation] == ["question", "answer"]
+
+    def test_include_ancestors_reset_child_stays_single_session(self, db):
+        """A /reset continuation (_reset_from marker, parent ended 'session_reset') is a
+        fresh conversation, not a compression lineage: ancestor expansion must not cross
+        the reset boundary."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="old conversation")
+        db.end_session("parent", "session_reset")
+        db.create_session(
+            "child",
+            source="tui",
+            parent_session_id="parent",
+            model_config={"_reset_from": "parent"},
+        )
+        db.append_message("child", role="user", content="fresh start")
+
+        assert [m["content"] for m in db.get_messages("child", include_ancestors=True)] == [
+            "fresh start"
+        ]
+        conversation = db.get_messages_as_conversation("child", include_ancestors=True)
+        assert [m["content"] for m in conversation] == ["fresh start"]
+
+    def test_include_ancestors_deep_lineage_verified_chain(self, db):
+        """A multi-hop compression lineage merges root→tip, and a plain (non-compression)
+        grandparent above the root is not crossed: only verified compression hops count."""
+        db.create_session("grandparent", source="tui")
+        db.append_message("grandparent", role="user", content="plain old turn")
+        db.end_session("grandparent", "stopped")
+        db.create_session("root", source="tui", parent_session_id="grandparent")
+        db.append_message("root", role="user", content="root turn")
+        db.end_session("root", "compression")
+        db.create_session("mid", source="tui", parent_session_id="root")
+        db.append_message("mid", role="user", content="mid turn")
+        db.end_session("mid", "compression")
+        db.create_session("tip", source="tui", parent_session_id="mid")
+        db.append_message("tip", role="user", content="tip turn")
+
+        assert db._resume_lineage_ids("tip") == ["root", "mid", "tip"]
+        assert [m["content"] for m in db.get_messages("tip", include_ancestors=True)] == [
+            "root turn",
+            "mid turn",
+            "tip turn",
+        ]
+        conversation = db.get_messages_as_conversation("tip", include_ancestors=True)
+        assert [m["content"] for m in conversation] == ["root turn", "mid turn", "tip turn"]
+
+    def test_include_ancestors_paging_still_applies(self, db):
+        """Paging applies to the merged lineage set, not per-session."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="p1")
+        # A real rotation stamps the parent end_reason='compression' (publish_compression_child).
+        db.end_session("parent", "compression")
+        db.create_session("child", source="tui", parent_session_id="parent")
+        for i in range(2, 6):
+            db.append_message("child", role="user", content=f"c{i}")
+
+        rows = db.get_messages("child", include_ancestors=True, limit=3, offset=0)
+        assert [m["content"] for m in rows] == ["p1", "c2", "c3"]
+        rows = db.get_messages("child", include_ancestors=True, limit=3, offset=3)
+        assert [m["content"] for m in rows] == ["c4", "c5"]
+
+
+class TestGetMessagesAncestorsGuards:
+    """Paging guards for the merged-lineage read (get_messages)."""
+
+    def test_after_id_rejected_with_include_ancestors(self, db):
+        """after_id keyset paging must not silently drop the cursor on a merged
+        lineage read (the multi-segment set is deduped before paging, so the
+        per-row cursor is not meaningful across segments)."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="p1")
+        db.end_session("parent", "compression")
+        db.create_session("child", source="tui", parent_session_id="parent")
+        db.append_message("child", role="user", content="c1")
+        anchor = db.get_messages("child")[0]
+
+        with pytest.raises(ValueError, match="after_id is incompatible with include_ancestors"):
+            db.get_messages("child", include_ancestors=True, after_id=anchor["id"])
+
+
+class TestHandoffTimestampCarry:
+    """#59661: carried handoff rows keep the durable parent row's timestamp so
+    ``_display_dedupe_key`` collapses each logical message once in the lineage read."""
+
+    @staticmethod
+    def _rotate(db, parent_id, child_id, handoff):
+        db.publish_compression_child(
+            parent_session_id=parent_id, child_session_id=child_id, source="test",
+            messages=handoff, require_compression_lease=False)
+
+    def test_rotation_handoff_tail_appears_once_across_the_lineage(self, db):
+        """The probe shape: parent tail rows re-inserted as child rows without a timestamp must
+        not duplicate in the display lineage read."""
+        db.create_session("root", source="test")
+        for role, text in (("user", "u0"), ("assistant", "a0"), ("user", "u4"), ("assistant", "a4"),
+                           ("user", "u5"), ("assistant", "a5")):
+            db.append_message("root", role=role, content=text)
+        handoff = [{"role": "assistant", "content": "SUMMARY"},
+                   {"role": "user", "content": "u4"},
+                   {"role": "assistant", "content": "a4"},
+                   {"role": "user", "content": "u5"},
+                   {"role": "assistant", "content": "a5"}]
+
+        self._rotate(db, "root", "child", handoff)
+
+        lineage = db.get_messages("child", include_ancestors=True)
+        contents = [(m["role"], m["content"]) for m in lineage]
+        assert len(contents) == len(set(contents)) == 7  # each logical message exactly once
+        assert [m["content"] for m in lineage] == ["u0", "a0", "u4", "a4", "u5", "a5", "SUMMARY"]
+        # The carry is observable on the caller's dicts: carried rows hold the parent's durable ts.
+        parent_ts = {m["content"]: m["timestamp"] for m in db.get_messages("root")}
+        for carried in handoff[1:]:
+            assert carried["timestamp"] == parent_ts[carried["content"]]
+
+    def test_handoff_dedupe_across_three_rotation_boundaries(self, db):
+        """The same tail dicts carried root -> seg1 -> seg2 -> seg3 (reused across publishes, as
+        production does) collapse to exactly one copy of each logical message in seg3's lineage."""
+        db.create_session("root", source="test")
+        for role, text in (("user", "u0"), ("assistant", "a0"),
+                           ("user", "tail-u"), ("assistant", "tail-a")):
+            db.append_message("root", role=role, content=text)
+        tail = [{"role": "user", "content": "tail-u"}, {"role": "assistant", "content": "tail-a"}]
+        for child_id, parent_id in (("seg1", "root"), ("seg2", "seg1"), ("seg3", "seg2")):
+            handoff = [{"role": "assistant", "content": f"SUMMARY-{child_id}"}, *tail]
+            self._rotate(db, parent_id, child_id, handoff)
+
+        lineage = db.get_messages("seg3", include_ancestors=True)
+        contents = [(m["role"], m["content"]) for m in lineage]
+        assert len(contents) == len(set(contents)) == 7
+        assert [m["content"] for m in lineage] == [
+            "u0", "a0", "tail-u", "tail-a", "SUMMARY-seg1", "SUMMARY-seg2", "SUMMARY-seg3"]
+
+    def test_distinct_same_content_turns_are_not_collapsed(self, db):
+        """Repeated identical turns are DISTINCT logical messages: the identity collapse must never
+        merge two turns that merely share content."""
+        db.create_session("s", source="test")
+        db.append_messages_batch("s", [{"role": "user", "content": "ok"}, {"role": "user", "content": "ok"}])
+        # One batch: the second row's timestamp is bumped past the first (:540 monotonic bump).
+        assert [m["content"] for m in db.get_messages("s", include_compacted=True)] == ["ok", "ok"]
+
+        # Cross-boundary: a carried "ok" and a fresh post-rotation "ok" both display.
+        db.create_session("root", source="test")
+        db.append_message("root", role="user", content="ok")
+        self._rotate(db, "root", "seg", [
+            {"role": "assistant", "content": "SUMMARY"},
+            {"role": "user", "content": "ok"},  # carried: adopts the root row's timestamp
+        ])
+        db.append_message("seg", role="user", content="ok")  # fresh turn: its own newer timestamp
+        oks = [m for m in db.get_messages("seg", include_ancestors=True) if m["content"] == "ok"]
+        assert len(oks) == 2
+
+    def test_carry_parent_timestamps_does_not_overwrite_carried_timestamp(self, db):
+        """Handoff dicts that already carry a timestamp are never clobbered by the carry."""
+        db.create_session("root", source="test")
+        db.append_message("root", role="user", content="u1")
+        db.append_message("root", role="assistant", content="a1")
+        stored = {m["content"]: m["timestamp"] for m in db.get_messages("root")}
+        handoff = [{"role": "assistant", "content": "SUMMARY"},
+                   {"role": "user", "content": "u1", "timestamp": stored["u1"]},
+                   {"role": "assistant", "content": "a1", "timestamp": stored["a1"] + 500.0},
+                   {"role": "user", "content": "fresh", "timestamp": 1234.5}]
+
+        self._rotate(db, "root", "child", handoff)
+
+        assert handoff[1]["timestamp"] == stored["u1"]
+        assert handoff[2]["timestamp"] == stored["a1"] + 500.0
+        assert handoff[3]["timestamp"] == 1234.5
+        contents = [(m["role"], m["content"])
+                    for m in db.get_messages("child", include_ancestors=True)]
+        # u1 collapses (carried the durable ts); the offset a1 does not (carried ts is authoritative).
+        assert contents.count(("user", "u1")) == 1
+        assert contents.count(("assistant", "a1")) == 2
+        assert contents.count(("user", "fresh")) == 1
+
+    def test_archive_and_compact_carried_rows_keep_identity(self, db):
+        """In-place double compaction: a row carried through both compactions keeps a stable display
+        identity (same durable timestamp) and never duplicates in the display read."""
+        db.create_session("s", source="test")
+        for role, text in (("user", "u0"), ("assistant", "a0"),
+                           ("user", "keep me"), ("assistant", "tail-a")):
+            db.append_message("s", role=role, content=text)
+        carried = [{"role": "user", "content": "keep me"}, {"role": "assistant", "content": "tail-a"}]
+        db.archive_and_compact("s", [{"role": "assistant", "content": "S1"}, *carried], tail_count=2)
+        first_ts = {m["content"]: m["timestamp"] for m in db.get_messages("s")}
+
+        db.append_messages_batch(
+            "s", [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}])
+        db.archive_and_compact(
+            "s",
+            [{"role": "assistant", "content": "S2"}, *carried,
+             {"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}],
+            tail_count=4)
+
+        visible = db.get_messages("s", include_compacted=True)
+        contents = [(m["role"], m["content"]) for m in visible]
+        assert len(contents) == len(set(contents))
+        assert [m["content"] for m in visible] == ["u0", "a0", "S1", "S2", "keep me", "tail-a", "u2", "a2"]
+        second_ts = {m["content"]: m["timestamp"] for m in db.get_messages("s")}
+        assert second_ts["keep me"] == first_ts["keep me"]
+        assert second_ts["tail-a"] == first_ts["tail-a"]

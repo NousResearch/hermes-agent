@@ -8,9 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
-from tools.connectors.gateway.config import session_platform
 from tools.connectors.gateway.errors import render_connection_required
 from tools.connectors.gateway.names import parse_connector_name
+from tools.connectors.turn import connection_surface
 
 __all__ = [
     "Partition",
@@ -70,7 +70,7 @@ def partition_calls(calls: Sequence[Any]) -> Partition:
                     code="TOOL_NOT_FOUND",
                     message=(
                         "Malformed connector tool name; expected "
-                        "connectors__<connector>__<tool>."
+                        "connectors__<connector>__{tool}."
                     ),
                 )
             )
@@ -82,9 +82,10 @@ def partition_calls(calls: Sequence[Any]) -> Partition:
 def render_remote_entry(planned: PlannedCall, remote: Mapping[str, Any]) -> dict[str, Any]:
     """Use the shared CONNECTION_REQUIRED shape so links render consistently."""
     error = remote.get("error") if isinstance(remote, Mapping) else None
+    account = _opt_str(remote.get("account")) if isinstance(remote, Mapping) else None
     if not isinstance(error, Mapping):
         data = remote.get("data") if isinstance(remote, Mapping) else None
-        return {"index": planned.position, "name": planned.name, "response": data}
+        return _with_account({"index": planned.position, "name": planned.name, "response": data}, account)
 
     code = str(error.get("code") or "PROVIDER_ERROR")
     message = str(error.get("message") or "The gateway reported an error.")
@@ -94,8 +95,12 @@ def render_remote_entry(planned: PlannedCall, remote: Mapping[str, Any]) -> dict
             message=message,
             connect_url=_opt_str(error.get("connect_url")),
             hint=_opt_str(error.get("hint")),
-            card=session_platform() == "desktop",
+            surface=connection_surface(),
         )
+        # The account the link repairs or waits on; with no connect_url the user already holds its link.
+        connection_id = _opt_str(error.get("connection_id"))
+        if connection_id:
+            payload["connection_id"] = connection_id
     else:
         payload = {"code": code, "message": message}
         connector = _opt_str(error.get("connector"))
@@ -104,7 +109,13 @@ def render_remote_entry(planned: PlannedCall, remote: Mapping[str, Any]) -> dict
         hint = _opt_str(error.get("hint"))
         if hint:
             payload["hint"] = hint
-    return {"index": planned.position, "name": planned.name, "error": payload}
+    return _with_account({"index": planned.position, "name": planned.name, "error": payload}, account)
+
+
+def _with_account(entry: dict[str, Any], account: Optional[str]) -> dict[str, Any]:
+    if account:
+        entry["account"] = account
+    return entry
 
 
 def splice_remote_results(

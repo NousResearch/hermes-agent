@@ -204,7 +204,7 @@ def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]
         if paths and _skip_file(path):
             continue
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            text = path.read_text(encoding="utf-8-sig", errors="ignore")
         except OSError:
             continue
         found = list(_iter_lines_with_hits(text, path.suffix))

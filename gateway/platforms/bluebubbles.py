@@ -73,7 +73,7 @@ def _redact(text: str) -> str:
 
 def check_bluebubbles_requirements() -> bool:
     try:
-        import aiohttp  # noqa: F401
+        import aiohttp
     except ImportError:
         return False
     return True
@@ -81,12 +81,12 @@ def check_bluebubbles_requirements() -> bool:
 
 def _normalize_server_url(raw: str) -> str:
     value = (raw or "").strip()
-    if value and not re.match(r"^https?://", value, flags=re.I):
+    if value and not re.match(r"^https?://", value, flags=re.IGNORECASE):
         value = f"http://{value}"
     return value.rstrip("/")
 
 
-def _closed_ext(mime: str, overrides: Dict[str, str], fallback: str) -> str:
+def _closed_ext(mime: str, overrides: dict[str, str], fallback: str) -> str:
     """Historical maps were closed: unlisted mimes fall back without consulting mimetypes."""
     return ext_for_mime(mime, overrides=overrides, use_defaults=False, use_mimetypes=False,
                         fallback=fallback) or fallback
@@ -138,7 +138,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return f"{self.server_url}{path}{'&' if '?' in path else '?'}password={quote(self.password, safe='')}"
 
     @staticmethod
-    def _compile_mention_patterns(raw: Any) -> List[re.Pattern]:
+    def _compile_mention_patterns(raw: Any) -> list[re.Pattern]:
         """Compile group-mention wake words; ``raw`` is a list, a raw env string (JSON list or
         comma/newline-separated), or None (Hermes defaults)."""
         return compile_mention_patterns(raw, log_prefix="bluebubbles", defaults=DEFAULT_MENTION_PATTERNS,
@@ -156,20 +156,20 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return stripped[match.end():].lstrip(" ,:-") or text
         return text
 
-    async def _api_json(self, method: str, path: str, **kwargs) -> Dict[str, Any]:
+    async def _api_json(self, method: str, path: str, **kwargs) -> dict[str, Any]:
         """Authenticated request to the BlueBubbles REST API; raises on HTTP errors, returns decoded JSON."""
         assert self.client is not None
         res = await getattr(self.client, method)(self._api_url(path), **kwargs)
         res.raise_for_status()
         return res.json()
 
-    async def _api_get(self, path: str) -> Dict[str, Any]:
+    async def _api_get(self, path: str) -> dict[str, Any]:
         return await self._api_json("get", path)
 
-    async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._api_json("post", path, json=payload)
 
-    async def _post_message(self, path: str, payload: Dict[str, Any]) -> SendResult:
+    async def _post_message(self, path: str, payload: dict[str, Any]) -> SendResult:
         """POST a message payload and wrap the outcome as a SendResult."""
         try:
             res = await self._api_post(path, payload)
@@ -355,12 +355,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # --- Text sending ---
 
     @staticmethod
-    def truncate_message(content: str, max_length: int = MAX_TEXT_LENGTH) -> List[str]:
+    def truncate_message(content: str, max_length: int = MAX_TEXT_LENGTH) -> list[str]:
         # Base splitter minus "(1/3)" pagination suffixes — iMessage bubbles flow naturally.
         return [_PAGINATION_SUFFIX_RE.sub("", c) for c in BasePlatformAdapter.truncate_message(content, max_length)]
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                   metadata: Optional[dict[str, Any]] = None) -> SendResult:
         text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
@@ -375,7 +375,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if self._private_api_enabled and ("@" in chat_id or _ADDRESS_RE.match(chat_id)):  # address → new chat
                     return await self._create_chat_for_handle(chat_id, chunk)
                 return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
-            payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
+            payload: dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
             if reply_to and self._private_api_enabled and self._helper_connected:
                 payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
             if not (last := await self._post_message("/api/v1/message/text", payload)).success:
@@ -399,7 +399,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             # httpx's async multipart iterator reads file objects through a sync chunk generator —
             # read the bytes off the event-loop thread first.
             payload = await asyncio.to_thread(Path(file_path).read_bytes)
-            data: Dict[str, str] = {"chatGuid": guid, "name": fname, "tempGuid": uuid.uuid4().hex}
+            data: dict[str, str] = {"chatGuid": guid, "name": fname, "tempGuid": uuid.uuid4().hex}
             if is_audio_message:
                 data["isAudioMessage"] = "true"
             res = await self.client.post(self._api_url("/api/v1/message/attachment"), data=data, timeout=120,
@@ -417,7 +417,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         try:
             from gateway.platforms.base import cache_image_from_url
             return await self._send_attachment(chat_id, await cache_image_from_url(image_url), caption=caption)
@@ -452,9 +452,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- Chat info ---
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         is_group = ";+;" in (chat_id or "")
-        info: Dict[str, Any] = {"name": chat_id, "type": "group" if is_group else "dm"}
+        info: dict[str, Any] = {"name": chat_id, "type": "group" if is_group else "dm"}
         with suppress(Exception):
             if guid := await self._resolve_chat_guid(chat_id):
                 res = await self._api_get(f"/api/v1/chat/{quote(guid, safe='')}?with=participants")
@@ -467,11 +467,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return info
 
     def format_message(self, content: str) -> str:
-        return strip_markdown(content)
+        return strip_markdown(content, keep_link_targets=True)  # iMessage auto-links bare URLs only
 
     # --- Inbound attachment downloading ---
 
-    async def _download_attachment(self, att_guid: str, att_meta: Dict[str, Any]) -> Optional[str]:
+    async def _download_attachment(self, att_guid: str, att_meta: dict[str, Any]) -> Optional[str]:
         """Download an attachment and cache it locally; local path or None on failure."""
         if not self.client:
             return None
@@ -493,7 +493,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- Webhook handling ---
 
-    def _extract_payload_record(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _extract_payload_record(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
         data = payload.get("data")
         if isinstance(data, dict):
             return data
@@ -518,10 +518,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload_str = (form.get("payload") or form.get("data") or form.get("message") or [""])[0]
             return json.loads(payload_str) if payload_str else {}
 
-    async def _collect_attachments(self, record: Dict[str, Any]):
+    async def _collect_attachments(self, record: dict[str, Any]):
         """Download inbound attachments; returns (media_urls, media_types, msg_type)."""
-        media_urls: List[str] = []
-        media_types: List[str] = []
+        media_urls: list[str] = []
+        media_types: list[str] = []
         msg_type = MessageType.TEXT
         for att in record.get("attachments") or []:
             att_guid = att.get("guid", "")
@@ -542,7 +542,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return (request.query.get("password") or request.query.get("guid") or request.headers.get("x-password")
                 or request.headers.get("x-guid") or request.headers.get("x-bluebubbles-guid"))
 
-    def _resolve_chat_and_sender(self, payload: Dict[str, Any], record: Dict[str, Any]):
+    def _resolve_chat_and_sender(self, payload: dict[str, Any], record: dict[str, Any]):
         """Returns ``(chat_guid, chat_identifier, sender)`` from the many BlueBubbles payload shapes."""
         chat_guid = self._value(record.get("chatGuid"), payload.get("chatGuid"), record.get("chat_guid"),
                                 payload.get("chat_guid"), payload.get("guid"))

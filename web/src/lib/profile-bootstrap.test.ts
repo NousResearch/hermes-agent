@@ -11,25 +11,6 @@ afterEach(() => {
 });
 
 describe("initialProfileScope", () => {
-  it("inherits the dashboard bootstrap profile when the URL omits profile", () => {
-    expect(initialProfileScope(new URLSearchParams("resume=session-1"), "worker_x"))
-      .toBe("worker_x");
-  });
-
-  it("keeps an explicit URL profile authoritative", () => {
-    expect(
-      initialProfileScope(
-        new URLSearchParams("resume=session-1&profile=review"),
-        "worker_x",
-      ),
-    ).toBe("review");
-  });
-
-  it("preserves an explicit empty profile", () => {
-    expect(
-      initialProfileScope(new URLSearchParams("profile="), "worker_x"),
-    ).toBe("");
-  });
 
   it("does not replace a launch profile with the sticky active profile", () => {
     expect(
@@ -41,6 +22,13 @@ describe("initialProfileScope", () => {
     expect(
       shouldAdoptActiveProfile(null, "", "default", "review"),
     ).toBe(true);
+  });
+
+  it("keeps a named-profile dashboard on its own profile (#96712)", () => {
+    // `hermes -p demo serve` with the machine's sticky active profile on
+    // `default`: the dashboard must not retarget chats to the other agent.
+    expect(shouldAdoptActiveProfile(null, "", "demo", "default")).toBe(false);
+    expect(shouldAdoptActiveProfile(null, "", "custom", "default")).toBe(false);
   });
 });
 

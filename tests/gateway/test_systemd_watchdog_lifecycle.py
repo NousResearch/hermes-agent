@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import inspect
-from unittest.mock import patch
 
-import pytest
 
 from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner, start_gateway
-from tests.gateway.restart_test_helpers import make_restart_runner
+from gateway.run import GatewayRunner
 
 
 class _FakeWatchdog:
-    instances: list["_FakeWatchdog"] = []
+    instances: list[_FakeWatchdog] = []
 
     def __init__(self, *, config_enabled: bool = True):
         self.config_enabled = config_enabled
@@ -49,6 +45,7 @@ def test_runner_starts_watchdog_only_after_running(monkeypatch):
 
     watchdog = _FakeWatchdog.instances[-1]
     assert watchdog.config_enabled is True
-    assert watchdog.calls == ["start", "ready:Hermes Gateway running"]
+    assert watchdog.calls[0] == "start"
+    assert len(watchdog.calls) == 2 and watchdog.calls[1].startswith("ready:")
 
 

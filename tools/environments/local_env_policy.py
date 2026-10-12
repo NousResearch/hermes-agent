@@ -2,7 +2,9 @@
 names are Hermes-managed credentials. The env *builders* applying it (``_make_run_env``,
 ``_sanitize_subprocess_env``, ``hermes_subprocess_env``) live in ``tools.environments.local``."""
 
+import functools
 import os
+from typing import Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
@@ -30,7 +32,7 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "SLACK_HOME_CHANNEL_NAME", "SLACK_ALLOWED_USERS", "WHATSAPP_ENABLED",
     "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS", "SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS", "SIGNAL_HOME_CHANNEL",
-    "SIGNAL_HOME_CHANNEL_NAME", "SIGNAL_IGNORE_STORIES", "HASS_TOKEN", "HASS_URL",
+    "SIGNAL_HOME_CHANNEL_NAME", "SIGNAL_IGNORE_STORIES",
     "EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST",
     "EMAIL_HOME_ADDRESS", "EMAIL_HOME_ADDRESS_NAME", "HERMES_DASHBOARD_SESSION_TOKEN",
     "GATEWAY_ALLOWED_USERS", "GH_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
@@ -38,12 +40,29 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
     "GATEWAY_RELAY_DELIVERY_KEY", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
     "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
+    # Keys the OAuth provider profiles (nous, qwen-oauth) also accept when pasted. The auth
+    # registry mirrors env_vars only for api_key profiles, and discovering the provider plugins
+    # from here, at import, would re-mirror them over a plugin's own registry entry.
+    "NOUS_API_KEY", "QWEN_API_KEY",
+    # Hermes' own secrets read in code: the anonymous-inference secret, dashboard auth
+    # (basic, OIDC, drain) and the Google Meet realtime key.
+    "HERMES_ANON_API_SECRET", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
+    "HERMES_DASHBOARD_BASIC_AUTH_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
+    "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_MEET_REALTIME_KEY",
 })
+
+
+def _left_core_env(*, secrets_only: bool) -> frozenset:
+    """Env of features that left core for a catalog plugin (``hermes_cli.left_core_migration``):
+    stripped exactly as when core shipped them, plugin installed or not."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+    return frozenset(name for feature in LEFT_CORE
+                     for name in feature.secret_env + (() if secrets_only else feature.private_env))
 
 
 def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
-    blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST)
+    blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
@@ -79,17 +98,89 @@ def _build_provider_env_blocklist() -> frozenset:
     return frozenset(blocked)
 
 
-_HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+def _build_adapter_secret_env() -> frozenset:
+    """Secrets the messaging adapters declare, process-wide: core ``password`` messaging entries
+    of OPTIONAL_ENV_VARS, the bundled platform plugin manifests' secret entries, and the
+    secret-named keys the gateway env-override table reads (WEIXIN_TOKEN, FEISHU_ENCRYPT_KEY, ...).
+    Declared names only: a user's own ``SLACK_USER_TOKEN`` or ``LOCAL_LLM_API_KEY`` is not Hermes's.
+    A profile's user-installed platform plugins are per home: :func:`_home_adapter_secret_env`.
+    Nothing here fails soft: an unreadable bundled manifest or env table fails the import rather
+    than dropping its secrets from the policy."""
+    from hermes_cli.config import (
+        CORE_DECLARED_ENV_NAMES, OPTIONAL_ENV_VARS, PLATFORM_SECRET_ENV_SUFFIXES, platform_manifest_secret_envs)
+    from hermes_cli.profile_channels import config_env_table_keys
+    # Read in code only, declared nowhere else: the Microsoft Graph app secret and webhook
+    # clientState, and the QQ bot's speech-to-text key.
+    names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY"}
+    names.update(name.upper() for name, meta in OPTIONAL_ENV_VARS.items()
+                 if name in CORE_DECLARED_ENV_NAMES
+                 and meta.get("category") == "messaging" and meta.get("password"))
+    names |= platform_manifest_secret_envs(source="bundled", strict=True)
+    names.update(n.upper() for n in config_env_table_keys() if n.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES))
+    return frozenset(names)
 
 
-def _is_provider_env_blocklisted(name: str) -> bool:
-    """``name`` is a blocklisted provider/tool credential, matched the way the
-    platform's environment resolves names: exact plus case-folded. On Windows
-    the environment block is case-insensitive, so ``openai_api_key`` IS
-    ``OPENAI_API_KEY``; consistent with ``_is_hermes_internal_secret``, which
-    already folds (``key.upper()``)."""
-    return (name in _HERMES_PROVIDER_ENV_BLOCKLIST
-            or name.upper() in _HERMES_PROVIDER_ENV_BLOCKLIST)
+# Provider blocklist first: it imports hermes_cli.auth before hermes_cli.config, whose import
+# discovers provider plugins that expect a fully initialized auth registry.
+_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+_ADAPTER_SECRET_ENV = _build_adapter_secret_env()
+_HERMES_PROVIDER_ENV_BLOCKLIST = _PROVIDER_ENV_BLOCKLIST | _ADAPTER_SECRET_ENV
+
+_HOME_ADAPTER_SECRET_CACHE: dict[str, tuple] = {}
+
+
+def _home_adapter_secret_env() -> frozenset:
+    """Secrets declared by the bound profile's own user-installed platform plugins. Per home, not
+    process-wide: under multiplex profile A's plugin must neither strip a same-named value from
+    profile B's children nor be missing from A's. Cached per home and keyed on every manifest's
+    file signature, so an edit, replacement or deletion takes effect on the next spawn. A plugin
+    manifest under ``plugins/platforms/`` that cannot be read raises. A partial scan (a plugin dir
+    or flat manifest unreadable or unparsable) keeps the names this home already had and is not
+    cached, so a failed discovery never releases a known denial and recovery is seen at once."""
+    from hermes_cli.config import platform_manifest_secret_scan, platform_manifest_stamp
+    from hermes_constants import get_hermes_home, hermes_home_key
+    home = get_hermes_home()
+    key, stamp = hermes_home_key(home), platform_manifest_stamp(home)
+    cached = _HOME_ADAPTER_SECRET_CACHE.get(key)
+    if cached is None or cached[0] is None or cached[0] != stamp:
+        names, complete = platform_manifest_secret_scan(home)
+        names -= _ADAPTER_SECRET_ENV
+        if not complete and cached is not None:
+            names |= cached[1]
+        cached = (stamp if complete else None, names)
+        _HOME_ADAPTER_SECRET_CACHE[key] = cached
+    return cached[1]
+
+
+def _registry_adapter_secret_env() -> frozenset:
+    """Secret-named ``required_env`` of the adapters registered in the current profile scope.
+    Tier 2 only: ``required_env`` is an unchecked setup list, so a plugin naming OPENAI_API_KEY
+    must not strip it from credentialed children. No blanket fallback: a registry error surfaces
+    instead of an empty (fail-open) set."""
+    from gateway.platform_registry import platform_registry
+    from hermes_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
+    return frozenset(n.upper() for n in platform_registry.required_env_names()
+                     if n.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES))
+
+
+def _registered_adapter_secret_env() -> frozenset:
+    """Per-call adapter secrets: the bound profile's user-plugin declarations (Tier 1, see
+    :func:`_home_adapter_secret_env`) plus the registered adapters' (Tier 2,
+    :func:`_registry_adapter_secret_env`)."""
+    return _registry_adapter_secret_env() | _home_adapter_secret_env()
+
+
+def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None) -> bool:
+    """``name`` is a blocklisted provider/tool credential or adapter secret, matched the way the
+    platform's environment resolves names: exact plus case-folded. On Windows the environment
+    block is case-insensitive, so ``openai_api_key`` IS ``OPENAI_API_KEY``; consistent with
+    ``_is_hermes_internal_secret``, which already folds (``key.upper()``). Loops pass
+    ``_registered`` so the registry is read once per env, not once per key."""
+    upper = name.upper()
+    if name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST:
+        return True
+    return upper in (_registered_adapter_secret_env() if _registered is None else _registered)
+
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
 # CLI) carved out of the TERMINAL scrub only (``_make_run_env``,
@@ -199,28 +290,68 @@ def _is_hermes_internal_secret(key: str) -> bool:
 # no secret scrub touches them, and most profiles' ``.env`` files do not define them, so the
 # child's own dotenv load never overwrites an inherited value: a child spawned FOR profile B
 # from a process that loaded profile A's gates (or a unit-file ``Environment=``) would enforce
-# A's channel/user/role list as its own (#113270). Matched by shape so a gate added to any
-# adapter is covered without a second edit; ``HERMES_*`` never counts (``HERMES_MEDIA_ALLOW_DIRS``,
+# A's channel/user/role list as its own (#113270). The suffix is matched by shape so a gate
+# added to any adapter is covered without a second edit, but ONLY under a platform prefix
+# (``DISCORD_``, ``GATEWAY_``, a plugin adapter's name): an operator's own ``DEMO_ALLOWED_SENDER``
+# is script data, not a Hermes gate, and deleting it by name shape broke routed ``no_agent``
+# cron scripts (#119539). ``HERMES_*`` never counts (``HERMES_MEDIA_ALLOW_DIRS``,
 # ``HERMES_ALLOW_PRIVATE_URLS`` are process settings, not adapter gates).
 _PROFILE_GATE_ENV_MARKERS = (
     "_ALLOWED_", "_ALLOW_ALL_", "_ALLOW_FROM", "_ALLOW_BOTS", "_ALLOW_PUBLIC_", "_IGNORED_CHANNELS",
     "_NO_THREAD_CHANNELS", "_FREE_RESPONSE_CHANNELS", "_BACKFILL_CHANNELS", "_GROUP_ALLOWED",
 )
+# Gate owners that are not a ``Platform`` value: the cross-platform pairing gate and adapters whose
+# env prefix differs from their platform name (``qqbot`` reads ``QQ_*``).
+_EXTRA_GATE_ENV_PREFIXES = frozenset({"GATEWAY", "QQ"})
 
 
-def is_profile_gate_env(name: str) -> bool:
+@functools.lru_cache(maxsize=1)
+def _static_gate_env_prefixes() -> frozenset:
+    """Built-in ``Platform`` values plus bundled platform plugins (directory names and manifest
+    aliases) — fixed for the life of the process, so scanned once."""
+    names = set(_EXTRA_GATE_ENV_PREFIXES)
+    try:
+        from gateway.config import Platform
+        names.update(m.value for m in Platform.__members__.values())
+        bundled, aliases = Platform._scan_bundled_plugin_platforms()
+        names.update(bundled)
+        names.update(aliases)
+    except Exception:
+        pass
+    return frozenset(str(n).upper().replace("-", "_") for n in names if n)
+
+
+def _platform_gate_env_prefixes() -> frozenset:
+    """Upper-cased owners of authorization gates: the static set plus runtime-registered plugin
+    adapters (``platform_registry``, dynamic and profile-scoped, so read per call — a cheap set
+    union under the registry lock)."""
+    names = set(_static_gate_env_prefixes())
+    try:
+        from gateway.platform_registry import platform_registry
+        names.update(str(n).upper().replace("-", "_") for n in platform_registry.registered_names() if n)
+    except Exception:
+        pass
+    return frozenset(names)
+
+
+def is_profile_gate_env(name: str, _prefixes: Optional[frozenset] = None) -> bool:
     """True for a platform authorization gate (``DISCORD_ALLOWED_CHANNELS``, ``TELEGRAM_ALLOW_ALL_USERS``,
     ``GATEWAY_ALLOWED_USERS``, ``WHATSAPP_GROUP_ALLOW_FROM`` ...) — profile-scoped policy a child acting
-    for ANOTHER profile must never inherit."""
+    for ANOTHER profile must never inherit. A gate is a platform prefix AND a gate-shaped suffix;
+    an operator variable that merely contains ``_ALLOWED_`` is not one."""
     upper = name.upper()
     if upper.startswith("HERMES_") or upper.startswith("_"):
         return False
-    return any(marker in upper for marker in _PROFILE_GATE_ENV_MARKERS)
+    if not any(marker in upper for marker in _PROFILE_GATE_ENV_MARKERS):
+        return False
+    prefixes = _prefixes if _prefixes is not None else _platform_gate_env_prefixes()
+    return any(upper.startswith(prefix + "_") for prefix in prefixes)
 
 
 def strip_profile_gate_env(env: dict) -> dict:
     """Drop every authorization gate from *env* in place (see :func:`is_profile_gate_env`)."""
-    for key in [k for k in env if is_profile_gate_env(k)]:
+    prefixes = _platform_gate_env_prefixes()
+    for key in [k for k in env if is_profile_gate_env(k, prefixes)]:
         del env[key]
     return env
 
@@ -251,7 +382,13 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be
     # enumerated here to stay stripped on the inherit_credentials=True path.
     "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
-    "HASS_TOKEN", "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
+    "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
+    # Dashboard auth: the basic-auth password and session-signing secret, the OIDC client
+    # secret and the drain bearer. They let a holder mint or forge dashboard sessions, and no
+    # child (credentialed CLIs included) consumes them.
+    "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
+    "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
-})
+}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True)  # every declared adapter secret is Tier 1
+_ALWAYS_STRIP_FOLDED: frozenset[str] = frozenset(k.upper() for k in _ALWAYS_STRIP_KEYS)

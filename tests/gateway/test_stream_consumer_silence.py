@@ -35,37 +35,6 @@ from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 # is_partial_silence_marker — mid-stream hold-back predicate
 # --------------------------------------------------------------------------
 
-# Buffers that could still resolve to a marker → held back while streaming.
-PARTIAL_POSITIVE = [
-    "N",
-    "NO",
-    "NO_",
-    "NO_REP",
-    "NO_REPLY",      # exact marker, not yet terminated by stream-end
-    "NO REPLY",
-    "no reply",      # canonicalized (case/space-insensitive)
-    "  no_reply  ",  # surrounding whitespace stripped
-    "[",
-    "[SIL",
-    "[SILENT]",
-    "SILENT",
-    "sil",
-]
-
-# Buffers that have already diverged from every marker → stream normally.
-PARTIAL_NEGATIVE = [
-    "",
-    "   ",
-    "No reply needed — here is the plan",   # diverged past the marker
-    "NO_REPLYING",                           # superset, not a prefix
-    "Nope",
-    "Hello there",
-    "The NO_REPLY token means silence",      # marker mentioned mid-prose
-    "x" * 65,                                # over the 64-char cap
-    "silence is golden",                     # 'SILENCE...' is not a marker prefix
-]
-
-
 def test_partial_predicate_agrees_with_exact_on_full_markers():
     """Every exact silence marker is also a (trivial) partial of itself."""
     from gateway.response_filters import LIVE_GATEWAY_SILENT_MARKERS

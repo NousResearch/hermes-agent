@@ -81,7 +81,7 @@ def read_active_work(home: Optional[Path] = None) -> Optional[list]:
 
 def format_drain_report(work: Optional[list], *, remaining_s: float, home: Optional[Path] = None) -> str:
     """Multi-line progress block: what the gateway is waiting on plus how to stop waiting."""
-    lines = [f"  ⏳ still draining — {int(max(remaining_s, 0))}s left before the forced restart"]
+    lines = [f"  ⏳ still draining — {max(remaining_s, 0):.0f}s left before the forced restart"]
     if work is None:
         lines.append("     (gateway did not report what it is waiting on — pre-update gateway or unreadable state file)")
     elif not work:

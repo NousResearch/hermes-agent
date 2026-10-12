@@ -18,7 +18,7 @@ import pytest
 
 
 pytest.importorskip("mcp.client.auth.oauth2")
-from tools import mcp_tool_loop as _mcp_loop  # noqa: E402
+from tools import mcp_tool_loop as _mcp_loop
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +487,7 @@ def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
         task._reconnect_event.set()
         try:
             await asyncio.wait_for(run_task, timeout=15)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())
@@ -535,7 +535,6 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
                 self.session = object()
                 self._ready.set()
                 await self._wait_for_lifecycle_event()
-                return
 
         task = _Task("srv")
         run_task = asyncio.ensure_future(task.run({"command": "x"}))
@@ -568,7 +567,7 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
         task._reconnect_event.set()
         try:
             await asyncio.wait_for(run_task, timeout=15)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())
@@ -609,4 +608,3 @@ def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch
     finally:
         _cleanup(mcp_tool, "srv")
         mcp_tool._server_errors_all_application.pop("srv", None)
-

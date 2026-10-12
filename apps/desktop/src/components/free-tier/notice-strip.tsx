@@ -6,6 +6,7 @@ import { StatusRow } from '@/components/chat/status-row'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
+import { recordFriction } from '@/store/desktop-metrics'
 import { ackFreeTierNotice, claimFreeTierNotice, freeTierNoticeClaim, releaseFreeTierNotice } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { setModelPickerOpen } from '@/store/session'
@@ -82,7 +83,10 @@ export function FreeTierNoticeStrip() {
           </Button>
           <Button
             className="text-muted-foreground/75 hover:text-foreground/90"
-            onClick={() => consume()}
+            onClick={() => {
+              recordFriction('notice_dismissed', 'free_tier_notice')
+              consume()
+            }}
             size="micro"
             type="button"
             variant="text"

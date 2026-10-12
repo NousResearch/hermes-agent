@@ -29,9 +29,9 @@ def _read_only_object_dir(root: Path) -> Path:
 
 
 def test_checkpoint_clear_all_removes_tree_with_read_only_object(tmp_path):
-    """Driven through a production call site (#117170): ``checkpoint_manager.clear_all`` must
+    """Driven through a production call site (#117170): ``checkpoint_maintenance.clear_all`` must
     reach ``rmtree_readonly`` — a bare ``shutil.rmtree`` there reports ``deleted=False``."""
-    from tools.checkpoint_manager import clear_all
+    from tools.checkpoint_maintenance import clear_all
 
     root = tmp_path / "checkpoints"
     obj_dir = _read_only_object_dir(root)
@@ -43,7 +43,7 @@ def test_checkpoint_clear_all_removes_tree_with_read_only_object(tmp_path):
     assert not root.exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_removes_read_only_file_in_writable_directory(tmp_path):
     """The Git-for-Windows shape: the file is read-only, its directory is writable."""
     root = tmp_path / "plugins" / "demo"

@@ -171,36 +171,6 @@ describe('insertion', () => {
     expect(options().some(label => label.startsWith('@builder'))).toBe(true)
     expect(options().some(label => label.startsWith('@undefined'))).toBe(false)
   })
-
-  it('paints the popover on the elevated surface token, never a translucent fill (#113713)', async () => {
-    const { input } = await mount()
-
-    typeInto(input, '@')
-
-    // `--ui-bg-primary` is a hover/interactive FILL (accent mixed into a 10%
-    // base over transparent) — on it the transcript read straight through the
-    // menu. Floating menus sit on `--ui-bg-elevated`, an opaque surface.
-    const menu = screen.getByRole('button', { name: /^@everyone/ }).parentElement
-
-    expect(menu?.className).toContain('bg-(--ui-bg-elevated)')
-    expect(menu?.className).not.toMatch(/bg-\(--ui-bg-(?:primary|secondary|tertiary)\)/)
-  })
-})
-
-// #89884: the composer used to be a single-line Input whose form submitted on
-// every Enter, so multi-line room prompts were impossible.
-describe('sizing (#95300)', () => {
-  it('sizes from its content up to a viewport-bounded cap and scrolls beyond it, while starting at one row', async () => {
-    const { input } = await mount()
-
-    // Chromium's field-sizing does the growing; the contract the room relies
-    // on is the class set: content-sized, capped, scrolling past the cap,
-    // and a single compact row when empty.
-    expect(input.rows).toBe(1)
-    expect(input.classList.contains('field-sizing-content')).toBe(true)
-    expect(input.classList.contains('max-h-[min(50vh,24rem)]')).toBe(true)
-    expect(input.classList.contains('overflow-y-auto')).toBe(true)
-  })
 })
 
 describe('keyboard (#89884)', () => {

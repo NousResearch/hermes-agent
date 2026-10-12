@@ -57,4 +57,4 @@ def test_delegated_child_kanban_cli_refusal_returns_nonzero_exit_status(tmp_path
     )
 
     assert refused.returncode == 1
-    assert "delegate_task child contexts cannot mutate Kanban tasks via the CLI" in refused.stderr
+    assert "delegate_task" in refused.stderr

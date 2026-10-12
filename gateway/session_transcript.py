@@ -524,6 +524,25 @@ class SessionTranscriptMixin:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
+    def stamp_latest_assistant_platform_message_id(
+        self,
+        session_id: str,
+        platform_message_id: str,
+        *,
+        content: str | None = None,
+    ) -> bool:
+        """Stamp outbound delivery id onto the latest matching assistant row (False without a DB)."""
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return False
+        try:
+            return db.stamp_latest_assistant_platform_message_id(
+                session_id, platform_message_id, content=content,
+            )
+        except Exception:
+            logger.debug("stamp_latest_assistant_platform_message_id failed", exc_info=True)
+            return False
+
     def transcript_tail_role(self, session_id: str) -> Optional[str]:
         """Role of the newest live conversation row on the route ``load_transcript`` reads (``None``
         when empty, no DB, or the read fails — the boundary write would fail the same way)."""

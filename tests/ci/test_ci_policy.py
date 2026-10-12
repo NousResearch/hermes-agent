@@ -117,6 +117,7 @@ def test_image_gate_keeps_runtime_failures_and_excludes_only_other_surfaces() ->
         "native-install-tests",
         "tests-os", "installer-tests", "rust-tests", "bootstrap-installer",
         "e2e-desktop", "e2e-desktop-core", "e2e-desktop-update", "docs-site",
+        "prompt-surface-diff", "blob-size-check",
     }
     needs = {name: {"result": "success"} for name in image}
     assert not _mod.evaluate_needs(needs, image).failed

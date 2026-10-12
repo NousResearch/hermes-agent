@@ -87,6 +87,9 @@ outputs:
   upgrade:
     description: Run real install/upgrade and packaged Desktop update E2E on the fork unless paths are known backend-only.
     value: ${{ steps.classify.outputs.upgrade }}
+  remote_backends:
+    description: Run the SSH and Docker terminal backends against a real sshd and Docker daemon.
+    value: ${{ steps.classify.outputs.remote_backends }}
 
 runs:
   using: composite

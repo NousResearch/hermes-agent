@@ -130,6 +130,20 @@ def _recover_refresh(
     return None
 
 
+def sync_xai_pool_entry(pool: CredentialPool, entry: PooledCredential) -> PooledCredential:
+    """Cooldown recovery must consult the row's owner, not the profile singleton."""
+    from agent.credential_pool import STATUS_DEAD
+
+    with _entry_transaction(pool, entry) as owner:
+        synced = _sync_entry(pool, entry, owner)
+        if synced is None:
+            # Already removed from the live pool; do not select the loop's stale snapshot.
+            return replace(entry, last_status=STATUS_DEAD)
+        if synced is not entry:
+            return _commit_rotation(pool, entry, synced, owner)
+        return entry
+
+
 def refresh_xai_pool_entry(pool: CredentialPool, entry: PooledCredential) -> PooledCredential | None:
     """Refresh or adopt this entry under its owner's lock, preserving other grants."""
     with _entry_transaction(pool, entry) as owner:

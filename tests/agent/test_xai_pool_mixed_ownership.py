@@ -80,6 +80,118 @@ def test_borrowed_pool_rotations_lock_and_update_root_not_profile_singleton(mixe
     assert after["credential_pool"]["xai-oauth"][0]["refresh_token"] == "refresh-B2"
 
 
+def test_device_code_seeding_keeps_profile_and_borrowed_root_grants_separate(mixed_grants, monkeypatch):
+    root, profiles = mixed_grants
+    root_path = root / "auth.json"
+    store = _store(root_path)
+    store["providers"] = {}
+    borrowed = store["credential_pool"]["xai-oauth"][0]
+    borrowed["source"] = "device_code"
+    store["credential_pool"]["xai-oauth"] = [borrowed]
+    root_path.write_text(json.dumps(store), encoding="utf-8")
+    profile_path = profiles[0] / "auth.json"
+    posted = []
+
+    def rotate(access_token, refresh_token, **_kwargs):
+        posted.append((access_token, refresh_token))
+        return {"access_token": access_token + "-rotated", "refresh_token": refresh_token + "-rotated",
+                "last_refresh": "2026-10-01T00:01:00Z"}
+
+    monkeypatch.setattr(auth, "refresh_xai_oauth_pure", rotate)
+    for suffix in ("", "-rotated"):
+        pool = load_pool("xai-oauth")
+        by_id = {row.id: row for row in pool.entries()}
+        assert by_id["borrowed-B"].refresh_token == "refresh-B0" + suffix
+        local = next(row for row in pool.entries() if row.id != "borrowed-B")
+        assert local.refresh_token == "one-refresh-A" + suffix
+        assert pool.select().id == (local.id if suffix else "borrowed-B")
+        assert _store(root_path)["credential_pool"]["xai-oauth"][0]["refresh_token"] == "refresh-B0" + suffix
+        if suffix:
+            break
+        assert pool.try_refresh_current().refresh_token == "refresh-B0-rotated"
+        assert _store(profile_path)["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "one-refresh-A"
+        root_after_rotation = root_path.read_bytes()
+        assert pool.try_refresh_matching(credential_id=local.id).refresh_token == "one-refresh-A-rotated"
+        assert root_path.read_bytes() == root_after_rotation
+        # A status flush must not materialize borrowed rows in the profile or swap their tokens.
+        assert pool.mark_exhausted_and_rotate(credential_id="borrowed-B", status_code=429).id == local.id
+    assert posted == [("access-B0", "refresh-B0"), ("one-access-A", "one-refresh-A")]
+    assert _store(profile_path)["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "one-refresh-A-rotated"
+    assert not _store(profile_path).get("credential_pool", {}).get("xai-oauth")
+    assert _store(profile_path)["active_provider"] == "openrouter"
+    assert _store(root_path)["active_provider"] == "openai-codex"
+    monkeypatch.setenv("HERMES_HOME", str(profiles[1]))
+    sibling = load_pool("xai-oauth")
+    assert next(row for row in sibling.entries() if row.id == "borrowed-B").refresh_token == "refresh-B0-rotated"
+    assert auth.resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)["api_key"] == "two-access-A"
+
+
+def test_same_grant_profile_singleton_and_root_pool_keep_one_owner(mixed_grants, monkeypatch):
+    root, profiles = mixed_grants
+    root_path = root / "auth.json"
+    profile_path = profiles[0] / "auth.json"
+    store = _store(root_path)
+    store["providers"] = {}
+    borrowed = store["credential_pool"]["xai-oauth"][0]
+    borrowed["source"] = "device_code"
+    store["credential_pool"]["xai-oauth"] = [borrowed]
+    root_path.write_text(json.dumps(store), encoding="utf-8")
+    profile = _store(profile_path)
+    profile["providers"]["xai-oauth"]["tokens"] = {
+        "access_token": borrowed["access_token"], "refresh_token": borrowed["refresh_token"],
+    }
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    posted = []
+
+    def rotate(access_token, refresh_token, **_kwargs):
+        posted.append(refresh_token)
+        return {"access_token": access_token + "-rotated", "refresh_token": refresh_token + "-rotated"}
+
+    monkeypatch.setattr(auth, "refresh_xai_oauth_pure", rotate)
+    for suffix in ("", "-rotated"):
+        pool = load_pool("xai-oauth")
+        assert [(row.id, row.refresh_token) for row in pool.entries()] == [("borrowed-B", "refresh-B0" + suffix)]
+        assert not _store(profile_path)["providers"].get("xai-oauth")
+        assert pool.try_refresh_matching(credential_id="borrowed-B").refresh_token == "refresh-B0" + suffix + "-rotated"
+    assert posted == ["refresh-B0", "refresh-B0-rotated"]
+    assert auth.resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)["api_key"] == "access-B0-rotated-rotated"
+    assert _store(profile_path)["active_provider"] == "openrouter"
+
+
+def test_same_owner_singleton_aliases_still_deduplicate(mixed_grants, monkeypatch):
+    _, profiles = mixed_grants
+    home = profiles[0]
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    path = home / "auth.json"
+    store = _store(path)
+    tokens = store["providers"]["xai-oauth"]["tokens"]
+    store["credential_pool"] = {"xai-oauth": [
+        {"id": row_id, "source": "device_code", "auth_type": "oauth", **tokens}
+        for row_id in ("original", "alias")
+    ]}
+    store["credential_pool"]["xai-oauth"].append({
+        "id": "independent", "source": "manual:device_code", "auth_type": "oauth",
+        "access_token": "other-access", "refresh_token": "other-refresh",
+    })
+    path.write_text(json.dumps(store), encoding="utf-8")
+    posted = []
+
+    def rotate(access_token, refresh_token, **_kwargs):
+        posted.append(refresh_token)
+        return {"access_token": access_token + "-rotated", "refresh_token": refresh_token + "-rotated"}
+
+    monkeypatch.setattr(auth, "refresh_xai_oauth_pure", rotate)
+    pool = load_pool("xai-oauth")
+    assert {row.id for row in pool.entries()} == {"original", "independent"}
+    assert pool.try_refresh_matching(credential_id="original").refresh_token == tokens["refresh_token"] + "-rotated"
+    reloaded = {row.id: row for row in load_pool("xai-oauth").entries()}
+    assert set(reloaded) == {"original", "independent"}
+    assert reloaded["original"].refresh_token == tokens["refresh_token"] + "-rotated"
+    assert reloaded["independent"].refresh_token == "other-refresh"
+    assert posted == [tokens["refresh_token"]]
+    assert {row["id"] for row in _store(path)["credential_pool"]["xai-oauth"]} == {"original", "independent"}
+
+
 def test_terminal_borrowed_grant_stays_quarantined_without_removing_independent_grants(mixed_grants, monkeypatch):
     root, profiles = mixed_grants
     root_path = root / "auth.json"

@@ -1366,6 +1366,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         if entry.source not in sources:
             return entry
         try:
+            if self.provider == "xai-oauth":
+                from agent.credential_pool_xai import sync_xai_pool_entry
+                return sync_xai_pool_entry(self, entry)
             with auth_mod._provider_state_transaction(self.provider) as (_, state, _source):
                 tokens = state.get("tokens") if isinstance(state, dict) else None
             if not isinstance(tokens, dict):
@@ -2447,8 +2450,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 # --- Seeding --------------------------------------------------------------
 
 
-def _upsert_entry(entries: list[PooledCredential], provider: str, source: str, payload: dict[str, Any]) -> bool:
-    matching_indices = [idx for idx, entry in enumerate(entries) if entry.source == source]
+def _upsert_entry(
+    entries: list[PooledCredential], provider: str, source: str, payload: dict[str, Any],
+    *, protected_ids: Iterable[str] = (),
+) -> bool:
+    matching_indices = [idx for idx, entry in enumerate(entries)
+                        if entry.source == source and entry.id not in protected_ids]
     existing_idx = matching_indices[0] if matching_indices else None
     duplicate_indices = set(matching_indices[1:])
     if duplicate_indices:
@@ -2551,12 +2558,13 @@ class _Seeder:
         self.active_sources: set[str] = set()
         self.is_suppressed = _is_source_suppressed_fn()
 
-    def upsert(self, source: str, payload: dict[str, Any]) -> bool:
+    def upsert(self, source: str, payload: dict[str, Any], *, protected_ids: Iterable[str] = ()) -> bool:
         """Upsert unless suppressed (``hermes auth remove`` must stay stable across loads)."""
         if self.is_suppressed(self.provider, source):
             return False
         self.active_sources.add(source)
-        ingested = _upsert_entry(self.entries, self.provider, source, {"source": source, **payload})
+        ingested = _upsert_entry(self.entries, self.provider, source, {"source": source, **payload},
+                                 protected_ids=protected_ids)
         self.changed |= ingested
         return ingested
 
@@ -2776,40 +2784,6 @@ def _seed_minimax_singleton(seed: _Seeder) -> None:
         logger.debug("MiniMax OAuth token seed failed: %s", exc)
 
 
-def _seed_tokens_singleton(seed: _Seeder, auth_store: dict[str, Any]) -> None:
-    """Codex / xAI: surface the auth.json ``providers.<id>.tokens`` singleton as ``device_code``.
-
-    Hermes owns its own Codex auth state and does NOT auto-import
-    ~/.codex/auth.json: refresh tokens are single-use, so sharing them with
-    Codex CLI / VS Code causes refresh_token_reused races. Adoption is an
-    explicit one-time prompt via `hermes auth openai-codex`.
-    """
-    if seed.provider == "xai-oauth":
-        from hermes_cli.auth_xai import _load_xai_oauth_state_with_source
-        state, source_path = _load_xai_oauth_state_with_source(auth_store, include_pool=False)
-    else:
-        state, source_path = _load_provider_state_with_source(auth_store, seed.provider)
-    if owned_profile_reads_root_state(auth_store, seed.provider, source_path):
-        return
-    tokens = state.get("tokens") if isinstance(state, dict) else None
-    if not (isinstance(tokens, dict) and tokens.get("access_token")):
-        return
-    if seed.provider == "openai-codex":
-        base_url = auth_mod.DEFAULT_CODEX_BASE_URL
-        custom_label = str(state.get("label") or "").strip()
-    else:
-        base_url = auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
-        custom_label = ""
-    seed.upsert("device_code", {
-        "auth_type": AUTH_TYPE_OAUTH,
-        "access_token": tokens.get("access_token", ""),
-        "refresh_token": tokens.get("refresh_token"),
-        "base_url": base_url,
-        "last_refresh": state.get("last_refresh"),
-        "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),
-    })
-
-
 def _seed_from_singletons(provider: str, entries: list[PooledCredential]) -> tuple[bool, set[str]]:
     seed = _Seeder(provider, entries)
     auth_store = _load_auth_store()
@@ -2828,7 +2802,8 @@ def _seed_from_singletons(provider: str, entries: list[PooledCredential]) -> tup
         # this gate the removal is undone on the next load_pool().
         if provider == "openai-codex" and seed.is_suppressed(provider, "device_code"):
             return seed.result
-        _seed_tokens_singleton(seed, auth_store)
+        from agent.credential_pool_sync import seed_tokens_singleton
+        seed_tokens_singleton(seed, auth_store)
     return seed.result
 
 

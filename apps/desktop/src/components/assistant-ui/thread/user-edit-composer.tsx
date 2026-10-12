@@ -556,8 +556,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     // In-app drags (project tree / gutter) are workspace-relative paths that
     // resolve on the gateway as-is, so they stay inline refs. OS drops need to
-    // be staged + uploaded first, then their gateway-side ref is inserted.
-    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    // be staged + uploaded first, then their gateway-side ref is inserted —
+    // unless the backend resolves this machine's paths as-is, in which case
+    // the drop keeps its original-path inline ref too (#52427).
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates, {
+      backendCwd: cwd,
+      remote: isSessionRemote(sessionId),
+      terminalBackend: $terminalBackend.get()
+    })
 
     if (insertDroppedRefs(inAppRefs)) {
       triggerHaptic('selection')

@@ -16,7 +16,7 @@ import os
 
 import pytest
 
-import gateway.relay as relay
+from gateway import relay
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +35,7 @@ def _clean_env(monkeypatch):
     ):
         monkeypatch.delenv(k, raising=False)
     # Never read config.yaml off disk in these tests.
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {}, raising=False)
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
 
 
 def _stub_post(captured: dict):
@@ -155,7 +155,7 @@ def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
         def read(self):
             return json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
 
-    def _fake_urlopen(req, timeout=None):  # noqa: ANN001
+    def _fake_urlopen(req, timeout=None):
         sent["body"] = json.loads(req.data.decode())
         return _Resp()
 

@@ -1,47 +1,65 @@
+import type { OnboardingStateResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
-import { endChatOnboardingSolo, takeGuideShape } from '@/components/onboarding-chat/assembly'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { ackFreeTierNotice, type FreeTierRequester } from '@/store/free-tier'
-import { $introReveal } from '@/store/intro-reveal'
 import { clearFreeTierIntro } from '@/store/onboarding'
-import { $guideOpening, $onboardingGate, runGuideKickoff, skipGuide } from '@/store/onboarding-gate'
+import {
+  $onboardingGate,
+  $setupProfileName,
+  abandonGuide,
+  beginOnboardingFlow,
+  type GuideKickoffResult,
+  markOnboardingStateRead,
+  runGuideKickoff
+} from '@/store/onboarding-gate'
+import { $introView } from '@/store/onboarding-intro'
 
-import { GuideLoading } from './guide-loading'
+import { failIntro, startIntro } from './intro'
 
 interface OnboardingChatGateProps {
   enabled: boolean
-  onKickoff: () => Promise<boolean>
+  onKickoff: () => Promise<GuideKickoffResult>
   requestGateway: FreeTierRequester
+  /** Only the main window runs the intro. Every window still reads the state: the provider picker,
+   *  the free-tier introduction and the usage-stats offer wait on that read (afterOnboardingStateRead). */
+  runsIntro: boolean
 }
 
-export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: OnboardingChatGateProps) {
+export function OnboardingChatGate({ enabled, onKickoff, requestGateway, runsIntro }: OnboardingChatGateProps) {
   const gate = useStore($onboardingGate)
-  const intro = useStore($introReveal)
-  const opening = useStore($guideOpening)
-
-  // A guide is owed the moment the renderer knows it (cinematic with the film
-  // seen, or a relaunch mid-guide). Take the solo shape now, before the
-  // gateway opens. Otherwise the normal shell paints at full size for the
-  // seconds the backend takes to come up, and then snaps down to the guide.
-  useEffect(() => {
-    if (gate.guideQueued && intro.phase === 'hidden') {
-      takeGuideShape()
-    }
-    // Once, on mount: the queued flag is a boot fact, not a live signal.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   useEffect(() => {
     if (!enabled || !isOnboardingEnabled()) {
       return
     }
 
-    // The guide is the free tier's introduction, whichever way it opens: the
-    // film, or the guided chat directly when the film is skipped. Ack the
-    // one-time notice as soon as either takes the screen, or a readiness
-    // round mid-guide raises the ready screen over the conversation.
+    void requestGateway<OnboardingStateResult>('onboarding.state')
+      .then(
+        state => {
+          $setupProfileName.set(state.profile ?? null)
+
+          if (!runsIntro) {
+            return
+          }
+
+          beginOnboardingFlow(state)
+
+          if ($onboardingGate.get().guideQueued) {
+            startIntro()
+          }
+        },
+        error => console.warn('[onboarding] state could not be read', error)
+      )
+      .finally(markOnboardingStateRead)
+  }, [enabled, requestGateway, runsIntro])
+
+  useEffect(() => {
+    if (!enabled || !isOnboardingEnabled()) {
+      return
+    }
+
     const ack = () => {
       clearFreeTierIntro()
       void ackFreeTierNotice(requestGateway).then(acked => {
@@ -51,39 +69,32 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
       })
     }
 
-    // subscribe also sees an intro started by the preceding sibling's effect.
-    const offIntro = $introReveal.subscribe(state => {
-      if (state.phase === 'playing') {
+    return $introView.subscribe(view => {
+      if (view === 'intro') {
         ack()
       }
     })
-
-    const offGate = $onboardingGate.subscribe(state => {
-      if (state.phase === 'guided') {
-        ack()
-      }
-    })
-
-    return () => {
-      offIntro()
-      offGate()
-    }
   }, [enabled, requestGateway])
 
   useEffect(() => {
-    if (enabled && gate.guideQueued && intro.phase === 'hidden') {
-      const recover = () => {
-        endChatOnboardingSolo()
-        skipGuide()
+    // No deadline here: the kickoff waits while the backend is known to be coming and settles itself on
+    // the states it cannot wait out (onboarding-kickoff-machine.ts).
+    if (enabled && gate.guideQueued) {
+      const recover = (result: Exclude<GuideKickoffResult, 'started'>) => {
+        failIntro()
+        abandonGuide(result)
       }
 
-      void runGuideKickoff(onKickoff).then(started => {
-        if (!started) {
-          recover()
-        }
-      }, recover)
+      void runGuideKickoff(onKickoff).then(
+        result => {
+          if (result !== 'started') {
+            recover(result)
+          }
+        },
+        () => recover('failed')
+      )
     }
-  }, [enabled, gate.guideQueued, intro.phase, onKickoff])
+  }, [enabled, gate.guideQueued, onKickoff])
 
-  return opening ? <GuideLoading /> : null
+  return null
 }

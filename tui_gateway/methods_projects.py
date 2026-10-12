@@ -95,6 +95,8 @@ def _(rid, params, pdb, conn) -> dict:
         **_pick(params, "slug", "primary_path", "description", "icon", "color", "board_slug"))
     if params.get("use"):
         pdb.set_active(conn, pid)
+    from hermes_cli.observability.shared_metrics_signals import record_feature_used
+    record_feature_used("projects")
     proj = pdb.get_project(conn, pid)
     return _ok(rid, {"project": proj.to_dict() if proj else None})
 

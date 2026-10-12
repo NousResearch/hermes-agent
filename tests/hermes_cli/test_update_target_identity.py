@@ -88,6 +88,14 @@ def update_tree(tmp_path, monkeypatch):
                            args=args, resumed=resumed, requests=requests, plans=plans)
 
 
+def _publish_stable(monkeypatch, t):
+    """stable = the latest published GitHub release; its resolver pins t.wanted (v1.1.0)."""
+    from hermes_cli import source_releases
+
+    monkeypatch.setattr(source_releases, '_resolve_stable', lambda repository, *_: source_releases.SourceTarget(
+        'stable', 'stable', repository, commit=t.wanted, version='1.1.0'))
+
+
 @pytest.mark.parametrize('case', ['main', 'explicit', 'missing', 'no-move', 'wrong-branch',
                                 'fork-no-upstream', 'fork-upstream', 'fork-upstream-push-ok',
                                 'fork-upstream-wrong-branch', 'fork-upstream-reverted',
@@ -123,10 +131,21 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
     run = subprocess.run
     pushes = []
 
+    def _upstream_sha():
+        # The fork sync merges the commit it resolved from refs/remotes/upstream/main (m2).
+        found = run(['git', 'rev-parse', '-q', '--verify', 'refs/remotes/upstream/main'], cwd=t.clone,
+                    capture_output=True, text=True, encoding='utf-8')
+        return found.stdout.strip() or '<no upstream>'
+
     def fault(command, *args, **kwargs):
         assert Path(command[0]).name.lower() in {'git', 'git.exe'} or command[0] == sys.executable, command
         assert Path(kwargs['cwd']).resolve() in {t.clone, t.origin}, command
-        if 'merge' in command and '--ff-only' in command:
+        # The upstream sync's tree move (`pull upstream main` on older updaters, a local merge of
+        # the commit resolved from `refs/remotes/upstream/main` now, m2) vs the origin fast-forward.
+        upstream_move = ('pull' in command or 'merge' in command) and (
+            any(arg == 'upstream' or arg.startswith(('upstream/', 'refs/remotes/upstream/')) for arg in command)
+            or ('merge' in command and _upstream_sha() in command))
+        if 'merge' in command and '--ff-only' in command and not upstream_move:
             if case == 'no-move':
                 return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
             result = run(command, *args, **kwargs)
@@ -136,7 +155,7 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
                 run(['git', 'reset', '--hard', t.base], cwd=t.clone, check=True, capture_output=True)
             return result
         result = run(command, *args, **kwargs)
-        if 'pull' in command and case.startswith('fork-late'):
+        if upstream_move and case.startswith('fork-late'):
             if case.endswith('wrong-branch'):
                 run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
             if case.endswith('reverted'):
@@ -194,20 +213,8 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
     """A stable update is pinned to the channel's exact commit: no tag lookup on
     origin, the stale local ``v1.1.0`` never moves, and an explicit --branch
     bypasses the channel."""
-    from hermes_cli import source_releases
-    from hermes_cli.release_channels import ChannelResolution
-
     t = update_tree
-    # The stable channel is an R2 record whose published build pins t.wanted
-    # (the documented reader seam; see test_source_channel_integration).
-    record = {"schema": 1, "name": "stable", "repository": "NousResearch/hermes-agent",
-              "policy": "stable-release", "state": "active", "identity": {}, "nextSequence": 2,
-              "head": {"buildId": "build-fixture", "sequence": 1}}
-    manifest = {"schema": 1, "request": {"buildId": "build-fixture", "channel": "stable", "sequence": 1,
-                "repository": "NousResearch/hermes-agent", "commit": t.wanted, "sourceVersion": "1.1.0",
-                "version": "0.0.1", "identity": {}, "bundleEnv": {}}, "packages": []}
-    monkeypatch.setattr(source_releases, '_resolve_channel',
-                        lambda name, repository: ChannelResolution(record, record, manifest))
+    _publish_stable(monkeypatch, t)
     expected = t.wanted
     if server in {'at-release', 'ahead-release'}:
         git(t.clone, 'fetch', '--no-tags', 'origin', t.wanted)
@@ -268,23 +275,13 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
 @pytest.mark.platforms('windows')
 @pytest.mark.parametrize('transport', ['gitless', 'no-git', 'git-error', 'dirty'])
 def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, monkeypatch, tmp_path, transport):
-    from hermes_cli import source_releases
-    from hermes_cli.release_channels import ChannelResolution
-
     t = update_tree
     monkeypatch.setattr(cli_main, '_pause_windows_gateways_for_update',
                         lambda: {"resume_needed": True})
     archive = tmp_path / 'source.zip'
     git(t.origin, 'archive', '--format=zip', '--prefix=hermes-agent-source/', f'--output={archive}', t.wanted)
     archive_bytes = archive.read_bytes()
-    record = {"schema": 1, "name": "stable", "repository": "NousResearch/hermes-agent",
-              "policy": "stable-release", "state": "active", "identity": {}, "nextSequence": 2,
-              "head": {"buildId": "build-fixture", "sequence": 1}}
-    manifest = {"schema": 1, "request": {"buildId": "build-fixture", "channel": "stable", "sequence": 1,
-                "repository": "NousResearch/hermes-agent", "commit": t.wanted, "sourceVersion": "1.1.0",
-                "version": "0.0.1", "identity": {}, "bundleEnv": {}}, "packages": []}
-    monkeypatch.setattr(source_releases, '_resolve_channel',
-                        lambda name, repository: ChannelResolution(record, record, manifest))
+    _publish_stable(monkeypatch, t)
     routes = {
         f'/NousResearch/hermes-agent/archive/{t.wanted}.zip': archive_bytes,
     }
@@ -321,7 +318,11 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
             local += '?' + parsed.query
         return real_open(local, *args, **kwargs)
 
-    def guarded_run(command, *args, **kwargs):
+    from hermes_cli import update_custody
+
+    real_custody_run, seam = update_custody.run, threading.local()
+
+    def guard(command, args, kwargs, call):
         nonlocal fetched, failed
         command = list(map(str, command))
         assert Path(command[0]).name.lower() in {'git', 'git.exe'}, command
@@ -334,10 +335,27 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
         if fetched and not failed and '--abbrev-ref' in command and kwargs.get('check'):
             failed = True
             raise subprocess.CalledProcessError(128, command, '', 'fixture: Git file I/O failed')
-        result = real_run(command, *args, **kwargs)
+        result = call(command, *args, **kwargs)
         if 'fetch' in command:
             fetched = True
         return result
+
+    def guarded_run(command, *args, **kwargs):
+        if getattr(seam, 'custody', False):  # already guarded at the custody seam below
+            return real_run(command, *args, **kwargs)
+        return guard(command, args, kwargs, real_run)
+
+    def custody_call(command, *args, **kwargs):
+        seam.custody = True
+        try:
+            return real_custody_run(command, *args, **kwargs)
+        finally:
+            seam.custody = False
+
+    def guarded_custody_run(command, *args, **kwargs):
+        # The updater's git goes through update_custody.run: on Windows inside an update that is a
+        # suspended Popen bound to the update's job, not subprocess.run, so faults go in here too.
+        return guard(command, args, kwargs, custody_call)
 
     if transport in {'gitless', 'no-git'}:
         (t.clone / '.git').rename(tmp_path / 'git-state')
@@ -346,6 +364,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
     before = (t.clone / 'content.txt').read_bytes()
     monkeypatch.setattr(urllib.request, 'urlopen', local_open)
     monkeypatch.setattr(subprocess, 'run', guarded_run)
+    monkeypatch.setattr(update_custody, 'run', guarded_custody_run)
     try:
         if transport == 'dirty':
             with pytest.raises(SystemExit) as error:
@@ -401,9 +420,13 @@ def test_update_syntax_failure_restores_pre_update_head(update_tree, monkeypatch
     unexpected_head = git(remote, 'rev-parse', 'HEAD')
     if sync_phase == 'late-other-branch':
         def switch_after_sync(*args, **kwargs):
-            result = _sync_with_upstream_if_needed(*args, **kwargs)
-            git(t.clone, 'checkout', '-qb', 'unexpected')
-            return result
+            try:  # the broken upstream target is now refused (raised) before its move (review G1)
+                return _sync_with_upstream_if_needed(*args, **kwargs)
+            finally:
+                git(t.clone, 'checkout', '-qb', 'unexpected')
+                switched.append(git(t.clone, 'rev-parse', 'HEAD'))
+
+        switched = []
 
         monkeypatch.setattr(cli_main, '_sync_with_upstream_if_needed', switch_after_sync)
     local = t.clone / '.gitignore'
@@ -420,15 +443,26 @@ def test_update_syntax_failure_restores_pre_update_head(update_tree, monkeypatch
     assert not t.requests
     output = capsys.readouterr().out
     if sync_phase == 'late-other-branch':
-        assert git(t.clone, 'rev-parse', 'unexpected') == unexpected_head
+        # The broken upstream commit never landed; the unexpected branch keeps the HEAD it was cut at.
+        assert git(t.clone, 'rev-parse', 'unexpected') == switched[0] != unexpected_head
         assert git(t.clone, 'branch', '--show-current') == 'unexpected'
-        assert (t.clone / 'hermes_cli/config.py').read_bytes() == bad.read_bytes()
+        assert not (t.clone / 'hermes_cli/config.py').exists()
         assert "checkout is on 'unexpected'" in output
         assert 'Rolling back' not in output
     else:
-        assert 'Pulled code has a syntax error' in output
+        # Origin's own target is refused before HEAD moves (the commit point's preflight); an
+        # upstream sync's target is refused before ITS move, and the update rolls back (review G1).
+        assert ('The update target has a syntax error' if sync_phase == 'origin'
+                else 'has a syntax error in a critical file; it was not merged') in output
         assert git(t.clone, 'rev-parse', 'HEAD') == t.base
         assert not (t.clone / 'hermes_cli' / 'config.py').exists()
+    if sync_phase == 'origin' and dirty:
+        # Refused before the autostash too: the local work never left the tree, index included.
+        assert not git(t.clone, 'stash', 'list')
+        assert local.read_bytes() == unstaged
+        assert git(t.clone, 'show', ':.gitignore') == staged.decode().strip()
+        assert (t.clone / 'notes.txt').read_bytes() == b'untracked local work\n'
+        return
     assert not git(t.clone, 'status', '--porcelain')
     assert bool(git(t.clone, 'stash', 'list')) is dirty
     if dirty:

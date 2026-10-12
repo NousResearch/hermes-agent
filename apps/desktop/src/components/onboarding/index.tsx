@@ -16,7 +16,6 @@ import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
 import { $freeTierStatus, FREE_TIER_MODEL, freeTierSetupFailure } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
-import { $introReveal, shouldPlayFirstRunIntro } from '@/store/intro-reveal'
 import { $setupReadyTick } from '@/store/live-sync'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
@@ -207,7 +206,6 @@ export function DesktopOnboardingOverlay({
   const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
-  const introReveal = useStore($introReveal)
   useStore($onboardingSurfaces)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
@@ -307,8 +305,13 @@ export function DesktopOnboardingOverlay({
           const current = $desktopOnboarding.get()
 
           return (
+            // `!== true` rather than `=== false`: an UNRESOLVED readiness state
+            // (a boot round whose probes both timed out) is left at `null`
+            // instead of being written down as unconfigured, and it needs this
+            // tick to settle too — otherwise the overlay sits on its
+            // "starting" header with nothing left to re-check it.
             !current.manual &&
-            current.configured === false &&
+            current.configured !== true &&
             current.flow.status === 'idle' &&
             current.mode === 'oauth' &&
             !current.localEndpoint
@@ -354,10 +357,7 @@ export function DesktopOnboardingOverlay({
     }
   }, [ctx, onboarding.flow.status, onboarding.manual, onboarding.providers])
 
-  if (
-    !onboarding.manual &&
-    (introReveal.phase !== 'hidden' || onboardingSurfaceActive() || shouldPlayFirstRunIntro(onboarding.firstRunSkipped))
-  ) {
+  if (!onboarding.manual && onboardingSurfaceActive()) {
     return null
   }
 
@@ -373,7 +373,12 @@ export function DesktopOnboardingOverlay({
   // The user chose "I'll choose a provider later" on first run. Stay out of the
   // way on every subsequent launch — they re-enter via Settings → Providers
   // (manual mode), which sets manual=true and bypasses this gate.
-  if (onboarding.firstRunSkipped && !onboarding.manual && !onboarding.freeTierReady) {
+  // `requested` also outranks the skip: it is only ever set when the user hit a
+  // REAL credential wall (the submit-time deferred warning, a stream that
+  // reported a provider setup error), never by a passive readiness round. Now
+  // that the skip is durable, without this a genuinely broken provider could
+  // leave the user with a prompt that silently refuses to send and no picker.
+  if (onboarding.firstRunSkipped && !onboarding.requested && !onboarding.manual && !onboarding.freeTierReady) {
     return null
   }
 

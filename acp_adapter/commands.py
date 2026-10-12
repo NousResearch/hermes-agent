@@ -97,6 +97,8 @@ class SlashCommandsMixin:
 
         if cmd not in self._COMMANDS:
             return None
+        from hermes_cli.observability.shared_metrics_events import record_slash_command
+        record_slash_command(command=cmd, surface="acp")
         mutating = cmd in _MID_TURN_BLOCKED_COMMANDS
         if mutating:
             with state.runtime_lock:

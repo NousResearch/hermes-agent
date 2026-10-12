@@ -33,6 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
   Textarea,
+  Tip,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
@@ -1259,18 +1260,19 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                 key={botRosterKey(bot)}
                 variant="muted"
               >
-                <RowButton
-                  onClick={() =>
-                    setChecked(prev => ({
-                      ...prev,
-                      [botRosterKey(bot)]: false
-                    }))
-                  }
-                  title={b.group.removeFromSelection}
-                >
-                  {displayName(bot, botRosterMeta(bot, allMeta))}
-                  <Codicon className="text-[0.6rem]" name="close" />
-                </RowButton>
+                <Tip label={b.group.removeFromSelection}>
+                  <RowButton
+                    onClick={() =>
+                      setChecked(prev => ({
+                        ...prev,
+                        [botRosterKey(bot)]: false
+                      }))
+                    }
+                  >
+                    {displayName(bot, botRosterMeta(bot, allMeta))}
+                    <Codicon className="text-[0.6rem]" name="close" />
+                  </RowButton>
+                </Tip>
               </Badge>
             ))}
           </div>

@@ -8,6 +8,7 @@ from __future__ import annotations
 import atexit
 import base64
 import contextlib
+import dataclasses
 import hashlib
 import json
 import logging
@@ -440,7 +441,7 @@ def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_)
     # pid/window_id forwarded only when given so older backends keep their defaults.
     cap = backend.capture(mode=mode, app=args.get("app"), **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
     fence()
-    return _capture_response(cap, session_id=session_id)
+    return _capture_response(cap, session_id=session_id, include_menus=bool(args.get("menus")))
 
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
@@ -513,7 +514,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
     res = spec.handler(backend, action, args, **(dict(delivery_mode=args.get("delivery_mode"), bring_to_front=bool(args.get("bring_to_front")))
                                                  if spec.input else dict(fence=fence, session_id=session_id)))
     return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")), fence,
-                                                                         session_id=session_id)
+                                                                         session_id=session_id, include_menus=bool(args.get("menus")))
 
 # ── Response shaping ────────────────────────────────────────────────────────
 def _classify_action_result(res: ActionResult) -> dict[str, Any]:
@@ -597,17 +598,26 @@ def _bounds_unknown(bounds) -> bool:
         return all(int(v) == 0 for v in bounds)
     return False
 
-def _element_to_dict(e: UIElement) -> dict[str, Any]:
-    # A zero rect is "geometry unknown", not a position — null it so no coordinate= is ever derived from it (the index still works).
-    return {"index": e.index, "role": e.role, "label": e.label[:_MAX_ELEMENT_LABEL_CHARS],
-            "bounds": None if _bounds_unknown(e.bounds) else list(e.bounds), "app": e.app,
-            **({"label_truncated": True} if len(e.label) > _MAX_ELEMENT_LABEL_CHARS else {})}
+def _format_elements(elements: list[UIElement]) -> list[str]:
+    # The one element list a capture returns (every branch). A zero rect is "geometry unknown", not a position:
+    # say so, so no coordinate= is ever derived from it (the index still works).
+    return [f"  #{e.index} {e.role} {e.label.replace(chr(10), ' ')[:_MAX_ELEMENT_LABEL_CHARS]!r} "
+            + ("@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}")
+            + (f" [{e.app}]" if e.app else "") for e in elements]
 
-def _format_elements(elements: list[UIElement], max_lines: int = 40) -> list[str]:
-    out = [f"  #{e.index} {e.role} {e.label.replace(chr(10), ' ')[:60]!r} "
-           + ("@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}")
-           + (f" [{e.app}]" if e.app else "") for e in elements[:max_lines]]
-    return out + ([f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)"] if len(elements) > max_lines else [])
+def _without_menu_bar(elements: list[UIElement]) -> tuple[list[UIElement], int]:
+    """``(elements minus the macOS app menu-bar subtree, number dropped)``. On macOS the menu bar is not part of the
+    window: it filled the element cap ahead of window controls and lists Apple menu > Recent Items, i.e. recently
+    opened file names. Linux/Windows menu bars live inside the window and stay. Indices are not renumbered, so
+    capture(menus=true) still acts on the same snapshot. Only a menu bar with children linked by parent_index is
+    dropped: without tree shape (flat legacy trees) nothing is inferred and nothing is dropped."""
+    bars = {e.index for e in elements if e.role == "AXMenuBar"}
+    frontier = {e.index for e in elements if e.parent_index in bars}
+    dropped = bars | frontier if frontier else set()
+    while frontier:
+        frontier = {e.index for e in elements if e.parent_index in frontier and e.index not in dropped}
+        dropped |= frontier
+    return [e for e in elements if e.index not in dropped], len(dropped)
 
 def _bounds_hints(elements: list[UIElement], image_width: int, image_height: int) -> tuple[Optional[float], Optional[str]]:
     """(scale, note) when element bounds live in a different coordinate space than the screenshot, else (None, None).
@@ -633,9 +643,10 @@ def _bounds_hints(elements: list[UIElement], image_width: int, image_height: int
 _bounds_scale = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[0]
 _bounds_space_note = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[1]
 
-def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
+def _capture_view(cap: CaptureResult, max_elements: int, menu_omitted: int = 0) -> SimpleNamespace:
     """One capture's derived facts, computed once for every response branch: ``visible`` is the capped element list,
-    ``dims_omitted`` an image below the provider minimum."""
+    ``dims_omitted`` an image below the provider minimum, ``menu_omitted`` the menu-bar elements already dropped
+    from ``cap``."""
     visible, dims = cap.elements[:max_elements], None
     with contextlib.suppress(Exception):  # (width, height) of the inline PNG/JPEG screenshot, else the backend's
         dims = image_dimensions_from_bytes(base64.b64decode(cap.png_b64, validate=False)) if cap.png_b64 else None
@@ -647,17 +658,16 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     has_image = bool(cap.png_b64) and cap.mode != "ax" and not too_small
     # The driver's own AX walk may have stopped at the ``max_elements`` the backend sent: then the spill file is
     # NOT the full tree, and the hint must not promise one.
-    ax_capped = len(cap.elements) >= cap.ax_max_elements > 0
+    ax_capped = len(cap.elements) + menu_omitted >= cap.ax_max_elements > 0  # the driver's count, before the drop
     return SimpleNamespace(cap=cap, visible=visible, total=len(cap.elements), width=width, height=height,
                            truncated=len(cap.elements) - len(visible), bounds_scale=scale, bounds_note=note,
                            ax_capped=cap.ax_max_elements if ax_capped else 0,
                            elements_file=_spill_elements_to_file(cap) if lost_detail else None,
                            screenshot_path=_persist_capture_image(cap) if has_image else None,
-                           dims_omitted=dims if too_small else None, has_image=has_image)
+                           dims_omitted=dims if too_small else None, has_image=has_image, menu_omitted=menu_omitted)
 
 def _capture_summary_lines(v: SimpleNamespace) -> list[str]:
-    """Human-readable capture summary; line ORDER is contract. Lists only what `elements` surfaces, otherwise the
-    summary names indices the model can't find."""
+    """Human-readable capture summary and the capture's only element list; line ORDER is contract."""
     notes = (
         v.bounds_note and v.bounds_note + (f"; estimated scale ~{v.bounds_scale}x (screenshot position x "
                                            f"{v.bounds_scale} ≈ native coordinate)" if v.bounds_scale else ""),
@@ -667,6 +677,7 @@ def _capture_summary_lines(v: SimpleNamespace) -> list[str]:
                              f"saved to {v.elements_file} — read_file/search_files it if you need dropped label "
                              "text or elements beyond the cap"),
         v.ax_capped and (f"accessibility walk capped at {v.ax_capped} elements; pass app= to narrow"),
+        v.menu_omitted and f"app menu bar omitted ({v.menu_omitted} element(s)); capture with menus=true to list it",
     )
     return [
         f"capture mode={v.cap.mode} {v.width}x{v.height}"
@@ -680,10 +691,10 @@ def _capture_summary_lines(v: SimpleNamespace) -> list[str]:
 
 def _text_capture_payload(v: SimpleNamespace, summary: str, extra: Optional[dict[str, Any]] = None) -> str:
     """JSON text payload shared by the AX, vision-unavailable and aux-vision branches. Key order is contract:
-    fixed fields, ``extra`` branch markers, then set optionals."""
+    fixed fields, ``extra`` branch markers, then set optionals. Elements are listed once, in ``summary``."""
     return json.dumps({
         "mode": v.cap.mode, "width": v.width, "height": v.height, "app": v.cap.app, "window_title": v.cap.window_title,
-        "elements": [_element_to_dict(e) for e in v.visible], "total_elements": v.total, "summary": summary,
+        "total_elements": v.total, "summary": summary,
         **(extra or {}),
         **_present(truncated_elements=v.truncated, elements_file=v.elements_file, screenshot_path=v.screenshot_path,
                    bounds_scale=v.bounds_scale),
@@ -694,8 +705,12 @@ def _capture_digest(cap: CaptureResult) -> str:
                           + (cap.png_b64 or "").encode("ascii", "ignore")).hexdigest()
 
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
-                      session_id: Optional[str] = None) -> Any:
-    v = _capture_view(cap, max_elements)
+                      session_id: Optional[str] = None, include_menus: bool = False) -> Any:
+    menu_omitted = 0
+    if not include_menus:  # before anything (summary, spill file, aux-vision prompt) reads the list
+        kept, menu_omitted = _without_menu_bar(cap.elements)
+        cap = dataclasses.replace(cap, elements=kept) if menu_omitted else cap
+    v = _capture_view(cap, max_elements, menu_omitted)
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
     if v.has_image and session_id and _screenshot_dedup_check(
@@ -709,7 +724,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     elif v.has_image:
         # Hand the screenshot to auxiliary.vision (text-only result) when the main model may not consume images
         # natively; returning the multimodal envelope unconditionally tripped HTTP 404/400 at the provider.
-        if not _should_route_through_aux_vision():  # envelope carrying the screenshot (not the elements array, so no truncation note)
+        if not _should_route_through_aux_vision():  # envelope carrying the screenshot; the elements_file note covers rows past the cap
             return {
                 "_multimodal": True,
                 "content": [{"type": "text", "text": summary},
@@ -732,13 +747,14 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         lines.append("  (vision unavailable: the auxiliary vision model could not be reached; screenshot "
                      "omitted. Element-index actions still work — drive via the element list above.)")
         extra = {"vision_unavailable": True}
-    if v.truncated:  # text paths carry the `elements` array, so the truncation note applies
+    if v.truncated:  # text paths point at elements_file for the rows beyond the cap
         lines.append(f"  (response truncated to {len(v.visible)} of {v.total} elements; the full tree is in "
                      "elements_file — read_file/search_files it, or pass app= to narrow scope)")
     return _text_capture_payload(v, "\n".join(lines), extra)
 
 def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
-                          fence: Callable[[], None] = lambda: None, session_id: Optional[str] = None) -> Any:
+                          fence: Callable[[], None] = lambda: None, session_id: Optional[str] = None,
+                          include_menus: bool = False) -> Any:
     # No follow-up capture after a failed action: a normal-looking screenshot would suggest success.
     if not do_capture or not res.ok:
         return _text_response(res)
@@ -752,7 +768,7 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
     fence()  # a frame taken after a takeover never reaches the dedup cache nor the model
-    resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
+    resp, payload = _capture_response(cap, session_id=session_id, include_menus=include_menus), _action_payload(res)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.
         resp["content"][0]["text"] = resp["text_summary"] = json.dumps(payload) + "\n\n" + resp["text_summary"]
@@ -862,7 +878,7 @@ def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:
 
 # ── auxiliary.vision routing for captured screenshots ───────────────────────
 _MAX_VISION_DIM = 1456  # longest image side handed to the aux vision model: full-resolution desktop captures tokenize heavily
-# and can overflow small local-model context windows; ~1456px keeps SOM badges legible while cutting vision latency.
+# and can overflow small local-model context windows; ~1456px keeps UI text legible while cutting vision latency.
 
 def _shrink_capture_for_vision(raw: bytes, ext: str, max_dim: int = _MAX_VISION_DIM) -> tuple[bytes, Optional[str]]:
     """Downscale encoded image bytes so the longest side is <= max_dim -> ``(bytes, scale_note)``. note is None when

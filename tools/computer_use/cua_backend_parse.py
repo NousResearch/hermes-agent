@@ -85,14 +85,26 @@ def _parse_elements_from_tree(markdown: str) -> list[UIElement]:
     element-index clicks since the driver resolves the frame.
 
     Last-resort fallback for cua-driver builds that don't carry the canonical ``structuredContent.elements``
-    array (see ``_parse_elements_from_structured`` — Surface 2 of #47072 prefers that path).
+    array (see ``_parse_elements_from_structured`` — Surface 2 of #47072 prefers that path). The tree nests by
+    indentation; ``parent_index`` is the nearest indexed ancestor (untagged container lines still open and close
+    levels), matching the driver's structured field.
     """
-    return [
-        # groups 3-6: value / quoted / paren / id= label (first non-None wins)
-        UIElement(index=int(m.group(1)), role=m.group(2),
-                  label=m.group(3) or m.group(4) or m.group(5) or m.group(6) or "", bounds=(0, 0, 0, 0))
-        for m in _ELEMENT_LINE_RE.finditer(markdown)
-    ]
+    elements: list[UIElement] = []
+    open_lines: list[tuple[int, Optional[int]]] = []  # (indent, index or None if untagged) of the enclosing lines
+    for line in markdown.splitlines():
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        while open_lines and open_lines[-1][0] >= indent:
+            open_lines.pop()
+        m = _ELEMENT_LINE_RE.match(line)
+        if m:
+            # groups 3-6: value / quoted / paren / id= label (first non-None wins)
+            elements.append(UIElement(
+                index=int(m.group(1)), role=m.group(2), label=m.group(3) or m.group(4) or m.group(5) or m.group(6) or "",
+                bounds=(0, 0, 0, 0), parent_index=next((i for _, i in reversed(open_lines) if i is not None), None)))
+        open_lines.append((indent, int(m.group(1)) if m else None))
+    return elements
 
 def _parse_elements_from_structured(raw_elements: list[dict[str, Any]]) -> list[UIElement]:
     """Read the canonical ``structuredContent.elements`` array: ``element_index``, ``role``, ``label`` and, when
@@ -107,7 +119,7 @@ def _parse_elements_from_structured(raw_elements: list[dict[str, Any]]) -> list[
         idx = raw.get("element_index") if isinstance(raw, dict) else None
         if not isinstance(idx, int):
             continue
-        role, label, frame, token = (raw.get(k) for k in ("role", "label", "frame", "element_token"))
+        role, label, frame, token, parent = (raw.get(k) for k in ("role", "label", "frame", "element_token", "parent_index"))
         bounds: tuple[int, int, int, int] = (0, 0, 0, 0)
         with contextlib.suppress(TypeError, ValueError):
             if isinstance(frame, dict) and frame:
@@ -117,6 +129,7 @@ def _parse_elements_from_structured(raw_elements: list[dict[str, Any]]) -> list[
             bounds=bounds,
             # Opaque `s{snapshot_hex}:{index}` token — the driver owns parse + LRU semantics.
             element_token=token if isinstance(token, str) and token else None,
+            parent_index=parent if isinstance(parent, int) and not isinstance(parent, bool) else None,
         ))
     return elements
 

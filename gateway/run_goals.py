@@ -27,6 +27,10 @@ logger = logging.getLogger("gateway.run")
 class GatewayGoalsMixin:
     """Goal/heartbeat continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner."""
 
+    async def _apply_pending_goal_model_handoff(self, entry, source, request):
+        from gateway.goal_model_handoff import apply
+        return await apply(self, entry, source, request)
+
     # ── /goal — persistent cross-turn goals (Ralph-style loop) ──────────
     def _goal_max_turns_from_config(self) -> int:
         """Configured /goal turn budget. GatewayRunner.config is a GatewayConfig dataclass, so the
@@ -286,6 +290,11 @@ class GatewayGoalsMixin:
         if mgr is None or not mgr.is_active():
             return
 
+        from hermes_cli.goal_model_recovery import enabled_for as handoff_enabled
+        if handoff_enabled(mgr.session_id):
+            from gateway.goal_model_handoff import worker_route
+            mgr.worker_model_route = worker_route(self, source)
+
         _bg_procs, _active_deleg = None, 0
         with suppress(Exception):
             from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
@@ -303,6 +312,21 @@ class GatewayGoalsMixin:
                 active_delegations=_active_deleg,
             ),
         )
+        handoff = decision.get("model_handoff")
+        if handoff:
+            committed = await self._apply_pending_goal_model_handoff(session_entry, source, handoff)
+            if committed is None:
+                await self._defer_goal_status_notice_after_delivery(
+                    source, "⏸ Model recovery held; original checkpoint preserved. Inspect /goal options.")
+                return
+            adapter = self._delivery_adapter_for(source)
+            key = self._session_key_for_source(source)
+            if adapter and key:
+                event = self._synthetic_prompt_event(source, committed["prompt"], internal=True)
+                event._goal_model_handoff_id = committed["id"]
+                self._enqueue_fifo(key, event, adapter)
+            await self._defer_goal_status_notice_after_delivery(source, decision.get("message") or "")
+            return
         msg = decision.get("message") or ""
         # Deferred until the visible final response is delivered, else "✓ Goal achieved" precedes it.
         if msg and source is not None:

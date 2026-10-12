@@ -151,6 +151,11 @@ def handle_blocked(manager, response: str, reason: str):
         fingerprint = hashlib.sha256(json.dumps([reason, option["route"], option["plan"]]).encode()).hexdigest()
         budget_ok = manager.state.turns_used < manager.state.max_turns
         fresh = fingerprint not in manager.state.recovery_attempts
+        if _automatic(option, assessment) and budget_ok:
+            from hermes_cli.goal_model_recovery import reserve
+            handoff = reserve(manager, assessment, option, _prompt(manager, option))
+            if handoff is not None:
+                return handoff
         if _automatic(option, assessment) and budget_ok and fresh and len(manager.state.recovery_attempts) < 2:
             manager.state.recovery_attempts.append(fingerprint)
             assessment["consumed"] = True

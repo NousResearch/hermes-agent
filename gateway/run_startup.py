@@ -635,6 +635,12 @@ class GatewayStartupMixin:
             self._persist_active_agents()
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.
             event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
+            if entry.resume_reason == "goal_model_handoff":
+                from hermes_cli.goal_model_recovery import current_pending
+                with self._profile_scope_for_source(source):
+                    manager = current_pending(entry.session_id)
+                    if manager is not None:
+                        event._goal_model_handoff_id = manager.state.model_recovery["pending"]["id"]
             task = self._retain_background_task(
                 asyncio.create_task(self._run_startup_resume_event(adapter, event, entry.session_key))
             )
@@ -1533,6 +1539,8 @@ class GatewayStartupMixin:
             recover_gateway_pending(self)
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
         # auto-resume stays visible on the next user message.
+        from gateway.goal_model_handoff import restore_markers as restore_model_handoffs
+        await restore_model_handoffs(self)
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
         # Surface state.db init failures to messaging platforms before the user loses data.

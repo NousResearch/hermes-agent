@@ -734,7 +734,7 @@ DEFAULT_CONFIG = {
     #         provider: {order: [anthropic, google], sort: throughput}  # or price | latency
     #         plugins: [{id: pareto-router, min_coding_score: 0.5}]
     # Aux tasks do not inherit main-agent routing; recovery plugins never grant authority.
-    "goal_recovery": {"auto_effects": ["read_only"], "judge_backoff": False},
+    "goal_recovery": {"auto_effects": ["read_only"], "judge_backoff": False, "model_handoff": {"enabled": False, "session_ids": [], "routes": [], "max_attempts": 3}},
     "auxiliary": {
         # Same-provider retries for a transient blip (reset/timeout/5xx/408) on ANY aux call before
         # falling back; clamped [0,6]. Matters for pinned calls (MoA advisors) where provider

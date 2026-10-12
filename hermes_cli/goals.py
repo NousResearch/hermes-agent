@@ -453,6 +453,7 @@ class GoalState:
     gates: list[GoalGate] = field(default_factory=list)
     recovery: Optional[dict[str, Any]] = None
     recovery_attempts: list[str] = field(default_factory=list)
+    model_recovery: Optional[dict[str, Any]] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -472,6 +473,7 @@ class GoalState:
             paused_reason=data.get("paused_reason"),
             recovery=data.get("recovery") if isinstance(data.get("recovery"), dict) else None,
             recovery_attempts=[str(x) for x in (data.get("recovery_attempts") or [])][:2],
+            model_recovery=data.get("model_recovery") if isinstance(data.get("model_recovery"), dict) else None,
             subgoals=[str(s).strip() for s in raw_subgoals if str(s).strip()] if isinstance(raw_subgoals, list) else [],
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
@@ -1101,6 +1103,7 @@ class GoalManager:
     def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
+        self.worker_model_route = None  # supplied by a surface capable of completed-turn model handoffs
         self._state: Optional[GoalState] = load_goal(session_id)
 
     # --- introspection ------------------------------------------------
@@ -1192,6 +1195,8 @@ class GoalManager:
             return None
         self._state.status = "paused"
         self._state.paused_reason = reason
+        from hermes_cli.goal_model_recovery import cancel_pending
+        cancel_pending(self._state)
         self._state.clear_wait()   # a wait barrier is meaningless once paused
         return self._save()
 
@@ -1204,6 +1209,8 @@ class GoalManager:
         if reset_budget:
             self._state.turns_used = 0
             self._state.recovery_attempts = []
+            from hermes_cli.goal_model_recovery import reset_episode
+            reset_episode(self._state)
         if self._state.recovery:
             self._state.recovery["consumed"] = True
         return self._save()
@@ -1500,6 +1507,11 @@ class GoalManager:
         if self.is_waiting():
             return self._waiting_decision(state)
 
+        if (state.model_recovery or {}).get("pending"):
+            from hermes_cli.goal_model_recovery import pending_decision
+            pending = pending_decision(self)
+            if pending is not None:
+                return pending
         state.turns_used += 1
         state.last_turn_at = time.time()
 

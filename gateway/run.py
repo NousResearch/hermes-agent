@@ -3989,7 +3989,7 @@ class GatewayRunner(
     # Reasons set by _stop_impl() on force-interrupt; "restart_interrupted" by recover_interrupted_turns()
     # for a crash-left turn marker (no .clean_shutdown marker). All mean "killed mid-turn" -> startup
     # auto-resume.
-    _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout", "restart_interrupted"})
+    _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout", "restart_interrupted", "goal_model_handoff"})
 
     _MAX_SUPERVISED_RESTARTS = 5
     # Ran this long before crashing = HEALTHY (isolated crash, not a crash-loop); restart counter resets.

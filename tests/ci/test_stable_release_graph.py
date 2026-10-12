@@ -378,3 +378,13 @@ def test_every_run_step_receives_the_variables_it_reads():
             used = set(re.findall(r"\$\{?([A-Z][A-Z0-9_]+)", step.get("run", ""))) - runner
             missing = used - given - set(step.get("env") or {})
             assert not missing, f"{name} / {step.get('name') or step['run'][:40]}: {sorted(missing)}"
+
+
+def test_the_builds_table_render_cannot_block_the_release_and_has_its_r2_inputs():
+    """The table is presentation: it never fails 'Stable release is green', and it gets the
+    R2 credentials its listing and page writes need."""
+    step = next(step for step in workflow("stable-release.yml")["jobs"]["complete"]["steps"]
+                if step.get("name") == "Render the admitted candidate smoke results")
+    assert str(step.get("continue-on-error")).lower() == "true"  # base YAML loader: a string
+    assert {"CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
+            "CLOUDFLARE_R2_BUCKET", "CLOUDFLARE_R2_PUBLIC_URL", "RELEASE_CLAIM_TAG"} <= set(step["env"])

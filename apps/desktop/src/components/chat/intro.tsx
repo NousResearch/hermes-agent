@@ -1,9 +1,12 @@
+import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
+import { StarterPrompts } from './starter-prompts'
 import { Wordmark } from './wordmark'
 
 type IntroCopy = {
@@ -161,6 +164,7 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 export function Intro({ personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const { t } = useI18n()
+  const showsAdvancedChrome = useStore($showsAdvancedChrome)
   const rotationSeed = mountSeed + (seed ?? 0)
   const copy = resolveCopy(personality, rotationSeed)
   const key = normalizeKey(personality)
@@ -168,7 +172,10 @@ export function Intro({ personality, seed }: IntroProps) {
   const bodies =
     t.intro.stock[key] ?? (NEUTRAL_PERSONALITIES.has(key) ? t.intro.stock.none : t.intro.custom(personality || ''))
 
-  const body = bodies?.[Math.abs(rotationSeed) % bodies.length] ?? copy.body
+  // The stock lines pitch repo work; Simple greets an everyday chat instead.
+  const body = showsAdvancedChrome
+    ? (bodies?.[Math.abs(rotationSeed) % bodies.length] ?? copy.body)
+    : t.chatStarters.intro
 
   return (
     <div
@@ -180,6 +187,8 @@ export function Intro({ personality, seed }: IntroProps) {
 
         <p className="m-0 text-center leading-normal tracking-tight">{body}</p>
       </div>
+
+      {showsAdvancedChrome ? null : <StarterPrompts />}
     </div>
   )
 }

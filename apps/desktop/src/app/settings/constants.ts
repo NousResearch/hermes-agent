@@ -707,9 +707,11 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
 })
 
 // Curated desktop config surface: only fields a user might tune from the app.
+// `tier: 'advanced'` sections are hidden in Simple mode (settings-visibility.ts).
 export const SECTIONS: DesktopConfigSection[] = [
   {
     id: 'model',
+    tier: 'advanced',
     label: 'Model',
     icon: Box,
     keys: ['model_context_length', 'fallback_providers']
@@ -728,6 +730,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'workspace',
+    tier: 'advanced',
     label: 'Workspace',
     icon: Monitor,
     keys: [
@@ -743,6 +746,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'safety',
+    tier: 'advanced',
     label: 'Safety',
     icon: Lock,
     keys: [
@@ -757,12 +761,14 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'browser',
+    tier: 'advanced',
     label: 'Browser',
     icon: Globe,
     keys: ['browser.use_real_profile', 'browser.allow_private_urls', 'browser.auto_local_for_private_urls']
   },
   {
     id: 'memory',
+    tier: 'advanced',
     label: 'Memory & Context',
     icon: Brain,
     keys: [
@@ -837,6 +843,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'advanced',
+    tier: 'advanced',
     label: 'Advanced',
     icon: Wrench,
     keys: [

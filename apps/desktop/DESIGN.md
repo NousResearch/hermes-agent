@@ -307,7 +307,13 @@ The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.
 In Simple interface mode only sidebar, settings and the layout editor render,
 and the reserved cluster width shrinks with them (`TITLEBAR_FIXED_TOOLS` is the
-one table both the buttons and the width reservation read).
+one table both the buttons and the width reservation read). The same tier rule
+hides Simple's other doors — Settings pages, technical Settings fields
+(`SIMPLE_HIDDEN_SETTINGS` in `settings-visibility.ts`, read by both the page and
+search), ⌘K rows, slash suggestions, the reasoning pill, Capabilities'
+Toolsets/Plugins tabs — while routes, keybinds and typed commands keep
+answering; a link to a hidden Settings page resolves to a visible one instead
+of a blank page.
 Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
 status dots after 400ms, without changing tab widths. Hints follow the same
 binding and hovered/focused-zone resolver as the number shortcuts.

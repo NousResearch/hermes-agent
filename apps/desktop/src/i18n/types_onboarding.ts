@@ -40,6 +40,7 @@ export interface OnboardingTranslations {
   useApiKeyInstead: string
   errorDetails: string
   pickDifferentProvider: string
+  pickDifferentAccount: string
   signInWith: (provider: string) => string
   openedBrowser: (provider: string) => string
   authorizeThere: string
@@ -60,4 +61,18 @@ export interface OnboardingTranslations {
   change: string
   startChatting: string
   docs: (provider: string) => string
+  modeChoiceTitle: string
+  modeChoiceDesc: string
+  modeChoiceSimpleDesc: string
+  modeChoiceAdvancedDesc: string
+  simpleHeaderDesc: string
+  simpleTiles: { nous: string; chatgpt: string; grok: string; claude: string }
+  simpleDeviceCodeOpened: string
+  simpleDeviceCodeCopied: string
+  terminalSignInOpened: (paste: string, enter: string) => string
+  openTerminalAgain: string
+  simpleSignInNotFinished: (provider: string) => string
+  simpleNoSignIns: string
+  simpleDefaultsFailed: string
+  simpleDefaultsRemote: string
 }

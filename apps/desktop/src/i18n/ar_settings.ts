@@ -927,21 +927,5 @@ export const arSettings = {
     resetDescription:
       'ستُمسح اختياراتك للنماذج الظاهرة والمخفية وتعود قائمة كل مزوّد الافتراضية. تُحفظ النماذج المخصصة التي أضفتها وتظهر.',
     resetAction: 'إعادة التعيين'
-  },
-  interfaceMode: {
-    title: 'وضع الواجهة',
-    hint: 'يغيّر ما يظهر، وليس ما يستطيع Hermes فعله.',
-    sessionNote: 'يحدده الوضع البسيط. التغيير هنا يستمر لهذه الجلسة فقط؛ بدّل إلى المتقدم لجعله خيارك.',
-    simple: {
-      label: 'بسيط',
-      description: 'للتحدث مع Hermes. الشريط الجانبي والدردشة؛ بلا طرفية أو لوحات ملفات أو فروقات.'
-    },
-    advanced: {
-      label: 'متقدم',
-      description: 'للمطورين. الطرفية والملفات والفروقات وشريط الحالة والتخطيطات، كما أعددتها.'
-    }
   }
-} satisfies Pick<
-  TranslationOverrides,
-  'language' | 'settings' | 'modelAssignment' | 'modelPicker' | 'modelVisibility' | 'interfaceMode'
->
+} satisfies Pick<TranslationOverrides, 'language' | 'settings' | 'modelAssignment' | 'modelPicker' | 'modelVisibility'>

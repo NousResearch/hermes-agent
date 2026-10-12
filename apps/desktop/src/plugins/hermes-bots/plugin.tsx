@@ -739,6 +739,7 @@ export default {
         id: `${ID}.new-agent`,
         label: 'New Bot…',
         keywords: ['bot', 'agent', 'profile', 'teammate', 'create'],
+        tier: 'advanced',
         run: () => {
           host.notify({
             kind: 'info',

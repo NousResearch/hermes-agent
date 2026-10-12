@@ -17,6 +17,7 @@ import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
+import { $interfaceMode } from '@/store/interface-mode'
 import { $gatewayBootGeneration } from '@/store/live-sync'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
@@ -87,6 +88,9 @@ export interface DesktopOnboardingState {
    *  configured. The backend's `notice_pending` flag is the only source of
    *  truth — there is no renderer latch — so an ack clears it everywhere. */
   freeTierReady: boolean
+  /** The first-run "Simple or Advanced" step is no longer owed: it was answered,
+   *  or this install was configured at some point. Persisted (MODE_CHOSEN_CACHE_KEY). */
+  modeChosen?: boolean
 }
 
 export interface OnboardingContext {
@@ -98,6 +102,7 @@ export interface OnboardingContext {
 
 const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
 const SKIP_CACHE_KEY = 'hermes-onboarding-skipped-v1'
+const MODE_CHOSEN_CACHE_KEY = 'hermes-onboarding-mode-chosen-v1'
 const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
 export const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
@@ -124,6 +129,11 @@ function writeCachedConfigured(value: boolean) {
     if (value) {
       window.localStorage.setItem(CONFIGURED_CACHE_KEY, '1')
     } else {
+      // Configured once is never a first run again, even after this cache drops.
+      if (window.localStorage.getItem(CONFIGURED_CACHE_KEY) === '1') {
+        window.localStorage.setItem(MODE_CHOSEN_CACHE_KEY, '1')
+      }
+
       window.localStorage.removeItem(CONFIGURED_CACHE_KEY)
     }
   } catch {
@@ -159,6 +169,22 @@ function writeCachedSkipped(value: boolean) {
   }
 }
 
+function readCachedModeChosen(): boolean {
+  try {
+    return window.localStorage.getItem(MODE_CHOSEN_CACHE_KEY) === '1' || readCachedConfigured() === true
+  } catch {
+    return false
+  }
+}
+
+function writeCachedModeChosen() {
+  try {
+    window.localStorage.setItem(MODE_CHOSEN_CACHE_KEY, '1')
+  } catch {
+    // localStorage unavailable — degrade silently.
+  }
+}
+
 const INITIAL: DesktopOnboardingState = {
   configured: readCachedConfigured(),
   flow: { status: 'idle' },
@@ -169,7 +195,8 @@ const INITIAL: DesktopOnboardingState = {
   firstRunSkipped: readCachedSkipped(),
   manual: false,
   localEndpoint: false,
-  freeTierReady: false
+  freeTierReady: false,
+  modeChosen: readCachedModeChosen()
 }
 
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
@@ -493,9 +520,16 @@ async function completeWithModelConfirm(
     return
   }
 
-  if (!defaults) {
-    // Couldn't get a sensible default — proceed without confirm step.
-    notifyReady(providerLabel)
+  // Simple never asks a non-technical user to confirm a model id: the default
+  // is already persisted above, so finish like the no-default path, minus the
+  // toast — it names the backend catalog entry, and landing in chat says enough.
+  const simple = $interfaceMode.get() === 'simple'
+
+  if (!defaults || simple) {
+    if (!simple) {
+      notifyReady(providerLabel)
+    }
+
     completeDesktopOnboarding(true)
     ctx.onCompleted?.()
 
@@ -725,7 +759,8 @@ export function completeDesktopOnboarding(connected = false) {
     firstRunSkipped: connected ? false : readCachedSkipped(),
     manual: false,
     localEndpoint: false,
-    freeTierReady: false
+    freeTierReady: false,
+    modeChosen: true
   })
 }
 
@@ -750,6 +785,11 @@ export function dismissFirstRunOnboarding() {
 
 export function setOnboardingMode(mode: OnboardingMode) {
   patch({ mode })
+}
+
+export function markFirstRunModeChosen() {
+  writeCachedModeChosen()
+  patch({ modeChosen: true })
 }
 
 /**
@@ -817,6 +857,13 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
     // the downgrade: the durable cache stays configured and the setup.ready
     // tick (or the next ambient refresh) re-checks once the route is real.
     return false
+  }
+
+  // The backend says a provider is configured (checks disagree) or the route
+  // still names a model: set up before, now an expired or removed credential.
+  // That is no first run, so never offer it the mode question.
+  if (runtime.checksDisagree || runtime.model) {
+    markFirstRunModeChosen()
   }
 
   writeCachedConfigured(false)

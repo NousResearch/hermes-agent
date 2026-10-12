@@ -55,6 +55,7 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
   connectedPicking: provider => `${provider} подключён. Выбираем модель по умолчанию...`,
   signInFailed: 'Вход не удался. Попробуйте снова.',
   pickDifferentProvider: 'Выбрать другого провайдера',
+  pickDifferentAccount: 'Выбрать другой аккаунт',
   signInWith: provider => `Войти через ${provider}`,
   openedBrowser: provider => `Мы открыли ${provider} в вашем браузере.`,
   authorizeThere: 'Авторизуйте Hermes там.',
@@ -75,5 +76,27 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
   price: (input, output) => `${input} вход / ${output} выход за Mtok`,
   change: 'Изменить',
   startChatting: 'Начать',
-  docs: provider => `Документация ${provider}`
+  docs: provider => `Документация ${provider}`,
+  modeChoiceTitle: 'Как вы хотите пользоваться Hermes?',
+  modeChoiceDesc: 'Выберите то, что вам удобнее. Переключиться можно в любой момент в настройках.',
+  modeChoiceSimpleDesc: 'Просто общайтесь с Hermes. Он сам подберёт лучшие настройки.',
+  modeChoiceAdvancedDesc: 'Все настройки, а также терминал, файлы и проверка кода.',
+  simpleHeaderDesc: 'Войдите с помощью уже существующего аккаунта. Остальное Hermes настроит сам.',
+  simpleTiles: {
+    nous: 'Бесплатный аккаунт',
+    chatgpt: 'Нужна подписка ChatGPT Plus или Pro',
+    grok: 'Нужна подписка SuperGrok или X Premium+',
+    claude: 'Нужна подписка Claude Max. Anthropic выставляет счёт как за дополнительное использование.'
+  },
+  simpleDeviceCodeOpened: 'Мы открыли браузер. Подтвердите доступ для Hermes там, затем вернитесь сюда.',
+  simpleDeviceCodeCopied: 'Если попросят код, вставьте этот. Он уже скопирован.',
+  terminalSignInOpened: (paste, enter) =>
+    `Открылось окно терминала. Подтвердите доступ для Hermes в браузере и скопируйте показанный код. Затем щёлкните по окну терминала, нажмите ${paste} и ${enter} и вернитесь сюда.`,
+  openTerminalAgain: 'Открыть терминал снова',
+  simpleSignInNotFinished: provider =>
+    `Hermes пока не видит вход в ${provider}. Завершите его и попробуйте снова или выберите другой аккаунт.`,
+  simpleNoSignIns: 'Hermes не удалось загрузить варианты входа. Попробуйте ещё раз через минуту.',
+  simpleDefaultsFailed: 'Не удалось включить настройки безопасности простого режима',
+  simpleDefaultsRemote:
+    'Hermes работает на другом компьютере, поэтому настройки безопасности простого режима туда не добавлены.'
 }

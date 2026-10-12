@@ -1,5 +1,6 @@
 import { translateNow } from '@/i18n/runtime'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
+import { $interfaceMode } from '@/store/interface-mode'
 
 import desktopSlashRegistry from './desktop-slash-registry.json'
 
@@ -719,6 +720,26 @@ export function isDesktopSlashCommand(command: string, arg = ''): boolean {
   return isDesktopSlashExtensionCommand(command)
 }
 
+// Simple mode's built-in slash vocabulary: the commands a non-technical user
+// reaches for in a conversation — start over (/new), stop a reply (/stop), redo
+// or take back the last turn (/retry, /undo), name or reopen a chat (/title,
+// /resume), a side question (/btw), the look (/skin) and voice wake-up (/wake),
+// plus /help to list exactly these. Everything else (/yolo, /profile,
+// /compress, /reasoning, /browser, ...) rests out of the popover; typing it in
+// full still executes, and skill/extension commands are never gated here.
+const SIMPLE_SLASH_SUGGESTIONS: Readonly<Record<string, true>> = {
+  '/btw': true,
+  '/help': true,
+  '/new': true,
+  '/resume': true,
+  '/retry': true,
+  '/skin': true,
+  '/stop': true,
+  '/title': true,
+  '/undo': true,
+  '/wake': true
+}
+
 /** Gates discovery in the popover/completions. */
 export function isDesktopSlashSuggestion(command: string): boolean {
   return isDesktopSlashSuggestionWithOptions(command, {})
@@ -733,6 +754,14 @@ export function isDesktopSlashSuggestion(command: string): boolean {
  */
 export function isDesktopSlashSuggestionWithOptions(command: string, options: { exactAlias?: string } = {}): boolean {
   const normalized = normalizeCommand(command)
+
+  if (
+    $interfaceMode.get() === 'simple' &&
+    !isDesktopSlashExtensionCommand(normalized) &&
+    !Object.hasOwn(SIMPLE_SLASH_SUGGESTIONS, canonicalDesktopSlashCommand(normalized))
+  ) {
+    return false
+  }
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.
   if (isAliasCommand(normalized)) {

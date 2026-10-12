@@ -1,14 +1,21 @@
 import { useStore } from '@nanostores/react'
+import { useEffect } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
+import { Ear, EarOff, iconSize, Layers3, Loader2, Square, ZapFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { setYoloEnabled } from '@/lib/yolo-session'
+import { $approvalModes, setApprovalModeForProfile, syncApprovalModeForProfile } from '@/store/approval-mode'
 import { recordAction } from '@/store/desktop-metrics'
+import { requestGatewayForProfile } from '@/store/gateway'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $yoloActive } from '@/store/session'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
@@ -73,6 +80,7 @@ export function ComposerControls({
   const { t } = useI18n()
   const c = t.composer
   const hudMode = useStore($hudMode)
+  const showsAdvancedChrome = useStore($showsAdvancedChrome)
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -115,12 +123,15 @@ export function ComposerControls({
 
   return (
     <div className="flex min-w-0 shrink items-center gap-(--composer-control-gap)">
+      {showsAdvancedChrome ? null : <SimpleYoloChip />}
       {minimal ? null : (
         <>
           {hideModelPill ? null : (
             <>
               <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
-              {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
+              {compactModelPill || !showsAdvancedChrome ? null : (
+                <ReasoningPill disabled={disabled} model={state.model} />
+              )}
             </>
           )}
           {voiceControls}
@@ -178,6 +189,56 @@ export function ComposerControls({
           things you can press. */}
       {hudMode ? <HudWindowButtons /> : null}
     </div>
+  )
+}
+
+// Simple hides the statusbar and the ⌘K yolo row, so an armed approvals bypass
+// (session YOLO or the profile's `approvals.mode: off`) must stay visible here;
+// clicking disarms it.
+function SimpleYoloChip() {
+  const { t } = useI18n()
+  const yoloActive = useStore($yoloActive)
+  const profile = useStore($activeGatewayProfile)
+  const profileOff = useStore($approvalModes)[profile.trim() || 'default'] === 'off'
+
+  useEffect(() => {
+    // Dial the profile directly, as the statusbar does: the session-routed
+    // dispatcher would re-scope to the focused session's owner.
+    void syncApprovalModeForProfile(
+      (method, params) => requestGatewayForProfile(profile, method, params),
+      profile
+    ).catch(() => undefined)
+  }, [profile])
+
+  if (!yoloActive && !profileOff) {
+    return null
+  }
+
+  const label = yoloActive ? t.desktop.yoloArmed : t.shell.approvalMode.ariaLabel(t.shell.approvalMode.off)
+
+  // Back to the shipped default (approvals.mode: smart); Simple has no menu to pick another.
+  const disarm = () =>
+    yoloActive
+      ? setYoloEnabled(false)
+      : setApprovalModeForProfile(
+          (method, params) => requestGatewayForProfile(profile, method, params),
+          profile,
+          'smart'
+        )
+
+  return (
+    <Tip label={label} placement="control">
+      <Button
+        aria-label={label}
+        className="h-(--composer-control-size) shrink-0 gap-1 rounded-md bg-(--chrome-action-hover) px-1.5 text-xs text-foreground"
+        onClick={() => void disarm().catch(() => undefined)}
+        type="button"
+        variant="ghost"
+      >
+        <ZapFilled className="size-3.5" />
+        {t.desktop.yoloTitle}
+      </Button>
+    </Tip>
   )
 }
 

@@ -10,6 +10,7 @@ import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
+import { deSimpleMode } from './de_simple_mode'
 import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
@@ -489,6 +490,7 @@ export const deOverrides = {
     }
   },
   ...deNotices,
+  ...deSimpleMode,
   billingBlock: {
     titleNous: 'Keine Nous-Credits mehr',
     titleProvider: provider => `Keine Credits mehr — ${provider}`,
@@ -4895,20 +4897,6 @@ export const deOverrides = {
       commentTitle: n => `Kommentar ${n}`,
       saveComment: 'Speichern',
       cancelComment: 'Kommentar abbrechen'
-    }
-  },
-  interfaceMode: {
-    title: 'Oberflächenmodus',
-    hint: 'Ändert, was angezeigt wird, nicht was Hermes kann.',
-    sessionNote:
-      'Vom einfachen Modus festgelegt. Eine Änderung hier gilt für diese Session; wechseln Sie zu „Erweitert“, um sie dauerhaft zu übernehmen.',
-    simple: {
-      label: 'Einfach',
-      description: 'Zum Chatten mit Hermes. Seitenleiste und Chat; keine Terminal-, Datei- oder Diff-Bereiche.'
-    },
-    advanced: {
-      label: 'Erweitert',
-      description: 'Für Entwickler. Terminal, Dateien, Diffs, Statusleiste und Layouts – so, wie Sie sie einrichten.'
     }
   },
   zones: {

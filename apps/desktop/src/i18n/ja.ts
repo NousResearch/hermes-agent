@@ -10,6 +10,7 @@ import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
+import { jaSimpleMode } from './ja_simple_mode'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
@@ -265,6 +266,8 @@ export const jaOverrides = {
   },
 
   ...jaNotices,
+
+  ...jaSimpleMode,
 
   billingBlock: {
     titleNous: 'Nous クレジットが不足しています',
@@ -3343,22 +3346,6 @@ export const jaOverrides = {
       unreachableDescription: 'プレビューページに到達できませんでした。',
       openTarget: url => `${url} を開く`,
       fallbackTitle: 'プレビュー'
-    }
-  },
-
-  interfaceMode: {
-    title: 'インターフェースモード',
-    hint: '表示される内容が変わるだけで、Hermes にできることは変わりません。',
-    sessionNote:
-      'シンプルモードで設定されています。ここでの変更はこのセッション中のみ有効です。自分の設定にするには詳細モードに切り替えてください。',
-    simple: {
-      label: 'シンプル',
-      description:
-        'Hermes と話すための表示。サイドバーとチャットのみ。ターミナル、ファイル、差分のペインは表示しません。'
-    },
-    advanced: {
-      label: '詳細',
-      description: '開発者向け。ターミナル、ファイル、差分、ステータスバー、レイアウトを設定したとおりに。'
     }
   },
 

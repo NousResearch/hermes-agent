@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
 import { $freeTierStatus, FREE_TIER_MODEL, freeTierSetupFailure } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $setupReadyTick } from '@/store/live-sync'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
@@ -42,6 +43,7 @@ import type { OAuthProvider } from '@/types/hermes'
 import { DocsLink, FlowPanel, Status } from './flow'
 import { FreeTierSetupNotice } from './free-tier-setup-notice'
 import { DecodedLabel } from './glyph'
+import { ModeChoice, modeChoiceOwed } from './mode-choice'
 import {
   FeaturedProviderRow,
   FireworksProviderRow,
@@ -50,6 +52,7 @@ import {
   ProviderRow,
   sortProviders
 } from './providers'
+import { SimplePicker } from './simple-picker'
 
 export {
   FeaturedProviderRow,
@@ -326,6 +329,7 @@ export function DesktopOnboardingOverlay({
   )
   const freeTierStatus = useStore($freeTierStatus)
   const setupFailure = !onboarding.manual ? freeTierSetupFailure(freeTierStatus) : null
+  const showsAdvancedChrome = useStore($showsAdvancedChrome)
 
   // When the Providers settings page asked to connect a specific provider, the
   // store stashed its id. Once the provider list has loaded and we're back at
@@ -383,22 +387,7 @@ export function DesktopOnboardingOverlay({
   }
 
   const { flow } = onboarding
-  // Show the launch reason only when it's a meaningful, caller-supplied prompt —
-  // suppress the generic defaults (useless noise) and provider-setup errors
-  // (those are surfaced by FlowPanel, not as a banner).
-  const rawReason = onboarding.reason?.trim() || null
-
-  // When the free tier itself failed to set up, its own notice explains the
-  // picker; the runtime check's technical reason ("No usable credentials
-  // found for nous.") would only restate it in the wrong words.
-  const reason =
-    rawReason &&
-    !setupFailure &&
-    !isProviderSetupErrorMessage(rawReason) &&
-    rawReason !== DEFAULT_ONBOARDING_REASON &&
-    rawReason !== DEFAULT_MANUAL_ONBOARDING_REASON
-      ? rawReason
-      : null
+  const reason = launchReason(onboarding.reason, setupFailure)
 
   // In manual mode the app is already configured, so the flow is "ready"
   // immediately — no runtime gate needed. Otherwise wait for the readiness
@@ -409,6 +398,7 @@ export function DesktopOnboardingOverlay({
   const freeTierIntro = onboarding.freeTierReady && !onboarding.manual && flow.status === 'idle'
   const ready = freeTierIntro || onboarding.manual || (enabled && onboarding.configured === false)
   const showPicker = !freeTierIntro && (flow.status === 'idle' || flow.status === 'success')
+  const choosingMode = modeChoiceOwed(onboarding, enabled)
   // The final "you're in" screen drops the card chrome and floats centered on
   // the surface — same bare, cinematic treatment as the connecting overlay.
   const bare = ready && (freeTierIntro || (!showPicker && flow.status === 'confirming_model'))
@@ -440,7 +430,13 @@ export function DesktopOnboardingOverlay({
             : 'translate-y-0 scale-100 opacity-100 blur-0'
         )}
       >
-        {showPicker || !ready ? <Header /> : null}
+        {showPicker || !ready ? (
+          choosingMode ? (
+            <Header desc={t.onboarding.modeChoiceDesc} title={t.onboarding.modeChoiceTitle} />
+          ) : (
+            <Header desc={showsAdvancedChrome ? undefined : t.onboarding.simpleHeaderDesc} />
+          )
+        ) : null}
         {onboarding.manual ? (
           <Button
             aria-label={t.common.close}
@@ -453,13 +449,19 @@ export function DesktopOnboardingOverlay({
           </Button>
         ) : null}
         <div className="grid gap-3 p-5">
-          {reason ? <ReasonNotice reason={reason} /> : null}
-          {ready && showPicker && !freeTierIntro && !onboarding.manual ? <FreeTierSetupNotice ctx={ctx} /> : null}
+          {/* The runtime reason speaks CLI ("Run `hermes model`…"); Simple's tiles
+              and the mode choice already say what to do in plain words. */}
+          {reason && showsAdvancedChrome && !choosingMode ? <ReasonNotice reason={reason} /> : null}
+          {ready && showPicker && !choosingMode && !freeTierIntro && !onboarding.manual ? (
+            <FreeTierSetupNotice ctx={ctx} />
+          ) : null}
           {ready ? (
             freeTierIntro ? (
               <FreeTierReadyPanel leaving={leaving} onDismiss={dismissFreeTierIntro} />
+            ) : choosingMode ? (
+              <ModeChoice scope={scope} />
             ) : showPicker ? (
-              <Picker ctx={ctx} />
+              <ConnectPicker ctx={ctx} />
             ) : (
               <FlowPanel ctx={ctx} flow={flow} leaving={leaving} onBegin={finalizeOnboarding} />
             )
@@ -470,6 +472,24 @@ export function DesktopOnboardingOverlay({
       </div>
     </div>
   )
+}
+
+// Show the launch reason only when it's a meaningful, caller-supplied prompt —
+// suppress the generic defaults (useless noise) and provider-setup errors
+// (those are surfaced by FlowPanel, not as a banner).
+// When the free tier itself failed to set up, its own notice explains the
+// picker; the runtime check's technical reason ("No usable credentials
+// found for nous.") would only restate it in the wrong words.
+function launchReason(raw: null | string | undefined, setupFailure: unknown): null | string {
+  const rawReason = raw?.trim() || null
+
+  return rawReason &&
+    !setupFailure &&
+    !isProviderSetupErrorMessage(rawReason) &&
+    rawReason !== DEFAULT_ONBOARDING_REASON &&
+    rawReason !== DEFAULT_MANUAL_ONBOARDING_REASON
+    ? rawReason
+    : null
 }
 
 /**
@@ -573,15 +593,29 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
   )
 }
 
-function Header() {
+function Header({ desc, title }: { desc?: string; title?: string }) {
   const { t } = useI18n()
 
   return (
     <div className="bg-(--ui-chat-bubble-background) px-5 pt-5 pb-1">
-      <h2 className="text-[0.9375rem] font-semibold tracking-tight">{t.onboarding.headerTitle}</h2>
-      <p className="mt-1 max-w-xl text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">{t.onboarding.headerDesc}</p>
+      <h2 className="text-[0.9375rem] font-semibold tracking-tight">{title ?? t.onboarding.headerTitle}</h2>
+      <p className="mt-1 max-w-xl text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
+        {desc ?? t.onboarding.headerDesc}
+      </p>
     </div>
   )
+}
+
+// Simple's account tiles stand in for the full picker. The key form a picker
+// row opens (store `mode`) and the custom-endpoint form always win, so Simple
+// never hides a form the user asked for.
+function ConnectPicker({ ctx }: { ctx: OnboardingContext }) {
+  const advanced = useStore($showsAdvancedChrome)
+  const { localEndpoint, mode, providers } = useStore($desktopOnboarding)
+  // A failed or empty provider list also reads mode 'apikey'; Simple keeps its tiles then.
+  const keyFormOpened = mode !== 'oauth' && Boolean(providers?.length)
+
+  return advanced || localEndpoint || keyFormOpened ? <Picker ctx={ctx} /> : <SimplePicker ctx={ctx} />
 }
 
 export const FEATURED_ID = 'nous'

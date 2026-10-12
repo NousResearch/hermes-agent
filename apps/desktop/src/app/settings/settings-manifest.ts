@@ -1,9 +1,11 @@
 import type { Translations } from '@/i18n'
+import type { InterfaceMode } from '@/store/interface-mode'
 import { NATIVE_NOTIFICATION_KINDS } from '@/store/native-notifications'
 import { canUseQuickEntry } from '@/store/quick-entry'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
 import type { AppearanceSubpageId } from './appearance-subpages'
+import { settingShownInMode, settingsPageShown } from './settings-visibility'
 import type { SettingsView } from './types'
 
 interface SettingCopy {
@@ -320,11 +322,19 @@ export interface SettingSearchTarget extends SettingCopy {
   view: SettingsView
 }
 
-/** Every manifest row the command palette can land on right now, copy resolved. */
-export function settingSearchTargets(t: Translations): SettingSearchTarget[] {
+/**
+ * Every manifest row the command palette can land on right now, copy resolved.
+ * A row inherits its page's tier, so Simple mode never searches into a page it hides.
+ */
+export function settingSearchTargets(t: Translations, mode: InterfaceMode): SettingSearchTarget[] {
   return (Object.keys(SETTINGS_MANIFEST) as ManifestViewKey[]).flatMap(viewKey =>
     Object.entries(definitions(viewKey))
-      .filter(([, setting]) => setting.available?.() ?? true)
+      .filter(
+        ([key, setting]) =>
+          (setting.available?.() ?? true) &&
+          settingsPageShown(manifestView(viewKey), setting.subpage, mode) &&
+          settingShownInMode(settingId(viewKey, key), mode)
+      )
       .map(([key, setting]) => ({
         id: SETTING_IDS[viewKey][key as keyof (typeof SETTING_IDS)[typeof viewKey]],
         keywords: [...setting.keywords],

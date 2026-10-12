@@ -125,7 +125,13 @@ const plugin: HermesPlugin = {
           id: 'nav',
           area: SIDEBAR_NAV_AREA,
           order: 50,
-          data: { codicon: 'project', label: ctx.i18n.t('nav'), path: '/kanban' } satisfies SidebarNavContribution
+          // The board is agent-orchestration machinery; Simple rests its doors.
+          data: {
+            codicon: 'project',
+            label: ctx.i18n.t('nav'),
+            path: '/kanban',
+            tier: 'advanced'
+          } satisfies SidebarNavContribution
         },
         {
           id: 'open',
@@ -134,6 +140,7 @@ const plugin: HermesPlugin = {
             id: 'kanban.open',
             label: ctx.i18n.t('openBoard'),
             keywords: ['kanban', 'board', 'tasks', 'agents'],
+            tier: 'advanced',
             run: () => host.navigate('/kanban')
           } satisfies PaletteContribution
         },
@@ -145,6 +152,7 @@ const plugin: HermesPlugin = {
             action: 'kanban.newTask',
             label: ctx.i18n.t('newTaskCommand'),
             keywords: ['kanban', 'task', 'new', 'create', 'triage'],
+            tier: 'advanced',
             run: newTask
           } satisfies PaletteContribution
         },

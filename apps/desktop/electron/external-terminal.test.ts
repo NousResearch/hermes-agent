@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 import { test } from 'vitest'
 
 import {
+  authInTerminalArgs,
+  authPrepareArgs,
   buildTerminalScript,
   posixQuote,
   resolveTerminalLaunch,
@@ -21,6 +27,18 @@ test('tuiResumeArgs resumes the session in the TUI', () => {
 
 test('tuiResumeArgs pins the profile ahead of the mode flag', () => {
   assert.deepEqual(tuiResumeArgs('sess', 'work'), ['--profile', 'work', '--tui', '--resume', 'sess'])
+})
+
+test('authInTerminalArgs maps an allowlisted provider to a fixed argv', () => {
+  assert.deepEqual(authInTerminalArgs('anthropic'), ['auth', 'add', 'anthropic'])
+  assert.deepEqual(authInTerminalArgs('anthropic', 'Work'), ['--profile', 'work', 'auth', 'add', 'anthropic'])
+  assert.deepEqual(authInTerminalArgs('anthropic', 'Not A Slug!'), ['auth', 'add', 'anthropic'])
+})
+
+test('authInTerminalArgs rejects any provider id off the allowlist', () => {
+  for (const id of ['claude-code', 'qwen-oauth', 'anthropic; rm -rf ~', 'constructor', '__proto__', '', 42, null]) {
+    assert.equal(authInTerminalArgs(id, 'work'), null)
+  }
 })
 
 test('posixQuote survives embedded single quotes', () => {
@@ -142,4 +160,64 @@ test('tuiResumeArgs drops a profile value that is not a valid profile id', () =>
 
 test('tuiResumeArgs normalizes a valid profile id like the CLI', () => {
   assert.deepEqual(tuiResumeArgs('sess', 'Work'), ['--profile', 'work', '--tui', '--resume', 'sess'])
+})
+
+test.skipIf(process.platform === 'win32')(
+  'a held sign-in window waits after a failure and closes after success',
+  () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hold-on-failure-'))
+
+    const run = (command: string) => {
+      const scriptPath = path.join(dir, `${command}.sh`)
+      fs.writeFileSync(scriptPath, buildTerminalScript({ args: [], command, cwd: dir, holdOnFailure: true }))
+
+      return spawnSync('/bin/sh', [scriptPath], { encoding: 'utf8', input: '\n' })
+    }
+
+    const failed = run('false')
+    assert.equal(failed.status, 1)
+    assert.match(failed.stdout, /Press Return to close/)
+
+    const succeeded = run('true')
+    assert.equal(succeeded.status, 0)
+    assert.doesNotMatch(succeeded.stdout, /Press Return/)
+  }
+)
+
+test('authPrepareArgs installs only what an allowlisted sign-in needs', () => {
+  assert.deepEqual(authPrepareArgs('anthropic'), ['pm', 'install', '--extra', 'anthropic'])
+
+  for (const id of ['claude-code', 'anthropic; rm -rf ~', '__proto__', '', 7, null]) {
+    assert.equal(authPrepareArgs(id), null)
+  }
+})
+
+test.skipIf(process.platform === 'win32')('a failed prepare step still runs the sign-in after it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prepare-step-'))
+  const scriptPath = path.join(dir, 'login.sh')
+
+  fs.writeFileSync(
+    scriptPath,
+    buildTerminalScript({ args: ['signed-in'], before: { args: [], command: 'false' }, command: 'echo', cwd: dir })
+  )
+
+  const result = spawnSync('/bin/sh', [scriptPath], { encoding: 'utf8' })
+  assert.equal(result.status, 0)
+  assert.equal(result.stdout.trim(), 'signed-in')
+})
+
+test('on Windows the prepare step returns to the sign-in even through a .cmd launcher', () => {
+  const lines = buildTerminalScript({
+    args: ['auth', 'add', 'anthropic'],
+    before: { args: ['pm', 'install', '--extra', 'anthropic'], command: 'C:\\hermes\\bin\\hermes.cmd' },
+    command: 'C:\\hermes\\bin\\hermes.cmd',
+    cwd: 'C:\\Users\\b',
+    platform: 'win32'
+  }).split('\r\n')
+
+  const prepare = lines.findIndex(line => line.includes('"pm"'))
+  const login = lines.findIndex(line => line.includes('"auth"'))
+
+  assert.ok(lines[prepare].startsWith('call '))
+  assert.ok(prepare < login)
 })

@@ -75,6 +75,7 @@ export const esOnboarding: TranslationOverrides['onboarding'] = {
   useApiKeyInstead: 'Usar una clave API',
   errorDetails: 'Detalles',
   pickDifferentProvider: 'Elegir otro proveedor',
+  pickDifferentAccount: 'Elegir otra cuenta',
   signInWith: provider => `Iniciar sesión con ${provider}`,
   openedBrowser: provider => `Abrimos ${provider} en tu navegador.`,
   authorizeThere: 'Autoriza Hermes allí.',
@@ -95,5 +96,27 @@ export const esOnboarding: TranslationOverrides['onboarding'] = {
   price: (input, output) => `${input} entrada / ${output} salida por Mtok`,
   change: 'Cambiar',
   startChatting: 'Empezar',
-  docs: provider => `Docs de ${provider}`
+  docs: provider => `Docs de ${provider}`,
+  modeChoiceTitle: '¿Cómo quieres usar Hermes?',
+  modeChoiceDesc: 'Elige lo que te resulte más cómodo. Puedes cambiarlo cuando quieras en Configuración.',
+  modeChoiceSimpleDesc: 'Solo habla con Hermes. Él elige la mejor configuración por ti.',
+  modeChoiceAdvancedDesc: 'Todos los ajustes, además de terminal, archivos y revisión de código.',
+  simpleHeaderDesc: 'Inicia sesión con una cuenta que ya tengas. Hermes se encarga del resto.',
+  simpleTiles: {
+    nous: 'Cuenta gratuita',
+    chatgpt: 'Requiere ChatGPT Plus o Pro',
+    grok: 'Requiere SuperGrok o X Premium+',
+    claude: 'Requiere Claude Max. Anthropic lo factura como uso adicional.'
+  },
+  simpleDeviceCodeOpened: 'Se abrió tu navegador. Autoriza a Hermes allí y luego vuelve aquí.',
+  simpleDeviceCodeCopied: 'Si te pide un código, pega este. Ya está copiado.',
+  terminalSignInOpened: (paste, enter) =>
+    `Se abrió una ventana de terminal. Autoriza a Hermes en tu navegador y copia el código que te muestre. Luego haz clic en la ventana del terminal, pulsa ${paste} y ${enter}, y vuelve aquí.`,
+  openTerminalAgain: 'Abrir el terminal otra vez',
+  simpleSignInNotFinished: provider =>
+    `Hermes todavía no ve tu inicio de sesión con ${provider}. Termínalo y vuelve a intentarlo, o elige otra cuenta.`,
+  simpleNoSignIns: 'Hermes no pudo cargar las opciones de inicio de sesión. Vuelve a intentarlo en un momento.',
+  simpleDefaultsFailed: 'No se pudieron activar los ajustes de seguridad del modo Simple',
+  simpleDefaultsRemote:
+    'Hermes se ejecuta en otro ordenador, así que los ajustes de seguridad del modo Simple no se añadieron allí.'
 }

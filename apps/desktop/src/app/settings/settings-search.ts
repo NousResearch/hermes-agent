@@ -1,11 +1,13 @@
 import type { IconComponent } from '@/lib/icons'
 import { normalize } from '@/lib/text'
+import type { InterfaceMode } from '@/store/interface-mode'
 import type { ConfigFieldSchema, EnvVarInfo, HermesConfigRecord } from '@/types/hermes'
 
 import { FIELD_LABELS, SECTIONS } from './constants'
 import { credentialRowLabel } from './credential-key-ui'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { prettyName, sectionFieldEntries, voiceFieldVisible } from './helpers'
+import { settingShownInMode, settingsPageShown } from './settings-visibility'
 import { settingsSubpageForTarget } from './subpages'
 import type { DesktopConfigSection, SettingsView } from './types'
 
@@ -183,6 +185,24 @@ export function filterSettingsSearchEntries(entries: SettingsSearchEntry[], quer
     .filter(result => result.score > 0)
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .map(result => result.entry)
+}
+
+/**
+ * Whether a search hit lands on a page the mode shows. Provider hits other
+ * than Accounts (API keys, custom endpoints) are Advanced-only sub-views.
+ */
+export function settingsSearchTargetShown(target: SettingsSearchTarget, mode: InterfaceMode): boolean {
+  if (mode === 'simple' && target.providerView && target.providerView !== 'accounts') {
+    return false
+  }
+
+  if ([target.field, target.setting].some(key => key && !settingShownInMode(key, mode))) {
+    return false
+  }
+
+  const subpage = target.subpage ?? settingsSubpageForTarget(target.view, target.field, target.setting)
+
+  return settingsPageShown(target.view, subpage, mode)
 }
 
 /** Serialize a search target to the Settings route's query string. */

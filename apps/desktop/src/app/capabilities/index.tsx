@@ -1,3 +1,5 @@
+import { useStore } from '@nanostores/react'
+import { computed } from 'nanostores'
 import type * as React from 'react'
 import { useCallback, useMemo, useState } from 'react'
 
@@ -9,6 +11,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -31,6 +34,12 @@ import { ToolsetsTab } from './toolsets/toolsets-tab'
 const CAPABILITY_MODES = ['skills', 'toolsets', 'connectors', 'plugins'] as const
 
 type CapabilityMode = (typeof CAPABILITY_MODES)[number]
+
+// Machinery tabs Simple hides. The route still parses them, so switching back
+// to Advanced lands on the deep-linked tab.
+const $hiddenModes = computed($showsAdvancedChrome, (advanced): readonly string[] =>
+  advanced ? [] : ['toolsets', 'plugins']
+)
 
 interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -63,11 +72,14 @@ export function CapabilitiesView({
   ...props
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
+  const hiddenModes = useStore($hiddenModes)
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
   const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
   const localTab = useState<CapabilityMode>('skills')
-  const [mode, setMode] = embedded ? localTab : routeTab
+  const [selectedMode, setMode] = embedded ? localTab : routeTab
+  // A tab Simple hides (deep link, or a mode flip mid-visit) shows Skills.
+  const mode = hiddenModes.includes(selectedMode) ? 'skills' : selectedMode
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
 
   const [query, setQuery] = useState('')
@@ -185,7 +197,7 @@ export function CapabilitiesView({
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
         { id: 'connectors', label: t.connectorsPage.title },
         { id: 'plugins', label: t.skills.tabPlugins }
-      ]}
+      ].filter(tab => !hiddenModes.includes(tab.id))}
     >
       <div className="flex h-full flex-col">
         {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}

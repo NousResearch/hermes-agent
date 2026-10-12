@@ -76,6 +76,7 @@ export const frOnboarding: TranslationOverrides['onboarding'] = {
   useApiKeyInstead: 'Utiliser une clé API',
   errorDetails: 'Détails',
   pickDifferentProvider: 'Choisissez un autre fournisseur',
+  pickDifferentAccount: 'Choisir un autre compte',
   signInWith: provider => `Se connecter avec ${provider}`,
   openedBrowser: provider => `Nous avons ouvert ${provider} dans votre navigateur.`,
   authorizeThere: 'Autorisez Hermes là-bas.',
@@ -96,5 +97,27 @@ export const frOnboarding: TranslationOverrides['onboarding'] = {
   price: (input, output) => `${input} entrant / ${output} sortant par Mtok`,
   change: 'Modifier',
   startChatting: 'Commencer',
-  docs: provider => `Documentation ${provider}`
+  docs: provider => `Documentation ${provider}`,
+  modeChoiceTitle: 'Comment voulez-vous utiliser Hermes ?',
+  modeChoiceDesc: 'Choisissez ce qui vous convient. Vous pourrez changer à tout moment dans les paramètres.',
+  modeChoiceSimpleDesc: 'Parlez simplement à Hermes. Il choisit les meilleurs réglages pour vous.',
+  modeChoiceAdvancedDesc: 'Tous les réglages, plus le terminal, les fichiers et la revue de code.',
+  simpleHeaderDesc: 'Connectez-vous avec un compte que vous avez déjà. Hermes s’occupe du reste.',
+  simpleTiles: {
+    nous: 'Compte gratuit',
+    chatgpt: 'Nécessite ChatGPT Plus ou Pro',
+    grok: 'Nécessite SuperGrok ou X Premium+',
+    claude: 'Nécessite Claude Max. Anthropic le facture en utilisation supplémentaire.'
+  },
+  simpleDeviceCodeOpened: 'Votre navigateur s’est ouvert. Autorisez Hermes là-bas, puis revenez ici.',
+  simpleDeviceCodeCopied: 'Si un code vous est demandé, collez celui-ci. Il est déjà copié.',
+  terminalSignInOpened: (paste, enter) =>
+    `Une fenêtre de terminal s’est ouverte. Autorisez Hermes dans votre navigateur et copiez le code affiché. Cliquez ensuite dans la fenêtre du terminal, appuyez sur ${paste} puis ${enter}, et revenez ici.`,
+  openTerminalAgain: 'Rouvrir le terminal',
+  simpleSignInNotFinished: provider =>
+    `Hermes ne voit pas encore votre connexion à ${provider}. Terminez-la puis réessayez, ou choisissez un autre compte.`,
+  simpleNoSignIns: 'Hermes n’a pas pu charger les options de connexion. Réessayez dans un instant.',
+  simpleDefaultsFailed: 'Impossible d’activer les réglages de sécurité du mode Simple',
+  simpleDefaultsRemote:
+    'Hermes tourne sur un autre ordinateur, les réglages de sécurité du mode Simple n’y ont donc pas été ajoutés.'
 }

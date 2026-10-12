@@ -1,15 +1,19 @@
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Loader } from '@/components/ui/loader'
-import { getGlobalModelOptions, profileScopeKey } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { getGlobalModelOptions, listOAuthProviders, profileScopeKey } from '@/hermes'
+import { type Translations, useI18n } from '@/i18n'
 import { ExternalLink, Loader2 } from '@/lib/icons'
+import { isMacPlatform, isWindowsPlatform } from '@/lib/platform'
+import { isLocalScope } from '@/lib/simple-agent-defaults'
 import { cn } from '@/lib/utils'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 import {
   cancelOnboardingFlow,
   copyDeviceCode,
@@ -23,9 +27,10 @@ import {
   startProviderOAuth,
   submitOnboardingCode
 } from '@/store/onboarding'
+import type { OAuthProvider } from '@/types/hermes'
 
 import { DecodedLabel, GlyphText, HackeryButton, useScramble } from './glyph'
-import { providerTitle } from './providers'
+import { providerTitle, SIMPLE_SIGN_IN_TILES } from './providers'
 
 export function FlowPanel({
   ctx,
@@ -39,7 +44,10 @@ export function FlowPanel({
   onBegin: () => void
 }) {
   const { t } = useI18n()
-  const title = 'provider' in flow && flow.provider ? providerTitle(flow.provider) : ''
+  const advanced = useStore($showsAdvancedChrome)
+  const provider = 'provider' in flow ? flow.provider : null
+  const simpleTitle = simpleTileTitle(provider, advanced)
+  const title = simpleTitle ?? (provider ? providerTitle(provider) : '')
 
   if (flow.status === 'starting') {
     return <Status>{t.onboarding.startingSignIn(title)}</Status>
@@ -62,26 +70,30 @@ export function FlowPanel({
     // (when we know which one failed), fall back to a pasted API key, or go
     // back to the provider list. Raw error text stays behind Details.
     const failedProvider = flow.provider
+    const { backLabel, detail, headline } = flowErrorCopy(flow, simpleTitle, t)
 
     return (
       <div className="grid gap-3">
         <div className="flex items-center gap-1.5 text-sm text-destructive">
           <ErrorIcon className="shrink-0" size="0.875rem" />
-          <span>{flow.message || t.onboarding.signInFailed}</span>
+          <span>{headline}</span>
         </div>
-        {flow.detail ? (
+        {detail ? (
           <details className="text-xs text-muted-foreground">
             <summary className="cursor-pointer select-none">{t.onboarding.errorDetails}</summary>
-            <pre className="mt-1 whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem]">{flow.detail}</pre>
+            <pre className="mt-1 whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem]">{detail}</pre>
           </details>
         ) : null}
         <div className="flex flex-wrap justify-end gap-2">
           <Button onClick={cancelOnboardingFlow} variant="text">
-            {t.onboarding.pickDifferentProvider}
+            {backLabel}
           </Button>
-          <Button onClick={() => startManualOnboarding(null, ctx.scope ?? ctx.profile)} variant="outline">
-            {t.onboarding.useApiKeyInstead}
-          </Button>
+          {/* API keys are an Advanced door. */}
+          {advanced ? (
+            <Button onClick={() => startManualOnboarding(null, ctx.scope ?? ctx.profile)} variant="outline">
+              {t.onboarding.useApiKeyInstead}
+            </Button>
+          ) : null}
           {failedProvider ? (
             <Button onClick={() => void startProviderOAuth(failedProvider, ctx)}>{t.onboarding.tryAgain}</Button>
           ) : null}
@@ -116,7 +128,7 @@ export function FlowPanel({
   }
 
   if (flow.status === 'external_pending') {
-    return (
+    const commandStep = (
       <Step title={t.onboarding.signInWith(title)}>
         <p className="text-sm text-muted-foreground">{t.onboarding.externalPending(title)}</p>
         <CodeBlock copied={flow.copied} onCopy={() => void copyExternalCommand()} text={flow.provider.cli_command} />
@@ -132,15 +144,187 @@ export function FlowPanel({
         </FlowFooter>
       </Step>
     )
+
+    // The terminal signs in THIS machine's Hermes; a remote backend keeps the command card.
+    return simpleTitle && isLocalScope(ctx.scope ?? {}) ? (
+      <TerminalSignInStep ctx={ctx} fallback={commandStep} flow={flow} title={title} />
+    ) : (
+      commandStep
+    )
   }
 
   if (flow.status !== 'polling') {
     return null
   }
 
+  return <DeviceCodeStep flow={flow} title={title} />
+}
+
+// Simple names a sign-in by its tile ("ChatGPT"), never a catalog label like
+// "ChatGPT or Codex Subscription"; null in Advanced or for a provider with no tile.
+function simpleTileTitle(provider: null | OAuthProvider | undefined, advanced: boolean): null | string {
+  return advanced ? null : (SIMPLE_SIGN_IN_TILES.find(tile => tile.providerId === provider?.id)?.title ?? null)
+}
+
+// Simple names the tile in plain words; the backend's wording (CLI commands,
+// env vars, catalog labels, "use an API key") stays behind Details.
+function flowErrorCopy(
+  flow: Extract<OnboardingFlow, { status: 'error' }>,
+  simpleTitle: null | string,
+  t: Translations
+): { backLabel: string; detail?: string; headline: string } {
+  if (!simpleTitle) {
+    return {
+      backLabel: t.onboarding.pickDifferentProvider,
+      detail: flow.detail,
+      headline: flow.message || t.onboarding.signInFailed
+    }
+  }
+
+  return {
+    backLabel: t.onboarding.pickDifferentAccount,
+    detail: [flow.message, flow.detail].filter(Boolean).join('\n\n') || undefined,
+    headline: t.onboarding.simpleSignInNotFinished(simpleTitle)
+  }
+}
+
+// One terminal per sign-in attempt (a flow object), even when StrictMode
+// replays mount effects in dev.
+const terminalLaunches = new WeakSet<OnboardingFlow>()
+
+// The keys that paste the copied code into the terminal and submit it, per OS.
+const PASTE_KEY = isMacPlatform() ? '⌘V' : isWindowsPlatform() ? 'Ctrl+V' : 'Ctrl+Shift+V'
+const ENTER_KEY = isMacPlatform() ? 'Return' : 'Enter'
+
+// Simple's Claude sign-in: Electron main opens Hermes' own CLI login in the
+// user's terminal from an allowlisted argv (the backend's `cli_command` stays
+// display-only). No terminal could be opened → the copy-the-command step.
+function TerminalSignInStep({
+  ctx,
+  fallback,
+  flow,
+  title
+}: {
+  ctx: OnboardingContext
+  fallback: React.ReactNode
+  flow: Extract<OnboardingFlow, { status: 'external_pending' }>
+  title: string
+}) {
+  const { t } = useI18n()
+  const [failed, setFailed] = useState(false)
+  const profile = ctx.scope?.profile ?? ctx.profile
+  const providerId = flow.provider.id
+
+  const open = useCallback(() => {
+    void Promise.resolve()
+      .then(() => window.hermesDesktop?.openAuthInTerminal?.(providerId, { profile: profile ?? undefined }))
+      .then(
+        result => setFailed(!result?.ok),
+        () => setFailed(true)
+      )
+  }, [profile, providerId])
+
+  useEffect(() => {
+    if (!failed && !terminalLaunches.has(flow)) {
+      terminalLaunches.add(flow)
+      open()
+    }
+  }, [failed, flow, open])
+
+  useNoticeTerminalSignIn(ctx, providerId)
+
+  if (failed) {
+    return fallback
+  }
+
   return (
     <Step title={t.onboarding.signInWith(title)}>
-      <p className="text-sm text-muted-foreground">{t.onboarding.deviceCodeOpened(title)}</p>
+      <p className="text-sm text-muted-foreground">{t.onboarding.terminalSignInOpened(PASTE_KEY, ENTER_KEY)}</p>
+      <FlowFooter
+        left={
+          <Button onClick={open} size="sm" variant="text">
+            {t.onboarding.openTerminalAgain}
+          </Button>
+        }
+      >
+        <CancelBtn />
+        <Button onClick={() => void recheckExternalSignin(ctx)}>{t.onboarding.signedIn}</Button>
+      </FlowFooter>
+    </Step>
+  )
+}
+
+const TERMINAL_SIGN_IN_POLL_MS = 3_000
+
+// The user finishes in a terminal we cannot watch, so ask the backend quietly
+// (every few seconds and on focus) and move on by ourselves once a NEW
+// credential appears: one that already existed (an env key, a stale token from a
+// failed attempt) must not cut the sign-in short. A failed check is just a missed
+// tick; "I've signed in" still works.
+function useNoticeTerminalSignIn(ctx: OnboardingContext, providerId: string) {
+  // A re-render hands in a new ctx; that must not restart the poll.
+  const ctxRef = useRef(ctx)
+  ctxRef.current = ctx
+
+  useEffect(() => {
+    let done = false
+    let sawSignedOut = false
+
+    const check = () => {
+      const current = ctxRef.current
+
+      void Promise.resolve()
+        .then(() => listOAuthProviders(current.scope ?? current.profile))
+        .then(
+          ({ providers }) => {
+            const signedIn = Boolean(providers.find(p => p.id === providerId)?.status.logged_in)
+
+            if (!signedIn) {
+              sawSignedOut = true
+            } else if (sawSignedOut && !done) {
+              done = true
+              void recheckExternalSignin(ctxRef.current)
+            }
+          },
+          () => undefined
+        )
+    }
+
+    const timer = window.setInterval(check, TERMINAL_SIGN_IN_POLL_MS)
+    window.addEventListener('focus', check)
+
+    return () => {
+      done = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', check)
+    }
+  }, [providerId])
+}
+
+// Sign-ins whose code Simple already copied, so a remount never writes the clipboard again.
+const copiedSignIns = new Set<string>()
+
+function DeviceCodeStep({ flow, title }: { flow: Extract<OnboardingFlow, { status: 'polling' }>; title: string }) {
+  const { t } = useI18n()
+  const advanced = useStore($showsAdvancedChrome)
+  const sessionId = flow.start.session_id
+
+  // Simple copies the code the moment the browser opens, once per sign-in, so
+  // pasting is the only step left. Mode is read at start on purpose: a toggle
+  // mid-sign-in must not trigger a second clipboard write.
+  useEffect(() => {
+    if (!$showsAdvancedChrome.get() && !copiedSignIns.has(sessionId)) {
+      copiedSignIns.add(sessionId)
+      void copyDeviceCode()
+    }
+  }, [sessionId])
+
+  return (
+    <Step title={t.onboarding.signInWith(title)}>
+      <p className="text-sm text-muted-foreground">
+        {advanced ? t.onboarding.deviceCodeOpened(title) : t.onboarding.simpleDeviceCodeOpened}
+      </p>
+      {advanced ? null : <p className="text-sm text-muted-foreground">{t.onboarding.simpleDeviceCodeCopied}</p>}
       <DeviceCode code={flow.start.user_code} copied={flow.copied} onCopy={() => void copyDeviceCode()} />
       <FlowFooter left={<DocsLink href={flow.start.verification_url}>{t.onboarding.reopenVerification}</DocsLink>}>
         <span className="flex items-center gap-2 text-xs text-muted-foreground">

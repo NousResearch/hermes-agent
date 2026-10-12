@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
+import { setInterfaceMode } from '@/store/interface-mode'
 
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
@@ -494,5 +495,23 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() =>
       expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('official/gifs/gif-search', expect.anything())
     )
+  })
+})
+
+describe('CapabilitiesView in Simple mode', { timeout: 60_000 }, () => {
+  afterEach(() => setInterfaceMode('advanced'))
+
+  it('offers only Skills and Connectors and lands a hidden deep-linked tab on Skills', async () => {
+    setInterfaceMode('simple')
+    const { container } = await renderSkills() // ?tab=toolsets
+
+    const shownTabs = ['skills', 'toolsets', 'connectors', 'plugins'].filter(id =>
+      container.querySelector(`[data-tour="tab-${id}"]`)
+    )
+
+    expect(shownTabs).toEqual(['skills', 'connectors'])
+    await waitFor(() => expect(getSkills).toHaveBeenCalled())
+    expect(container.querySelector('[data-tour="tab-skills"]')?.getAttribute('data-active')).toBe('true')
+    expect(screen.queryByRole('switch', { name: 'Turn Web Search toolset off' })).toBeNull()
   })
 })

@@ -312,6 +312,7 @@ export const zhHantBoot = {
     signInExpired:
       '等待授權逾時。通常是因為登入頁面在開啟的分頁中卡住（伺服器端問題）——請在該頁面完成登入後重試。若仍失敗，請改用 API 金鑰或 CLI 方式。',
     pickDifferentProvider: '選擇其他提供方',
+    pickDifferentAccount: '選擇其他帳號',
     signInWith: provider => `使用 ${provider} 登入`,
     openedBrowser: provider => `已在瀏覽器中開啟 ${provider}。`,
     authorizeThere: '請在那裡授權 Hermes。',
@@ -334,7 +335,28 @@ export const zhHantBoot = {
     docs: provider => `${provider} 文件`,
     setupSlowTitle: '設定花費的時間比平常久。',
     setupSlowBody: 'Hermes 仍在背景中啟動。',
-    continueWithoutSetup: '略過設定並繼續'
+    continueWithoutSetup: '略過設定並繼續',
+    modeChoiceTitle: '你想怎麼使用 Hermes？',
+    modeChoiceDesc: '選擇你覺得順手的方式。之後隨時可以在「設定」中切換。',
+    modeChoiceSimpleDesc: '直接和 Hermes 對話就好，它會為你挑選最合適的設定。',
+    modeChoiceAdvancedDesc: '所有設定一應俱全，還有終端機、檔案和程式碼審查。',
+    simpleHeaderDesc: '用你現有的帳戶登入，其餘的交給 Hermes 設定。',
+    simpleTiles: {
+      nous: '免費帳戶',
+      chatgpt: '需要 ChatGPT Plus 或 Pro',
+      grok: '需要 SuperGrok 或 X Premium+',
+      claude: '需要 Claude Max，Anthropic 會按額外用量計費。'
+    },
+    simpleDeviceCodeOpened: '瀏覽器已開啟。請在那裡允許 Hermes，然後回到這裡。',
+    simpleDeviceCodeCopied: '如果要求輸入代碼，請貼上這組代碼。它已經幫你複製好了。',
+    terminalSignInOpened: (paste, enter) =>
+      `已開啟一個終端機視窗。請在瀏覽器中允許 Hermes，並複製顯示的代碼。然後點一下終端機視窗，按 ${paste} 和 ${enter}，再回到這裡。`,
+    openTerminalAgain: '再次開啟終端機',
+    simpleSignInNotFinished: provider =>
+      `Hermes 還沒有偵測到你的 ${provider} 登入。請完成登入後再試一次，或改用其他帳號。`,
+    simpleNoSignIns: 'Hermes 無法載入登入選項，請稍後再試一次。',
+    simpleDefaultsFailed: '無法開啟簡潔模式的安全設定',
+    simpleDefaultsRemote: 'Hermes 在另一台電腦上執行，因此沒有在那裡加入簡潔模式的安全設定。'
   }
 } satisfies Pick<
   TranslationOverrides,

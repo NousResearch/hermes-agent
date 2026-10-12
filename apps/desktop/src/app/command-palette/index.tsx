@@ -72,6 +72,13 @@ import {
   setCommandPaletteOpen
 } from '@/store/command-palette'
 import { completeFlow, recordAction } from '@/store/desktop-metrics'
+import {
+  $interfaceMode,
+  type InterfaceMode,
+  type InterfaceTier,
+  shownInMode,
+  type Tiered
+} from '@/store/interface-mode'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
@@ -110,7 +117,13 @@ import {
   STARMAP_ROUTE
 } from '../routes'
 import { SECTIONS } from '../settings/constants'
-import { type SettingsSearchEntry, settingsSearchTargetQuery } from '../settings/settings-search'
+import {
+  type SettingsSearchEntry,
+  type SettingsSearchTarget,
+  settingsSearchTargetQuery,
+  settingsSearchTargetShown
+} from '../settings/settings-search'
+import type { SettingsView } from '../settings/types'
 import { useSettingsSearchCatalog } from '../settings/use-settings-search'
 
 import { usePaletteContributions } from './contrib'
@@ -118,7 +131,7 @@ import { HighlightWatcher } from './highlight-watcher'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 
-interface PaletteItem {
+interface PaletteItem extends Tiered {
   /** Keybind action id — its live combo renders as a hotkey hint. */
   action?: string
   /** Renders a trailing check: this row IS the current setting (theme, mode). */
@@ -154,7 +167,8 @@ interface PaletteItem {
   to?: string
 }
 
-interface PaletteGroup {
+/** `tier` on a group or an item rests it in the other mode (`shownInMode`). */
+interface PaletteGroup extends Tiered {
   /** Optional: a headingless group renders as a bare action row (e.g. the
    *  "Install theme…" entry pinned atop the theme picker). */
   heading?: string
@@ -231,6 +245,16 @@ const scoreItem = (item: PaletteItem, needle: string): number => {
 
   // Matched only via keywords — the weakest, generic-row signal.
   return 0.4
+}
+
+// Drop the groups and rows the interface mode rests, and any group left empty.
+const groupsForMode = (groups: PaletteGroup[], mode: InterfaceMode): PaletteGroup[] => {
+  const shown = shownInMode(mode)
+
+  return groups
+    .filter(shown)
+    .map(group => ({ ...group, items: group.items.filter(shown) }))
+    .filter(group => group.items.length > 0)
 }
 
 // Order items within each group by score, order groups by their best item, and
@@ -415,6 +439,16 @@ type NonConfigSettingsLabel =
   | 'providerAccounts'
   | 'providerApiKeys'
 
+// Settings owns which of its pages Simple shows; a row deep-linking into a
+// page it rests rests with it. The tab is `<view>[&pview=<provider view>]`.
+const nonConfigTier = (tab: string): InterfaceTier | undefined => {
+  const [view, query] = tab.split('&')
+  const providerView = new URLSearchParams(query).get('pview') as SettingsSearchTarget['providerView'] | null
+  const target = { providerView: providerView ?? undefined, view: view as SettingsView }
+
+  return settingsSearchTargetShown(target, 'simple') ? undefined : 'advanced'
+}
+
 const NON_CONFIG_SETTINGS: ReadonlyArray<{
   icon: IconComponent
   keywords?: string[]
@@ -560,6 +594,31 @@ export function CommandPalette() {
   )
 }
 
+// Live ⌘/⌃-held state while the palette is open: rows with a modifier
+// variant (projects) preview it by swapping their label. Window-level
+// listeners because focus sits in the search input; blur clears so a
+// ⌘-Tab away doesn't strand the preview on.
+function useModifierHeld(): boolean {
+  const [modHeld, setModHeld] = useState(false)
+
+  useEffect(() => {
+    const sync = (event: KeyboardEvent) => setModHeld(event.metaKey || event.ctrlKey)
+    const clear = () => setModHeld(false)
+
+    window.addEventListener('keydown', sync, { capture: true })
+    window.addEventListener('keyup', sync, { capture: true })
+    window.addEventListener('blur', clear)
+
+    return () => {
+      window.removeEventListener('keydown', sync, { capture: true })
+      window.removeEventListener('keyup', sync, { capture: true })
+      window.removeEventListener('blur', clear)
+    }
+  }, [])
+
+  return modHeld
+}
+
 function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const { t } = useI18n()
   const pendingPage = useStore($commandPalettePage)
@@ -632,26 +691,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     }
   }
 
-  // Live ⌘/⌃-held state while the palette is open: rows with a modifier
-  // variant (projects) preview it by swapping their label. Window-level
-  // listeners because focus sits in the search input; blur clears so a
-  // ⌘-Tab away doesn't strand the preview on.
-  const [modHeld, setModHeld] = useState(false)
-
-  useEffect(() => {
-    const sync = (event: KeyboardEvent) => setModHeld(event.metaKey || event.ctrlKey)
-    const clear = () => setModHeld(false)
-
-    window.addEventListener('keydown', sync, { capture: true })
-    window.addEventListener('keyup', sync, { capture: true })
-    window.addEventListener('blur', clear)
-
-    return () => {
-      window.removeEventListener('keydown', sync, { capture: true })
-      window.removeEventListener('keyup', sync, { capture: true })
-      window.removeEventListener('blur', clear)
-    }
-  }, [])
+  const modHeld = useModifierHeld()
 
   // Server-backed sources for the type-to-search groups. This component only
   // exists while the palette is open, so the queries are inherently lazy — no
@@ -804,7 +844,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
                   label: t.commandCenter.startInBranch(name),
                   run: () => requestStartWorkSession(wt.path)
                 }
-              })
+              }),
+              tier: 'advanced'
             }
           ]
         : [],
@@ -900,7 +941,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             icon: Package,
             id: 'nav-artifacts',
             label: cc.nav.artifacts.title,
-            run: go(ARTIFACTS_ROUTE)
+            run: go(ARTIFACTS_ROUTE),
+            tier: 'advanced'
           },
           {
             action: 'nav.cron',
@@ -908,16 +950,32 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             id: 'nav-cron',
             keywords: ['schedule', 'jobs'],
             label: t.shell.statusbar.cron,
-            run: go(CRON_ROUTE)
+            run: go(CRON_ROUTE),
+            tier: 'advanced'
           },
-          { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
-          { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) },
+          {
+            action: 'nav.profiles',
+            icon: Users,
+            id: 'nav-profiles',
+            label: t.profiles.title,
+            run: go(PROFILES_ROUTE),
+            tier: 'advanced'
+          },
+          {
+            action: 'nav.agents',
+            icon: Cpu,
+            id: 'nav-agents',
+            label: t.agents.title,
+            run: go(AGENTS_ROUTE),
+            tier: 'advanced'
+          },
           {
             icon: Starmap,
             id: 'nav-starmap',
             keywords: ['star map', 'memory', 'memories', 'skills', 'graph', 'learning', 'constellation'],
             label: t.starmap.title,
-            run: go(STARMAP_ROUTE)
+            run: go(STARMAP_ROUTE),
+            tier: 'advanced'
           }
         ]
       },
@@ -952,35 +1010,40 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             id: 'cc-sessions',
             keywords: ['command center', 'sessions', 'pin'],
             label: cc.sections.sessions,
-            run: go(`${COMMAND_CENTER_ROUTE}?section=sessions`)
+            run: go(`${COMMAND_CENTER_ROUTE}?section=sessions`),
+            tier: 'advanced'
           },
           {
             icon: Download,
             id: 'session-import',
             keywords: ['import', 'claude', 'codex', 'conversation'],
             label: t.sessionImport.action,
-            run: go(SESSION_IMPORT_ROUTE)
+            run: go(SESSION_IMPORT_ROUTE),
+            tier: 'advanced'
           },
           {
             icon: Activity,
             id: 'cc-system',
             keywords: ['command center', 'system', 'status', 'logs'],
             label: cc.sections.system,
-            run: go(`${COMMAND_CENTER_ROUTE}?section=system`)
+            run: go(`${COMMAND_CENTER_ROUTE}?section=system`),
+            tier: 'advanced'
           },
           {
             icon: BarChart3,
             id: 'cc-usage',
             keywords: ['command center', 'usage', 'tokens', 'cost'],
             label: cc.sections.usage,
-            run: go(`${COMMAND_CENTER_ROUTE}?section=usage`)
+            run: go(`${COMMAND_CENTER_ROUTE}?section=usage`),
+            tier: 'advanced'
           },
           {
             icon: RefreshCw,
             id: 'cc-restart-gateway',
             keywords: ['gateway', 'restart', 'messaging', 'reconnect', 'system'],
             label: cc.restartGateway,
-            run: () => void runGatewayRestart()
+            run: () => void runGatewayRestart(),
+            tier: 'advanced'
           },
           {
             detail: updateVersionLabel,
@@ -1051,14 +1114,16 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             id: `set-config-${section.id}`,
             keywords: ['settings', section.label, settingsSectionLabel(section)],
             label: settingsSectionLabel(section),
-            run: go(settingsTab(`config:${section.id}`))
+            run: go(settingsTab(`config:${section.id}`)),
+            tier: section.tier
           })),
           ...NON_CONFIG_SETTINGS.map(entry => ({
             icon: entry.icon,
             id: `set-${entry.tab}`,
             keywords: ['settings', ...(entry.keywords ?? [])],
             label: t.settings.nav[entry.labelKey],
-            run: go(settingsTab(entry.tab))
+            run: go(settingsTab(entry.tab)),
+            tier: nonConfigTier(entry.tab)
           }))
         ]
       }
@@ -1163,7 +1228,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           id: 'cap-toolsets',
           keywords: ['tools', 'toolsets', 'capabilities'],
           label: `${capLabel}: ${t.skills.tabToolsets}`,
-          run: go(`${CAPABILITIES_ROUTE}?tab=toolsets`)
+          run: go(`${CAPABILITIES_ROUTE}?tab=toolsets`),
+          tier: 'advanced'
         },
         {
           icon: Layers3,
@@ -1177,7 +1243,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           id: 'cap-plugins',
           keywords: ['plugins', 'extensions', 'desktop plugins', 'agent plugins', 'catalog', 'addon', 'add-on'],
           label: `${capLabel}: ${t.skills.tabPlugins}`,
-          run: go(`${CAPABILITIES_ROUTE}?tab=plugins`)
+          run: go(`${CAPABILITIES_ROUTE}?tab=plugins`),
+          tier: 'advanced'
         }
       ]
     })
@@ -1279,7 +1346,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           keywords: [entry.context, entry.description ?? '', ...entry.keywords],
           label: entry.label,
           run: go(`${CAPABILITIES_ROUTE}?tab=plugins&plugin=${encodeURIComponent(entry.plugin)}`)
-        }))
+        })),
+        tier: 'advanced'
       })
     }
 
@@ -1299,7 +1367,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           keywords: ['mcp', 'server', 'tool'],
           label: name,
           run: go(`${CAPABILITIES_ROUTE}?tab=connectors&server=${encodeURIComponent(name)}`)
-        }))
+        })),
+        tier: 'advanced'
       })
     }
 
@@ -1364,14 +1433,16 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             id: `sp-config-${section.id}`,
             keywords: ['settings', section.label, settingsSectionLabel(section)],
             label: settingsSectionLabel(section),
-            run: go(settingsTab(`config:${section.id}`))
+            run: go(settingsTab(`config:${section.id}`)),
+            tier: section.tier
           })),
           ...NON_CONFIG_SETTINGS.map(entry => ({
             icon: entry.icon,
             id: `sp-${entry.tab}`,
             keywords: ['settings', ...(entry.keywords ?? [])],
             label: t.settings.nav[entry.labelKey],
-            run: go(settingsTab(entry.tab))
+            run: go(settingsTab(entry.tab)),
+            tier: nonConfigTier(entry.tab)
           }))
         ]
       }
@@ -1520,7 +1591,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   )
 
   const activePage = page ? subPages[page] : null
-  const unrankedGroups = activePage ? activePage.groups : groups
+  const interfaceMode = useStore($interfaceMode)
+
+  const unrankedGroups = useMemo(
+    () => groupsForMode(activePage ? activePage.groups : groups, interfaceMode),
+    [activePage, groups, interfaceMode]
+  )
+
   const visibleGroups = useMemo(() => rankGroups(unrankedGroups, search), [unrankedGroups, search])
   const placeholder = activePage ? activePage.placeholder : t.commandCenter.searchPlaceholder
 

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { setInterfaceMode } from '@/store/interface-mode'
+
 import {
   type CommandCatalogMeta,
   type CommandsCatalogLike,
@@ -458,5 +460,23 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
         expect(isDesktopSlashCommand(name)).toBe(false)
       }
     }
+  })
+})
+
+describe('slash suggestions in Simple mode', () => {
+  afterEach(() => setInterfaceMode('advanced'))
+
+  it('offers only the curated built-ins and every extension, while all commands still run', () => {
+    setInterfaceMode('simple')
+
+    expect(isDesktopSlashSuggestion('/yolo')).toBe(false)
+    expect(isDesktopSlashSuggestion('/profile')).toBe(false)
+    expect(isDesktopSlashSuggestion('/new')).toBe(true)
+    expect(isDesktopSlashSuggestion('/gif-search')).toBe(true)
+    expect(isDesktopSlashCommand('/yolo')).toBe(true)
+
+    setInterfaceMode('advanced')
+
+    expect(isDesktopSlashSuggestion('/yolo')).toBe(true)
   })
 })

@@ -20,10 +20,26 @@ const PROVIDER_ORDER: Record<string, number> = {
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
 export const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY_NAMES[p.id] ?? p.name
+
+// Simple mode's sign-in tiles by backend OAuth id, in display order. Their
+// short names also title the sign-in steps, so Simple never shows a catalog
+// label like "ChatGPT or Codex Subscription".
+export const SIMPLE_SIGN_IN_TILES = [
+  { tile: 'nous', providerId: 'nous', title: 'Nous' },
+  { tile: 'chatgpt', providerId: 'openai-codex', title: 'ChatGPT' },
+  { tile: 'grok', providerId: 'xai-oauth', title: 'Grok' },
+  { tile: 'claude', providerId: 'anthropic', title: 'Claude' }
+] as const
+
 const orderOf = (p: OAuthProvider) => PROVIDER_ORDER[p.id] ?? 99
 
 export const sortProviders = (providers: OAuthProvider[]) =>
   [...providers].sort((a, b) => orderOf(a) - orderOf(b) || a.name.localeCompare(b.name))
+
+/** The Nous brand mark shared by the featured row and Simple mode's Nous tile. */
+export function NousMark() {
+  return <img alt="" className="size-5 shrink-0 rounded" src={assetPath('apple-touch-icon.png')} />
+}
 
 export function FeaturedProviderRow({
   onSelect,
@@ -45,20 +61,11 @@ export function FeaturedProviderRow({
       <span aria-hidden className="arc-border arc-reverse arc-nous" />
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <img alt="" className="size-5 shrink-0 rounded" src={assetPath('apple-touch-icon.png')} />
+          <NousMark />
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
             {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider)}
           </span>
-          {freeTier ? (
-            <FreeTierTag />
-          ) : loggedIn ? (
-            <ConnectedTag />
-          ) : (
-            <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
-              <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
-              {t.onboarding.recommended}
-            </span>
-          )}
+          {freeTier ? <FreeTierTag /> : loggedIn ? <ConnectedTag /> : <RecommendedTag />}
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
           {freeTier ? t.freeTier.providerRowPitch : t.onboarding.featuredPitch}
@@ -66,6 +73,18 @@ export function FeaturedProviderRow({
       </div>
       <ChevronRight className="size-4 shrink-0 text-primary transition group-hover:translate-x-0.5" />
     </button>
+  )
+}
+
+/** The "Recommended" chip on the featured Nous row and Simple mode's Nous tile. */
+export function RecommendedTag() {
+  const { t } = useI18n()
+
+  return (
+    <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
+      <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
+      {t.onboarding.recommended}
+    </span>
   )
 }
 

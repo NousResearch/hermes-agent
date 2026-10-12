@@ -318,6 +318,7 @@ registry.registerMany([
     id: 'layout.editMode',
     label: 'Toggle layout edit mode',
     action: 'layout.editMode',
+    tier: 'advanced',
     icon: LayoutDashboard,
     keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],
     get: () => $layoutEditMode.get(),
@@ -331,6 +332,7 @@ registry.registerMany([
     data: {
       id: 'plugins.reload',
       label: 'Reload desktop plugins',
+      tier: 'advanced',
       keywords: ['plugins', 'reload', 'refresh', 'desktop'],
       run: () => void discoverRuntimePlugins()
     } satisfies PaletteContribution
@@ -365,6 +367,7 @@ registry.registerMany([
     id: 'view.toggleStatusbar',
     label: 'Toggle status bar',
     action: 'view.toggleStatusbar',
+    tier: 'advanced',
     icon: PanelBottom,
     keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
     get: () => $statusbarVisible.get(),
@@ -374,6 +377,7 @@ registry.registerMany([
     id: 'view.toggleProfileRail',
     label: 'Toggle profile rail',
     action: 'view.toggleProfileRail',
+    tier: 'advanced',
     icon: Users,
     keywords: ['profile rail', 'profile bar', 'profile strip', 'profiles', 'sidebar', 'hide', 'show', 'chrome'],
     get: () => $profileRailVisible.get(),
@@ -394,6 +398,7 @@ registry.registerMany([
     id: 'view.toggleTabStrip',
     label: 'Toggle tabs',
     action: 'view.toggleTabStrip',
+    tier: 'advanced',
     icon: PanelTop,
     keywords: ['tab strip', 'tab bar', 'tabs', 'header', 'zone', 'hide', 'show', 'chrome'],
     // On-screen truth for the zone the verbs target, not a stored flag: a zone
@@ -422,6 +427,7 @@ registry.registerMany([
     data: {
       id: 'profile.export',
       label: 'Export profile…',
+      tier: 'advanced',
       icon: Upload,
       keywords: ['profile', 'export', 'share', 'bundle', 'theme', 'settings', 'backup'],
       run: () => void runExportProfileFlow()
@@ -433,6 +439,7 @@ registry.registerMany([
     data: {
       id: 'profile.import',
       label: 'Import profile…',
+      tier: 'advanced',
       icon: Download,
       keywords: ['profile', 'import', 'share', 'bundle', 'archive', 'restore'],
       run: () => void runImportProfileFlow()
@@ -673,6 +680,7 @@ registry.register(
   paletteToggle({
     id: 'logs.toggle',
     label: 'Toggle logs',
+    tier: 'advanced',
     icon: FileText,
     keywords: ['logs', 'agent log', 'tail', 'debug'],
     // On-screen, not the store's boolean. Summon-only keeps the two in step
@@ -722,6 +730,7 @@ registry.register(
           paletteToggle({
             id: `strip-tab.${pane.id}`,
             label: translateNow('zones.toggleStripTab', title),
+            tier: 'advanced',
             icon: LayoutDashboard,
             keywords: [title.toLowerCase(), 'tab', 'pane', 'sidebar', 'show', 'hide'],
             // On-screen truth, same contract as the logs toggle above.
@@ -750,6 +759,7 @@ registry.register(
   paletteToggle({
     id: 'session.yolo',
     label: 'Toggle yolo',
+    tier: 'advanced',
     icon: Zap,
     keywords: ['yolo', 'approvals', 'auto-approve', 'bypass', 'dangerous', 'commands'],
     get: () => $yoloActive.get(),

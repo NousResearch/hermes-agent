@@ -135,6 +135,9 @@ The layout editor (titlebar button, or **Cmd/Ctrl+Shift+\\**) opens with an **In
 
 - **Advanced** (default) is the app as you have set it up. Users who have not explicitly selected Simple stay in Advanced.
 - **Simple** is chat-first: the statusbar, profile rail, terminal, file browser and review panes, the technical tool-call view, inline code diffs, and the Artifacts / Scheduled jobs rows rest out of the way (Capabilities and Messaging stay — they are how you set Hermes up); thinking starts collapsed; session rows show the title, a preview and when they were last active. The titlebar keeps Settings and the layout editor. Simple's layout picker offers *Sidebar left* or *Sidebar right*. The templates and saved layouts are Advanced.
+  - **Settings** shows only Accounts, Chat, Voice (conversation), Appearance, Notifications, Billing, archived Sessions, Keyboard shortcuts and About, and on those pages leaves out technical fields (show reasoning, image input mode, the voice connection options, model pricing); settings search never returns a hidden page or field, a link to one lands on a visible page, and the rail ends with **Switch to Advanced**.
+  - **The command palette and slash suggestions** leave out developer rows (Toggle yolo, Starmap, Agents, Profiles, Command Center, logs, plugin reload, layout editing, profile export/import, Kanban). Slash suggestions are a short everyday set (`/new`, `/stop`, `/retry`, `/undo`, `/title`, `/resume`, `/btw`, `/skin`, `/wake`, `/help`) plus any command your skills or plugins add. Typing any command in full still runs it.
+  - **The composer** keeps the model pill (so you can see which model answers) but hides the reasoning pill. While YOLO is on for the chat, or approvals are off for the profile, a **YOLO** chip appears there; clicking it turns YOLO off, or approvals back on. **Capabilities** shows Skills and Connectors only. A new empty chat offers four starter ideas — clicking one fills the composer, it never sends.
 
 A layout says what is on screen, not just where things sit: applying one opens every pane it places and closes the ones it leaves *resting*, so **Ctrl+`**, **Cmd/Ctrl+J** and **Cmd/Ctrl+G** always agree with what you see. *Basic* is sessions and chat with the terminal resting as a collapsed rail under the chat and the file browser and review resting in a right column — **Ctrl+`** opens the terminal under the chat, **Cmd/Ctrl+J** opens the tree on the right. *Focus* keeps files and review as tabs behind the chat, with the same terminal rail. *Default*, *Terminal deck* and *Quad* open everything they place. A layout you save remembers which of its panes were closed.
 
@@ -142,7 +145,22 @@ Each mode remembers its own arrangement: pane positions, sizes, active tabs, hid
 
 Existing layouts are retained on upgrade. Advanced continues using the original storage keys. If you already explicitly selected Simple, its current layout is copied into Simple's separate storage without deleting the originals. An older arrangement that was overwritten before this separation cannot be reconstructed.
 
-Simple shadows your display preferences instead of overwriting them. Every keybind still works in Simple — **Ctrl+`**, **Cmd/Ctrl+J** and **Cmd/Ctrl+G** open the terminal, file browser and review for the current session, and the next launch is quiet again. With more than one profile the profile rail stays, since it is then the only way to switch. First-run onboarding sets the mode from the layout you pick: *Basic* starts in Simple, *Elite* in Advanced; skipping leaves it on Advanced.
+Simple shadows your display preferences instead of overwriting them. Every keybind still works in Simple — **Ctrl+`**, **Cmd/Ctrl+J** and **Cmd/Ctrl+G** open the terminal, file browser and review for the current session, and the next launch is quiet again. With more than one profile the profile rail stays, since it is then the only way to switch. The guided first-run chat sets the mode from the layout you pick: *Basic* starts in Simple, *Elite* in Advanced; skipping leaves it on Advanced. Only the Simple choice below adds safety settings.
+
+##### First run in Simple
+
+On a first run (an install that has never been configured) the first screen asks **How do you want to use Hermes?** — *Simple* or *Advanced*. It is asked once; you can change it any time later. Advanced continues to the full provider picker. Simple shows account tiles instead — no API keys:
+
+| Tile | How it connects | What you need |
+|---|---|---|
+| **Nous** | Your browser opens; approve Hermes there | A free Nous account |
+| **ChatGPT** | Your browser opens; approve Hermes there (the code is already copied if it asks) | ChatGPT Plus or Pro |
+| **Grok** | Your browser opens; approve Hermes there | SuperGrok or X Premium+ |
+| **Claude** | A terminal window opens running `hermes auth add anthropic`; approve Hermes in your browser, copy the code it shows and paste it into the terminal. The app notices the sign-in by itself (or click **I've signed in**). On an install that is not a full app bundle, the terminal first adds the Claude support Hermes needs (`hermes pm install --extra anthropic`), so the first chat starts without a wait | Claude Max with extra usage credits — Anthropic bills Hermes usage as extra usage (see [Providers](../integrations/providers.md)). Shown only when the backend runs on this computer. |
+
+A tile appears only when your Hermes backend supports that sign-in. If the list of sign-ins cannot load, Simple says so and offers **Try again**. **I'll choose a provider later** closes setup without connecting, and **Switch to Advanced** opens the full picker (API keys, local models, every provider). After sign-in Simple skips the model-confirm screen and starts on the recommended default model. A failed sign-in names the account in plain words; the technical message stays under **Details**.
+
+Choosing Simple on a local install also adds safety settings to that profile's `config.yaml` before your first chat: `checkpoints.enabled: true` (file edits inside a folder can be rolled back) and `agent.coding_context: off` (no coding brief in everyday chats), each only when you have not set it yourself, plus `approvals.deny` globs — added to any you already have — that block common forms of force-pushes, `git reset --hard` and `diskutil` erase commands even under YOLO. Switching modes later never changes `config.yaml`. Nothing is written to a remote or cloud backend; Simple tells you when it skipped the settings for that reason.
 
 #### Minimize to tray
 

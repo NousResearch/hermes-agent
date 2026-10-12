@@ -250,13 +250,8 @@ import { embedHostOrigin } from './embed-host'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
 import { openExternalUrl as externalOpen, type ExternalOpenDeps, reportPreOpenStatFailure } from './external-open'
-import {
-  buildTerminalScript,
-  resolveTerminalLaunch,
-  terminalScriptEnv,
-  terminalScriptExtension,
-  tuiResumeArgs
-} from './external-terminal'
+import { authInTerminalArgs, authPrepareArgs, tuiResumeArgs } from './external-terminal'
+import { openHermesInTerminal } from './external-terminal-launch'
 import { f12ShortcutDecision, toF12KeyboardEventPayload } from './f12-shortcut'
 import { resolveFeatureFlags } from './feature-flags'
 import {
@@ -15750,68 +15745,45 @@ ipcMain.on('hermes:window:relay', (event, payload) => {
   }
 })
 
+const externalTerminalDeps = {
+  findOnPath,
+  hermesHome: HERMES_HOME,
+  log: rememberLog,
+  resolveBackend: resolveHermesBackend,
+  sanitizeCwd: sanitizeWorkspaceCwd,
+  scriptDir: () => path.join(app.getPath('userData'), 'open-in-terminal')
+}
+
 // Hand a session to the user's OWN terminal emulator, running the TUI against
 // it (`hermes --tui --resume <id>`). Not the in-app terminal pane: the point is
 // to continue the chat in the terminal they already live in.
-//
-// The desktop's runtime is usually a venv Python invoked as
-// `python -m hermes_cli.main`, so we resolve the SAME backend the app itself
-// launches and carry its argv + PYTHONPATH into a launcher script rather than
-// hoping a `hermes` exists on the user's interactive PATH. Resolution only —
-// never ensureRuntime(), which would kick off a first-run install from a menu
-// click; an unresolved runtime is reported instead.
 ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return { ok: false, error: 'invalid-session-id' }
   }
 
-  try {
-    const profile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
-    const backend = await resolveHermesBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
+  const profile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
 
-    if (!backend.command) {
-      return { ok: false, error: 'Hermes is not installed yet' }
-    }
+  return openHermesInTerminal(
+    tuiResumeArgs(sessionId.trim(), profile || undefined),
+    { cwd: opts?.cwd, label: `session ${sessionId}` },
+    externalTerminalDeps
+  )
+})
+// A CLI-only sign-in (Claude) in the user's terminal. Only allowlisted provider
+// ids map to a hard-coded argv; no string from the renderer or backend is run.
+ipcMain.handle('hermes:window:openAuthInTerminal', async (_event, providerId, opts) => {
+  const args = authInTerminalArgs(providerId, opts?.profile)
+  // Bundles ship every extra; a dev run must not build a venv into the checkout.
+  const prepareArgs = app.isPackaged && installShape() === 'checkout' ? authPrepareArgs(providerId) : null
 
-    const { cwd } = sanitizeWorkspaceCwd(opts?.cwd)
-    const scriptDir = path.join(app.getPath('userData'), 'open-in-terminal')
-    fs.mkdirSync(scriptDir, { recursive: true })
-
-    const scriptPath = path.join(
-      scriptDir,
-      `hermes-${crypto.randomBytes(6).toString('hex')}${terminalScriptExtension()}`
-    )
-
-    fs.writeFileSync(
-      scriptPath,
-      buildTerminalScript({
-        args: backend.args,
-        command: backend.command,
-        cwd,
-        env: terminalScriptEnv(backend.env, HERMES_HOME)
-      }),
-      { mode: 0o700 }
-    )
-
-    const launch = resolveTerminalLaunch({ findOnPath, scriptPath })
-
-    if (!launch) {
-      return { ok: false, error: 'No terminal emulator found' }
-    }
-
-    rememberLog(`[terminal] opening session ${sessionId} via ${launch.command}`)
-
-    // Detached + unref'd: the terminal window outlives the desktop app, and
-    // never inherits our stdio (a closed pipe would kill the TUI).
-    const child = spawn(launch.command, launch.args, { detached: true, stdio: 'ignore' })
-    child.unref()
-
-    return { ok: true }
-  } catch (error) {
-    rememberLog(`[terminal] open in terminal failed: ${error.message}`)
-
-    return { ok: false, error: error.message }
-  }
+  return args
+    ? openHermesInTerminal(
+        args,
+        { holdOnFailure: true, label: `${providerId} sign-in`, prepareArgs },
+        externalTerminalDeps
+      )
+    : { ok: false, error: 'unsupported-provider' }
 })
 ipcMain.handle('hermes:wake-indicator:get', () => wakeIndicatorController.getState())
 ipcMain.on('hermes:wake-indicator:set', (_event, state) => {

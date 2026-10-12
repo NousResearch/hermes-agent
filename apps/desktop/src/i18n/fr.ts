@@ -11,6 +11,7 @@ import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
+import { frSimpleMode } from './fr_simple_mode'
 import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
 
@@ -489,6 +490,7 @@ export const frOverrides = {
     }
   },
   ...frNotices,
+  ...frSimpleMode,
   billingBlock: {
     titleNous: 'Plus de crédits Nous',
     titleProvider: provider => `Plus de crédits — ${provider}`,
@@ -4905,21 +4907,6 @@ export const frOverrides = {
       commentTitle: n => `Commentaire ${n}`,
       saveComment: 'Enregistrer',
       cancelComment: 'Annuler le commentaire'
-    }
-  },
-  interfaceMode: {
-    title: 'Mode d’interface',
-    hint: 'Modifie ce qui est affiché, pas ce que Hermes peut faire.',
-    sessionNote:
-      'Défini par le mode Simple. Une modification ici dure le temps de cette session ; passez en mode Avancé pour la conserver.',
-    simple: {
-      label: 'Simple',
-      description:
-        'Pour discuter avec Hermes. Barre latérale et conversation ; pas de panneaux terminal, fichiers ou diff.'
-    },
-    advanced: {
-      label: 'Avancé',
-      description: 'Pour les développeurs. Terminal, fichiers, diffs, barre d’état et dispositions, selon vos réglages.'
     }
   },
   zones: {

@@ -22,6 +22,7 @@ import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedM
 import {
   $interfaceMode,
   $modeShadowed,
+  $showsAdvancedChrome,
   INTERFACE_MODES,
   type InterfaceMode,
   setInterfaceMode
@@ -172,6 +173,28 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
 
 const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
 const ids = SETTING_IDS.appearance
+
+// Token pricing is a developer detail; Simple hides the row (and its search hit).
+function ModelPricingRow() {
+  const { t } = useI18n()
+  const showModelPricing = useStore($showModelPricing)
+  const showsAdvancedChrome = useStore($showsAdvancedChrome)
+
+  if (!showsAdvancedChrome) {
+    return null
+  }
+
+  return (
+    <ToggleRow
+      checked={showModelPricing}
+      description={t.settings.appearance.modelPricingDesc}
+      id={settingElementId(ids.modelPricing)}
+      label={t.settings.appearance.modelPricingTitle}
+      onChange={setShowModelPricing}
+    />
+  )
+}
+
 type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
 
 function matchUiScalePreset(percent: number): UiScalePreset | null {
@@ -442,7 +465,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
-  const showModelPricing = useStore($showModelPricing)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
@@ -942,15 +964,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             />
           )}
 
-          {show('general') && (
-            <ToggleRow
-              checked={showModelPricing}
-              description={a.modelPricingDesc}
-              id={settingElementId(ids.modelPricing)}
-              label={a.modelPricingTitle}
-              onChange={setShowModelPricing}
-            />
-          )}
+          {show('general') && <ModelPricingRow />}
 
           {/* The same state as the titlebar toggle / ⌘J, which persists across
               launches — so this is the file browser's standing default. Simple

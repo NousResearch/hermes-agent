@@ -9,6 +9,7 @@ import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
 import { arSettings } from './ar_settings'
+import { arSimpleMode } from './ar_simple_mode'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
@@ -47,7 +48,6 @@ export const arOverrides = {
   shell: arChrome.shell,
   rightSidebar: arChrome.rightSidebar,
   preview: arArtifacts.preview,
-  interfaceMode: arSettings.interfaceMode,
   zones: arChrome.zones,
   contextMenu: arChrome.contextMenu,
   assistant: arAssistant.assistant,
@@ -56,6 +56,7 @@ export const arOverrides = {
   errors: arDiagnostics.errors,
   tips: arChat.tips,
   ui: arCommon.ui,
+  ...arSimpleMode,
   handoffTour: {
     profileTitle: 'مهمتك الأولى تعمل على الملف الشخصي الافتراضي',
     profileText:

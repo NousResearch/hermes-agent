@@ -41,7 +41,7 @@ class Kind:
     note: str
 
 
-def reissue(operation: ConnectionOperation, names: Sequence[str]) -> Optional[str]:
+def reissue(operation: ConnectionOperation, names: Sequence[str], *, initiator: Optional[str] = None) -> Optional[str]:
     from tools.connectors.contract import Actor, TargetState, allowed
 
     targets = [operation.target(name) for name in names]
@@ -57,9 +57,10 @@ def reissue(operation: ConnectionOperation, names: Sequence[str]) -> Optional[st
     if any(allowed(target.kind, target.state, TargetState.initiated) is None for target in targets):
         return NOT_ALLOWED
     if targets[0].kind == "connector":
-        from tools.connectors.managed import managed_client, mint
+        from tools.connectors.managed import CARD_RETRY, managed_client, mint
 
-        mint(managed_client(), operation, stale, reinitiate=True, actor=Actor.user)
+        client = managed_client(initiator=initiator or CARD_RETRY, call=operation.call)
+        mint(client, operation, stale, reinitiate=True, actor=Actor.user)
         return None
     from tools.connectors import catalog
     from tools.connectors.mcp import retry
@@ -85,9 +86,10 @@ def run_operation(
     connection_callback: Optional[Callback],
     tick_seconds: Optional[float] = None,
     with_urls_in_result: bool,
+    call: Optional[Any] = None,
 ) -> str:
     """Block the tool thread until the operation settles; return the tool's JSON string."""
-    operation = ConnectionOperation(targets, session_key=session_key, tool_call_id=tool_call_id)
+    operation = ConnectionOperation(targets, session_key=session_key, tool_call_id=tool_call_id, call=call)
     try:
         live.open(operation)
     except live.OperationAlreadyOpen as exc:

@@ -393,6 +393,7 @@ class CLIChatTurnMixin:
                 next_result_check = time.monotonic() + 1.0
                 try:
                     self._offer_delegation_results_to_running_turn(self.agent)
+                    self._announce_delegation_results_carried_so_far(self.agent)
                 except Exception:  # health: allow BLE001 -- the monitor loop must keep running; a failed offer leaves the result queued for the next turn
                     logger.warning("Could not offer finished subagent results to the running turn", exc_info=True)
             try:

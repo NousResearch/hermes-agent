@@ -41,6 +41,7 @@ import { readChatPanelCollapsed, toggleChatPanelCollapsed } from "@/lib/chat-pan
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { createComposingKeyGuard, type PtyComposingKeyGuard } from "@/lib/pty-composing-key";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
@@ -651,8 +652,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       (text) => term.paste(text),
     );
 
+    let composingKeys: PtyComposingKeyGuard | null = null;
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
+      // SwiftKey ends a word with a real key: xterm must not finalize mid-composition.
+      if (composingKeys?.onKeydown(ev)) return false;
 
       // Tab/Shift+Tab escape the terminal (WCAG 2.1.2); xterm stores one
       // key handler per Terminal, so a second registration overwrites this one.
@@ -799,14 +803,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     // IME composition guard (#52111): keep keyCode-229 keydowns away from
     // React's root-level composition handling, which runs in the bubble
-    // phase. The guard must sit in the *bubble* phase on the host, not the
-    // capture phase: xterm.js handles these keys from its own keydown
-    // listener on the hidden textarea (Android IMEs such as Gboard and
-    // SwiftKey report every key as keyCode 229, and CompositionHelper diffs
-    // the textarea for them; there is no keypress, and the `input` path is
-    // off in screenReaderMode). A capture-phase guard stopped the event
-    // before it reached the textarea, so non-composed typing and IME
-    // backspaces never produced onData (#136179).
+    // phase. It must sit in the *bubble* phase on the host: xterm handles
+    // these keys from its own keydown listener on the hidden textarea
+    // (Android IMEs report every key as keyCode 229; CompositionHelper diffs
+    // the textarea; the `input` path is off in screenReaderMode). A capture
+    // guard starved xterm, so typing and IME backspaces died (#136179).
     const _imeCompositionGuard = (e: KeyboardEvent) => {
       if (e.keyCode === 229 || e.key === "Process") {
         e.stopPropagation();
@@ -843,9 +844,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       textarea.addEventListener("beforeinput", markReplacementInput, true);
       textarea.addEventListener("compositionend", markCompositionEnd, true);
+      composingKeys = createComposingKeyGuard(textarea, () =>
+        sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, "\r"),
+      );
       mobileInputCleanup = () => {
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
         textarea.removeEventListener("compositionend", markCompositionEnd, true);
+        composingKeys?.dispose();
       };
     }
 

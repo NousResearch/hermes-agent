@@ -30,6 +30,8 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
+  keyHandler: ((ev: KeyboardEvent) => boolean) | null = null;
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -40,9 +42,11 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
-  attachCustomKeyEventHandler() {
+  attachCustomKeyEventHandler(handler: (ev: KeyboardEvent) => boolean) {
+    this.keyHandler = handler;
     return true;
   }
 
@@ -223,6 +227,7 @@ async function render(ui: ReactNode) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  FakeTerminal.instances = [];
   webglInstances.length = 0;
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
@@ -447,6 +452,53 @@ describe("ChatPage", () => {
     } finally {
       textarea.removeEventListener("keydown", seenByTextarea, true);
       container.removeEventListener("keydown", seenByReactRoot);
+    }
+  });
+
+  // SwiftKey ends a composed word with a real Enter/space key. xterm would
+  // finalize the composition from that keydown with the uncorrected text;
+  // the key must be withheld from xterm and Enter replayed only after
+  // compositionend (#125517 family).
+  it("withholds a real key pressed mid-composition from xterm and replays Enter after the commit", async () => {
+    vi.useFakeTimers();
+    try {
+      // Fake timers: drive the mount with a microtask tick, as the other
+      // fake-timer tests do, instead of renderChat()'s vi.waitFor.
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => socket.onopen?.());
+      socket.send.mockClear();
+      const textarea = container.querySelector(".hermes-chat-xterm-host textarea")!;
+      const keyHandler = FakeTerminal.instances.at(-1)!.keyHandler!;
+      const enterKey = () =>
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", keyCode: 13 });
+
+      await act(async () => {
+        textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      });
+      const enter = enterKey();
+      expect(keyHandler(enter)).toBe(false);
+      expect(enter.defaultPrevented).toBe(true);
+      expect(socket.send).not.toHaveBeenCalledWith("\r");
+
+      await act(async () => {
+        textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "hello" }));
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(socket.send.mock.calls.filter(([frame]) => frame === "\r")).toHaveLength(1);
+
+      // Outside a composition the handler leaves Enter to xterm.
+      expect(keyHandler(enterKey())).toBe(true);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

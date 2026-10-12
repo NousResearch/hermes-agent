@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import type * as DesktopFs from '@/lib/desktop-fs'
 import { $freeTierStatus } from '@/store/free-tier'
 import { INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
 import { $onboardingGate } from '@/store/onboarding-gate'
@@ -28,6 +29,13 @@ import { useStatusbarItems } from './use-statusbar-items'
 
 // The mock above replaces the computed store with a writable atom.
 const $focusedTreePaneId = $focusedTreePaneIdMock as unknown as WritableAtom<null | string>
+
+const selectDesktopPaths = vi.hoisted(() => vi.fn<(options?: unknown) => Promise<string[]>>())
+
+vi.mock('@/lib/desktop-fs', async importOriginal => ({
+  ...(await importOriginal<typeof DesktopFs>()),
+  selectDesktopPaths
+}))
 
 // The focused pane is derived from the layout tree; a settable atom stands in
 // so a test can focus a tile without building a pane tree.
@@ -73,11 +81,12 @@ function focusPane(storedId: null | string): void {
 
 const wrapper = ({ children }: { children: ReactNode }) => <MemoryRouter>{children}</MemoryRouter>
 
-function renderStatusbarItems() {
+function renderStatusbarItems(changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void> = async () => {}) {
   const { result } = renderHook(
     () =>
       useStatusbarItems({
         agentsOpen: false,
+        changeSessionCwd,
         chatOpen: true,
         commandCenterOpen: false,
         extraLeftItems: [],
@@ -97,10 +106,14 @@ function renderStatusbarItems() {
   return result.current
 }
 
-function workspaceMenuIds(): string[] {
-  const workspace = renderStatusbarItems().leftStatusbarItems.find(item => item.id === 'workspace-cwd')
+function workspaceMenu(changeSessionCwd?: (cwd: string, sessionId?: string) => Promise<void>) {
+  const workspace = renderStatusbarItems(changeSessionCwd).leftStatusbarItems.find(item => item.id === 'workspace-cwd')
 
-  return (workspace?.menuItems ?? []).map(item => item.id)
+  return (workspace?.menuItems ?? []).filter(item => !item.hidden)
+}
+
+function workspaceMenuIds(): string[] {
+  return workspaceMenu().map(item => item.id)
 }
 
 afterEach(() => {
@@ -145,8 +158,53 @@ describe('statusbar workspace menu — "Open containing folder"', () => {
   })
 })
 
+describe('statusbar workspace menu — change working directory', () => {
+  it('re-homes the primary chat through the picker', async () => {
+    const changeSessionCwd = vi.fn(async () => {})
+    selectDesktopPaths.mockResolvedValueOnce(['/opt/data/profiles/austin'])
+    $currentCwd.set('/opt/data')
+
+    const item = workspaceMenu(changeSessionCwd).find(menuItem => menuItem.id === 'change-workspace-path')
+    item?.onSelect?.()
+
+    await vi.waitFor(() => expect(changeSessionCwd).toHaveBeenCalledWith('/opt/data/profiles/austin', undefined))
+    expect(selectDesktopPaths).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultPath: '/opt/data', directories: true })
+    )
+  })
+
+  it("targets a focused tile's own runtime, and is absent for a cold tile or another gateway's tile", async () => {
+    const changeSessionCwd = vi.fn(async () => {})
+    selectDesktopPaths.mockResolvedValueOnce(['/srv/bot'])
+    $selectedStoredSessionId.set('primary')
+    $sessions.set([{ cwd: '/opt/data', id: 'tile' }] as never)
+    $sessionTiles.set([
+      { ownerRoute: { connectionId: null, mode: 'local', profile: 'austin' }, storedSessionId: 'tile' }
+    ] as never)
+    focusPane('tile')
+
+    expect(workspaceMenuIds()).not.toContain('change-workspace-path')
+
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: null, mode: 'local', profile: 'austin' },
+        runtimeId: 'tile-rt',
+        storedSessionId: 'tile'
+      }
+    ] as never)
+    workspaceMenu(changeSessionCwd)
+      .find(menuItem => menuItem.id === 'change-workspace-path')
+      ?.onSelect?.()
+    await vi.waitFor(() => expect(changeSessionCwd).toHaveBeenCalledWith('/srv/bot', 'tile-rt'))
+
+    $sessions.set([{ connection_id: 'conn-remote', cwd: '/opt/data', id: 'tile' }] as never)
+    expect(workspaceMenuIds()).not.toContain('change-workspace-path')
+  })
+})
+
 const statusbarOptions = {
   agentsOpen: false,
+  changeSessionCwd: async () => {},
   chatOpen: true,
   commandCenterOpen: false,
   extraLeftItems: [],

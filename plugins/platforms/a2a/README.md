@@ -29,6 +29,17 @@ a2a_agents:
     capabilities: [web_search, research]
 ```
 
+Use `token_env` instead of `token` to read the secret from the environment,
+mirroring `A2A_PEER_TOKENS` on the inbound side — useful when `config.yaml` is
+rewritten by the agent, backed up, or otherwise not a place for a secret:
+
+```yaml
+a2a_agents:
+  researcher:
+    url: "http://localhost:9999"
+    auth: { type: bearer, token_env: A2A_TOKEN_RESEARCHER }
+```
+
 ## Outbound — call other agents
 
 The agent gets five tools:

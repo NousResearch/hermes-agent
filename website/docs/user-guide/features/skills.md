@@ -682,6 +682,12 @@ When `write_approval: true`, every `skill_manage` write (create / edit /
 patch / delete / write_file / remove_file) is **staged** instead of committed —
 a SKILL.md is too large to review inline, so staging applies regardless of
 whether the write came from a foreground turn or the background review.
+Approved targeted patches require a verbatim `old_string` anchor in the current file.
+A patch that only matches after whitespace normalization refuses approval and stays
+pending; read the file and re-stage it with an exact anchor. `/skills diff` reports
+the same refusal. Exact `replace_all` patches still replace every matching occurrence.
+Interactive edits keep the existing fuzzy matching behavior.
+
 Staged writes survive restarts under `~/.hermes/pending/skills/` and are
 reviewed with the same familiar approve/deny flow as dangerous commands:
 

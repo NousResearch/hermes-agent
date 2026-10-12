@@ -532,13 +532,16 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
 
     # Use the same fuzzy matching engine as the file patch tool.
     from tools.fuzzy_match import fuzzy_find_and_replace
-    new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
+    new_content, match_count, strategy, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all)
     if match_error:
         with suppress(Exception):
             from tools.fuzzy_match import format_no_match_hint
             match_error += format_no_match_hint(match_error, match_count, old_string, content)
         return _err(match_error) | {"file_preview": _clip(content, 500, "...")}
+    from tools.skill_patch_authority import approved_patch_replay, exact_patch_error
+    if approved_patch_replay.get() and (err := exact_patch_error(strategy)):
+        return _err(err)
     if err := _validate_content_size(new_content, label=target_label):
         return _err(err)
     if not file_path and (err := _validate_frontmatter(new_content)):
@@ -697,11 +700,14 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
 
 def apply_skill_pending(payload: dict[str, Any]) -> str:
     """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
+    from tools.skill_patch_authority import approved_patch_replay
+    exact_token = approved_patch_replay.set(True)
     token = _skill_gate_bypass.set(True)
     try:
         return _skill_manage_from(payload)
     finally:
         _skill_gate_bypass.reset(token)
+        approved_patch_replay.reset(exact_token)
 
 
 def _act_patch(a):
@@ -837,7 +843,7 @@ def _skill_manage_description() -> str:
 
 _NAME = {"type": "string"}
 _OLD_STRING = {"type": "string",
-               "description": "Text to find (same matching semantics as the patch tool)."}
+               "description": "Text to find. Interactive edits use patch-tool matching; approved patches require a verbatim anchor."}
 _NEW_STRING = {"type": "string", "description": "Replacement; empty string deletes the match."}
 _FILE_PATH = {
     "type": "string",

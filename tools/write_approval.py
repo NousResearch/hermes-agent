@@ -358,10 +358,13 @@ def _fold_patch(base: str, old_string: str, new_string: str, replace_all: Any = 
     without the tool chain (fuzzy_match is core-adjacent but guarded for safety anyway).
     """
     from tools.fuzzy_match import fuzzy_find_and_replace
-    folded, match_count, _strategy, error = fuzzy_find_and_replace(
+    folded, match_count, strategy, error = fuzzy_find_and_replace(
         base, old_string, str(new_string), bool(replace_all))
     if error or match_count == 0:
         return base, error or "Could not find a match for old_string in the file"
+    from tools.skill_patch_authority import exact_patch_error
+    if error := exact_patch_error(strategy):
+        return base, error
     return folded, None
 
 

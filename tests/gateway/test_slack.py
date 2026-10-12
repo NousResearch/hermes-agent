@@ -364,7 +364,7 @@ class TestAppMentionHandler:
         socket_mode_handler.start_async = AsyncMock(return_value=None)
 
         with (
-            patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+            patch.object(_slack_mod, "AsyncApp", return_value=mock_app) as mock_async_app,
             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
             patch.object(
                 _slack_mod, "AsyncSocketModeHandler", return_value=socket_mode_handler
@@ -374,6 +374,9 @@ class TestAppMentionHandler:
             patch("asyncio.create_task", side_effect=_fake_create_task),
         ):
             asyncio.run(adapter.connect())
+
+        assert mock_async_app.call_args.kwargs.get("client") is not None
+        assert "token" not in mock_async_app.call_args.kwargs
 
         assert "message" in registered_events
         assert "app_mention" in registered_events
@@ -884,12 +887,12 @@ class TestSlackProxyBehavior:
 
         class FakeApp:
             # **_kwargs absorbs adapter kwargs we don't model here.
-            def __init__(self, token, client=None, **_kwargs):
+            def __init__(self, token=None, client=None, **_kwargs):
                 self.token = token
                 # Honor the ``client=`` kwarg the production adapter passes
                 # (so the User-Agent prefix sticks on ``self._app.client``).
                 # Fall back to building our own fake client when not provided.
-                self.client = client if client is not None else FakeWebClient(token)
+                self.client = client if client is not None else FakeWebClient(token or "xoxb-fake")
                 self.kwargs = _kwargs
                 self.registered_events = []
                 self.registered_commands = []
@@ -1017,7 +1020,6 @@ class TestSlackProxyBehavior:
         app_client = _slack_mod.AsyncWebClient(token="xoxb-fake")
         _slack_mod._apply_slack_proxy(app_client, None)
         app = async_app_mod.AsyncApp(
-            token="xoxb-fake",
             client=app_client,
             signing_secret="secret",
             before_authorize=_slack_mod._slack_per_request_proxy_middleware(None),

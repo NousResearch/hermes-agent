@@ -571,10 +571,11 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
     ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``.
 
-    ``smart_unavailable`` is set when the guardian could not run, so the queued card says WHY it is
-    asking; it does not change the outcome (the fall-back to a human is deliberate)."""
-    notice = (f"\n\nNOTE: smart approval could not run ({smart_unavailable}) — asking you directly "
-              f"instead of a model verdict.") if smart_unavailable else ""
+    ``smart_unavailable`` carries the "why you're being asked" note when there is something to say
+    (guardian failed, manual mode never asked a model, or the verdict came from a fallback route);
+    it does not change the outcome (the fall-back to a human is deliberate)."""
+    notice = (f"\n\nNOTE: why you're being asked - {smart_unavailable}."
+              if smart_unavailable else "")
     pending = {"command": command, "pattern_key": pattern_key}
     if spec.pending_keys:
         pending["pattern_keys"] = pattern_keys
@@ -810,6 +811,12 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     }, True, None
 
 
+def _no_model_note() -> str:
+    """The note for a prompt raised without asking any model (manual mode)."""
+    return (f"approvals mode is '{approval_context._get_approval_mode()}' - "
+            f"no model verdict was requested for this command")
+
+
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
@@ -830,6 +837,10 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:
             return result
+    else:
+        # Manual mode: no model was ever asked about this command. Say so, so a prompt waiting
+        # on a human is distinguishable from one a guardian escalated.
+        smart_unavailable = _no_model_note()
     pending_body = pending_body() if pending_body else None
     allow_permanent = not smart_denied
 
@@ -886,9 +897,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             if smart_denied:
                 data["smart_denied"] = True
             if smart_unavailable:
-                # Announce the degradation: the guardian could not run, so this is a human
-                # decision by default rather than by the model's judgement. Behaviour is
-                # unchanged — the fall-back to a prompt is deliberate.
+                # Announce why this is a human decision: the guardian could not run, manual mode
+                # asked no model, or the verdict came from a fallback route. Behaviour is
+                # unchanged - the fall-back to a prompt is deliberate.
                 data["smart_unavailable"] = smart_unavailable
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
             if decision.get("notify_failed"):

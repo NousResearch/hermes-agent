@@ -2807,7 +2807,7 @@ class BasePlatformAdapter(ABC):
         flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
         platform-local. ``description=None`` renders the localized default reason.
 
-        ``smart_unavailable`` announces a guardian that could NOT run. The fall-back to this
+        ``smart_unavailable`` carries why a human is being asked (guardian failure, manual mode, or a fallback-route verdict). The fall-back to this
         prompt is deliberate, so it adds no decision — only the reason the user is being asked,
         which without it is indistinguishable from a model having judged the command."""
         if description is None:
@@ -2818,8 +2818,8 @@ class BasePlatformAdapter(ABC):
             str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
         # Same wording as the plain-text fallback and the queued card's NOTE: diagnostic detail
         # rather than locale copy (one string, every surface that speaks to the operator).
-        notice = (f"\nNOTE: smart approval could not run ({smart_unavailable}) — asking directly "
-                  f"instead of a model verdict." if smart_unavailable else "")
+        notice = (f"\nNOTE: why you're being asked - {smart_unavailable}."
+                  if smart_unavailable else "")
         text = (f"{self._EA_HEADER}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
                 f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"

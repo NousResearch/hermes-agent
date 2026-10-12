@@ -5173,7 +5173,7 @@ export const esOverrides = {
         `Esto añade el patrón “${pattern}” a tu allowlist permanente (~/.hermes/config.yaml). Hermes no volverá a preguntar por comandos como este, ni en esta sesión ni en futuras.`,
       alwaysAllow: 'Permitir siempre',
       smartUnavailable: reason =>
-        `La aprobación inteligente no pudo ejecutarse (${reason}) — Hermes te pregunta directamente en lugar de usar el veredicto de un modelo.`
+        `Por qué se te pregunta - ${reason}.`
     },
     clarify: esClarify,
     themePicker: esThemePicker,

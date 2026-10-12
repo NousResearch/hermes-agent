@@ -180,7 +180,7 @@ class ApprovalRequestParams(ServerRequestParams):
     allow_permanent: bool | None = None
     allow_session: bool | None = None
     smart_denied: bool | None = None
-    # Present only when the guardian could not run: the reason the gate is asking a human.
+    # Present when the gate is asking a human and there is a reason worth naming.
     smart_unavailable: str | None = None
     tool_name: str | None = None
     session_id_hint: str | None = Field(default=None, alias="gateway_session_id")

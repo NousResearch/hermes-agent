@@ -102,7 +102,7 @@ async def test_button_card_announces_a_guardian_that_could_not_run():
 
     (prompt,) = adapter.prompts
     assert prompt.smart_unavailable == reason
-    assert "smart approval could not run" in prompt.text
+    assert "why you're being asked" in prompt.text
     assert reason in prompt.text
     # Announcement only: the choice set is untouched by a degraded guardian.
     assert prompt.choices == ["once", "session", "always", "deny"]
@@ -116,4 +116,4 @@ async def test_button_card_stays_silent_when_the_guardian_ran():
 
     (prompt,) = adapter.prompts
     assert prompt.smart_unavailable is None
-    assert "smart approval could not run" not in prompt.text
+    assert "why you're being asked" not in prompt.text

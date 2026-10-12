@@ -5178,7 +5178,7 @@ export const deOverrides = {
         `Dies fügt das Muster „${pattern}“ Ihrer dauerhaften Zulassungsliste hinzu (~/.hermes/config.yaml). Hermes fragt bei solchen Befehlen nicht mehr nach – weder in dieser noch in zukünftigen Sessions.`,
       alwaysAllow: 'Immer erlauben',
       smartUnavailable: reason =>
-        `Die intelligente Freigabe konnte nicht ausgeführt werden (${reason}) — Hermes fragt Sie direkt statt über ein Modellurteil.`
+        `Warum Sie gefragt werden - ${reason}.`
     },
     clarify: deClarify,
     themePicker: deThemePicker,

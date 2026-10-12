@@ -160,10 +160,12 @@ def _smart_approve(command: str, description: str) -> str:
             'via -c flag" but is completely harmless.\n\n'
             "Respond with exactly one word: APPROVE, DENY, or ESCALATE"
         )
+        route_info: dict = {}
         response = call_llm(
             task="approval", temperature=0, max_tokens=16, timeout=smart_timeout,
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             reasoning_config=_verdict_reasoning(),
+            route_info=route_info,  # filled with the route actually used, after any fallback
         )
         logger.debug("Smart approvals: LLM call completed in %.1fs", time.monotonic() - _smart_t0)
         answer = (response.choices[0].message.content or "").strip().upper()
@@ -179,7 +181,14 @@ def _smart_approve(command: str, description: str) -> str:
             # Annotate the degradation so the prompt can say why it is asking.
             _mark_unavailable(f"the guardian returned an empty answer (finish_reason={finish_reason})")
             return "escalate"
-        return _VERDICTS.get(answer, "escalate")
+        verdict = _VERDICTS.get(answer, "escalate")
+        if verdict == "escalate":
+            # A fallback-route verdict is still a verdict, but the prompt should name the model
+            # that actually made the call (typical cause: the primary is quota-walled).
+            note = _route_note(route_info)
+            if note:
+                _mark_unavailable(note)
+        return verdict
     except Exception as e:
         # WARNING, not DEBUG: a failed/blocked guardian call is a real event
         # the operator needs to see (the hang was invisible at DEBUG).
@@ -187,6 +196,44 @@ def _smart_approve(command: str, description: str) -> str:
                        time.monotonic() - _smart_t0, type(e).__name__, e)
         _mark_unavailable(f"{type(e).__name__}: {e}")
         return "escalate"
+
+
+def _expected_route() -> tuple[str, str]:
+    """(provider, model) the approval task expects: its pinned route, else the primary route.
+
+    Empty strings mean "unknown" - callers then skip the note rather than guess. Never raises:
+    a provenance note must not be able to break an approval path.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        cfg = load_config_readonly()  # the LIVE config-cache dict (read-only contract)
+        pinned_provider = str(cfg_get(cfg, "auxiliary", "approval", "provider", default="") or "").strip()
+        pinned_model = str(cfg_get(cfg, "auxiliary", "approval", "model", default="") or "").strip()
+        if pinned_provider and pinned_provider != "auto":
+            return pinned_provider, pinned_model
+        return (str(cfg_get(cfg, "model", "provider", default="") or "").strip(),
+                str(cfg_get(cfg, "model", "default", default="") or "").strip())
+    except Exception:  # pragma: no cover - never break a gate over a note
+        return "", ""
+
+
+def _route_note(route: dict) -> str:
+    """A note when a VERDICT came from a route the task did not expect (i.e. a fallback).
+
+    ``call_llm`` fills ``route_info`` with the provider/model it actually used, after any
+    fallback. The verdict is still a verdict - but the human should know the model behind it
+    was not the configured one (typical cause: the primary is quota-walled, so the auxiliary
+    chain falls through). Empty when the route matches, or when either side is unknown.
+    """
+    used_provider = str(route.get("provider") or "").strip()
+    used_model = str(route.get("model") or "").strip()
+    expected_provider, expected_model = _expected_route()
+    if not used_provider or not expected_provider:
+        return ""
+    if used_provider == expected_provider and (not expected_model or used_model == expected_model):
+        return ""
+    return (f"the verdict came from the fallback route {used_provider}/{used_model} "
+            f"(expected {expected_provider}/{expected_model or 'default'})")
 
 
 def _smart_verdict(command: str, description: str, pattern_key: str,

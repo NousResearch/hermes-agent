@@ -293,6 +293,11 @@ jobs:
     needs: detect
     uses: ./.github/workflows/case-collision-check.yml
 
+  blob-size-check:
+    name: Check no large binaries
+    needs: detect
+    uses: ./.github/workflows/blob-size-check.yml
+
   lazy-deps-guard:
     name: No production imports of the tools.lazy_deps stub
     needs: detect
@@ -373,6 +378,7 @@ jobs:
       - uv-lockfile
       - infographic-check
       - case-collision-check
+      - blob-size-check
       - lazy-deps-guard
       - lockfile-diff
       - prompt-surface-diff

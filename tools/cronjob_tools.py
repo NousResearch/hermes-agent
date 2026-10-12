@@ -725,7 +725,16 @@ def _action_list(a: dict[str, Any]) -> str:
         # Same silent-inert-job class as create (#87033): an agent inspecting existing jobs in a
         # gateway-less environment must learn they are not firing, not just see a clean list.
         _result.update(_gateway_liveness_notice(plural=True))
-    return _dumps(_result)
+    from tools.tool_output_limits import cap_json_output
+    return cap_json_output(
+        _dumps(_result),
+        list_fields=("jobs",),
+        truncation_message=(
+            "Output capped at {cap} chars (dropped {dropped} of the "
+            "board's jobs from {field}). Use job_id to inspect a "
+            "specific job, or narrow with include_disabled."
+        ),
+    )
 
 
 def _action_remove(job: dict[str, Any], a: dict[str, Any]) -> str:

@@ -62,3 +62,77 @@ def _reset_tool_output_limits_cache() -> None:
 def get_max_bytes() -> int: return get_tool_output_limits()["max_bytes"]
 def get_max_lines() -> int: return get_tool_output_limits()["max_lines"]
 def get_max_line_length() -> int: return get_tool_output_limits()["max_line_length"]
+
+def cap_json_output(
+    payload: str,
+    *,
+    max_chars: int | None = None,
+    list_fields: tuple[str, ...] = ("results", "messages", "sessions", "jobs"),
+    string_fields: tuple[str, ...] = (),
+    truncation_message: str | None = None,
+) -> str:
+    """Bound a JSON tool response to ``tool_output.max_bytes``.
+
+    Shared helper for tool families whose serialized responses can exceed the
+    centralized ``tool_output`` cap (cron list, delegate results, skill
+    dumps).  When the payload fits, it is returned unchanged (fast path is a
+    length check).  When it exceeds the cap, entries are dropped from the tail
+    of the largest list field named in ``list_fields`` (or the largest string
+    field named in ``string_fields`` is tail-truncated) until the serialized
+    response fits, and the truncation is marked in-band (``truncated`` +
+    ``truncated_count``) so the model knows to narrow its request.
+
+    Defensive: any parse or shrink failure returns the original payload
+    unchanged, so a malformed or non-list-shaped response is never corrupted.
+    """
+    import json as _json
+
+    try:
+        cap = max_chars if max_chars is not None else get_max_bytes()
+        if len(payload) <= cap:
+            return payload
+        resp = _json.loads(payload)
+        if not isinstance(resp, dict):
+            return payload
+
+        # Prefer shrinking the largest list field (drop tail entries), then
+        # fall back to tail-truncating the largest string field.
+        biggest_key, biggest_len = None, 0
+        for key in list_fields:
+            val = resp.get(key)
+            if isinstance(val, list) and len(val) > biggest_len:
+                biggest_key, biggest_len = key, len(val)
+        if biggest_key is not None:
+            while resp[biggest_key] and len(_json.dumps(resp, ensure_ascii=False)) > cap:
+                resp[biggest_key].pop()
+            dropped = biggest_len - len(resp[biggest_key])
+        else:
+            biggest_key, biggest_len = None, 0
+            for key in string_fields:
+                val = resp.get(key)
+                if isinstance(val, str) and len(val) > biggest_len:
+                    biggest_key, biggest_len = key, len(val)
+            if biggest_key is None:
+                return payload
+            original = resp[biggest_key]
+            # Binary-search the largest prefix that fits under the cap.
+            lo, hi = 0, len(original)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                resp[biggest_key] = original[:mid] + "\n… [truncated]"
+                if len(_json.dumps(resp, ensure_ascii=False)) <= cap:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            resp[biggest_key] = original[:lo] + "\n… [truncated]"
+            dropped = biggest_len - lo
+
+        resp["truncated"] = True
+        resp["truncated_count"] = dropped
+        if truncation_message is not None:
+            resp["message"] = truncation_message.format(
+                cap=cap, dropped=dropped, field=biggest_key
+            )
+        return _json.dumps(resp, ensure_ascii=False)
+    except Exception:
+        return payload

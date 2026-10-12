@@ -43,10 +43,12 @@ Do not use this skill for a generic map, a route, or weather. Do not invent a pl
 
 ## Prerequisites
 
-- The Hermes Companion iPhone app. Product page: [hermescompanion.funktional.dev](https://hermescompanion.funktional.dev). Source: [github.com/danielmain/hermes-companion](https://github.com/danielmain/hermes-companion). The skill has no data source other than that app.
-- macOS, signed into the same Apple ID as the iPhone.
-- Location set to Always, Motion & Fitness allowed, and Health access allowed.
-- iCloud Drive has finished downloading `latest_location.json` and `latest_health.json`.
+- **macOS host required**: The Hermes agent must run directly on macOS under the user's account. Non-macOS environments (Linux, Windows, WSL, Docker/containerized runtimes) cannot access Apple's local iCloud Drive (`~/Library/Mobile Documents/`).
+- **Same Apple ID**: Both iPhone and Mac must be signed into the same Apple ID with iCloud Drive turned on.
+- **Hermes CLI (`hermes`) in PATH**: Required for autonomous background replies via LaunchAgent (`/opt/homebrew/bin`, `~/.local/bin`, `~/.cargo/bin`, or `/Applications/Hermes.app/Contents/MacOS`).
+- **The Hermes Companion iPhone app**: Product page: [hermescompanion.funktional.dev](https://hermescompanion.funktional.dev). Source: [github.com/danielmain/hermes-companion](https://github.com/danielmain/hermes-companion). The skill has no data source other than that app.
+- **First-run sequence**: Open the iPhone app once and allow Location (upgrade to Always) so it seeds the iCloud container. Apple creates the local container on your Mac only after the phone writes its first file.
+- **Diagnostic tool**: Run `python3 ${HERMES_SKILL_DIR}/scripts/companion.py --doctor` to verify OS, iCloud access, CLI discovery, and permissions in seconds.
 
 If the skill config block names `hermes-companion.places_file` or `hermes-companion.icloud_dir`, pass those paths as `--places` and `--icloud-dir`. Otherwise the script uses its defaults, including an existing Hermes profile `state/places.json` when exactly one profile has that file. Places added in the iOS app (`Places` tab) synchronize directly into the iCloud container (`Documents/places.json`) and are automatically merged with any profile places.
 
@@ -130,6 +132,7 @@ The sweep never skips a letter silently. Its heartbeat carries what it saw (`hea
 | Check Hermes Post / Inbox | `companion.py --inbox --pending` | `thread_count`, `thread_id`, `subject`, `status` |
 | Read/reply to thread | `companion.py --thread ID` / `--reply ID` | chronological messages, `body`, `updated_at` |
 | Archive/delete thread | `companion.py --archive ID` / `--delete-thread ID` | `thread_id`, status confirmation |
+| System diagnostics | `companion.py --doctor` | OS, iCloud container, permissions, CLI paths |
 
 `movement_reason` is why the phone accepted the last write: `moved`, `distance`, or `no_motion_reading`. `absent` means an older file from before that field existed.
 

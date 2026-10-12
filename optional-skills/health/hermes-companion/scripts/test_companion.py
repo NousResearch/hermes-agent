@@ -952,6 +952,24 @@ def test_turn_based_concurrency_guards_and_sequence_indexing() -> None:
         check("letter file with 006 prefix created", len(files_006) == 1)
 
 
+def test_environment_diagnostics_and_doctor() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        (tmp_path / "latest_location.json").write_text("{}", encoding="utf-8")
+        results = companion.check_environment_diagnostics(str(tmp_path))
+        categories = {cat for _, cat, _, _ in results}
+        check("diagnostics checks operating system", "Operating System" in categories)
+        check("diagnostics checks hermes cli", "Hermes CLI" in categories)
+        check("diagnostics checks app container", "App Container" in categories)
+
+        args = companion.build_parser().parse_args(["--doctor", "--icloud-dir", str(tmp_path)])
+        rc = companion.command_doctor(args)
+        check("doctor command returns int status code", isinstance(rc, int))
+
+        explanation = companion.missing_icloud_explanation([Path("/nonexistent/icloud")])
+        check("missing explanation contains guidance", "iPhone" in explanation or "macOS" in explanation)
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -986,6 +1004,7 @@ def main() -> int:
     test_delete_dispatch_thread()
     test_icloud_placeholder_cache_fallback()
     test_turn_based_concurrency_guards_and_sequence_indexing()
+    test_environment_diagnostics_and_doctor()
     print("ok")
     return 0
 

@@ -27,6 +27,7 @@ import argparse
 import json
 import math
 import os
+import platform
 import re
 import shutil
 import signal
@@ -1140,11 +1141,29 @@ def emit(payload: Mapping[str, object], as_json: bool, text: str) -> int:
 # CLI Commands
 # ==============================================================================
 
+def missing_icloud_explanation(directories: Sequence[Path], item_type: str = "location") -> str:
+    """Generate helpful diagnostics message when an expected telemetry file is missing."""
+    if sys.platform != "darwin":
+        return (
+            f"No accepted {item_type} file from the iPhone yet.\n"
+            "Notice: Hermes Companion strictly requires macOS with native iCloud Drive access. "
+            "Non-macOS environments (Linux, Docker containers, Windows) cannot sync local iCloud containers."
+        )
+    container_exists = any(d.is_dir() for d in directories)
+    if not container_exists:
+        return (
+            f"No accepted {item_type} file from the iPhone yet.\n"
+            "iCloud container has not synced to this Mac yet. Open Hermes Companion on your iPhone to initialize the container.\n"
+            "Run 'companion.py --doctor' to diagnose system requirements."
+        )
+    return f"No accepted {item_type} file from the iPhone yet."
+
+
 def command_where(args: argparse.Namespace, now: datetime) -> int:
     directories = icloud_directories(args.icloud_dir)
     raw, path = first_reading(directories, "latest_location.json")
     if raw is None or path is None or "latitude" not in raw or "longitude" not in raw:
-        print("No accepted location file from the iPhone yet.")
+        print(missing_icloud_explanation(directories, "location"))
         return 0
     places = load_places(args.places)
     loc = resolve_location(raw, places, now, str(path))
@@ -1179,7 +1198,7 @@ def command_timeline(args: argparse.Namespace, now: datetime) -> int:
     directories = icloud_directories(args.icloud_dir)
     history_records, path = read_history(directories)
     if not history_records or path is None:
-        print("No location history file from the iPhone yet.")
+        print(missing_icloud_explanation(directories, "location history"))
         return 0
     places = load_places(args.places)
     since_dt = parse_since(args.since, now)
@@ -1206,9 +1225,10 @@ def command_timeline(args: argparse.Namespace, now: datetime) -> int:
 
 
 def command_health(args: argparse.Namespace, now: datetime) -> int:
-    raw, path = first_reading(icloud_directories(args.icloud_dir), "latest_health.json")
+    directories = icloud_directories(args.icloud_dir)
+    raw, path = first_reading(directories, "latest_health.json")
     if raw is None or path is None:
-        print("No health snapshot from the iPhone yet.")
+        print(missing_icloud_explanation(directories, "health snapshot"))
         return 0
     health = resolve_health(raw, now, str(path))
     return emit(health, args.json, format_health(health))
@@ -2360,14 +2380,20 @@ def release_dispatch_lock(lock_file: Path) -> None:
 
 
 def find_hermes_executable() -> Optional[str]:
-    """Locate the hermes CLI executable."""
+    """Locate the hermes CLI executable across PATH, virtualenvs, homebrew, and Mac app bundles."""
     candidates = [
         shutil.which("hermes"),
         str(Path.home() / ".local" / "bin" / "hermes"),
         str(Path.home() / ".hermes" / "hermes-agent" / ".hermes" / "bin" / "hermes"),
         str(Path.home() / ".hermes" / "bin" / "hermes"),
+        str(Path.home() / ".cargo" / "bin" / "hermes"),
         "/opt/homebrew/bin/hermes",
         "/usr/local/bin/hermes",
+        "/Applications/Hermes.app/Contents/MacOS/hermes",
+        "/Applications/Hermes.app/Contents/Resources/hermes",
+        "/Applications/Hermes Agent.app/Contents/MacOS/hermes",
+        str(Path.home() / "Applications" / "Hermes.app" / "Contents" / "MacOS" / "hermes"),
+        str(Path.home() / "Applications" / "Hermes.app" / "Contents" / "Resources" / "hermes"),
     ]
     for c in candidates:
         if c and os.path.isfile(c) and os.access(c, os.X_OK):
@@ -2402,8 +2428,8 @@ def render_launch_agent_plist(
     </array>"""
 
     system_path = (
-        f"{home}/.local/bin:{home}/.hermes/bin:{home}/.hermes/hermes-agent/.hermes/bin:"
-        "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        f"{home}/.local/bin:{home}/.cargo/bin:{home}/.hermes/bin:{home}/.hermes/hermes-agent/.hermes/bin:"
+        "/Applications/Hermes.app/Contents/MacOS:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     )
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -2477,7 +2503,12 @@ def is_daemon_plist(text: str) -> bool:
 def install_launch_agent(icloud_dir: Optional[str] = None) -> bool:
     """Install and (re)load the dispatch LaunchAgent."""
     if sys.platform != "darwin":
+        log("WARN", "LaunchAgent requires macOS; cannot install on non-macOS system")
         return False
+
+    hermes_bin = find_hermes_executable()
+    if not hermes_bin:
+        log("WARN", "hermes executable not found in PATH or standard locations; auto-dispatch of pending letters will fail until hermes is installed")
 
     plist_path = get_launch_agent_path()
     plist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2502,6 +2533,195 @@ def install_launch_agent(icloud_dir: Optional[str] = None) -> bool:
     except Exception as exc:
         log("WARN", f"could not install LaunchAgent: {exc}")
         return False
+
+
+def check_environment_diagnostics(icloud_dir: Optional[str] = None) -> List[Tuple[str, str, str, str]]:
+    """Perform pre-flight diagnostics across OS, iCloud, permissions, and Hermes executable.
+
+    Returns a list of tuples: (status, category, message, remedy)
+    status: 'PASS', 'WARN', 'FAIL', 'INFO'
+    """
+    results: List[Tuple[str, str, str, str]] = []
+
+    # 1. Operating System & Container Check
+    is_darwin = sys.platform == "darwin"
+    is_container = (
+        Path("/.dockerenv").exists()
+        or os.environ.get("CONTAINER") in ("docker", "podman")
+        or os.environ.get("DOCKER_CONTAINER") == "1"
+        or Path("/run/.containerenv").exists()
+    )
+    if not is_darwin or is_container:
+        os_desc = "Container (Docker/Podman)" if is_container else sys.platform
+        results.append((
+            "FAIL",
+            "Operating System",
+            f"{os_desc} is not supported. Hermes Companion strictly requires a native macOS host.",
+            "Run Hermes directly on macOS under your user account. Containers and Linux/Windows cannot access native iCloud Drive synchronization (~/Library/Mobile Documents)."
+        ))
+    else:
+        mac_ver = platform.mac_ver()[0] or platform.release()
+        results.append((
+            "PASS",
+            "Operating System",
+            f"macOS {mac_ver} (native host)",
+            ""
+        ))
+
+    # 2. iCloud Drive Root Directory
+    mobile_docs = Path.home() / "Library" / "Mobile Documents"
+    if not is_darwin:
+        pass
+    elif not mobile_docs.is_dir():
+        results.append((
+            "FAIL",
+            "iCloud Drive",
+            f"Directory '{mobile_docs}' not found.",
+            "Sign in to your Apple Account and enable iCloud Drive in System Settings -> Apple Account -> iCloud."
+        ))
+    else:
+        results.append((
+            "PASS",
+            "iCloud Drive",
+            f"Active at {mobile_docs}",
+            ""
+        ))
+
+    # 3. macOS Privacy / Files and Folders Permissions (TCC)
+    if is_darwin and mobile_docs.is_dir():
+        try:
+            _ = list(mobile_docs.iterdir())
+            results.append((
+                "PASS",
+                "Privacy Permissions",
+                "Files and Folders access to iCloud Drive verified.",
+                ""
+            ))
+        except (PermissionError, OSError) as exc:
+            results.append((
+                "FAIL",
+                "Privacy Permissions",
+                f"Permission denied accessing iCloud Drive: {exc}",
+                "Grant Terminal or Python access in System Settings -> Privacy & Security -> Files and Folders (or Full Disk Access)."
+            ))
+
+    # 4. Hermes Companion App Container & Files
+    dirs = icloud_directories(icloud_dir)
+    found_container: Optional[Path] = None
+    for d in dirs:
+        if d.is_dir():
+            found_container = d
+            break
+
+    if found_container:
+        can_write = False
+        test_probe = found_container / ".probe_tmp"
+        try:
+            test_probe.write_text("probe", encoding="utf-8")
+            test_probe.unlink(missing_ok=True)
+            can_write = True
+        except OSError:
+            can_write = False
+
+        status = "PASS" if can_write else "FAIL"
+        msg = f"Found at {found_container} (write access: {'yes' if can_write else 'no'})"
+        remedy = "" if can_write else f"Ensure write permissions on {found_container}"
+        results.append((status, "App Container", msg, remedy))
+
+        loc_file = found_container / "latest_location.json"
+        health_file = found_container / "latest_health.json"
+        threads_dir = found_container / "threads"
+        places_file = found_container / "places.json"
+        marker_file = found_container / ".sync_marker.json"
+
+        inventory: List[str] = []
+        if loc_file.is_file():
+            inventory.append("location")
+        if health_file.is_file():
+            inventory.append("health")
+        if threads_dir.is_dir():
+            inventory.append(f"threads ({len(list(threads_dir.iterdir()))})")
+        if places_file.is_file():
+            inventory.append("places")
+        if marker_file.is_file():
+            inventory.append("sync_marker")
+
+        inv_msg = ", ".join(inventory) if inventory else "empty (awaiting first sync)"
+        results.append(("INFO", "Container Files", f"Synced files: {inv_msg}", ""))
+    else:
+        results.append((
+            "WARN",
+            "App Container",
+            "iCloud~com~hermes~HermesCompanion container directory not found yet.",
+            "Apple's CloudDocs only creates this folder after the iPhone app writes its first record. Open the Hermes Companion iOS app, allow permissions, and wait 1–2 minutes for iCloud sync."
+        ))
+
+    # 5. Hermes Executable Discovery
+    hermes_bin = find_hermes_executable()
+    if hermes_bin:
+        results.append((
+            "PASS",
+            "Hermes CLI",
+            f"Executable located at {hermes_bin}",
+            ""
+        ))
+    else:
+        results.append((
+            "FAIL",
+            "Hermes CLI",
+            "'hermes' executable not found in PATH or standard application bundles.",
+            "Install Hermes CLI (brew install / pipx / uv) or ensure its binary directory is added to PATH. If using the Hermes macOS app, symlink its binary (e.g. /Applications/Hermes.app/Contents/MacOS/hermes) to /opt/homebrew/bin/hermes or ~/.local/bin/hermes."
+        ))
+
+    # 6. LaunchAgent Background Inbox Service
+    if is_darwin:
+        plist_path = get_launch_agent_path()
+        if plist_path.is_file():
+            res = subprocess.run(["launchctl", "list", LAUNCH_AGENT_LABEL], capture_output=True, text=True)
+            if res.returncode == 0:
+                results.append((
+                    "PASS",
+                    "Background Service",
+                    f"LaunchAgent '{LAUNCH_AGENT_LABEL}' is active.",
+                    ""
+                ))
+            else:
+                results.append((
+                    "WARN",
+                    "Background Service",
+                    "LaunchAgent plist exists but is not running in launchctl.",
+                    "Run 'companion.py --install-service' to reload the background daemon."
+                ))
+        else:
+            results.append((
+                "INFO",
+                "Background Service",
+                "Not installed (run 'companion.py --install-service' for automatic background letter replies).",
+                ""
+            ))
+
+    return results
+
+
+def command_doctor(args: argparse.Namespace) -> int:
+    """Print system diagnostics report and return 0 if all required checks pass."""
+    results = check_environment_diagnostics(args.icloud_dir)
+    print("Hermes Companion Pre-Flight Diagnostics:")
+    print("=" * 60)
+    has_fail = False
+    for status, category, msg, remedy in results:
+        badge = f"[{status}]"
+        print(f"{badge:<7} {category:<22} {msg}")
+        if remedy:
+            print(f"        -> Remedy: {remedy}")
+        if status == "FAIL":
+            has_fail = True
+    print("=" * 60)
+    if has_fail:
+        print("Diagnostic summary: Required dependencies or permissions are missing.")
+        return 1
+    print("Diagnostic summary: All critical checks passed.")
+    return 0
 
 
 def uninstall_launch_agent() -> bool:
@@ -2999,6 +3219,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--daemon", action="store_true", help="Run the long-lived dispatch daemon (launchd KeepAlive service)")
     parser.add_argument("--interval", type=float, default=DAEMON_DEFAULT_INTERVAL, help="Seconds between daemon sweeps (default 5)")
     parser.add_argument("--max-cycles", type=int, help="Stop the daemon after N sweeps (used by tests)")
+    parser.add_argument("--doctor", action="store_true", help="Run system and environment pre-flight diagnostics")
     parser.add_argument("--install-service", action="store_true", help="Install macOS background LaunchAgent auto-responder")
     parser.add_argument("--uninstall-service", action="store_true", help="Uninstall macOS background LaunchAgent auto-responder")
     parser.add_argument("--service-status", action="store_true", help="Check status of background LaunchAgent auto-responder")
@@ -3022,7 +3243,18 @@ def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -
         args.places = expand(str(args.places))
     moment = now or utcnow()
 
+    if getattr(args, "doctor", False):
+        return command_doctor(args)
+
     if args.install_service:
+        if sys.platform != "darwin":
+            print("Error: Background LaunchAgent requires macOS. Non-macOS systems (Linux, Docker, Windows) cannot run launchd.", file=sys.stderr)
+            return 1
+        hermes_bin = find_hermes_executable()
+        if not hermes_bin:
+            print("Warning: 'hermes' CLI executable was not found in PATH or standard application paths.", file=sys.stderr)
+            print("Auto-dispatch of pending letters will fail until hermes is installed and discoverable.", file=sys.stderr)
+            print("Run 'companion.py --doctor' to inspect your environment.", file=sys.stderr)
         ok = install_launch_agent(args.icloud_dir)
         print("LaunchAgent service installed and loaded" if ok else "Failed to install service")
         return 0 if ok else 1

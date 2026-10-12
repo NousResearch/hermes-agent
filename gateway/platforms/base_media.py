@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable
 
 
 logger = logging.getLogger("gateway.platforms.base")
@@ -13,7 +13,7 @@ logger = logging.getLogger("gateway.platforms.base")
 class MediaDeliveryMixin:
     async def _deliver_media_attachments(
         self, event, media_files: list, local_files: list, *,
-        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any],
+        force_document_attachments: bool, human_delay: float, metadata: dict[str, Any],
         record_delivery: Callable) -> None:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA

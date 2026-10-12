@@ -297,7 +297,7 @@ class TestExtractMedia:
 
     def test_extract_media_keeps_distinct_files_when_inode_is_zero(self, tmp_path, monkeypatch):
         """Windows/SMB often report st_ino==0; that must not drop the second file."""
-        import gateway.platforms.base as base
+        from gateway.platforms import base
 
         a = tmp_path / "a.pdf"
         b = tmp_path / "b.pdf"
@@ -731,7 +731,7 @@ class TestMediaDeliveryDefaultMode:
 
     def test_filter_media_keeps_distinct_files_when_inode_is_zero(self, tmp_path, monkeypatch):
         """st_ino==0 must fall back to path identity, not collapse the batch."""
-        import gateway.platforms.base as base
+        from gateway.platforms import base
 
         self._patch_roots(monkeypatch)
         a = tmp_path / "a.pdf"

@@ -1634,10 +1634,10 @@ def test_cron_store_check_reports_writability_and_low_space(
     assert len(finding.issues) == len(issues) and all(any(s in i for i in finding.issues) for s in issues)
 
 
-@pytest.mark.parametrize("platform", ["win32", "darwin"])
-def test_profile_alias_status_follows_the_wrapper_the_profile_really_has(monkeypatch, tmp_path, platform):
+@pytest.mark.platforms("any")  # the wrapper name differs per host (.bat on Windows)
+def test_profile_alias_status_follows_the_wrapper_the_profile_really_has(monkeypatch, tmp_path):
     """#131753: doctor said "no alias" for every Windows profile (``.bat`` wrapper) and for any
-    profile reachable only through a custom alias name; a bare pre-``.bat`` wrapper still counts."""
+    profile reachable only through a custom alias name; a bare (pre-``.bat`` on Windows) wrapper counts."""
     import hermes_cli.gateway_migrate as gm
     from hermes_cli import profiles
 
@@ -1645,13 +1645,14 @@ def test_profile_alias_status_follows_the_wrapper_the_profile_really_has(monkeyp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     monkeypatch.setattr(gm, "duplicate_credential_findings", list)
-    monkeypatch.setattr(profiles, "sys", SimpleNamespace(**{**vars(sys), "platform": platform}))
     for name in ("dev", "ops", "work", "old"):
         (tmp_path / ".hermes" / "profiles" / name).mkdir(parents=True)
         (tmp_path / ".hermes" / "profiles" / name / "config.yaml").write_text("model: m\n", encoding="utf-8")
     profiles.create_wrapper_script("dev")
     profiles.create_wrapper_script("w", target="work")
     (tmp_path / ".local" / "bin" / "old").write_text('#!/bin/sh\nexec hermes -p old "$@"\n', encoding="utf-8")
+    for foreign in ("ops.bat", "old.bat"):  # same-named non-Hermes commands
+        (tmp_path / ".local" / "bin" / foreign).write_text("@echo off\r\nnotepad %*\r\n", encoding="utf-8")
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -1660,4 +1661,6 @@ def test_profile_alias_status_follows_the_wrapper_the_profile_really_has(monkeyp
     status = {name: next(ln for ln in lines if f" {name}:" in ln) for name in ("dev", "ops", "work", "old")}
 
     assert not any("no alias" in status[n] for n in ("dev", "work", "old"))
-    assert "no alias" in status["ops"]
+    assert "no alias" in status["ops"]  # a foreign ops.bat is not ops's alias
+    old = next(p for p in profiles.list_profiles() if p.name == "old")
+    assert old.alias_path == tmp_path / ".local" / "bin" / "old"  # never the foreign old.bat (uninstall unlinks it)

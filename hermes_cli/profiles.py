@@ -1029,7 +1029,7 @@ def _profile_info(name: str, path: Path, *, is_default: bool, alias_name: Option
     model, provider = _read_config_model(path)
     dist_name, dist_version, dist_source = _read_distribution_meta(path)
     meta = read_profile_meta(path)
-    alias_path = next((p for p in _wrapper_candidates(alias_name) if p.exists()), None) if alias_name else None
+    alias_path = next((p for p in _wrapper_candidates(alias_name) if p.exists() and _is_our_wrapper(p)), None) if alias_name else None
     gateway_running = _check_gateway_running(path)
     if not is_default:
         gateway_running = gateway_running or _served_by_running_multiplexer(name)

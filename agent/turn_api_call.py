@@ -1,9 +1,9 @@
 """The provider call for the conversation turn's retry loop: ``nous_rate_limit_guard`` (skip
 the attempt while another session's Nous Portal rate limit is active), ``perform_api_call``
 (streaming decision, MoA prepared-request handshake, LLM execution middleware wrapper, the
-redirect ``_model_request_active`` bracket and the response-vs-redirect crossing check) and
-``handle_api_interrupt`` (``InterruptedError`` mid-call). Nothing here imports
-``agent.conversation_loop`` at module level (cycle).
+redirect ``_model_request_active`` bracket, the response-vs-redirect crossing check, and the
+anti-refusal retry harness) and ``handle_api_interrupt`` (``InterruptedError`` mid-call).
+Nothing here imports ``agent.conversation_loop`` at module level (cycle).
 """
 
 from __future__ import annotations
@@ -35,12 +35,18 @@ def stop_thinking_spinner(agent: Any, thinking_spinner: Any) -> None:
 @dataclass
 class ApiCallVerdict:
     """``action``: ``"fallthrough"`` (``response`` is ready for verification) or ``"break"``
-    (a redirect crossed the response — rebuild armed on ``_retry`` or ``interrupted``)."""
+    (a redirect crossed the response — rebuild armed on ``_retry`` or ``interrupted``; or the
+    anti-refusal harness switched lanes — rebuilt restart armed). ``retry_count``,
+    ``compression_attempts`` and ``active_system_prompt`` carry the values the loop continues
+    with; they change only on a lane-switched restart."""
 
     action: str
     response: Any
     thinking_spinner: Any
     interrupted: Any
+    retry_count: Any
+    compression_attempts: Any
+    active_system_prompt: Any
 
 
 def _should_stream(agent: Any) -> bool:
@@ -68,7 +74,7 @@ def perform_api_call(
     agent: Any, *, api_kwargs: Any, _original_api_kwargs: Any, _llm_middleware_trace: Any,
     _moa_prepared_request: Any, _retry: Any, thinking_spinner: Any, retry_count: Any,
     api_call_count: Any, api_request_id: Any, effective_task_id: Any, turn_id: Any,
-    interrupted: Any,
+    interrupted: Any, api_messages: Any, active_system_prompt: Any, compression_attempts: Any,
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
     response = None
@@ -76,7 +82,8 @@ def perform_api_call(
     def _verdict(action: str) -> ApiCallVerdict:
         return ApiCallVerdict(
             action=action, response=response, thinking_spinner=thinking_spinner,
-            interrupted=interrupted,
+            interrupted=interrupted, retry_count=retry_count,
+            compression_attempts=compression_attempts, active_system_prompt=active_system_prompt,
         )
 
     def _stop_spinner():
@@ -125,25 +132,33 @@ def perform_api_call(
     _model_request_active = getattr(agent, "_model_request_active", None)
     _redirect_lock = getattr(agent, "_pending_redirect_lock", None)
     _bracket = nullcontext() if _redirect_lock is None else _redirect_lock
-    with _bracket:
-        if _model_request_active is not None:
-            _model_request_active.set()
-    try:
-        response = run_llm_execution_middleware(
-            api_kwargs, _perform_api_call, original_request=_original_api_kwargs,
-            task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
-            session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
-            provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
-            api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
-        )
-    finally:
+
+    def _issue_call(call_kwargs, original_request):
+        """Issue one provider request under the ``_model_request_active`` bracket; returns
+        ``(call_response, redirect_crossed)``. The redirect flag is read under the same
+        bracket so a crossing is judged against the request that just finished."""
         with _bracket:
             if _model_request_active is not None:
-                _model_request_active.clear()
-            _redirect_crossed_response = (
-                bool(agent._pending_redirect) if _redirect_lock is not None
-                else agent._has_pending_redirect()
+                _model_request_active.set()
+        try:
+            call_response = run_llm_execution_middleware(
+                call_kwargs, _perform_api_call, original_request=original_request,
+                task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+                session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
+                provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
+                api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
             )
+        finally:
+            with _bracket:
+                if _model_request_active is not None:
+                    _model_request_active.clear()
+                crossed = (
+                    bool(agent._pending_redirect) if _redirect_lock is not None
+                    else agent._has_pending_redirect()
+                )
+        return call_response, crossed
+
+    response, _redirect_crossed_response = _issue_call(api_kwargs, _original_api_kwargs)
     if _redirect_crossed_response:
         # Response and redirect can cross threads: discard the now-stale
         # response and rebuild from the correction rather than lose it.
@@ -153,6 +168,69 @@ def perform_api_call(
         else:
             interrupted = True
         return _verdict("break")
+
+    # Soft refusals arrive as ordinary stop responses; hard ones as finish_reason
+    # ``content_filter``, which check_api_response routes to handle_content_policy_refusal
+    # and never through here. The harness judges the response above (only once it survived
+    # the crossing check — a discarded response is not worth judge or retry calls) and, on a
+    # soft refusal, resends with frame repair (attempt 2); its lane switch (attempt 3) arms
+    # a rebuilt restart for the next pass (see agent/anti_refusal_retry.py).
+    from agent.anti_refusal_retry import anti_refusal_retry_harness
+
+    _redirect_crossed_retry = False
+
+    def _llm_call_wrapper(retry_messages, retry_kwargs):
+        """Issue one harness resend with the harness' messages, through the same
+        middleware + bracket path as the original call. A redirect crossing the resend's
+        response is reported via ``_redirect_crossed_retry`` for the break handling below."""
+        nonlocal _redirect_crossed_retry
+        call_kwargs = dict(retry_kwargs)
+        call_kwargs["messages"] = retry_messages
+        retry_response, crossed = _issue_call(call_kwargs, call_kwargs)
+        if crossed:
+            _redirect_crossed_retry = True
+        return retry_response
+
+    retry_result = anti_refusal_retry_harness(
+        agent=agent,
+        initial_response=response,
+        original_messages=api_kwargs.get("messages", []),
+        api_kwargs=api_kwargs,
+        llm_call=_llm_call_wrapper,
+    )
+
+    if _redirect_crossed_retry:
+        # A redirect corrected the conversation while the harness resend was in flight: the
+        # resend's response is stale on arrival — same discard/rebuild protocol as above.
+        thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
+        if agent.clear_interrupt(preserve_redirect=True):
+            _retry.restart_with_redirected_messages = True
+        else:
+            interrupted = True
+        return _verdict("break")
+
+    if retry_result.restart_on_fallback:
+        # Attempt 3 switched lanes. ``api_kwargs`` was built for the previous lane (its
+        # model slug is what the wire carries), so the re-issue happens on the next pass
+        # against a freshly built request — the same rebuilt-restart protocol the rate
+        # guard and handle_content_policy_refusal use.
+        from agent.conversation_loop import _arm_fallback_restart
+
+        active_system_prompt = _arm_fallback_restart(
+            agent, api_messages, active_system_prompt, _retry)
+        retry_count = 0
+        compression_attempts = 0
+        return _verdict("break")
+
+    response = retry_result.response
+    if retry_result.attempts > 1:
+        logger.info(
+            "Anti-refusal retry harness: %d attempts, frame_repaired=%s, lane_switched=%s, fall_through=%s",
+            retry_result.attempts, retry_result.frame_repaired, retry_result.lane_switched,
+            retry_result.should_fall_through,
+        )
+    # ``should_fall_through``: the ladder is spent — the response is still the soft refusal
+    # and the turn proceeds with it like any other stop response.
     return _verdict("fallthrough")
 
 

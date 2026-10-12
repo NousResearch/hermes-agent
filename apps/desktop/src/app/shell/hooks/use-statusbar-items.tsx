@@ -229,6 +229,27 @@ export function useStatusbarItems({
   // never paint session A's workspace while the tab already shows session B.
   const focusedStateStoredId = useStoreSelector($focusedSessionState, state => state?.storedSessionId?.trim() || null)
 
+  // Session activity counts for the statusbar chip: user turns and assistant
+  // steps from the focused session's transcript (tiles included — same source
+  // as the other focused readouts). The primitive "turns:steps" string keeps
+  // the per-delta republish of `$sessionStates` from re-rendering until a
+  // count actually changes; empty means there is no transcript to count yet.
+  const sessionActivityCounts = useStoreSelector($focusedSessionState, state => {
+    const messages = state?.messages ?? []
+    let turns = 0
+    let steps = 0
+
+    for (const message of messages) {
+      if (message.role === 'user') {
+        turns += 1
+      } else if (message.role === 'assistant') {
+        steps += 1
+      }
+    }
+
+    return turns === 0 && steps === 0 ? '' : `${turns}:${steps}`
+  })
+
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const primaryFocused = !focusedStoredSessionId || focusedStoredSessionId === selectedStoredSessionId
 
@@ -660,6 +681,18 @@ export function useStatusbarItems({
     ]
   )
 
+  // Opted-in readouts never vanish; until a transcript exists the activity
+  // chip rests at the same em-dash placeholder as the meters above.
+  const sessionActivityLabel = useMemo(() => {
+    if (!sessionActivityCounts) {
+      return '—'
+    }
+
+    const [turns, steps] = sessionActivityCounts.split(':').map(Number)
+
+    return copy.sessionActivityLabel(turns, steps)
+  }, [copy, sessionActivityCounts])
+
   const coreRightStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
       {
@@ -716,6 +749,14 @@ export function useStatusbarItems({
         toggleLabel: copy.toggleSessionTimer,
         variant: 'text'
       },
+      {
+        icon: <Activity className="size-3" />,
+        id: 'session-activity',
+        label: sessionActivityLabel,
+        title: copy.sessionActivityTitle,
+        toggleLabel: copy.toggleSessionActivity,
+        variant: 'text'
+      },
       systemResourcesItem,
       {
         ...approvalModeItem,
@@ -754,6 +795,7 @@ export function useStatusbarItems({
       gatewayState,
       systemResourcesItem,
       terminalShowing,
+      sessionActivityLabel,
       tokensPerSecond,
       turnStartedAt
     ]

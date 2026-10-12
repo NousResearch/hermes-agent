@@ -3669,6 +3669,7 @@ export interface Translations extends NoticeTranslations {
       toggleCommandCenter: string
       toggleContextUsage: string
       toggleRunningTimer: string
+      toggleSessionActivity: string
       toggleSessionTimer: string
       toggleTerminal: string
       toggleTokensPerSecond: string
@@ -3676,6 +3677,8 @@ export interface Translations extends NoticeTranslations {
       toggleFreeTier: string
       toggleWorkspace: string
       cacheHitRateTitle: string
+      sessionActivityLabel: (turns: number, steps: number) => string
+      sessionActivityTitle: string
       tokensPerSecondTitle: string
       agents: string
       closeAgents: string

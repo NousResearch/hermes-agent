@@ -386,6 +386,55 @@ describe('useStatusbarItems session timer — runtime cache anchor', () => {
   })
 })
 
+describe('statusbar session activity — turns · steps', () => {
+  function activityItem() {
+    const { result } = renderHook(() => useStatusbarItems(statusbarOptions), { wrapper })
+
+    return result.current.statusbarItems.find(item => item.id === 'session-activity')
+  }
+
+  function focusActivityTile(messages: unknown[] | null): void {
+    setActiveSessionId('activity-runtime')
+    $selectedStoredSessionId.set('primary-stored')
+    $sessions.set([{ id: 'primary-stored' }, { id: 'activity-stored', parent_session_id: 'primary-stored' }] as never)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: null, mode: 'local', profile: 'default' },
+        runtimeId: 'activity-runtime',
+        storedSessionId: 'activity-stored'
+      }
+    ] as never)
+    $sessionStates.set({
+      'activity-runtime': {
+        ...createClientSessionState('activity-stored', (messages ?? []) as never)
+      }
+    } as never)
+    focusPane('activity-stored')
+  }
+
+  afterEach(() => {
+    $sessionStates.set({})
+  })
+
+  it('counts user turns and assistant steps from the focused transcript', () => {
+    focusActivityTile([
+      { id: 'm1', role: 'user' },
+      { id: 'm2', role: 'assistant' },
+      { id: 'm3', role: 'tool' },
+      { id: 'm4', role: 'user' },
+      { id: 'm5', role: 'assistant' }
+    ])
+
+    expect(activityItem()?.label).toBe('2 turns · 2 steps')
+  })
+
+  it('rests at the em-dash placeholder until the transcript has messages', () => {
+    focusActivityTile(null)
+
+    expect(activityItem()?.label).toBe('—')
+  })
+})
+
 // The statusbar chip is a free-tier user's standing way in to a sign-in, and
 // an interface mode decides whether the bar is mounted at all. Whatever a mode
 // rests, a signed-out free-tier user keeps one visible Sign in.

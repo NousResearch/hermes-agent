@@ -66,6 +66,7 @@ def _fire_pre_api_request_hook(
                 turn_id=turn_id,
                 api_request_id=api_request_id,
                 session_id=agent.session_id or "",
+                user_id=getattr(agent, "_user_id", "") or "",
                 user_message=original_user_message,
                 conversation_history=list(messages),
                 platform=agent.platform or "",

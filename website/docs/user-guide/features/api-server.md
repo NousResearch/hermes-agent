@@ -618,6 +618,25 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
+### End-user attribution (`X-Hermes-User-Id`)
+
+A frontend proxying many human users through one Hermes deployment (e.g. a shared internal
+dashboard) can declare which end user is actually chatting via `X-Hermes-User-Id` — any
+string identifier (email, username, etc.) is accepted, unvalidated. It threads through to
+`AIAgent(user_id=...)` — the same gateway-identity field every other platform (Telegram,
+Discord, ...) already populates from its own session source — so observability plugins such
+as the bundled Langfuse integration can attribute a turn's trace to the real end user instead
+of only the shared caller, enabling Langfuse's per-user usage/cost/feedback views. Purely
+observability-facing: it grants nothing and is never used for authorization.
+
+```bash
+# attribute this turn's trace to a specific end user
+curl -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -H "X-Hermes-User-Id: alice@example.com" \
+  -d '{"input": "what files changed in the last hour?"}'
+```
+
 ```bash
 # fork a session and run one turn
 curl -X POST http://localhost:8642/api/sessions/$ID/fork \

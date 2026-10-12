@@ -35,6 +35,68 @@ def test_skipped_required_settings_do_not_report_ready(monkeypatch, tmp_path, ca
         image_gen_registry._reset_for_tests()
 
 
+@pytest.mark.parametrize("scoped_model,expected_model", [
+    (None, "vendor/image-model"),
+    ("", "vendor/image-model"),
+    ("   ", "vendor/image-model"),
+    (42, "vendor/image-model"),
+    ("  scoped/image-model  ", "scoped/image-model"),
+])
+def test_documented_model_config_agrees_across_generation_and_setup(
+    monkeypatch, tmp_path, scoped_model, expected_model
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_COMPATIBLE_IMAGE_API_KEY", "profile-token")
+    # The specification's documented global-model configuration, not a schema snapshot.
+    config = {"image_gen": {
+        "provider": "openai-compatible",
+        "model": "vendor/image-model",
+        "openai_compatible": {
+            "display_name": "Local Image Service",
+            "base_url": "http://localhost:30122/v1",
+            "size_by_aspect": {"square": "512x512", "landscape": "1024x576", "portrait": "576x1024"},
+            "params": {"num_inference_steps": 8, "guidance_scale": 1.0},
+            "timeout": 600,
+        },
+    }}
+    if scoped_model is not None:
+        config["image_gen"]["openai_compatible"]["model"] = scoped_model
+    save_config(config)
+    image_gen_registry._reset_for_tests()
+    try:
+        _ensure_plugins_discovered(force=True)
+        provider = image_gen_registry.get_provider("openai-compatible")
+        row = next(row for row in setup._plugin_image_gen_providers()
+                   if row["image_gen_plugin_name"] == provider.name)
+        seen = {}
+
+        def post(url, **kwargs):
+            seen.update(kwargs)
+            response = requests.Response()
+            response.status_code = 200
+            response._content = json.dumps({"data": [{"b64_json": base64.b64encode(b"image").decode()}]}).encode()
+            return response
+
+        monkeypatch.setattr(requests, "post", post)
+        assert provider.is_available()
+        assert provider.generate("cat")["success"] is True
+        assert seen["json"]["model"] == expected_model
+        assert setup.provider_readiness_status(row, config) == "ready"
+
+        # A valid model must not trigger a second free-text model/endpoint/secret prompt.
+        monkeypatch.setattr(setup, "_prompt", lambda *a, **kw: pytest.fail("configuration is already complete"))
+        monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", lambda *a, **kw: 0)
+        setup._configure_provider(row, config)
+        save_config(config)
+        saved = load_config()
+        assert saved["image_gen"]["openai_compatible"].get("model") == scoped_model
+        assert setup.provider_readiness_status(row, saved) == "ready"
+        assert provider.is_available()
+        assert provider.default_model() == expected_model
+    finally:
+        image_gen_registry._reset_for_tests()
+
+
 def test_empty_profile_setup_can_generate(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("OPENAI_COMPATIBLE_IMAGE_API_KEY", raising=False)

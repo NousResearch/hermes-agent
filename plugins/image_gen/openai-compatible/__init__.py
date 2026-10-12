@@ -180,7 +180,8 @@ class OpenAICompatibleImageProvider(ImageGenProvider):
             "tag": "User-configured OpenAI /v1/images/generations endpoint",
             "config_fields": [
                 {"key": "image_gen.openai_compatible.base_url", "prompt": "Image endpoint base URL"},
-                {"key": "image_gen.openai_compatible.model", "prompt": "Image model ID"},
+                {"key": "image_gen.openai_compatible.model", "prompt": "Image model ID",
+                 "fallback_keys": ["image_gen.model"]},
             ],
             "env_vars": [
                 {

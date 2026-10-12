@@ -173,12 +173,20 @@ def _visible_providers(
     return visible
 
 
-def _provider_config_ready(provider: dict, config: dict) -> bool:
-    """Required non-secret setup fields are independent of credential readiness."""
+def _provider_config_value(field: dict, config: dict) -> str:
+    """Resolve a setup field's first non-blank string, primary key before fallbacks."""
     from hermes_cli.config import _get_nested
 
-    return all(isinstance(value := _get_nested(config, field["key"]), str) and value.strip()
-               for field in provider.get("config_fields", []))
+    for key in (field["key"], *field.get("fallback_keys", [])):
+        value = _get_nested(config, key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _provider_config_ready(provider: dict, config: dict) -> bool:
+    """Required non-secret setup fields are independent of credential readiness."""
+    return all(_provider_config_value(field, config) for field in provider.get("config_fields", []))
 
 
 def provider_readiness_status(provider: dict, config: dict, *, features=None, is_active: Optional[bool] = None) -> str:
@@ -980,12 +988,11 @@ def _prompt_provider_config(provider: dict, config: dict, *, reconfigure: bool) 
     The caller persists config through the normal tools/setup writer. Blank input
     keeps an existing value; skipping a missing field never reports success.
     """
-    from hermes_cli.config import _get_nested, _set_nested
+    from hermes_cli.config import _set_nested
 
     for field in provider.get("config_fields", []):
         key = field["key"]
-        current = _get_nested(config, key)
-        current = current.strip() if isinstance(current, str) else ""
+        current = _provider_config_value(field, config)
         if current and not reconfigure:
             continue
         value = (_prompt(field.get("prompt", key), current) or current).strip()

@@ -247,7 +247,10 @@ entries. Keys are config.yaml dotpaths; values are required strings. The CLI's s
 through the normal config writer. Existing values are kept when enabling a provider;
 reconfiguration prompts again, with Enter keeping the current value. Missing fields
 leave the provider marked as needing setup, not configured. Credentials belong only
-in `env_vars`, never in `config_fields`.
+in `env_vars`, never in `config_fields`. A field can declare ordered `fallback_keys`
+(config.yaml dotpaths): readiness and prompt defaults use the first non-blank string,
+checking `key` first. New input is written to `key`; enabling an already configured
+provider does not copy fallback values into it.
 
 ## Response format
 
@@ -298,7 +301,9 @@ Run `hermes tools` (also available from `hermes setup`) → **Image Generation**
 **OpenAI-compatible**. Setup asks for the bearer token, endpoint base URL, and model ID.
 The token goes to the active profile's secret store; the endpoint and model go to
 `image_gen.openai_compatible` in `config.yaml`. Skipping a required field leaves setup
-incomplete. Advanced settings can be added in config.yaml:
+incomplete. An existing `image_gen.openai_compatible.model` takes precedence over
+`image_gen.model`; setup accepts either, just like generation, without requesting a
+duplicate scoped model. Advanced settings can be added in config.yaml:
 
 ```yaml
 image_gen:

@@ -428,6 +428,17 @@ export function resolveNewChatOwnerRoute(forProfile?: string): AgentProfileRoute
   }
 }
 
+/** The destination profile selected for the next session, using the same
+ * precedence as `session.create` so draft UI stays aligned during profile switches. */
+export function resolveNewSessionProfile(
+  capturedRoute: AgentProfileRoute | null = resolveNewChatOwnerRoute(),
+  requestedProfile?: string
+): string {
+  return normalizeProfileKey(
+    capturedRoute?.profile || requestedProfile || $newChatProfile.get() || $activeGatewayProfile.get()
+  )
+}
+
 /**
  * The owner route for a surface anchored to a profile the ACTIVE source is
  * rendering (a project tree's "+", #124265). Unlike resolveNewChatOwnerRoute

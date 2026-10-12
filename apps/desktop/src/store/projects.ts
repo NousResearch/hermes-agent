@@ -66,8 +66,8 @@ export const $projects = atom<ProjectInfo[]>([])
 
 // The atom itself lives in ./project-tree (a leaf); re-exported here so every
 // existing import path keeps working — projects.ts remains its only writer.
-import { $projectTree } from './project-tree'
-export { $projectTree }
+import { $projectTree, $projectTreeProfile } from './project-tree'
+export { $projectTree, $projectTreeProfile }
 export const $activeProjectId = atom<null | string>(null)
 
 // The authoritative project -> repo -> lane tree (overview), served by
@@ -80,6 +80,10 @@ export const $projectTreeLoading = atom(false)
 // sibling worktree the git probe assigned to its repo project never re-files
 // under an umbrella folder by cwd.
 export const $projectOwnerBySessionId = computed($projectTree, projectOwnerBySessionId)
+
+export function projectTreeSupportsProfile(treeProfile: null | string, profile: string): boolean {
+  return treeProfile === profile || treeProfile === ALL_PROFILES
+}
 
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.
@@ -232,7 +236,10 @@ export function projectIdForCwd(cwd: string): null | string {
 // cwd-leaf label — matching the backend `_project_info_for_cwd`, which
 // only resolves projects.db rows, so the desktop and TUI name the same session
 // identically without threading a second per-session copy through session.info.
-export function projectNameForCwd(cwd: string): null | string {
+export function projectNameForCwd(
+  cwd: string,
+  projects: readonly SidebarProjectTree[] = $projectTree.get()
+): null | string {
   const target = (cwd || '').trim()
 
   if (!target) {
@@ -242,7 +249,7 @@ export function projectNameForCwd(cwd: string): null | string {
   let best: null | string = null
   let bestLen = -1
 
-  for (const project of $projectTree.get()) {
+  for (const project of projects) {
     if (project.isAuto || project.isNoProject) {
       continue
     }
@@ -489,7 +496,9 @@ function tagProjectSessionConnection(project: SidebarProjectTree, owner: Project
   }
 }
 
-function applyProjectTreePayload(res: ProjectTreePayload, owner: ProjectRowOwner): void {
+function applyProjectTreePayload(
+  res: ProjectTreePayload, owner: ProjectRowOwner, treeProfile: string,
+): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
   // The tree refreshes on every sessions.changed and window focus, and most of
   // those answers are unchanged. Keep unchanged nodes by reference so the
@@ -500,6 +509,7 @@ function applyProjectTreePayload(res: ProjectTreePayload, owner: ProjectRowOwner
       (res.projects ?? []).map(project => tagProjectSessionConnection(project, owner))
     )
   )
+  $projectTreeProfile.set(treeProfile)
   $activeProjectId.set(res.active_id ?? null)
   const tombstones = $removedSessionIds.get()
 
@@ -520,7 +530,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
   const generation = ++projectTreeRefreshGeneration
   const { gateway, profile } = context
 
-  if (activeGateway() === gateway) {
+  if (stillOnProjectsContext(context)) {
     $projectTreeLoading.set(true)
   }
 
@@ -553,14 +563,14 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       return
     }
 
-    applyProjectTreePayload(res, context)
+    applyProjectTreePayload(res, context, context.profile)
     markProjectsRpcSuccess()
   } catch (err) {
     if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {
       markProjectsRpcFailure(err)
     }
   } finally {
-    if (generation === projectTreeRefreshGeneration && activeGateway() === gateway) {
+    if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {
       $projectTreeLoading.set(false)
     }
   }
@@ -608,7 +618,7 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
       return
     }
 
-    applyProjectTreePayload(res, owner)
+    applyProjectTreePayload(res, owner, ALL_PROFILES)
     markProjectsRpcSuccess()
   } catch (err) {
     markProjectsRpcFailure(err)

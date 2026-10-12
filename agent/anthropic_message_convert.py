@@ -11,6 +11,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
+from agent.anthropic_endpoints import _is_deepseek_anthropic_endpoint
 from agent.anthropic_thinking_policy import anthropic_thinking_route, route_replays_prior_thinking
 
 logger = logging.getLogger(__name__)
@@ -604,12 +605,24 @@ def _manage_thinking_signatures(result: list[dict[str, Any]], base_url: str | No
         if route == "kimi":
             pass  # shared cleanup below still strips cache markers + the flag
         elif route == "deepseek":
-            # Strip signed (or redacted-with-data), keep unsigned.
-            new_content = [
-                b for b in m["content"]
-                if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
-            ]
-            m["content"] = new_content or [_text_block("(empty)")]
+            if _is_deepseek_anthropic_endpoint(base_url):
+                # DeepSeek's own ``/anthropic`` signs its thinking blocks with a UUID in ``signature``
+                # (not an Anthropic-proprietary signature) and REQUIRES them round-tripped: dropping one
+                # makes the next call 400 "The `content[].thinking` in the thinking mode must be passed
+                # back to the API". Verified live against api.deepseek.com/anthropic — the same tool-loop
+                # request is 200 with the block present (signed or unsigned, even with empty ``thinking``
+                # text) and 400 with it absent. ``redacted_thinking`` is the one shape it cannot parse
+                # (422 "unknown variant `redacted_thinking`"), so only that variant is dropped.
+                new_content = [b for b in m["content"] if _block_type(b) != "redacted_thinking"]
+                m["content"] = new_content or [_text_block("(empty)")]
+            else:
+                # A relay fronting a DeepSeek id: it cannot verify Anthropic signatures, so keep the
+                # unchanged strip-signed / keep-unsigned policy of #17510.
+                new_content = [
+                    b for b in m["content"]
+                    if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
+                ]
+                m["content"] = new_content or [_text_block("(empty)")]
         elif route == "third_party" or (idx < loop_start and not preserve_prior):
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
         else:

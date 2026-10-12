@@ -1,6 +1,7 @@
 """Command diagnostics use the same selection and launch contract as setup."""
 
 import json
+import os
 from argparse import Namespace
 from pathlib import Path
 import shutil
@@ -192,3 +193,83 @@ def test_remedies_and_launcher_repairs_respect_install_owner(tmp_path, monkeypat
     else:
         assert not command.exists()
         assert "hermes pm repair" not in out
+
+
+def _exe(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _owned_tree(tmp_path, monkeypatch, stamp, project=None):
+    tree, home, command = _tree(tmp_path, monkeypatch)
+    project = project or tree
+    project.mkdir(parents=True, exist_ok=True)
+    (tree / ".install_method").unlink()
+    (project / "install-stamp.json").write_text(json.dumps(stamp), encoding="utf-8")
+    monkeypatch.setattr(doctor, "PROJECT_ROOT", project)
+    return project, home, command
+
+
+# A distro package as the AUR ships it: no venv/bin/hermes, its wrapper lives in /usr/bin.
+PACKAGE_STAMP = {"updateMechanism": "external", "distribution": "pacman", "payload": "bootstrap"}
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("leftover", ["stale", "foreign"])
+def test_owned_command_removes_only_this_trees_stale_launcher(tmp_path, monkeypatch, capsys, leftover):
+    project, home, command = _owned_tree(tmp_path, monkeypatch, PACKAGE_STAMP)
+    packaged = _exe(tmp_path / "usr" / "bin" / "hermes")
+    monkeypatch.setenv("PATH", os.pathsep.join((str(command.parent), str(packaged.parent))))
+    foreign = _exe(tmp_path / "other-checkout" / "hermes")
+    if leftover == "stale":
+        # What an older `hermes doctor --fix` published here: a launcher that shadows the package's.
+        _pm_source(project, home)
+        assert _launchers.stage_launcher("hermes", project, command.parent) == command
+    else:
+        command.symlink_to(foreign)
+
+    doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert ("stale Hermes launcher" in out) is (leftover == "stale")
+    assert ("points elsewhere" in out) is (leftover == "foreign")
+    assert "symlink" not in out
+    assert command.is_file()
+
+    doctor.run_doctor(Namespace(fix=True))
+
+    out = capsys.readouterr().out
+    if leftover == "stale":
+        assert not command.exists()
+        assert f"Hermes command managed by pacman ({packaged})" in out
+    else:
+        assert command.resolve() == foreign.resolve()
+        assert "Review ~/.local/bin/hermes manually" in out
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("owner", ["desktop-app", "its installer"])
+def test_owned_command_is_reported_never_published(tmp_path, monkeypatch, capsys, owner):
+    if owner == "desktop-app":
+        # A desktop payload whose app linked ~/.local/bin/hermes to the bundle's shim.
+        payload = tmp_path / "payload"
+        stamp = {"updateMechanism": "electron-updater", "distribution": "desktop-app", "payload": "bundled"}
+        _project, _home, command = _owned_tree(tmp_path, monkeypatch, stamp, payload / "repo")
+        command.symlink_to(_exe(payload / "bin" / "hermes"))
+    else:
+        stamp = {key: value for key, value in PACKAGE_STAMP.items() if key != "distribution"}
+        _project, _home, command = _owned_tree(tmp_path, monkeypatch, stamp)
+
+    doctor.run_doctor(Namespace(fix=True))
+
+    out = capsys.readouterr().out
+    assert "Fixed" not in out and "Created" not in out
+    if owner == "desktop-app":
+        assert f"Hermes command managed by desktop-app ({command})" in out
+        assert command.is_symlink()
+    else:
+        assert "Hermes command not on PATH (managed by its installer)" in out
+        assert "Reinstall Hermes with its installer" in out
+        assert not command.exists()

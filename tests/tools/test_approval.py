@@ -2171,7 +2171,7 @@ class TestApprovalYoloChoice:
              _patch.object(mod, "prompt_dangerous_approval", return_value="yolo"):
             decision = mod._human_decision(
                 mod._COMMAND_GATE, command="rm -rf /var/data", description="recursive delete",
-                pattern_key="rm -rf", pattern_keys=["rm -rf"], warnings=[],
+                pattern_key="rm -rf", pattern_keys=["rm -rf"],
                 session_key=session_key, approval_callback=None,
                 is_cli=True, is_gateway=False, is_ask=False, smart=True,
             )

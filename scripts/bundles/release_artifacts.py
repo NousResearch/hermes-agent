@@ -231,7 +231,12 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
     return result
 
 
-def materialize(manifest: dict, root: Path, *, public_base: str, store_only: bool = False) -> None:
+# Package payloads: receipt-bound by sha256, never needed on disk to write feeds.
+PACKAGE_SUFFIXES = (".dmg", ".zip", ".blockmap", ".msix", ".msixbundle", ".deb")
+
+
+def materialize(manifest: dict, root: Path, *, public_base: str, store_only: bool = False,
+                metadata_only: bool = False) -> None:
     validate_candidates(manifest, manifest["tag"], manifest["commit"], public_base,
                         archive=manifest["archive"])
     files = manifest.get("files", [])
@@ -241,9 +246,16 @@ def materialize(manifest: dict, root: Path, *, public_base: str, store_only: boo
     if any(by_url.get(row["artifact"]["url"]) != row["artifact"]["sha256"] for row in manifest["packages"]):
         raise ValueError("Package receipts differ from candidate file receipts")
     selected = [item for item in files if item["path"].startswith("Store-") and item["path"].endswith(".msixbundle")] if store_only else files
+    if metadata_only:
+        selected = [item for item in selected if not item["path"].endswith(PACKAGE_SUFFIXES)]
     if store_only and len(selected) != 1:
         raise ValueError("Expected one Store candidate")
-    for item in selected:
+    from scripts.releases.progress import log
+
+    total = sum(item.get("size", 0) for item in selected)
+    log(f"Materializing {len(selected)} candidate files ({total / 1e9:.1f} GB) into {root}")
+    for number, item in enumerate(selected, start=1):
+        log(f"  [{number}/{len(selected)}] {item['path']} ({item.get('size', 0) / 1e6:.0f} MB)")
         relative = Path(item["path"])
         if relative.is_absolute() or ".." in relative.parts or any(c in item["path"] for c in "\\:%?#") or item["path"].startswith("/") or "//" in item["path"]:
             raise ValueError("Invalid artifact path")
@@ -325,7 +337,9 @@ def publish_canary_appinstaller(root: Path, *, tag: str, variant: str, bundle: P
 def promote(manifest: dict, root: Path, public_base: str) -> None:
     from scripts.releases.r2 import put, finalize
 
-    materialize(manifest, root, public_base=public_base)
+    # Feeds need the per-arch feed legs and APT indexes, not the packages: those are
+    # bound by the accepted candidate's sha256 receipts.
+    materialize(manifest, root, public_base=public_base, metadata_only=True)
     windows = next(r for r in manifest["packages"] if r["platform"] == "windows")
     uri = f"{public_base.rstrip('/')}/releases/win32/stable/stable.appinstaller"
     appinstaller = root / "stable.appinstaller"
@@ -346,7 +360,7 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
     # macOS Intel is opt-in: without it the feed carries the arm64 leg alone.
     arches = tuple(arch for arch in ("arm64", "x64")
                    if any(row["platform"] == "macos" and row["arch"] == arch for row in manifest["packages"]))
-    finalize(tag=manifest["tag"], dir=root, archive=manifest["archive"], arches=arches)
+    finalize(tag=manifest["tag"], dir=root, archive=manifest["archive"], arches=arches, verify_bytes=False)
     def publish_pointer(key, file):
         put(tag=manifest["tag"], key=key, file=file, key_is_full=True)
         digest = hashlib.sha256()

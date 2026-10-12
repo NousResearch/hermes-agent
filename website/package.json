@@ -46,7 +46,7 @@
     "mermaid": "11.16.1",
     "image-size": "npm:@nous-research/image-size@2.0.3",
     "tar": "7.5.22",
-    "braces": "3.0.3",
+    "braces": "file:vendor/braces",
     "browserslist": "4.29.3",
     "compression": "1.8.2",
     "fast-uri": "3.1.8",

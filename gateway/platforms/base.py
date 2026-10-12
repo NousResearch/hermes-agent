@@ -1631,6 +1631,9 @@ class ExecApprovalPrompt:
     command: str
     description: str
     smart_denied: bool
+    # Set when the guardian could not run, so a renderer can say why it is asking at all. The
+    # notice is already inside ``text``; this is for adapters that render their own copy.
+    smart_unavailable: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
 
     @property
@@ -2798,19 +2801,29 @@ class BasePlatformAdapter(ABC):
         return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
 
     def _format_exec_approval(
-        self, command: str, description: Optional[str] = None, smart_denied: bool = False) -> str:
+        self, command: str, description: Optional[str] = None, smart_denied: bool = False,
+        smart_unavailable: Optional[str] = None) -> str:
         """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
         flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
-        platform-local. ``description=None`` renders the localized default reason."""
+        platform-local. ``description=None`` renders the localized default reason.
+
+        ``smart_unavailable`` announces a guardian that could NOT run. The fall-back to this
+        prompt is deliberate, so it adds no decision — only the reason the user is being asked,
+        which without it is indistinguishable from a model having judged the command."""
         if description is None:
             description = ea_default_reason_text()
         if self._EA_REASON_BUDGET:
             description = self._ea_fit(str(description or ""), self._EA_REASON_BUDGET)
         cmd_preview = self._ea_fit(
             str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
+        # Same wording as the plain-text fallback and the queued card's NOTE: diagnostic detail
+        # rather than locale copy (one string, every surface that speaks to the operator).
+        notice = (f"\nNOTE: smart approval could not run ({smart_unavailable}) — asking directly "
+                  f"instead of a model verdict." if smart_unavailable else "")
         text = (f"{self._EA_HEADER}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
                 f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
+                f"{self._ea_escape(notice)}"
                 f"{self._ea_deadline_line()}")
         return text + self._EA_SMART_DENY_LINE if smart_denied else text
 
@@ -2844,7 +2857,7 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, smart_unavailable: Optional[str] = None,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
@@ -2853,8 +2866,8 @@ class BasePlatformAdapter(ABC):
             description = ea_default_reason_text()
         prompt = ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
-            description=description, smart_denied=smart_denied,
-            text=self._format_exec_approval(command, description, smart_denied),
+            description=description, smart_denied=smart_denied, smart_unavailable=smart_unavailable,
+            text=self._format_exec_approval(command, description, smart_denied, smart_unavailable),
             actions=self._exec_approval_actions(
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
         return await self._send_exec_approval_prompt(prompt)

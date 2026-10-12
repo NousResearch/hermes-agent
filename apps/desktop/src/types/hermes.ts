@@ -812,6 +812,7 @@ export interface SessionResumeResult {
     description?: string
     request_id?: string
     smart_denied?: boolean
+    smart_unavailable?: string
   }
   // Server→client requests still unanswered for this session (clarify, sudo,
   // vault prompts, …). The shared channel re-delivers them to the request

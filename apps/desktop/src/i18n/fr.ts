@@ -5183,7 +5183,9 @@ export const frOverrides = {
       alwaysTitle: 'Toujours autoriser cette commande ?',
       alwaysDescription: pattern =>
         `Cela ajoute le motif « ${pattern} » à votre liste d'autorisation permanente (~/.hermes/config.yaml). Hermes ne redemandera plus pour ce type de commande — que ce soit dans cette session ou dans une session future.`,
-      alwaysAllow: 'Toujours autoriser'
+      alwaysAllow: 'Toujours autoriser',
+      smartUnavailable: reason =>
+        `L’approbation intelligente n’a pas pu s’exécuter (${reason}) — Hermes vous demande directement au lieu d’utiliser le verdict d’un modèle.`
     },
     clarify: frClarify,
     themePicker: frThemePicker,

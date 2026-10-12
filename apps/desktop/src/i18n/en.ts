@@ -4753,7 +4753,9 @@ export const en: Translations = {
       alwaysTitle: 'Always allow this command?',
       alwaysDescription: pattern =>
         `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
-      alwaysAllow: 'Always allow'
+      alwaysAllow: 'Always allow',
+      smartUnavailable: reason =>
+        `Smart approval could not run (${reason}) — asking you directly instead of a model verdict.`
     },
     clarify: enClarify,
     themePicker: enThemePicker,

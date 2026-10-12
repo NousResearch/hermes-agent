@@ -180,6 +180,8 @@ class ApprovalRequestParams(ServerRequestParams):
     allow_permanent: bool | None = None
     allow_session: bool | None = None
     smart_denied: bool | None = None
+    # Present only when the guardian could not run: the reason the gate is asking a human.
+    smart_unavailable: str | None = None
     tool_name: str | None = None
     session_id_hint: str | None = Field(default=None, alias="gateway_session_id")
     # The approval queue entry carries tool-specific context the card may render; the closed set

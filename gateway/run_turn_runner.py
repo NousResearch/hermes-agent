@@ -693,7 +693,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=ctx._status_thread_metadata,
+                        smart_unavailable=approval_data.get("smart_unavailable"), **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -752,7 +753,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"),
+                                            smart_unavailable=approval_data.get("smart_unavailable"),
+                                            **flags)
         try:
             # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
             # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.

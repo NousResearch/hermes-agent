@@ -1069,6 +1069,10 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
                 pattern_key=approval.get("pattern_key", ""),
                 smart_denied=approval.get("smart_denied", False),
                 allow_permanent=approval.get("allow_permanent", True),
+                # Propagate the degraded-state notice (present only when the guardian could not
+                # run) so the surface that renders this envelope can say WHY it is asking.
+                **({"smart_unavailable": approval["smart_unavailable"]}
+                   if approval.get("smart_unavailable") else {}),
             ))
         desc = approval.get("description", "command flagged")
         fallback_msg = (

@@ -9,10 +9,49 @@ Inspired by OpenAI Codex's Smart Approvals guardian subagent.
 """
 
 import logging
+import threading
 import time
 from tools import approval_context as _ctx
 
 logger = logging.getLogger("tools.approval")
+
+
+# ── Degradation notice ────────────────────────────────────────────────────────
+# When the guardian cannot run — the call raised, or it answered with an empty
+# body (an infrastructure failure, not a verdict) — the gate falls back to asking
+# a human. That fall-back is deliberate fail-safe behaviour and is NOT changed
+# here. What was missing is any way for the prompt to SAY that the smart verdict
+# is absent: without it an operator cannot tell "the guardian looked and was
+# unsure" from "the guardian never ran". The reason is held per-thread for the
+# duration of one assessment, read by the gate when it paints a prompt, and
+# cleared at the start of every attempt so a stale reason can never be attributed
+# to a later command.
+_UNAVAILABLE = threading.local()
+
+
+def clear_unavailable() -> None:
+    """Forget any recorded degradation. Called before each assessment."""
+    try:
+        _UNAVAILABLE.reason = None
+    except Exception:  # pragma: no cover - never break an approval path
+        pass
+
+
+def _mark_unavailable(reason: str) -> None:
+    try:
+        _UNAVAILABLE.reason = reason
+    except Exception:  # pragma: no cover
+        pass
+
+
+def unavailable_reason() -> str | None:
+    """Why the guardian could not decide, or None when it did run — including a
+    genuine ESCALATE verdict, which is a decision, not a degradation. Used only to
+    announce the degraded state; never to change one."""
+    try:
+        return getattr(_UNAVAILABLE, "reason", None)
+    except Exception:  # pragma: no cover
+        return None
 
 _SYSTEM_PROMPT = (
     "You are a security reviewer for an AI coding agent. You assess whether shell commands are safe to execute.\n\n"
@@ -91,6 +130,7 @@ def _smart_approve(command: str, description: str) -> str:
     Inspired by OpenAI Codex's Smart Approvals guardian subagent (openai/codex#13860).
     """
     _smart_t0 = time.monotonic()
+    clear_unavailable()
     try:
         from agent.auxiliary_client import _get_task_timeout, call_llm
 
@@ -136,6 +176,8 @@ def _smart_approve(command: str, description: str) -> str:
             finish_reason = getattr(response.choices[0], "finish_reason", None)
             logger.warning("Smart approvals: guardian returned an empty answer "
                            "(finish_reason=%s), escalating", finish_reason)
+            # Annotate the degradation so the prompt can say why it is asking.
+            _mark_unavailable(f"the guardian returned an empty answer (finish_reason={finish_reason})")
             return "escalate"
         return _VERDICTS.get(answer, "escalate")
     except Exception as e:
@@ -143,6 +185,7 @@ def _smart_approve(command: str, description: str) -> str:
         # the operator needs to see (the hang was invisible at DEBUG).
         logger.warning("Smart approvals: LLM call failed after %.1fs (%s: %s), escalating",
                        time.monotonic() - _smart_t0, type(e).__name__, e)
+        _mark_unavailable(f"{type(e).__name__}: {e}")
         return "escalate"
 
 

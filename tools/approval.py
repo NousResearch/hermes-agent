@@ -566,30 +566,37 @@ def _gateway_notify_cb(session_key: str):
 
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
-                    smart_denied: bool) -> dict:
+                    smart_denied: bool, smart_unavailable: str | None = None) -> dict:
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
-    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
+    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``.
+
+    ``smart_unavailable`` is set when the guardian could not run, so the queued card says WHY it is
+    asking; it does not change the outcome (the fall-back to a human is deliberate)."""
+    notice = (f"\n\nNOTE: smart approval could not run ({smart_unavailable}) — asking you directly "
+              f"instead of a model verdict.") if smart_unavailable else ""
     pending = {"command": command, "pattern_key": pattern_key}
     if spec.pending_keys:
         pending["pattern_keys"] = pattern_keys
     pending["description"] = description
     if smart_denied:
         pending.update(smart_denied=True, allow_permanent=False)
+    if smart_unavailable:
+        pending["smart_unavailable"] = smart_unavailable
     submit_pending(session_key, pending)
     if not spec.pending_keys:
         return {
             "approved": False, "pattern_key": pattern_key, "status": "approval_required",
             "command": command, "description": description,
             "message": (f"⚠️ This action is potentially dangerous ({description}). "
-                        f"Asking the user for approval.\n\n**Target:**\n```\n{command}\n```"),
+                        f"Asking the user for approval.{notice}\n\n**Target:**\n```\n{command}\n```"),
         }
     body = body or f"**Command:**\n```\n{command}\n```"
     result = {
         "approved": False, "pattern_key": pattern_key, "status": "pending_approval",
         "approval_pending": True, "command": command, "description": description,
         "message": (
-            f"⚠️ {description}. Asking the user for approval.\n\n{body}\n\n"
+            f"⚠️ {description}. Asking the user for approval.{notice}\n\n{body}\n\n"
             f"STOP: do NOT re-run, rephrase, or re-issue this {spec.noun} — each "
             "variant sends the user ANOTHER approval card. Wait for the "
             "user's decision; if this turn must end, report that approval is pending."
@@ -597,6 +604,8 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     }
     if smart_denied:
         result.update(smart_denied=True, allow_permanent=False)
+    if smart_unavailable:
+        result["smart_unavailable"] = smart_unavailable
     return result
 
 
@@ -763,10 +772,12 @@ _ACTION_GATE = _GateSpec(
 
 def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: str,
                 pattern_keys: list[str], session_key: str, *,
-                human_present: bool) -> tuple[dict | None, bool]:
-    """Guardian-LLM step -> ``(result, smart_denied_for_owner)``: a result ends the gate;
-    ``smart_denied_for_owner`` means an interactive owner may still override the DENY for this
-    one operation (once/deny only, nothing persists).
+                human_present: bool) -> tuple[dict | None, bool, str | None]:
+    """Guardian-LLM step -> ``(result, smart_denied_for_owner, degraded_reason)``: a result ends
+    the gate; ``smart_denied_for_owner`` means an interactive owner may still override the DENY
+    for this one operation (once/deny only, nothing persists); ``degraded_reason`` is set when the
+    guardian itself could not run (so the prompt can announce that, and why) and is None for every
+    real verdict, including a genuine ESCALATE. It never influences the decision.
 
     APPROVE approves this command only — pattern-level persistence would let one benign
     command suppress review of later commands in the same broad detector category. A DENY
@@ -774,15 +785,21 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     normal, potentially persistent manual behavior.
     """
     verdict = _smart_verdict(command, description, pattern_key, pattern_keys, session_key)
+    # A failure inside the guardian (the call raised, or it returned an empty body) is
+    # reported alongside the verdict so the prompt can ANNOUNCE the degraded state.
+    # It changes nothing about the decision: falling back to a human prompt when the
+    # guardian cannot run is deliberate fail-safe behaviour.
+    from tools.approval_smart import unavailable_reason as _unavailable_reason
+    degraded = _unavailable_reason()
     if verdict == "approve":
         _reset_denials(session_key)
         logger.debug(spec.smart_log.format(command=command[:60], description=description, session_key=session_key))
-        return {"approved": True, "message": None, "smart_approved": True, "description": description}, False
+        return {"approved": True, "message": None, "smart_approved": True, "description": description}, False, None
     if verdict != "deny":
-        return None, False
+        return None, False, degraded
     _record_denial(session_key)
     if human_present:
-        return None, True
+        return None, True, None
     return {
         # Unattended programmatic platforms (webhook/msgraph_webhook/ api_server): respect unattended_mode
         # config. Resolves instantly — never a pending approval nobody can answer (#37284, #87509).
@@ -790,7 +807,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
         "message": (f"BLOCKED by smart approval: {description}. The command was assessed as genuinely "
                     f"dangerous. Do NOT retry.{_denial_breaker_addendum(session_key)}"),
         "smart_denied": True,
-    }, True
+    }, True, None
 
 
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
@@ -806,9 +823,11 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     from agent.redact import redact_sensitive_text
 
     smart_denied = False
+    smart_unavailable = None
     if smart:
-        result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
-                                           session_key, human_present=is_cli or is_gateway or is_ask)
+        result, smart_denied, smart_unavailable = _smart_gate(
+            spec, command, description, pattern_key, pattern_keys,
+            session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
@@ -866,6 +885,11 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             }
             if smart_denied:
                 data["smart_denied"] = True
+            if smart_unavailable:
+                # Announce the degradation: the guardian could not run, so this is a human
+                # decision by default rather than by the model's judgement. Behaviour is
+                # unchanged — the fall-back to a prompt is deliberate.
+                data["smart_unavailable"] = smart_unavailable
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
@@ -901,6 +925,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
                 pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                smart_unavailable=smart_unavailable,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.

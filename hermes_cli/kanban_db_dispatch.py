@@ -2102,7 +2102,17 @@ def _dispatch_lane_task(
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
-            workspace, resolved_branch_name = _kbw._resolve_worktree_workspace(claimed, board=board)
+            try:
+                workspace, resolved_branch_name = _kbw._resolve_worktree_workspace(claimed, board=board)
+            except _kbw.WorktreeUnavailable as exc:
+                # No git repo to branch from: check whether this card should
+                # stay a worktree at all, and if not switch it to a plain
+                # workspace (dir at the named path, else scratch) rather than
+                # failing the spawn. Persisted, so later ticks agree.
+                workspace = _kbw.switch_task_off_worktree(
+                    conn, claimed, reason=str(exc), board=board
+                )
+                claimed.workspace_kind = "dir" if claimed.workspace_path else "scratch"
         else:
             workspace = _kbw.resolve_workspace(claimed, board=board)
     except Exception as exc:

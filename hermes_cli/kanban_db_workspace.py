@@ -26,6 +26,24 @@ if TYPE_CHECKING:
 _REMOVABLE_KINDS = ("scratch", "worktree")
 
 
+class WorktreeUnavailable(ValueError):
+    """A ``worktree``-kind task names a path with no git repo to branch from.
+
+    Not a fatal error: the dispatcher catches it and switches the task to a
+    plain workspace (``dir`` at the named path, else ``scratch``) so a builder
+    whose work is not in a git checkout still runs instead of blocking the
+    card. See :func:`switch_task_off_worktree`.
+    """
+
+    def __init__(self, task_id: str, path: str) -> None:
+        self.task_id = task_id
+        self.path = path
+        super().__init__(
+            f"task {task_id} worktree path {path!r} is not inside a git repo "
+            "and does not point at a git repo root"
+        )
+
+
 def _path_key(path: Path | str | None) -> str:
     """Unicode-form-insensitive identity for a filesystem path.
 
@@ -737,10 +755,10 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
             )
         repo_root = _git_toplevel(anchor)
         if repo_root is None:
-            raise ValueError(
-                f"task {task.id} has workspace_kind=worktree but board "
-                f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
-            )
+            # The board points at something that is not a git repo (the default
+            # board's /tmp, say): no branch is available, so let the dispatcher
+            # switch this card to a plain workspace instead of blocking it.
+            raise WorktreeUnavailable(task.id, board_default)
         return _anchored_worktree(repo_root, task.id, branch_name)
 
     requested = Path(task.workspace_path).expanduser()
@@ -776,12 +794,58 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
     if repo_root is None:
-        raise ValueError(
-            f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
-            "and does not point at a git repo root"
-        )
+        # No repo anywhere above the named path, and the path is not one: there
+        # is nothing to branch from. Hand it to the caller as a downgrade
+        # rather than failing the spawn — the card's work may simply not be in
+        # a git checkout. ``switch_task_off_worktree`` materializes it as dir.
+        raise WorktreeUnavailable(task.id, str(task.workspace_path))
     _ensure_git_worktree(repo_root, requested, branch_name)
     return requested, branch_name
+
+
+def switch_task_off_worktree(
+    conn: sqlite3.Connection, task: "Task", *, reason: str, board: Optional[str] = None
+) -> Path:
+    """Give a repo-less ``worktree`` task a plain workspace instead of failing.
+
+    Called by the dispatcher when :func:`_resolve_worktree_workspace` reports
+    :class:`WorktreeUnavailable`. A task that names a path keeps it (``dir``);
+    a task with no path gets ``scratch``. The downgrade is persisted so every
+    later tick resolves the same workspace, and recorded as an event so the
+    board shows why the card is not on a branch.
+    """
+    requested = (task.workspace_path or "").strip()
+    if requested:
+        kind = "dir"
+        path = Path(requested).expanduser()
+        if not path.is_absolute():
+            raise ValueError(
+                f"task {task.id} has non-absolute workspace_path "
+                f"{task.workspace_path!r}; use an absolute path "
+                f"(relative paths are ambiguous against the dispatcher's CWD)"
+            )
+    else:
+        kind = "scratch"
+        path = _kb.workspaces_root(board=board) / task.id
+    path.mkdir(parents=True, exist_ok=True)
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET workspace_kind = ?, workspace_path = ?, branch_name = NULL "
+            "WHERE id = ?",
+            (kind, str(path), task.id),
+        )
+        _kb._append_event(
+            conn, task.id, "workspace_downgraded",
+            {"from": "worktree", "to": kind, "path": str(path), "reason": reason},
+        )
+    try:
+        _kb._log.warning(
+            "kanban: task %s switched worktree -> %s at %s (%s)",
+            task.id, kind, path, reason,
+        )
+    except Exception:
+        pass
+    return path
 
 
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:

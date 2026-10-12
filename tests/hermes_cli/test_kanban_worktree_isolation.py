@@ -16,6 +16,7 @@ Two-part fix under test:
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -129,5 +130,133 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert head == "wt/sibling"
 
 
+def test_worktree_path_outside_a_repo_is_reported_as_unavailable(kanban_home, tmp_path):
+    """No repo above the named path: the resolver flags it for a downgrade
+    instead of claiming the path is a broken repo."""
+    plain = tmp_path / "not-a-repo" / "wt-target"
 
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="work outside git",
+            workspace_kind="worktree",
+            workspace_path=str(plain),
+        )
+        task = kb.get_task(conn, tid)
+
+    with pytest.raises(kbw.WorktreeUnavailable):
+        kbw._resolve_worktree_workspace(task)
+
+
+def test_worktree_without_a_repo_switches_to_a_plain_dir(kanban_home, tmp_path):
+    """The switch: a worktree task whose path has no repo becomes a dir task at
+    that path — same workspace the card named, no branch, recorded on the board."""
+    plain = tmp_path / "not-a-repo" / "wt-target"
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="work outside git",
+            workspace_kind="worktree",
+            workspace_path=str(plain),
+            branch_name="wt/ghost",
+        )
+        task = kb.get_task(conn, tid)
+        with pytest.raises(kbw.WorktreeUnavailable):
+            kbw._resolve_worktree_workspace(task)
+
+        workspace = kbw.switch_task_off_worktree(
+            conn, task, reason="no repo at the named path"
+        )
+        assert workspace == plain
+        assert plain.is_dir()
+
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_path, branch_name FROM tasks WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        assert (row["workspace_kind"], row["workspace_path"], row["branch_name"]) == (
+            "dir", str(plain), None,
+        )
+
+        # Re-resolving now takes the dir branch: stable across dispatcher ticks.
+        assert kbw.resolve_workspace(kb.get_task(conn, tid)) == plain
+
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id", (tid,)
+        ).fetchall()
+        downgrade = [e for e in events if e["kind"] == "workspace_downgraded"]
+        assert len(downgrade) == 1
+        assert json.loads(downgrade[0]["payload"])["to"] == "dir"
+
+
+def test_dispatch_switches_a_repo_less_worktree_card_to_a_plain_dir(
+    kanban_home, monkeypatch, all_assignees_spawnable,
+):
+    """End to end through the dispatcher: a worktree card whose (board-inherited)
+    path is not a git repo spawns as a ``dir`` card instead of blocking."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    non_repo = kanban_home / "not-a-repo"
+    non_repo.mkdir()
+    monkeypatch.setattr(
+        kbw._kb, "read_board_metadata", lambda *a, **k: {"default_workdir": str(non_repo)}
+    )
+
+    seen: list[tuple[str, str]] = []
+
+    def _fake_spawn(task, workspace, board=None):
+        seen.append((task.workspace_kind, str(workspace)))
+        return 0  # falsy pid: dispatch records no worker_pid
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="worktree, no repo", assignee="alice", workspace_kind="worktree",
+        )
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn)
+
+        assert seen, f"card was not spawned: {res.auto_blocked}"
+        assert seen[0] == ("dir", str(non_repo))
+        assert not res.auto_blocked
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_path, branch_name FROM tasks WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        assert (row["workspace_kind"], row["workspace_path"], row["branch_name"]) == (
+            "dir", str(non_repo), None,
+        )
+
+
+def test_board_default_workdir_that_is_not_a_repo_downgrades_to_scratch(
+    kanban_home, monkeypatch, all_assignees_spawnable,
+):
+    """A card with no path of its own (a decompose child, say) on a board whose
+    default_workdir is not a repo has nowhere to branch: it runs in scratch."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    non_repo = kanban_home / "not-a-repo"
+    non_repo.mkdir()
+    monkeypatch.setattr(
+        kbw._kb, "read_board_metadata", lambda *a, **k: {"default_workdir": str(non_repo)}
+    )
+
+    seen: list[tuple[str, str]] = []
+
+    def _fake_spawn(task, workspace, board=None):
+        seen.append((task.workspace_kind, str(workspace)))
+        return 0
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="worktree, no path", assignee="alice", workspace_kind="worktree",
+        )
+        conn.execute("UPDATE tasks SET workspace_path = NULL WHERE id = ?", (tid,))
+        conn.commit()
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn)
+
+        assert seen, f"card was not spawned: {res.auto_blocked}"
+        kind, workspace = seen[0]
+        assert kind == "scratch"
+        assert workspace == str(kb.workspaces_root() / tid)
+        assert not res.auto_blocked
 

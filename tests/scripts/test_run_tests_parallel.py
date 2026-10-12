@@ -63,7 +63,7 @@ def _pid_alive(pid: int) -> bool:
         # test is skipped on Windows so the path is unreachable.
         raise RuntimeError("_pid_alive POSIX-only")
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only, guarded above
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -170,7 +170,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
             }}))
             assert child.pid > 0
     """).strip()
-    probe.write_text(probe_src + "\n")
+    probe.write_text(probe_src + "\n", encoding="utf-8")
 
     # Run the parallel runner against just the probe file. The runner
     # discovers under ``tests/`` by default, so we override via --paths.
@@ -202,7 +202,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
     assert handoff.exists(), (
         f"probe never wrote handoff file; runner output:\n{proc.stdout}"
     )
-    handoff_data = json.loads(handoff.read_text())
+    handoff_data = json.loads(handoff.read_text(encoding="utf-8-sig"))
     grandchild_pid = handoff_data["pid"]
     diag = handoff_data.get("diag", "(no diag)")
     test_pid = handoff_data.get("test_pid")
@@ -577,6 +577,28 @@ def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: 
     assert "NO TESTS RAN" not in proc.stdout
 
 
+@pytest.mark.parametrize("rc", [0xC000012D, 0xC0000142, 0xC0000005])
+def test_ntstatus_exit_with_no_output_is_a_crash_not_no_tests_ran(rc: int) -> None:
+    """A Windows loader failure / native fault exit lands in the CRASHED bucket (#137198).
+
+    Windows reports these as a positive exit code with the NTSTATUS error
+    severity bits set and usually no output, so neither the faulthandler
+    banner nor the POSIX ``rc < 0`` signal path fired and the file was
+    billed as a collection/import error. Ordinary pytest exit codes must
+    stay uncrashed so real failures keep their own bucket.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "rtp_ntstatus", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
+    rtp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rtp)
+    synthesized = f"pytest child exited {rc} (0x{rc:08x}) with no output: tests/test_x.py\n"
+
+    assert f"0x{rc:08X}" in rtp._describe_interpreter_crash(rc, synthesized)
+    assert all(rtp._describe_interpreter_crash(code, "1 failed in 0.1s") is None for code in (1, 2, 3, 4))
+
+
 # ── --files-from: file-backed explicit file lists ───────────────────────────
 #
 # --files carries the whole list as ONE argv element, and Linux caps a
@@ -592,7 +614,7 @@ def test_files_from_runs_exactly_the_listed_files(tmp_path: Path) -> None:
     probe_dir = _make_probe_dir(tmp_path)
     extra = tmp_path / "probe_extra"
     extra.mkdir()
-    (extra / "test_extra.py").write_text("def test_extra():\n    assert True\n")
+    (extra / "test_extra.py").write_text("def test_extra():\n    assert True\n", encoding="utf-8")
 
     list_file = tmp_path / "files.txt"
     list_file.write_text(

@@ -149,7 +149,8 @@ def test_completion_pending_survives_public_exit_dequeue_and_busy_turn(delivery,
             raise RuntimeError("bounded test dispatch failure")
 
     monkeypatch.setattr(server, "_run_prompt_submit", accepted)
-    if settlement == "cli":
+
+    def settle_cli():
         from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
 
         class InputQueue(Queue):
@@ -164,7 +165,8 @@ def test_completion_pending_survives_public_exit_dequeue_and_busy_turn(delivery,
         registry._poll_observed.clear()
         consumer._drain_process_notifications("test")
         assert consumer._pending_input.qsize() == 1
-    elif settlement == "gateway":
+
+    def settle_gateway():
         from gateway.run import _drain_gateway_watch_events
         from gateway.run_notifications import GatewayNotificationsMixin
 
@@ -189,11 +191,11 @@ def test_completion_pending_survives_public_exit_dequeue_and_busy_turn(delivery,
         assert rows()[proc.id]["notification_pending"] is True
         accepting = True
         assert asyncio.run(runner._deliver_completion_notification("finished", evt)) is True
-    elif settlement in {"wait", "log", "kill"}:
-        {"wait": registry.wait, "log": registry.read_log, "kill": registry.kill_process}[settlement](proc.id)
-    elif settlement == "post_turn":
+
+    def settle_post_turn():
         server._run_post_turn_followups("test", "pending-ui", session, {}, None)
-    else:
+
+    def settle_poller():
         evt = registry.completion_queue.get(timeout=5)
         if settlement == "orphan":
             session["session_key"] = "another-owner"
@@ -201,6 +203,16 @@ def test_completion_pending_survives_public_exit_dequeue_and_busy_turn(delivery,
         server._notif_handle_ready("pending-ui", session, [evt], set(), registry,
                                    format_process_notification, [])
         session["session_key"] = "pending-owner"
+
+    settlement_handlers = {
+        "cli": settle_cli,
+        "gateway": settle_gateway,
+        "wait": lambda: registry.wait(proc.id),
+        "log": lambda: registry.read_log(proc.id),
+        "kill": lambda: registry.kill_process(proc.id),
+        "post_turn": settle_post_turn,
+    }
+    settlement_handlers.get(settlement, settle_poller)()
     assert rows()[proc.id]["notification_pending"] is False
     if settlement in {"poller", "post_turn"}:
         assert any(event[0] == "message.start" for event in events)

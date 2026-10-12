@@ -13,6 +13,7 @@ import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
+import { enSidebarRow } from './en_sidebar_row'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
@@ -3308,52 +3309,7 @@ export const en: Translations = {
     loadCount: step => `Load ${step} more`,
     messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
     toolCallCount: count => `${count} ${count === 1 ? 'tool call' : 'tool calls'}`,
-    row: {
-      pin: 'Pin',
-      unpin: 'Unpin',
-      markUnread: 'Mark as unread',
-      markRead: 'Mark as read',
-      unreadFailed: 'Could not update unread state',
-      copyId: 'Copy ID',
-      export: 'Export',
-      branchFrom: 'Branch',
-      rename: 'Rename…',
-      archive: 'Archive',
-      unarchive: 'Unarchive',
-      newWindow: 'New window',
-      openInTerminal: 'Open in terminal',
-      hideTabBar: 'Hide tab bar',
-      openInNewTab: 'Open in new tab',
-      openInSplit: 'Open in split',
-      copyIdFailed: 'Could not copy session ID',
-      sessionActions: 'Session actions',
-      sessionRunning: 'Session running',
-      needsInput: 'Needs your input',
-      waitingForAnswer: 'Waiting for your answer',
-      finishedUnread: 'Finished — unread',
-      backgroundRunning: 'Background task running',
-      activity: 'Monitoring',
-      draftSession: 'Draft — nothing sent yet',
-      handoffOrigin: platform => `Handed off from ${platform}`,
-      continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
-      ownedByProfile: profile => `Profile: ${profile}`,
-      renamed: 'Renamed',
-      renameFailed: 'Rename failed',
-      renameTitle: 'Rename session',
-      renameDesc: 'Leave empty to clear.',
-      untitledPlaceholder: 'Untitled session',
-      deleteTitle: 'Delete session?',
-      deleteDesc: title => `This will permanently delete “${title}”. This cannot be undone.`,
-      deleting: 'Deleting…',
-      deleted: 'Session deleted',
-      untitledChat: id => `Chat ${id}`,
-      messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
-      todoProgress: 'Tasks completed',
-      ageNow: 'now',
-      ageDay: 'd',
-      ageHour: 'h',
-      ageMin: 'm'
-    },
+    row: enSidebarRow,
     dateDivider: {
       today: 'Earlier today',
       yesterday: 'Yesterday',

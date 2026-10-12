@@ -70,6 +70,14 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack'], 
   )
 }
 
+function statusTitleTone(item: ComposerStatusItem, failed: boolean): string {
+  return failed
+    ? 'text-destructive/90'
+    : item.todoStatus && item.todoStatus !== 'in_progress'
+      ? 'text-muted-foreground/75'
+      : 'text-foreground/92'
+}
+
 interface StatusItemRowProps {
   item: ComposerStatusItem
   /** Render a retained, non-running task snapshot. */
@@ -126,16 +134,7 @@ export const StatusItemRow = memo(function StatusItemRow({
           ) : undefined
         }
       >
-        <span
-          className={cn(
-            'min-w-0 flex-1 truncate text-[0.73rem] leading-4',
-            failed
-              ? 'text-destructive/90'
-              : item.todoStatus && item.todoStatus !== 'in_progress'
-                ? 'text-muted-foreground/75'
-                : 'text-foreground/92'
-          )}
-        >
+        <span className={cn('min-w-0 flex-1 truncate text-[0.73rem] leading-4', statusTitleTone(item, failed))}>
           {item.title}
         </span>
         {item.type === 'subagent' && item.currentTool && (

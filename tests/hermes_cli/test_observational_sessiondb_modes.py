@@ -50,3 +50,24 @@ def test_doctor_write_probe_never_touches_a_store_a_live_writer_holds(monkeypatc
 
     assert probed[0] != state_db and probed[0].name == "state.db"
     assert probed[1] == state_db
+
+
+def test_doctor_live_snapshot_has_a_deadline_and_reports_inconclusive(monkeypatch, tmp_path, capsys):
+    import sqlite3
+
+    import hermes_state_holders
+    from hermes_cli import doctor_state
+    from hermes_cli.doctor_report import Finding
+
+    state_db = tmp_path / "state.db"
+    with sqlite3.connect(state_db) as conn:
+        conn.execute("CREATE TABLE sessions (id TEXT)")
+
+    monkeypatch.setattr(hermes_state_holders, "live_writer_holds_db", lambda *_a, **_k: True)
+    monkeypatch.setattr(doctor_state, "_WRITE_PROBE_SNAPSHOT_MAX_SECONDS", 0)
+    finding = Finding()
+    doctor_state._state_db_health(finding, False, state_db, "profile")
+
+    assert "write-health probe inconclusive" in capsys.readouterr().out
+    assert len(finding.issues) == 1
+    assert "retry in a quiet window" in finding.issues[0]

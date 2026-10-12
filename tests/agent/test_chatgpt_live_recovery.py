@@ -271,3 +271,47 @@ def test_auxiliary_auth_retry_cannot_recover_a_narrowed_terminal_plan_error(sess
     row = auth.read_credential_pool("openai-chatgpt")[0]
     assert row.get("last_status") in {None, "ok"}
     assert not row.get("cooldown_until")
+
+
+@pytest.mark.parametrize("status", [401, 503])
+def test_main_plan_failure_never_binds_a_configured_billing_fallback(session, status, monkeypatch):
+    from unittest.mock import Mock
+
+    _, requests, replies, _ = session
+    replies.extend(httpx.Response(status, json={"error": {"message": "Provider unavailable"}})
+                   for _ in range(30))
+    agent = _agent()
+    agent._fallback_chain = [{"provider": "openrouter", "model": "vendor/billed-model"}]
+    agent._auto_recovery_cycles = 0
+    bind = Mock(return_value=None)
+    monkeypatch.setattr("agent.route_binding.bind_route_entry", bind)
+    result = agent.run_conversation("Respond without changing billing route")
+    assert result.get("failed") is True, result
+    assert requests and all(r.url.host == "api.openai.com" for r in requests)
+    bind.assert_not_called()
+    assert agent.provider == "openai-chatgpt"
+    assert agent._fallback_index == 0
+
+
+def test_signed_out_plan_initialization_never_resolves_a_billing_fallback(session, monkeypatch):
+    from types import SimpleNamespace
+    from agent import auxiliary_client as aux
+    from agent.agent_init import _routed_client_kwargs
+    from agent.auxiliary_unavailable import ProviderNotConfiguredError
+
+    auth._save_auth_store({"version": 1})
+    original_resolve = aux.resolve_provider_client
+    calls = []
+
+    def resolve(provider, **kwargs):
+        calls.append(provider)
+        if provider == "openai-chatgpt":
+            return original_resolve(provider, **kwargs)
+        return SimpleNamespace(api_key="fixture-billed-key", base_url="https://openrouter.ai/api/v1"), "vendor/model"
+
+    monkeypatch.setattr(aux, "resolve_provider_client", resolve)
+    agent = SimpleNamespace(provider="openai-chatgpt", model="gpt-5.4", api_mode="codex_responses")
+    with pytest.raises(ProviderNotConfiguredError):
+        _routed_client_kwargs(agent, [{"provider": "openrouter", "model": "vendor/model"}], 30)
+    assert calls == ["openai-chatgpt"]
+    assert agent.provider == "openai-chatgpt"

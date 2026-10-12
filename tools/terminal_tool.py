@@ -762,12 +762,12 @@ def _get_env_config() -> dict[str, Any]:
         "ssh_user": _tenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": _tenv("TERMINAL_SSH_KEY", ""),
-        # Persistent shell: SSH defaults to the config-level persistent_shell
-        # setting; local is always opt-in. Per-backend env vars override.
+        # Exported env carries across commands (cwd always does). SSH follows
+        # terminal.persistent_shell; local has its own knob. Both default on.
         "ssh_persistent": _tenv_bool(
             "TERMINAL_SSH_PERSISTENT", _tenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ),
-        "local_persistent": _tenv_bool("TERMINAL_LOCAL_PERSISTENT", "false"),
+        "local_persistent": _tenv_bool("TERMINAL_LOCAL_PERSISTENT", "true"),
         # Container resources (MB); ignored for local/ssh.
         "container_cpu": container_cpu,
         "container_memory": container_memory,
@@ -1213,10 +1213,6 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
             new_env = _create_configured_env(
                 plan.config, env_type, image=plan.image, cwd=plan.cwd,
                 timeout=plan.effective_timeout, task_id=eff, host_cwd=plan.host_cwd,
-                local_config=(
-                    {"persistent": plan.config.get("local_persistent", False)}
-                    if env_type == "local" else None
-                ),
             )
         except ImportError as e:
             raise _Rejected(_error_json(

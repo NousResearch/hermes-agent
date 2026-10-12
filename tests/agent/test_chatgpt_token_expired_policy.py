@@ -40,6 +40,7 @@ def _agent(provider):
         _try_refresh_codex_client_credentials=Mock(return_value=False),
         _try_activate_fallback=Mock(return_value=True),
         _has_pending_fallback=lambda: True,
+        _get_transport=lambda: None,
     )
     agent._recover_with_credential_pool = lambda **kwargs: recover_with_credential_pool(agent, **kwargs)
     agent._disable_codex_reasoning_replay = Mock(
@@ -89,3 +90,26 @@ def test_explicit_policy_respects_terminal_gate_and_legacy_codex_keeps_replay_re
         assert "codex_reasoning_items" not in messages[0]
         assert "codex_reasoning_items" not in api_messages[0]
         agent._disable_codex_reasoning_replay.assert_called_once()
+
+
+def test_plan_token_expiry_preserves_reasoning_for_credential_recovery():
+    from agent.error_classifier import classify_api_error
+    from agent.turn_recovery import recover_after_classification
+
+    agent, retry = _agent("openai-chatgpt"), TurnRetryState()
+    messages = [{"role": "assistant", "content": "Prior answer", "codex_reasoning_items": [
+        {"type": "reasoning", "id": "rs_fixture", "encrypted_content": "fixture-reasoning"},
+    ]}]
+    original = deepcopy(messages)
+    api_messages = deepcopy(messages)
+    error = _ExpiredToken()
+    classified = classify_api_error(error, provider=agent.provider, model=agent.model)
+    assert recover_after_classification(
+        agent, error, classified, retry, status_code=401,
+        error_context=extract_api_error_context(error), messages=messages, api_messages=api_messages,
+    ) == (False, False)
+    assert messages == original and api_messages == original
+    assert retry.invalid_encrypted_content_retry_attempted is False
+    agent._disable_codex_reasoning_replay.assert_not_called()
+    agent._try_refresh_codex_client_credentials.assert_not_called()
+    agent._try_activate_fallback.assert_not_called()

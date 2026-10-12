@@ -1244,14 +1244,14 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     return manifest
 
 
-def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
+def _load_skills_snapshot(skills_dir: Path, manifest: Optional[dict] = None) -> Optional[dict]:
     """The disk snapshot if it exists, is current-version, and its manifest still matches."""
     try:
         snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8-sig"))
     except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
     if (isinstance(snapshot, dict) and snapshot.get("version") == _SKILLS_SNAPSHOT_VERSION
-            and snapshot.get("manifest") == _build_skills_manifest(skills_dir)):
+            and snapshot.get("manifest") == (manifest if manifest is not None else _build_skills_manifest(skills_dir))):
         return snapshot
     return None
 
@@ -1510,14 +1510,20 @@ def _build_skills_system_prompt_inner(
     # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
     # root — the snapshot manifest can't see them change, so they participate in the cache key.
     plugin_rows = _plugin_skill_prompt_rows(disabled, available_tools, available_toolsets, _platform_hint or None)
+    # Skill files are part of the key: another process (a hub install in a second terminal, the curator
+    # inside the gateway, a git pull of an external dir) never clears this process's LRU, so a key of
+    # config alone served the pre-change index to every running session until restart (#92313).
+    manifest = _build_skills_manifest(skills_dir)
+    files = frozenset((rel, *sig) for rel, sig in manifest.items())
+    files |= {(str(d), rel, *sig) for _, d in extra_roots for rel, sig in _build_skills_manifest(d).items()}
     cache_key = (
-        str(skills_dir), tuple((t, str(d)) for t, d in extra_roots),
+        str(skills_dir), tuple((t, str(d)) for t, d in extra_roots), files,
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
         _oneshot_prompt_variant(), tuple(plugin_rows),
     )
-    snapshot = _load_skills_snapshot(skills_dir)
+    snapshot = _load_skills_snapshot(skills_dir, manifest)
     app_gated = snapshot is not None and any(
         entry.get("requires_apps") for entry in snapshot.get("skills", []) if isinstance(entry, dict)
     )

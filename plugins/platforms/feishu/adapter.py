@@ -1917,8 +1917,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Image file not found: {image_path}")
         try:
             import io as _io
-            with open(image_path, "rb") as f:
-                image_file = _io.BytesIO(f.read())  # lark's MultipartEncoder needs .name and .tell()
+            image_file = _io.BytesIO(await asyncio.to_thread(Path(image_path).read_bytes))  # lark's MultipartEncoder needs .name and .tell()
             image_file.name = os.path.basename(image_path)
             body = self._build_image_upload_body(image_type=_FEISHU_IMAGE_UPLOAD_TYPE, image=image_file)
             request = self._build_image_upload_request(body)
@@ -3668,7 +3667,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         try:
             duration_ms = self._get_audio_duration_ms(file_path) if upload_file_type == "opus" else 0
-            with open(file_path, "rb") as file_obj:
+            with open(file_path, "rb") as file_obj:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                 body = self._build_file_upload_body(
                     file_type=upload_file_type, file_name=display_name, file=file_obj, duration=duration_ms,
                 )

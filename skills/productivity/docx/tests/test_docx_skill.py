@@ -43,7 +43,7 @@ def run(script: str, *args: str) -> dict:
     env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / script), *map(str, args)],
-        capture_output=True, env=env)
+        capture_output=True, env=env, check=False)
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
     return json.loads(proc.stdout.decode("utf-8"))
 
@@ -228,7 +228,7 @@ class TestTemplate:
         proc = subprocess.run(
             [sys.executable, str(SCRIPTS / "docx_template.py"), str(tpl),
              str(values), str(workdir / "out2.docx"), "--strict"],
-            capture_output=True, env=env)
+            capture_output=True, env=env, check=False)
         assert proc.returncode == 1
         payload = json.loads(proc.stdout.decode("utf-8"))
         assert payload["unfilled_tokens"] == ["gone"]
@@ -247,7 +247,7 @@ def run_raw(script: str, *args: str):
     env = dict(os.environ, LC_ALL="C", PYTHONIOENCODING="utf-8")
     return subprocess.run(
         [sys.executable, str(SCRIPTS / script), *map(str, args)],
-        capture_output=True, env=env)
+        capture_output=True, env=env, check=False)
 
 
 def _add_ins(para, rev_id: int, text: str, author="Editor"):

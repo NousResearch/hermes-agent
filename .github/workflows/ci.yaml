@@ -80,6 +80,7 @@ jobs:
       bootstrap: ${{ steps.gate-lanes.outputs.bootstrap }}
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
+      remote_backends: ${{ steps.gate-lanes.outputs.remote_backends }}
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
       e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
@@ -185,6 +186,16 @@ jobs:
     if: needs.detect.outputs.rust == 'true'
     uses: ./.github/workflows/rust-tests.yml
 
+  remote-backends:
+    name: Remote terminal backends
+    needs: detect
+    # The SSH and Docker terminal backends against a real sshd container and the
+    # runner's Docker daemon. Only PRs that touch the backends / terminal tool /
+    # their real tests start it (and every push to main); it runs in parallel with
+    # the other lanes and is required whenever detect selects it.
+    if: needs.detect.outputs.remote_backends == 'true'
+    uses: ./.github/workflows/remote-backends.yml
+
   bootstrap-installer:
     name: Bootstrap installer
     needs: detect
@@ -282,6 +293,11 @@ jobs:
     needs: detect
     uses: ./.github/workflows/case-collision-check.yml
 
+  blob-size-check:
+    name: Check no large binaries
+    needs: detect
+    uses: ./.github/workflows/blob-size-check.yml
+
   lazy-deps-guard:
     name: No production imports of the tools.lazy_deps stub
     needs: detect
@@ -292,6 +308,14 @@ jobs:
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
     uses: ./.github/workflows/lockfile-diff.yml
+
+  # Advisory summary of the committed prompt-surface snapshot's diff. A stdlib-only job over two
+  # committed directories: cheap enough to run on every Python PR, and silent when nothing moved.
+  prompt-surface-diff:
+    name: Prompt surface diff
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.python == 'true'
+    uses: ./.github/workflows/prompt-surface-diff.yml
 
   docker-lint:
     name: Lint Docker scripts
@@ -317,7 +341,7 @@ jobs:
   #   by detect.outputs must succeed; only unselected consumers may skip.
   #   Release (inputs.release): strict — every required job must be
   #   `success`. A skipped required lane fails the gate; only the PR-only
-  #   jobs (history-check, lockfile-diff, supply-chain) and
+  #   jobs (history-check, lockfile-diff, prompt-surface-diff, supply-chain) and
   #   the deferred Desktop E2E (e2e-desktop) may skip. The OSV scan's
   #   findings are advisory, but its execution is required.
   #
@@ -343,6 +367,7 @@ jobs:
       - lint
       - js-tests
       - rust-tests
+      - remote-backends
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core
@@ -353,8 +378,10 @@ jobs:
       - uv-lockfile
       - infographic-check
       - case-collision-check
+      - blob-size-check
       - lazy-deps-guard
       - lockfile-diff
+      - prompt-surface-diff
       - docker-lint
       - profile-artifact-check
       - icons-freshness-check

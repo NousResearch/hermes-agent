@@ -1816,30 +1816,31 @@ def tool_error_class(kwargs: dict[str, Any], outcome: str | None = None) -> str:
     return _TOOL_ERROR_TYPES.get(error_type, "exception" if error_type else "unknown")
 
 
-# The tool gateway's execute codes (product family: the user or the model can fix it; backend: the
-# gateway or the vendor failed). An unlisted code falls back to its family.
+# The tool gateway's execute codes (``tools.connectors.gateway.wire.EXECUTE_ERROR_CODES``) by class;
+# a code not listed here keeps ``tool_error`` unless its family is backend.
 _CONNECTOR_CODE_CLASSES = {
     **dict.fromkeys(("CONNECTION_REQUIRED", "CONNECTION_EXPIRED"), "connection_required"),
     "TOOL_NOT_ALLOWED": "not_allowed",
     **dict.fromkeys(("ALIAS_REQUIRED", "ALIAS_UNKNOWN"), "alias"),
     "INVALID_ARGUMENTS": "invalid_arguments",
-    **dict.fromkeys((
-        "PROVIDER_ERROR", "PROVIDER_RATE_LIMITED", "PROVIDER_TIMEOUT", "POLICY_UNAVAILABLE", "GATEWAY_ERROR",
-    ), "connector_backend"),
 }
 _CONNECTOR_FAMILY_CLASSES = {"backend": "connector_backend"}
 
 
 def connector_error_class(kwargs: dict[str, Any]) -> str | None:
-    """The class of a failed connector entry from its result's ``error.code`` (``error.family`` for an
-    unlisted code); None when the call is not a connector call or its result names no code."""
+    """The class of a failed connector entry from its result's ``error.code``; None when the call is
+    not a connector call or its result names no code."""
     if not _norm(kwargs.get("tool_name")).startswith(CONNECTOR_NAME_PREFIX):
         return None
     error = _result_error(kwargs.get("result"))
     code = str(error.get("code") or "").strip().upper()
     if not code:
         return None
-    return _CONNECTOR_CODE_CLASSES.get(code) or _CONNECTOR_FAMILY_CLASSES.get(_norm(error.get("family")))
+    # Late import: the wire module pulls pydantic, which the contract does not need at import.
+    from tools.connectors.gateway.wire import execute_error_family
+
+    family = execute_error_family(code, error.get("family") if isinstance(error.get("family"), str) else None)
+    return _CONNECTOR_FAMILY_CLASSES.get(family or "") or _CONNECTOR_CODE_CLASSES.get(code)
 
 
 def _result_error(result: Any) -> dict[str, Any]:

@@ -154,6 +154,37 @@ describe('readProjectDir', () => {
     expect(result.entries.map(entry => entry.name)).toEqual(['src'])
   })
 
+  it('reveals revealable hygiene entries (out, vendor, coverage) when the root opted in (#55169)', async () => {
+    setShowIgnoredFiles('/repo', true)
+    readDir.mockResolvedValue(
+      ok([
+        { name: '.git', path: '/repo/.git', isDirectory: true },
+        { name: 'coverage', path: '/repo/coverage', isDirectory: true },
+        { name: 'out', path: '/repo/out', isDirectory: true },
+        { name: 'src', path: '/repo/src', isDirectory: true },
+        { name: 'vendor', path: '/repo/vendor', isDirectory: true }
+      ])
+    )
+
+    const result = await readProjectDir('/repo', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['coverage', 'out', 'src', 'vendor'])
+  })
+
+  it('keeps revealable hygiene entries hidden when the root has not opted in', async () => {
+    readDir.mockResolvedValue(
+      ok([
+        { name: 'coverage', path: '/repo/coverage', isDirectory: true },
+        { name: 'out', path: '/repo/out', isDirectory: true },
+        { name: 'src', path: '/repo/src', isDirectory: true }
+      ])
+    )
+
+    const result = await readProjectDir('/repo', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['src'])
+  })
+
   it('opting one root in leaves other roots filtered', async () => {
     setShowIgnoredFiles('/repo', true)
     gitRoot.mockResolvedValue('/other')

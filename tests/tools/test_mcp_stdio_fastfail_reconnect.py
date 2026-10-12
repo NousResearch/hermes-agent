@@ -30,7 +30,7 @@ from unittest.mock import MagicMock
 import pytest
 
 pytest.importorskip("mcp")
-from tools import mcp_tool_loop as _mcp_loop  # noqa: E402
+from tools import mcp_tool_loop as _mcp_loop
 
 
 def _success_result():

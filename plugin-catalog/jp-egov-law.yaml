@@ -1,0 +1,20 @@
+name: jp-egov-law
+repo: https://github.com/TakeshiTGAL/hermes-plugin-egov-law
+sha: 765ec577992ccf7f61c7467e2332740f5b8b347d
+description: |-
+  Japanese laws for Hermes Agent, built on the e-Gov Law API: find a law by name, abbreviation or phrase, read one article as in force today or on a given date, and check amendment history and enforcement dates, with the source credit e-Gov's terms ask for. Disclosure — sends the law names, article numbers, dates and search phrases you look up to laws.e-gov.go.jp (public API, no key); no other host, nothing written to disk. Registers blueprint jp-egov-law:weekly-amendments and does not create a cron job. When you create a job from that blueprint, one model turn runs once a week (default Mon 09:00, Hermes tz or the host clock if unset, not converted to Japan). A turn that calls a tool is at least two model requests, and there is no daily cap. The agent can schedule it, and scheduling it twice creates two jobs. Silence is not "no amendment". Uninstall leaves the cron until hermes cron remove. Tools stay on every platform, including gateways (a guest can call them; hermes tools disables one). v0.21.4 and v0.21.5 load the tools and skip the blueprint.
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-egov-law#readme
+version: "0.1.1"
+requires_hermes: ">=0.21.4"
+platforms: []
+capabilities:
+  provides_tools:
+  - egov_law_search
+  - egov_law_article
+  - egov_law_revisions
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

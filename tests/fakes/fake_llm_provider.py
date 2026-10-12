@@ -32,6 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Union
 
+from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
+
 MODEL_ID = "fake-model"
 
 
@@ -110,7 +112,7 @@ class Raw:
     content_type: str = "application/json"
 
 
-Response = Union[Text, ToolCall, Error, Hang, DropMidStream, StallMidStream, Raw]
+Response = Text | ToolCall | Error | Hang | DropMidStream | StallMidStream | Raw
 Responder = Callable[[dict[str, Any]], Response]
 
 
@@ -151,7 +153,7 @@ class FakeLLMServer:
         self._tool_seq = 0
 
     # lifecycle
-    def __enter__(self) -> "FakeLLMServer":
+    def __enter__(self) -> FakeLLMServer:
         self.start()
         return self
 
@@ -231,7 +233,7 @@ def _handler_for(server: FakeLLMServer) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             if server.record_get:
                 with server._lock:
                     server.requests.append({
@@ -245,7 +247,7 @@ def _handler_for(server: FakeLLMServer) -> type[BaseHTTPRequestHandler]:
                 return
             self._send_json(404, {"error": {"message": "not found"}})
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
             try:
                 body = json.loads(raw or b"{}")
@@ -430,6 +432,13 @@ def write_hermes_home(
         "  context_length: 128000\n"
         "agent:\n"
         "  api_max_retries: 1\n"
+        # Answered at the current offer version, so an interactive chat never stops on the
+        # shared-metrics offer (a "No thanks" without offer_version is re-asked).
+        "telemetry:\n"
+        "  shared_metrics:\n"
+        "    enabled: false\n"
+        "    send: false\n"
+        f"    offer_version: {OFFER_VERSION}\n"
         + extra_config,
         encoding="utf-8",
     )

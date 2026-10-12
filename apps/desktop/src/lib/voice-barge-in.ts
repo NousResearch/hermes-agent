@@ -24,6 +24,7 @@
 //   trigger) so intra-word energy dips don't reset progress.
 
 import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
+import { $voiceSilenceMs } from '@/store/voice-prefs'
 
 const CALIBRATION_MS = 400
 const SUSTAINED_MS = 300
@@ -41,7 +42,10 @@ const PLAYBACK_GRACE_MS = 500
 const PLAYBACK_GAP_FOR_GRACE_MS = 1_000
 const FLOOR_SAMPLE_CAP = 200 // ~3s of quiet-phase levels at rAF cadence
 const PRE_ROLL_RESTART_MS = 5_000 // cap pre-roll: restart the recorder while quiet
-const UTTERANCE_SILENCE_MS = 1_250 // matches the voice loop's silenceMs
+// The utterance endpoint shares the voice loop's `silenceMs` ($voiceSilenceMs,
+// seeded from `voice.silence_duration`) so barge-in capture ends on the same
+// silence window the loop uses; read live per frame so a config refresh
+// mid-turn keeps the two matched.
 const UTTERANCE_MAX_MS = 30_000
 
 export interface BargeMonitorCallbacks {
@@ -347,7 +351,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
             quietSince ??= now
           }
 
-          if ((quietSince && now - quietSince >= UTTERANCE_SILENCE_MS) || now - trippedAt >= UTTERANCE_MAX_MS) {
+          if ((quietSince && now - quietSince >= $voiceSilenceMs.get()) || now - trippedAt >= UTTERANCE_MAX_MS) {
             finishCapture()
 
             return

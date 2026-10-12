@@ -78,7 +78,7 @@ def _visible_once(tui: TmuxTui, needles: list[str]) -> str:
 def _scenario(root, victim) -> object:
     command = f"for i in $(seq -w 1 {len(TOOL_LINES)}); do echo tout$i; sleep 0.3; done"
     script = [
-        ToolCall("clarify", {"question": QUESTION, "choices": ["red", "blue"]}), Text(REPLIES["c1"]),
+        ToolCall("clarify", {"questions": [{"question": QUESTION, "choices": ["red", "blue"]}]}), Text(REPLIES["c1"]),
         ToolCall("terminal", {"command": f"rm -rf {victim}"}), Text(REPLIES["a1"]),
         ToolCall("terminal", {"command": command}), Text(REPLIES["t1"]),
     ]
@@ -98,18 +98,18 @@ def _scenario(root, victim) -> object:
         cells.phase = "clarify"
         # 1. clarify card open across a shrink and a grow, answered afterwards.
         tui.submit("pick a colour mq1")
-        tui.wait_for("quick pick")
+        tui.wait_for("1. red")
         for cols in (90, 130):
             tui.resize(cols)
             tui.wait_quiet(1.0)
         cells.add("clarify_card_survives_resize",
-                  _visible_once(tui, [f"ask {QUESTION}", "1. red", "2. blue"]), tui.dump())
+                  _visible_once(tui, ["ask 1 question", f"▸ {QUESTION}", "1. red", "2. blue"]), tui.dump())
         tui.key("Down")
         tui.wait_for(lambda t: "▸ 2. blue" in t, history=False)
         tui.key("Enter")
         tui.wait_replies(1)
         results = _tool_results(llm)
-        answer = json.loads(results[0]).get("user_response") if results else None
+        answer = json.loads(results[0])["responses"][0]["user_response"] if results else None
         cells.add("clarify_answer_reaches_tool", "" if answer == "blue" else f"tool result {results[:1]}")
         tui.wait_quiet(1.0)
         n = tui.text().count(f'Clarify("{QUESTION}")')

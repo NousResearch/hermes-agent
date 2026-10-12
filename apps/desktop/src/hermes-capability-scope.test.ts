@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { approvePairing, getMessagingPlatforms } from './api/messaging'
 import { getAuxiliaryModels, getGlobalModelInfo } from './api/models'
 import { getOfficialSkills, getSkillHubSources } from './api/skills'
-import { getToolsetConfig } from './api/toolsets'
+import { getTerminalBackends, getToolsetConfig, selectTerminalBackend } from './api/toolsets'
 import {
   getHermesConfigRecord,
   getMcpCatalog,
@@ -76,6 +76,30 @@ describe('capability helpers are connection-scoped', () => {
 
     expect(last().profile).toBe('coder')
     expect(last().connectionId).toBe('gw-tailscale')
+  })
+
+  it('routes terminal backend reads and writes through the rendered capability scope', () => {
+    setApiRequestProfile('stale-sidebar-profile')
+    setApiRequestConnection('gw-tailscale')
+
+    for (const profile of ['research', 'coder', 'research']) {
+      void getTerminalBackends(profile)
+      expect(last()).toMatchObject({
+        connectionId: 'gw-tailscale',
+        path: '/api/tools/terminal/backends',
+        priority: 'foreground',
+        profile
+      })
+
+      void selectTerminalBackend('docker', { connectionId: 'homelab', profile })
+      expect(last()).toMatchObject({
+        body: { backend: 'docker' },
+        connectionId: 'homelab',
+        method: 'PUT',
+        path: '/api/tools/terminal/backend',
+        profile
+      })
+    }
   })
 
   it('marks an explicitly scoped Settings / Capabilities read as foreground (#111651)', () => {

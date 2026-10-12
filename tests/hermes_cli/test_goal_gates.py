@@ -243,3 +243,82 @@ def test_no_gates_behaves_exactly_as_before():
     mock_judge.assert_called_once()
     assert decision["verdict"] == "continue"
     assert decision["should_continue"] is True
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Gate working directory (#125369)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def backend_and_session(tmp_path, monkeypatch):
+    """A backend started in a project whose check passes, serving a session whose check fails."""
+    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+
+    backend, session = tmp_path / "backend", tmp_path / "session"
+    for folder, code in ((backend, 0), (session, 1)):
+        folder.mkdir()
+        (folder / "check.sh").write_text(f"pwd\nexit {code}\n", encoding="utf-8")
+    monkeypatch.chdir(backend)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    def bind(cwd):
+        token = set_session_cwd(str(cwd))
+        return lambda: reset_session_cwd(token)
+
+    return backend, session, bind
+
+
+def _evaluate_with_done_judge(mgr):
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "all good", False, None, False)) as judge:
+        return mgr.evaluate_after_turn("ready"), judge
+
+
+def test_gate_runs_in_the_session_workspace_not_the_backend_directory(backend_and_session):
+    _backend, session, bind = backend_and_session
+    mgr = _mgr_with_goal("gate-cwd-sid")
+    mgr.add_gate("sh check.sh")
+    unbind = bind(session)
+    try:
+        decision, judge = _evaluate_with_done_judge(mgr)
+    finally:
+        unbind()
+    judge.assert_not_called()
+    assert decision["verdict"] == "gate_failed"
+    assert mgr.state.gates[0].last_exit_code == 1
+    assert str(session.resolve()) in mgr.state.gates[0].last_output_tail
+
+
+def test_missing_session_workspace_pauses_instead_of_running_elsewhere(backend_and_session, tmp_path):
+    # A deleted, remote or container workspace: the backend's passing check must not stand in for it,
+    # and no retry can fix it, so the goal pauses on the first check with the reason and no attempt charged.
+    _backend, _session, bind = backend_and_session
+    missing = tmp_path / "gone"
+    mgr = _mgr_with_goal("gate-missing-cwd-sid")
+    mgr.add_gate("sh check.sh")
+    unbind = bind(missing)
+    try:
+        with patch("hermes_cli.goals.run_gate") as run:
+            decision, judge = _evaluate_with_done_judge(mgr)
+    finally:
+        unbind()
+    run.assert_not_called()
+    judge.assert_not_called()
+    assert decision["status"] == "paused" and decision["should_continue"] is False
+    assert str(missing) in decision["message"] and "still failing" not in decision["message"]
+    assert str(missing) in (mgr.state.paused_reason or "")
+    gate = mgr.state.gates[0]
+    assert (gate.attempts, gate.last_exit_code) == (0, None)
+
+
+def test_gate_without_a_session_workspace_keeps_the_launch_directory(backend_and_session):
+    from agent.runtime_cwd import clear_session_cwd
+
+    backend, _session, _bind = backend_and_session
+    clear_session_cwd()
+    mgr = _mgr_with_goal("gate-launch-cwd-sid")
+    mgr.add_gate("sh check.sh")
+    decision, judge = _evaluate_with_done_judge(mgr)
+    judge.assert_called_once()
+    assert decision["verdict"] == "done"
+    assert str(backend.resolve()) in mgr.state.gates[0].last_output_tail

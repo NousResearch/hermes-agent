@@ -51,6 +51,13 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
 
   if (isConnectionRequestEvent(event)) {
+    // An interrupted/deleted session's runtime has no turn left to consent to a
+    // connection; the backend withdraws its request on the same boundary. Drop
+    // the frame rather than parking a stale consent card (#75587).
+    if (sessionId && deps.sessionInterrupted(sessionId)) {
+      return true
+    }
+
     // Park per-session and upsert a stable tool row so the card renders even if tool.start was missed.
     const request = normalizeConnectionRequest(event.payload, sessionId ?? null)
 

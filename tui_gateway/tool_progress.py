@@ -70,7 +70,7 @@ def _fmt_tool_duration(seconds: float | None) -> str:
         return f"{seconds:.1f}s"
     if seconds < 60:
         return f"{round(seconds)}s"
-    mins, secs = divmod(int(round(seconds)), 60)
+    mins, secs = divmod(round(seconds), 60)
     return f"{mins}m {secs}s" if secs else f"{mins}m"
 
 
@@ -288,7 +288,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         # A preview prepared for an earlier call whose completion never fired (failed
         # flush) must not attach to a provider that reuses the same call id.
         session.setdefault("tool_result_metadata", {}).pop(tool_call_id, None)
-    if (_process_tool_chrome_enabled(sid) or _tool_lifecycle_required_for_ui(name)
+    if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
             or _connector_tool_lifecycle(name, args)):
         payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
         if (labels := _tool_labels(name, args)) is not None:
@@ -356,7 +356,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
-    if (_process_tool_chrome_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
+    if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or is_todo_tool_name(name) or _connector_tool_lifecycle(name, args)
             or _tool_result_needs_user(result)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
@@ -371,8 +371,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
 # the stable id and args; an id-less duplicate row makes the desktop live view diverge from history.
 
 def _progress_output_risk(sid, name, preview, kw):
+    # A risk badge on a tool row: tool chrome, so it follows display.tool_progress.
     metadata = kw.get("risk_metadata")
-    if isinstance(metadata, dict):
+    if isinstance(metadata, dict) and _tool_progress_enabled(sid):
         _emit("tool.output_risk", sid, {
             "tool_id": str(kw.get("tool_call_id") or ""), "name": str(name), "risk": str(metadata.get("risk") or "low"),
             "findings": [str(item) for item in metadata.get("findings", [])], "redacted": bool(metadata.get("redacted", False)),
@@ -468,7 +469,11 @@ def _progress_subagent(sid: str, name: str, preview, kw, event_type):
     # (keyed off the child sid); on the parent it's hundreds of ignored frames, so skip it.
     if event_type != "subagent.text":
         _emit(event_type, sid, payload)
-    _mirror_subagent_to_child(event_type, payload)
+    # The child runs under the PARENT's profile: the mirror and its liveness registry are scoped to
+    # that home. A parent record already gone (close / WS orphan reap mid-turn) cannot be attributed
+    # to a profile — bind nothing rather than fold the run into the launch profile.
+    if (parent := _sessions.get(sid)) is not None:
+        _mirror_subagent_to_child(event_type, payload, parent.get("profile_home"))
 
 
 # event_type -> (handler, requires): `requires` names the arg that must be truthy for the row to be
@@ -494,8 +499,8 @@ def _on_tool_progress(
     # tool-progress chrome: it must survive display.tool_progress=off like todo.updated does.
     if event_type.startswith("subagent."):
         return _progress_subagent(sid, name, preview, _kwargs, event_type)
-    if not _tool_progress_enabled(sid):
-        return
+    # No blanket tool_progress gate here: reasoning.available and moa.* are reasoning
+    # content that follow display.show_reasoning in their own handlers.
     handler, requires = _PROGRESS_HANDLERS.get(event_type, (None, None))
     if handler is not None and (requires is None or {"name": name, "preview": preview}[requires]):
         handler(sid, name, preview, _kwargs)

@@ -264,7 +264,7 @@ def _failed_from_exception(exc: BaseException) -> Failed:
     return Failed(reason=reason, detail=str(exc), retry_after=float(err.retry_after or 0.0))
 
 
-def _outcome_state(outcome: Dict[str, Any], anon_token: str) -> SignInState:
+def _outcome_state(outcome: dict[str, Any], anon_token: str) -> SignInState:
     """The one reason -> state mapping in the tree, for a promotion that did not complete.
 
     A retiring outcome clears the dead identity here, pinned to the token this attempt started
@@ -340,7 +340,7 @@ def run_sign_in(
     # from: with none on disk there is nothing to promote and the answer is ``Unavailable`` (the boot
     # bootstrap is the only creator, NS-845 Q1.2).
     precondition_state: Optional[SignInState] = None
-    state: Optional[Dict[str, Any]] = None
+    state: Optional[dict[str, Any]] = None
     try:
         with open_scope():
             state = _core.current_nous_state()
@@ -360,8 +360,8 @@ def run_sign_in(
     anon_token = str(state.get("anon_token") or "")
     portal = (state.get("portal_base_url") or _core._portal_base_url()).rstrip("/")
 
-    outcome: Dict[str, Any] = {}
-    account_state: Optional[Dict[str, Any]] = None
+    outcome: dict[str, Any] = {}
+    account_state: Optional[dict[str, Any]] = None
     try:
         pconfig = PROVIDER_REGISTRY["nous"]
         client_id, scope_str = pconfig.client_id, pconfig.scope
@@ -426,7 +426,10 @@ def run_sign_in(
         yield Retired()
         return
     except TimeoutError as exc:
-        yield TimedOut(detail=str(exc))
+        # The code ran out while the token endpoint kept failing (``_poll_device_token_generic`` sets
+        # the cause): the service was unreachable, not a sign-in left unapproved.
+        outage = exc.__cause__ if isinstance(exc.__cause__, ConnectionError) else None
+        yield _failed_from_exception(outage) if outage else TimedOut(detail=str(exc))
         return
     except Exception as exc:
         yield _failed_from_exception(exc)

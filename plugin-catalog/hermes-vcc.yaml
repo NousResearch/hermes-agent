@@ -1,0 +1,17 @@
+name: hermes-vcc
+repo: https://github.com/agentbox-tech/hermes-vcc
+sha: 72a765b8fdf2af4c830c01ac995fc514e05ae4f2
+subdir: engine
+description: "Algorithmic (no-LLM) context compaction engine: replaces the summary LLM call with deterministic regex extraction (port of pi-vcc), producing zero-token, byte-reproducible summaries inside the built-in ContextCompressor; compacted turns stay searchable via session_search with (#N) DB-row refs. Disclosure — no network calls, no env vars, no secrets, no tools/hooks/middleware registered (v0 ships zero engine tools); reads only the turns the host hands it at compaction; debug: true (default false) additionally writes $HERMES_HOME/vcc-debug.json; no telemetry; Derived from pi-vcc (MIT, sting8k), ported to the Hermes context-engine seam"
+maintainer: rain-sk
+tier: community
+category: memory
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/agentbox-tech/hermes-vcc
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

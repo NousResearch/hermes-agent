@@ -30,8 +30,10 @@ NORMAL_TIER_WORDS = frozenset({"", "normal", "default", "standard", "off", "none
 # on CLI / gateway / TUI) parses through, so a new tier is one edit.
 SERVICE_TIER_WORDS: dict[str, str] = {
     "fast": "priority", "priority": "priority", "on": "priority",
-    "ultrafast": "ultrafast", "auto": "auto", "cold": "cold",
+    "ultrafast": "ultrafast", "ultra": "ultrafast", "auto": "auto", "cold": "cold",
 }
+# Typed /fast shorthands -> canonical /fast word (pickers always send the canonical value).
+FAST_ARG_ALIASES: dict[str, str] = {"ultra": "ultrafast"}
 
 
 def parse_service_tier(raw: Any) -> str | None:

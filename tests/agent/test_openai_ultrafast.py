@@ -103,7 +103,7 @@ def test_cli_refuses_ultrafast_on_a_model_without_it(monkeypatch):
     cli_mod.HermesCLI._handle_fast_command(stub, "/fast ultrafast")
     assert stub.service_tier == "priority"
     stub.model = stub.agent.model = "gpt-6-astra"
-    cli_mod.HermesCLI._handle_fast_command(stub, "/fast ultrafast")
+    cli_mod.HermesCLI._handle_fast_command(stub, "/fast ultra")  # typed shorthand
     assert stub.service_tier == "ultrafast"
 
 

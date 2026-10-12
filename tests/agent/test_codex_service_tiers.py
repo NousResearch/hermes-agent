@@ -110,3 +110,31 @@ def test_catalog_ceiling_unknown_expiry_and_route_isolation(monkeypatch):
     assert tiers._advertised_tiers({"service_tiers": [], "additional_speed_tiers": ["fast"]}) == frozenset({"priority"})
     assert tiers._advertised_tiers({"service_tiers": [{"id": "priority"}],
                                     "additional_speed_tiers": ["fast", "ultrafast"]}) == frozenset({"priority"})
+
+
+def test_ultrafast_is_offered_on_the_codex_plan_only_when_its_catalog_lists_it(monkeypatch):
+    """The Codex backend accepts ``service_tier: ultrafast`` from a plan without the entitlement and
+    silently serves the default tier, so /fast must follow the account's own catalog (per model)."""
+    from agent import codex_service_tiers
+    from agent.codex_service_tiers import ultrafast_offered
+
+    monkeypatch.setattr(mm, "_codex_oauth_context_cache", {})
+    monkeypatch.setattr(codex_service_tiers, "_catalogs", {})
+
+    def get(url, **kwargs):
+        tiers = {"A": {"gpt-6-astra": ["priority", "ultrafast"], "gpt-6.1-sol": ["priority"]},
+                 "B": {"gpt-6-astra": ["priority", "ultrafast"], "gpt-6.1-sol": ["priority", "ultrafast"]}}
+        account = kwargs["headers"]["ChatGPT-Account-ID"]
+        return SimpleNamespace(status_code=200, json=lambda: {"models": [
+            {"slug": slug, "context_window": 272000, "service_tiers": [{"id": t} for t in ids]}
+            for slug, ids in tiers[account].items()]})
+
+    monkeypatch.setattr(mm.model_metadata_http, "get", get)
+    codex = {"provider": "openai-codex", "base_url": BASE}
+    assert ultrafast_offered("gpt-6-astra", **codex, access_token=token("A"))
+    assert not ultrafast_offered("gpt-6.1-sol-900k", **codex, access_token=token("A"))  # plan lacks Sol Ultrafast
+    assert ultrafast_offered("gpt-6.1-sol-900k", **codex, access_token=token("B"))
+    # The API key route is not plan-gated; an unreadable catalog never refuses.
+    assert ultrafast_offered("gpt-6.1-sol", provider="openai-api", base_url="https://api.openai.com/v1")
+    monkeypatch.setattr(mm.model_metadata_http, "get", lambda url, **kw: SimpleNamespace(status_code=503, json=dict))
+    assert ultrafast_offered("gpt-6.1-sol", **codex, access_token=token("C"))

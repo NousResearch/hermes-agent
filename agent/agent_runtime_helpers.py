@@ -1476,6 +1476,18 @@ def restore_primary_runtime(agent) -> bool:
         reinstall_primary_runtime(
             agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
         )
+        # Invariant: the snapshot must not BE the fallback we are leaving. A snapshot rebuilt while
+        # a fallback was live (switch_model, or an agent constructed on a persisted fallback route)
+        # makes this function restore the fallback onto itself while clearing _fallback_activated —
+        # the agent then believes it is on primary, no further restore is attempted, and the session
+        # is pinned to the fallback for its whole life. Log loudly rather than silently "restoring".
+        _fb_route = getattr(agent, "_provider_fallback_route", None)
+        if _fb_route and (str(rt["model"]), str(rt["provider"])) == (str(_fb_route[0]), str(_fb_route[1])):
+            logger.error(
+                "Primary runtime snapshot is the fallback route (%s via %s) — refusing to treat it "
+                "as a restore. The snapshot was captured while fallback was active; this session "
+                "would otherwise stay pinned to the fallback.", rt["model"], rt["provider"],
+            )
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None

@@ -551,6 +551,16 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         config_model_seen = _config_model_target()
         if opened:
             session_db = _open_profile_session_db(profile_home)
+        if kwargs.pop("preserve_runtime", True) and "model_override" not in kwargs:
+            from tui_gateway.fallback_recovery import recovery_state, recovery_matches_profile
+            recovery = recovery_state(old_agent) if old_agent is not None else None
+            # Unpinned rebuilds adopt the owning profile below. Do not mark an edit
+            # seen while carrying recovery to a primary the profile no longer wants.
+            if (recovery and not session.get("model_override")
+                    and not recovery_matches_profile(recovery, config_model_seen, _load_cfg())):
+                recovery = None
+            if recovery:
+                kwargs["model_override"] = {**recovery["primary"], "_fallback_recovery": recovery}
         # A rebuild is not a conversation boundary (/new pops the pins before calling us): carry the
         # session's /model, /reasoning and /fast picks, else config_model_seen below hides the
         # reversion from the per-turn sync.
@@ -609,7 +619,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         for k in ("model_override", "create_reasoning_override", "create_service_tier_override", "one_turn_model_restore"):
             session.pop(k, None)
         new_agent = _rebuild_session_agent(
-            sid, session, session_id=session["session_key"],
+            sid, session, session_id=session["session_key"], preserve_runtime=False,
             platform_override=_session_source(session),
             context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
     finally:

@@ -347,14 +347,25 @@ class GatewayTurnMixin:
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
         """Persist the runtime model/provider a gateway turn actually used (provider fallback can
         switch them after the row was created). Runs in the ``run_sync`` executor thread, so it
-        uses the sync ``SessionDB`` (``_db``), not the AsyncSessionDB forwarder."""
+        uses the sync ``SessionDB`` (``_db``), not the AsyncSessionDB forwarder.
+
+        A route reached by PROVIDER FALLBACK is deliberately not persisted as the session's
+        routable identity. Fallback is transient by contract — ``restore_primary_runtime()`` exists
+        to undo it at the next turn boundary — but ``SessionDB.session_gateway_runtime()`` re-pins a
+        resumed session from the stored ``gateway_runtime.provider``. Writing the fallback there
+        made a one-off blip permanent: the next turn's agent was constructed ON the fallback, and
+        ``_snapshot_primary_runtime()`` froze it as ``_primary_runtime``, so every later
+        "Primary runtime restored" restored the fallback. Long-lived rooms (Matrix) never came back.
+        The fallback flag is still recorded so billing/observability can see what served the turn.
+        """
         if not session_id or agent is None or self._session_db is None:
             return
         model = getattr(agent, "model", None)
         if not model:
             return
         runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
-        runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
+        fallback_active = bool(getattr(agent, "_fallback_activated", False))
+        runtime["fallback_active"] = fallback_active
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:
             db = self._session_db._db
@@ -374,6 +385,22 @@ class GatewayTurnMixin:
             if not isinstance(config, dict):
                 config = {}
             gateway_runtime = dict(config.get("gateway_runtime") or {})
+            if fallback_active:
+                # Keep the session's routable identity on the PRIMARY. Record only that a fallback
+                # served this turn, so resume re-pins the configured primary instead of inheriting
+                # the fallback (and freezing it as _primary_runtime on the next agent build).
+                preserved = {k: v for k, v in gateway_runtime.items() if k != "fallback_active"}
+                if preserved:
+                    config["gateway_runtime"] = {**preserved, "fallback_active": True}
+                    if gateway_runtime.get("fallback_active") is True:
+                        return
+                    db.update_session_meta(session_id, json.dumps(config), model=row.get("model") or model)
+                    return
+                # No primary recorded yet (fallback fired on the very first turn): store the route
+                # but flagged, so a later successful primary turn overwrites it cleanly.
+                config["gateway_runtime"] = runtime
+                db.update_session_meta(session_id, json.dumps(config), model=model)
+                return
             if row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
                 return
             config["gateway_runtime"] = runtime
@@ -3589,13 +3616,17 @@ class GatewayTurnMixin:
         return self._run_agent_timeout_result(worker, turn_ctx)
 
     def _run_agent_evict_on_fallback(self, turn_ctx: TurnContext) -> None:
-        """Evict the cached agent when a fallback model activated on a SUCCESSFUL run (so /model shows
-        the active model and the next message retries the primary). Skip failed runs: evicting
-        would loop bad model → fallback → evict → recreate."""
+        """Keep managed fallback's primary snapshot and cooldown; evict unexplained drift.
+
+        Core turn admission owns reset/entitlement-aware primary restoration. Cache
+        signature changes still invalidate an agent after an explicit config change.
+        """
         session_key = turn_ctx.session_key
         _agent = turn_ctx.agent_holder[0]
         _result_for_fb = turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
+            return
+        if getattr(_agent, "_fallback_activated", False) is True:
             return
         # A provider fallback is drift even when it serves the configured model name on another endpoint.
         if getattr(_agent, "_provider_fallback_active", False) is True:

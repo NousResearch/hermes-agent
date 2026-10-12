@@ -711,7 +711,9 @@ class TestFollowProfileConfigRuntimeOverrides:
         """Changing the Bot profile invalidates both stored and live chat pins."""
         from tui_gateway import server
 
-        monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/new-default", "nous"))
+        monkeypatch.setattr(server, "_load_cfg", lambda: {
+            "model": {"default": "profile/new-default", "provider": "nous"},
+        })
         row = {
             "title": "Bot Chat",
             "model": "openai/gpt-5.6-luna-pro",
@@ -743,6 +745,8 @@ class TestFollowProfileConfigRuntimeOverrides:
             "sid", session, "profile/new-default --provider nous",
             confirm_expensive_model=True, pin_session_override=False, persist_override=False,
             count_switch=False,
+            adopted_profile_intent={"model": "profile/new-default", "provider": "nous",
+                                    "base_url": "", "api_mode": ""},
         )
 
     def test_marked_row_returns_no_overrides(self):

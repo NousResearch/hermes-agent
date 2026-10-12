@@ -145,11 +145,11 @@ class TestCompressionTimeoutFloorSync:
         assert primary_timeout == local_timeout
         assert fallback_timeout >= COMPRESSION_TIMEOUT_FLOOR
 
-    def test_explicit_call_timeout_survives_remote_fallback(self):
+    @pytest.mark.parametrize("explicit", [45.0, 60.0])
+    def test_explicit_call_timeout_survives_remote_fallback(self, explicit):
         primary = _client_sync("http://localhost:10243/v1")
         primary.chat.completions.create.side_effect = TimeoutError("local timeout")
         fallback = _client_sync("https://openrouter.ai/api/v1")
-        explicit = 45.0
         chain = [{
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",

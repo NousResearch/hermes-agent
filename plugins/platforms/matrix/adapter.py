@@ -1893,12 +1893,14 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 # 45s outer cap guards TCP-level hangs the 30s long-poll timeout cannot catch.
                 # mautrix raises on every non-2xx, so a non-dict here is never an error object.
-                sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
+                sent_since = next_batch
+                sync_data = await asyncio.wait_for(client.sync(since=sent_since, timeout=30000), timeout=45.0)
                 if isinstance(sync_data, dict):
                     next_batch = await self._absorb_sync(
-                        client, sync_data, initial=not next_batch) or next_batch
-                    # Budget is consecutive poisoned cursors, not process lifetime.
-                    if next_batch:
+                        client, sync_data, initial=not sent_since) or next_batch
+                    # A recovery snapshot has no since. It must not clear the
+                    # consecutive budget; only a successful incremental sync does.
+                    if sent_since and next_batch:
                         cursor_resets = 0
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync
             except asyncio.CancelledError:
@@ -1935,8 +1937,10 @@ class MatrixAdapter(BasePlatformAdapter):
         The initial (full-state) sync also seeds the DM cache and dispatches so the OlmMachine sees
         to-device key shares queued while offline."""
         self._last_sync_ts = time.time()
-        rooms_join = set((sync_data.get("rooms", {}) or {}).get("join", {}) or {})
-        rooms_leave = set((sync_data.get("rooms", {}) or {}).get("leave", {}) or {})
+        joined = (sync_data.get("rooms", {}) or {}).get("join") or {}
+        left = (sync_data.get("rooms", {}) or {}).get("leave") or {}
+        rooms_join = set(joined)
+        rooms_leave = set(left)
         if initial:
             # A sync without since is a fresh snapshot, including after cursor
             # recovery. Departed rooms may be absent rather than listed in leave.
@@ -1945,7 +1949,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if rooms_join or initial:
             self._joined_rooms.update(rooms_join)
             self._invalidate_room_identities()
-        self._warn_encrypted_drops(rooms_join, client)
+        self._warn_encrypted_drops(joined if isinstance(joined, dict) else {}, client)
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if nb:
             await client.sync_store.put_next_batch(nb)

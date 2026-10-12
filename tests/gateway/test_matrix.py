@@ -1372,8 +1372,8 @@ class TestMatrixSyncLoop:
         client.sync_store.put_next_batch.assert_any_await(None)
 
     @pytest.mark.asyncio
-    async def test_sync_loop_cursor_reset_budget_clears_after_successful_sync(self):
-        """Reset budget is consecutive, not process lifetime — a healthy snapshot starts over."""
+    async def test_sync_loop_cursor_reset_budget_survives_recovery_snapshots(self):
+        """A snapshot after a rejected cursor does not reset the consecutive budget."""
         adapter = _make_adapter()
         adapter._closing = False
         adapter._joined_rooms = set()
@@ -1383,9 +1383,10 @@ class TestMatrixSyncLoop:
         async def _sync_side_effect(**kwargs):
             since_seen.append(kwargs.get("since"))
             n = len(since_seen)
-            if n % 2 == 1:
+            if kwargs.get("since"):
                 raise _sync_error("Forbidden", errcode="M_FORBIDDEN", http_status=403)
-            adapter._closing = n >= 8
+            if n >= 12:
+                adapter._closing = True
             return {"next_batch": f"s{n}", "rooms": {"join": {}}}
 
         fake_client = MagicMock()
@@ -1398,10 +1399,66 @@ class TestMatrixSyncLoop:
         adapter._client = fake_client
         with patch("asyncio.sleep", new=AsyncMock()):
             await adapter._sync_loop()
-        # Four 403+snapshot cycles would have exhausted a lifetime budget of 3.
-        assert fake_client.sync.await_count == 8
+        # Four incremental rejects, each followed by a snapshot, stop at the cap.
         assert since_seen[0] == "s-stale"
-        assert since_seen.count(None) == 4
+        assert sum(1 for since in since_seen if since) == 4
+        assert since_seen.count(None) == 3
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_cursor_reset_budget_clears_after_incremental_sync(self):
+        """An incremental sync with since set clears the budget. A snapshot does not."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._joined_rooms = set()
+        adapter._dm_rooms = {}
+        since_seen = []
+
+        async def _sync_side_effect(**kwargs):
+            since_seen.append(kwargs.get("since"))
+            n = len(since_seen)
+            if n == 1:
+                raise _sync_error("Forbidden", errcode="M_FORBIDDEN", http_status=403)
+            if n == 3:
+                return {"next_batch": "s-ok", "rooms": {"join": {}}}
+            if n >= 4 and kwargs.get("since"):
+                raise _sync_error("Forbidden", errcode="M_FORBIDDEN", http_status=403)
+            if n >= 12:
+                adapter._closing = True
+            return {"next_batch": f"s{n}", "rooms": {"join": {}}}
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_side_effect)
+        fake_client.sync_store = MagicMock()
+        fake_client.sync_store.get_next_batch = AsyncMock(return_value="s-stale")
+        fake_client.sync_store.put_next_batch = AsyncMock()
+        fake_client.handle_sync = MagicMock(return_value=[])
+        fake_client.get_account_data = AsyncMock(side_effect=Exception("no m.direct"))
+        adapter._client = fake_client
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await adapter._sync_loop()
+        assert fake_client.sync.await_count == 10
+
+    @pytest.mark.asyncio
+    async def test_absorb_sync_passes_join_map_to_encrypted_drop_warning(self):
+        """Join payloads stay maps. A set would raise in the encrypted-drop warning."""
+        adapter = _make_adapter()
+        seen = {}
+
+        def _warn(rooms_join, client):
+            seen["value"] = rooms_join
+
+        adapter._warn_encrypted_drops = _warn
+        adapter._dispatch_sync = AsyncMock()
+        adapter._refresh_dm_cache = AsyncMock()
+        adapter._schedule_pending_invite_joins = MagicMock()
+        client = MagicMock()
+        client.sync_store.put_next_batch = AsyncMock()
+        room = "!room:example.org"
+        await adapter._absorb_sync(client, {
+            "next_batch": "s1",
+            "rooms": {"join": {room: {"timeline": {"events": []}}}},
+        })
+        assert seen["value"] == {room: {"timeline": {"events": []}}}
 
     @pytest.mark.asyncio
     async def test_html_403_digits_do_not_reset_cursor(self):

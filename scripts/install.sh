@@ -40,6 +40,11 @@ FAILURE_CLASS=""
 INSTALL_SIGNAL=""
 INSTALL_IN_STAGE=false
 
+# Stall detection for git transfers: abort a clone/fetch slower than 1 KiB/s
+# for 120s so the retry loop runs instead of hanging forever. Passed as
+# `git -c ...` (never `git clone -c ...`) so nothing persists into .git/config.
+GIT_STALL_OPTS=(-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=120)
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --branch|-Branch|--commit|-Commit|--dir|--hermes-home|-HermesHome|--stage|-Stage)
@@ -601,7 +606,7 @@ stage_repository() {
                 fi
             fi
         fi
-        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
+        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" "${GIT_STALL_OPTS[@]}" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
             || fail "git fetch failed$(native_detail)" git_fetch_failed
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
@@ -671,7 +676,7 @@ stage_repository() {
             fi
         fi
         mkdir -p "$(dirname "$INSTALL_DIR")"
-        local staged attempt label cloned=false progress=() materialize=(reset --hard HEAD)
+        local staged attempt label cloned=false progress=() materialize=(reset --hard HEAD) stall_opts=()
         # Phase lines ("Receiving objects: 42%") feed the status line; git
         # prints none to a pipe unless asked.
         if quiet_output; then progress=(--progress); fi
@@ -684,9 +689,14 @@ stage_repository() {
             # checkout and history walk (#129712).
             label="Cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
             [ "$attempt" = 1 ] || label="$label (attempt $attempt of 3)"
+            # A stalled transfer never exits, so the retry loop never runs
+            # without lowSpeed abort; HTTP/2 resets through some proxies, so
+            # retries fall back to HTTP/1.1.
+            stall_opts=("${GIT_STALL_OPTS[@]}")
+            [ "$attempt" = 1 ] || stall_opts+=(-c http.version=HTTP/1.1)
             # A pinned install materializes only the pin (below): checking out the
             # branch tip first fetches and rewrites every file the two differ in.
-            if run_logged "$label" git clone ${progress[@]+"${progress[@]}"} \
+            if run_logged "$label" git "${stall_opts[@]}" clone ${progress[@]+"${progress[@]}"} \
                 --filter=blob:none ${INSTALL_COMMIT:+--no-checkout} --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 cloned=true
                 break
@@ -698,7 +708,7 @@ stage_repository() {
             # The checkout step is where throttled downloads die: clone the
             # graph alone, then retry materializing the tree separately.
             log_warn "direct clone failed; trying deferred checkout"
-            if run_logged "Cloning history" git clone ${progress[@]+"${progress[@]}"} \
+            if run_logged "Cloning history" git "${GIT_STALL_OPTS[@]}" -c http.version=HTTP/1.1 clone ${progress[@]+"${progress[@]}"} \
                 --filter=blob:none --no-checkout --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 cloned=deferred
             fi

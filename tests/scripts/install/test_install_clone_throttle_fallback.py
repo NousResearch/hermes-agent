@@ -31,10 +31,11 @@ def test_clone_retries_and_publishes_only_materialized_tree(tmp_path, materializ
     script = f'''source {shlex.quote((ROOT / 'scripts/install.sh').as_posix())} --manifest
 sleep() {{ :; }}
 git() {{
-    if [ "$1" = clone ]; then
+    case " $* " in *" clone "*)
         printf '%s\\n' "$*" >> {shlex.quote(attempts.as_posix())}
         case " $* " in *" --filter=blob:none --no-checkout "*) ;; *) return 1 ;; esac
-    fi
+        ;;
+    esac
     if [ "{int(materialize_fails)}" = 1 ] && [ "${{3:-}}" = reset ]; then return 1; fi
     command git "$@"
 }}

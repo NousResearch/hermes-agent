@@ -72,6 +72,10 @@ $script:BoundParams = $PSBoundParameters
 # each run without the previous run's answer (see Set-LauncherUserPath).
 $script:BinDirOnCallerPath = $null
 $RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://github.com/NousResearch/hermes-agent.git" }
+# Stall detection for git transfers: abort a clone/fetch slower than 1 KiB/s
+# for 120s so the retry loop runs instead of hanging forever. Passed as
+# `git -c ...` (never `git clone -c ...`) so nothing persists into .git/config.
+$GitStallOpts = @('-c','http.lowSpeedLimit=1000','-c','http.lowSpeedTime=120')
 
 # --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---
 # Derived from pm/lock.json. DO NOT EDIT BY HAND:
@@ -906,7 +910,7 @@ function Stage-Repository {
                 }
             }
         }
-        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir @GitStallOpts fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
         if ($LASTEXITCODE) { Fail "git fetch failed$(Get-NativeDetail)" git_fetch_failed }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -1000,7 +1004,12 @@ function Stage-Repository {
                 # checkout and history walk (#129712).
                 $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
                 if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
-                Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none @checkout --branch $Branch $RepoUrl $tree }
+                # A stalled transfer never exits, so the retry loop never runs
+                # without lowSpeed abort; HTTP/2 resets through some proxies, so
+                # retries fall back to HTTP/1.1.
+                $cloneStall = $GitStallOpts
+                if ($attempt -gt 1) { $cloneStall = $cloneStall + @('-c','http.version=HTTP/1.1') }
+                Invoke-Logged $cloneLabel { git @cloneStall clone @progress --filter=blob:none @checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
@@ -1009,7 +1018,7 @@ function Stage-Repository {
                 # The checkout step is where throttled downloads die: clone the
                 # graph alone, then retry materializing the tree separately.
                 Write-Warn "direct clone failed; trying deferred checkout"
-                Invoke-Logged "Cloning history" { git clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
+                Invoke-Logged "Cloning history" { git @GitStallOpts -c http.version=HTTP/1.1 clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; $deferred = $true }
             }
             if (-not $cloned) { Fail "git clone failed; no checkout published$(Get-NativeDetail)" git_clone_failed }

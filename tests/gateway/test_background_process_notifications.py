@@ -17,6 +17,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner, _parse_session_key
+from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +372,10 @@ async def test_inject_watch_notification_drops_stale_trigger_reply_anchor(monkey
     assert _reply_anchor_for_event(synth_event) is None
     # The original id survives for debugging only.
     assert synth_event.metadata["original_trigger_message_id"] == "777"
+    # Unambiguous machine provenance: SYSTEM prefix still leads, footer appended, origin tagged.
+    assert synth_event.text.startswith("[SYSTEM: ")
+    assert synth_event.text.rstrip().endswith(INTERNAL_NOTIFICATION_FOOTER)
+    assert synth_event.metadata["notification_origin"] == "process_registry_synthetic"
 
 
 @pytest.mark.asyncio
@@ -635,9 +640,12 @@ async def test_inject_watch_notification_raw_session_key_self_posts(monkeypatch,
 
     assert result is True
     api_adapter.handle_message.assert_not_awaited()
-    assert posts == [
-        {"text": "[SYSTEM: subagent finished]", "session_id": "raw-hq-session-id"}
-    ]
+    # Same presentation contract as the push path: leading SYSTEM prefix intact, machine-origin
+    # footer appended — this text becomes a role=user turn on the stateless surface too.
+    assert len(posts) == 1
+    assert posts[0]["session_id"] == "raw-hq-session-id"
+    assert posts[0]["text"].startswith("[SYSTEM: subagent finished]")
+    assert posts[0]["text"].rstrip().endswith(INTERNAL_NOTIFICATION_FOOTER)
 
 
 @pytest.mark.asyncio
@@ -718,6 +726,8 @@ async def test_async_delegation_apiserver_persists_delivery_not_self_post(
     assert len(persisted) == 1
     assert persisted[0]["session_id"] == "raw-hq-session-id"
     assert persisted[0]["evt"]["delegation_id"] == "deleg_85957"
+    # Persist-only route stays verbatim: the client reads this row, no model turn is woken.
+    assert persisted[0]["text"] == "[ASYNC DELEGATION BATCH COMPLETE — deleg_85957]"
 
 
 @pytest.mark.asyncio

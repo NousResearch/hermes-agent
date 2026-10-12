@@ -33,7 +33,7 @@ def seed_manifest(pub, request, objects):
 
 def test_resolve_verifies_exact_manifest_and_preserves_retirement_constraints():
     from hermes_cli.release_channels import ChannelReader, ChannelError, canonical_json
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url)
         for name in ("old-preview", "next-preview"):
             pub.create(name)
@@ -72,9 +72,78 @@ def test_names_are_validated_without_normalizing(name):
         validate_name(name)
 
 
+def test_update_reads_retry_transient_http_and_honor_retry_after(monkeypatch):
+    from email.message import Message
+    from urllib.error import HTTPError
+    from hermes_cli.release_channels import ChannelReader, retrying_reads
+
+    url = "http://127.0.0.1:12345/releases/fixture.json"
+    headers = Message()
+    headers["Retry-After"] = "7"
+    attempts = []
+    waits = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def geturl(self):
+            return url
+
+        def read(self, _limit):
+            return b"fixture"
+
+    def opener(request, timeout):
+        assert timeout == 30
+        attempts.append(request.full_url)
+        if len(attempts) == 1:
+            raise HTTPError(url, 503, "unavailable", headers, None)
+        return Response()
+
+    monkeypatch.setattr("pm.network.time.sleep", waits.append)
+    reader = ChannelReader("http://127.0.0.1:12345", opener=opener)
+    with retrying_reads():
+        assert reader.read_bytes("releases/fixture.json") == b"fixture"
+    assert attempts == [url, url]
+    assert waits == [7.0]
+
+
+def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):
+    """Offline looks transient (ENETUNREACH); a passive check must not back off on it."""
+    import errno
+    from email.message import Message
+    from urllib.error import HTTPError, URLError
+    from hermes_cli.release_channels import ChannelError, ChannelNotFound, ChannelReader, retrying_reads
+
+    waits = []
+    monkeypatch.setattr("pm.network.time.sleep", waits.append)
+
+    def reader(fault, calls):
+        def opener(request, timeout):
+            calls.append(request.full_url)
+            raise fault
+        return ChannelReader("https://releases.example", opener=opener)
+
+    calls = []
+    offline = URLError(OSError(errno.ENETUNREACH, "Network is unreachable"))
+    with pytest.raises(ChannelError, match="unavailable"):
+        reader(offline, calls).read_bytes("releases/channels/main.json")
+    assert len(calls) == 1
+
+    calls.clear()
+    missing = HTTPError("https://releases.example/x", 404, "missing", Message(), None)
+    with retrying_reads(), pytest.raises(ChannelNotFound):
+        reader(missing, calls).read_bytes("releases/channels/stable.json")
+    assert len(calls) == 1
+    assert waits == []
+
+
 def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
     from hermes_cli.release_channels import ChannelReader, ChannelError, canonical_json
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url)
         pub.create("alpha")
         request = pub.allocate("alpha", "a" * 40, "1.2.3")
@@ -103,7 +172,7 @@ def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
 
 def test_legacy_bootstrap_uses_real_archive_keys_and_source_main_has_no_bundle():
     from hermes_cli.release_channels import canonical_json, ChannelError
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url, verify_build=lambda request, manifest: True)
         preview = pub.create("temporary")
         request = pub.allocate("temporary", "a" * 40, "2.0.0")
@@ -155,7 +224,7 @@ def test_sequence_exhaustion_never_wraps(sequence):
 
 def test_malformed_record_and_unqualified_retirement_never_resolve():
     from hermes_cli.release_channels import ChannelError, canonical_json
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url)
         pub.create("preview")
         record = pub._read("preview")[0]

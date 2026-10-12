@@ -160,11 +160,9 @@ The result chart on the run summary shows each leg as passed, failed, or skipped
 
 ## Triggers and cost
 
-The matrix does not run on pull requests. One leg installs real toolchains and takes more than 10 minutes. The triggers are:
+The matrix runs on release builds only. It never runs on pull requests, pushes to main, or a schedule: one leg installs real toolchains and takes more than 10 minutes. The triggers are:
 
-- A schedule, every 12 hours. This finds upstream drift.
-- A matching release tag push.
-- A reusable workflow call from the stable release gate.
+- A reusable workflow call from the stable release gate (`route=all`).
 - Manual dispatch. You can select the route and the tag count:
 
 ```

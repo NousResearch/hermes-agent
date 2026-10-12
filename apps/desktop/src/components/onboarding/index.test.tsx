@@ -107,7 +107,15 @@ describe('ApiKeyForm manual local-model fallback', () => {
     // for a manual model name instead of dead-ending. Second Connect: the typed
     // name is forwarded as the 5th onSave argument.
     const onSave = vi
-      .fn<(envKey: string, value: string, name: string, apiKey?: string, modelName?: string) => Promise<{ message?: string; needsModelInput?: boolean; ok: boolean }>>()
+      .fn<
+        (
+          envKey: string,
+          value: string,
+          name: string,
+          apiKey?: string,
+          modelName?: string
+        ) => Promise<{ message?: string; needsModelInput?: boolean; ok: boolean }>
+      >()
       .mockResolvedValueOnce({
         ok: false,
         needsModelInput: true,
@@ -115,14 +123,7 @@ describe('ApiKeyForm manual local-model fallback', () => {
       })
       .mockResolvedValueOnce({ ok: true })
 
-    render(
-      <ApiKeyForm
-        canGoBack={false}
-        initialEnvKey="OPENAI_BASE_URL"
-        onBack={() => undefined}
-        onSave={onSave}
-      />
-    )
+    render(<ApiKeyForm canGoBack={false} initialEnvKey="OPENAI_BASE_URL" onBack={() => undefined} onSave={onSave} />)
 
     fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8000/v1'), {
       target: { value: 'https://api.cohere.ai/compatibility/v1' }

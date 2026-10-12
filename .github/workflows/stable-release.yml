@@ -17,6 +17,13 @@ on:
 permissions:
   contents: read
 
+# Every reusable workflow called below inherits secrets (`secrets: inherit`)
+# because their release-signing jobs need protected-environment secrets. A
+# called workflow only sees them when the caller inherits AND the called job
+# declares the environment: the job-level `environment:` alone attaches the
+# deployment and exposes `vars`, but leaves `secrets.*` empty
+# (actions/runner#1490). ci.yaml is deliberately excluded — it runs
+# PR-controlled code and must stay secret-free.
 concurrency:
   group: stable-release
   cancel-in-progress: false
@@ -40,8 +47,12 @@ jobs:
       release-epoch: ${{ steps.admit.outputs.release-epoch }}
       skip-bundles: ${{ steps.admit.outputs.skip-bundles }}
       skip-tests: ${{ steps.admit.outputs.skip-tests }}
+      # Opt-in platforms, off unless the claim was cut with --include-macos-intel
+      # / --include-termux. A claim without the keys reads them as false.
+      include-macos-intel: ${{ steps.admit.outputs.include-macos-intel }}
+      include-termux: ${{ steps.admit.outputs.include-termux }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -76,10 +87,11 @@ jobs:
     if: >-
       !cancelled() && needs.admit.result == 'success'
     uses: ./.github/workflows/docker.yml
+    secrets: inherit
     with:
       release-phase: test
       skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
-      tag: ${{ needs.admit.outputs.tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   nix:
@@ -104,11 +116,12 @@ jobs:
 
   termux-checks:
     needs: admit
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: needs.admit.outputs.skip-tests != 'true' && needs.admit.outputs.include-termux == 'true'
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/termux-verify.yml
+    secrets: inherit
     with:
       release: true
 
@@ -145,6 +158,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -157,14 +171,18 @@ jobs:
     name: Build signed release candidates (darwin-x64)
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
+    # macOS Intel is opt-in (--include-macos-intel): unsupported on main, and
+    # its macos-15-intel runner adds over an hour to the release.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      && needs.admit.outputs.include-macos-intel == 'true'
     permissions:
       contents: write
       actions: read
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -185,6 +203,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -205,6 +224,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -227,6 +247,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -239,14 +260,17 @@ jobs:
     name: Build signed release candidates (termux)
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
+    # Termux is opt-in (--include-termux).
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      && needs.admit.outputs.include-termux == 'true'
     permissions:
       contents: write
       actions: read
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -264,8 +288,9 @@ jobs:
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
+      baseline: ${{ steps.plan.outputs.baseline }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -292,14 +317,15 @@ jobs:
   transitions-darwin-x64:
     name: Pin actual OLD and NEW signed packages (darwin-x64)
     needs: [admit, candidates-darwin-x64]
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: needs.admit.outputs.skip-tests != 'true' && needs.admit.outputs.include-macos-intel == 'true'
     runs-on: ubuntu-24.04
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
+      baseline: ${{ steps.plan.outputs.baseline }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -332,8 +358,9 @@ jobs:
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
+      baseline: ${{ steps.plan.outputs.baseline }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -383,7 +410,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -397,6 +424,8 @@ jobs:
   windows-packaged:
     name: Windows signed-package acceptance
     needs: transitions-win32
+    # Without a published stable baseline there is no OLD package to upgrade from.
+    if: needs.transitions-win32.outputs.baseline != 'none'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transitions-win32.outputs.windows) }}
@@ -413,6 +442,8 @@ jobs:
   macos-packaged-arm64:
     name: macOS arm64 signed-package acceptance
     needs: transitions-darwin-arm64
+    # Without a published stable baseline there is no OLD package to upgrade from.
+    if: needs.transitions-darwin-arm64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transitions-darwin-arm64.outputs.macos) }}
@@ -429,6 +460,8 @@ jobs:
   macos-packaged-x64:
     name: macOS x64 signed-package acceptance
     needs: transitions-darwin-x64
+    # Without a published stable baseline there is no OLD package to upgrade from.
+    if: needs.transitions-darwin-x64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transitions-darwin-x64.outputs.macos) }}
@@ -448,7 +481,7 @@ jobs:
     if: needs.admit.outputs.skip-tests != 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ needs.admit.outputs.commit }}
       - name: Stamp and verify the Cargo and Tauri release identity
@@ -487,7 +520,7 @@ jobs:
             bootstrap-version]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -498,6 +531,8 @@ jobs:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           SKIP_BUNDLES: ${{ needs.admit.outputs.skip-bundles }}
           SKIP_TESTS: ${{ needs.admit.outputs.skip-tests }}
+          INCLUDE_MACOS_INTEL: ${{ needs.admit.outputs.include-macos-intel }}
+          INCLUDE_TERMUX: ${{ needs.admit.outputs.include-termux }}
 
   publish-docker:
     name: Publish tested Docker image
@@ -505,21 +540,28 @@ jobs:
     # stable/latest aliases move in the ordered publication pass.
     needs: [admit, docker]
     uses: ./.github/workflows/docker.yml
+    secrets: inherit
     with:
       release-phase: publish
-      tag: ${{ needs.admit.outputs.tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   publish-bundles:
     name: Publish tested bundle artifacts
     needs: [admit, acceptance, candidate-manifest]
-    if: needs.admit.outputs.skip-bundles != 'true'
+    # acceptance's own needs include signed-package arms that skip when there is no published
+    # baseline (the first bundled release). Without !cancelled() that skip propagates here and
+    # publication then refuses publish-bundles=skipped. acceptance itself is the gate.
+    if: >-
+      !cancelled() && needs.admit.outputs.skip-bundles != 'true'
+      && needs.acceptance.result == 'success' && needs.candidate-manifest.result == 'success'
     permissions:
       contents: write
       actions: read
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -533,7 +575,7 @@ jobs:
     needs: [admit, acceptance, publish-docker, publish-bundles]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -544,6 +586,8 @@ jobs:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           SKIP_BUNDLES: ${{ needs.admit.outputs.skip-bundles }}
           SKIP_TESTS: ${{ needs.admit.outputs.skip-tests }}
+          INCLUDE_MACOS_INTEL: ${{ needs.admit.outputs.include-macos-intel }}
+          INCLUDE_TERMUX: ${{ needs.admit.outputs.include-termux }}
 
   complete:
     name: Stable release is green
@@ -556,7 +600,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -573,6 +617,8 @@ jobs:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           SKIP_BUNDLES: ${{ needs.admit.outputs.skip-bundles }}
           SKIP_TESTS: ${{ needs.admit.outputs.skip-tests }}
+          INCLUDE_MACOS_INTEL: ${{ needs.admit.outputs.include-macos-intel }}
+          INCLUDE_TERMUX: ${{ needs.admit.outputs.include-termux }}
       - name: Validate the accepted candidate archive
         if: needs.admit.outputs.skip-bundles != 'true'
         run: python -m scripts.releases.stable complete
@@ -589,11 +635,21 @@ jobs:
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
       - name: Render the admitted candidate smoke results
         if: needs.admit.outputs.skip-bundles != 'true'
+        # The builds table is presentation: a render failure warns and the release still
+        # publishes (rc.14-v0.21.7 passed every gate, then died here on missing env).
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
+          RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
           RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
           CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
+          # It lists the archive and writes the tag and channel pages on R2.
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
         run: |
           python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --archive "$RELEASE_CLAIM_TAG" \
@@ -606,7 +662,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Reconcile ordered stable publication
-        run: python -m scripts.releases.sequencer
+        # The macOS feed merge parses YAML (hermes_yaml -> ruamel); the node toolchain has none.
+        run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.sequencer
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_VERSION: ''

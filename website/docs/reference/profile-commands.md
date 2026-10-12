@@ -229,7 +229,11 @@ hermes profile alias work --remove
 hermes profile rename <old-name> <new-name>
 ```
 
-Renames a profile. Updates the directory and shell alias.
+Renames a profile. Updates the directory and shell alias. A gateway service installed under the
+old name (`hermes -p <old-name> gateway install`) is removed, whether or not the gateway is
+running, because it would start the old name at the next login; reinstall it with
+`hermes -p <new-name> gateway install`. Inside the Docker image the s6 gateway slot moves to the
+new name.
 
 | Argument | Description |
 |----------|-------------|
@@ -321,7 +325,7 @@ hermes profile purge-identity mybot
 hermes profile export <name> [options]
 ```
 
-Exports a profile as a compressed tar.gz archive — a portable snapshot you can back up, move to another machine, or hand to someone else. `auth.json` and `.env` are always excluded.
+Exports a profile as a compressed tar.gz archive — a portable snapshot you can back up, move to another machine, or hand to someone else. `auth.json`, `.env` and the other credential stores are always excluded; see [what an export file contains](../user-guide/profile-distributions.md#what-an-export-file-contains).
 
 Also available in chat as [`/export`](./slash-commands.md), and in the desktop app via **⌘K → Export profile…** or a profile square's right-click menu. A desktop export additionally stages `desktop.json` (skin, light/dark mode, custom themes, rail color, window layout) into the archive.
 
@@ -508,9 +512,12 @@ distribution_owned:   # optional; defaults to SOUL.md, config.yaml,
 version (treated as `>=`). Install fails with a clear error if the current
 Hermes version doesn't satisfy the spec.
 
-`distribution_owned` is optional. If set, only those paths are replaced on
-update; anything else in the profile stays user-owned. If omitted, the
-defaults above apply.
+`distribution_owned` is optional. If set, only those paths are updated;
+anything else in the profile stays user-owned. A directory of skills, such as
+`skills/` or a category like `skills/research/`, is merged per skill: the skills
+the distribution ships are replaced, and skills you added there stay. A skill
+the author later drops from the distribution is left in place on update, as
+with top-level `skills/`. If omitted, the defaults above apply.
 
 ### Publishing a distribution
 

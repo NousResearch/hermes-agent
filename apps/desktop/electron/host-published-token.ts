@@ -50,7 +50,9 @@ export function hostRendezvousDirectory(env: HostRendezvousEnv): string {
   }
 
   const stateHomeEnv = String(env.stateHome || '').trim()
-  const stateHome = stateHomeEnv && path.isAbsolute(stateHomeEnv) ? stateHomeEnv : path.join(env.home, '.local', 'state')
+
+  const stateHome =
+    stateHomeEnv && path.isAbsolute(stateHomeEnv) ? stateHomeEnv : path.join(env.home, '.local', 'state')
 
   return path.join(stateHome, 'hermes', 'gateway-locks')
 }
@@ -112,10 +114,7 @@ function tokenForPublication(record: HostBackendRecord, publication: PublishedHo
 }
 
 /** The published token that belongs to this ledger record, or null. */
-export function publishedTokenForRecord(
-  record: HostBackendRecord,
-  publications: PublishedHostToken[]
-): string | null {
+export function publishedTokenForRecord(record: HostBackendRecord, publications: PublishedHostToken[]): string | null {
   for (const publication of publications) {
     const token = tokenForPublication(record, publication)
 

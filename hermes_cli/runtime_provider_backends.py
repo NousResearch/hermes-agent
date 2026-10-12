@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from agent.azure_identity_adapter import is_token_provider
 from agent.secret_scope import get_secret_str
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 
 def _rp():
@@ -24,7 +24,7 @@ def _rp():
 # ── Azure Foundry ──────────────────────────────────────────────────────────────────────────
 
 
-def _azure_entra_credentials(cfg_entra: Dict[str, Any]) -> Any:
+def _azure_entra_credentials(cfg_entra: dict[str, Any]) -> Any:
     """Callable api_key minting a fresh Entra JWT per request (OpenAI SDK accepts it natively;
     ``build_anthropic_client`` injects the bearer via an httpx hook)."""
     AuthError = _rp().AuthError
@@ -63,9 +63,9 @@ def _azure_foundry_api_key(rp, explicit_api_key: str) -> str:
     return api_key
 
 
-def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[str, Any],
+def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: dict[str, Any],
                                    explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None,
-                                   target_model: Optional[str] = None) -> Dict[str, Any]:
+                                   target_model: Optional[str] = None) -> dict[str, Any]:
     """Azure Foundry: ``model.base_url`` + ``model.api_mode`` (or explicit overrides), API key from
     ``.env``/env or a per-request Entra ID token, trailing ``/v1`` stripped for Anthropic-style
     endpoints (the Anthropic SDK appends /v1/messages itself)."""
@@ -115,7 +115,7 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
 
 def _resolve_openrouter_runtime(
     *, requested_provider: str, explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Terminal resolver: OpenRouter, or a bare/aliased ``custom`` endpoint. base_url precedence:
     explicit > CUSTOM_BASE_URL > trusted ``model.base_url`` > OPENROUTER_BASE_URL > default.
     OPENAI_BASE_URL never picks the endpoint (config.yaml is the single source of truth for endpoint
@@ -157,12 +157,24 @@ def _resolve_openrouter_runtime(
         )
     )
     if is_openrouter_context:
-        # OPENAI_API_KEY is a legacy home for an OpenRouter key -- unless OPENAI_BASE_URL binds it
-        # to another host, where sending it to OpenRouter leaks that host's credential.
-        openai_base_host = base_url_hostname(get_secret_str("OPENAI_BASE_URL", "").strip())
-        openai_key_ok = not openai_base_host or openai_base_host == base_url_hostname(base_url)
-        candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"),
-                      get_secret_str("OPENAI_API_KEY") if openai_key_ok else ""]
+        # Same read order as the credential pool and _resolve_api_key_provider_secret
+        # (.env, then scope-aware os.environ, raw op:// references yielding to the resolved
+        # scoped value). get_secret_str sees os.environ only, so a key living solely in
+        # ~/.hermes/.env was lost once the pool entry went exhausted/benched (#117667).
+        # OPENAI_API_KEY is a legacy home for an OpenRouter key. When OPENAI_BASE_URL binds it, it
+        # goes only to that origin: another scheme or port on the same host is another endpoint.
+        # Unbound, openrouter.ai gets it only when it is OpenRouter-shaped (sk-or-), so a real OpenAI
+        # key never reaches a third party.
+        from hermes_cli.config import get_env_value_prefer_dotenv
+        openai_key = get_env_value_prefer_dotenv("OPENAI_API_KEY") or ""
+        openai_base_url = get_secret_str("OPENAI_BASE_URL", "").strip()
+        if base_url_hostname(openai_base_url):
+            openai_origin = base_url_origin(openai_base_url)  # empty on a bad port: bound, matches nothing
+            openai_key_ok = bool(openai_origin[1]) and openai_origin == base_url_origin(base_url)
+        else:
+            openai_key_ok = not is_openrouter_url or rp.looks_like_openrouter_key(openai_key)
+        candidates = [explicit_api_key, get_env_value_prefer_dotenv("OPENROUTER_API_KEY"),
+                      openai_key if openai_key_ok else ""]
     else:
         # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
         # rung is what a bare ``provider: custom`` block relies on (#67453).
@@ -190,13 +202,14 @@ def _resolve_openrouter_runtime(
 # ── AWS Bedrock ────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: Optional[str]) -> Dict[str, Any]:
-    """AWS Bedrock with triple-path routing: OpenAI models → Bedrock Mantle's Responses endpoint;
+def _resolve_bedrock_runtime(requested_provider: str, model_cfg: dict[str, Any], target_model: Optional[str]) -> dict[str, Any]:
+    """AWS Bedrock with triple-path routing: bare in-Region OpenAI IDs → Bedrock Mantle's Responses
+    endpoint (their ``us.``/``global.`` profile IDs are bedrock-runtime IDs and take Converse);
     Claude → AnthropicBedrock SDK (prompt caching, thinking budgets); others → Converse API.
     AWS_BEARER_TOKEN_BEDROCK auth is unsupported by AnthropicBedrock (SigV4 only), so bearer users
     go through Converse regardless of model."""
-    from agent.bedrock_adapter import (bedrock_openai_base_url, has_aws_credentials, is_anthropic_bedrock_model,
-                                       is_openai_bedrock_model, resolve_aws_auth_env_var, resolve_bedrock_bearer_token,
+    from agent.bedrock_adapter import (bedrock_openai_base_url, bedrock_openai_uses_mantle, has_aws_credentials,
+                                       is_anthropic_bedrock_model, resolve_aws_auth_env_var, resolve_bedrock_bearer_token,
                                        resolve_bedrock_runtime_region, bedrock_guardrail_config)
     from hermes_cli.config import load_config  # direct (not the origin delegate), as before
     rp = _rp()
@@ -221,7 +234,7 @@ def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any],
     has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
     runtime = rp._runtime("bedrock", "bedrock_converse", f"https://bedrock-runtime.{region}.amazonaws.com", "aws-sdk",
                           source=auth_source, region=region, requested_provider=requested_provider)
-    if is_openai_bedrock_model(current_model):
+    if bedrock_openai_uses_mantle(current_model):
         bearer = resolve_bedrock_bearer_token()
         runtime.update(api_mode="codex_responses", base_url=bedrock_openai_base_url(region), api_key=bearer or "aws-sdk",
                        source="AWS_BEARER_TOKEN_BEDROCK" if bearer else auth_source, model=current_model, bedrock_openai=True)
@@ -256,7 +269,7 @@ def _is_external_process_provider(provider: str) -> bool:
     return profile is not None and getattr(profile, "auth_type", "") == "external_process"
 
 
-def _resolve_external_process_runtime(provider: str, requested_provider: str) -> Dict[str, Any]:
+def _resolve_external_process_runtime(provider: str, requested_provider: str) -> dict[str, Any]:
     rp = _rp()
     creds = rp.resolve_external_process_provider_credentials(provider)
     return rp._runtime(provider, "chat_completions", creds.get("base_url", "").rstrip("/"), creds.get("api_key", ""),

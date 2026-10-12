@@ -9,11 +9,16 @@ import { resolveLocalReadPath } from './wsl-path-bridge'
 // so the wiring is exercised in isolation instead of buried in main.ts.
 
 /**
- * hermes-media:// stream handler: the request `pathname` (leading slashes plus
- * percent-encoding) → a bridged fs path.
+ * hermes-media:// stream handler's `resolveLocalFile` dependency: the protocol
+ * handler already percent-decoded the request pathname into `filePath`
+ * (`parseMediaProtocolTarget` in media-protocol.ts), so this boundary only
+ * bridges. Decoding or stripping leading slashes again would turn an absolute
+ * POSIX path (`/home/...`) into a cwd-relative one that ENOENTs into the
+ * handler's silent 404, and a second `decodeURIComponent` throws on filenames
+ * containing a literal `%`.
  */
-export function resolveMediaRequestPath(pathname: string): string {
-  return resolveLocalReadPath(decodeURIComponent(String(pathname ?? '').replace(/^\/+/, '')))
+export function resolveMediaStreamFile(filePath: unknown): string {
+  return resolveLocalReadPath(String(filePath ?? ''))
 }
 
 /**

@@ -33,6 +33,7 @@ export function clearNativeTuiFrame(stream: ResettableStream = process.stdout): 
 
   try {
     stream.write('\x1b[2J\x1b[H')
+
     return true
   } catch {
     return false

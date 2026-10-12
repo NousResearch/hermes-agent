@@ -79,4 +79,37 @@ describe('contrast', () => {
     expect(ensureContrast('#3D2F13', '#ffffff', 3.9)).toBe('#3D2F13')
     expect(ensureContrast('ansi256(245)', '#ffffff', 3.9)).toBe('ansi256(245)')
   })
+
+  it.each([
+    ['zero', 0],
+    ['negative', -0.2],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['denormal', Number.MIN_VALUE]
+  ])('ensureContrast normalizes a %s step to the default ladder and still clears the ratio', (_label, badStep) => {
+    const fixed = ensureContrast('#777777', '#ffffff', 4.5, badStep as number)
+
+    expect(fixed).toBe(ensureContrast('#777777', '#ffffff', 4.5))
+    expect(contrastRatio(fixed, '#ffffff')!).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('ensureContrast clamps an above-1 step to a single full blend toward the pole', () => {
+    expect(ensureContrast('#777777', '#ffffff', 4.5, 25)).toBe('#000000')
+    expect(contrastRatio(ensureContrast('#777777', '#ffffff', 4.5, 25), '#ffffff')!).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('ensureContrast accepts a sub-default rung down to 0.001 without renormalizing', () => {
+    const fixed = ensureContrast('#777777', '#ffffff', 4.5, 0.001)
+
+    expect(fixed).not.toBe(ensureContrast('#777777', '#ffffff', 4.5))
+    expect(contrastRatio(fixed, '#ffffff')!).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('ensureContrast keeps the documented ladders byte-identical', () => {
+    // Desktop default rungs and the TUI's 0.05 chain rely on the exact float
+    // sequence of the accumulating loop; normalization must not touch them.
+    expect(ensureContrast('#cba6f7', '#ffffff', 7)).toBe('#514263')
+    expect(ensureContrast('#cba6f7', '#ffffff', 7, 0.2)).toBe('#514263')
+    expect(ensureContrast('#3a3a5c', '#101014', 4.5, 0.05)).toBe('#7f7f95')
+  })
 })

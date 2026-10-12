@@ -201,7 +201,7 @@ export function closeHubLog(): void {
 const INSTALL_BLOCKED_CURRENT_RE =
   /Not installed:\s+the security scan found\s+(?:(?<findings>\d+)\s+)?high-risk\s+pattern/i
 
-const INSTALL_BLOCKED_UNVERIFIED_RE = /never installs\s+unverified/i
+const INSTALL_BLOCKED_UNVERIFIED_RE = /never\s+installs\s+unverified/i
 
 const INSTALL_BLOCKED_LEGACY_RE =
   /Installation blocked:.*?\((?<source>[a-z_-]+) source \+ (?<verdict>[a-z_]+) verdict, (?<findings>\d+) findings?\)/i

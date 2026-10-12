@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure, known_gate
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
     KnownSymptom,
@@ -129,10 +129,8 @@ def test_acp_failure_is_retried_per_semantics_and_surfaced_once(outcomes, name):
     row, out = ROWS[name], outcomes[name]
     run, fake = out.run, out.fake
     assert fake.invalid() == [], f"requests rejected by the ACP schema: {fake.invalid()}"
-    with known_failure(r"^crash_\w+: [3-9] model calls, expected 2",
-                       "#121467 a crash whose stderr lags the exit reads as a timeout and is retried past the budget"):
-        assert len(fake.main_prompts()) == row.model_calls, (
-            f"{name}: {len(fake.main_prompts())} model calls, expected {row.model_calls}\n{run.describe()}")
+    assert len(fake.main_prompts()) == row.model_calls, (
+        f"{name}: {len(fake.main_prompts())} model calls, expected {row.model_calls}\n{run.describe()}")
     assert (run.returncode == 0) is row.succeeds, run.describe()
     assert run.stdout.count(row.visible) == 1, f"{row.visible!r} must be shown exactly once\n{run.describe()}"
     rows = messages(out.nh, latest_session(out.nh))
@@ -157,7 +155,7 @@ def test_auth_failure_remedy_is_an_actionable_command(outcomes):
     for command in REMEDY_RE.findall(out.run.stdout):
         argv = [sys.executable, "-m", "hermes_cli.main", *command.split()[1:]]
         proc = subprocess.run(argv, cwd=out.nh.project, env=out.nh.env(), capture_output=True, text=True,
-                              timeout=60, stdin=subprocess.DEVNULL)
+                              timeout=60, stdin=subprocess.DEVNULL, check=False)
         said = (proc.stdout + proc.stderr).lower()
         with known_gate(KNOWN, "auth_remedy", raises=KnownSymptom):
             if "not implemented" in said:

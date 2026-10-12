@@ -28,12 +28,15 @@ PROVIDER_SERVER_ERROR = "provider_server_error"
 CONTEXT_OVERFLOW = "context_overflow"
 MISSING_CONFIG = "missing_config"
 MODEL_UNAVAILABLE = "model_unavailable"
+# A spawn site could not resolve the target profile's secret scope: no turn ran, no provider was called.
+TARGET_SCOPE_UNRESOLVED = "target_scope_unresolved"
 UNKNOWN = "unknown"
 
 ALL_REASONS = frozenset({
     RUNTIME_OFFLINE, QUEUED_EXPIRED, DELIVERY_TIMEOUT, AGENT_BLOCKED, CANCELLED,
     PROVIDER_AUTH_OR_ACCESS, PROVIDER_QUOTA_LIMIT, PROVIDER_RATE_LIMIT,
-    PROVIDER_SERVER_ERROR, CONTEXT_OVERFLOW, MISSING_CONFIG, MODEL_UNAVAILABLE, UNKNOWN,
+    PROVIDER_SERVER_ERROR, CONTEXT_OVERFLOW, MISSING_CONFIG, MODEL_UNAVAILABLE,
+    TARGET_SCOPE_UNRESOLVED, UNKNOWN,
 })
 
 #: Reasons a supervisor may retry automatically without human intervention.
@@ -70,6 +73,11 @@ _STATUS = r"(?:error code:?\s*|status(?:\s*code)?:?\s*|http\s*)"
 _RULES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     (re.compile(pat, re.IGNORECASE), code)
     for pat, code in (
+        # FIRST: the copy says "API key" and "restart", so it must be claimed before the auth rules.
+        # ``UnscopedSecretError`` names the secret when it has one ("this profile's OPENROUTER_API_KEY");
+        # the ``served_profile_child_env`` detail rides in tracebacks.
+        (r"could not read this profile's [^(]+\(an internal profile-scoping bug"
+         r"|served_profile_child_env\(inherit_credentials=true\)", TARGET_SCOPE_UNRESOLVED),
         (rf"authentication_error|invalid api key|{_STATUS}(?:401|403)\b", PROVIDER_AUTH_OR_ACCESS),
         (rf"{_STATUS}402\b|out of funds|quota|balance", PROVIDER_QUOTA_LIMIT),
         (rf"{_STATUS}429\b|rate.?limit", PROVIDER_RATE_LIMIT),

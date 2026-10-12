@@ -27,19 +27,19 @@ const ugitGitExe = (version: string): string =>
 
 describe('ugitGitBinaries (#61494)', () => {
   test('enumerates the UGit app-* glob and returns each bundled git.exe, newest first', () => {
-    const fs = fakeFs(
-      { [path.join(LAD, 'UGit')]: ['app-5.50.1', 'app-5.51.0', 'Update.exe', 'tools'] },
-      [ugitGitExe('5.50.1'), ugitGitExe('5.51.0')]
-    )
+    const fs = fakeFs({ [path.join(LAD, 'UGit')]: ['app-5.50.1', 'app-5.51.0', 'Update.exe', 'tools'] }, [
+      ugitGitExe('5.50.1'),
+      ugitGitExe('5.51.0')
+    ])
 
     assert.deepEqual(ugitGitBinaries(LAD, fs), [ugitGitExe('5.51.0'), ugitGitExe('5.50.1')])
   })
 
   test('sorts app dirs by version, not lexically (app-10.0.0 beats app-9.0.0)', () => {
-    const fs = fakeFs(
-      { [path.join(LAD, 'UGit')]: ['app-9.0.0', 'app-10.0.0'] },
-      [ugitGitExe('9.0.0'), ugitGitExe('10.0.0')]
-    )
+    const fs = fakeFs({ [path.join(LAD, 'UGit')]: ['app-9.0.0', 'app-10.0.0'] }, [
+      ugitGitExe('9.0.0'),
+      ugitGitExe('10.0.0')
+    ])
 
     assert.deepEqual(ugitGitBinaries(LAD, fs), [ugitGitExe('10.0.0'), ugitGitExe('9.0.0')])
   })

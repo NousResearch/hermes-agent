@@ -47,7 +47,7 @@ async def _run_one_notifier_tick(monkeypatch, runner):
 
     async def fake_sleep(delay):
         if delay == 5:
-            return None
+            return
         runner._running = False
         await real_sleep(0)
 

@@ -646,7 +646,16 @@ class Task:
     worker_pid: Optional[int] = None
     last_failure_error: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
+    # Worker/agent's own estimate of how long this attempt needs, recorded via
+    # ``kanban_heartbeat(expected_runtime_seconds=...)``. Enforced as
+    # ``estimate * grace`` when no explicit ``max_runtime_seconds`` is set; NULL =
+    # no self-estimate. See kanban_db_dispatch.enforce_max_runtime.
+    estimated_runtime_seconds: Optional[int] = None
     last_heartbeat_at: Optional[int] = None
+    # Forward-progress rollup (kanban_progress); None/0 = legacy row or unknown.
+    last_progress_at: Optional[int] = None
+    progress_repeat_count: int = 0
+    tool_calls_total: int = 0
     current_run_id: Optional[int] = None
     workflow_template_id: Optional[str] = None
     current_step_key: Optional[str] = None
@@ -693,7 +702,8 @@ _TASK_REQUIRED_COLUMNS = (
 # Later-added columns read as NULL when absent from the row.
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
-    "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
+    "max_runtime_seconds", "estimated_runtime_seconds", "last_heartbeat_at", "last_progress_at",
+    "progress_repeat_count", "tool_calls_total", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
@@ -723,6 +733,12 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    # Forward-progress rollup mirrored from tasks (kanban_progress); None/0 = unknown.
+    last_progress_at: Optional[int] = None
+    progress_repeat_count: int = 0
+    tool_calls_total: int = 0
+    # Worker self-estimate for this attempt (see tasks.estimated_runtime_seconds).
+    estimated_runtime_seconds: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Run:
@@ -734,6 +750,10 @@ class Run:
                 )
             },
             id=int(row["id"]),
+            last_progress_at=_opt_int(_row_get(row, "last_progress_at")),
+            progress_repeat_count=int(_row_get(row, "progress_repeat_count") or 0),
+            tool_calls_total=int(_row_get(row, "tool_calls_total") or 0),
+            estimated_runtime_seconds=_opt_int(_row_get(row, "estimated_runtime_seconds")),
             started_at=int(row["started_at"]),
             ended_at=_opt_int(row["ended_at"]),
             metadata=_json_or(_lossy_text(row["metadata"])),
@@ -838,7 +858,21 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
+    -- Worker/agent self-estimate for the attempt (kanban_heartbeat
+    -- expected_runtime_seconds), enforced as estimate*grace when no explicit
+    -- max_runtime cap is set. NULL = no estimate.
+    estimated_runtime_seconds INTEGER,
     last_heartbeat_at    INTEGER,
+    -- Forward-progress signal (see hermes_cli/kanban_progress.py). The
+    -- heartbeat above answers "is the process making API traffic?"; these
+    -- answer "is it getting anywhere?". ``last_progress_at`` is stamped only
+    -- when a tool call's signature differs from the previous one, so a worker
+    -- looping on the same call stops refreshing it while ``last_heartbeat_at``
+    -- stays fresh. NULL/0 on legacy rows and on workers that predate the
+    -- signal; readers treat absence as unknown, never as stalled.
+    last_progress_at     INTEGER,
+    progress_repeat_count INTEGER NOT NULL DEFAULT 0,
+    tool_calls_total     INTEGER NOT NULL DEFAULT 0,
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
     current_run_id       INTEGER,
@@ -947,7 +981,13 @@ CREATE TABLE IF NOT EXISTS task_runs (
     -- still be found and reaped; NULL = legacy row, never signalled.
     worker_started_at   INTEGER,
     max_runtime_seconds INTEGER,
+    estimated_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
+    -- Per-run mirror of the task's forward-progress columns (kanban_progress),
+    -- so a finished run keeps the state it ended with. NULL/0 = unknown.
+    last_progress_at    INTEGER,
+    progress_repeat_count INTEGER NOT NULL DEFAULT 0,
+    tool_calls_total    INTEGER NOT NULL DEFAULT 0,
     started_at          INTEGER NOT NULL,
     ended_at            INTEGER,
     outcome             TEXT,
@@ -2933,85 +2973,9 @@ def _merge_completion_prose_artifacts(
     return updated
 
 
-def _persist_scratch_completion_artifacts(
-    conn: sqlite3.Connection, task_id: str, metadata: dict,
-) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
-    raw_artifacts = metadata.get("artifacts")
-    if not isinstance(raw_artifacts, (list, tuple)):
-        return
-
-    workspace = _scratch_workspace(conn, task_id)
-    if workspace is None:
-        return
-    is_managed, board = _managed_scratch_path_info(workspace)
-    if not is_managed:
-        return
-
-    try:
-        workspace_root = workspace.resolve()
-    except OSError:
-        return
-
-    attachment_dir = task_attachments_dir(task_id, board=board)
-    persisted: list[str] = []
-    used_destinations: set[Path] = set()
-    changed = False
-
-    def _discard_copies() -> None:
-        _discard_staged_copies(used_destinations, attachment_dir)
-
-    for item in raw_artifacts:
-        artifact = str(item).strip() if isinstance(item, str) else ""
-        if not artifact:
-            continue
-        src = Path(artifact).expanduser()
-        try:
-            resolved_src = src.resolve()
-        except OSError:
-            persisted.append(artifact)
-            continue
-
-        if not resolved_src.is_relative_to(workspace_root):
-            persisted.append(artifact)
-            continue
-
-        problem = None
-        if not src.is_file():
-            problem = f"declared scratch artifact is unavailable or not a regular file: {artifact}"
-        elif resolved_src.stat().st_size > KANBAN_ATTACHMENT_MAX_BYTES:
-            problem = (
-                f"declared scratch artifact exceeds the "
-                f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
-            )
-        if problem:
-            _discard_copies()
-            raise ArtifactPreservationError(problem)
-
-        dest: Optional[Path] = None
-        try:
-            attachment_dir.mkdir(parents=True, exist_ok=True)
-            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
-            _copy_capped(resolved_src, dest, artifact)
-        except Exception as exc:
-            if dest is not None:
-                with contextlib.suppress(OSError):
-                    dest.unlink(missing_ok=True)
-            _discard_copies()
-            if isinstance(exc, ArtifactPreservationError):
-                raise
-            raise ArtifactPreservationError(
-                f"could not preserve declared scratch artifact {artifact}: {exc}"
-            ) from exc
-        used_destinations.add(dest)
-        persisted.append(str(dest.resolve()))
-        changed = True
-
-    if changed:
-        metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
+from hermes_cli.kanban_artifacts import (
+    persist_scratch_completion_artifacts as _persist_scratch_completion_artifacts,
+)
 
 
 def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None:

@@ -26,6 +26,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli.kanban_runtime_budget import enforce_max_runtime
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -613,17 +614,45 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    progress: Optional[Any] = None,
+    estimated_runtime_seconds: Optional[int] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
     Liveness signal orthogonal to the PID check: a worker whose forked child
     (train loop, crawl) is stuck can still have a live Python process.
     Returns False if the task is not running or its claim expired.
+
+    ``progress`` (a ``kanban_progress.ProgressSnapshot``, a mapping or None)
+    carries the forward-progress columns alongside the heartbeat so a worker
+    looping on the same tool call is distinguishable from one making progress:
+    the heartbeat stays fresh either way, only ``last_progress_at`` stops
+    advancing. Omitted / empty = leave the columns untouched (an explicit
+    ``kanban_heartbeat`` tool call from the model writes no signal of its own).
+
+    ``estimated_runtime_seconds`` records the worker's own guess at how long this
+    attempt needs (``kanban_heartbeat(expected_runtime_seconds=...)``);
+    ``enforce_max_runtime`` turns it into a budget with ``ESTIMATE_GRACE_FACTOR``
+    headroom. Omitted = leave any previous estimate alone.
     """
     now = int(time.time())
+    progress_cols = _progress_columns(progress)
+    estimate = _kb._opt_int(estimated_runtime_seconds)
     with _kb.write_txn(conn):
-        sql = "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ? AND status = 'running'"
-        params: tuple = (now, task_id)
+        sets = "last_heartbeat_at = ?"
+        params: tuple = (now,)
+        if progress_cols:
+            sets += ", last_progress_at = ?, progress_repeat_count = ?, tool_calls_total = ?"
+            params += (
+                progress_cols["last_progress_at"],
+                progress_cols["progress_repeat_count"],
+                progress_cols["tool_calls_total"],
+            )
+        if estimate is not None:
+            sets += ", estimated_runtime_seconds = ?"
+            params += (estimate,)
+        sql = f"UPDATE tasks SET {sets} WHERE id = ? AND status = 'running'"
+        params += (task_id,)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params += (int(expected_run_id),)
@@ -636,108 +665,57 @@ def heartbeat_worker(
             else _kb._current_run_id(conn, task_id)
         )
         if run_id is not None:
-            conn.execute("UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?", (now, run_id))
+            run_sets = "last_heartbeat_at = ?"
+            run_params: tuple = (now,)
+            if progress_cols:
+                run_sets += ", last_progress_at = ?, progress_repeat_count = ?, tool_calls_total = ?"
+                run_params += (
+                    progress_cols["last_progress_at"],
+                    progress_cols["progress_repeat_count"],
+                    progress_cols["tool_calls_total"],
+                )
+            if estimate is not None:
+                run_sets += ", estimated_runtime_seconds = ?"
+                run_params += (estimate,)
+            run_params += (run_id,)
+            conn.execute(f"UPDATE task_runs SET {run_sets} WHERE id = ?", run_params)
+        event_payload: dict = {}
+        if note:
+            event_payload["note"] = note
+        if progress_cols:
+            event_payload.update(progress_cols)
+        if estimate is not None:
+            event_payload["estimated_runtime_seconds"] = estimate
         _kb._append_event(
             conn, task_id, "heartbeat",
-            {"note": note} if note else None,
+            event_payload or None,
             run_id=run_id,
         )
     return True
 
 
-def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
-    """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
+def _progress_columns(progress: Optional[Any]) -> Optional[dict]:
+    """Normalise a progress snapshot/mapping to the three board columns.
 
-    SIGTERM, short grace, then SIGKILL. Emits ``timed_out`` and restores the
-    task's source phase so the next tick re-spawns the same kind of worker —
-    unless the circuit breaker already gave up, leaving it blocked. Host-local
-    only (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a test hook.
+    Returns None when the caller supplied nothing, so an unrelated heartbeat
+    never zeroes a live signal. Accepts the dataclass from
+    ``hermes_cli.kanban_progress`` and plain dicts (tests, other embedders).
     """
-    timed_out: list[str] = []
-    now = int(time.time())
-    host_prefix = _kb._host_prefix()
-
-    rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.worker_started_at, "
-        "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
-        "FROM tasks t "
-        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
-        "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
-        "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
-        "  AND t.worker_pid IS NOT NULL"
-    ).fetchall()
-    for row in rows:
-        lock = row["claim_lock"] or ""
-        if not lock.startswith(host_prefix):
-            continue
-        # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
-        # so retries must be measured from the active task_runs row.
-        elapsed = now - int(row["active_started_at"])
-        limit = int(row["max_runtime_seconds"])
-        if elapsed < limit:
-            continue
-
-        pid = int(row["worker_pid"])
-        tid = row["id"]
-        started_at = _kb._row_get(row, "worker_started_at")
-        if started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
-            # Fingerprint capture failed at spawn: we cannot prove this live PID is our worker, so
-            # it is neither signalled nor released beside (duplicate). It is reclaimed once it exits.
-            _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but has no verified "
-                             "identity; not signalled", tid, pid)
-            continue
-        # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
-        # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
-        # mismatch) is never signalled: the worker is already gone.
-        killed = False
-        kill = _kill_fn(signal_fn)
-        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
-            with contextlib.suppress(ProcessLookupError, OSError):
-                kill(pid, signal.SIGTERM)
-            # Short polling wait — no time.sleep on the write txn.
-            _poll_worker_exit(pid, started_at)
-            if _worker_alive(pid, started_at):
-                killed = _sigkill(kill, pid)
-
-        error = f"elapsed {int(elapsed)}s > limit {limit}s"
-        with _kb.write_txn(conn):
-            retry_status = _kb._retry_status_for_run(conn, tid)
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, tid, pid, row["claim_lock"]),
-            )
-            if cur.rowcount == 1:
-                payload = {
-                    "pid": pid,
-                    "elapsed_seconds": int(elapsed),
-                    "limit_seconds": limit,
-                    "sigkill": killed,
-                    "retry_status": retry_status,
-                }
-                run_id = _kb._end_run(
-                    conn, tid, outcome="timed_out", status="timed_out",
-                    error=error, metadata=payload,
-                )
-                _kb._append_event(conn, tid, "timed_out", payload, run_id=run_id)
-                timed_out.append(tid)
-        # Outside the write_txn above because ``_record_task_failure`` opens its
-        # own. If the breaker trips this flips the task to ``blocked`` and emits
-        # ``gave_up`` on top of the ``timed_out`` already emitted.
-        if cur.rowcount == 1:
-            _record_task_failure(
-                conn, tid,
-                error=error,
-                outcome="timed_out",
-                release_claim=False,
-                end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
-            )
-    return timed_out
+    if progress is None:
+        return None
+    if hasattr(progress, "as_heartbeat_payload"):
+        data = progress.as_heartbeat_payload()
+    elif isinstance(progress, Mapping):
+        data = dict(progress)
+    else:
+        return None
+    if not data:
+        return None
+    return {
+        "last_progress_at": _kb._opt_int(data.get("last_progress_at")),
+        "progress_repeat_count": int(data.get("progress_repeat_count") or 0),
+        "tool_calls_total": int(data.get("tool_calls_total") or 0),
+    }
 
 
 # A running task with no heartbeat for this long is inactive regardless of

@@ -401,6 +401,11 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Runtime cap for a running card that has neither an explicit max_runtime_seconds
+  # nor a worker estimate (kanban_heartbeat expected_runtime_seconds). When > 0 the
+  # dispatcher terminates and re-queues the attempt past this many seconds, long
+  # before the 4 h stale window. 0 = off (only the stale window bounds a run).
+  default_max_runtime_seconds: 0
 
 # =============================================================================
 # Terminal Tool Configuration

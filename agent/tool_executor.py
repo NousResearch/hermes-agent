@@ -1016,6 +1016,12 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
 
     agent._current_tool = function_name
     agent._touch_activity(f"executing tool: {function_name}")
+    # Forward-progress signal for the kanban board (no-op outside a worker); the
+    # signature is a hash, so tool arguments are never persisted by it.
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        with contextlib.suppress(Exception):
+            from tools.kanban_tools import note_tool_call_progress
+            note_tool_call_progress(function_name, function_args)
     _set_worker_activity_callback(agent)
 
     if agent.tool_progress_callback:

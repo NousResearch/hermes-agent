@@ -969,16 +969,3 @@ def _info_is_active_for(
     info: Mapping[str, Any], identity: state.TaskIdentity, *, require_exact: bool = False) -> bool:
     accepted = (identity.task_id,) if require_exact else (None, identity.task_id)
     return _info_active(info) and info.get("task_id") in accepted
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import contextlib  # noqa: F401,E402
-
-@contextlib.contextmanager
-def null_turn_lock(_profile: str) -> Any:
-    """Provide an explicit no-op lock for narrow embedding tests."""
-    yield
-# ---- END PLUGIN-COMPAT ----

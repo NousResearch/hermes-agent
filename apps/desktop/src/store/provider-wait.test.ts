@@ -28,6 +28,20 @@ describe('providerWaitText', () => {
   })
 })
 
+describe('providerWaitText accepts retry and auto-recovery frames', () => {
+  // Minted by agent/turn_recovery.py (retry backoff) and
+  // agent/turn_recovery_autorecover.ladder_notice (outage ladder). Rejecting
+  // them left a bare timer for minutes while the backend slept between retries.
+  it.each([
+    '⏳ rate limited — resets in 2m, retrying in 30s (attempt 2/3)',
+    '⏳ provider overloaded — resets in 1m, retrying in 15s (attempt 1/3)',
+    '⏳ waiting on provider — retrying in 6s (attempt 1/3)',
+    '⏳ Provider temporarily unavailable — retrying automatically in 18s (cycle 1/5); press Esc to stop'
+  ])('%s', frame => {
+    expect(providerWaitText(frame)).toBe(frame)
+  })
+})
+
 describe('parseModelLoadWait', () => {
   it('extracts model and percent from a load frame', () => {
     expect(

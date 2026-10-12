@@ -2,7 +2,7 @@ import ignore from 'ignore'
 
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
 import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
-import { ALWAYS_EXCLUDED } from '@/lib/excluded-paths'
+import { ALWAYS_EXCLUDED, SHOW_IGNORED_EXCLUDED } from '@/lib/excluded-paths'
 import { cleanPath, comparisonPath, isUnderPath } from '@/lib/path-compare'
 
 import { showsIgnoredFiles } from './prefs'
@@ -203,10 +203,16 @@ export async function readProjectDir(dirPath: string, rootPath = dirPath): Promi
     return { entries: [], error: 'no-bridge' }
   }
 
+  // The transport-level noise (.git internals, dependency/build dirs) is
+  // stripped at both ends, so the reveal floor is SHOW_IGNORED_EXCLUDED —
+  // ALWAYS_EXCLUDED names the transports keep (out, vendor, coverage, …)
+  // stay browsable in a project that opted into showing ignored files (#55169).
+  const showIgnored = showsIgnoredFiles(rootPath)
+  const filterSet = showIgnored ? SHOW_IGNORED_EXCLUDED : ALWAYS_EXCLUDED
   const result = await readDesktopDir(dirPath)
-  const entries = (result?.entries ?? []).filter(entry => !ALWAYS_EXCLUDED.has(entry.name))
+  const entries = (result?.entries ?? []).filter(entry => !filterSet.has(entry.name))
 
-  return { ...result, entries: await filterIgnored(entries, rootPath, dirPath) }
+  return { ...result, entries: showIgnored ? entries : await filterIgnored(entries, rootPath, dirPath) }
 }
 
 export function clearProjectDirCache(rootPath?: string) {

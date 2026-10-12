@@ -66,7 +66,7 @@ class Script:
                 self.tool_results.setdefault(tag, []).append(str(last.get("content") or ""))
             return Text(f"DONE {tag}")
         if kind == "CLARIFY":
-            return ToolCall("clarify", {"question": f"Which colour for {tag}?", "choices": ["red", "blue"]})
+            return ToolCall("clarify", {"questions": [{"question": f"Which colour for {tag}?", "choices": ["red", "blue"]}]})
         return ToolCall("terminal", {"command": f"rm -rf {self.victims[tag]}"})
 
 
@@ -118,7 +118,7 @@ def _drive(backend: Backend, script: Script, kind: str, how: str, tag: str) -> N
     req_idx = next(i for i, f in enumerate(a.snapshot()) if f is request or f.get("id") == rid)
     assert isinstance(rid, str) and rid.startswith("srq-"), request
     if kind == "clarify":
-        assert request["params"].get("question") == f"Which colour for {tag}?", request["params"]
+        assert request["params"]["questions"][0]["question"] == f"Which colour for {tag}?", request["params"]
     else:
         assert str(victim) in str(request["params"].get("command")), request["params"]
         assert request["params"].get("request_id"), request["params"]
@@ -149,7 +149,7 @@ def _drive(backend: Backend, script: Script, kind: str, how: str, tag: str) -> N
 
     answer = f"blue-{tag}"
     if kind == "clarify":
-        responder.respond(rid, {"answer": answer})
+        responder.respond(rid, {"answers": {"q0": answer}})
     elif how == "rpc":
         choice = "deny" if kind == "approval_deny" else "once"
         resolved = responder.call("approval.respond", session_id=sid, choice=choice,

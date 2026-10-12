@@ -2,7 +2,8 @@ import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult } from 
 
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 
-type CatalogProviderIdentity = Pick<ModelOptionProvider, 'aliases' | 'name' | 'slug'>
+type CatalogProviderIdentity = Partial<Pick<ModelOptionProvider, 'aliases' | 'name'>> &
+  Pick<ModelOptionProvider, 'slug'>
 
 /** True when `currentProvider` is this catalog row — slug, display name, or
  *  a custom-provider alias (`custom:<key>` vs the bare config key, #87035). */
@@ -18,6 +19,15 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
   )
 }
 
+/** The catalog row for `currentProvider`, matched the same way as
+ *  `catalogProviderMatches` (so a saved `custom:<key>` finds its row). */
+export function findCatalogProvider<T extends CatalogProviderIdentity>(
+  providers: readonly T[],
+  currentProvider: string
+): T | undefined {
+  return providers.find(row => catalogProviderMatches(row, currentProvider))
+}
+
 /** The catalog's option support for the current pick, or undefined while the
  *  catalog is loading / doesn't say. Callers treat undefined as "assume
  *  reasoning" so controls never flicker away during the fetch. */
@@ -26,7 +36,7 @@ export function currentModelCapabilities(
   provider: string,
   model: string
 ): ModelCapabilities | undefined {
-  return options?.providers?.find(row => catalogProviderMatches(row, provider))?.capabilities?.[model]
+  return findCatalogProvider(options?.providers ?? [], provider)?.capabilities?.[model]
 }
 
 // A picked (provider, model) pair is never retargeted from catalog membership.

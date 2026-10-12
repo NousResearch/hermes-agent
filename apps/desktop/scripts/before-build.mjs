@@ -42,20 +42,20 @@ function stageMsixAssets() {
   const desktop = path.join(import.meta.dirname, '..')
   const sourceDir = path.join(desktop, 'assets', 'appx')
   const stageDir = path.join(desktop, 'build', 'appx')
-  const names = [
-    'Square44x44Logo.png',
-    'Square150x150Logo.png',
-    'StoreLogo.png',
-    'Wide310x150Logo.png'
-  ]
+  // Every generated logo goes in: the qualified siblings (*.scale-N,
+  // *.targetsize-N_altform-*) are what make Windows draw an exact bitmap per
+  // taskbar/Start slot instead of upscaling the 44px base, and app-builder-lib
+  // only runs makepri when it sees them staged.
+  const names = fs.readdirSync(sourceDir).filter((name) => name.endsWith('.png'))
+  for (const required of ['Square44x44Logo.png', 'Square150x150Logo.png', 'StoreLogo.png', 'Wide310x150Logo.png']) {
+    if (!names.includes(required)) {
+      throw new Error(`missing MSIX asset ${path.join(sourceDir, required)}`)
+    }
+  }
 
   fs.mkdirSync(stageDir, { recursive: true })
   for (const name of names) {
-    const source = path.join(sourceDir, name)
-    if (!fs.existsSync(source)) {
-      throw new Error(`missing MSIX asset ${source}`)
-    }
-    fs.copyFileSync(source, path.join(stageDir, name))
+    fs.copyFileSync(path.join(sourceDir, name), path.join(stageDir, name))
   }
 }
 

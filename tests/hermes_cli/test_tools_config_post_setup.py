@@ -21,7 +21,7 @@ from hermes_cli.tools_config_post_setup import _run_post_setup
 ])
 def test_browser_setup_respects_provider_and_native_owner(monkeypatch, capsys, provider, docker, playwright):
     with (
-        patch('tools.browser_use_cli.install_cli', return_value=(True, 'ready')) as install,
+        patch('tools.browser_use_cli._find_cli', return_value=['harness']) as install,
         patch('tools.browser_tool_install._running_in_docker', return_value=docker),
         patch('tools.browser_tool_install._find_agent_browser', return_value='/image/agent-browser'),
         patch('tools.browser_tool_install._chromium_installed', return_value=False) as chromium,

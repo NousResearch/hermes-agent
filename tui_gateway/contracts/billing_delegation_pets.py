@@ -138,11 +138,11 @@ class BillingAutoReload(Result):
 
 class BillingStateResult(Result):
     """``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only
-    ``ok / logged_in / free_tier / error``, so everything else is optional."""
+    ``ok / logged_in / free_tier_account / error``, so everything else is optional."""
 
     ok: bool
     logged_in: bool
-    free_tier: bool = False
+    free_tier_account: bool = False
     free_tier_model: str | None = None
     org_name: str | None = None
     org_slug: str | None = None
@@ -527,7 +527,7 @@ class PetGenerateParams(ProfileParams):
     """``prompt`` or a ``referenceImage`` data URL is required (the handler answers 4004 without one)."""
 
     prompt: str | None = None
-    referenceImage: str | None = None  # noqa: N815 - wire key
+    referenceImage: str | None = None
     count: int | None = None
     style: str | None = None
     provider: str | None = None
@@ -535,7 +535,7 @@ class PetGenerateParams(ProfileParams):
 
 class PetDraft(Result):
     index: int
-    dataUri: str  # noqa: N815 - wire key
+    dataUri: str
 
 
 class PetGenerateResult(Result):
@@ -551,7 +551,7 @@ method("pet.generate", params=PetGenerateParams, result=PetGenerateResult,
 class PetHatchParams(ProfileParams):
     token: str
     name: str
-    cancelToken: str | None = None  # noqa: N815 - wire key
+    cancelToken: str | None = None
     index: int | None = None
     description: str | None = None
     prompt: str | None = None
@@ -564,18 +564,18 @@ class PetHatchParams(ProfileParams):
 # emits ``{}`` when the installed pet cannot be reloaded.
 class PetSpritePayload(Result):
     slug: str | None = None
-    displayName: str | None = None  # noqa: N815 - wire key
+    displayName: str | None = None
     mime: str | None = None
-    spritesheetBase64: str | None = None  # noqa: N815 - wire key
-    spritesheetRevision: str | None = None  # noqa: N815 - wire key
-    frameW: int | None = None  # noqa: N815 - wire key
-    frameH: int | None = None  # noqa: N815 - wire key
-    framesPerState: int | None = None  # noqa: N815 - wire key
-    framesByState: dict[str, int] | None = None  # noqa: N815 - wire key
-    framesByRow: dict[str, int] | None = None  # noqa: N815 - wire key
-    loopMs: int | None = None  # noqa: N815 - wire key
+    spritesheetBase64: str | None = None
+    spritesheetRevision: str | None = None
+    frameW: int | None = None
+    frameH: int | None = None
+    framesPerState: int | None = None
+    framesByState: dict[str, int] | None = None
+    framesByRow: dict[str, int] | None = None
+    loopMs: int | None = None
     scale: float | None = None
-    stateRows: list[str] | None = None  # noqa: N815 - wire key
+    stateRows: list[str] | None = None
 
 
 class PetHatchResult(Result):
@@ -583,7 +583,7 @@ class PetHatchResult(Result):
 
     ok: bool
     slug: str
-    displayName: str  # noqa: N815 - wire key
+    displayName: str
     warnings: list[JsonValue] = Field(default_factory=list)
     pet: PetSpritePayload
 
@@ -604,9 +604,9 @@ class ProjectFacts(Result):
 
     root: str
     manifests: list[str]
-    packageManagers: list[str]  # noqa: N815 - wire key
-    verifyCommands: list[str]  # noqa: N815 - wire key
-    contextFiles: list[str]  # noqa: N815 - wire key
+    packageManagers: list[str]
+    verifyCommands: list[str]
+    contextFiles: list[str]
 
 
 class ProjectFactsResult(Result):

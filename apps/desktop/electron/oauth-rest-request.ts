@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 import { readJsonErrorBody, readStatusCode } from './api-transport'
 import { isGatewayAuthRejection } from './connection-config'
 import { type NativeAccessTokenOptions, NativeAuthChangedError } from './native-access-token'
@@ -55,6 +57,38 @@ export interface MintGatewayWsTicketDeps {
   ensureNativeAccessToken: OauthRestRequestDeps<unknown>['ensureNativeAccessToken']
   fetchJson: (url: string, token: string | null, options: any) => Promise<any>
   fetchJsonViaOauthSession: (url: string, options: any) => Promise<any>
+}
+
+// Roster polling reads saved gateways in the background. Its auth failures
+// belong on the source row, not in a login window over the active workspace.
+const interactiveLoginAllowed = new AsyncLocalStorage<boolean>()
+
+export function withoutInteractiveOauthLogin<T>(work: () => Promise<T>): Promise<T> {
+  return interactiveLoginAllowed.run(false, work)
+}
+
+export function canShowInteractiveOauthLogin(): boolean {
+  return interactiveLoginAllowed.getStore() !== false
+}
+
+export async function retryCookie401WithLogin<T>(
+  error: unknown,
+  options: { method?: unknown; replayOn401?: unknown },
+  actions: { clearCookies: () => void; login: () => Promise<unknown>; retry: () => Promise<T> }
+): Promise<T> {
+  if (!canShowInteractiveOauthLogin() || !shouldReplayAfterCookie401(error, options)) {
+    throw error
+  }
+
+  actions.clearCookies()
+
+  try {
+    await actions.login()
+  } catch {
+    throw error
+  }
+
+  return actions.retry()
 }
 
 /**

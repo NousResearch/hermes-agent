@@ -1061,7 +1061,7 @@ def _branch_owner_sessions(repo_root: str) -> dict:
     suffix = ".hermes-session"
     try:
         listing = _git_out(["config", "--get-regexp", r"^branch\..*\.hermes-session$"], repo_root)
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return {}
     owners: dict = {}
     for line in (listing or "").splitlines():
@@ -1074,21 +1074,29 @@ def _branch_owner_sessions(repo_root: str) -> dict:
     return owners
 
 
-def _session_is_gone(session_id: str) -> bool:
-    """Whether the session store no longer counts *session_id* as live.
+def _session_is_gone(session_id: str) -> Optional[bool]:
+    """True when this store archived *session_id*, False while it is live, None when unknown.
 
-    Gone means archived, or never recorded there. Fails SAFE toward False: a store we
-    cannot read is never the reason a branch is deleted.
+    Unknown (no row, or an unreadable store) is NOT gone: the row is only written on the
+    session's first turn, and the store is per profile while the repo is shared, so a
+    missing row is also a session that has not spoken yet or belongs to another profile.
+    The caller falls back to the age gate for those.
     """
-    try:
-        from hermes_state import SessionDB
+    import sqlite3
 
-        row = SessionDB().get_session(session_id)
-    except Exception:
-        return False
-    if row is None:
-        return True
-    return bool(row.get("archived"))
+    from hermes_state import SessionDB
+
+    try:
+        db = SessionDB(read_only=True)
+    except (sqlite3.Error, OSError, RuntimeError):
+        return None
+    try:
+        row = db.get_session(session_id)
+    except (sqlite3.Error, OSError, RuntimeError):
+        return None
+    finally:
+        db.close()
+    return None if row is None else bool(row.get("archived"))
 
 
 def _branch_tip_dates(repo_root: str) -> dict:
@@ -1126,9 +1134,9 @@ def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None,
     """Delete local ``hermes/hermes-*`` and ``pr-*`` branches with no worktree, except *protect*.
 
     Session-associated first: a branch is reaped when the session recorded on it (see
-    :func:`_branch_owner_sessions`) is gone from the session store, whatever its age — a
-    branch then lives exactly as long as the work that made it. Branches with no recorded
-    owner fall back to the age gate (*max_age_hours*), which also protects work that is
+    :func:`_branch_owner_sessions`) is archived in the session store, whatever its age, and
+    kept while that session is live. Branches with no recorded owner, or an owner the
+    store has no row for, fall back to the age gate (*max_age_hours*), which also protects work that is
     only briefly worktree-less: the ref is created before its tree, and a tree can be
     reaped on an earlier pass. Undatable branches are kept.
     """
@@ -1170,12 +1178,13 @@ def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None,
     stale = []
     for b in orphaned:
         owner = owners.get(b)
-        if owner is not None:
+        gone = _session_is_gone(owner) if owner is not None else None
+        if gone is not None:
             # Session-associated: the ref lives exactly as long as its session does.
-            if _session_is_gone(owner):
+            if gone:
                 stale.append(b)
         elif ages.get(b, float("inf")) <= cutoff:
-            # Nothing recorded an owner: the age gate is the only signal left.
+            # No owner, or one this store has no row for: the age gate is the only signal left.
             stale.append(b)
     if not stale:
         return

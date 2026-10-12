@@ -61,12 +61,23 @@ def repo(tmp_path):
 
 
 @pytest.fixture
-def live(monkeypatch):
-    """Answer session liveness from a set, so no real session store is opened."""
-    alive: set = set()
+def live():
+    """The real session store under the hermetic HERMES_HOME: ``live.add(sid)`` records a
+    live session, ``live.archive(sid)`` records one and archives it."""
+    from hermes_state import SessionDB
 
-    monkeypatch.setattr(worktree_ops, "_session_is_gone", lambda sid: sid not in alive)
-    return alive
+    db = SessionDB()
+
+    class Store:
+        def add(self, sid):
+            db.create_session(sid, source="cli")
+
+        def archive(self, sid):
+            self.add(sid)
+            db.set_session_archived(sid, True)
+
+    yield Store()
+    db.close()
 
 
 def _own(repo, branch, session_id, monkeypatch):
@@ -100,6 +111,7 @@ def test_no_session_in_the_environment_records_no_owner(repo, monkeypatch):
 def test_a_branch_whose_session_is_gone_is_reaped_however_young(repo, live, monkeypatch):
     """The in-flight branch the age gate would spare, once its session has gone."""
     _own(repo, "hermes/hermes-fresh", "sess-done", monkeypatch)
+    live.archive("sess-done")
 
     worktree_ops._prune_orphaned_branches(str(repo))
 
@@ -114,6 +126,18 @@ def test_a_branch_whose_session_is_live_is_kept_however_old(repo, live, monkeypa
     worktree_ops._prune_orphaned_branches(str(repo), max_age_hours=0)
 
     assert "hermes/hermes-stale" in _branches(repo)
+
+
+def test_an_owner_the_store_has_no_row_for_falls_back_to_the_age_gate(repo, live, monkeypatch):
+    """No row is not "gone": the row is written on the first turn and the store is per
+    profile, so a fresh lane (or another profile's) must not be reaped on sight."""
+    _own(repo, "hermes/hermes-fresh", "sess-before-first-turn", monkeypatch)
+    _own(repo, "hermes/hermes-stale", "sess-other-profile", monkeypatch)
+
+    worktree_ops._prune_orphaned_branches(str(repo))
+
+    assert "hermes/hermes-fresh" in _branches(repo)
+    assert "hermes/hermes-stale" not in _branches(repo)
 
 
 # ── the age gate, as the fallback for branches nothing owns ───────────

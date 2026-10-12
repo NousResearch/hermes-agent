@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
+import gateway.run_adapters as adapters_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.run import GatewayRunner
@@ -1255,3 +1256,217 @@ class TestSecondarySkipsCredentiallessPlatforms:
         assert connected == 1
         assert created == [(Platform.SLACK, profile_cfg.platforms[Platform.SLACK])]
         assert Platform.SLACK in runner._profile_adapters["profile-b"]
+
+
+class _PluginPlatformRecoveryAdapter(_SecondaryRecoveryAdapter):
+    """A secondary adapter on a platform that is NOT a builtin: the one shape whose creation can
+    return None and still heal (a bundled plugin whose deferred load died transiently)."""
+
+    platform = Platform("irc")
+
+
+def _install_plugin_platform_context(monkeypatch, runner, adapter):
+    """Point the secondary-restart fixtures at that platform + credential."""
+    _install_secondary_reconnect_context(monkeypatch, runner, adapter)
+    monkeypatch.setattr(
+        "gateway.config.load_gateway_config",
+        lambda: GatewayConfig(
+            multiplex_profiles=True,
+            platforms={
+                Platform("irc"): PlatformConfig(enabled=True, token="plugin-token")
+            },
+        ),
+    )
+
+
+def _dispose_platform_registration(monkeypatch, name: str) -> None:
+    """Model the state #137268(d) rules in: the plugin's load overran its deadline, so the plugin
+    manager disposed the lease and the registry holds NO registration for the platform at boot."""
+    from gateway.platform_registry import platform_registry
+
+    real_is_registered = platform_registry.is_registered
+    monkeypatch.setattr(
+        platform_registry,
+        "is_registered",
+        lambda candidate: False if candidate == name else real_is_registered(candidate),
+    )
+
+
+def _install_none_buildable_context(monkeypatch, runner, platform):
+    """Secondary restart for a platform whose creation returns None and cannot heal without a
+    config change (a builtin whose probe fails)."""
+    _install_secondary_reconnect_context(monkeypatch, runner, _SecondaryRecoveryAdapter())
+    monkeypatch.setattr(
+        "gateway.config.load_gateway_config",
+        lambda: GatewayConfig(
+            multiplex_profiles=True,
+            platforms={
+                platform: PlatformConfig(enabled=True, token="probe-token")
+            },
+        ),
+    )
+
+
+class TestSecondaryAdapterUnavailableRecovery:
+    """A secondary platform whose adapter creation returns None reaches the same reconnect slot a
+    connect failure gets, when the platform can still heal. The startup sweep runs once per process,
+    so dropping the platform there left it dead until the gateway was restarted by hand (#137268)."""
+
+    @pytest.mark.asyncio
+    async def test_healable_none_is_queued_and_installed_on_a_later_tick(self, monkeypatch):
+        runner = _secondary_recovery_runner()
+        replacement = _PluginPlatformRecoveryAdapter()
+        _install_plugin_platform_context(monkeypatch, runner, replacement)
+        _dispose_platform_registration(monkeypatch, "irc")
+        built = []
+
+        def create(platform, config):
+            built.append(platform)
+            # Unusable on the startup sweep AND on the first reconnect attempt; importable after.
+            return replacement if len(built) > 2 else None
+
+        monkeypatch.setattr(runner, "_create_adapter", create)
+        rearm = AsyncMock(return_value=None)
+        monkeypatch.setattr(adapters_run, "rearm_secondary_plugin_load", rearm)
+        monkeypatch.setattr(
+            runner, "_connect_adapter_with_timeout", AsyncMock(return_value=True)
+        )
+        real_sleep = asyncio.sleep
+        ticks = []
+
+        async def fast_backoff(delay, *args, **kwargs):
+            ticks.append(delay)
+            if len(ticks) >= 3:
+                runner._running = False
+            await real_sleep(0 if delay > 0.05 else delay)
+
+        monkeypatch.setattr(asyncio, "sleep", fast_backoff)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 0
+        assert runner._profile_adapters.get("reviewer", {}) == {}
+        # The platform is parked for reconnect instead of being dropped for the process lifetime.
+        bridge = list(runner._background_tasks)
+        assert len(bridge) == 1
+        await asyncio.wait_for(bridge[0], timeout=0.5)
+        task = runner._profile_failed_platforms["reviewer"][Platform("irc")]
+        await asyncio.wait_for(task, timeout=1.0)
+        # The failed load is re-armed, the next attempt builds the plugin, and the slot clears.
+        assert rearm.await_count == 1
+        assert len(built) == 3
+        assert runner._profile_adapters["reviewer"][Platform("irc")] is replacement
+        assert Platform("irc") not in runner._profile_failed_platforms.get("reviewer", {})
+
+    @pytest.mark.asyncio
+    async def test_unhealable_none_is_not_queued(self, monkeypatch):
+        """A builtin whose probe fails needs a config change: no slot, no retry storm."""
+        runner = _secondary_recovery_runner()
+        built = []
+        _install_none_buildable_context(monkeypatch, runner, Platform.SIGNAL)
+        monkeypatch.setattr(
+            runner, "_create_adapter", lambda platform, config: built.append(platform) or None
+        )
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 0
+        assert built == [Platform.SIGNAL]
+        assert list(runner._background_tasks) == []
+        assert runner._profile_failed_platforms == {}
+
+    @pytest.mark.asyncio
+    async def test_second_profile_skips_a_shared_listener_without_queueing_it(
+        self, monkeypatch
+    ):
+        """A profile repeating the default's api_server is a served-mirror, not a second listener: it is
+        skipped in place — no crash, and nothing for the reconnect queue to retry."""
+        runner = _secondary_recovery_runner()
+        built = []
+        _install_none_buildable_context(monkeypatch, runner, Platform.API_SERVER)
+        monkeypatch.setattr(
+            runner, "_create_adapter", lambda platform, config: built.append(platform) or None
+        )
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 0
+        assert built == []
+        assert list(runner._background_tasks) == []
+        assert runner._profile_failed_platforms == {}
+
+    @pytest.mark.asyncio
+    async def test_attempt_classifies_healable_none_as_retryable(self, monkeypatch):
+        """``(None, False)`` keeps the slot; ``(None, None)`` still gives up."""
+        runner = _secondary_recovery_runner()
+        _install_none_buildable_context(monkeypatch, runner, Platform.SIGNAL)
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: None)
+
+        assert await runner._secondary_reconnect_attempt(
+            "reviewer", Platform.SIGNAL
+        ) == (None, None)
+
+        _install_plugin_platform_context(
+            monkeypatch, runner, _PluginPlatformRecoveryAdapter()
+        )
+        _dispose_platform_registration(monkeypatch, "irc")
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: None)
+        assert await runner._secondary_reconnect_attempt(
+            "reviewer", Platform("irc")
+        ) == (None, False)
+
+    @pytest.mark.asyncio
+    async def test_queued_slot_stops_a_second_build(self, monkeypatch):
+        """The queued entry is the claim the runtime re-scan defers to: one adapter, never two."""
+        runner = _secondary_recovery_runner(running=False)
+        _install_plugin_platform_context(
+            monkeypatch, runner, _PluginPlatformRecoveryAdapter()
+        )
+        built = []
+        monkeypatch.setattr(
+            runner, "_create_adapter", lambda platform, config: built.append(platform) or None
+        )
+        runner._profile_failed_platforms = {
+            "reviewer": {Platform("irc"): MagicMock(name="reconnect-task")}
+        }
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 0
+        assert built == []
+
+    @pytest.mark.asyncio
+    async def test_plugin_load_rearm_is_capped_and_off_loop(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        runner = _secondary_recovery_runner()
+        _install_plugin_platform_context(
+            monkeypatch, runner, _PluginPlatformRecoveryAdapter()
+        )
+        rearmed, on_loop = [], []
+        manager = MagicMock()
+        manager.rearm_failed_platform.side_effect = (
+            lambda name: rearmed.append(name)
+            or on_loop.append(threading.current_thread() is threading.main_thread())
+            or True
+        )
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+        queue_info = {}
+
+        for _ in range(5):
+            # The name the reconnect loop calls (imported from the recovery module).
+            await adapters_run.rearm_secondary_plugin_load(
+                runner, "reviewer", Platform("irc"), queue_info
+            )
+
+        assert rearmed == ["irc"] * 3  # a permanently broken plugin stops being re-imported
+        assert queue_info["load_rearms"] == 3
+        assert on_loop and not any(on_loop)  # the re-arm never blocks the event loop

@@ -89,6 +89,14 @@ OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 #: Meta Model API (Muse): rejects ``none``.
 META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
+#: GLM-5.3 behind OpenAI-compatible resellers (b.ai-style MaaS relays, live-verified 2026-09-27):
+#: the relay's MaaS front accepts exactly low/high/max; ``medium``, ``none`` and ``minimal`` are
+#: rejected with an opaque ``rejected by an internal MaaS component`` (code 400001) HTTP 400. The
+#: native z.ai endpoint accepts the full graded scale (#91789), so this vocabulary applies only to
+#: relay mirrors of glm-5.3*.
+B_AI_GLM53_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+B_AI_GLM53_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max", "minimal": "low", "none": "low"}
+
 
 def is_astra_model(model: Optional[str]) -> bool:
     """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.

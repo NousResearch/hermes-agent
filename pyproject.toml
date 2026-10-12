@@ -639,6 +639,13 @@ exclude-newer = "14 days"
 # risk — their newest releases are years old — and unbricks resolvers that
 # cannot see upload dates.
 #
+# pilk: both shapes at once (#136868). [silk] exact-pins pilk==0.2.4, a
+# frozen 2023 release whose sdist upload date is missing from the index, so a
+# cold-cache `uv lock` under the rolling cutoff errors out
+# ("pilk==0.2.4 has no publish time ... requirements are unsatisfiable")
+# while a warm cache (metadata with real dates) passes. The pin cannot float,
+# so exemption is pure brick-risk removal.
+#
 # setuptools, wheel, pillow, mcp: build/core pin bricks (#78227, #75992, #76020, #96488). uv
 # applies exclude-newer to build-system.requires and core deps too; when a
 # resolver cannot see an upload date (old uv, mirror index, stale HTTP cache)
@@ -737,6 +744,7 @@ opentelemetry-sdk = false
 packaging = false
 parallel-web = false
 pathspec = false
+pilk = false
 pillow = false
 piper-tts = "2026-09-04T16:47:32Z"
 prompt-toolkit = false

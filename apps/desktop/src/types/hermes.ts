@@ -1484,15 +1484,14 @@ export interface LocalHardware {
   vram_used_bytes: number | null
 }
 
-/** GET /api/system/stats: host facts for the System page and the statusbar's
- *  System Resources item. Every psutil-backed field is optional — a backend
+/** GET /api/system/stats: host facts for the web dashboard's System page and
+ *  the desktop statusbar's System Resources item. Every psutil-backed field is optional — a backend
  *  without psutil (or an older one) omits it, and the UI hides that row. */
 export interface SystemStats {
   hostname: string
   cpu_count: number | null
   psutil: boolean
   cpu_percent?: number
-  load_avg?: number[]
   memory?: { total: number; available: number; used: number; percent: number }
   /** The filesystem holding the backend's Hermes home. */
   disk?: { total: number; used: number; free: number; percent: number }

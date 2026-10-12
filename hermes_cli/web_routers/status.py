@@ -567,9 +567,11 @@ async def get_status(profile: Optional[str] = None):
 
 
 @router.get("/api/system/stats")
-async def get_system_stats():
-    """Host + process system stats for the System page (stdlib identity; psutil CPU/memory/
-    disk/uptime when available). Non-sensitive: no env values, no paths beyond hermes home."""
+def get_system_stats():
+    """Host + process system stats for the System page and the desktop statusbar (stdlib
+    identity; psutil CPU/memory/disk/uptime when available). Non-sensitive: no env values, no
+    paths beyond hermes home. Sync def: psutil.cpu_percent(interval=0.1) sleeps 100ms, so it
+    runs in the threadpool instead of holding the event loop (and the chat socket)."""
     import platform as _platform
 
     info: dict[str, Any] = {

@@ -3453,8 +3453,15 @@ export const ruOverrides = {
       contextUsage: 'Использование контекста',
       compressions: count => `Сжатий: ${count}`,
       systemResources: {
+        title: 'Системные ресурсы',
+        loading: 'Ресурсы…',
+        gpuUtilization: 'Загрузка GPU',
+        gpuMemory: 'Память GPU',
+        ram: 'ОЗУ',
         cpu: 'ЦП',
-        disk: 'Диск'
+        disk: 'Диск',
+        unifiedNote: 'Единая память — GPU и система используют общий пул.',
+        toggle: 'Системные ресурсы'
       },
       contextUsagePanel: {
         categories: {

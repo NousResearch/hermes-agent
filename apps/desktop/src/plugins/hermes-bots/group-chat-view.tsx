@@ -69,6 +69,7 @@ import {
   scheduleGroupChatServerSync,
   setGroupChatHoldDetection,
   setGroupChatImage,
+  setGroupChatSharing,
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
@@ -213,6 +214,8 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
           members: Array.isArray(room.members) ? room.members : [],
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
           image: room.image || null,
+          shareWithGateways: room.shareWithGateways === true,
+          sharingRevoked: room.sharingRevoked === true,
           syncRevision: Math.max(0, Number(room.syncRevision || 0))
         }
       }
@@ -397,15 +400,18 @@ function GroupChatSettingsDialog({
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const current = (rooms[group] || {}).image || null
   const currentHoldDetection = (rooms[group] || {}).holdDetection !== false
+  const currentSharing = (rooms[group] || {}).shareWithGateways === true
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
   const [holdDetection, setHoldDetection] = useState(currentHoldDetection)
+  const [sharing, setSharing] = useState(currentSharing)
   const [compressing, setCompressing] = useState<null | string>(null)
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
       setHoldDetection(currentHoldDetection)
+      setSharing(currentSharing)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
@@ -455,6 +461,15 @@ function GroupChatSettingsDialog({
       setGroupChatHoldDetection(finalName, holdDetection)
     }
 
+    if (sharing !== currentSharing) {
+      try {
+        await setGroupChatSharing(finalName, sharing)
+      } catch {
+        setSharing(currentSharing)
+        host.notify({ kind: 'error', message: b.group.sharingSaveFailed })
+      }
+    }
+
     onClose()
 
     if (finalName !== group) {
@@ -501,6 +516,12 @@ function GroupChatSettingsDialog({
           description={b.group.holdDetectionHint}
           label={b.group.holdDetection}
           onChange={setHoldDetection}
+        />
+        <ToggleRow
+          checked={sharing}
+          description={b.group.sharingHint}
+          label={b.group.sharing}
+          onChange={setSharing}
         />
         {(members || []).length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid="group-settings-members">

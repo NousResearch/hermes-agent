@@ -1249,38 +1249,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             _handled = _result is not None
         return _handled, _result
 
-    def _hm_rescue_orphaned_fifo(
-        self, event: MessageEvent, source: SessionSource, is_internal: bool, _quick_key: str
-    ) -> tuple[MessageEvent, SessionSource, bool]:
-        """FIFO orphan rescue: a session that went idle with a populated overflow (post-turn drain
-        never promoted, e.g. a compression-demoted follow-up) silently orphaned those events. The
-        oldest orphan runs as THIS turn and the incoming event is parked behind the chain. Skipped
-        for control commands and internal events."""
-        try:
-            # ── FIFO orphan rescue (#99882) ──────────────────────────────── If this session went idle with
-            # a populated overflow (queued during a busy window whose post-turn drain never promoted — e.g.
-            # a compression-demoted follow-up after the compression window ended through an exit that
-            # skipped the promotion site), those events were silently orphaned. We are starting the next
-            # turn for this session NOW: re-stage the orphans in FIFO order and enqueue the incoming event
-            # behind them, so arrival order (#28503) holds: oldest orphan runs as this turn, the rest drain
-            # in order, the new message last.
-            _orphan_adapter = self._delivery_adapter_for(source)
-            if _orphan_adapter is None or getattr(event, "internal", False) or event.get_command():
-                return event, source, is_internal
-            _rescued = self._rescue_orphaned_overflow(_quick_key, _orphan_adapter)
-            if _rescued is None:
-                return event, source, is_internal
-            # Into the slot when the chain was a single orphan (post-turn drain picks it up),
-            # otherwise into overflow behind the already-staged next orphan.
-            self._enqueue_fifo(_quick_key, event, _orphan_adapter)
-            # Same session key by construction; carry the orphan's own source so reply anchors /
-            # thread metadata point at the message actually being answered.
-            _rescued_source = getattr(_rescued, "source", None)
-            source = _rescued_source if _rescued_source is not None else source
-            return _rescued, source, bool(getattr(_rescued, "internal", False))
-        except Exception:
-            logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
-            return event, source, is_internal
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
@@ -1306,7 +1274,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if _paused_notice is not None:
             return _paused_notice
 
-        _quick_key = self._session_key_for_source(source)
+        source, _quick_key = await self._stale_override_intake_source(event, source, is_internal)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply
@@ -1364,6 +1332,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 _consumed, _consumer_reply = await run_post_admission_hook(self, event, source, _quick_key)
                 if _consumed:
                     return _consumer_reply
+            # Notice I/O owns the same slot and cleanup as the agent turn.
+            handled, response = await self._stale_override_before_agent(
+                event, source, _quick_key, _run_generation,
+            )
+            if handled:
+                return response
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             except TurnLeaseTimeoutError as exc:
@@ -1376,6 +1350,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                     _quick_key, exc.session_id,
                 )
                 return t("gateway.busy.another_turn_running")
+            await self._defer_stale_override_turn_completed(
+                _quick_key, source=source, run_generation=_run_generation, is_internal=is_internal,
+            )
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,

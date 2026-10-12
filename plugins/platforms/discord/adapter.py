@@ -564,13 +564,6 @@ def _metadata_marks_nonconversational(metadata: Optional[dict[str, Any]]) -> boo
     return any(bool(metadata.get(key)) for key in _DISCORD_NONCONVERSATIONAL_METADATA_KEYS)
 
 
-def _prompt_target_id(chat_id: str, metadata: Optional[dict]) -> str:
-    """Interactive prompts post into ``metadata["thread_id"]`` when present, else ``chat_id``."""
-    if metadata and metadata.get("thread_id"):
-        return metadata["thread_id"]
-    return chat_id
-
-
 def _looks_like_nonconversational_history_message(content: str) -> bool:
     """Fallback recognizer for legacy status bumps missing persisted IDs."""
     text = content or ""
@@ -1283,11 +1276,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
     PLAYBACK_TIMEOUT = 120
     PLAYBACK_TIMEOUT_PADDING = 30
 
-    def format_tool_preview(self, preview: ToolPreview) -> str:
-        """Keep a truncated URL preview clickable in Discord markdown."""
-        if not preview.url:
-            return preview.text
-        return _format_discord_markdown_link(preview.text, preview.url)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -5701,6 +5689,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
         try:
+            from plugins.platforms.discord.adapter_component_auth import _prompt_target_id
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             send_kwargs, view = build(channel)
             if view is not None:
@@ -5907,6 +5896,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             )
             view = ChoicePickerView(
                 choices=choices, on_choice_selected=on_choice_selected,
+                requester_user_id=(metadata or {}).get("requester_user_id"),
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
             return {"embed": embed, "view": view}, view
@@ -6844,10 +6834,11 @@ def _define_discord_view_classes() -> None:
     class ChoicePickerView(_HermesView):
         """Flat single-select picker for finite-choice commands (/reasoning, /fast); 2-minute timeout."""
 
-        def __init__(self, choices: list, on_choice_selected, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
+        def __init__(self, choices: list, on_choice_selected, allowed_user_ids: set, allowed_role_ids: Optional[set] = None, requester_user_id: Optional[Any] = None):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=120)
             self.choices = list(choices)[:_DISCORD_SELECT_MAX_OPTIONS]
             self.on_choice_selected = on_choice_selected
+            self.requester_user_id = str(requester_user_id or "").strip() if requester_user_id is not None else None
             options = []
             for choice in self.choices:
                 label = str(choice.get("label") or choice.get("value") or "")
@@ -6867,6 +6858,11 @@ def _define_discord_view_classes() -> None:
             if not self._check_auth(interaction):
                 await interaction.response.send_message(_unauthorized(), ephemeral=True)
                 return
+            if self.requester_user_id is not None:
+                actor = str(getattr(getattr(interaction, "user", None), "id", "") or "").strip()
+                if not actor or actor != self.requester_user_id:
+                    await interaction.response.send_message("⛔ Only the user who opened this picker can use it.", ephemeral=True)
+                    return
             if self.resolved:
                 await interaction.response.defer()
                 return

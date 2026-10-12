@@ -1,0 +1,551 @@
+"""Session override notices and held-message lifecycle."""
+from __future__ import annotations
+import asyncio
+
+from copy import copy
+import logging
+import time
+from typing import Optional
+from gateway.platforms.event import MessageEvent
+from gateway.session import SessionSource
+from gateway.session_identity import replace_source
+
+logger = logging.getLogger("gateway.run")
+_STALE_OVERRIDE_LAST_COMPLETED_KEY = "stale_override_last_completed_at"
+_STALE_OVERRIDE_PROMPT_TIMEOUT_SECONDS = 120.0
+
+class GatewayStaleOverrideMixin:
+    async def _mark_stale_override_turn_completed(
+        self, session_key: str, *, is_internal: bool
+    ) -> None:
+        """Persist the completion clock used by stale-override notices."""
+        if is_internal or not session_key:
+            return
+        try:
+            await self.async_session_store.set_session_metadata(
+                session_key, _STALE_OVERRIDE_LAST_COMPLETED_KEY, time.time()
+            )
+        except Exception:
+            logger.debug(
+                "Failed to persist stale-override completion clock for %s",
+                session_key,
+                exc_info=True,
+            )
+
+    async def _defer_stale_override_turn_completed(
+        self,
+        session_key: str,
+        *,
+        source: SessionSource,
+        run_generation: int,
+        is_internal: bool,
+    ) -> None:
+        """Start the idle clock after the delivery lifecycle, not generation."""
+        if is_internal or not session_key:
+            return
+
+        notice_config = getattr(self.config, "stale_override_notice", None)
+        if notice_config is None or notice_config.mode == "off":
+            return
+        try:
+            home_channel = self.config.get_home_channel(source.platform)
+        except Exception:
+            logger.debug("Failed to resolve stale-override completion home channel", exc_info=True)
+            home_channel = None
+        from gateway.stale_override_notice import source_matches_channels
+
+        if not source_matches_channels(
+            source,
+            notice_config.channels,
+            home_channel=home_channel,
+        ):
+            return
+
+        adapter = self._delivery_adapter_for(source)
+        register = getattr(adapter, "register_post_delivery_callback", None)
+        if not callable(register):
+            await self._mark_stale_override_turn_completed(
+                session_key, is_internal=False
+            )
+            return
+
+        async def _after_delivery() -> None:
+            await self._mark_stale_override_turn_completed(
+                session_key, is_internal=False
+            )
+
+        register(
+            session_key,
+            _after_delivery,
+            generation=run_generation,
+        )
+
+    def _stale_override_decision(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        notice_config,
+    ):
+        """Resolve which explicit session overrides differ from live defaults."""
+        from gateway.stale_override_notice import (
+            OverrideNoticeDecision,
+            reasoning_effort,
+            reasoning_matches_policy,
+            route_label,
+            routes_differ,
+        )
+
+        self._rehydrate_session_model_override(session_key)
+        state = self._peek_session_state(session_key)
+        if state is None:
+            return OverrideNoticeDecision()
+
+        model_override = state.conversation.model_override
+        reasoning_override = state.conversation.reasoning_override
+
+        default_model, default_runtime = self._resolve_session_agent_runtime(
+            source=source,
+            session_key=session_key,
+            include_session_override=False,
+        )
+        current_model, current_runtime = self._resolve_session_agent_runtime(
+            source=source,
+            session_key=session_key,
+        )
+        default_provider = default_runtime.get("provider")
+        current_provider = current_runtime.get("provider")
+        model_stale = bool(
+            notice_config.model != "off"
+            and model_override is not None
+            and routes_differ(
+                current_model,
+                current_provider,
+                default_model,
+                default_provider,
+            )
+        )
+
+        default_reasoning = self._load_reasoning_config(current_model)
+        reasoning_stale = reasoning_matches_policy(
+            notice_config.reasoning,
+            reasoning_override,
+            default_reasoning,
+        )
+
+        return OverrideNoticeDecision(
+            model_stale=model_stale,
+            reasoning_stale=reasoning_stale,
+            current_route=route_label(current_model, current_provider),
+            default_route=route_label(default_model, default_provider),
+            current_reasoning=reasoning_effort(reasoning_override),
+            default_reasoning=reasoning_effort(default_reasoning),
+        )
+
+    def _stale_override_reset_denial(
+        self, source: SessionSource, *, model: bool, reasoning: bool
+    ) -> Optional[str]:
+        # Older standalone releases expose only the direct slash checker.
+        primary_check = getattr(self, "_primary_slash_access_check", None)
+        check = primary_check() if primary_check is not None else self._check_slash_access
+        for command, resets in (("model", model), ("reasoning", reasoning)):
+            if resets:
+                denial = check(source, command)
+                if denial:
+                    return denial
+        return None
+
+    async def _clear_stale_override_selection(
+        self, session_key: str, *, model: bool, reasoning: bool
+    ) -> None:
+        """Clear selected session overrides through their canonical stores."""
+        reset_generation = self._current_session_run_generation(session_key)
+        if model:
+            conversation = self._session_state(session_key).conversation
+            conversation.model_override = None
+            conversation.one_turn_restore = None
+            pending_notes = getattr(self, "_pending_model_notes", None)
+            if isinstance(pending_notes, dict):
+                pending_notes.pop(session_key, None)
+            try:
+                await self.async_session_store.set_model_override(session_key, None)
+            except Exception:
+                logger.debug(
+                    "Failed to persist stale-override model reset for %s",
+                    session_key,
+                    exc_info=True,
+                )
+        if not self._is_session_run_current(session_key, reset_generation):
+            return
+        if reasoning:
+            self._set_session_reasoning_override(session_key, None)
+        if model or reasoning:
+            self._evict_cached_agent(session_key)
+
+    def _schedule_stale_override_prompt_expiry(
+        self, session_key: str, token: object
+    ) -> None:
+        """Expire a held message without ever submitting it implicitly."""
+
+        async def _expire() -> None:
+            await asyncio.sleep(_STALE_OVERRIDE_PROMPT_TIMEOUT_SECONDS)
+            pending = getattr(self, "_stale_override_pending", {}).get(session_key)
+            if pending is not None and pending.get("token") is token:
+                self._stale_override_pending.pop(session_key, None)
+                logger.info(
+                    "Stale-override prompt expired; pending message was not sent "
+                    "(session=%s)",
+                    session_key,
+                )
+
+        task = asyncio.create_task(_expire())
+        background = getattr(self, "_background_tasks", None)
+        if background is not None:
+            background.add(task)
+            task.add_done_callback(background.discard)
+
+    async def _maybe_handle_stale_override_notice(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *, run_generation: Optional[int] = None,
+    ) -> tuple[bool, Optional[str]]:
+        """Notify or hold the first ordinary message after an idle override."""
+        metadata = getattr(event, "metadata", None)
+        if isinstance(metadata, dict) and metadata.pop(
+            "_stale_override_notice_bypass", False
+        ):
+            return False, None
+        if getattr(event, "internal", False) or event.is_command():
+            return False, None
+
+        config = getattr(getattr(self, "config", None), "stale_override_notice", None)
+        if config is None or config.mode == "off":
+            return False, None
+
+        if run_generation is None:
+            run_generation = self._current_session_run_generation(session_key)
+        if not self._is_session_run_current(session_key, run_generation):
+            return True, None
+        handled, decision, idle_seconds = await self._stale_override_preflight(
+            event, session_key, config, run_generation,
+        )
+        if decision is None:
+            return handled, None
+        return await self._present_stale_override_notice(
+            event, session_key, config, run_generation, decision, idle_seconds,
+        )
+
+    async def _stale_override_preflight(self, event, session_key, config, run_generation):
+        """Read idle and reset policy before presenting an override decision."""
+        from gateway.stale_override_notice import source_matches_channels
+
+        home = None
+        try:
+            home = self.config.get_home_channel(event.source.platform)
+        except Exception:
+            logger.debug("Failed to resolve stale-override home channel", exc_info=True)
+        if not source_matches_channels(
+            event.source, config.channels, home_channel=home
+        ):
+            return False, None, None
+
+        try:
+            completed_at = await self.async_session_store.get_session_metadata(
+                session_key, _STALE_OVERRIDE_LAST_COMPLETED_KEY, None
+            )
+            idle_seconds = max(0.0, time.time() - float(completed_at))
+        except (TypeError, ValueError):
+            return False, None, None
+        except Exception:
+            logger.debug("Failed to read stale-override completion clock", exc_info=True)
+            return False, None, None
+        if not self._is_session_run_current(session_key, run_generation):
+            return True, None, None
+        if idle_seconds < config.idle_minutes * 60:
+            return False, None, None
+
+        try:
+            session_entry = await self.async_session_store.get_or_create_session(
+                event.source,
+                touch_activity=False,
+            )
+        except Exception:
+            logger.debug("Failed stale-override reset-policy preflight", exc_info=True)
+            return False, None, None
+        if not self._is_session_run_current(session_key, run_generation):
+            return True, None, None
+        if getattr(session_entry, "was_auto_reset", False):
+            logger.info(
+                "Skipping stale-override prompt because session auto-reset is pending "
+                "(session=%s)",
+                session_key,
+            )
+            return False, None, None
+
+        decision = self._stale_override_decision(
+            source=event.source,
+            session_key=session_key,
+            notice_config=config,
+        )
+        if not decision.triggered:
+            return False, None, None
+
+        return False, decision, idle_seconds
+
+    async def _present_stale_override_notice(
+        self, event, session_key, config, run_generation, decision, idle_seconds,
+    ):
+        """Deliver the notice or hold its input behind the authorized picker."""
+        adapter = self._delivery_adapter_for(event.source)
+        if adapter is None:
+            return False, None
+        # Keep routing/profile and transport provenance while authorizing the actor.
+        policy_source = copy(event.source)
+        requester = getattr(event, "user_id", None)
+        if isinstance(requester, int) and not isinstance(requester, bool):
+            requester = str(requester)
+        if isinstance(requester, str) and requester:
+            policy_source.user_id = requester
+        confirm = config.mode == "confirm" and not self._stale_override_reset_denial(
+            policy_source, model=decision.model_stale, reasoning=decision.reasoning_stale
+        )
+        notice_text = decision.message(idle_seconds / 60.0, held=confirm)
+        send_metadata = self._thread_metadata_for_source(
+            event.source, self._reply_anchor_for_event(event)
+        )
+
+        if not confirm:
+            try:
+                await adapter.send(
+                    event.source.chat_id,
+                    f"ℹ️ {notice_text}",
+                    metadata=send_metadata,
+                )
+            except Exception:
+                logger.warning("Failed to send stale-override info notice", exc_info=True)
+            return False, None
+
+        has_picker = getattr(type(adapter), "send_choice_picker", None) is not None
+        if not has_picker:
+            logger.warning(
+                "stale_override_notice mode=confirm requires send_choice_picker; "
+                "allowing message on platform=%s",
+                getattr(getattr(event.source, "platform", None), "value", "unknown"),
+            )
+            return False, None
+
+        pending_map = getattr(self, "_stale_override_pending", None)
+        if pending_map is None:
+            pending_map = {}
+            self._stale_override_pending = pending_map
+        if session_key in pending_map:
+            return True, (
+                "⚠️ A previous message is still waiting on the override prompt. "
+                "Resolve that prompt first; this newer message was not sent."
+            )
+
+        token = object()
+        pending_map[session_key] = {"token": token, "event": event}
+        send_metadata = self._stale_override_picker_metadata(event, requester, send_metadata)
+
+        async def _on_choice_selected(_chat_id: str, value: str) -> str:
+            async with self._async_profile_scope_for_source(policy_source):
+                return await _apply_choice(value)
+
+        async def _apply_choice(value: str) -> str:
+            pending = getattr(self, "_stale_override_pending", {}).get(session_key)
+            if pending is None or pending.get("token") is not token:
+                return "Selection expired — the original message was not sent."
+            if value not in {
+                "continue",
+                "default_model",
+                "default_reasoning",
+                "defaults",
+            }:
+                return "Invalid selection — the original message was not sent."
+
+            reset_model = value in {"default_model", "defaults"}
+            reset_reasoning = value in {"default_reasoning", "defaults"}
+            denial = self._stale_override_reset_denial(
+                policy_source, model=reset_model, reasoning=reset_reasoning
+            )
+            if denial:
+                return f"{denial} The original message was not sent."
+            logger.info(
+                "Stale-override selection accepted session=%s choice=%s "
+                "reset_model=%s reset_reasoning=%s",
+                session_key,
+                value,
+                reset_model,
+                reset_reasoning,
+            )
+            choice_generation = self._current_session_run_generation(session_key)
+            self._stale_override_pending.pop(session_key, None)
+            await self._clear_stale_override_selection(
+                session_key,
+                model=reset_model,
+                reasoning=reset_reasoning,
+            )
+            if not self._is_session_run_current(session_key, choice_generation):
+                return "Selection expired — the original message was not sent."
+            held_event = pending["event"]
+            if not isinstance(getattr(held_event, "metadata", None), dict):
+                held_event.metadata = {}
+            held_event.metadata["_stale_override_notice_bypass"] = True
+            resume_adapter = self._intake_adapter_for(held_event.source) or adapter
+            await resume_adapter.handle_message(held_event)
+            logger.info(
+                "Stale-override held message re-dispatched session=%s choice=%s",
+                session_key,
+                value,
+            )
+            if value == "continue":
+                return "Keeping the current overrides. Resuming your message..."
+            return "Override updated. Resuming your message..."
+
+        try:
+            result = await adapter.send_choice_picker(
+                chat_id=event.source.chat_id,
+                title=f"⚠️ {notice_text}",
+                choices=decision.choices(),
+                session_key=session_key,
+                on_choice_selected=_on_choice_selected,
+                metadata=send_metadata,
+            )
+        except asyncio.CancelledError:
+            if pending_map.get(session_key, {}).get("token") is token:
+                pending_map.pop(session_key, None)
+            raise
+        except Exception:
+            logger.warning("Failed to send stale-override confirmation", exc_info=True)
+            result = None
+        if not self._is_session_run_current(session_key, run_generation):
+            if pending_map.get(session_key, {}).get("token") is token:
+                pending_map.pop(session_key, None)
+            return True, None
+        if not bool(getattr(result, "success", False)):
+            if pending_map.get(session_key, {}).get("token") is token:
+                pending_map.pop(session_key, None)
+            return False, None
+
+        logger.info(
+            "Stale-override prompt shown session=%s idle_seconds=%.1f "
+            "model_stale=%s reasoning_stale=%s",
+            session_key,
+            idle_seconds,
+            decision.model_stale,
+            decision.reasoning_stale,
+        )
+        self._schedule_stale_override_prompt_expiry(session_key, token)
+        return True, None
+
+    def _normalize_source_for_session_key(self, source: SessionSource) -> SessionSource:
+        """Apply Telegram DM topic recovery to a source for session-key purposes. Always derive override
+        storage keys from the result: ``_handle_message_with_agent`` rewrites ``thread_id`` before
+        deriving the session key, so keys from the raw ``event.source`` are never read next turn.
+
+        ``_handle_message_with_agent`` rewrites ``source.thread_id`` via
+        ``_recover_telegram_topic_thread_id`` *before* deriving the session key for a normal message turn (a
+        lobby/stripped reply gets pinned to the user's last-active topic). Session-scoped command handlers
+        like ``/model`` and ``/reasoning`` derive their override key from the raw inbound ``event.source``,
+        which skips that recovery — so the override is stored under a different key than the next message
+        turn reads, and the override is silently dropped on Telegram forum topics and after compression
+        session splits (#30479).
+        """
+        try:
+            recovered = self._recover_telegram_topic_thread_id(source)
+        except Exception:
+            logger.debug("Telegram topic recovery failed; retaining original source", exc_info=True)
+            return source
+        return source if recovered is None else replace_source(source, thread_id=recovered)
+
+    def _hm_rescue_orphaned_fifo(
+        self, event: MessageEvent, source: SessionSource, is_internal: bool, _quick_key: str
+    ) -> tuple[MessageEvent, SessionSource, bool]:
+        """FIFO orphan rescue: a session that went idle with a populated overflow (post-turn drain
+        never promoted, e.g. a compression-demoted follow-up) silently orphaned those events. The
+        oldest orphan runs as THIS turn and the incoming event is parked behind the chain. Skipped
+        for control commands and internal events."""
+        try:
+            # ── FIFO orphan rescue (#99882) ──────────────────────────────── If this session went idle with
+            # a populated overflow (queued during a busy window whose post-turn drain never promoted — e.g.
+            # a compression-demoted follow-up after the compression window ended through an exit that
+            # skipped the promotion site), those events were silently orphaned. We are starting the next
+            # turn for this session NOW: re-stage the orphans in FIFO order and enqueue the incoming event
+            # behind them, so arrival order (#28503) holds: oldest orphan runs as this turn, the rest drain
+            # in order, the new message last.
+            _orphan_adapter = self._delivery_adapter_for(source)
+            if _orphan_adapter is None or getattr(event, "internal", False) or event.get_command():
+                return event, source, is_internal
+            _rescued = self._rescue_orphaned_overflow(_quick_key, _orphan_adapter)
+            if _rescued is None:
+                return event, source, is_internal
+            # Into the slot when the chain was a single orphan (post-turn drain picks it up),
+            # otherwise into overflow behind the already-staged next orphan.
+            self._enqueue_fifo(_quick_key, event, _orphan_adapter)
+            # Same session key by construction; carry the orphan's own source so reply anchors /
+            # thread metadata point at the message actually being answered.
+            _rescued_source = getattr(_rescued, "source", None)
+            source = _rescued_source if _rescued_source is not None else source
+            return _rescued, source, bool(getattr(_rescued, "internal", False))
+        except Exception:
+            logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
+            return event, source, is_internal
+
+
+    async def _stale_override_before_agent(self, event, source, _quick_key, _run_generation):
+        """Notice I/O and supersession checks within the already claimed intake slot."""
+        notice_config = getattr(self.config, "stale_override_notice", None)
+        if notice_config is not None and notice_config.mode != "off":
+            async with self._async_profile_scope_for_source(source):
+                handled, response = await self._maybe_handle_stale_override_notice(
+                    event, _quick_key, run_generation=_run_generation,
+                )
+            if handled:
+                return True, response
+        if (
+            not self._is_session_run_current(_quick_key, _run_generation)
+            or not self._is_session_running(_quick_key)
+        ):
+            return True, None
+        return False, None
+
+    def _stale_override_picker_metadata(self, event, requester, send_metadata):
+        """Carry route metadata and the existing per-user picker ownership policy."""
+        send_metadata = dict(send_metadata or {})
+        send_metadata["choice_layout"] = "vertical"
+        send_metadata["choice_timeout_seconds"] = _STALE_OVERRIDE_PROMPT_TIMEOUT_SECONDS
+        source = event.source
+        is_thread = bool(source.thread_id or source.prospective_thread_id)
+        owner_required = (
+            source.chat_type == "dm"
+            or (
+                is_thread
+                and getattr(self.config, "thread_sessions_per_user", False)
+            )
+            or (
+                source.chat_type != "dm"
+                and not is_thread
+                and getattr(self.config, "group_sessions_per_user", True)
+            )
+        )
+        # New transports may separate a concrete actor from a shared route.
+        # Preserve existing per-user/alternate-ID policy when no actor is supplied.
+        if isinstance(requester, str) and requester:
+            send_metadata["requester_user_id"] = requester
+        elif owner_required:
+            send_metadata["requester_user_id"] = str(
+                source.user_id_alt or source.user_id or ""
+            )
+
+        return send_metadata
+
+    async def _stale_override_intake_source(self, event, source, is_internal):
+        """Recover ordinary Telegram topic routing before reading its override key."""
+        from gateway.config import Platform
+        if not is_internal and source.platform == Platform.TELEGRAM and not event.is_command():
+            source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
+            event.source = source
+        _quick_key = self._session_key_for_source(source)
+        return source, _quick_key

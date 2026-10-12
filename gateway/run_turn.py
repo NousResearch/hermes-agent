@@ -34,6 +34,7 @@ from gateway.session import (
     build_session_context,
 )
 from gateway.session_transcript import TranscriptReadError
+from gateway.session_identity import replace_source
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
@@ -73,7 +74,6 @@ def _tool_call_logger() -> logging.Logger:
             tool_logger.propagate = False
             tool_logger.addHandler(handler)
     return tool_logger
-
 
 
 _CONTEXT_OVERFLOW_ERROR_PHRASES = (
@@ -170,7 +170,7 @@ class GatewayTurnMixin:
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
-        user_config: Optional[dict] = None,
+        user_config: Optional[dict] = None, include_session_override: bool = True,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
@@ -187,9 +187,9 @@ class GatewayTurnMixin:
         self._pre_agent_fallback_notice = None
 
         model = _resolve_gateway_model(user_config)
-        if skey:
+        if skey and include_session_override:
             self._rehydrate_session_model_override(skey)
-        _override_state = self._peek_session_state(skey) if skey else None
+        _override_state = self._peek_session_state(skey) if skey and include_session_override else None
         override = _override_state.conversation.model_override if _override_state else None
         if override:
             override_model = override.get("model", model)
@@ -417,7 +417,7 @@ class GatewayTurnMixin:
                 "telegram topic recovery: chat=%s user=%s %r -> %s",
                 source.chat_id, source.user_id, source.thread_id, recovered,
             )
-            source = dataclasses.replace(source, thread_id=recovered)
+            source = replace_source(source, thread_id=recovered)
             with suppress(Exception):
                 event.source = source
 

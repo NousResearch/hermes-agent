@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.display import ToolPreview
 from agent.i18n import t
 from gateway.platforms.base import SendResult
 
@@ -87,7 +88,8 @@ class DiscordMediaMixin:
 
         See #66797.
         """
-        from plugins.platforms.discord.adapter import _prompt_target_id, discord
+        from plugins.platforms.discord.adapter import discord
+        from plugins.platforms.discord.adapter_component_auth import _prompt_target_id
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -135,7 +137,8 @@ class DiscordMediaMixin:
     ) -> SendResult:
         """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
         inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type, _read_url_image_with_redirect_guard, is_safe_url
+        from plugins.platforms.discord.adapter import _image_ext_from_content_type, _read_url_image_with_redirect_guard, is_safe_url
+        from plugins.platforms.discord.adapter_component_auth import _prompt_target_id
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -280,7 +283,8 @@ class DiscordMediaMixin:
         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, discord
+        from plugins.platforms.discord.adapter import discord
+        from plugins.platforms.discord.adapter_component_auth import _prompt_target_id
 
         try:
             import io
@@ -374,7 +378,8 @@ class DiscordMediaMixin:
     ) -> SendResult:
         """Download ``url`` and post it as a native attachment (Discord renders those inline).
         ``fallback(metadata)`` is the base-adapter URL send (``error_metadata`` after download failure)."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, _read_url_image_with_redirect_guard, discord, is_safe_url
+        from plugins.platforms.discord.adapter import _read_url_image_with_redirect_guard, discord, is_safe_url
+        from plugins.platforms.discord.adapter_component_auth import _prompt_target_id
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -413,7 +418,7 @@ class DiscordMediaMixin:
         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Discord file attachment."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type
+        from plugins.platforms.discord.adapter import _image_ext_from_content_type
 
         return await self._send_url_media(
             chat_id, image_url, caption, kind="image",
@@ -457,3 +462,9 @@ class DiscordMediaMixin:
             metadata=metadata,
         )
 
+    def format_tool_preview(self, preview: ToolPreview) -> str:
+        """Keep a truncated URL preview clickable in Discord markdown."""
+        from plugins.platforms.discord.adapter import _format_discord_markdown_link
+        if not preview.url:
+            return preview.text
+        return _format_discord_markdown_link(preview.text, preview.url)

@@ -458,6 +458,9 @@ class GatewayAgentCacheMixin:
         Settles a pending one-shot model override first: the displaced turn's finalizer is
         generation-guarded and would otherwise leave ``/moa`` / ``/model --once`` in force."""
         self._restore_pending_one_turn_model_override(session_key)
+        pending_notice = getattr(self, "_stale_override_pending", None)
+        if isinstance(pending_notice, dict):
+            pending_notice.pop(session_key, None)
         generation = self._begin_session_run_generation(session_key)
         if reason:
             logger.info("Invalidated run generation for %s → %d (%s)", session_key, generation, reason)

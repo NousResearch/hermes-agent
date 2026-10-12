@@ -403,55 +403,50 @@ class TestFormatMessageComplex:
 
 
 class TestStripMdv2:
-    """The MarkdownV2 parse-failure fallback.
+    """The MarkdownV2 parse-failure fallback (plain-text mode).
 
-    NEW contract: it must produce text that (a) always PARSES as MarkdownV2 (escaping
-    reserved chars outside code) and (b) preserves content + code blocks instead of
-    shredding them to raw markdown. Regression for the "raw markdown chars visible,
-    nothing rendered" symptom caused by the old unescape-and-strip behavior.
+    NEW contract: the output is sent with `parse_mode=None`, so Telegram renders it as
+    PLAIN TEXT — it must contain NO MarkdownV2 markers at all. Code fences (```) are
+    deleted (they would show as literal backticks), inline-code backticks become plain
+    quotes, and reserved chars are left BARE (no escape backslash — plain mode shows
+    backslashes literally). Content is preserved; only markup is removed. Regression
+    for the visible "``` (×4)" artifact in tool-progress bubbles after a parse failure.
     """
 
-    def test_escapes_reserved_chars_so_parse_succeeds(self):
-        # Old behavior unescaped to raw text (still unparseable); new behavior
-        # escapes reserved chars so Telegram accepts it and renders plain text.
+    def test_plain_text_has_no_markdown_markers(self):
         out = _strip_mdv2("This is a test: (parentheses) and = equals.")
-        # Parses as MarkdownV2 (reserved chars escaped), no raw glyphs.
-        assert r"\(" in out and r"\)" in out
-        assert r"\=" in out
-        assert out != "This is a test: (parentheses) and = equals."
+        assert out == "This is a test: (parentheses) and = equals."
+        assert "\\" not in out  # no escape backslashes in plain mode
 
-    def test_lone_backtick_no_longer_breaks_code_entity(self):
-        # A lone `` ` `` previously survived raw -> Telegram "can't find end of code
-        # entity" -> plain-text dump with a stray backtick. Now it is escaped.
+    def test_lone_backtick_is_dropped(self):
+        # A lone ` is not a code entity; plain mode must not show it raw.
         out = _strip_mdv2("backtick ` and nothing else.")
-        assert "\\`" in out
-        assert out.count("`") == 1  # escaped form, not a code opener
+        assert "`" not in out
+        assert out == "backtick  and nothing else."
 
-    def test_unclosed_italic_escaped(self):
+    def test_unclosed_italic_marker_bare(self):
+        # Plain mode shows * literally; no backslash-escape.
         out = _strip_mdv2("*unclosed italic and more")
-        assert r"\*" in out
+        assert out == "*unclosed italic and more"
 
-    def test_preserves_fenced_code_block(self):
+    def test_fenced_code_block_fences_removed_content_kept(self):
         out = _strip_mdv2("Header:\n```\ncode `tick` *star*\n```\nend.")
-        # fence stays a real fence; content inside intact
-        assert "```\ncode" in out
-        assert "```\nend\\." in out or out.endswith("```")
-        assert "`tick`" in out and "*star*" in out
+        # fences deleted, body kept, inline backticks inside body flattened
+        assert "```" not in out
+        assert "code " in out and "tick" in out and "star" in out
+        assert out.startswith("Header:\n") and out.rstrip().endswith("end.")
 
-    def test_preserves_inline_code(self):
+    def test_inline_code_backticks_removed(self):
         out = _strip_mdv2("use `code` and nothing else")
-        assert "`code`" in out
+        assert out == "use code and nothing else"
 
-    def test_snake_case_escaped_for_parse_safety(self):
-        # A bare ``_`` can pair with a later ``_`` -> unintended italic. The fallback
-        # escapes reserved chars OUTSIDE code; the old strip-left-them-raw behavior
-        # was the "raw markdown visible" bug.
-        assert _strip_mdv2("my_variable_name") == r"my\_variable\_name"
+    def test_snake_case_stays_bare(self):
+        # Plain mode: underscore is literal, not an italic marker.
+        assert _strip_mdv2("my_variable_name") == "my_variable_name"
 
-    def test_escaped_input_stays_escaped(self):
-        # Already-escaped content is left as-is (no double-escape, no unescape).
-        out = _strip_mdv2(r"hello\.world\!")
-        assert out == r"hello\.world\!"
+    def test_already_escaped_input_backslashes_kept(self):
+        # Content that arrived pre-escaped is preserved verbatim (plain mode shows it).
+        assert _strip_mdv2(r"hello\.world\!") == r"hello\.world\!"
 
 
 

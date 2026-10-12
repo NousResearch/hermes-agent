@@ -473,10 +473,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
   useSettingDeepLink('config:appearance', page => page !== undefined && show(page as AppearanceSubpageId))
 
-  // One box does double duty: filter installed themes live (below), and run a
-  // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
-  // backend) for anything not already installed.
+  // Filter installed themes live, and search the VS Code Marketplace through
+  // the Cmd-K "Install theme…" backend for anything not already installed.
   const needle = normalize(query)
+
   const themeDescription = (theme: Pick<DesktopTheme, 'name' | 'description'>) =>
     !isUserTheme(theme.name) ? (a.themeDescriptions[theme.name] ?? theme.description) : theme.description
 

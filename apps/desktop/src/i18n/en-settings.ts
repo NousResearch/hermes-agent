@@ -3,6 +3,7 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import { enAuxTasks } from './en_aux_tasks'
 import { enLocalModels } from './en_local_models'
 import { enUninstallSection } from './en_uninstall_section'
+import { enUpdateChannel } from './en_update_channel'
 import { settingsRiskCopyEn } from './settings-risk-copy'
 import type { Translations } from './types'
 
@@ -593,7 +594,8 @@ export const enSettings: Translations['settings'] = {
     justNow: 'just now',
     minAgo: count => `${count} min ago`,
     hoursAgo: count => `${count} hours ago`,
-    daysAgo: count => `${count} days ago`
+    daysAgo: count => `${count} days ago`,
+    channel: enUpdateChannel
   },
   config: {
     minimizeToTrayTitle: 'Minimize to tray',

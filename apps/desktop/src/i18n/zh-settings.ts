@@ -4,6 +4,7 @@ import type { TranslationOverrides } from './define-locale'
 import { settingsRiskCopyZh } from './settings-risk-copy'
 import { zhAuxTasks } from './zh_aux_tasks'
 import { zhLocalModels } from './zh_local_models'
+import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhSettings: NonNullable<TranslationOverrides['settings']> = {
   subpages: {
@@ -875,7 +876,8 @@ export const zhSettings: NonNullable<TranslationOverrides['settings']> = {
     justNow: '刚刚',
     minAgo: count => `${count} 分钟前`,
     hoursAgo: count => `${count} 小时前`,
-    daysAgo: count => `${count} 天前`
+    daysAgo: count => `${count} 天前`,
+    channel: zhUpdateChannel
   },
   config: {
     minimizeToTrayTitle: '最小化到托盘',

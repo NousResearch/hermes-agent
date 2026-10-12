@@ -4,6 +4,7 @@ import type { TranslationOverrides } from './define-locale'
 import { jaAuxTasks } from './ja_aux_tasks'
 import { jaLocalModels } from './ja_local_models'
 import { jaPluginSettings } from './ja_plugins'
+import { jaUpdateChannel } from './ja_update_channel'
 import { settingsRiskCopyJa } from './settings-risk-copy'
 
 export const jaSettings: NonNullable<TranslationOverrides['settings']> = {
@@ -733,7 +734,8 @@ export const jaSettings: NonNullable<TranslationOverrides['settings']> = {
     justNow: 'たった今',
     minAgo: count => `${count} 分前`,
     hoursAgo: count => `${count} 時間前`,
-    daysAgo: count => `${count} 日前`
+    daysAgo: count => `${count} 日前`,
+    channel: jaUpdateChannel
   },
   config: {
     minimizeToTrayTitle: 'トレイに最小化',

@@ -1244,7 +1244,7 @@ def _existing_regular_file(raw: str) -> bool:
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf", ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
-    ".log": "text/plain", ".json": "application/json", ".xml": "application/xml",
+    ".log": "text/plain", ".json": "application/json", ".xml": "application/xml", ".svg": "image/svg+xml",
     ".yaml": "application/yaml", ".yml": "application/yaml", ".toml": "application/toml",
     ".ini": "text/plain", ".cfg": "text/plain", ".zip": "application/zip",
     ".doc": "application/msword", ".xls": "application/vnd.ms-excel",
@@ -1258,7 +1258,7 @@ SUPPORTED_DOCUMENT_TYPES = {
 # (PDF/zip/docx can start with decodable ASCII). Non-members are still cached by path.
 _TEXT_INJECT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".jsonl", ".ndjson", ".xml",
-    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env", ".properties", ".html", ".htm",
+    ".svg", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env", ".properties", ".html", ".htm",
     ".css", ".scss", ".sass", ".less", ".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
     ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".c", ".h", ".cpp", ".cc", ".hpp", ".cs",
     ".java", ".kt", ".go", ".rs", ".rb", ".php", ".pl", ".lua", ".r", ".jl", ".swift", ".m",
@@ -1591,6 +1591,8 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
             ("image", SUPPORTED_IMAGE_DOCUMENT_TYPES, ".jpg", cache_image_from_bytes, True),
             ("video", SUPPORTED_VIDEO_TYPES, ".mp4", cache_video_from_bytes, False),
             ("audio", _AUDIO_MIME_TYPES, ".ogg", cache_audio_from_bytes, True)):
+        if kind == "image" and mime == "image/svg+xml":
+            continue  # SVG is an image/* MIME but XML text — route to the document path
         if not (mime.startswith(f"{kind}/") or ext in table or default_kind == kind):
             continue
         kind_ext = ext if ext in table else default_ext

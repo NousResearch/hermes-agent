@@ -1426,6 +1426,11 @@ export interface StatusResponse {
   gateway_heartbeat_stale_s?: number | null
   gateway_pid: number | null
   gateway_platforms: Record<string, PlatformStatus>
+  /** Whether any messaging platform is configured, independent of gateway liveness. A stopped
+   *  gateway projects an empty `gateway_platforms`, so this is the only signal that separates
+   *  "bots are down" from "messaging was never set up". Absent/null when the backend could not
+   *  read the gateway config (older backends omit it entirely). */
+  gateway_messaging_configured?: boolean | null
   gateway_running: boolean
   /** Every profile the gateway process serves when the polled profile is carried by the shared
    *  multiplexer (e.g. ['default', 'alpha', 'beta']); null/absent for a standalone gateway. */

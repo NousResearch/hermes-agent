@@ -16,9 +16,13 @@ jobs:
         uses: ./.github/actions/hermes-pr-docs
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_app_id: ${{ secrets.GITHUB_APP_ID }}
+          github_app_private_key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          github_app_installation_id: ${{ secrets.GITHUB_APP_INSTALLATION_ID }}
           provider: openrouter
           model: nvidia/nemotron-3-super-120b-a12b:free
           api_key: ${{ secrets.OPENROUTER_API_KEY }}
           language: de
+          review_mode: review
           extra_instructions: "Fokus auf fehlende oder veraltete Dokumentation (README, Docs, Changelog). Gib konkrete Verbesserungsvorschläge für die Weiterentwicklung des Hermes-Agent-Core und vorschlage eine nächste PR-Idee, die das Projekt voranbringt."
           comment_title: "Hermes PR‑Doku & Review"

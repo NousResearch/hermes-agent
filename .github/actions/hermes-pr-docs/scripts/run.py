@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import subprocess
+import time
 import urllib.request
 
 API = "https://api.github.com"
@@ -39,8 +40,101 @@ def get_env(name, default=None, required=False):
     return val
 
 
+def emit_github_output(name, value):
+    value = value or ""
+    target = os.getenv("GITHUB_OUTPUT")
+    if target:
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(f"{name}<<EOF\n{value}\nEOF\n")
+        return
+    print(f"{name}<<EOF\n{value}\nEOF")
+
+
+def get_github_app_token(app_id=None, installation_id=None, private_key=None, private_key_path=None):
+    app_id = app_id or os.getenv("GITHUB_APP_ID") or os.getenv("INPUT_GITHUB_APP_ID")
+    installation_id = installation_id or os.getenv("GITHUB_APP_INSTALLATION_ID") or os.getenv("INPUT_GITHUB_APP_INSTALLATION_ID")
+    private_key = private_key or os.getenv("GITHUB_APP_PRIVATE_KEY") or os.getenv("INPUT_GITHUB_APP_PRIVATE_KEY")
+    private_key_path = private_key_path or os.getenv("GITHUB_APP_PRIVATE_KEY_PATH") or os.getenv("INPUT_GITHUB_APP_PRIVATE_KEY_PATH")
+
+    if not app_id or not installation_id:
+        raise ValueError("GitHub App requires GITHUB_APP_ID and GITHUB_APP_INSTALLATION_ID")
+
+    if not private_key and private_key_path:
+        with open(private_key_path, "r", encoding="utf-8") as fh:
+            private_key = fh.read()
+
+    if not private_key:
+        raise ValueError("GitHub App requires GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_PATH")
+
+    try:
+        import jwt
+    except ImportError as exc:
+        raise RuntimeError("PyJWT is required for GitHub App authentication") from exc
+
+    clean_key = private_key.replace("\\n", "\n").strip()
+    now = int(time.time())
+    payload = {
+        "iat": now - 60,
+        "exp": now + (10 * 60),
+        "iss": str(app_id),
+    }
+    jwt_token = jwt.encode(payload, clean_key, algorithm="RS256")
+
+    req = urllib.request.Request(
+        f"{API}/app/installations/{installation_id}/access_tokens",
+        method="POST",
+    )
+    req.add_header("Authorization", f"Bearer {jwt_token}")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("Content-Type", "application/json")
+
+    with urllib.request.urlopen(req, timeout=30) as r:
+        body = json.load(r)
+
+    token = body.get("token")
+    if not token:
+        raise ValueError("GitHub App access token response missing token")
+    return token
+
+
+def resolve_github_token():
+    for env_name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        token = os.getenv(env_name, "").strip()
+        if token:
+            return token
+
+    try:
+        return get_github_app_token()
+    except Exception as exc:
+        print(f"GitHub App token fallback failed: {exc}", file=sys.stderr)
+        return ""
+
+
+def post_pr_review(token, repo, pr_number, body, review_mode="comment"):
+    review_mode = (review_mode or "comment").lower()
+    if review_mode == "review":
+        endpoint = f"{API}/repos/{repo}/pulls/{pr_number}/reviews"
+        payload = json.dumps({
+            "event": "COMMENT",
+            "body": body,
+        }).encode("utf-8")
+    else:
+        endpoint = f"{API}/repos/{repo}/issues/{pr_number}/comments"
+        payload = json.dumps({"body": body}).encode("utf-8")
+
+    req = urllib.request.Request(endpoint, data=payload, method="POST")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+
 def main():
-    token = get_env("GITHUB_TOKEN", required=True)
+    token = resolve_github_token()
+    if not token:
+        print("Missing GitHub auth token. Set GITHUB_TOKEN or install GitHub App credentials.", file=sys.stderr)
+        sys.exit(2)
     repo = get_env("GITHUB_REPOSITORY", required=True)
     event_path = get_env("GITHUB_EVENT_PATH", required=True)
 
@@ -57,7 +151,7 @@ def main():
     pr_body = pr.get("body", "")
 
     files_url = pr.get("url") + "/files"
-    comments_url = pr.get("comments_url")
+    review_mode = get_env("INPUT_REVIEW_MODE", "comment")
 
     max_files = int(get_env("INPUT_MAX_FILES", "50"))
     max_patch_chars = int(get_env("INPUT_MAX_PATCH_CHARS", "40000"))
@@ -85,12 +179,25 @@ def main():
         })
 
     prompt = (
-        "Du bist Hermes Agent. Analysiere den PR und liefere:\n"
-        "1) Kurze Zusammenfassung der Änderungen\n"
-        "2) Doku-Check: fehlende/zu aktualisierende Doku (README/Docs/Changelog)\n"
-        "3) Review-Hinweise (Risiken, Bugs, Testlücken)\n"
-        "4) Konkrete Verbesserungsvorschläge für Weiterentwicklung\n"
-        "5) Falls passend: Vorschlag für nächste PR-Idee\n\n"
+        "Du bist Hermes Agent und führst einen strukturierten PR-Review aus.\n"
+        "Bitte antworte in diesem Format:\n"
+        "---\n"
+        "## Kurzfazit\n"
+        "<1-3 Sätze>\n\n"
+        "## Änderungsübersicht\n"
+        "<Was wurde verändert?>\n\n"
+        "## Doku-Check\n"
+        "- Missing docs: ...\n"
+        "- Update needed: ...\n"
+        "- No issue: ...\n\n"
+        "## Risiken / Bugs / Testlücken\n"
+        "- ...\n\n"
+        "## Verbesserungsvorschläge\n"
+        "1. ...\n"
+        "2. ...\n\n"
+        "## Nächste PR-Idee\n"
+        "<konkrete Idee>\n"
+        "---\n\n"
         f"Antwortsprache: {language}\n\n"
         f"PR: {pr_title}\n"
         "Beschreibung:\n"
@@ -144,20 +251,13 @@ def main():
 
     comment_body = f"{comment_title}\n\n{output}".strip()
 
-    # Set GitHub Action output
-    print(f"comment_body<<EOF\n{comment_body}\nEOF")
+    emit_github_output("comment_body", comment_body)
 
     if dry_run:
         print(comment_body)
         return
 
-    payload = json.dumps({"body": comment_body}).encode("utf-8")
-    req = urllib.request.Request(comments_url, data=payload, method="POST")
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Accept", "application/vnd.github+json")
-    req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=30) as r:
-        _ = r.read()
+    post_pr_review(token, repo, pr_number, comment_body, review_mode=review_mode)
 
 
 if __name__ == "__main__":

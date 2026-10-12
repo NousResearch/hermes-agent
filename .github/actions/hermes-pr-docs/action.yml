@@ -2,8 +2,20 @@ name: "Hermes PR Docs & Review"
 description: "Dokumentiert PRs, schreibt Review-Kommentare und gibt Entwicklungsvorschläge mit Hermes Agent"
 inputs:
   github_token:
-    description: "GitHub token mit repo/PR comment Rechten"
-    required: true
+    description: "GitHub token mit repo/PR comment Rechten (fallback: GitHub App vars)"
+    required: false
+  github_app_id:
+    description: "GitHub App ID (optional; alternative to GITHUB_TOKEN)"
+    required: false
+  github_app_private_key:
+    description: "GitHub App private key PEM content (optional; alternative to GITHUB_TOKEN)"
+    required: false
+  github_app_private_key_path:
+    description: "Pfad zur GitHub App PEM-Datei (optional)"
+    required: false
+  github_app_installation_id:
+    description: "GitHub App installation ID (optional; alternative to GITHUB_TOKEN)"
+    required: false
   provider:
     description: "Hermes Provider (z.B. openrouter, openai, anthropic, deepseek)"
     required: true
@@ -32,6 +44,10 @@ inputs:
     description: "true = kein Kommentar posten, nur Output"
     required: false
     default: "false"
+  review_mode:
+    description: "Kommentar-Art: comment = issue comment, review = GitHub PR review"
+    required: false
+    default: "comment"
   extra_instructions:
     description: "Zusätzliche Instruktionen für Hermes"
     required: false
@@ -59,6 +75,10 @@ runs:
       run: python scripts/run.py
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
+        GITHUB_APP_ID: ${{ inputs.github_app_id }}
+        GITHUB_APP_PRIVATE_KEY: ${{ inputs.github_app_private_key }}
+        GITHUB_APP_PRIVATE_KEY_PATH: ${{ inputs.github_app_private_key_path }}
+        GITHUB_APP_INSTALLATION_ID: ${{ inputs.github_app_installation_id }}
         INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_API_KEY: ${{ inputs.api_key }}
@@ -67,5 +87,6 @@ runs:
         INPUT_MAX_PATCH_CHARS: ${{ inputs.max_patch_chars }}
         INPUT_LANGUAGE: ${{ inputs.language }}
         INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        INPUT_REVIEW_MODE: ${{ inputs.review_mode }}
         INPUT_EXTRA_INSTRUCTIONS: ${{ inputs.extra_instructions }}
         INPUT_COMMENT_TITLE: ${{ inputs.comment_title }}

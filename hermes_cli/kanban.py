@@ -206,7 +206,7 @@ def _profile_author() -> str:
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
+    "init", "create", "swarm", "assign", "reclaim", "reassign", "authorize-existing-pr", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
@@ -615,6 +615,28 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
         f"cannot reassign {args.task_id} (unknown id, or still running — pass --reclaim to release first)",
         f"Reassigned {args.task_id} to {profile or '(unassigned)'}" + (" (claim reclaimed)" if reclaim else ""),
     )
+
+
+def _cmd_authorize_existing_pr(args: argparse.Namespace) -> int:
+    import getpass
+
+    from hermes_cli import kanban_pr_authorization as pra
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        # Operator-only: a worker must not lift the duplicate-PR guard for its own card.
+        print("refused: authorize-existing-pr is operator-only (running inside a kanban worker)", file=sys.stderr)
+        return 1
+    operator = f"{getpass.getuser()} (profile {_profile_author()})"
+    try:
+        with kbc.connect_closing() as conn:
+            grant = pra.authorize_existing_pr(
+                conn, args.task_id, pr_url=args.pr, repo=args.repo, branch=args.branch,
+                reason=args.reason, operator=operator)
+    except pra.AuthorizationError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    print(f"Authorized {grant['task_id']} to amend {grant['pr_url']} ({grant['repo']}@{grant['branch']}); "
+          "expires on its next claimed run")
+    return 0
 
 
 def _rows_by_task(conn, table: str, ids: list[str]) -> dict[str, list]:
@@ -1322,6 +1344,7 @@ _HANDLERS = {
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
     "assign": _cmd_assign, "set-model": _cmd_set_model,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
+    "authorize-existing-pr": _cmd_authorize_existing_pr,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,

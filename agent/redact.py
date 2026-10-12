@@ -45,55 +45,44 @@ REDACT_WALK_DEPTH_MARKER = "[redacted: nesting limit]"
 # output with profile A's passwords (which would also confirm to B that the bytes exist), and
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
 _VAULT_REDACTION_MAX_PER_PROFILE = 64
-_VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {unit key: tuple of exact values}
+_MIN_SECRET_LINE_CHARS = 24
+_VAULT_REDACTION_VALUES: dict = {}  # profile home key → ordered {value: tuple of exact fragments}
 _VAULT_REDACTION_LOCK = threading.Lock()
 
 
-def _vault_scope() -> str:
-    from hermes_constants import get_hermes_home
-    return str(get_hermes_home())
+def _vault_scope(home=None) -> str:
+    from hermes_constants import hermes_home_key
+    return hermes_home_key(home)
 
 
-def register_vault_redaction_value(value) -> None:
-    """Register an exact vault secret value for model-facing redaction.
+def register_vault_redaction_value(value, *, home=None) -> None:
+    """Register an exact secret value for model-facing redaction.
 
     Called by the vault fill path BEFORE the injection happens, so no later browser tool result
-    can echo the value back into model context. Also registers the form a text input normalizes
-    it to (CR/LF stripped), since that is what the page holds.
+    can echo the value back into model context, and by the secret-source apply funnel. Also
+    registers the form a text input normalizes it to (CR/LF stripped), since that is what the
+    page holds, and each line of a multi-line value: line-oriented output (``env | sort``,
+    ``grep -v key``, ``sed -n 2,4p`` of a key file) separates a PEM body from its markers, so
+    only the exact line can still be recognised. Armor lines (``-----BEGIN …``) and lines under
+    ``_MIN_SECRET_LINE_CHARS`` are never registered on their own: the scrub is an unanchored
+    substring replace, and those would blank out innocent text (key body lines are 64 chars).
+
+    All fragments form ONE unit for the per-profile bound, so a 50-line key never evicts its own
+    early lines or older entries one at a time. ``home`` scopes the unit to a profile that is not
+    the ambient one (multiplex hydration resolves profile B with no home override bound).
     """
-    register_vault_redaction_values((value,))
-
-
-def register_vault_redaction_values(values) -> None:
-    """Atomically register one or more related exact values.
-
-    A multiline secret is treated as one bounded registration unit: when its
-    fragments exceed the per-profile capacity, retain evenly spaced fragments
-    (including the first and last) rather than evicting the secret's own early
-    lines one by one.
-    """
-    if not values:
+    if not isinstance(value, str) or not value:
         return
-    normalized_values = []
-    for value in values:
-        if not isinstance(value, str) or not value:
-            continue
-        normalized = value.replace("\r", "").replace("\n", "")
-        normalized_values.append((value, normalized))
-    if not normalized_values:
-        return
+    lines = [line.strip() for line in value.splitlines()] if ("\n" in value or "\r" in value) else []
+    fragments = tuple(dict.fromkeys(
+        f for f in (value, value.replace("\r", "").replace("\n", ""),
+                    *(ln for ln in lines if len(ln) >= _MIN_SECRET_LINE_CHARS and not ln.startswith("-----")))
+        if f
+    ))
     with _VAULT_REDACTION_LOCK:
-        bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(), OrderedDict())
-        candidates = []
-        for value, normalized in normalized_values:
-            lines = [line for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n") if line]
-            candidates.extend(v for v in (value, normalized, *lines) if v)
-        # One source application is one bounded unit. A multiline secret may
-        # contribute many exact fragments, but those fragments must be evicted
-        # together rather than evicting the secret's own early lines first.
-        unit_key = normalized_values[0][0]
-        bucket.pop(unit_key, None)  # re-registering refreshes recency
-        bucket[unit_key] = tuple(dict.fromkeys(candidates))
+        bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(home), OrderedDict())
+        bucket.pop(value, None)  # re-registering refreshes recency
+        bucket[value] = fragments
         while len(bucket) > _VAULT_REDACTION_MAX_PER_PROFILE:
             del bucket[next(iter(bucket))]
 
@@ -728,6 +717,10 @@ def _is_b64_pem_key(blob: str) -> bool:
     text = decoded[:64]
     return text.startswith(b"-----BEGIN") and b"PRIVATE KEY" in text
 
+# A partial print keeps only one armor line: ``head`` of a key file has BEGIN + body, ``tail``
+# has body + END. The full-block pattern needs both, so those body lines leaked verbatim.
+_PRIVATE_KEY_ARMOR_RE = re.compile(r"-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----")
+_PEM_BODY_LINE_RE = re.compile(r"[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*")
 
 # Database connection strings: protocol://user:PASSWORD@host. The userinfo and
 # password groups forbid whitespace so a match can never span a line break (a
@@ -1117,6 +1110,8 @@ def _redact_private_key_blocks(text: str) -> str:
     ``AccountKey=-----BEGIN`` first would break the PEM header and leave the body visible."""
     if "-----BEGIN" in text and "-----END" in text:  # no END, no match: skip the quadratic scan
         text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+    if "PRIVATE KEY-----" in text:
+        text = _redact_partial_private_keys(text)
     if "LS0tLS1CRUdJTi" in text:
         text = _B64_PEM_RE.sub(
             lambda m: "[REDACTED PRIVATE KEY]" if _is_b64_pem_key(m.group(0)) else m.group(0),
@@ -1516,6 +1511,31 @@ def _mask_network_path_userinfo(m) -> str:
     if _is_userinfo_placeholder(m.group(3)):
         return m.group(0)
     return f"{m.group(1)}{m.group(2)}:***@"
+
+
+def _redact_partial_private_keys(text: str) -> str:
+    """Mask the base64 body run next to a lone BEGIN (forward) or END (backward) armor line.
+
+    Walks lines instead of regex-backtracking over the run, so a megabyte base64 blob with a
+    stray armor line elsewhere stays linear. A body slice with no armor at all is invisible to
+    any shape rule; secret-source values cover that case through exact-line registration.
+    """
+    lines = text.split("\n")
+    drop: set[int] = set()
+    for i, line in enumerate(lines):
+        m = _PRIVATE_KEY_ARMOR_RE.search(line)
+        if not m:
+            continue
+        step = 1 if m.group(1) == "BEGIN" else -1
+        j = i + step
+        while 0 <= j < len(lines) and j not in drop and _PEM_BODY_LINE_RE.fullmatch(lines[j].rstrip("\r")):
+            drop.add(j)
+            j += step
+        if j != i + step:
+            lines[i] = "[REDACTED PRIVATE KEY]"
+    if not drop:
+        return text
+    return "\n".join(line for k, line in enumerate(lines) if k not in drop)
 
 
 def _redact_phone(m):

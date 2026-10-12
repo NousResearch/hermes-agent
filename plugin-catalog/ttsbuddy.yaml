@@ -1,12 +1,12 @@
 name: ttsbuddy
 title: TTS Buddy
 repo: https://github.com/ngelik/ttsbuddy-cli
-sha: f28b697f3dabf652f30f64ac632b5ba0bd6d8dbc
+sha: cb7af8ab874ab4643041a12cb6723c24ea787a66
 subdir: plugins/hermes-ttsbuddy
 description: >-
   Native TTS Buddy speech provider using the existing TTS Buddy CLI, with offline
   voice selection, MP3 generation, Hermes voice-message conversion and exact-job
-  recovery. Disclosure: launches the user-installed ttsbuddy executable with an
+  recovery, plus terminal-only account deletion through CLI 0.16.0+. Disclosure: launches the user-installed ttsbuddy executable with an
   argument array and speech text on stdin; the CLI sends text and voice settings
   to TTS Buddy, downloads hosted audio and consumes the selected account's quota.
   Requests declare agent execution context. Credentials use Hermes's active
@@ -16,16 +16,25 @@ description: >-
   to the requested local destination and uses temporary files/configuration for
   profile-secret calls. No plugin self-updater, automatic software installation,
   login, plan purchase or separate telemetry is added. Requires the CLI on the
-  Hermes host and ffmpeg for Hermes's optional Opus conversion.
+  Hermes host and ffmpeg for Hermes's optional Opus conversion. The native
+  hermes ttsbuddy account delete commands delegate start, confirm, status and
+  cancel to that CLI. Explicit confirmation and fresh email verification can
+  permanently delete the account, hosted files and identity and cancel
+  subscriptions. Verification codes use hidden terminal input or protected
+  stdin, never model tool arguments. The CLI owns persistent protected recovery
+  state in the explicitly selected config directory; the plugin does not read
+  it. The ttsbuddy-account slash command returns help only. No automatic
+  deletion retries or new model-facing destructive tools are added.
 maintainer: ngelik
 tier: community
 category: voice
 requires_hermes: ">=0.21.7"
 docs_url: https://www.ttsbuddy.com/docs/developers/hermes-plugin
-version: "0.1.0"
+version: "0.2.0"
 readme: true
 platforms: [linux, macos]
 known_issues:
+  - "Account deletion is terminal-only, requires CLI 0.16.0+ and an explicit persistent cli_config_dir; speech credentials do not authorize deletion."
   - "Use fresh unique output filenames/stems: successful Hermes delivery and same-stem Opus conversion can replace files outside the provider's no-clobber checks."
   - "MP3 source audio only; no PCM streaming. A local timeout does not cancel an accepted hosted job; use ttsbuddy_recover with the exact job ID."
 capabilities:

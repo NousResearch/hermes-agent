@@ -165,9 +165,9 @@ def _docker_media_host_candidate(candidate: Path) -> Optional[Path]:
     if not candidate.is_absolute() or candidate.exists():
         return None
     try:
-        from gateway.platforms.base import docker_container_media_host_path
-        return docker_container_media_host_path(candidate)
-    except Exception:
+        from gateway.platforms.base import _translate_docker_container_media_path
+        return _translate_docker_container_media_path(candidate)
+    except (ImportError, OSError, RuntimeError, ValueError):
         return None
 
 

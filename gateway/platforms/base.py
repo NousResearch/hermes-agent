@@ -1165,13 +1165,6 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     return None
 
 
-def docker_container_media_host_path(candidate: Path, session_key: str = "") -> Optional[Path]:
-    """Public wrapper over the container-path translation for host-side surfaces (the
-    dashboard file APIs) that receive a raw container-absolute MEDIA path and must resolve
-    it where the sandbox actually lives on the host (#137381)."""
-    return _translate_docker_container_media_path(candidate, session_key=session_key)
-
-
 def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
     """Safe absolute file path for native media delivery, else None. Default: any existing
     regular file outside the credential / system denylist (symmetric with inbound). Strict

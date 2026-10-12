@@ -572,18 +572,25 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.error).toContain('never reached the page')
   })
 
-  it('does not report a locate that never answers as a successful click', async () => {
+  it('fails without sending input when locating the target times out', async () => {
+    vi.useFakeTimers()
     const send = vi.fn()
     const tabId = openBrowserTab()
 
-    cleanups.push(registerPreviewScriptRunner(tabId, async () => undefined))
+    cleanups.push(registerPreviewScriptRunner(tabId, () => new Promise(() => {})))
     cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
 
-    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
+    try {
+      const pending = actOnActivePreview({ kind: 'click', ref: '@e1' })
+      await vi.advanceTimersByTimeAsync(8_000)
+      const result = await pending
 
-    expect(send).not.toHaveBeenCalled()
-    expect(result.success).toBe(false)
-    expect(result.error).toContain('no input was sent')
+      expect(send).not.toHaveBeenCalled()
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('no input was sent')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('says so when the overlay itself swallowed the click', async () => {

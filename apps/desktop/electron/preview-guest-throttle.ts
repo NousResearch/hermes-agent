@@ -8,10 +8,11 @@ export interface PreviewGuestAttachPrefs {
 
 /**
  * `drive_preview` aims the pointer only after one animation frame inside the
- * guest. Chromium does not fire that frame while the guest is
- * background-throttled, so a click or keystroke never leaves once the Desktop
- * window is not in front. This guest is the page being driven, not a Hermes
- * chat renderer — those stay on the stream-throttle dial.
+ * guest. Background throttling can suspend that frame and stall input before
+ * dispatch. Keep preview guests unthrottled so background actions can proceed.
+ * Chat renderers retain their stream-throttle settings, but Electron draws
+ * frames for the entire containing window while any displayed guest disables
+ * throttling; an open preview therefore also has an idle rendering cost.
  */
 export function applyPreviewGuestAttachPrefs(
   webPreferences: PreviewGuestAttachPrefs,

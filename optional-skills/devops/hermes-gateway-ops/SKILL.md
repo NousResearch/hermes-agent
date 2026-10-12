@@ -2,7 +2,7 @@
 name: hermes-gateway-ops
 description: Diagnose and recover Hermes gateway and messaging faults.
 version: 1.0.0
-author: PRELVAS94
+author: Pedro Relvas (@PRELVAS94) + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -40,6 +40,18 @@ adding a new messaging platform or the s6 supervision inside the Docker image
   except the two clearly-marked recovery commands
 - For the hosted-instance section: an agent OAuth token in `auth.json`
   (written by `hermes setup --portal`)
+
+## How to Run
+
+This skill is a runbook, not a script. Install it from the Skills Hub
+(`hermes skills install hermes-gateway-ops`) and it loads when a gateway fault
+is being diagnosed, or load it explicitly with `hermes -s hermes-gateway-ops`.
+
+Everything here is read-only except the two clearly-marked recovery commands.
+Inspect with the `terminal` tool, read state files with `read_file`, and search
+logs with `search_files` — the local half needs no daemon, no credentials and
+no network. The hosted-instance half (step 6) needs the platform's token, which
+`auth.json` already carries.
 
 ## Quick Reference
 
@@ -171,6 +183,24 @@ restart-leftover forensics table, and the escalation ladder.
   run` on a live multiplexer attaches (prints the host PID and served set,
   exits 0) instead of starting a second process — that exit 0 is a report, not
   a failure.
+
+## Verification
+
+Recovery is complete only when all of these hold — read the CLI's verdict, not
+a hand-read file:
+
+1. `hermes gateway status` reports `running` (or `degraded` with one named,
+   understood adapter) and the record is fresh.
+2. `state/gateway.heartbeat` `updated_at` is seconds old — proof the loop is
+   turning, not just that a PID exists.
+3. The affected platform is `connected` and a test message round-trips.
+4. `gateway-starts.log` gains no new pair of starts seconds apart (no restart
+   loop) once the fix is in.
+5. A turn completes without an `API failed after N retries` / `Rate limited
+   after N retries` diagnostic reaching the chat.
+
+If the fault was platform-side, verification is the platform's own view
+agreeing (see the reference) plus a healthy `/api/health`.
 
 ## References
 

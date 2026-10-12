@@ -708,6 +708,30 @@ def test_multiplex_connected_secondary_uses_its_own_adapters(tmp_path):
     assert sec_ad is sec
 
 
+def test_multiplex_secondary_with_other_adapter_can_deliver_exact_primary_route(tmp_path):
+    """A Home Assistant adapter must not hide the shared Telegram bot for a routed topic."""
+    from cron.scheduler_preflight import SharedRouteAdapters
+    from gateway.config import Platform
+    from gateway.profile_routing import ProfileRoute
+
+    telegram = object()
+    homeassistant = object()
+    route = ProfileRoute(
+        name="home-ops-topic", platform="telegram", profile="home-ops",
+        chat_id="-1004373456433", thread_id="2",
+    )
+    with patch("cron.scheduler_preflight._primary_profile_routes_for_current_home", return_value=[route]):
+        _, secondary = _run_multiplex_capture(
+            tmp_path,
+            profile_adapters={"home-ops": {"homeassistant": homeassistant}},
+            shared_adapters={Platform.TELEGRAM: telegram},
+        )
+    assert isinstance(secondary, SharedRouteAdapters)
+    assert secondary.get("homeassistant", {"chat_id": "any"}) is homeassistant
+    assert secondary.get(Platform.TELEGRAM, {"chat_id": "-1004373456433", "thread_id": "2"}) is telegram
+    assert secondary.get(Platform.TELEGRAM, {"chat_id": "-1004373456433", "thread_id": "5"}) is None
+
+
 def test_multiplex_empty_secondary_does_not_fall_back_to_shared(tmp_path):
     """A secondary whose adapter map is present-but-empty (its bot has not
     connected yet) must NOT fall back to the default profile's shared adapters

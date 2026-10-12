@@ -1,6 +1,6 @@
 name: adwhispr
 repo: https://github.com/adwhispr/adwhispr-hermes-plugin
-sha: 4649bcc553c2e088d6f6a573f27bd713cdb90269
+sha: 80fd0e8fd93fe6207e6e9dd288811be9fe695bc2
 description: Research competitor ads, clone the winners, and run campaigns through the hosted AdWhispr
   MCP. Finds brands verified to be advertising in a niche right now, their longest-running Meta and
   TikTok ads, Instagram content and Google keyword data; clones a proven ad into a finished image or
@@ -14,8 +14,8 @@ tier: community
 category: tools
 requires_hermes: '>=0.20'
 docs_url: https://github.com/adwhispr/adwhispr-hermes-plugin#readme
-version: 1.0.0
-image: https://raw.githubusercontent.com/adwhispr/adwhispr-hermes-plugin/4649bcc553c2e088d6f6a573f27bd713cdb90269/assets/icon.png
+version: 1.0.1
+image: https://raw.githubusercontent.com/adwhispr/adwhispr-hermes-plugin/80fd0e8fd93fe6207e6e9dd288811be9fe695bc2/assets/icon.png
 platforms: []
 capabilities:
   provides_tools: []

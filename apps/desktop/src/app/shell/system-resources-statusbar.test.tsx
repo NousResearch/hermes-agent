@@ -2,6 +2,7 @@ import { act, render, renderHook, screen, waitFor } from '@testing-library/react
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $localModelsEnabled } from '@/store/local-models-flag'
+import { $connection } from '@/store/session'
 import { $statusbarHiddenIds, STATUSBAR_HIDDEN_BY_DEFAULT } from '@/store/statusbar-prefs'
 
 // The poll fires getLocalHardware() every 5s while the item is shown; the
@@ -287,6 +288,43 @@ describe('system-resources poll cadence', () => {
     })
     expect(getLocalHardware).toHaveBeenCalledTimes(4)
     expect(getSystemStats).toHaveBeenCalledTimes(2)
+    unmount()
+  })
+
+  // Switching backends re-reads both routes at once and drops the old
+  // machine's values, instead of pairing a stale hostname with new numbers
+  // until the next 15s stats tick.
+  it('re-reads stats immediately and clears the old host on a connection switch', async () => {
+    // One poll per connection: the initial one and the switch's re-read.
+    getLocalHardware.mockResolvedValueOnce(NO_GPU_HARDWARE).mockResolvedValueOnce(NO_GPU_HARDWARE)
+    $connection.set({ connectionId: 'local' } as never)
+    $localModelsEnabled.set(true)
+    $statusbarHiddenIds.set([])
+
+    const { result, unmount } = renderHook(() => useSystemResourcesStatusbarItem())
+
+    await waitFor(() => expect(result.current.label).toBe('CPU 12% · RAM 16G/32G'))
+    expect(getSystemStats).toHaveBeenCalledTimes(1)
+
+    let release: (value: unknown) => void = () => {}
+    getSystemStats.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          release = resolve
+        })
+    )
+
+    await act(async () => {
+      $connection.set({ connectionId: 'ssh-box' } as never)
+    })
+    expect(getSystemStats).toHaveBeenCalledTimes(2)
+    expect(result.current.label).not.toContain('CPU 12%')
+
+    await act(async () => {
+      release({ hostname: 'ssh-box', cpu_count: 2, psutil: true, cpu_percent: 80 })
+    })
+    await waitFor(() => expect(result.current.label).toBe('CPU 80% · RAM 16G/32G'))
+    $connection.set(null)
     unmount()
   })
 

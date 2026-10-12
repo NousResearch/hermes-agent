@@ -6,6 +6,7 @@ import { getLocalHardware, getSystemStats } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Activity } from '@/lib/icons'
 import { $localModelsEnabled } from '@/store/local-models-flag'
+import { $connection } from '@/store/session'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import type { LocalHardware, SystemStats } from '@/types/hermes'
 
@@ -65,8 +66,16 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
   const shown = enabled && !hiddenIds.includes('system-resources')
   const [hardware, setHardware] = useState<LocalHardware | null>(null)
   const [stats, setStats] = useState<SystemStats | null>(null)
+  // A connection switch restarts the poll: both routes are re-read at once,
+  // so the header never names the old machine over the new one's numbers.
+  // ($connection rather than store/connections' $activeConnectionId, which
+  // drags the whole source-switch module into this leaf.)
+  const connectionId = useStore($connection)?.connectionId ?? null
 
   useEffect(() => {
+    setHardware(null)
+    setStats(null)
+
     if (!shown) {
       return
     }
@@ -86,10 +95,12 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
       }
 
       inFlight = true
-      const statsDue = Date.now() - lastStatsAt >= STATS_POLL_MS
+      // Monotonic clock: a wall-clock jump backwards must not stall stats.
+      const now = performance.now()
+      const statsDue = now - lastStatsAt >= STATS_POLL_MS
 
       if (statsDue) {
-        lastStatsAt = Date.now()
+        lastStatsAt = now
       }
 
       try {
@@ -142,7 +153,7 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
         window.clearTimeout(timer)
       }
     }
-  }, [shown])
+  }, [shown, connectionId])
 
   const hasGpu = Boolean(hardware?.gpu_name)
 

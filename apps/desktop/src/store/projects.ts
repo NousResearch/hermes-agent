@@ -35,7 +35,7 @@ import {
   normalizeProfileKey,
   requestFreshSession
 } from '@/store/profile'
-import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from '@/store/project-scope'
 import {
   $currentCwd,
   $selectedStoredSessionId,
@@ -150,7 +150,12 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 // The cwd a NEW chat should start in.
 //
 // Priority (first hit wins):
-//   1. Explicit sidebar project scope (drilled into a project / Home bucket)
+//   1. Explicit sidebar project scope (drilled into a project / Home bucket) —
+//      only in the single-profile view: the All-profiles overview merges every
+//      profile's projects into one tree, a plain new chat there targets the
+//      ACTIVE gateway profile, and an entered project can belong to another
+//      profile, so its root must not pick the cwd (#79406). The gateway then
+//      resolves the target profile's own active project from its projects.db.
 //   2. Configured default project dir (detached otherwise — in BOTH local and
 //      remote mode; a bare new chat never inherits the sticky remembered cwd,
 //      #57911 / #84220)
@@ -170,7 +175,7 @@ export function resolveNewSessionCwd(): string {
     return ''
   }
 
-  if (scope !== ALL_PROJECTS) {
+  if (scope !== ALL_PROJECTS && $profileScope.get() !== ALL_PROFILES) {
     const cwd = projectRootCwd($projectTree.get().find(node => node.id === scope))
 
     if (cwd) {
@@ -623,6 +628,49 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 // when the user enters it. Same backend grouping as `projects.tree`, so ids and
 // membership match exactly.
 let projectSessionsRefreshGeneration = 0
+
+// ── Per-profile cache boundary (#79406) ─────────────────────────────────────
+// The cached atoms above mirror ONE backend's projects.db, yet they live in
+// app-global stores: left populated across a profile switch, the next profile's
+// draft resolved its cwd (and its AGENTS.md) from the PREVIOUS profile's active
+// project. Clear the whole cache the moment the active gateway profile changes
+// (every swap door — selectProfile, a resume re-home, registry activations —
+// publishes $activeGatewayProfile) and strand every in-flight read, so a late
+// projects.list/tree reply from the departing profile cannot repopulate the
+// cleared cache either. The sidebar's scope-keyed effect re-pulls for the new
+// profile; until it lands the cache is honestly empty, never foreign.
+export function resetProjectsCache(): void {
+  projectsRefreshGeneration += 1
+  projectTreeRefreshGeneration += 1
+  projectSessionsRefreshGeneration += 1
+  $projects.set([])
+  $projectTree.set([])
+  $activeProjectId.set(null)
+}
+
+let projectsCacheOwnerProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+$activeGatewayProfile.subscribe(profile => {
+  const key = normalizeProfileKey(profile)
+
+  if (key === projectsCacheOwnerProfile) {
+    return
+  }
+
+  projectsCacheOwnerProfile = key
+
+  // A project id names a row in ONE profile's projects.db, so the entered
+  // scope belongs to the departing profile's catalog — leave it with the cache.
+  // In the All-profiles overview the catalog is DELIBERATELY cross-profile
+  // (the backend merges every profile's tree and writes carry ?profile=), so
+  // the boundary only bites in single-profile view.
+  if ($profileScope.get() === ALL_PROFILES) {
+    return
+  }
+
+  exitProjectScope()
+  resetProjectsCache()
+})
 
 // A drill-in page read before an archive/delete committed can land after the
 // projects.tree prune has dropped the tombstone, resurrecting the row in the

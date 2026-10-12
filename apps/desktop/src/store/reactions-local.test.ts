@@ -21,6 +21,10 @@ vi.mock('@/store/profile', async () => {
 
   return {
     $activeGatewayProfile: nanoAtom('default'),
+    // The per-profile project-cache boundary (#79406) reads the profile scope
+    // on every active-profile change.
+    $profileScope: nanoAtom('__all__'),
+    ALL_PROFILES: '__all__',
     invalidateProfileListFetches: vi.fn(),
     normalizeProfileKey: (value: string | null | undefined) => (value ?? '').trim() || 'default'
   }

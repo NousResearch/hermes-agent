@@ -698,8 +698,11 @@ describe('project writes while viewing all profiles', () => {
     async profile => {
       const request = vi.fn().mockResolvedValue({})
       activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
-      $activeGatewayProfile.set(profile)
+      // Enter the All-profiles overview BEFORE the switch: the merged catalog
+      // is deliberately cross-profile, but the per-profile cache boundary
+      // (#79406) is evaluated at profile-change time.
       setShowAllProfiles(true)
+      $activeGatewayProfile.set(profile)
 
       await expect(updateProject(project.id, { color: '#ff0000' })).resolves.toBeUndefined()
 
@@ -717,8 +720,11 @@ describe('project writes while viewing all profiles', () => {
     async profile => {
       const request = vi.fn().mockResolvedValue({})
       activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
-      $activeGatewayProfile.set(profile)
+      // Enter the All-profiles overview BEFORE the switch: the merged catalog
+      // is deliberately cross-profile, but the per-profile cache boundary
+      // (#79406) is evaluated at profile-change time.
       setShowAllProfiles(true)
+      $activeGatewayProfile.set(profile)
 
       await expect(addProjectFolder(project.id, '/srv/ws/extra')).resolves.toBeUndefined()
 
@@ -735,8 +741,11 @@ describe('project writes while viewing all profiles', () => {
     async profile => {
       const request = vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: [] })
       activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
-      $activeGatewayProfile.set(profile)
+      // Enter the All-profiles overview BEFORE the switch: the merged catalog
+      // is deliberately cross-profile, but the per-profile cache boundary
+      // (#79406) is evaluated at profile-change time.
       setShowAllProfiles(true)
+      $activeGatewayProfile.set(profile)
 
       await expect(deleteProject(project.id)).resolves.toBeUndefined()
 

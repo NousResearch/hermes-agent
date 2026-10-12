@@ -172,6 +172,7 @@ import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionS
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
+import { resolveChatProfile } from './profile-swap'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
 import { restorePendingApproval } from './restore-pending-approval'
@@ -335,11 +336,8 @@ async function desktopSessionCreateParams(
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
 
-  const profile =
-    capturedRoute?.profile ||
-    requestedProfile ||
-    $newChatProfile.get() ||
-    normalizeProfileKey($activeGatewayProfile.get())
+  // #81817: a pending swap's target wins over the still-live profile (profile-swap.ts).
+  const profile = resolveChatProfile(capturedRoute?.profile || requestedProfile || $newChatProfile.get())
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)
@@ -767,7 +765,8 @@ export function useSessionActions({
         // reduce the owner to a bare profile name that later RPCs dial on a
         // different socket than the one that minted the runtime.
         const capturedRoute = resolveNewChatOwnerRoute()
-        const capturedProfile = $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+        // #81817: a pending swap's target wins over the still-live profile (profile-swap.ts).
+        const capturedProfile = resolveChatProfile($newChatProfile.get())
         const legacyProfileIntent = isLegacyNewChatProfile(capturedProfile)
 
         const params = {

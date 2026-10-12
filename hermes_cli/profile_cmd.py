@@ -416,19 +416,16 @@ def _profile_alias(args):
         validate_alias_name(alias_name)
     except ValueError as exc:
         _die(f"Error: {exc}")
-    if remove:
-        # Removal touches only the wrapper file, never the profile: the alias names
-        # a profile that may already be gone -- which is exactly the "orphan alias"
-        # the doctor reports, and this is the only command that can clean it up.
-        # Behind profile_exists() that case was unremovable.
+    if remove:  # runs without the profile: an orphan alias outlives it
+        exists = profile_exists(name)
+        if custom_name and not exists:  # orphan cleanup is `alias <alias> --remove`
+            _die(f"Error: Profile '{name}' does not exist.")
         if remove_wrapper_script(alias_name):
             print(f"✓ Removed alias '{alias_name}'")
+        elif not exists:
+            _die(f"Error: No alias '{alias_name}' and no profile '{name}'. `hermes doctor` lists orphan aliases.")
         else:
             print(f"No alias '{alias_name}' found to remove.")
-            print(
-                "  Tip: run `hermes doctor` -- its \"Orphan alias\" section lists "
-                "wrapper/profile mismatches, including wrappers whose profile is gone."
-            )
         return
     if not profile_exists(name):
         _die(f"Error: Profile '{name}' does not exist.")

@@ -1,73 +1,66 @@
-"""`hermes profile alias <name> --remove` must clean up an ORPHAN alias.
+"""`hermes profile alias <name> --remove` must clean up an ORPHAN alias (#90983).
 
-An orphan alias is a wrapper in ``~/.local/bin`` pointing at a profile that no
-longer exists — the state ``hermes doctor`` reports as
-``Orphan alias: <name> -> profile '<p>' no longer exists``.
-
-Removal is the one path that must work in that state, and it is the only cleanup
-the doctor can point users at. It used to be impossible: the handler checked
-``profile_exists()`` before looking at ``--remove``, so the command died with
-"Profile '<p>' does not exist" and the wrapper was only removable by hand.
+An orphan alias is a wrapper in ``~/.local/bin`` whose profile no longer exists;
+``hermes doctor`` lists it together with the remove command. Removal used to die on
+the profile-exists check before it looked at ``--remove``.
 """
 
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import profile_cmd
+import hermes_constants
+from hermes_cli import doctor_state, gateway_migrate, profile_cmd
+from hermes_cli.profiles import create_wrapper_script
 
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
     """Isolate the profile root (HERMES_HOME) and the wrapper dir (Path.home())."""
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
+    (tmp_path / ".hermes").mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    monkeypatch.setattr(gateway_migrate, "duplicate_credential_findings", list)
     return tmp_path
 
 
-def _write_wrapper(home: Path, name: str) -> Path:
-    wrapper = home / ".local" / "bin" / name
-    wrapper.parent.mkdir(parents=True, exist_ok=True)
-    wrapper.write_text(f'#!/bin/sh\nexec hermes -p {name} "$@"\n', encoding="utf-8")
-    return wrapper
+def _alias(profile, *, remove, name=None):
+    profile_cmd._profile_alias(SimpleNamespace(profile_name=profile, remove=remove, alias_name=name))
 
 
-def test_remove_alias_whose_profile_is_gone(isolated_home, capsys):
-    wrapper = _write_wrapper(isolated_home, "petcare")
-    assert not (isolated_home / ".hermes" / "profiles" / "petcare").exists()
+def test_doctor_names_the_command_that_removes_an_orphan_alias(isolated_home, capsys):
+    keep = isolated_home / ".hermes" / "profiles" / "keep"  # doctor's section needs one live profile
+    keep.mkdir(parents=True)
+    (keep / "config.yaml").write_text("model: m\n", encoding="utf-8")
+    wrapper = create_wrapper_script("petcare")
+    assert wrapper is not None
+    report = io.StringIO()
+    with redirect_stdout(report):
+        doctor_state._check_profiles(False)
+    assert "(remove with: hermes profile alias petcare --remove)" in report.getvalue()
 
-    profile_cmd._profile_alias(
-        SimpleNamespace(profile_name="petcare", remove=True, alias_name=None)
-    )
+    _alias("petcare", remove=True)
 
-    assert not wrapper.exists(), "the orphan wrapper must be gone"
+    assert not wrapper.exists()
     assert "Removed alias 'petcare'" in capsys.readouterr().out
 
 
-def test_remove_never_unlinks_a_file_that_is_not_a_wrapper(isolated_home, capsys):
-    """Dropping the profile check is safe only because removal stays name- and
-    content-guarded: it refuses a traversal-shaped name and only unlinks a file
-    that reads as a Hermes wrapper."""
-    not_a_wrapper = isolated_home / ".local" / "bin" / "notes"
-    not_a_wrapper.parent.mkdir(parents=True, exist_ok=True)
-    not_a_wrapper.write_text("just my notes\n", encoding="utf-8")
+def test_remove_refuses_unknown_profile_and_never_unlinks_a_foreign_file(isolated_home):
+    foreign = isolated_home / ".local" / "bin" / "notes"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("just my notes\n", encoding="utf-8")
+    bot = create_wrapper_script("bot", target="work")
 
-    profile_cmd._profile_alias(
-        SimpleNamespace(profile_name="notes", remove=True, alias_name=None)
-    )
-
-    assert not_a_wrapper.exists()
-    # A dead end must point at the tool that surfaces these mismatches (#90983).
-    out = capsys.readouterr().out
-    assert "hermes doctor" in out and "Orphan alias" in out
-
-
-def test_create_still_requires_an_existing_profile(isolated_home):
-    """The reorder must not weaken the create path."""
+    with pytest.raises(SystemExit) as exc:
+        _alias("notes", remove=True)
+    assert exc.value.code == 1
+    assert foreign.read_text(encoding="utf-8") == "just my notes\n"
     with pytest.raises(SystemExit):
-        profile_cmd._profile_alias(
-            SimpleNamespace(profile_name="ghost", remove=False, alias_name=None)
-        )
+        _alias("ghost", remove=True, name="bot")  # --name still requires a real profile
+    assert bot is not None and bot.exists()
+    with pytest.raises(SystemExit):
+        _alias("ghost", remove=False)  # creating an alias still requires the profile

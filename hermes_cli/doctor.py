@@ -29,6 +29,7 @@ from hermes_cli.doctor_config import (
     _check_config_file,
     _check_env_file,
     _check_mcp_security,
+    _check_relay_plugins,
     _check_xai_retirement,
     _check_retired_session_reset,
 )
@@ -50,6 +51,7 @@ from hermes_cli.doctor_tools import (
 )
 from hermes_cli.doctor_state import (
     _check_checkpoint_store,
+    _check_cron_store,
     _check_directory_structure,
     _check_memory_provider,
     _check_profiles,
@@ -116,12 +118,14 @@ DOCTOR_CHECKS = (
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
     ('Auth Providers', _check_auth_providers),
-    ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
+    ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_cron_store),
+    (None, _check_checkpoint_store),
     (None, _check_gateway_supervision), (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),
-    ('Memory Provider', _check_memory_provider), (None, _check_profiles),
+    ('Memory Provider', _check_memory_provider), ('NeMo Relay Plugins', _check_relay_plugins),
+    (None, _check_profiles),
 )
 
 

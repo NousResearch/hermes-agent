@@ -518,6 +518,10 @@ export function ConnectionsRegistrySection() {
           notify({ title: row.label, message: row.detail || s.updateAllDone })
         } else if (row.skipped && row.reason === 'cloud-managed') {
           notify({ title: row.label, message: s.updateSkippedCloud })
+        } else if (row.skipped && row.reason === 'darwin-drain-unsupported' && row.detail) {
+          // A deliberate per-row skip (e.g. a macOS SSH remote whose running
+          // serve Desktop cannot safely stop) — informational, not a failure.
+          notify({ title: row.label, message: row.detail })
         } else {
           notifyError(new Error(row.error || row.detail || row.reason || row.label), s.updateAllFailed)
         }

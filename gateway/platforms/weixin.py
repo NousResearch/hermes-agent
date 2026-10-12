@@ -4,7 +4,7 @@ encrypted CDN; ``qr_login`` backs the gateway setup wizard."""
 
 from __future__ import annotations
 
-import asyncio, base64, contextlib, hashlib, json, logging, mimetypes, os, re, secrets, tempfile, textwrap, time, uuid  # noqa: E401
+import asyncio, base64, contextlib, hashlib, json, logging, mimetypes, os, re, secrets, tempfile, textwrap, time, uuid
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -41,7 +41,7 @@ from utils import atomic_json_write
 from gateway.platforms._shared import extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
 
 
-def _extra_or_secret(extra: Dict[str, Any], key: str, default: str = "") -> str:
+def _extra_or_secret(extra: dict[str, Any], key: str, default: str = "") -> str:
     """``config.extra[key]`` first, else the scoped ``WEIXIN_<KEY>``; stripped."""
     return str(_extra_or_env(extra, key, f"WEIXIN_{key.upper()}", default)).strip()
 
@@ -60,13 +60,13 @@ MEDIA_IMAGE, MEDIA_VIDEO, MEDIA_FILE, MEDIA_VOICE = 1, 2, 3, 4  # getuploadurl m
 ITEM_TEXT, ITEM_IMAGE, ITEM_VOICE, ITEM_FILE, ITEM_VIDEO = 1, 2, 3, 4, 5  # item_list entry types
 MSG_TYPE_BOT, MSG_STATE_FINISH = 2, 2
 TYPING_START, TYPING_STOP = 1, 2
-_LIVE_ADAPTERS: Dict[str, Any] = {}
+_LIVE_ADAPTERS: dict[str, Any] = {}
 _HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 
 
-def _is_stale_session_ret(ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]") -> bool:
+def _is_stale_session_ret(ret: Optional[int], errcode: Optional[int], errmsg: Optional[str]) -> bool:
     """Recognize stale-session variants of iLink's ``-2`` response, not real rate limits."""
     return (ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE) and (errmsg or "").lower() in {
         "unknown error",
@@ -74,7 +74,7 @@ def _is_stale_session_ret(ret: "Optional[int]", errcode: "Optional[int]", errmsg
     }
 
 
-def _is_session_expired(resp: Dict[str, Any], ret: Any, errcode: Any) -> bool:
+def _is_session_expired(resp: dict[str, Any], ret: Any, errcode: Any) -> bool:
     return SESSION_EXPIRED_ERRCODE in (ret, errcode) or _is_stale_session_ret(ret, errcode, resp.get("errmsg") or resp.get("msg"))
 
 
@@ -88,7 +88,7 @@ def _session_not_ready_error(ret: Any, errcode: Any, errmsg: Any) -> RuntimeErro
         " — the user must send the bot a message first (or re-pair)")
 
 
-def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
+def _make_ssl_connector() -> Optional[aiohttp.TCPConnector]:
     """TCPConnector with certifi's CA bundle (``ilinkai.weixin.qq.com`` fails some system stores, e.g. Homebrew
     OpenSSL); None without certifi so aiohttp's default (honors ``SSL_CERT_FILE`` under trust_env) applies.
     ``keepalive_timeout=2`` + ``enable_cleanup_closed`` drain idle CLOSE_WAIT sockets behind proxies like Warp.
@@ -108,7 +108,7 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=certifi.where()), keepalive_timeout=2, enable_cleanup_closed=True)
 
 
-def _new_session(**kwargs: Any) -> "aiohttp.ClientSession":
+def _new_session(**kwargs: Any) -> aiohttp.ClientSession:
     return aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector(), **kwargs)
 
 
@@ -141,7 +141,7 @@ def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
     return padded
 
 
-def _headers(token: Optional[str], body: str) -> Dict[str, str]:
+def _headers(token: Optional[str], body: str) -> dict[str, str]:
     uin = base64.b64encode(str(int.from_bytes(secrets.token_bytes(4), "big")).encode("utf-8")).decode("ascii")
     return {
         "Content-Type": "application/json", "AuthorizationType": "ilink_bot_token",
@@ -173,7 +173,7 @@ def save_weixin_account(hermes_home: str, *, account_id: str, token: str, base_u
         path.chmod(0o600)
 
 
-def load_weixin_account(hermes_home: str, account_id: str) -> Optional[Dict[str, Any]]:
+def load_weixin_account(hermes_home: str, account_id: str) -> Optional[dict[str, Any]]:
     return _read_json(_account_dir(hermes_home) / f"{account_id}.json")
 
 
@@ -182,7 +182,7 @@ class ContextTokenStore:
 
     def __init__(self, hermes_home: str):
         self._root = _account_dir(hermes_home)
-        self._cache: Dict[str, str] = {}
+        self._cache: dict[str, str] = {}
         # Serializes the offloaded flushes so two concurrent set() calls
         # cannot land their writes out of order (last-writer-wins would drop
         # the newer token from disk).
@@ -218,7 +218,7 @@ class ContextTokenStore:
             payload = {key[len(prefix):]: value for key, value in self._cache.items() if key.startswith(prefix)}
             await asyncio.to_thread(self._persist, account_id, payload)
 
-    def _persist(self, account_id: str, payload: Dict[str, str]) -> None:
+    def _persist(self, account_id: str, payload: dict[str, str]) -> None:
         try:
             atomic_json_write(self._root / f"{account_id}.context-tokens.json", payload)
         except Exception as exc:
@@ -230,7 +230,7 @@ class TypingTicketCache:
 
     def __init__(self, ttl_seconds: float = 600.0):
         self._ttl_seconds = ttl_seconds
-        self._cache: Dict[str, Tuple[str, float]] = {}
+        self._cache: dict[str, tuple[str, float]] = {}
 
     def get(self, user_id: str) -> Optional[str]:
         entry = self._cache.get(user_id)
@@ -253,7 +253,7 @@ def _parse_aes_key(aes_key_b64: str) -> bytes:
     raise ValueError(f"unexpected aes_key format ({len(decoded)} decoded bytes)")
 
 
-def _guess_chat_type(message: Dict[str, Any], account_id: str) -> Tuple[str, str]:
+def _guess_chat_type(message: dict[str, Any], account_id: str) -> tuple[str, str]:
     room_id = str(message.get("room_id") or message.get("chat_room_id") or "").strip()
     to_user_id = str(message.get("to_user_id") or "").strip()
     if room_id or (to_user_id and account_id and to_user_id != account_id and message.get("msg_type") == 1):
@@ -264,9 +264,9 @@ def _guess_chat_type(message: Dict[str, Any], account_id: str) -> Tuple[str, str
 # HTTP helpers enforce timeouts via asyncio.wait_for(), not aiohttp ClientTimeout, which raises
 # "Timeout context manager should be used inside a task" under run_coroutine_threadsafe() from cron.
 async def _api_request(
-    session: "aiohttp.ClientSession", method: str, *, base_url: str, endpoint: str, headers: Dict[str, str], timeout_ms: int, body: Optional[str] = None,
-) -> Dict[str, Any]:
-    async def _do() -> Dict[str, Any]:
+    session: aiohttp.ClientSession, method: str, *, base_url: str, endpoint: str, headers: dict[str, str], timeout_ms: int, body: Optional[str] = None,
+) -> dict[str, Any]:
+    async def _do() -> dict[str, Any]:
         kwargs = {"data": body} if body is not None else {}
         async with getattr(session, method.lower())(f"{base_url.rstrip('/')}/{endpoint}", headers=headers, **kwargs) as response:
             raw = await response.text()
@@ -277,28 +277,28 @@ async def _api_request(
 
 
 async def _api_post(
-    session: "aiohttp.ClientSession", *, base_url: str, endpoint: str, payload: Dict[str, Any], token: Optional[str], timeout_ms: int,
-) -> Dict[str, Any]:
+    session: aiohttp.ClientSession, *, base_url: str, endpoint: str, payload: dict[str, Any], token: Optional[str], timeout_ms: int,
+) -> dict[str, Any]:
     body = json.dumps({**payload, "base_info": {"channel_version": CHANNEL_VERSION}}, ensure_ascii=False, separators=(",", ":"))
     return await _api_request(session, "POST", base_url=base_url, endpoint=endpoint, headers=_headers(token, body), timeout_ms=timeout_ms, body=body)
 
 
-async def _api_get(session: "aiohttp.ClientSession", *, base_url: str, endpoint: str, timeout_ms: int) -> Dict[str, Any]:
+async def _api_get(session: aiohttp.ClientSession, *, base_url: str, endpoint: str, timeout_ms: int) -> dict[str, Any]:
     headers = {"iLink-App-Id": ILINK_APP_ID, "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION)}
     return await _api_request(session, "GET", base_url=base_url, endpoint=endpoint, headers=headers, timeout_ms=timeout_ms)
 
 
-async def _get_updates(session: "aiohttp.ClientSession", *, base_url: str, token: str, sync_buf: str, timeout_ms: int) -> Dict[str, Any]:
+async def _get_updates(session: aiohttp.ClientSession, *, base_url: str, token: str, sync_buf: str, timeout_ms: int) -> dict[str, Any]:
     try:
         return await _api_post(session, base_url=base_url, endpoint=EP_GET_UPDATES, payload={"get_updates_buf": sync_buf}, token=token, timeout_ms=timeout_ms)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
 
 
 async def _send_items(
-    session: "aiohttp.ClientSession", *, base_url: str, token: str, to: str, item_list: List[Dict[str, Any]], context_token: Optional[str], client_id: str,
-) -> Dict[str, Any]:
-    message: Dict[str, Any] = {
+    session: aiohttp.ClientSession, *, base_url: str, token: str, to: str, item_list: list[dict[str, Any]], context_token: Optional[str], client_id: str,
+) -> dict[str, Any]:
+    message: dict[str, Any] = {
         "from_user_id": "", "to_user_id": to, "client_id": client_id, "message_type": MSG_TYPE_BOT, "message_state": MSG_STATE_FINISH,
         "item_list": item_list}
     if context_token:
@@ -307,32 +307,32 @@ async def _send_items(
 
 
 async def _send_message(
-    session: "aiohttp.ClientSession", *, base_url: str, token: str, to: str, text: str, context_token: Optional[str], client_id: str,
-) -> Dict[str, Any]:
+    session: aiohttp.ClientSession, *, base_url: str, token: str, to: str, text: str, context_token: Optional[str], client_id: str,
+) -> dict[str, Any]:
     if not text or not text.strip():
         raise ValueError("_send_message: text must not be empty")
     item_list = [{"type": ITEM_TEXT, "text_item": {"text": text}}]
     return await _send_items(session, base_url=base_url, token=token, to=to, item_list=item_list, context_token=context_token, client_id=client_id)
 
 
-async def _get_config(session: "aiohttp.ClientSession", *, base_url: str, token: str, user_id: str, context_token: Optional[str]) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"ilink_user_id": user_id}
+async def _get_config(session: aiohttp.ClientSession, *, base_url: str, token: str, user_id: str, context_token: Optional[str]) -> dict[str, Any]:
+    payload: dict[str, Any] = {"ilink_user_id": user_id}
     if context_token:
         payload["context_token"] = context_token
     return await _api_post(session, base_url=base_url, endpoint=EP_GET_CONFIG, payload=payload, token=token, timeout_ms=CONFIG_TIMEOUT_MS)
 
 
 async def _get_upload_url(
-    session: "aiohttp.ClientSession", *, base_url: str, token: str, to_user_id: str, media_type: int, filekey: str, rawsize: int,
+    session: aiohttp.ClientSession, *, base_url: str, token: str, to_user_id: str, media_type: int, filekey: str, rawsize: int,
     rawfilemd5: str, filesize: int, aeskey_hex: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     payload = {
         "filekey": filekey, "media_type": media_type, "to_user_id": to_user_id, "rawsize": rawsize, "rawfilemd5": rawfilemd5,
         "filesize": filesize, "no_need_thumb": True, "aeskey": aeskey_hex}
     return await _api_post(session, base_url=base_url, endpoint=EP_GET_UPLOAD_URL, payload=payload, token=token, timeout_ms=API_TIMEOUT_MS)
 
 
-async def _upload_ciphertext(session: "aiohttp.ClientSession", *, ciphertext: bytes, upload_url: str) -> str:
+async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: bytes, upload_url: str) -> str:
     async def _do() -> str:
         async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}) as response:
             encrypted_param = response.headers.get("x-encrypted-param") if response.status == 200 else None
@@ -344,7 +344,7 @@ async def _upload_ciphertext(session: "aiohttp.ClientSession", *, ciphertext: by
     return await asyncio.wait_for(_do(), timeout=120)
 
 
-async def _download_bytes(session: "aiohttp.ClientSession", *, url: str, timeout_seconds: float = 60.0) -> bytes:
+async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
     async def _do() -> bytes:
         async with session.get(url) as response:
             response.raise_for_status()
@@ -360,7 +360,7 @@ def _assert_weixin_cdn_url(url: str) -> None:
     try:
         parsed = urlparse(url)
         scheme, host = parsed.scheme.lower(), parsed.hostname or ""
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ValueError(f"Unparseable media URL: {url!r}") from exc
     if scheme not in {"http", "https"}:
         raise ValueError(f"Media URL has disallowed scheme {scheme!r}; only http/https are permitted.")
@@ -369,7 +369,7 @@ def _assert_weixin_cdn_url(url: str) -> None:
 
 
 async def _download_and_decrypt_media(
-    session: "aiohttp.ClientSession", *, cdn_base_url: str, encrypted_query_param: Optional[str], aes_key_b64: Optional[str],
+    session: aiohttp.ClientSession, *, cdn_base_url: str, encrypted_query_param: Optional[str], aes_key_b64: Optional[str],
     full_url: Optional[str], timeout_seconds: float,
 ) -> bytes:
     if encrypted_query_param:
@@ -396,7 +396,7 @@ def _walk_markdown_lines(content: str):
 
 def _normalize_markdown_blocks(content: str) -> str:
     """rstrip lines and collapse blank runs to one, leaving fenced code untouched."""
-    result: List[str] = []
+    result: list[str] = []
     blank_run = 0
     for line, is_fence, in_code_block in _walk_markdown_lines(content):
         if not is_fence and not in_code_block and not line.strip():
@@ -414,7 +414,7 @@ def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
     """Wrap long display lines that are hard to copy in WeChat clients (not code/table lines)."""
     if not content:
         return content
-    wrapped: List[str] = []
+    wrapped: list[str] = []
     for line, is_fence, in_code_block in _walk_markdown_lines(content):
         stripped = line.strip()
         keep = is_fence or in_code_block or len(line) <= WEIXIN_COPY_LINE_WIDTH or not stripped or stripped.startswith("|")
@@ -427,9 +427,9 @@ def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
     return "\n".join(wrapped).strip()
 
 
-def _split_markdown_blocks(content: str) -> List[str]:
-    blocks: List[str] = []
-    current: List[str] = []
+def _split_markdown_blocks(content: str) -> list[str]:
+    blocks: list[str] = []
+    current: list[str] = []
 
     def flush() -> None:
         if current:
@@ -448,14 +448,14 @@ def _split_markdown_blocks(content: str) -> List[str]:
     return [block for block in blocks if block]
 
 
-def _split_delivery_units_for_weixin(content: str) -> List[str]:
+def _split_delivery_units_for_weixin(content: str) -> list[str]:
     """Top-level lines become units; fenced code stays intact; indented continuation lines attach to the previous line."""
-    units: List[str] = []
+    units: list[str] = []
     for block in _split_markdown_blocks(content):
         if _FENCE_RE.match(block.splitlines()[0].strip()):
             units.append(block)
             continue
-        current: List[str] = []
+        current: list[str] = []
         for raw_line in block.splitlines():
             line = raw_line.rstrip()
             if current and line.strip() and raw_line.startswith((" ", "\t")):
@@ -485,15 +485,15 @@ def _should_split_short_chat_block_for_weixin(block: str) -> bool:
     return all(_looks_like_chatty_line_for_weixin(line) for line in lines)
 
 
-def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:
+def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> list[str]:
     if len(content) <= max_length:
         return [content]
     # Block extraction stays weixin-local (anchored _FENCE_RE + per-line rstrip); packing is shared.
-    overflow = lambda block: BasePlatformAdapter.truncate_message(block, max_length)  # noqa: E731
+    overflow = lambda block: BasePlatformAdapter.truncate_message(block, max_length)
     return greedy_pack_blocks(_split_markdown_blocks(content), max_length, overflow=overflow)
 
 
-def _split_text_for_weixin_delivery(content: str, max_length: int, split_per_line: bool = False) -> List[str]:
+def _split_text_for_weixin_delivery(content: str, max_length: int, split_per_line: bool = False) -> list[str]:
     """Compact (default): one message when it fits, unless it reads as a short chatty exchange (separate
     bubbles). Per-line (legacy ``extra.split_multiline_messages`` / ``WEIXIN_SPLIT_MULTILINE_MESSAGES``):
     top-level line breaks become separate messages. Oversized units use block-aware packing."""
@@ -520,7 +520,7 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return True if text in {"1", "true", "yes", "on"} else False if text in {"0", "false", "no", "off"} else default
 
 
-def _extract_text(item_list: List[Dict[str, Any]]) -> str:
+def _extract_text(item_list: list[dict[str, Any]]) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
             text = str((item.get("text_item") or {}).get("text") or "")
@@ -555,7 +555,7 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
 _MIME_PREFIX_TYPES = (("image/", MessageType.PHOTO), ("video/", MessageType.VIDEO), ("audio/", MessageType.VOICE))
 
 
-def _message_type_from_media(media_types: List[str], text: str) -> MessageType:
+def _message_type_from_media(media_types: list[str], text: str) -> MessageType:
     for prefix, message_type in _MIME_PREFIX_TYPES:
         if any(m.startswith(prefix) for m in media_types):
             return message_type
@@ -571,7 +571,7 @@ def _save_sync_buf(hermes_home: str, account_id: str, sync_buf: str) -> None:
     atomic_json_write(_account_dir(hermes_home) / f"{account_id}.sync.json", {"get_updates_buf": sync_buf})
 
 
-async def _fetch_qr(session: "aiohttp.ClientSession", bot_type: str) -> Tuple[str, str]:
+async def _fetch_qr(session: aiohttp.ClientSession, bot_type: str) -> tuple[str, str]:
     qr_resp = await _api_get(session, base_url=ILINK_BASE_URL, endpoint=f"{EP_GET_BOT_QR}?bot_type={bot_type}", timeout_ms=QR_TIMEOUT_MS)
     return str(qr_resp.get("qrcode") or ""), str(qr_resp.get("qrcode_img_content") or "")
 
@@ -591,7 +591,7 @@ def _print_qr(qrcode_value: str, qrcode_url: str, *, report_render_error: bool) 
             print(f"（终端二维码渲染失败: {_qr_exc}，请直接打开上面的二维码链接）")
 
 
-async def qr_login(hermes_home: str, *, bot_type: str = "3", timeout_seconds: int = 480) -> Optional[Dict[str, str]]:
+async def qr_login(hermes_home: str, *, bot_type: str = "3", timeout_seconds: int = 480) -> Optional[dict[str, str]]:
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError("aiohttp is required for Weixin QR login")
     async with _new_session() as session:
@@ -650,7 +650,7 @@ async def qr_login(hermes_home: str, *, bot_type: str = "3", timeout_seconds: in
 
 
 # Outbound item shapes: item type -> (item key, extra fields after the shared ``media`` block).
-_ITEM_SHAPES: Dict[int, Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = {
+_ITEM_SHAPES: dict[int, tuple[str, Callable[[dict[str, Any]], dict[str, Any]]]] = {
     ITEM_FILE: ("file_item", lambda kw: {"file_name": kw["filename"], "len": str(kw["plaintext_size"])}),
     ITEM_IMAGE: ("image_item", lambda kw: {"mid_size": kw["ciphertext_size"]}),
     ITEM_VIDEO: ("video_item", lambda kw: {
@@ -661,7 +661,7 @@ _ITEM_SHAPES: Dict[int, Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] 
 }
 
 
-def _media_item(item_type: int, **kw: Any) -> Dict[str, Any]:
+def _media_item(item_type: int, **kw: Any) -> dict[str, Any]:
     key, fields = _ITEM_SHAPES[item_type]
     media = {"encrypt_query_param": kw["encrypt_query_param"], "aes_key": kw["aes_key_for_api"], "encrypt_type": 1}
     return {"type": item_type, key: {"media": media, **fields(kw)}}
@@ -673,7 +673,7 @@ _video_item, _voice_item = partial(_media_item, ITEM_VIDEO), partial(_media_item
 
 # Inbound media dispatch: item type -> (item key, download timeout, cache fn, mime or None (= guess from
 # file_name), log label). Cache fns are lambdas so monkeypatching the module names takes effect at call time.
-_INBOUND_MEDIA: Dict[int, Tuple[str, float, Callable[[bytes, str], Awaitable[str]], Optional[str], str]] = {
+_INBOUND_MEDIA: dict[int, tuple[str, float, Callable[[bytes, str], Awaitable[str]], Optional[str], str]] = {
     ITEM_IMAGE: ("image_item", 30.0, lambda data, _name: cache_image_from_bytes_async(data, ".jpg"), "image/jpeg", "image"),
     ITEM_VIDEO: ("video_item", 120.0, lambda data, _name: cache_document_from_bytes_async(data, "video.mp4"), "video/mp4", "video"),
     ITEM_FILE: ("file_item", 60.0, lambda data, name: cache_document_from_bytes_async(data, name), None, "file"),
@@ -681,7 +681,7 @@ _INBOUND_MEDIA: Dict[int, Tuple[str, float, Callable[[bytes, str], Awaitable[str
 }
 
 # Outbound local-file dispatch by extension: (extensions, sender method, path kwarg); default = send_document.
-_OUTBOUND_BY_EXT: Tuple[Tuple[frozenset, str, str], ...] = (
+_OUTBOUND_BY_EXT: tuple[tuple[frozenset, str, str], ...] = (
     (frozenset({".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}), "send_voice", "audio_path"),  # no .m2a, unlike base
     (_VIDEO_EXTS, "send_video", "video_path"),
     (_IMAGE_EXTS, "send_image_file", "image_path"),
@@ -735,7 +735,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
 
     @staticmethod
-    def _coerce_list(value: Any) -> List[str]:
+    def _coerce_list(value: Any) -> list[str]:
         if value is None:
             return []
         items = value.split(",") if isinstance(value, str) else value if isinstance(value, (list, tuple, set)) else [value]
@@ -862,13 +862,13 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             except Exception as exc:
                 logger.debug("[%s] old poll session close failed: %s", self.name, exc)
 
-    async def _process_message_safe(self, message: Dict[str, Any]) -> None:
+    async def _process_message_safe(self, message: dict[str, Any]) -> None:
         try:
             await self._process_message(message)
         except Exception as exc:
             logger.error("[%s] unhandled inbound error from=%s: %s", self.name, _safe_id(message.get("from_user_id")), exc, exc_info=True)
 
-    async def _process_message(self, message: Dict[str, Any]) -> None:
+    async def _process_message(self, message: dict[str, Any]) -> None:
         assert self._poll_session is not None
         sender_id = str(message.get("from_user_id") or "").strip()
         message_id = str(message.get("message_id") or "").strip()
@@ -908,14 +908,14 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         else:
             await self.handle_message(event)
 
-    async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:
+    async def _collect_media(self, item: dict[str, Any], media_paths: list[str], media_types: list[str]) -> None:
         spec = _INBOUND_MEDIA.get(item.get("type"))
         path, mime = await self._download_media(item, spec) if spec else (None, "")
         if path:
             media_paths.append(path)
             media_types.append(mime)
 
-    async def _download_media(self, item: Dict[str, Any], spec: Tuple[Any, ...]) -> Tuple[Optional[str], str]:
+    async def _download_media(self, item: dict[str, Any], spec: tuple[Any, ...]) -> tuple[Optional[str], str]:
         """Download + decrypt one inbound media item -> (cached path or None, mime). Voice is always downloaded
         (never trust Tencent's ``voice_item.text``) so gateway/run.py's central STT re-transcribes."""
         item_key, timeout_seconds, cache_fn, mime, label = spec
@@ -951,7 +951,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.debug("[%s] %s for %s: %s", self.name, failure_label, _safe_id(user_id), exc)
         return None
 
-    def _split_text(self, content: str) -> List[str]:
+    def _split_text(self, content: str) -> list[str]:
         return _split_text_for_weixin_delivery(content, self.MAX_MESSAGE_LENGTH, self._split_multiline_messages)
 
     def _rate_limit_cooldown_remaining(self) -> float:
@@ -1026,7 +1026,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             assert last_error is not None
             raise last_error
 
-    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
         context_token = self._token_store.get(self._account_id, chat_id)
@@ -1078,7 +1078,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] typing %s failed for %s: %s", self.name, label, _safe_id(chat_id), exc)
 
-    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         await self._set_typing(chat_id, TYPING_START, "start")
 
     async def stop_typing(self, chat_id: str) -> None:
@@ -1110,7 +1110,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None, **kwargs,
+        metadata: Optional[dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
         return await self._send_file_result(chat_id, file_path, caption or "", "send_document")
 
@@ -1155,7 +1155,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             "ciphertext_size": len(ciphertext), "plaintext_size": rawsize, "filename": Path(path).name, "rawfilemd5": rawfilemd5}
         if media_type == MEDIA_VOICE and path.endswith(".silk"):
             item_kwargs.update(encode_type=6, sample_rate=24000, bits_per_sample=16)
-        item_lists: List[List[Dict[str, Any]]] = [[item_builder(**item_kwargs)]]
+        item_lists: list[list[dict[str, Any]]] = [[item_builder(**item_kwargs)]]
         if caption:
             item_lists.insert(0, [{"type": ITEM_TEXT, "text_item": {"text": self.format_message(caption)}}])
         last_message_id = ""
@@ -1191,7 +1191,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return MEDIA_VOICE, _voice_item
         return MEDIA_FILE, _file_item  # audio/* and everything else ship as file attachments
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "group" if chat_id.endswith("@chatroom") else "dm", "chat_id": chat_id}
 
     def format_message(self, content: Optional[str]) -> str:
@@ -1199,8 +1199,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
 
 async def _deliver_direct(
-    adapter: WeixinAdapter, chat_id: str, message: str, media_files: Optional[List[Tuple[str, bool]]], context_token: Optional[str],
-) -> Dict[str, Any]:
+    adapter: WeixinAdapter, chat_id: str, message: str, media_files: Optional[list[tuple[str, bool]]], context_token: Optional[str],
+) -> dict[str, Any]:
     last_result: Optional[SendResult] = None
     cleaned = adapter.format_message(message)
     if cleaned:
@@ -1217,8 +1217,8 @@ async def _deliver_direct(
 
 
 async def send_weixin_direct(
-    *, extra: Dict[str, Any], token: Optional[str], chat_id: str, message: str, media_files: Optional[List[Tuple[str, bool]]] = None,
-) -> Dict[str, Any]:
+    *, extra: dict[str, Any], token: Optional[str], chat_id: str, message: str, media_files: Optional[list[tuple[str, bool]]] = None,
+) -> dict[str, Any]:
     """One-shot send for ``send_message``/cron: reuse the live adapter's session on this loop, else a throwaway adapter."""
     account_id = _extra_or_secret(extra, "account_id")
     base_url = _extra_or_secret(extra, "base_url", ILINK_BASE_URL).rstrip("/")

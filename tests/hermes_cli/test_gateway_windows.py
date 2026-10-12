@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.gateway as gateway
-import hermes_cli.gateway_windows as gateway_windows
-import hermes_cli.setup as setup
+from hermes_cli import gateway
+from hermes_cli import gateway_windows
+from hermes_cli import setup
 
 
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
@@ -69,12 +69,13 @@ def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
     created = subprocess.run(
         ["schtasks", "/Create", "/F", "/TN", task, "/SC", "ONLOGON", "/TR", f'wscript.exe //B "C:\\{marker}\\x.vbs"'],
         capture_output=True, timeout=30,
+        check=False,
     )
     assert created.returncode == 0, created.stderr
     try:
         code, out, _err = gateway_windows._exec_schtasks(["/Query", "/TN", task, "/XML"])
     finally:
-        subprocess.run(["schtasks", "/Delete", "/F", "/TN", task], capture_output=True, timeout=30)
+        subprocess.run(["schtasks", "/Delete", "/F", "/TN", task], capture_output=True, timeout=30, check=False)
     assert code == 0
     assert marker in out, out
 
@@ -134,7 +135,7 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
         encoding="utf-8",
     )
 
-    import hermes_cli.gateway as gateway
+    from hermes_cli import gateway
 
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
@@ -324,7 +325,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
         raise AssertionError(f"unexpected schtasks args: {args}")
 
     monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
-    ok, detail = gateway_windows._install_scheduled_task("Hermes_Gateway_alice", script_path)
+    ok, _detail = gateway_windows._install_scheduled_task("Hermes_Gateway_alice", script_path)
 
     assert ok is True
     assert "/Change" not in [arg for call in calls for arg in call]
@@ -693,7 +694,7 @@ def _arrange_uninstalled_start(monkeypatch):
     monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
-    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", list)
     monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
     monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
     monkeypatch.setattr(gateway_windows, "install", lambda **kwargs: installs.append(kwargs))

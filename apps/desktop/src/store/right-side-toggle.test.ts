@@ -3,7 +3,16 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { findGroupOfPane, group, type LayoutNode, split } from '@/components/pane-shell/tree/model'
 import { $collapsedTreeSides, $hiddenTreePanes, $layoutTree } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
-import { $fileBrowserOpen, setFileBrowserOpen, setSidebarOpen, toggleRightSide } from '@/store/layout'
+import {
+  $fileBrowserOpen,
+  $leftSideOpen,
+  $panesFlipped,
+  $sidebarOpen,
+  setFileBrowserOpen,
+  setSidebarOpen,
+  toggleLeftSide,
+  toggleRightSide
+} from '@/store/layout'
 
 // The right-side toggle must be POSITIONAL: it acts on whatever column is
 // physically rightmost in the root row — including a preview-tile column
@@ -100,5 +109,82 @@ describe('positional right-side toggle', () => {
     expect($collapsedTreeSides.get().has('right')).toBe(false)
     expect(Boolean(groupOf('files')?.minimized)).toBe(false)
     expect($fileBrowserOpen.get()).toBe(true)
+  })
+})
+
+// The LEFT titlebar button has the same positional contract (#66357): after a
+// ⌘\ flip the sessions pane sits physically RIGHT and the file tree LEFT, so
+// the old pane-bound left toggle folded the sessions column from the LEFT
+// button — leaving the physically-left file tree unreachable and BOTH
+// buttons acting on the same column.
+describe('positional left-side toggle', () => {
+  // Flipped arrangement: files physically left, main, sessions right.
+  const filesLeft = () => {
+    $panesFlipped.set(true)
+    $layoutTree.set(split('row', [group(['files']), group(['workspace']), group(['sessions'])]))
+  }
+
+  it('folds the physically-left files column after a flip, never the sessions pane', () => {
+    filesLeft()
+
+    toggleLeftSide()
+
+    expect(Boolean(groupOf('files')?.minimized)).toBe(true)
+    expect(Boolean(groupOf('sessions')?.minimized)).toBe(false)
+  })
+
+  it('round-trips: a second press restores the zone', () => {
+    filesLeft()
+
+    toggleLeftSide()
+    toggleLeftSide()
+
+    expect(Boolean(groupOf('files')?.minimized)).toBe(false)
+  })
+
+  it('folds the sessions leaf column on the unflipped layout, not the right column', () => {
+    $layoutTree.set(split('row', [group(['sessions']), group(['workspace']), group(['files'])]))
+
+    toggleLeftSide()
+
+    expect(Boolean(groupOf('sessions')?.minimized)).toBe(true)
+    expect(Boolean(groupOf('files')?.minimized)).toBe(false)
+  })
+
+  // Nothing left of main: the search must never cross main into the right
+  // column — it falls back to the semantic sidebar branch instead.
+  it('falls back to the sidebar branch when main is leftmost', () => {
+    $panesFlipped.set(false)
+    $layoutTree.set(split('row', [group(['workspace']), group(['files'])]))
+
+    toggleLeftSide()
+
+    expect($collapsedTreeSides.get().has('right')).toBe(false)
+    expect($sidebarOpen.get()).toBe(false)
+  })
+
+  it('first press reopens a left side collapsed by setSidebarOpen(false) when flipped', () => {
+    filesLeft()
+    setFileBrowserOpen(false)
+
+    toggleLeftSide()
+
+    expect($collapsedTreeSides.get().has('left')).toBe(false)
+    expect(Boolean(groupOf('files')?.minimized)).toBe(false)
+    expect($fileBrowserOpen.get()).toBe(true)
+  })
+
+  it('$leftSideOpen tracks the physically-left column, not the sidebar pane', () => {
+    filesLeft()
+    setFileBrowserOpen(false)
+
+    expect($leftSideOpen.get()).toBe(false)
+
+    setFileBrowserOpen(true)
+    expect($leftSideOpen.get()).toBe(true)
+
+    // Folding the zone through the toggle flips it too.
+    toggleLeftSide()
+    expect($leftSideOpen.get()).toBe(false)
   })
 })

@@ -47,7 +47,6 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
-    monkeypatch.setattr("tools.approval._tirith_scan", lambda command: {"action": "allow"})
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     nested = tmp_path / "nested"
     nested.mkdir()
@@ -153,7 +152,6 @@ def test_cancelled_preparation_drains_requests_without_reusing_once(tmp_path, mo
 
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")
     monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
-    monkeypatch.setattr("tools.approval._tirith_scan", lambda command: {"action": "allow"})
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     key = "cancelled-terminal-batch"
     command = "rm -rf absent; printf executed > effect.txt"
@@ -247,7 +245,6 @@ def test_failed_command_re_gates_later_prepared_approvals(tmp_path, monkeypatch)
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
-    monkeypatch.setattr("tools.approval._tirith_scan", lambda command: {"action": "allow"})
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     key = "regate-terminal-batch"
     # First command fails (exit 1); second would succeed if allowed to run.
@@ -320,6 +317,55 @@ def test_failed_command_re_gates_later_prepared_approvals(tmp_path, monkeypatch)
         finally:
             agent.interrupt("test cleanup")
             approval.unregister_gateway_notify(key)
+            worker.join(timeout=5)
+            cleanup_vm(key)
+            clear_session_vars(tokens)
+
+
+def test_switching_yolo_off_mid_batch_re_gates_later_commands(tmp_path, monkeypatch):
+    """A prepared approval nobody answered is policy: the policy in force at execution governs."""
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from tools.terminal_tool_lifecycle import cleanup_vm
+
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
+    key = "yolo-off-terminal-batch"
+    agent = _agent()
+    agent._flush_messages_to_session_db = lambda *a, **kw: True
+    published = queue.Queue()
+    approval.register_gateway_notify(key, published.put)
+    from tui_gateway import server
+    monkeypatch.setattr(server, "_sessions", {key: {
+        "session_key": key, "source": "desktop", "agent": agent, "cwd": str(tmp_path)}})
+    tokens = server._set_session_context(key)
+    calls = [_call(f"c{i}", f"rm -rf absent-{i}; touch ran-{i}") for i in range(3)]
+    # The user switches YOLO off once the first command has run.
+    agent.tool_start_callback = lambda call_id, name, args: call_id == "c1" and approval.disable_session_yolo(key)
+    messages, errors = [], []
+    approval.enable_session_yolo(key)
+
+    def run():
+        try:
+            agent._execute_tool_calls(SimpleNamespace(tool_calls=calls), messages, key)
+        except BaseException as exc:
+            errors.append(exc)
+
+    with ExitStack() as scope:
+        scope.callback(reset_terminal_scope, set_terminal_scope({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(tmp_path)}))
+        worker = threading.Thread(target=propagate_context_to_thread(run), daemon=True)
+        worker.start()
+        try:
+            for _ in range(2):
+                request = published.get(timeout=15)
+                assert approval.resolve_gateway_approval(key, "deny", request_id=request["request_id"]) == 1
+            worker.join(timeout=15)
+            assert not worker.is_alive() and errors == []
+            assert sorted(p.name for p in tmp_path.glob("ran-*")) == ["ran-0"]
+        finally:
+            agent.interrupt("test cleanup")
+            approval.unregister_gateway_notify(key)
+            approval.clear_session(key)
             worker.join(timeout=5)
             cleanup_vm(key)
             clear_session_vars(tokens)

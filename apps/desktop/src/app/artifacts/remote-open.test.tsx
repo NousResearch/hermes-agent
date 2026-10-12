@@ -18,28 +18,33 @@ const paths = vi.hoisted(() => [
   '/srv/absolute.txt'
 ])
 
+const getSessionMessages = vi.hoisted(() => vi.fn())
+
 vi.mock('@/hermes', async () => ({
   ...(await vi.importActual('@/hermes')),
   listAllProfileSessions: async () => ({
     sessions: [{ id: 'artifact-session', title: 'Fixture', profile: 'origin-profile' }]
   }),
-  getAllSessionMessages: async () => ({
+  getSessionMessages
+}))
+afterEach(() => {
+  cleanup()
+  $connection.set(null)
+  vi.clearAllMocks()
+  vi.unstubAllGlobals()
+})
+
+it('keeps discovered file paths and originating session scope intact through remote opening', async () => {
+  getSessionMessages.mockResolvedValue({
     messages: [
       {
         role: 'assistant',
         timestamp: 1000,
         content: paths.map(path => `MEDIA:${path}`).join(' ') + ' https://example.com/report.txt'
       }
-    ]
+    ],
+    session_id: 'artifact-session'
   })
-}))
-afterEach(() => {
-  cleanup()
-  $connection.set(null)
-  vi.unstubAllGlobals()
-})
-
-it('keeps discovered file paths and originating session scope intact through remote opening', async () => {
   const saveGatewayFile = vi.fn().mockResolvedValue({ saved: true })
   const openExternal = vi.fn()
   vi.stubGlobal('hermesDesktop', { saveGatewayFile, openExternal })
@@ -87,4 +92,10 @@ it('keeps discovered file paths and originating session scope intact through rem
   )
   expect(screen.getByRole('link').getAttribute('href')).toBe('https://example.com/report.txt')
   expect(openExternal).not.toHaveBeenCalled()
+  expect(getSessionMessages).toHaveBeenCalledWith('artifact-session', 'origin-profile', {
+    includeCompacted: true,
+    limit: expect.any(Number),
+    offset: 0,
+    order: 'oldest'
+  })
 })

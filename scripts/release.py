@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 # Bootstrap the repo root onto sys.path so this script can import the
@@ -37,6 +37,7 @@ def git(*args, cwd=None):
         ["git"] + list(args),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"git {' '.join(args)} failed: {result.stderr}", file=sys.stderr)
@@ -51,6 +52,7 @@ def git_result(*args, cwd=None):
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
 
 
@@ -92,6 +94,7 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"  ✗ Could not start the release pipeline: {result.stderr.strip()}")
@@ -110,6 +113,7 @@ def _default_branch(gh_repo: str | None) -> str | None:
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         return None
@@ -432,6 +436,7 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
     view = subprocess.run(
         ["gh", "release", "view", tag, "--repo", repository, "--json", "tagName,isDraft,isPrerelease,url"],
         cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+        check=False,
     )
     # A draft is served at an untagged-* URL, never releases/tag/<tag>; gh's
     # answer is the only working link to it.
@@ -444,6 +449,7 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
         create.extend(["--notes-file", str(notes_file)] if notes_file else ["--generate-notes"])
         created = subprocess.run(
             create, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+            check=False,
         )
         if created.returncode != 0:
             raise ValueError(created.stderr.strip() or "Canary draft could not be recovered")
@@ -488,7 +494,7 @@ def cmd_canary(args) -> None:
     canary — the skip-if-no-new-commits gate lives HERE, not in workflow
     YAML.
     """
-    date_utc = args.date or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    date_utc = args.date or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     push_remote = resolve_push_remote(args.remote)
     gh_repo = remote_github_repo(push_remote)
     if not gh_repo:
@@ -576,7 +582,7 @@ def prune_old_canaries(args) -> None:
     """
     push_remote = resolve_push_remote(args.remote)
     gh_repo = remote_github_repo(push_remote)
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y%m%d")
+    cutoff = (datetime.now(UTC) - timedelta(days=14)).strftime("%Y%m%d")
 
     tags = git("tag", "--list", "v*+canary.*", "--sort=-creatordate")
     doomed = []
@@ -597,6 +603,7 @@ def prune_old_canaries(args) -> None:
         result = subprocess.run(
             gh_cmd, capture_output=True, text=True, encoding="utf-8",
             errors="replace", cwd=str(REPO_ROOT),
+            check=False,
         )
         if result.returncode == 0:
             print(f"✓ Deleted {tag}")
@@ -653,6 +660,13 @@ def main():
                              help="Emergency release: skip CI, Nix, PM bundle, install/update E2E, "
                                   "Termux, Windows, native smoke and upgrade acceptance jobs. "
                                   "Artifacts still build and publish.")
+    release_cmd.add_argument("--include-macos-intel", action="store_true",
+                             help="Also build, test and publish the macOS Intel (darwin-x64) desktop "
+                                  "bundle. Off by default: Intel macOS is not supported on main and "
+                                  "its runner adds over an hour to the release.")
+    release_cmd.add_argument("--include-termux", action="store_true",
+                             help="Also build, test and publish the Termux (Android aarch64) APT "
+                                  "package. Off by default.")
     # SUPPRESS keeps a --no-changelog given before the subcommand from being
     # reset by this parser's default.
     release_cmd.add_argument("--no-changelog", action="store_true", default=argparse.SUPPRESS,

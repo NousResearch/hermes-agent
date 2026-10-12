@@ -184,8 +184,8 @@ gateway:
     choice_normal: "normal — 標準処理"
     choice_auto: "auto — 各ターンの最初の数秒間だけ高速"
     choice_cold: "cold — セッションの最初のターンのみ高速"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast（GPT-6 Astra、料金 6 倍）"
-    ultrafast_not_supported: "⚡ Ultrafast は GPT-6 Astra でのみ利用できます（現在のモデル: `{model}`）。"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast、料金 6 倍"
+    ultrafast_not_supported: "⚡ このアカウントまたはルートでは `{model}` の Ultrafast は利用できません。"
   footer:
     status: "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"
     usage: "使い方: `/footer [on|off|status]`"
@@ -2279,6 +2279,7 @@ cli:
     failed: "接続に失敗しました"
     authorized_no_tools: "認可されました。ツールは利用できません。"
     connected: "接続済み"
+    named_account: "Hermes はこの {name} アカウントを {alias} と名付けました。名前はいつでも変更できます。"
     waiting: "待機中…"
   editor:
     only_interactive: "外部エディターは対話型 CLI 内でのみ利用できます。"
@@ -2660,7 +2661,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast は GPT-6 Astra でのみ利用できます（現在のモデル: {model}）。"
+      ultrafast_not_supported: "(._.) このアカウントまたはルートでは {model} の Ultrafast は利用できません。"
       usage: "使い方: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} を {value} に設定しました {scope}"

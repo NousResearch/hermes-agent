@@ -112,7 +112,7 @@ class Raw:
     content_type: str = "application/json"
 
 
-Response = Union[Text, ToolCall, Error, Hang, DropMidStream, StallMidStream, Raw]
+Response = Text | ToolCall | Error | Hang | DropMidStream | StallMidStream | Raw
 Responder = Callable[[dict[str, Any]], Response]
 
 
@@ -153,7 +153,7 @@ class FakeLLMServer:
         self._tool_seq = 0
 
     # lifecycle
-    def __enter__(self) -> "FakeLLMServer":
+    def __enter__(self) -> FakeLLMServer:
         self.start()
         return self
 

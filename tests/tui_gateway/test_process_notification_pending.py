@@ -373,3 +373,69 @@ def test_pruning_waits_for_each_independent_obligation(delivery, monkeypatch, pr
     proc._scope_stop_pending = False
     prune()
     assert proc.id not in rows()
+
+
+@pytest.mark.parametrize("entrypoint", ["watcher", "enqueue", "deliver"])
+def test_gateway_suppressed_child_completion_settles_without_consuming(
+    delivery, monkeypatch, entrypoint,
+):
+    registry, _session, _events, rows, spawn = delivery
+    proc = spawn(owner_task_id="sa-child")
+    proc.notify_on_complete = True
+    registry.submit_stdin(proc.id)
+    assert proc._completion_event.wait(5)
+    assert proc.exit_code == 0
+    event = registry.completion_queue.get(timeout=5)
+    assert rows()[proc.id]["notification_pending"] is True
+
+    from gateway.run_notifications import GatewayNotificationsMixin
+
+    class Owner(GatewayNotificationsMixin):
+        @contextlib.asynccontextmanager
+        async def _completion_event_scope(self, evt):
+            yield
+
+        def _load_background_notifications_mode(self):
+            return "all"
+
+    monkeypatch.setattr(processes.ProcessRegistry, "_surface_child_process_notifications", lambda: False)
+    owner = Owner()
+    if entrypoint == "watcher":
+        asyncio.run(GatewayNotificationsMixin._run_process_watcher(owner, {
+            "session_id": proc.id, "check_interval": 0, "notify_on_complete": True,
+        }))
+    elif entrypoint == "enqueue":
+        assert asyncio.run(GatewayNotificationsMixin._enqueue_process_completion_notification(
+            owner, "completion", event)) is None
+    else:
+        assert asyncio.run(GatewayNotificationsMixin._deliver_completion_notification_scoped(
+            owner, "completion", event)) is None
+    assert rows()[proc.id]["notification_pending"] is False
+    assert not registry.is_completion_consumed(proc.id)
+
+
+def test_gateway_suppression_preserves_live_child_handoff_obligation(delivery, monkeypatch):
+    registry, _session, _events, rows, spawn = delivery
+    proc = spawn(owner_task_id="sa-child")
+    proc.notify_on_complete = True
+
+    from gateway.run_notifications import GatewayNotificationsMixin
+
+    class Owner(GatewayNotificationsMixin):
+        @contextlib.asynccontextmanager
+        async def _completion_event_scope(self, evt):
+            yield
+
+        def _load_background_notifications_mode(self):
+            return "all"
+
+    monkeypatch.setattr(processes.ProcessRegistry, "_surface_child_process_notifications", lambda: False)
+    snapshots = iter([proc, None])
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr(registry, "get", lambda sid: next(snapshots))
+        asyncio.run(GatewayNotificationsMixin._run_process_watcher(Owner(), {
+            "session_id": proc.id, "check_interval": 0, "notify_on_complete": True,
+        }))
+    assert not proc.exited
+    assert rows()[proc.id]["notification_pending"] is True
+    assert not registry.is_completion_consumed(proc.id)

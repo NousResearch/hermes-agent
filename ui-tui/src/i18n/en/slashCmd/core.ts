@@ -6,6 +6,7 @@ export const slashCmdCoreEn = {
   core: {
     help: {
       skillCommandsAvailable: (count: string) => `${count} skill commands available — /skills to browse`,
+      connectors: 'manage connector accounts (rename, add another, reconnect, remove)',
       detailsGlobal: 'set global agent detail visibility mode',
       detailsSection: 'override one section (thinking/tools/subagents/activity)',
       fortune: 'show a random or daily local fortune',

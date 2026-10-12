@@ -230,7 +230,7 @@ class LoadedPlugin:
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
 
-    def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
+    def __init__(self, manifest: PluginManifest, manager: PluginManager):
         self.manifest = manifest
         self._manager = manager
         self._llm: Any = None  # lazy; tests preseed it (see ``llm``)
@@ -415,7 +415,7 @@ class PluginContext:
         logger.debug("Plugin %s registered on_unload callback", self.manifest.name)
         return handle
 
-    def spawn_task(self, coro, *, name: Optional[str] = None) -> "asyncio.Task":
+    def spawn_task(self, coro, *, name: Optional[str] = None) -> asyncio.Task:
         """Spawn a supervised asyncio task; unload/force reload cancels it. Needs a running loop."""
         if not asyncio.iscoroutine(coro):
             raise TypeError("spawn_task expects a coroutine")
@@ -888,7 +888,7 @@ class PluginContext:
         return count
 
     def register_locale(
-        self, lang: str, source: Union[str, Path, Mapping[str, Any]], *, endonym: Optional[str] = None,
+        self, lang: str, source: str | Path | Mapping[str, Any], *, endonym: Optional[str] = None,
         rtl: bool = False, surface: str = "core",
     ) -> PluginRegistration:
         """Register a language-pack layer for ``lang`` (``pl``, ``pt-br``): ``source`` is a YAML file path or
@@ -913,7 +913,7 @@ class PluginContext:
         return handle
 
     def register_locale_dir(
-        self, path: Union[str, Path], *, metadata: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        self, path: str | Path, *, metadata: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ) -> list[PluginRegistration]:
         """Register every ``<lang>[.tui|.desktop].yaml`` under ``path`` (a pack's ``locales/`` dir). The
         loader calls this for plugins declaring ``provides_locales``; ``metadata`` maps ids to
@@ -955,7 +955,7 @@ class PluginContext:
         return handle
 
     def register_system_prompt_section(
-        self, id: str, content: Union[str, Callable[[Mapping[str, Any]], str]], *,
+        self, id: str, content: str | Callable[[Mapping[str, Any]], str], *,
         position: str = "after_memory", max_chars: int = DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS,
     ) -> PluginRegistration:
         """Register bounded context frozen into each new session prompt. Callables receive a
@@ -1815,7 +1815,7 @@ def _persist_plugin_toolset_keys() -> None:
         logger.debug("plugin toolset key persist failed", exc_info=True)
 
 
-def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], "set[str]"]) -> "set[str]":
+def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], set[str]]) -> set[str]:
     """Shared body of the ``*_nowait`` probes: live registry, else last launch's cache, else block."""
     manager = get_plugin_manager()
     t = _background_discovery_thread
@@ -1832,14 +1832,14 @@ def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], "set[st
     return live(manager)
 
 
-def get_plugin_toolset_keys_nowait() -> "set[str]":
+def get_plugin_toolset_keys_nowait() -> set[str]:
     """Plugin toolset keys without blocking on in-flight discovery: live registry when done, last
     launch's persisted set while a background scan runs (callers only EXCLUDE these keys, so a stale
     set is harmless and self-heals), else block via discover_plugins()."""
     return _nowait_plugin_set("toolset_keys", lambda _m: {ts_key for ts_key, _, _ in get_plugin_toolsets()})
 
 
-def get_portable_mcp_server_names_nowait() -> "set[str]":
+def get_portable_mcp_server_names_nowait() -> set[str]:
     """Portable MCP server names; same contract as :func:`get_plugin_toolset_keys_nowait`."""
     return _nowait_plugin_set("portable_mcp", lambda m: set(m.get_portable_mcp_servers()))
 
@@ -2049,7 +2049,7 @@ def resolve_pre_tool_block(
 
 
 def _resolve_block_from_details(
-    details: "_PreToolCallDirective", tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
+    details: _PreToolCallDirective, tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
     session_id: str = "",
 ) -> Optional[str]:
     """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an

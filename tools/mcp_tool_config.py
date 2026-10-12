@@ -277,15 +277,38 @@ def _outside_package(launcher: str, managed: str, dirs: list[str]) -> tuple[str,
     return shutil.which(launcher, path=os.pathsep.join(moved)) or managed, moved
 
 
-def _is_hermes_managed_bin_dir(directory: str) -> bool:
+def _pm_managed_roots() -> set[Path]:
+    """Roots of the trees PM puts on PATH, resolved: its stores (tool dirs), the dependency
+    generations and a sealed payload's venv (the selected venv's bin). They may live outside
+    the active home: a stamped ``runtimeDir``, a sealed payload, the root's ``tools/`` and
+    ``installs/`` seen from a profile."""
+    from pm.environments import installs_root, payload_venv
+    from pm.paths import repo_root, store_root, writable_store_root
+    roots = set()
+    for root in (store_root, writable_store_root, installs_root, lambda: payload_venv(repo_root())):
+        try:
+            path = root()
+        except (OSError, RuntimeError, ValueError):  # unreadable stamp, a payload path escaping its root
+            continue
+        if path is not None:
+            roots.add(path.resolve())
+    return roots
+
+
+def _is_hermes_managed_bin_dir(directory: str, pm_roots: set[Path]) -> bool:
     """True for the bin dirs Hermes' bootstrap prepends to this process's PATH: anything
-    under the active hermes home (the sealed payload's venv, ``<home>/bin``, PM store
-    runtimes) plus the running interpreter's own bin dir (a repo checkout's venv)."""
+    under the active hermes home (``<home>/bin``) or under *pm_roots* (``_pm_managed_roots``),
+    plus the running venv's own bin dir (a repo checkout's venv)."""
     try:
         resolved = Path(directory).resolve()
     except OSError:
         return False
-    if resolved == Path(sys.executable).resolve().parent:
+    # The venv's bin, not its interpreter's target: a POSIX venv's python is a symlink into
+    # the base interpreter's dir, which for a venv on the system Python is the user's /usr/bin.
+    # Outside a venv the interpreter is PM's (under pm_roots or the home) or the user's own.
+    if sys.prefix != sys.base_prefix and resolved == Path(sys.executable).parent.resolve():
+        return True
+    if any(root in resolved.parents for root in pm_roots):
         return True
     from hermes_constants import get_hermes_home
     try:
@@ -332,8 +355,9 @@ def _first_user_which_hit(command: str, path_arg: Optional[str],
         names = [command]
     else:
         names = [command + ext for ext in exts]
+    pm_roots = _pm_managed_roots()
     for directory in str(path_arg or "").split(os.pathsep):
-        if not directory or _is_hermes_managed_bin_dir(directory):
+        if not directory or _is_hermes_managed_bin_dir(directory, pm_roots):
             continue
         for name in names:
             candidate = os.path.join(directory, name)

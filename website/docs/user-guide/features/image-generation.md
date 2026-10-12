@@ -80,7 +80,8 @@ image_gen:
     num_images: 4
 ```
 
-The OpenRouter equivalent is `image_gen.openrouter.n`. Every image is delivered:
+The equivalents are `image_gen.openrouter.n` and `image_gen.openai.n` (the latter also
+applies to a custom OpenAI-compatible endpoint). Every image is delivered:
 the first in the tool result's `image` field, the rest in `additional_images`.
 
 `max_parallel_requests` defaults to `4`. Hermes clamps it to at least one and
@@ -214,7 +215,11 @@ image_gen:
     model: gpt-image-2-medium
     base_url: http://localhost:18081/v1   # → OPENAI_BASE_URL → api.openai.com
     key_env: IMAGE_GATEWAY_TOKEN          # → OPENAI_API_KEY
+    n: 4                                  # optional: images per request (default 1)
 ```
+
+`n` is sent as-is; whether a gateway honours it (or serves the images itself
+by fanning out) is up to the gateway. Every image it returns comes back.
 
 Only the variable *name* is stored in `config.yaml`; the secret stays in `.env`
 or the process environment. Availability checks and

@@ -36,6 +36,12 @@ import hermes_yaml as yaml
 from hermes_cli.cli_output import line_input
 from hermes_cli.colors import Colors, color
 from hermes_cli import managed_scope
+from hermes_cli.config_content_identity import (
+    _canonical_config_path_key,
+    _combined_config_signature,
+    _load_config_cache_sig,
+    _raw_config_cache_hit,
+)
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Managed-mode, container and HERMES_UID/GID policy live in hermes_constants (import-safe);
@@ -46,7 +52,7 @@ from hermes_constants import (
     apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home
-from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside
+from utils import atomic_replace, fast_safe_load, file_signature, read_file_with_signature, file_content_signature, mkstemp_beside
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
@@ -1879,14 +1885,8 @@ def cfg_get(cfg: Optional[dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
-def _raw_config_cache_hit(path_key: str, cache_key: tuple[Any, ...]) -> Optional[dict[str, Any]]:
-    """Pure lookup: the cached raw config for ``path_key`` if its signature equals ``cache_key``,
-    else ``None``. Shared by the lock-free fast path and the locked re-check of
-    ``_read_raw_config_impl`` so the predicate cannot drift between them."""
-    cached = _RAW_CONFIG_CACHE.get(path_key)
-    if cached is not None and cached[:len(cache_key)] == cache_key:
-        return cached[len(cache_key)]
-    return None
+
+
 
 
 def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
@@ -1897,8 +1897,9 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
     # every cached read for the duration). A lost race just falls through to the locked re-check.
     try:
         config_path = get_config_path()
-        cache_key = file_signature(config_path.stat())
-        hit = _raw_config_cache_hit(str(config_path), cache_key)
+        snapshot = read_file_with_signature(config_path, raise_errors=True)
+        cache_key = snapshot[1] if snapshot is not None else None
+        hit = _raw_config_cache_hit(_RAW_CONFIG_CACHE, _canonical_config_path_key(config_path), cache_key) if cache_key is not None else None
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
     except Exception:
@@ -1907,20 +1908,22 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
     with _CONFIG_LOCK:
         config_path = get_config_path()
         try:
-            cache_key = file_signature(config_path.stat())
+            snapshot = read_file_with_signature(config_path, raise_errors=True)
+            if snapshot is None:
+                return {}
+            content, cache_key = snapshot
         except FileNotFoundError:
             return {}
-        except OSError as e:
+        except (OSError, RuntimeError) as e:
             return FailedConfigRead(error=e)
 
-        path_key = str(config_path)
-        hit = _raw_config_cache_hit(path_key, cache_key)
+        path_key = _canonical_config_path_key(config_path)
+        hit = _raw_config_cache_hit(_RAW_CONFIG_CACHE, path_key, cache_key)
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
         try:
-            with open(config_path, encoding="utf-8-sig") as f:
-                data = fast_safe_load(f) or {}
+            data = fast_safe_load(content) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return FailedConfigRead(error=e)
@@ -2202,24 +2205,8 @@ def apply_terminal_config_to_env(
     return target
 
 
-def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, int, int]], Optional[tuple[int, ...]]]:
-    """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
-    The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
-    try:
-        st = config_path.stat()
-        user_sig: Optional[tuple[int, int, int, int]] = file_signature(st)
-    except FileNotFoundError:
-        user_sig = None
-    managed_dir = managed_scope.get_managed_dir()
-    try:
-        mst = (managed_dir / "config.yaml").stat() if managed_dir else None
-        managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
-    except OSError:
-        managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
-        return None, None
-    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
+
+
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[dict[str, Any]]:
@@ -2263,13 +2250,16 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
     return lkg_copy
 
 
-def _merge_managed_overlay(expanded: dict[str, Any]) -> tuple[dict[str, Any], Any]:
+def _merge_managed_overlay(
+    expanded: dict[str, Any], managed_config: Optional[dict] = None
+) -> tuple[dict[str, Any], Any]:
     """Apply the managed-scope overlay; returns ``(merged, managed_config_or_falsy)``.
     Managed wins at the leaf and is applied AFTER user expansion so a user ``${VAR}`` cannot shadow
     a managed literal: managed values expand only against the process environment. This
     deliberately inverts the usual env-over-config precedence for the keys the managed layer pins
     (docs/design/managed-scope.md §4.1)."""
-    managed_config = managed_scope.load_managed_config()
+    if managed_config is None:
+        managed_config = managed_scope.load_managed_config()
     if not managed_config:
         return expanded, managed_config
     # Same canonicalization as the user config BEFORE merging (parity with
@@ -2313,7 +2303,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
     # gateway that stalls every inbound message's hook path. A lost race falls through to the lock.
     try:
         config_path = get_config_path()
-        path_key = str(config_path)
+        path_key = _canonical_config_path_key(config_path)
         if path_key in _LOAD_CONFIG_CACHE:
             _, fast_sig = _load_config_cache_sig(config_path)
             hit = _load_config_cache_hit(path_key, fast_sig)
@@ -2327,20 +2317,30 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
     with _CONFIG_LOCK:
         ensure_hermes_home()
         config_path = get_config_path()
-        path_key = str(config_path)
+        path_key = _canonical_config_path_key(config_path)
 
-        user_sig, cache_sig = _load_config_cache_sig(config_path)
+        managed_config, managed_sig = managed_scope.load_managed_config_snapshot()
+        snapshot_error = None
+        try:
+            user_snapshot = read_file_with_signature(config_path, raise_errors=True)
+        except (OSError, RuntimeError) as exc:
+            user_snapshot = None
+            snapshot_error = exc
+        user_sig = user_snapshot[1] if user_snapshot is not None else None
+        cache_sig = _combined_config_signature(user_sig, managed_sig)
 
-        hit = _load_config_cache_hit(path_key, cache_sig)
+        hit = _load_config_cache_hit(path_key, cache_sig) if snapshot_error is None else None
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
-        if user_sig is not None:
+        if user_snapshot is not None or snapshot_error is not None:
             try:
-                with open(config_path, encoding="utf-8-sig") as f:
-                    user_config = fast_safe_load(f) or {}
+                if snapshot_error is not None:
+                    raise snapshot_error
+                assert user_snapshot is not None
+                user_config = fast_safe_load(user_snapshot[0]) or {}
                 _CONFIG_PARSE_FAILURES.pop(path_key, None)  # the file reads now (a transient error left the record)
 
                 if "max_turns" in user_config:
@@ -2371,7 +2371,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                 return copy.deepcopy(fallback) if want_deepcopy else fallback
 
         normalized = _canonicalize_config(config)
-        expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+        expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized), managed_config)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while
@@ -2485,7 +2485,7 @@ def save_config(
         if _raw_for_paths:
             normalized = _preserve_env_ref_templates(
                 normalized, _canonicalize_config(_raw_for_paths),
-                _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
+                _LAST_EXPANDED_CONFIG_BY_PATH.get(_canonical_config_path_key(config_path)))
 
         if strip_defaults:
             # ``_strip_default_values`` always preserves ``_config_version`` itself.
@@ -2494,8 +2494,8 @@ def save_config(
 
         atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
-        _RAW_CONFIG_CACHE.pop(str(config_path), None)
-        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        _RAW_CONFIG_CACHE.pop(_canonical_config_path_key(config_path), None)
+        _LAST_EXPANDED_CONFIG_BY_PATH[_canonical_config_path_key(config_path)] = copy.deepcopy(current_normalized)
     from hermes_cli.observability.shared_metrics_disabled import record_config_saved
     record_config_saved(_raw_for_paths, current_normalized)
 

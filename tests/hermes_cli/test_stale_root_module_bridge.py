@@ -40,20 +40,21 @@ def pre_handoff_purge():
             sys.modules[name] = module
 
 
+@pytest.mark.parametrize("missing_symbol", ["file_signature", "read_file_with_signature", "file_content_signature"])
 @pytest.mark.parametrize("consumer", ["hermes_cli.config", "hermes_cli.managed_scope"])
 def test_fresh_hermes_cli_import_heals_stale_utils_missing_file_signature(
-    monkeypatch, pre_handoff_purge, consumer
+    monkeypatch, pre_handoff_purge, consumer, missing_symbol
 ):
     """Restart-phase shape: hermes_cli.* purged, root utils stale, consumer freshly imported."""
     import utils
 
-    monkeypatch.delattr(utils, "file_signature")
+    monkeypatch.delattr(utils, missing_symbol)
     pre_handoff_purge()
     assert consumer not in sys.modules
 
     module = importlib.import_module(consumer)
     assert callable(module.file_signature)
-    assert hasattr(sys.modules["utils"], "file_signature")
+    assert hasattr(sys.modules["utils"], missing_symbol)
 
 
 def test_drop_stale_root_modules_leaves_complete_utils_alone():

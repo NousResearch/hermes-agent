@@ -14,6 +14,7 @@ import threading
 import time
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -292,7 +293,6 @@ class TestDelegateTask(unittest.TestCase):
         ``parent_session_id`` lineage and ``session_search``.
         """
         import tempfile
-        from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmp:
             profile_db_path = Path(tmp) / "profile-work" / "state.db"

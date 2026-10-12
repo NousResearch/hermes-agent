@@ -142,6 +142,245 @@ def test_target_worktree_owns_admission_and_fork_comparison(installation, monkey
     assert {str(p.relative_to(root)): p.read_bytes() for p in (root / ".git").rglob("*") if p.is_file()} == before
 
 
+def _update_client(root, monkeypatch, *, install_method="git"):
+    """Exercise the real HTTP adapter without starting the full dashboard or an updater."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+    from hermes_cli.web_routers import actions
+
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: root)
+    monkeypatch.setattr(actions, "_server_path", lambda name: root)
+    monkeypatch.setattr(actions, "_config_profile_scope", lambda profile: nullcontext())
+    monkeypatch.setattr(actions, "_dashboard_local_update_managed_externally", lambda: False)
+    monkeypatch.setattr(actions, "get_version_info", lambda: SimpleNamespace(derived_version="fixture"))
+    monkeypatch.setattr(actions, "detect_install_method", lambda root: install_method)
+    app = FastAPI()
+    app.include_router(actions.router)
+    return TestClient(app)
+
+
+def test_desktop_checks_official_line_without_leaving_local_customizations(installation, monkeypatch):
+    root, linked, home, _base, _head, responses, requests, git = installation
+    _bare_origin(installation)
+    git("remote", "set-url", "origin", "git@github.com:NousResearch/hermes-agent.git")
+    git("config", f"url.{(home / 'remote.git').as_uri()}.insteadOf", "https://github.com/NousResearch/hermes-agent.git")
+    git("commit", "--allow-empty", "-m", "private customization", cwd=linked)
+    custom = git("rev-parse", "HEAD", cwd=linked)
+    (linked / "custom.txt").write_text("keep my work")
+    target = "a" * 40
+    from hermes_cli.update_channel import install_id
+    (home / "config.yaml").write_text(
+        f"update:\n  installs:\n    {install_id(linked)}:\n      channel: main\n")
+    responses["/repos/NousResearch/hermes-agent/commits/main"] = (200, target)
+    client = _update_client(linked, monkeypatch)
+    before = {str(p.relative_to(root)): p.read_bytes() for p in (root / ".git").rglob("*") if p.is_file()}
+    commands = []
+    original = subprocess.run
+
+    def record(args, **kwargs):
+        commands.append(args)
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", record)
+    response = client.get("/api/hermes/update/check?force=true")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["behind"] == -1, body
+    assert body["update_available"] is True
+    assert body["can_apply"] is True
+    assert body["message"] is None
+    assert requests == ["/repos/NousResearch/hermes-agent/commits/main",
+                        f"/repos/NousResearch/hermes-agent/compare/{custom}...{target}"]
+    assert all(not any(arg in {"fetch", "checkout", "reset", "update-ref", "stash", "merge", "pull"}
+                       for arg in cmd) for cmd in commands)
+    assert git("rev-parse", "HEAD", cwd=linked) == custom
+    assert git("branch", "--show-current", cwd=linked) == "feature/gui"
+    assert (linked / "custom.txt").read_text() == "keep my work"
+    assert {str(p.relative_to(root)): p.read_bytes() for p in (root / ".git").rglob("*") if p.is_file()} == before
+
+
+def test_desktop_preserves_local_only_diagnostic_for_nonofficial_origin(installation, monkeypatch):
+    root, _linked, _home, _base, _head, _responses, _requests, git = installation
+    _bare_origin(installation)
+    git("checkout", "-b", "local-work")
+    git("commit", "--allow-empty", "-m", "private work")
+    client = _update_client(root, monkeypatch)
+    response = client.get("/api/hermes/update/check?force=true")
+    assert response.status_code == 200
+    body = response.json()
+    assert "never been pushed" in body["message"], body
+    assert body["error"] == "branch-local-only"
+    assert body["localOnly"] is True
+    assert body["behind"] is None
+    assert body["update_available"] is False
+    assert git("branch", "--show-current") == "local-work"
+
+
+def test_desktop_checker_exception_is_not_misreported_as_network_failure(installation, monkeypatch):
+    root, _linked, _home, _base, _head, _responses, _requests, _git = installation
+    client = _update_client(root, monkeypatch)
+
+    def broken(**kwargs):
+        raise ValueError("invalid local state")
+
+    monkeypatch.setattr("hermes_cli.source_check.check_for_updates", broken)
+    response = client.get("/api/hermes/update/check")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["behind"] is None
+    assert body["update_available"] is False
+    assert body["error"] == "check-failed"
+    assert "could not complete" in body["message"]
+    assert "reach" not in body["message"]
+
+
+@pytest.mark.parametrize("count", [None, -1])
+def test_desktop_known_update_with_unknown_count_keeps_the_legacy_sentinel(installation, monkeypatch, count):
+    root, _linked, _home, _base, _head, _responses, _requests, _git = installation
+    client = _update_client(root, monkeypatch)
+    monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kwargs: {
+        "supported": True, "behind": count, "updateAvailable": True, "commits": [],
+    })
+    body = client.get("/api/hermes/update/check").json()
+    assert body["behind"] == -1, body
+    assert body["update_available"] is True
+    assert body["message"] is None
+
+
+@pytest.mark.parametrize("kind", ["no-git", "external-steward"])
+def test_desktop_source_admission_disables_apply_without_network_error(installation, monkeypatch, kind):
+    root, _linked, home, _base, _head, _responses, requests, _git = installation
+    if kind == "no-git":
+        root = home
+        expected = "not-a-git-checkout"
+    else:
+        (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "external"}))
+        expected = "update-root-steward-owned-git-tree"
+    client = _update_client(root, monkeypatch)
+    body = client.get("/api/hermes/update/check").json()
+    assert body["can_apply"] is False, body
+    assert body["behind"] is None
+    assert body["reason"] == expected
+    assert body["message"]
+    assert "reach" not in body["message"]
+    assert requests == []
+
+
+@pytest.mark.parametrize("channel,delivery", [("main", "main"), ("maintained-line", "release-line")])
+@pytest.mark.parametrize("selection", ["default", "explicit", "desktop"])
+def test_official_source_channel_selection_keeps_explicit_pins(installation, channel, delivery, selection):
+    from hermes_cli.source_check import check_for_updates
+    from hermes_cli.update_channel import install_id
+
+    _root, linked, home, _base, head, responses, requests, git = installation
+    git("remote", "set-url", "origin", "https://github.com/NousResearch/hermes-agent.git")
+    (home / "config.yaml").write_text(
+        f"update:\n  installs:\n    {install_id(linked)}:\n      channel: {channel}\n")
+    path = f"/releases/channels/{channel}.json"
+    responses[path] = (200, source_channel(channel, "NousResearch/hermes-agent", delivery))
+    expected = delivery if selection == "default" else "user-choice"
+    branch_file = home / "desktop-update.json"
+    if selection == "desktop":
+        branch_file.write_text(json.dumps({"branch": expected}))
+    branch_path = f"/repos/NousResearch/hermes-agent/commits/{expected}"
+    responses[branch_path] = (200, head)
+    status = check_for_updates(install_root=linked, home=home,
+                               branch="user-choice" if selection == "explicit" else None,
+                               branch_config_path=branch_file)
+    assert status["branch"] == expected
+    assert status["targetSha"] == head
+    assert status["currentBranch"] == "feature/gui"
+    assert status["behind"] == 0
+    assert requests == ([] if selection == "explicit" or channel == "main" else [path]) + [branch_path]
+    assert git("branch", "--show-current", cwd=linked) == "feature/gui"
+    if selection == "desktop":
+        assert json.loads(branch_file.read_text()) == {"branch": expected}
+
+
+@pytest.mark.parametrize("pinned_first", [False, True])
+def test_desktop_pin_equal_to_checkout_invalidates_cached_channel_policy(installation, pinned_first):
+    from hermes_cli.source_check import check_for_updates
+
+    _root, linked, home, _base, head, responses, requests, git = installation
+    git("remote", "set-url", "origin", "https://github.com/NousResearch/hermes-agent.git")
+    from hermes_cli.update_channel import install_id
+    (home / "config.yaml").write_text(
+        f"update:\n  installs:\n    {install_id(linked)}:\n      channel: main\n")
+    official_path = "/repos/NousResearch/hermes-agent/commits/main"
+    pinned_path = "/repos/NousResearch/hermes-agent/commits/feature%2Fgui"
+    responses[official_path] = responses[pinned_path] = (200, head)
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "feature/gui"} if pinned_first else {}))
+    kwargs = {"install_root": linked, "home": home, "cache_path": home / "cache.json",
+              "branch_config_path": branch_file}
+    first_branch = "feature/gui" if pinned_first else "main"
+    assert check_for_updates(**kwargs)["branch"] == first_branch
+    requests.clear()
+    assert check_for_updates(**kwargs)["branch"] == first_branch
+    assert requests == []  # The first result really is a valid cache entry.
+
+    next_config = {} if pinned_first else {"branch": "feature/gui"}
+    branch_file.write_text(json.dumps(next_config))
+    status = check_for_updates(**kwargs)
+    assert status["branch"] == ("main" if pinned_first else "feature/gui")
+    assert status["behind"] == 0
+    assert status["targetSha"] == head
+    assert requests == [official_path if pinned_first else pinned_path]
+    assert json.loads(branch_file.read_text()) == next_config
+    assert git("branch", "--show-current", cwd=linked) == "feature/gui"
+    assert git("rev-parse", "HEAD", cwd=linked) == head
+
+
+def test_old_branch_policy_cache_cannot_hide_an_official_update(installation):
+    from hermes_cli.source_check import check_for_updates
+
+    _root, linked, home, _base, head, responses, requests, git = installation
+    git("remote", "set-url", "origin", "https://github.com/NousResearch/hermes-agent.git")
+    from hermes_cli.update_channel import install_id
+    (home / "config.yaml").write_text(
+        f"update:\n  installs:\n    {install_id(linked)}:\n      channel: main\n")
+    path = "/repos/NousResearch/hermes-agent/commits/main"
+    responses[path] = (200, head)
+    cache = home / "cache.json"
+    kwargs = {"install_root": linked, "home": home, "cache_path": cache}
+    assert check_for_updates(**kwargs)["behind"] == 0
+    cached = json.loads(cache.read_text())
+    cached["identity"]["channelProtocol"] = 1
+    cached["status"] = {"supported": True, "behind": None, "error": "branch-local-only"}
+    cache.write_text(json.dumps(cached))
+    requests.clear()
+    status = check_for_updates(**kwargs)
+    assert status["behind"] == 0
+    assert "error" not in status
+    assert status["branch"] == "main"
+    assert requests == [path]
+
+
+@pytest.mark.parametrize("tip", ["current", "network-failure"])
+def test_desktop_official_current_and_network_failure_stay_distinct(installation, monkeypatch, tip):
+    _root, linked, home, _base, head, responses, _requests, git = installation
+    git("remote", "set-url", "origin", "https://github.com/NousResearch/hermes-agent.git")
+    from hermes_cli.update_channel import install_id
+    (home / "config.yaml").write_text(
+        f"update:\n  installs:\n    {install_id(linked)}:\n      channel: main\n")
+    responses["/repos/NousResearch/hermes-agent/commits/main"] = (
+        (200, head) if tip == "current" else (503, {}))
+    client = _update_client(linked, monkeypatch)
+    body = client.get("/api/hermes/update/check?force=true").json()
+    assert body["update_available"] is False
+    if tip == "current":
+        assert body["behind"] == 0
+        assert body["message"] == "You're on the latest version."
+        assert "error" not in body
+    else:
+        assert body["behind"] is None
+        assert body["error"] == "fetch-failed"
+        assert "HTTP 503" in body["message"]
+    assert git("branch", "--show-current", cwd=linked) == "feature/gui"
+
+
 @pytest.mark.parametrize("tip_kind,compare,expected", [
     ("head", None, 0), ("base", None, 0),
     ("unknown", {"ahead_by": 61}, 61), ("unknown", {"ahead_by": 0}, 0),

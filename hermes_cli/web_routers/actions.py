@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 
 from hermes_cli.config import format_docker_update_message, recommended_update_command_for_method
+from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT
 from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
 from hermes_cli.version_info import get_version_info
 from hermes_cli.web_deps import LateState, late
@@ -327,19 +328,27 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
         from hermes_cli.source_check import check_for_updates
 
         with _config_profile_scope(profile):
-            status = await asyncio.to_thread(check_for_updates, force=force)
-        behind = status.get("behind")
+            status: dict[str, Any] = await asyncio.to_thread(check_for_updates, force=force)
     except Exception:
         _log.exception("Update check failed")
-        behind = None
+        status = {"error": "check-failed", "message": "The update check could not complete; see the server log for details."}
 
+    behind = status.get("behind")
+    # Desktop treats null as a failed check; -1 means an available update whose
+    # count is unknown (e.g. a private local commit absent from GitHub).
+    if behind is None and status.get("updateAvailable") is True and not status.get("error"):
+        behind = UPDATE_AVAILABLE_NO_COUNT
     payload["behind"] = behind
+    payload["update_available"] = status.get("updateAvailable", behind is not None and behind != 0) is True
+    if status.get("supported") is False:
+        payload["can_apply"] = False
+    payload.update({key: status[key] for key in ("error", "reason", "localOnly") if key in status})
+    payload["message"] = status.get("message")
     if behind is None:
-        payload["message"] = "Couldn't reach the update source — try again later."
+        payload["message"] = status.get("message") or "The update check could not determine availability."
     elif behind == 0:
-        payload["message"] = "You're on the latest version."
-    else:
-        payload["update_available"] = True
+        payload["message"] = status.get("message") or "You're on the latest version."
+    if payload["update_available"]:
         if status.get("rollback"):
             # A stable release this build already contains: applying it moves back.
             payload.update(rollback_to=status.get("sourceVersion"),

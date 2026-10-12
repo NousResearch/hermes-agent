@@ -87,6 +87,57 @@ async def test_internal_events_bypass_hook(monkeypatch):
     await runner._handle_message(event)
     assert called["count"] == 0
 
+
+@pytest.mark.asyncio
+async def test_startup_resume_internal_event_runs_hook_and_stays_internal(monkeypatch):
+    """Resume replays are internal, but plugins can still rewrite them before dispatch."""
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    event = _make_event("")
+    event.internal = True
+    event._hermes_startup_resume = True
+    seen = {}
+
+    async def _plugin_hook(name, **kwargs):
+        assert name == "pre_gateway_dispatch"
+        seen["event"] = kwargs["event"]
+        return [{"action": "rewrite", "text": "resume rewritten"}]
+
+    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", _plugin_hook)
+
+    admitted = await runner._hm_admit_event(event)
+
+    assert seen["event"] is event
+    assert admitted is not None
+    rewritten, source, is_internal = admitted
+    assert rewritten.text == "resume rewritten"
+    assert rewritten.internal is True
+    assert source is event.source
+    assert is_internal is True
+
+
+@pytest.mark.asyncio
+async def test_startup_resume_internal_event_can_be_declined(monkeypatch, caplog):
+    """A plugin can prevent an automatic resume from starting an agent turn."""
+    caplog.set_level("INFO")
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    event = _make_event("")
+    event.internal = True
+    event._hermes_startup_resume = True
+    called = []
+
+    async def _decline_hook(name, **kwargs):
+        assert name == "pre_gateway_dispatch"
+        called.append((kwargs["event"], kwargs["event"].source))
+        return [{"action": "skip", "reason": "declined-resume"}]
+
+    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", _decline_hook)
+
+    admitted = await runner._hm_admit_event(event)
+
+    assert admitted is None
+    assert called == [(event, event.source)]
+    assert "startup resume" in caplog.text.lower()
+
 @pytest.mark.asyncio
 async def test_hook_fires_without_session_store_attribute(monkeypatch):
     """A runner missing session_store still delivers the event to plugins.

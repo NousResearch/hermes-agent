@@ -646,7 +646,18 @@ async def test_reconnect_reschedule_is_platform_scoped():
         tg_entry.session_key: tg_entry,
         discord_entry.session_key: discord_entry,
     }
-    adapter.handle_message = AsyncMock()
+    hook_events = []
+
+    async def _observe_resume(event, source):
+        hook_events.append((event, source))
+        return event
+
+    runner._hm_pre_gateway_dispatch_hook = _observe_resume
+
+    async def _admit_resume(event):
+        return await runner._hm_admit_event(event)
+
+    adapter.handle_message = AsyncMock(side_effect=_admit_resume)
     runner.adapters = {Platform.TELEGRAM: adapter}
 
     scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
@@ -658,6 +669,8 @@ async def test_reconnect_reschedule_is_platform_scoped():
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.source == tg_source
+    assert event._hermes_startup_resume is True
+    assert hook_events == [(event, tg_source)]
 
 
 @pytest.mark.asyncio

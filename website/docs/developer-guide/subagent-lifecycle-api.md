@@ -59,3 +59,17 @@ parent-broadening toolsets are rejected, and per-tool blocks, working-directory
 overrides, and per-launch timeouts are explicitly rejected until Hermes can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
 child; Hermes's existing unsafe-tool block remains enforced.
+
+### Overlong reasoning-only output
+
+A trusted parser route may place an answer in its reasoning field. If that promoted
+text reaches 4,000 characters without response text, the host requests a final answer
+using the shared two-nudge stall budget. Interim promoted rows retain at most 500
+characters in each replay carrier (`api_content`, `reasoning`, `reasoning_content`).
+
+If the model still stops on overlong reasoning after bounded recovery, the text is
+retained for inspection with a warning. A delegated result reports `status: failed`
+and `exit_reason: mangled`, and prefixes its summary with an explicit reliability
+notice. Actual iteration-budget exhaustion keeps `exit_reason: max_iterations` and
+`truncated: true`. Short parser-promoted answers and recovered response text keep
+their normal completion behavior.

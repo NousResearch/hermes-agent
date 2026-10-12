@@ -14,6 +14,7 @@ import {
   HUD_TEXT
 } from '@/app/floating-hud'
 import { SESSION_IMPORT_ROUTE } from '@/app/routes'
+import { leaveIntro } from '@/components/onboarding-chat/intro'
 import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
@@ -404,7 +405,15 @@ const sessionKeywords = (session: SessionEntry, ...tags: string[]): string[] =>
   [...tags, 'chat', 'session', session.preview, session.git_branch].filter((word): word is string => !!word)
 
 type NonConfigSettingsLabel =
-  'about' | 'archivedChats' | 'gateway' | 'keysSettings' | 'keysTools' | 'mcp' | 'providerAccounts' | 'providerApiKeys'
+  | 'about'
+  | 'archivedChats'
+  | 'gateway'
+  | 'keysSettings'
+  | 'keysTools'
+  | 'mcp'
+  | 'plugins'
+  | 'providerAccounts'
+  | 'providerApiKeys'
 
 const NON_CONFIG_SETTINGS: ReadonlyArray<{
   icon: IconComponent
@@ -455,6 +464,12 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
     tab: 'keys&kview=settings'
   },
   { icon: Archive, keywords: ['history', 'archived'], labelKey: 'archivedChats', tab: 'sessions' },
+  {
+    icon: codiconIcon('extensions'),
+    keywords: ['plugins', 'plugin settings', 'plugin options', 'addons', 'add-ons', 'extensions'],
+    labelKey: 'plugins',
+    tab: 'plugins'
+  },
   { icon: Info, keywords: ['version', 'about'], labelKey: 'about', tab: 'about' }
 ]
 
@@ -1568,6 +1583,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
     completeFlow('command_palette')
     recordAction(item.action ?? 'other', 'palette')
+    // A Cmd-K command or layout is a way out of the first-run intro.
+    leaveIntro()
 
     if (item.runWithEvent) {
       item.runWithEvent(lastSelectMods.current)

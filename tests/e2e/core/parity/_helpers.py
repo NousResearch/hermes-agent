@@ -269,7 +269,7 @@ def _tool_names(body: dict[str, Any]) -> set[str]:
     return {(t.get("function") or {}).get("name") or t.get("name") for t in body.get("tools") or []}
 
 
-_CATALOG_LINE = re.compile(r"^- ([A-Za-z0-9_.:-]+): ", re.M)
+_CATALOG_LINE = re.compile(r"^- ([A-Za-z0-9_.:-]+): ", re.MULTILINE)
 
 
 def offered_tool_names(body: dict[str, Any]) -> set[str]:

@@ -243,7 +243,7 @@ class TestCmdGuiOnABundle:
         import pm
         monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
         monkeypatch.setattr(source_build, "source_build_env", lambda env, **kwargs: dict(env))
-        monkeypatch.setattr(pm, "ensure", lambda name, *, base_env: SimpleNamespace(env=base_env))
+        monkeypatch.setattr(pm, "ensure", lambda name, *, base_env, **_: SimpleNamespace(env=base_env))
         monkeypatch.setattr(main_desktop, "_desktop_build_needed", lambda *a, **k: True)
         monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda *a, **k: [])
         monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_fixup", lambda *a, **k: launcher_ok)
@@ -292,7 +292,7 @@ class TestCmdGuiOnABundle:
         checkout = tmp_path / "hermes-agent"
         (checkout / "apps" / "desktop").mkdir(parents=True)
         (checkout / "apps" / "desktop" / "package.json").write_text("{}\n")
-        code, builds, launches = self._run(monkeypatch, checkout, self._args())
+        _code, builds, launches = self._run(monkeypatch, checkout, self._args())
 
         assert launches == []
         assert any("npm" in " ".join(cmd) for cmd in builds), builds

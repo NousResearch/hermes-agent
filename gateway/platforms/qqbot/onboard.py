@@ -56,7 +56,7 @@ def _portal_post(path: str, payload: dict, timeout: float, fail_msg: str) -> dic
     return data
 
 
-def _create_bind_task(timeout: float = ONBOARD_API_TIMEOUT) -> Tuple[str, str]:
+def _create_bind_task(timeout: float = ONBOARD_API_TIMEOUT) -> tuple[str, str]:
     """Create a bind task and return *(task_id, aes_key_base64)*."""
     key = generate_bind_key()
     data = _portal_post(ONBOARD_CREATE_PATH, {"key": key}, timeout, "create_bind_task failed")
@@ -67,7 +67,7 @@ def _create_bind_task(timeout: float = ONBOARD_API_TIMEOUT) -> Tuple[str, str]:
     return task_id, key
 
 
-def _poll_bind_result(task_id: str, timeout: float = ONBOARD_API_TIMEOUT) -> Tuple[BindStatus, str, str, str]:
+def _poll_bind_result(task_id: str, timeout: float = ONBOARD_API_TIMEOUT) -> tuple[BindStatus, str, str, str]:
     """Poll *task_id*; returns ``(status, bot_appid, bot_encrypt_secret, user_openid)``."""
     d = _portal_post(ONBOARD_POLL_PATH, {"task_id": task_id}, timeout, "poll_bind_result failed").get("data", {})
     return (BindStatus(d.get("status", 0)), str(d.get("bot_appid", "")), d.get("bot_encrypt_secret", ""),

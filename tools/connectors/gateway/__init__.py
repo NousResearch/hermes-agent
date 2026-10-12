@@ -57,12 +57,12 @@ from tools.connectors.gateway.names import (
 __all__ = [
     "CONNECTOR_BATCH_SENTINEL",
     "CONNECTOR_NAME_PREFIX",
+    "MAX_CALLS_PER_DISPATCH",
     "ConnectorConfig",
     "ConnectorName",
     "GatewayAuthError",
     "GatewayUnavailable",
     "IdempotencyConflict",
-    "MAX_CALLS_PER_DISPATCH",
     "ToolGatewayError",
     "connectors_available",
     "format_connector_name",

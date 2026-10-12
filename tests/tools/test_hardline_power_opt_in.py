@@ -434,3 +434,51 @@ def test_approvals_test_reports_human_only(monkeypatch):
     verdict = approvals_test.evaluate_command("sync; sudo reboot")
     assert verdict["verdict"] == "ask-approval"
     assert "requires human approval every time (smart/allowlist/yolo cannot approve)" in verdict["detail"]
+
+
+# ---- Path-prefixed spellings take the same path as the bare name --------------------------------
+
+PATH_PREFIXED_POWER_CMDS = [
+    "/sbin/reboot", "sudo /usr/sbin/shutdown -h now", "/usr/bin/systemctl reboot", "sync; /sbin/reboot",
+]
+
+
+@pytest.mark.parametrize("cmd", PATH_PREFIXED_POWER_CMDS)
+def test_path_prefixed_power_commands_hit_the_floor_by_default(cmd):
+    assert detect_hardline_command(cmd)[0], cmd
+    assert detect_power_state_command(cmd) is not None, cmd
+
+
+@pytest.mark.parametrize("cmd, bare", [
+    ("/sbin/reboot", "reboot"), ("sudo /usr/sbin/shutdown -h now", "sudo shutdown -h now"),
+    ("/usr/bin/systemctl reboot", "systemctl reboot"), ("sync; /sbin/reboot", "sync; reboot"),
+])
+def test_path_prefixed_classified_like_bare_name(cmd, bare):
+    assert detect_hardline_command(cmd) == detect_hardline_command(bare)
+    assert detect_power_state_command(cmd) == detect_power_state_command(bare)
+
+
+@pytest.mark.parametrize("cmd", PATH_PREFIXED_POWER_CMDS)
+def test_default_guard_chain_hard_blocks_path_prefixed(guard_env, cmd):
+    guard_env()
+    result = check_all_command_guards(cmd, "local")
+    assert result["approved"] is False and result.get("hardline") is True
+
+
+def test_path_prefixed_reboot_opted_in_goes_to_human_only_gate(guard_env, interactive, monkeypatch):
+    """/sbin/reboot with allow_reboot takes the same human-only gate as bare `reboot`: an
+    approving guardian is not consulted, a human is prompted, and their deny blocks."""
+    guard_env(allow_reboot=True, mode="smart")
+    guardian = _guardian(monkeypatch, "approve")
+    prompt = _Prompt("deny")
+    result = check_all_command_guards("/sbin/reboot", "local", approval_callback=prompt)
+    assert guardian.call_count == 0
+    assert len(prompt.calls) == 1 and prompt.calls[0][0] == "/sbin/reboot"
+    assert result["approved"] is False and not result.get("hardline") and not result.get("smart_approved")
+    assert result.get("user_consent") is False
+
+
+@pytest.mark.parametrize("cmd", ["/opt/reboot-helper.sh", "ls /sbin/reboot"])
+def test_path_lookalikes_are_not_power_commands(cmd):
+    assert detect_power_state_command(cmd) is None
+    assert detect_hardline_command(cmd) == (False, None)

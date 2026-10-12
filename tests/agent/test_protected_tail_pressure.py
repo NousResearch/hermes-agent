@@ -22,6 +22,7 @@ from agent.context_compressor import (
     ContextCompressor,
     _MAX_TAIL_MESSAGE_FLOOR,
     _PRESSURE_KEEP_RECENT_MESSAGES,
+    _summarize_tool_result,
     _tool_content_has_images,
 )
 from agent.model_metadata import estimate_messages_tokens_rough
@@ -320,3 +321,83 @@ def test_compaction_keeps_four_images_in_a_spared_pending_round(compressor_128k)
     results = {m["tool_call_id"]: m for m in out if m.get("role") == "tool"}
     assert [_tool_content_has_images(results[call_id]["content"]) for call_id in pending_ids] == [True] * 4
     assert not _tool_content_has_images(results["old"]["content"])
+
+
+def _heavy_round_transcript(trailer: dict | None) -> list[dict]:
+    """Older terminal rounds plus one unread round, optionally followed by a non-assistant row."""
+    msgs: list[dict] = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Run the fleet probes."},
+    ]
+    for t in range(12):
+        msgs += [
+            {"role": "assistant", "content": None, "tool_calls": [_terminal_call(f"old_{t}", f"python3 probe.py c{t} 3")]},
+            _terminal_result(f"old_{t}", f"o{t}", 60),
+        ]
+    msgs += [
+        {"role": "assistant", "content": None, "tool_calls": [_terminal_call("new_a", "cat big.json")]},
+        _terminal_result("new_a", "na", 375),
+    ]
+    if trailer is not None:
+        msgs.append(trailer)
+    return msgs
+
+
+def _pressure_compressor_200k():
+    with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+        c = ContextCompressor(model="test/model", quiet_mode=True, config_context_length=200_000)
+    c.context_length = 200_000
+    c.max_tokens = 32_000
+    return c
+
+
+@pytest.mark.parametrize(
+    "trailer_kind",
+    ["none", "notice_user_row", "steer_row"],
+    ids=["round_last", "notice_after_round", "steer_after_round"],
+)
+def test_pressure_spares_pending_round_behind_a_non_steer_row(trailer_kind):
+    """Regression (#137105): a background-process notice lands as a plain user row after the unread
+    tool round. Only trailing steer rows were skipped, so the round read as answered and the pressure
+    pass's last resort replaced the newest, still-unread result with a one-line stub. Rows after the
+    round do not answer it — only an assistant row does."""
+    c = _pressure_compressor_200k()
+    trailers = {
+        "none": None,
+        "notice_user_row": {"role": "user", "content": "[IMPORTANT: Background process proc_x completed (exit code 0).]"},
+        "steer_row": steer_user_row("Also flag any node above 90% cpu."),
+    }
+    msgs = _heavy_round_transcript(trailers[trailer_kind])
+    pending = next(m["content"] for m in msgs if m.get("tool_call_id") == "new_a")
+
+    out, _ = c._prune_old_tool_results(msgs, protect_tail_count=20, protect_tail_tokens=5_000)
+
+    kept = next(m for m in out if m.get("tool_call_id") == "new_a")
+    assert kept["content"] == pending, f"unread round was stubbed: {kept['content']!r:.90}"
+
+
+def test_pressure_may_stub_the_round_once_an_assistant_row_answered_it():
+    """The fix must not over-protect: once an assistant row has answered the round, the result is
+    history the model already read, and the pressure pass's last resort may stub it again."""
+    c = _pressure_compressor_200k()
+    msgs = _heavy_round_transcript({"role": "assistant", "content": "node-na-000 is the hottest."})
+
+    out, _ = c._prune_old_tool_results(msgs, protect_tail_count=20, protect_tail_tokens=5_000)
+
+    answered = next(m for m in out if m.get("tool_call_id") == "new_a")
+    assert answered["content"].startswith("[terminal] ran `cat big.json` -> exit 0, 375 lines output")
+
+
+def test_terminal_stub_counts_output_lines_not_envelope_lines():
+    """Regression (#137105): the terminal result is a JSON envelope whose ``output`` newlines are
+    escaped, so counting the envelope always reported "1 lines output" for any real output."""
+    stub = _summarize_tool_result(
+        "terminal",
+        json.dumps({"command": "cat big.json"}),
+        json.dumps({"output": "\n".join(f"line-{i}" for i in range(2000)), "exit_code": 0}),
+    )
+    assert stub == "[terminal] ran `cat big.json` -> exit 0, 2000 lines output"
+    # Malformed historical content keeps the envelope count instead of failing compression.
+    assert _summarize_tool_result("terminal", '{"command": "ls"}', "raw non-json output\nsecond line") == (
+        "[terminal] ran `ls` -> exit ?, 2 lines output"
+    )

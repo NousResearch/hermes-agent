@@ -32,6 +32,7 @@ from agent.auxiliary_client import (
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
+from agent.context_compressor_round_scan import _last_index_with_role, _pending_tool_round
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -1324,28 +1325,9 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     return tokens
 
 
-def _last_index_with_role(messages: list[dict[str, Any]], role: str) -> int:
-    """Index of the newest dict message with ``role``, or -1."""
-    return max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == role), default=-1)
-
-
 def _last_assistant_index(messages: list[dict[str, Any]]) -> int:
     """Newest assistant message index, or -1 (the one turn whose thinking may replay; see ``_NEWEST_TURN_ONLY_BUDGET_KEYS``)."""
     return _last_index_with_role(messages, "assistant")
-
-
-def _pending_tool_round(messages: list[dict[str, Any]]) -> range:
-    """Indices of the tool results the transcript ends with — a round the model has not answered yet; empty when
-    the transcript ends in any other row. /steer rows after the round do not answer it: a steer is delivered
-    after the newest tool result before the next API call, and two can land in one iteration (one when the tool
-    batch ends, one before the request), so every contiguous trailing steer row is skipped."""
-    end = len(messages)
-    while end and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
-        end -= 1
-    start = end
-    while start > 0 and messages[start - 1].get("role") == "tool":
-        start -= 1
-    return range(start, end)
 
 
 def _part_text(item: Any) -> Optional[str]:
@@ -1662,11 +1644,23 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[{tool_name}] ({_len:,} chars result)"
 
 
+def _terminal_output_lines(content: str, fallback: int) -> int:
+    """Line count of a terminal result's ``output`` field, or ``fallback`` when the envelope does not parse.
+
+    The terminal result is a JSON envelope whose ``output`` newlines are escaped, so the raw ``content`` is one
+    line and counting it directly reports "1 lines output" for any real multi-line output."""
+    try:
+        output = json.loads(content).get("output")
+    except (ValueError, TypeError, AttributeError):
+        return fallback
+    return output.count("\n") + 1 if isinstance(output, str) and output.strip() else 0
+
+
 def _sum_terminal(name, args, content, content_len, line_count):
     cmd = _str_arg(args, "command")
     cmd = cmd if len(cmd) <= 80 else cmd[:77] + "..."
     exit_code = m.group(1) if (m := re.search(r'"exit_code"\s*:\s*(-?\d+)', content)) else "?"
-    return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+    return f"[terminal] ran `{cmd}` -> exit {exit_code}, {_terminal_output_lines(content, line_count)} lines output"
 
 
 def _sum_write_file(name, args, content, content_len, line_count):

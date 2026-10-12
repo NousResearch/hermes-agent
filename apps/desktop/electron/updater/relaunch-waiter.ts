@@ -193,7 +193,8 @@ export async function startRelaunchWaiter(
 
   try {
     // PowerShell 5.1 exits before executing -File under DETACHED_PROCESS.
-    // /b shares cmd's hidden console; /wait retains a live cancellation root.
+    // cmd owns a hidden console that PowerShell shares, stays alive as the
+    // cancellation root and returns the script's exit code.
     // The PowerShell grandchild survives Electron's libuv job being closed.
     const wrapped = wrapHandoffForDetachedConsole(
       {

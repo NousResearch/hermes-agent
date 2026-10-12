@@ -298,8 +298,10 @@ export function resolvePosixScriptHandoff(
  * (`start`'s powershell) are never members and Windows does not tie a
  * process's lifetime to its parent. By default `start` returns immediately, so the
  * spawned pid is the WRAPPER's — callers must not use it as a marker owner
- * (the script claims the marker itself with its own $PID). Set waitForExit to
- * keep the wrapper alive for callers that need to cancel its process tree.
+ * (the script claims the marker itself with its own $PID). Set waitForExit for
+ * callers that cancel the process tree or read the script's exit code: cmd then
+ * runs the command directly in the same hidden console, stays alive until it
+ * exits and returns its exit code (`start /wait` always returns 0).
  */
 export function wrapHandoffForDetachedConsole(
   handoff: UpdateScriptHandoff,
@@ -317,10 +319,7 @@ export function wrapHandoffForDetachedConsole(
       '/d',
       '/s',
       '/c',
-      'start',
-      '',
-      '/b',
-      ...(waitForExit ? ['/wait'] : []),
+      ...(waitForExit ? [] : ['start', '', '/b']),
       handoff.command,
       ...handoff.args,
       ...extraArgs

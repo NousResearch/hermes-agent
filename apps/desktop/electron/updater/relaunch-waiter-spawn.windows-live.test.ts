@@ -6,6 +6,36 @@ import path from 'node:path'
 import { buildSync } from 'esbuild'
 import { expect, it } from 'vitest'
 
+import { startRelaunchWaiter } from './relaunch-waiter'
+
+it.runIf(process.platform === 'win32')(
+  'a waiter that exits before its handshake reports its own exit code',
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'waiter exit '))
+    const script = path.join(root, 'waiter.ps1')
+    const logs: string[] = []
+    fs.writeFileSync(script, 'exit 2\n')
+
+    try {
+      const handle = await startRelaunchWaiter(
+        {
+          processId: process.pid,
+          processStartTimeMs: Date.now() - process.uptime() * 1000,
+          identityName: 'disposable-waiter-test',
+          scriptPath: script
+        },
+        { log: message => logs.push(message) }
+      )
+
+      expect(handle).toBeUndefined()
+      expect(logs.join('\n')).toMatch(/exited before its handshake after \d+ms \(exit code 2,/)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  },
+  30_000
+)
+
 it.runIf(process.platform === 'win32').each([false, true])(
   'a real hidden PowerShell waiter survives parent exit unless cancelled (cancel=%s)',
   async cancel => {

@@ -172,3 +172,36 @@ describe('narrow overlay of a stacked zone', () => {
     )
   })
 })
+
+// The `display.hover_reveal_file_browser` toggle (#45928): `pointerHoverReveal:
+// false` takes a pane out of the pointer-hover path while manual reveal
+// (PANE_TOGGLE_REVEAL_EVENT) keeps working.
+describe('pointer hover reveal toggle', () => {
+  it.each([
+    ['static', false as const],
+    ['live getter', () => false]
+  ])('keeps manual reveal when pointer hover is disabled (%s)', (_form, pointerHoverReveal) => {
+    registerPane('files', 'files', { collapsible: true, placement: 'right', pointerHoverReveal, width: '240px' }, 'file tree')
+    $layoutTree.set(split('row', [group(['sessions']), group(['workspace']), group(['files'])]))
+
+    const { container } = render(<NarrowOverlays />)
+    const hoverStrip = (side: 'left' | 'right') => container.querySelector<HTMLElement>(`[data-pane-hover-strip="${side}"]`)
+    const overlay = (id: string) => container.querySelector(`[data-narrow-overlay="${id}"]`)
+
+    // The right edge's only collapsible opted out — no hover-intent strip for
+    // it at all (the old edge trigger stays unrendered); the left edge keeps
+    // its strip for the default panes.
+    expect(hoverStrip('right')).toBeNull()
+    expect(hoverStrip('left')).toBeTruthy()
+
+    // Pointer hover reveals only the hoverable pane — never the opted-out one.
+    fireEvent.mouseEnter(hoverStrip('left')!)
+    expect(overlay('sessions')).toBeTruthy()
+    expect(overlay('files')).toBeNull()
+
+    // Manual/event reveal still opens the opted-out pane.
+    revealPane('files')
+    expect(overlay('files')).toBeTruthy()
+    expect(overlay('sessions')).toBeNull()
+  })
+})

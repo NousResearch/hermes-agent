@@ -55,6 +55,11 @@ interface PaneChrome extends PaneSizing {
   /** Extra ids accepted from PANE_TOGGLE_REVEAL_EVENT (the real app's pane
    *  ids, e.g. `chat-sidebar` for `sessions`). */
   revealAliases?: string[]
+  /** Pointer hover may reveal this collapsed pane from an edge strip. Off:
+   *  only manual reveal (keyboard / PANE_TOGGLE_REVEAL_EVENT) opens it — the
+   *  strips leave the pane alone (e.g. `display.hover_reveal_file_browser`).
+   *  A function is resolved per strip pass, so a config toggle applies live. */
+  pointerHoverReveal?: boolean | (() => boolean)
   /** Tiling role in the tree, or `'floating'` — the one NON-tiling placement:
    *  the pane is excluded from the tree entirely and rendered as a fixed card
    *  above it (see renderer/floating-panes.tsx). A floating pane takes no
@@ -123,6 +128,14 @@ interface PaneChrome extends PaneSizing {
 }
 
 export const paneChrome = (c: Contribution | undefined) => (c?.data ?? {}) as PaneChrome
+
+/** Whether pointer hover may reveal this pane (`pointerHoverReveal`, default
+ *  true — absent means the historical hover-reveal behavior). */
+export const pointerHoverRevealEnabled = (c: Contribution | undefined): boolean => {
+  const flag = paneChrome(c).pointerHoverReveal
+
+  return typeof flag === 'function' ? flag() : flag !== false
+}
 
 /** Resolve a computed style length ("237px" / "none" / "auto") to px. */
 export function computedPx(value: string, fallback: number): number {

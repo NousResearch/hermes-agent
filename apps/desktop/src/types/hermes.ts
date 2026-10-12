@@ -485,6 +485,7 @@ export interface HermesConfig {
     service_tier?: string
   }
   display?: {
+    hover_reveal_file_browser?: boolean
     show_reasoning?: boolean | string
     personality?: string
     skin?: string

@@ -860,6 +860,10 @@ DEFAULT_CONFIG = {
         # Memory updated") | "verbose" (content preview). Per-platform via
         # display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
+        # Desktop file-browser pane: reveal the collapsed pane when the cursor
+        # approaches the window edge. Set false to keep manual keyboard reveal
+        # while disabling pointer-hover activation.
+        "hover_reveal_file_browser": True,
         # Gateway notices when a terminal(background=true) process finishes: "concise" (one line;
         # failures append an output tail) | "all" (running updates + final raw output) | "result"
         # (final raw only) | "error" (raw only on non-zero exit) | "off".

@@ -25,7 +25,7 @@ import { allPaneIds, findGroupOfPane, type LayoutNode } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
 import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
-import { fixedTrackSize, paneChrome, type TrackContext } from './track-model'
+import { fixedTrackSize, paneChrome, pointerHoverRevealEnabled, type TrackContext } from './track-model'
 
 /** The width a revealed narrow overlay sizes itself to: the SAME resolution
  *  the pane's zone uses while docked — declared max() refined by the live
@@ -155,7 +155,11 @@ export function NarrowOverlays() {
 
   const sideOf = (c: Contribution) => (paneChrome(c).placement === 'left' ? 'left' : 'right')
   const revealed = reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
-  const sides = [...new Set(collapsibles.map(sideOf))]
+  // A pane with `pointerHoverReveal: false` (e.g. `display.hover_reveal_file_browser`
+  // off) keeps its keyboard/event reveal but drops out of the hover path:
+  // no strip on an edge whose only collapsible opted out.
+  const hoverable = collapsibles.filter(pointerHoverRevealEnabled)
+  const sides = [...new Set(hoverable.map(sideOf))]
 
   // Size the overlay the way the pane's zone is sized while docked: declared
   // width refined by the user's drag override (fixedTrackSize), so a pane the
@@ -187,13 +191,14 @@ export function NarrowOverlays() {
 
   return (
     <>
-      {/* Hover-intent strips on each edge that has a collapsed pane. */}
+      {/* Hover-intent strips on each edge that has a hover-revealable collapsed pane. */}
       {sides.map(side => (
         <div
           className={cn('absolute inset-y-0 z-30 w-1.5', side === 'left' ? 'left-0' : 'right-0')}
+          data-pane-hover-strip={side}
           key={side}
           onMouseEnter={() => {
-            const first = collapsibles.find(p => sideOf(p) === side)
+            const first = hoverable.find(p => sideOf(p) === side)
 
             if (first) {
               setReveal(current => (current?.pinned ? current : { id: first.id, pinned: false }))

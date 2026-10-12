@@ -57,7 +57,7 @@ class TestUndeliveredInterimMarker:
             if msg.get("role") == "assistant" and msg.get("tool_calls")
         ]
 
-    def test_material_tool_call_content_is_recovered_when_interim_disabled(
+    def test_tool_call_content_is_recovered_when_interim_disabled(
         self, agent, caplog
     ):
         agent.platform = "gateway"
@@ -309,6 +309,29 @@ class TestUndeliveredInterimMarker:
             agent, assistant_message=assistant_message, assistant_msg=assistant_msg
         ) is marked
         assert assistant_msg["content"] == text
+        if marked:
+            assert assistant_msg["api_content"] == f"{text}\n\n{UNDELIVERED_INTERIM_MARKER}"
+        else:
+            assert "api_content" not in assistant_msg
+
+    @pytest.mark.parametrize(
+        ("text", "marked"),
+        [("", False), ("  \n\t ", False), ("On it.", True), ("Let me check the stock first.", True)],
+        ids=["empty", "whitespace-only", "short-narration", "narration"],
+    )
+    def test_any_non_blank_text_is_marked(self, agent, text, marked):
+        """Every undelivered row with non-blank text is marked; there is no content heuristic."""
+        from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER, mark_undelivered_interim
+
+        agent.interim_assistant_callback = None
+        assistant_message = _mock_assistant_msg(
+            content=text, tool_calls=[_mock_tool_call(call_id="c1")]
+        )
+        assistant_msg = agent._build_assistant_message(assistant_message, "tool_calls")
+
+        assert mark_undelivered_interim(
+            agent, assistant_message=assistant_message, assistant_msg=assistant_msg
+        ) is marked
         if marked:
             assert assistant_msg["api_content"] == f"{text}\n\n{UNDELIVERED_INTERIM_MARKER}"
         else:

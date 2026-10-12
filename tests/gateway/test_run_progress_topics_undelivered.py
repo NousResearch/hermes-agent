@@ -11,7 +11,7 @@ from tests.gateway.test_run_progress_topics import _run_with_agent
 
 
 class UndeliveredToolRoundAgent(StreamDeliveryMixin):
-    """Stages one material tool-call row through the real ``mark_undelivered_interim``,
+    """Stages one tool-call row through the real ``mark_undelivered_interim``,
     against whatever interim callback the gateway left on the agent for this turn
     (same shape as ``DelayedInterimAgent`` in test_run_progress_topics.py)."""
 

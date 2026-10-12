@@ -22,7 +22,7 @@ logger = logging.getLogger("agent.conversation_loop")
 # Post-response housekeeping tools: a round made only of these mutes tool progress.
 _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session_search"})
 
-# Appended to the API view of a tool-call row whose material text never fully reached the
+# Appended to the API view of a tool-call row whose text never fully reached the
 # user (interim messages disabled, and the text not streamed or only partly streamed), so
 # the model's next reply can carry it.
 UNDELIVERED_INTERIM_MARKER = (
@@ -321,7 +321,7 @@ def stage_tool_call_message(
 
 
 def mark_undelivered_interim(agent: Any, *, assistant_message: Any, assistant_msg: dict[str, Any]) -> bool:
-    """Stamp the marker onto the ``api_content`` sidecar of a tool-call row whose material
+    """Stamp the marker onto the ``api_content`` sidecar of a tool-call row whose non-blank
     text will not reach the user; returns whether it did.
 
     With interim messages disabled (no ``interim_assistant_callback``) and the text not
@@ -332,8 +332,6 @@ def mark_undelivered_interim(agent: Any, *, assistant_message: Any, assistant_ms
     are identical on every later call. It is decided before the row is flushed (interim
     emission runs after the flush), from the same callback and streamed-text checks the
     interim path uses."""
-    from agent.conversation_loop import _looks_like_material_interim_content
-
     if getattr(agent, "interim_assistant_callback", None) is not None:
         return False
     content = assistant_msg.get("content")
@@ -343,7 +341,7 @@ def mark_undelivered_interim(agent: Any, *, assistant_message: Any, assistant_ms
     if not visible or agent._interim_content_fully_streamed(visible):
         return False
     clean_turn_content = agent._strip_think_blocks(assistant_message.content or "").strip()
-    if not clean_turn_content or not _looks_like_material_interim_content(clean_turn_content):
+    if not clean_turn_content:
         return False
     assistant_msg["api_content"] = f"{content}\n\n{UNDELIVERED_INTERIM_MARKER}"
     logger.info(

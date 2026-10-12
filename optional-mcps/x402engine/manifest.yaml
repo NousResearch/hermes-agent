@@ -1,0 +1,50 @@
+manifest_version: 1
+
+name: x402engine
+description: Discover pay-per-call APIs and use image, code, crypto and travel tools with budgeted USDC payments.
+source: https://github.com/agentc22/x402engine-mcp
+
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "x402engine-mcp@1.1.1"]
+  version: "1.1.1"
+  env:
+    X402_BASE_URL: "https://x402engine.app"
+    X402_PAYMENT_NETWORK: "auto"
+    X402_MAX_PAYMENT_USD: "0.10"
+
+# Discovery works without a wallet. Paid access is an explicit user setup step.
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - discover_services
+    - service_health
+
+suggest:
+  keywords:
+    - x402engine
+    - x402
+  hosts:
+    - x402engine.app
+  examples:
+    - Browse API capabilities and current prices without a wallet.
+    - Generate an image within an approved spending limit.
+    - Fetch crypto prices for a short market summary.
+
+post_install: |
+  Requires Node.js 20.18 or later and npx. Start a new session to load the tools.
+  discover_services and service_health are free; paid tools return payment
+  requirements until you configure a payer wallet.
+
+  To enable Base USDC payments, store a dedicated low-balance payer key locally
+  as X402_EVM_PRIVATE_KEY in the active profile's .env file. Add
+  X402_EVM_PRIVATE_KEY: "${X402_EVM_PRIVATE_KEY}" under this server's env in
+  config.yaml and change X402_PAYMENT_NETWORK to "base". Never paste the private key into a conversation.
+
+  X402_MAX_PAYMENT_USD limits each request, not a whole task. Authorize a task
+  budget before paid use. The MCP signs locally; the key is not sent to the API.
+  For more tools, run hermes mcp configure x402engine.
+  Setup and skill: https://x402engine.app/docs/hermes/

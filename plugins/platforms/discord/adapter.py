@@ -5046,11 +5046,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _component_live_auth(self, interaction) -> Optional[bool]:
         """The gateway's live allowlist verdict for a component click (None when no check is wired):
         an out-of-process revoke never reaches the connect-time ``_allowed_user_ids`` snapshot."""
+        from plugins.platforms.discord.adapter_component_auth import component_chat_context
         user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
-        channel_id = getattr(interaction, "channel_id", None)
-        chat_type = "dm" if getattr(interaction, "guild", None) is None else "group"
-        return self._is_sender_authorized(
-            user_id, chat_type, str(channel_id) if channel_id is not None else None)
+        chat_type, chat_id, thread_id = component_chat_context(interaction, discord.Thread)
+        return self._is_sender_authorized(user_id, chat_type, chat_id, thread_id=thread_id)
 
     def resolved_allowlist_user_ids(self) -> set:
         """Numeric IDs from connect-time username resolution.

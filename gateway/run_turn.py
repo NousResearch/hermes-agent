@@ -28,6 +28,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
+from gateway.run_turn_replies import bg_prompt_preview, unexpected_silence_reply
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -83,16 +84,6 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "request entity too large", "prompt is too long",
     "payload too large", "input is too long",
 )
-
-def _unexpected_silence_reply() -> str:
-    """Reply when the model returned only a silence marker for a message that needed an answer."""
-    return t("gateway.errors.unexpected_silence")
-
-
-def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
-    """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
-    text = " ".join(str(prompt or "").split())
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
@@ -1530,7 +1521,7 @@ class GatewayTurnMixin:
                 _platform_name, source.chat_id or "unknown",
             )
             _intentional_silence = False
-            response = _unexpected_silence_reply()
+            response = unexpected_silence_reply()
         elif _intentional_silence and not is_machinery_display_kind(_silence_kind):
             logger.debug(
                 "silence marker suppressed on an unaddressed turn: platform=%s chat=%s",
@@ -2210,6 +2201,7 @@ class GatewayTurnMixin:
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                skip_background_review=bool((getattr(event, "metadata", None) or {}).get("hermes_plugin_injection")),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -2543,7 +2535,7 @@ class GatewayTurnMixin:
             with suppress(Exception):
                 await adapter.emit_warning(
                     source.chat_id,
-                    t("gateway.background.failed", preview=_bg_prompt_preview(prompt)),
+                    t("gateway.background.failed", preview=bg_prompt_preview(prompt)),
                     metadata=_thread_metadata, logical_platform=source.platform,
                 )
 
@@ -3765,7 +3757,7 @@ class GatewayTurnMixin:
                     "Queued follow-up for session %s: replacing a human-turn silence marker.",
                     session_key or "?",
                 )
-                first_response = _unexpected_silence_reply()
+                first_response = unexpected_silence_reply()
                 _already_streamed = False
         # Failed turns deliver their text but never their attachments (completed-turn parity).
         _deliver_media = not _delivery_result.get("failed")
@@ -3946,6 +3938,8 @@ class GatewayTurnMixin:
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                skip_background_review=bool(
+                    (getattr(pending_event, "metadata", None) or {}).get("hermes_plugin_injection")),
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -4273,6 +4267,7 @@ class GatewayTurnMixin:
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
+        skip_background_review: bool = False,
         title_user_message: Optional[str] = None,
     ) -> dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
@@ -4312,6 +4307,7 @@ class GatewayTurnMixin:
             persist_user_display_kind=persist_user_display_kind,
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
+            skip_background_review=skip_background_review,
             voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(

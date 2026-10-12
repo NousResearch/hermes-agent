@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 UNDELIVERED = "[clarify prompt could not be delivered]"
@@ -23,6 +25,12 @@ UNDELIVERED_NO_SURFACE = "[clarify prompt could not be delivered: no chat surfac
 
 # Seconds a scheduled card send may take before it is classified ``ambiguous`` (possibly posted).
 SEND_ACK_WINDOW = 15
+
+
+def clarify_expired_notice() -> str:
+    """Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
+    Slack click handler shows on a dead entry)."""
+    return t("gateway.clarify.expired")
 
 
 def text_fallback_coro(adapter, **send_kwargs):

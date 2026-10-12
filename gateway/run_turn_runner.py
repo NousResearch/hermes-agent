@@ -59,12 +59,6 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
-# Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
-# Slack click handler shows on a dead entry).
-def _clarify_expired_notice() -> str:
-    return t("gateway.clarify.expired")
-
-
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
 
@@ -1272,6 +1266,7 @@ class TurnRunner:
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
         agent._voice_turn_pending = ctx.voice_turn  # auxiliary.voice_chat route
+        agent.skip_background_review = ctx.skip_background_review  # injected turns skip the review fork (#137339)
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
@@ -1433,8 +1428,9 @@ class TurnRunner:
             # looking answerable. Adapters without a persistent card have no such method.
             retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
             if callable(retire):
+                from gateway.run_turn_runner_clarify_delivery import clarify_expired_notice
                 self._schedule(
-                    retire(ctx._status_adapter, clarify_id, _clarify_expired_notice()),
+                    retire(ctx._status_adapter, clarify_id, clarify_expired_notice()),
                     "Clarify card retire failed to schedule")
         elif rearm:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming

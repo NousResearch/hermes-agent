@@ -19,6 +19,9 @@ class TurnContext:
     # Scheduled heartbeats are proactive work, not replies to the source message that
     # registered the watch.  Their routine delivery surfaces stay quiet.
     scheduled_heartbeat: bool = False
+    # Plugin-injected turns (PluginContext.inject_message) are machine-initiated like cron
+    # turns: skip the end-of-turn memory/skill review fork nobody asked for (#137339).
+    skip_background_review: bool = False
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
     _live_status_adapter: Any = None
     _live_status_mode: str = "off"

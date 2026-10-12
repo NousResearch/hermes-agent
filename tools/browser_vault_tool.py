@@ -520,8 +520,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # Register the secret bytes with the model-egress redaction boundary
     # BEFORE they touch the page: any later browser_* result (including
     # browser_cdp Runtime.evaluate reads) that echoes them is scrubbed.
-    # Address values are not secrets but the card fields are: register every payment value.
-    for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
+    # Only the card secrets: the scrub is an exact-substring replace over every later tool result.
+    for value in (_card_redaction_values(secret, fills) if meta.kind == "payment" else [secret.get("password", "")]):
         register_vault_redaction_value(value)
 
     try:
@@ -566,6 +566,22 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if meta.kind != "login":
         out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
     return json.dumps(out)
+
+
+def _card_redaction_values(secret: dict[str, Any], fills: list[dict[str, Any]]) -> list[str]:
+    """The payment values that are secrets: the card number (also grouped with spaces or dashes,
+    as card inputs reformat it), the CVC and the combined MM/YY value the fill writes. The holder
+    name, expiry month/year and billing postcode are not secret, and registering them would scrub
+    common strings such as "03", "2027" or a postcode from every later tool result."""
+    number = str(secret.get("card_number") or "")
+    digits = "".join(ch for ch in number if ch.isdigit())
+    groupings = [[digits[i:i + 4] for i in range(0, len(digits), 4)]]
+    if len(digits) == 15:  # American Express prints 4-6-5
+        groupings.append([digits[:4], digits[4:10], digits[10:]])
+    values = [number, digits, str(secret.get("cvc") or "")]
+    values += [sep.join(groups) for groups in groupings for sep in (" ", "-")]
+    values += [fill["value"] for fill in fills if fill["token"] == "cc-exp"]
+    return [value for value in dict.fromkeys(values) if value]
 
 
 def _confirm_payment_fill(label: str, origin: str) -> bool:

@@ -1,6 +1,7 @@
 """Tests for Bug #12905 fixes in agent/anthropic_adapter.py — macOS Keychain support."""
 
 import json
+import logging
 import platform
 import subprocess
 import threading
@@ -452,3 +453,72 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
         assert argv == ["security", "-i"]
         assert json.loads(bytes.fromhex(kwargs["input"].split(" -X ", 1)[1].strip()))["claudeAiOauth"] == {
             "accessToken": "A1", "refreshToken": "R1", "expiresAt": 1}
+
+    @pytest.mark.platforms("macos")
+    def test_oversized_payload_is_never_sent_to_security_i(self, monkeypatch, caplog):
+        """#123184: ``security -i`` truncates lines at 4095 characters and runs the truncated
+        first half as-is, clobbering the item with a partial payload — the mirror must refuse
+        the write instead."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"},
+                        "mcpOAuth": {"srv": "x" * 3000}})
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+
+        with caplog.at_level(logging.WARNING, logger="agent.anthropic_credentials"):
+            _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
+
+        run.assert_not_called()
+        assert any("mirror skipped" in r.message and "4095" in r.message for r in caplog.records)
+
+    @pytest.mark.platforms("macos")
+    def test_payload_under_the_line_limit_is_still_mirrored(self, monkeypatch):
+        """The guard must not over-trigger: a payload that fits the 4095-character line keeps
+        being written (a large-but-legal mcpOAuth set)."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"},
+                        "mcpOAuth": {"srv": "x" * 1500}})
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+
+        _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
+
+        assert run.call_count == 1
+        assert len(run.call_args[1]["input"]) <= 4095
+
+    @pytest.mark.platforms("macos")
+    def test_a_line_at_exactly_the_limit_is_still_mirrored(self, monkeypatch):
+        """The 4095 limit is on the line's *content*: a line of exactly 4095 chars (the reporter's
+        own arithmetic — 65-char prefix + 4,030 hex digits) is accepted by ``security -i``, so the
+        newline ``_keychain_mirror_command`` appends must not tip the guard into refusing it."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}})
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item
+        )
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+        merged = _merge_keychain_credential_payload(item[1], "A1", "R1", 1)
+        _, line = _keychain_mirror_command("bob", merged)
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._SECURITY_I_LINE_LIMIT", len(line.rstrip("\n"))
+        )
+
+        _mirror_claude_code_credentials_to_keychain(
+            "A1", "R1", 1, spent_refresh_token="R0"
+        )
+
+        assert run.call_count == 1
+
+    @pytest.mark.platforms("macos")
+    def test_mirror_failure_is_visible_at_warning_level(self, monkeypatch, caplog):
+        """#123184: a failed mirror logged only at DEBUG, hiding the damage — the split second
+        half of an oversized line fails while the truncated first half already ran."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}})
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
+        run = MagicMock(return_value=MagicMock(returncode=1, stderr='security: unknown command "ABCD"'))
+        monkeypatch.setattr(subprocess, "run", run)
+
+        with caplog.at_level(logging.WARNING, logger="agent.anthropic_credentials"):
+            _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
+
+        assert any("Keychain mirror failed" in r.message for r in caplog.records)

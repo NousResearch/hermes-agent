@@ -193,9 +193,6 @@ def test_one_unwalkable_ref_no_longer_stops_the_size_round_for_every_project(his
 
     base, project, manager = history
     store = checkpoints._store_path(base)
-    other = next(first.parent / name for name in ("project-a", "project-b")
-                 if first.name != name) if False else None
-    # build a second project with real history
     other = None
     for name in ("project-a", "project-b"):
         candidate = base.parent / name
@@ -210,17 +207,18 @@ def test_one_unwalkable_ref_no_longer_stops_the_size_round_for_every_project(his
 
     ref = checkpoints._ref_name(checkpoints._project_hash(str(project)))
     _corrupt_parent_object(store, ref)
-    with pytest.raises((PruneError, Exception)):
-        import subprocess as sp
+    import subprocess as sp
+    with pytest.raises(sp.CalledProcessError):
         sp.run(["git", "--git-dir", str(store), "rev-list", "--reverse", ref],
                check=True, capture_output=True)
 
     result = checkpoint_maintenance.prune_checkpoints(
         retention_days=0, checkpoint_base=base, max_total_size_mb=1)
     assert result["errors"] == 0
-    # the healthy ref's history still converged: drops down to its newest snapshot
+    # the healthy ref's history still converged: started at 3, the size round must have
+    # dropped at least the oldest (exact depth depends on remeasured object sizes)
     remaining = [row["reason"] for row in manager.list_checkpoints(str(other))]
-    assert remaining == ["other-2"] or len(remaining) < 3, remaining
+    assert len(remaining) < 3, remaining
     # and the periodic prune still reclaimed the store under the cap
     assert checkpoints._dir_size_bytes(store) <= 1024 * 1024
 
@@ -261,3 +259,39 @@ def test_take_path_size_round_repairs_the_broken_ref_and_trims_the_healthy_one(h
     walk = sp.run(["git", "--git-dir", str(store), "rev-list", "--reverse", other_ref],
                   check=False, capture_output=True, text=True)
     assert walk.returncode == 0, walk.stderr
+
+
+def test_take_path_repairs_its_own_broken_ref_before_the_size_round(history):
+    """The take path must heal THIS project's own unwalkable ref: a single-project store
+    with auto-prune off (the reported configuration) has no sibling take to fix it — if
+    the count trim aborted the round, the ref would stay broken and the store over cap
+    forever (every take just logs the same warning)."""
+    from tools.checkpoint_pruning import GC_PENDING_NAME
+
+    base, project, manager = history
+    store = checkpoints._store_path(base)
+    ref = checkpoints._ref_name(checkpoints._project_hash(str(project)))
+    _corrupt_parent_object(store, ref)
+
+    import subprocess as sp
+    broken = sp.run(["git", "--git-dir", str(store), "rev-list", "--reverse", ref],
+                    check=False, capture_output=True, text=True)
+    assert broken.returncode != 0  # fixture sanity: the own ref really is unwalkable
+
+    manager.max_total_size_mb = 1
+    (project / "late.txt").write_text("late", encoding="utf-8")
+    manager.new_turn()
+    assert manager.ensure_checkpoint(str(project), "late")
+
+    walk = sp.run(["git", "--git-dir", str(store), "rev-list", "--reverse", ref],
+                  check=False, capture_output=True, text=True)
+    assert walk.returncode == 0, walk.stderr  # repaired during the take
+    count = sp.run(["git", "--git-dir", str(store), "rev-list", "--count", ref],
+                   check=False, capture_output=True, text=True)
+    assert count.returncode == 0, count.stderr
+    # repair alone rebuilds the readable prefix (6 incl. the new take); a smaller count
+    # proves the size round landed real drops on top of the repair
+    assert int(count.stdout) < 6, count.stdout
+    assert (store / GC_PENDING_NAME).exists()  # the drop was real and the gc is deferred
+    reasons = [row["reason"] for row in manager.list_checkpoints(str(project))]
+    assert reasons[0] == "late" and all(r.startswith("small-") for r in reasons[1:]), reasons

@@ -39,13 +39,31 @@ from hermes_cli.memory_provider_migration import (
 logger = logging.getLogger(__name__)
 
 
-def _read_config(home: Path) -> dict:
-    import utils
+def _read_config(home: Path, *, fail_closed: bool = False) -> dict:
+    from agent.secret_scope import (
+        current_secret_scope_home,
+        load_env_file,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_constants import get_hermes_home, hermes_home_key
+
+    token = None
     try:
-        data = utils.fast_safe_load((home / "config.yaml").read_text(encoding="utf-8-sig"))
-    except Exception:  # missing/unreadable/invalid YAML: nothing we can see is in use
+        owner = current_secret_scope_home() or get_hermes_home()
+        if hermes_home_key(owner) != hermes_home_key(home):
+            token = set_secret_scope(
+                load_env_file(home / ".env"), profile_home=str(home)
+            )
+        return load_user_config_effective(home / "config.yaml", fail_closed=fail_closed)
+    except Exception:
+        if fail_closed:
+            raise
         return {}
-    return data if isinstance(data, dict) else {}
+    finally:
+        if token is not None:
+            reset_secret_scope(token)
 
 
 def platform_configured_on(home: Path, name: str) -> bool:
@@ -59,7 +77,7 @@ def platform_configured_on(home: Path, name: str) -> bool:
     gw_data = config_loader.load_legacy_gateway_json(home)
     gw_data = gw_data if isinstance(gw_data, dict) else {}
     try:
-        yaml_cfg = config_loader.read_yaml_layers(home)
+        yaml_cfg = _read_config(home, fail_closed=True)
     except Exception:  # malformed config.yaml: the gateway falls back to gateway.json alone too
         yaml_cfg = {}
     yaml_cfg = yaml_cfg if isinstance(yaml_cfg, dict) else {}
@@ -312,28 +330,39 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     (``hermes tools``). Raises when config.yaml cannot be read or written."""
     from hermes_cli.config import atomic_config_write, read_user_config_raw
     from hermes_cli.toolset_validation import parse_platform_toolsets_value
+
     path = home / "config.yaml"
     config = read_user_config_raw(path)
-    installed = plugin_present(feature.plugin, home) and not _marked(config, _INSTALLED_KEY, feature)
-    if _scope_kept(config, feature) and not installed:
+    effective = _read_config(home, fail_closed=True)
+    installed = plugin_present(feature.plugin, home) and not _marked(
+        effective, _INSTALLED_KEY, feature
+    )
+    if _scope_kept(effective, feature) and not installed:
         return
     if installed:
         _mark(config, _INSTALLED_KEY, feature)
-    if not _scope_kept(config, feature):
-        saved = config.get("platform_toolsets")
+    if not _scope_kept(effective, feature):
+        saved = effective.get("platform_toolsets")
         saved = saved if isinstance(saved, dict) else {}
-        selections = {str(p): parse_platform_toolsets_value(v) for p, v in saved.items()}
+        selections = {
+            str(p): parse_platform_toolsets_value(v) for p, v in saved.items()
+        }
         for platform in feature.off_platforms:
             selections.setdefault(platform, None)
         known = config.get("known_plugin_toolsets")
         known = known if isinstance(known, dict) else {}
+        effective_known = effective.get("known_plugin_toolsets")
+        effective_known = effective_known if isinstance(effective_known, dict) else {}
         for platform, selection in selections.items():
             if selection is None and platform not in feature.off_platforms:
                 continue  # no (valid) saved list: core's default composite carried the toolsets
             if selection is not None and _core_carried(feature, selection):
                 continue
-            current = known.get(platform) if isinstance(known.get(platform), list) else []
-            if missing := [ts for ts in feature.toolsets if ts not in current]:
+            seen = effective_known.get(platform)
+            seen = seen if isinstance(seen, list) else []
+            if missing := [ts for ts in feature.toolsets if ts not in seen]:
+                current = known.get(platform)
+                current = current if isinstance(current, list) else []
                 known[platform] = sorted({*map(str, current), *missing})
         if known:
             config["known_plugin_toolsets"] = known

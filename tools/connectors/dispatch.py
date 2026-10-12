@@ -20,7 +20,9 @@ def dispatch_connector_call(name, arguments, tool_call_id, turn_id=None):
 
 def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                              middleware_trace, enabled_toolsets, disabled_toolsets):
-    from model_tools import handle_function_call, own_post_tool_call_hook
+    from dataclasses import replace
+
+    from model_tools import handle_function_call, suppress_post_tool_call_hook
     from tools.interrupt import is_interrupted
 
     if len(calls) > MAX_CALLS_PER_DISPATCH:
@@ -38,10 +40,12 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                 partition.remote[offset:], "Stopped by the user before this call was made.",
                 code="INTERRUPTED"))
             break
-        # Each entry must run its own policy and middleware, and report as its own call.
-        with own_post_tool_call_hook():
+        # Each entry is its own call: its own policy, middleware, hooks and call id (``<id>#<position>``),
+        # so observers never fold an entry into the wrapper or into a sibling entry.
+        entry_ids = replace(ids, tool_call_id=f"{ids.tool_call_id}#{plan.position}") if ids.tool_call_id else ids
+        with suppress_post_tool_call_hook(False):
             payload = handle_function_call(
-                plan.name, plan.arguments, **asdict(ids), user_task=user_task,
+                plan.name, plan.arguments, **asdict(entry_ids), user_task=user_task,
                 enabled_tools=enabled_tools, tool_request_middleware_trace=list(middleware_trace),
                 skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
                 skip_tool_execution_middleware=False,

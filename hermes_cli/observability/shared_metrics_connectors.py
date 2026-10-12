@@ -1,10 +1,9 @@
-"""Connector work in the shared metrics: per-entry tool counting, the search-to-execute chain, and
-the batch and search rows.
+"""Connector work in the shared metrics: the search-to-execute chain and the batch and search rows.
 
-A ``tool_call`` batch of connector entries reaches the hooks once per entry (same ``tool_call_id``)
-and once more for the wrapper. Each entry is its own logical call, so entries get distinct identities
-(``<id>#<n>`` in run order) and the wrapper is not counted once an entry was. Connector slugs, tool
-names and query text never leave this module: rows carry only buckets and closed enums.
+Each entry of a connector ``tool_call`` batch dispatches with its own call id (``<id>#<position>``,
+``tools/connectors/dispatch.py``), so entries count as their own calls; the wrapper's post under the
+bare id is dropped once an entry ran. Connector slugs, tool names and query text never leave this
+module: rows carry only buckets and closed enums.
 """
 
 from __future__ import annotations
@@ -42,42 +41,41 @@ def is_connector_batch(event: dict[str, Any]) -> bool:
     return bool(entries) and all(is_connector_name(entry.get("name")) for entry in entries)
 
 
+def batch_entry_ran(identities: Iterable[tuple[str, str, str]], wrapper: tuple[str, str, str]) -> bool:
+    """Whether an entry of the batch whose wrapper has identity ``wrapper`` was already counted."""
+    prefix = f"{wrapper[2]}#"
+    return bool(wrapper[2]) and any(
+        identity[2].startswith(prefix) and identity[:2] == wrapper[:2] for identity in identities)
+
+
+def _described_names(args: Any) -> list[str]:
+    """``tool_describe`` names as its dispatcher reads them: a bare string is one name, items stripped."""
+    names = args.get("names") if isinstance(args, dict) else None
+    names = [names] if isinstance(names, str) else names if isinstance(names, list) else []
+    return [str(name or "").strip() for name in names]
+
+
 @dataclass
 class ConnectorSessionState:
-    """Per-conversation connector state; the caller holds the session lock."""
+    """Per-conversation chain state; the caller holds the session lock. Compression hands it to the
+    rotated-to segment so the chain spans the whole conversation."""
 
     searches_since_execute: int = 0
     described: set[str] = field(default_factory=set)
-    # (task_id, api_request_id, turn_id, tool_call_id) -> connector entries already counted.
-    counted_entries: dict[tuple[str, str, str, str], int] = field(default_factory=dict)
 
-    def identity(self, task_id: str, event: dict[str, Any], base: tuple[str, str, str]) -> tuple[str, str, str]:
-        """``base`` for any call but a connector entry, which gets ``<id>#<n>`` (n = entries counted)."""
-        if not is_connector_name(event.get("tool_name")) or not base[2]:
-            return base
-        return (base[0], base[1], f"{base[2]}#{self.counted_entries.get((task_id, *base), 0)}")
-
-    def batch_already_counted(self, task_id: str, event: dict[str, Any], base: tuple[str, str, str]) -> bool:
-        """True for a connector batch wrapper once one of its entries was counted."""
-        return bool(self.counted_entries.get((task_id, *base))) and is_connector_batch(event)
-
-    def observe(self, task_id: str, event: dict[str, Any], base: tuple[str, str, str]) -> dict[str, str] | None:
+    def observe(self, event: dict[str, Any]) -> dict[str, str] | None:
         """Update the chain after a counted call; the ``hermes.connector_chain.count`` fields for an entry."""
         name = event.get("tool_name")
         if name == "tool_search":
             self.searches_since_execute += 1
             return None
         if name == "tool_describe":
-            names = (event.get("args") or {}).get("names") if isinstance(event.get("args"), dict) else None
-            for described in names if isinstance(names, list) else ():
+            for described in _described_names(event.get("args")):
                 if is_connector_name(described) and len(self.described) < _MAX_DESCRIBED:
                     self.described.add(described)
             return None
         if not is_connector_name(name):
             return None
-        if base[2]:
-            key = (task_id, *base)
-            self.counted_entries[key] = self.counted_entries.get(key, 0) + 1
         fields = {
             "described_first": "yes" if name in self.described else "no",
             "outcome": contract.tool_outcome(event),
@@ -85,10 +83,6 @@ class ConnectorSessionState:
         }
         self.searches_since_execute = 0
         return fields
-
-    def forget_task(self, task_id: str) -> None:
-        for key in [key for key in self.counted_entries if key[0] == task_id]:
-            del self.counted_entries[key]
 
 
 # ---- row builders ----------------------------------------------------------------------------

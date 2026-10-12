@@ -208,6 +208,7 @@ class _PeakLineage:
     tally: engagement_.SessionTally = field(default_factory=engagement_.SessionTally)
     run: engagement_.RouteRun = field(default_factory=engagement_.RouteRun)
     spent: deque | None = None
+    connectors: connectors_.ConnectorSessionState | None = None
 
 
 # Backstop: conversations whose rotated-to segment a surface never closed are flushed past this many.
@@ -471,10 +472,10 @@ class _Runtime:
             return
         if connectors_.is_connector_batch(event):
             return  # each entry opens its own lifecycle; the wrapper counts only if no entry ran
+        identity = self._tool_call_identity(event)
         with session.lock:
             if not self._admits(session, task, event):
                 return
-            identity = self._tool_call_identity(event, session, task_id)
             key = (task_id, *identity)
             if identity in task.completed_tool_call_ids or key in session.tool_calls:
                 return
@@ -516,11 +517,11 @@ class _Runtime:
                 return
             tool_call = None
             if _text(event, "tool_call_id"):
-                base_identity = self._tool_call_identity(event)
-                if session.connectors.batch_already_counted(task_id, event, base_identity):
-                    task.completed_tool_call_ids.add(base_identity)
+                observed_identity = self._tool_call_identity(event)
+                if connectors_.is_connector_batch(event) and connectors_.batch_entry_ran(
+                        task.completed_tool_call_ids, observed_identity):
+                    task.completed_tool_call_ids.add(observed_identity)
                     return
-                observed_identity = self._tool_call_identity(event, session, task_id)
                 if observed_identity in task.completed_tool_call_ids:
                     return
                 identity = observed_identity
@@ -548,7 +549,7 @@ class _Runtime:
             if task.cost.user_turn:
                 session.efficiency.tools.used.add(eff.toolset_metric_name(event.get("toolset")))
             self._finish_tool_call(task, tool_call, event)
-            chain = session.connectors.observe(task_id, event, self._tool_call_identity(event))
+            chain = session.connectors.observe(event)
             if chain is not None:
                 self._mark(session, task, contract.CONNECTOR_CHAIN_MARK, chain)
 
@@ -781,13 +782,9 @@ class _Runtime:
                 self._turn_sessions[(session.session_id, turn_id)] = session
 
     @staticmethod
-    def _tool_call_identity(
-        event: dict[str, Any], session: _MetricsSession | None = None, task_id: str = "",
-    ) -> tuple[str, str, str]:
-        """Identify one provider-local tool call without exporting its IDs. With ``session``, a
-        connector entry of a ``tool_call`` batch gets its own identity (entries share the call id)."""
-        base = _text(event, "api_request_id"), _text(event, "turn_id"), _text(event, "tool_call_id")
-        return base if session is None else session.connectors.identity(task_id, event, base)
+    def _tool_call_identity(event: dict[str, Any]) -> tuple[str, str, str]:
+        """Identify one provider-local tool call without exporting its IDs."""
+        return _text(event, "api_request_id"), _text(event, "turn_id"), _text(event, "tool_call_id")
 
     @staticmethod
     def _event_matches_task_turn(task: _TaskRun, event: dict[str, Any]) -> bool:
@@ -932,7 +929,6 @@ class _Runtime:
             return False
         self._end_pending_tool_calls(session, task, event)
         self._end_pending_model_calls(session, {**event, "task_id": task_id})
-        session.connectors.forget_task(task_id)
         fields = contract.task_terminal_fields(
             {**task.start_fields, **event},
             duration_ms=_elapsed_ms(task.started_ns),
@@ -1070,7 +1066,8 @@ class _Runtime:
                 if old is None:
                     return  # a segment this process never served: the new id is its own conversation
                 key = old_id
-                self._lineages[key] = _PeakLineage(open={old_id}, run=old.route_run, spent=old.efficiency.spent)
+                self._lineages[key] = _PeakLineage(
+                    open={old_id}, run=old.route_run, spent=old.efficiency.spent, connectors=old.connectors)
                 self._lineage_of[old_id] = key
             self._lineages[key].open.add(new_id)
             self._lineage_of[new_id] = key
@@ -1093,10 +1090,15 @@ class _Runtime:
             return lineage.spent if lineage is not None else None
 
     def _share_spent(self, session: _MetricsSession) -> None:
-        """A rotated-to segment's /undo and /retry reach the turns the earlier segments spent."""
+        """A rotated-to segment's /undo and /retry reach the turns the earlier segments spent, and its
+        connector chain continues the earlier segments' searches and descriptions."""
         spent = self._lineage_spent(session.session_id)
         if spent is not None:
             session.efficiency.spent = spent
+        with self._lineage_lock:
+            lineage = self._lineages.get(self._lineage_of.get(session.session_id, ""))
+            if lineage is not None and lineage.connectors is not None:
+                session.connectors = lineage.connectors
 
     def _with_route_run(
         self, session_id: str, own: engagement_.RouteRun | None, update: Callable[[engagement_.RouteRun], Any],

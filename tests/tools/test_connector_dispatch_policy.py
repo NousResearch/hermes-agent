@@ -31,7 +31,7 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
         events.append(("hook", name))
         assert args == {"body": "request-rewrite"}
         assert kw["middleware_trace"] == [{"source": "test-policy"}]
-        assert kw["tool_call_id"] == "policy-call"
+        assert kw["tool_call_id"] == f"policy-call#{[denied, rewritten].index(name)}"  # each entry is its own call
         if name == denied and blocked_by == "hook":
             return "hook denied", None
         return None, {"body": "hook-rewrite"}

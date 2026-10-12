@@ -83,13 +83,15 @@ def test_batch_row_counts_logical_calls_and_the_connector_share():
 
 
 def _connector_batch_hooks(entries, *, wrapper_result="ok"):
-    """The hook sequence a connector batch produces: pre/post per entry, then the wrapper's post."""
+    """The hook sequence a connector batch produces: pre/post per entry under ``<id>#<position>``,
+    then the wrapper's post under the bare id."""
     call = {**_BASE, "tool_call_id": "tc1"}
-    for name, result in entries:
-        lifecycle.invoke_hook("pre_tool_call", **call, tool_name=name, args={})
+    for position, (name, result) in enumerate(entries):
+        entry = {**call, "tool_call_id": f"tc1#{position}"}
+        lifecycle.invoke_hook("pre_tool_call", **entry, tool_name=name, args={})
         failed = isinstance(result, dict)
         lifecycle.invoke_hook(
-            "post_tool_call", **call, tool_name=name, args={}, result=json.dumps(result if failed else {"ok": 1}),
+            "post_tool_call", **entry, tool_name=name, args={}, result=json.dumps(result if failed else {"ok": 1}),
             status="error" if failed else "ok", error_type="tool_error" if failed else None)
     lifecycle.invoke_hook(
         "post_tool_call", **call, tool_name="tool_call", status=wrapper_result, result="{}",
@@ -154,6 +156,42 @@ def test_chain_row_counts_searches_since_the_last_execute_and_whether_the_tool_w
     ]
 
 
+def test_a_plugin_approval_on_a_connector_entry_is_attributed_to_that_entry(fake_relay):
+    lifecycle.invoke_hook("pre_llm_call", **_BASE)
+    entry = {**_BASE, "tool_call_id": "tc1#0", "tool_name": "connectors__gmail__SEND_EMAIL", "args": {}}
+    lifecycle.invoke_hook("pre_tool_call", **entry)
+    lifecycle.invoke_hook("post_approval_response", **_BASE, tool_call_id="tc1#0", choice="once")
+    lifecycle.invoke_hook("post_tool_call", **entry, result="{}", status="ok")
+    _end_turn()
+    [approval] = [event[2]["data"] for event in fake_relay.events
+                  if event[0] == "scope.event" and event[1] == contract.TOOL_APPROVAL_MARK]
+    assert approval == {"attribution": "tool_call", "outcome": "approved"}
+    [end] = [event[2] for event in fake_relay.events if event[0] == "tool.call_end"]
+    assert end["approval_outcome"] == "approved"
+
+
+def test_the_chain_survives_a_compression_rotation(fake_relay):
+    from hermes_cli.observability import relay_shared_metrics
+
+    lifecycle.invoke_hook("pre_llm_call", **_BASE)
+    for n, (name, args) in enumerate([
+        ("tool_search", {"queries": ["mail"]}),
+        ("tool_describe", {"names": " connectors__gmail__SEND_EMAIL "}),  # bare string, padded
+    ]):
+        call = {**_BASE, "tool_call_id": f"c{n}", "tool_name": name, "args": args}
+        lifecycle.invoke_hook("pre_tool_call", **call)
+        lifecycle.invoke_hook("post_tool_call", **call, result="{}", status="ok")
+    relay_shared_metrics.rotate_segment("s1", "s2")
+    rotated = {**_BASE, "session_id": "s2", "task_id": "t2", "turn_id": "turn-2"}
+    lifecycle.invoke_hook("pre_llm_call", **rotated)
+    call = {**rotated, "tool_call_id": "c9", "tool_name": "connectors__gmail__SEND_EMAIL", "args": {}}
+    lifecycle.invoke_hook("pre_tool_call", **call)
+    lifecycle.invoke_hook("post_tool_call", **call, result="{}", status="ok")
+    [chain] = [event[2]["data"] for event in fake_relay.events
+               if event[0] == "scope.event" and event[1] == contract.CONNECTOR_CHAIN_MARK]
+    assert chain == {"described_first": "yes", "outcome": "success", "searches_before_bucket": "1"}
+
+
 def test_entries_report_their_own_post_even_under_the_executor_suppression(monkeypatch):
     """The sequential executor suppresses the inner post_tool_call for the call it owns; connector
     entries are their own calls and must still report, or each entry's lifecycle never closes."""
@@ -165,18 +203,25 @@ def test_entries_report_their_own_post_even_under_the_executor_suppression(monke
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
     invalidate_check_fn_cache()
-    monkeypatch.setattr(bridge, "run_remote", lambda plans, _id, **_kw: [
-        {"index": plan.position, "name": plan.name, "response": {"ok": 1}} for plan in plans])
+    gateway_ids = []
+
+    def fake_remote(plans, dispatch_id, **_kw):
+        gateway_ids.append(dispatch_id)
+        return [{"index": plan.position, "name": plan.name, "response": {"ok": 1}} for plan in plans]
+
+    monkeypatch.setattr(bridge, "run_remote", fake_remote)
     posts = []
     monkeypatch.setattr(lc, "has_hook", lambda name: True)
-    monkeypatch.setattr(lc, "invoke_hook", lambda name, **kw: posts.append(kw["tool_name"]) or []
-                        if name == "post_tool_call" else [])
+    monkeypatch.setattr(lc, "invoke_hook", lambda name, **kw: posts.append((kw["tool_name"], kw["tool_call_id"]))
+                        or [] if name == "post_tool_call" else [])
     calls = [{"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
              {"name": "connectors__slack__POST", "arguments": {}}]
     with model_tools.suppress_post_tool_call_hook():
         model_tools.handle_function_call("tool_call", {"calls": calls}, tool_call_id="tc1",
                                          enabled_toolsets=["connections"])
-    assert posts == ["connectors__gmail__SEND_EMAIL", "connectors__slack__POST"]
+    # Each entry reports under its own id, so a trace observer never folds entries together.
+    assert posts == [("connectors__gmail__SEND_EMAIL", "tc1#0"), ("connectors__slack__POST", "tc1#1")]
+    assert gateway_ids == ["tc1#0", "tc1#1"]
 
 
 def test_a_package_with_each_new_row_validates_against_the_v4_schema(tmp_path, monkeypatch):

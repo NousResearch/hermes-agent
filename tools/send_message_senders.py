@@ -531,12 +531,13 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     media_files = media_files or []
     metadata = {"thread_id": thread_id} if thread_id else None
     from gateway.config import Platform
-    _, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
+    runner, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
         "Matrix: live gateway adapter lookup failed; falling back to an "
         "ephemeral connect (may re-init E2EE per send)"))
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
-        return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
+        from tools.send_message_tool import _dispatch_on_gateway_loop
+        return await _dispatch_on_gateway_loop(runner, lambda: _matrix_send_core(live_adapter, chat_id, message, media_files, metadata), "Matrix live gateway send failed")
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:

@@ -790,7 +790,10 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(BasePlatformAdapter):
+from plugins.platforms.matrix.adapter_key_recovery import MatrixKeyRecoveryMixin
+
+
+class MatrixAdapter(MatrixKeyRecoveryMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -1100,13 +1103,6 @@ class MatrixAdapter(BasePlatformAdapter):
             "Matrix: cannot upload device keys for %s: %s. Try generating a new access token to get a fresh device.",
             client.device_id)
 
-    @staticmethod
-    async def _abort_connect(api: Any, crypto_db: Any = None) -> bool:
-        """Close what connect() opened so far; always False so callers can ``return await``."""
-        if crypto_db is not None:
-            await crypto_db.stop()
-        await api.session.close()
-        return False
 
     async def _connect_authenticate(self, client: Any, api: Any) -> bool:
         """Authenticate via access token (whoami) or password login; resolve user/device IDs."""
@@ -1172,6 +1168,8 @@ class MatrixAdapter(BasePlatformAdapter):
             return await self._abort_connect(api)
         return True
 
+
+
     async def _connect_setup_e2ee(self, client: Any, api: Any, state_store: Any) -> bool:
         """Set up the Olm machine + crypto store. Returns False when connect must abort."""
         if not _check_e2ee_deps():
@@ -1197,6 +1195,8 @@ class MatrixAdapter(BasePlatformAdapter):
             if (self._store_dir / "crypto_store.pickle").exists():  # pre-SQLite era
                 logger.info("Matrix: removing legacy crypto_store.pickle (migrated to SQLite)")
                 (self._store_dir / "crypto_store.pickle").unlink()
+            if not await asyncio.to_thread(self._acquire_matrix_store_lock):
+                return await self._abort_connect(api)
             crypto_db = Database.create(
                 f"sqlite:///{self._crypto_db_path}", upgrade_table=PgCryptoStore.upgrade_table)
             await crypto_db.start()
@@ -1220,6 +1220,10 @@ class MatrixAdapter(BasePlatformAdapter):
             olm = OlmMachine(client, crypto_store, crypto_state)
             olm.share_keys_min_trust = TrustState.UNVERIFIED
             olm.send_keys_min_trust = TrustState.UNVERIFIED
+            async def _share_keys_crash_safely(current_otk_count):
+                await self._share_matrix_keys_crash_safely(olm, current_otk_count)
+            olm._share_keys = _share_keys_crash_safely
+            olm.allow_key_share = self._allow_matrix_key_share
             await olm.load()
             if not await self._verify_device_keys_on_server(client, olm):
                 return await self._abort_connect(api, crypto_db)
@@ -1242,16 +1246,6 @@ class MatrixAdapter(BasePlatformAdapter):
             return await self._e2ee_setup_failed(phase, exc, api)
         return True
 
-    async def _e2ee_setup_failed(self, what: str, exc: Exception, api: Any) -> bool:
-        """Optional mode: log + disable E2EE and return True; required mode: close + return False."""
-        if self._e2ee_mode == "optional":
-            logger.warning(
-                "Matrix: failed to %s optional E2EE client; continuing without encrypted-room "
-                "support: %s. %s", what, exc, _E2EE_INSTALL_HINT)
-            self._encryption = False
-            return True
-        logger.error("Matrix: failed to %s E2EE client: %s. %s", what, exc, _E2EE_INSTALL_HINT)
-        return await self._abort_connect(api)
 
     async def _verify_or_bootstrap_cross_signing(self, olm: Any, client: Any) -> None:
         """Verify cross-signing via MATRIX_RECOVERY_KEY, or bootstrap a new key (non-fatal)."""
@@ -1374,6 +1368,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self._crypto_db.stop()
             except Exception as exc:
                 logger.debug("Matrix: could not close crypto DB on disconnect: %s", exc)
+        self._release_matrix_store_lock()
         if self._client:
             with suppress(Exception):
                 await self._client.api.session.close()
@@ -3109,6 +3104,8 @@ class MatrixAdapter(BasePlatformAdapter):
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """standalone_sender_fn: out-of-process delivery via the Client-Server API (cron without gateway)."""
     extra = getattr(pconfig, "extra", {}) or {}
+    if _resolve_e2ee_mode(extra) != "off":
+        return send_error("Encrypted Matrix delivery requires the live gateway adapter; standalone sending is disabled")
     try:
         import aiohttp
     except ImportError:

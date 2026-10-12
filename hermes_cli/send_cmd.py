@@ -236,7 +236,9 @@ def cmd_send(args: argparse.Namespace) -> None:
     tool_args = {"action": "send", "target": target, "message": message}
     if mentions:
         tool_args["mentions"] = mentions
-    result = send_message_tool(tool_args)
+    from hermes_cli.send_relay import relay_matrix_send
+    relayed = relay_matrix_send(target, tool_args)
+    result = send_message_tool(tool_args) if relayed is None else json.dumps(relayed)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
 

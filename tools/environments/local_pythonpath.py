@@ -127,10 +127,44 @@ def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
         env.pop(_marker, None)
 
 
+def _managed_generation_site_packages_entry(entry: Path) -> bool:
+    """True when *entry* is a site-packages dir inside this install's managed
+    dependency store (``<home>/installs/<key>/…``: ``environments/<hash>/venv`` or
+    ``pm-runtime/generations/<hash>``).
+
+    ``pm.environments.activate_dependencies`` stamps the SELECTED generation's
+    site-packages into ``os.environ["PYTHONPATH"]`` at boot. A dependency update can
+    commit a newer generation while the gateway keeps running, so the process env
+    still names the previous generation; and when the process interpreter is not the
+    generation's own venv (an in-tree ``venv`` python, a base interpreter) the
+    owned set built from ``site.getsitepackages()`` never names the generation at
+    all. Either way the path leaks into children, where a different Python
+    ABI-crashes on the old compiled extensions (#133668, #133670). Everything under
+    the install's dependency store is Hermes-built, so residence there is ownership
+    by path provenance — still no version heuristic. Non-site-packages entries
+    under the store are left alone (exact-match discipline of the caller).
+    """
+    if entry.name != "site-packages":
+        return False
+    try:
+        from pm.environments import install_state_dir
+
+        repo = Path(__file__).resolve().parents[2]
+        store = install_state_dir(repo)
+        if not store.is_dir():
+            return False
+        return entry.resolve().is_relative_to(store.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def _strip_hermes_owned_pythonpath(env: dict) -> None:
     """Remove Hermes-owned PYTHONPATH entries: only exact matches of the repo root
-    (any launcher spelling) and runtime site-packages — never descendants, which are
-    user paths. Empty components (= cwd) and everything else are preserved.
+    (any launcher spelling) and runtime site-packages, plus site-packages dirs inside
+    the install's managed dependency store (a previous generation stays owned after a
+    newer one is committed, #133668; the selected generation too when the running
+    interpreter is not its venv, #133670) — never other descendants, which are user
+    paths. Empty components (= cwd) and everything else are preserved.
 
     Everything else -- user libs, Nix plugin paths, a pythonX.Y/site-packages entry meant for a DIFFERENT
     child version -- is preserved byte-for-byte: ownership is decided by path provenance, never by a
@@ -141,7 +175,15 @@ def _strip_hermes_owned_pythonpath(env: dict) -> None:
         return
     owned_paths = [*_get_hermes_site_packages(env), *_state()._hermes_repo_root_aliases]
     entries = pp.split(os.pathsep)
-    stripped = [e for e in entries if e and any(_same_path(Path(e), p) for p in owned_paths)]
+    stripped = [
+        e
+        for e in entries
+        if e
+        and (
+            any(_same_path(Path(e), p) for p in owned_paths)
+            or _managed_generation_site_packages_entry(Path(e))
+        )
+    ]
     kept = [e for e in entries if e not in stripped]
     if kept:
         env["PYTHONPATH"] = os.pathsep.join(kept)

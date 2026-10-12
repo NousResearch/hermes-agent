@@ -177,8 +177,10 @@ dependencies = [
   # "not a recognized image". pillow-heif registers a Pillow opener so
   # _normalize_to_supported_image can re-encode HEIF/AVIF to PNG before embed.
   # Ships prebuilt wheels bundling libheif for the common platforms (no system
-  # libs needed), so it's safe in the base install alongside Pillow.
-  "pillow-heif>=1.4.0,<2; python_version >= '3.14'",
+  # libs needed), so it's safe in the base install alongside Pillow. Floor is
+  # 1.8.0: 1.4.0-1.7.x bundle a libheif vulnerable to CVEs in HEIF decode,
+  # reachable from the vision tools' untrusted image inputs (#125940).
+  "pillow-heif>=1.8.0,<2; python_version >= '3.14'",
   # SVG rendering for the icon generator (scripts/generate_icons.py). Source
   # builds render icons with the runtime interpreter (`hermes desktop`,
   # `hermes update`), so a source install carries its renderer instead of

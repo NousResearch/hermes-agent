@@ -166,8 +166,15 @@ def _tool_def_names(tool_defs: Iterable[dict[str, Any]]) -> Iterable[str]:
     return (_fn(td).get("name", "") for td in tool_defs)
 
 
-def classify_tools(tool_defs: list[dict[str, Any]], defer_tools: Optional[frozenset] = None,
-                   ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def session_tool_names(tool_defs: Iterable[Dict[str, Any]]) -> frozenset[str]:
+    """Every tool name in the session's ``tool_defs`` — what this session can actually
+    reach. Public wrapper over the private name extractor so callers outside this module
+    (the ``model_tools`` dispatcher) can scope error messages to the real session."""
+    return frozenset(n for n in _tool_def_names(tool_defs) if n)
+
+
+def classify_tools(tool_defs: List[Dict[str, Any]], defer_tools: Optional[frozenset] = None,
+                   ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
     after classification)."""
     visible: list[dict[str, Any]] = []
@@ -554,7 +561,9 @@ def out_of_scope_reason(name: str) -> Optional[str]:
     return None
 
 
-def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[str, Any], Optional[str]]:
+def resolve_underlying_call(args: Dict[str, Any],
+                           session_tool_names: Optional[Iterable[str]] = None
+                           ) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
@@ -567,6 +576,10 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
     one dispatch unit owned by the ``model_tools`` bridge branch, and the
     sentinel is what planners/display layers see. A single local entry keeps
     the historical single-tool contract unchanged.
+
+    ``session_tool_names`` is the session's own tool list, when the caller has it. Passed
+    through so a core tool this session cannot reach reports *unavailable* rather than
+    "call it directly" — the static core list cannot tell the two apart.
 
     On parse error, returns ``(None, {}, error_message)``.
     """
@@ -582,7 +595,7 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
-        return None, {}, not_deferrable_error(name)
+        return None, {}, not_deferrable_error(name, session_tool_names)
     return name, raw_args, None
 
 

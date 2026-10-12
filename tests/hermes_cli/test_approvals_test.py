@@ -16,6 +16,7 @@ import json
 import pytest
 
 import tools.approval as A
+from tools import approval_detection
 from tools import approval_prompt
 from tools import approval_context
 from hermes_cli import approvals_test as at
@@ -195,3 +196,60 @@ class TestOutputAndWiring:
         assert rc == 0
         assert "ls -la" in out
         assert "-- ls" not in out
+
+
+class TestPermanentAllowlistConsentKinds:
+    """Step 6 must consent exactly the way the RUNTIME does.
+
+    ``command_allowlist`` holds two kinds of entry: manual command TEXT (possibly a
+    shell-style glob such as ``podman *``) and the PATTERN KEY every ``[a]lways`` choice
+    persists. The runtime consents to a flagged command by key —
+    ``approval.is_approved(session_key, pattern_key)`` in the human gate,
+    ``approval._is_permanently_approved(pattern_key)`` under cron/-q deny mode — so a
+    text/glob-only check renders ``ask-approval`` for a standing approval the runtime
+    would auto-approve. Both kinds must keep working.
+    """
+
+    FORCE_PUSH = "git push --force-with-lease origin my-own-branch"
+
+    @staticmethod
+    def _key(command):
+        is_dangerous, pattern_key, _ = approval_detection.detect_dangerous_command(command)
+        assert is_dangerous, f"{command!r} is expected to be a flagged pattern"
+        return pattern_key
+
+    def test_pattern_key_entry_allows_the_dangerous_command(self, isolated_approvals,
+                                                            capsys):
+        key = self._key(self.FORCE_PUSH)
+        A._permanent_approved.add(key)
+        rc = at.approvals_test_command(_args(self.FORCE_PUSH.split()))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "allow" in out
+        assert key in out
+
+    def test_pattern_key_absent_still_asks(self, isolated_approvals, capsys):
+        rc = at.approvals_test_command(_args(self.FORCE_PUSH.split()))
+        out = capsys.readouterr().out
+        assert rc == 2
+        assert "ask-approval" in out
+
+    def test_a_different_pattern_key_does_not_leak_into_the_verdict(
+            self, isolated_approvals, capsys):
+        A._permanent_approved.add("recursive delete")
+        rc = at.approvals_test_command(_args(self.FORCE_PUSH.split()))
+        assert rc == 2
+
+    def test_text_glob_entry_allows_a_matching_command(self, isolated_approvals,
+                                                       capsys):
+        A._permanent_approved.add("podman *")
+        rc = at.approvals_test_command(_args(["podman", "run", "--rm", "alpine", "true"]))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "command_allowlist" in out
+
+    def test_text_glob_entry_does_not_allow_a_non_matching_command(
+            self, isolated_approvals, capsys):
+        A._permanent_approved.add("podman *")
+        rc = at.approvals_test_command(_args(["rm", "-rf", "~/project/build"]))
+        assert rc == 2

@@ -371,3 +371,29 @@ def test_old_spotify_commands_point_at_the_plugin(tmp_path, monkeypatch):
     (home / "plugins" / "spotify").mkdir(parents=True)  # installed but disabled
     assert "plugins enable spotify" in lcm.moved_command_hint("hermes", "spotify")
     assert lcm.moved_command_hint("hermes", "honcho") == ""
+
+
+_LANGFUSE_KEYS_ENV = "HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-x\nHERMES_LANGFUSE_SECRET_KEY=sk-lf-x\n"
+
+
+@pytest.mark.parametrize(("config", "in_use"), [
+    ("plugins:\n  enabled: [observability/langfuse]\n", True),
+    ("plugins:\n  enabled: [langfuse]\n", True),                       # legacy bare name the loader accepted
+    ("plugins:\n  enabled: [observability/langfuse]\n  disabled: [langfuse]\n", False),  # disabled wins
+    ("plugins:\n  enabled: [other]\n", False),
+    ("", False),                                                       # keys alone: it was opt-in
+])
+def test_langfuse_in_use_is_the_bundled_plugin_enabled(tmp_path, config, in_use):
+    home = _home(tmp_path, env=_LANGFUSE_KEYS_ENV, config=config)
+    assert lcm.langfuse_in_use(home) is in_use
+
+
+def test_old_langfuse_plugin_key_points_at_the_catalog_plugin(tmp_path, monkeypatch):
+    """`hermes plugins enable observability/langfuse` (every pre-move doc said so) names the install."""
+    from hermes_cli.plugins_cmd import _unknown_plugin_message
+    monkeypatch.setenv("HERMES_HOME", str(_home(tmp_path)))
+    for name in ("observability/langfuse", "langfuse"):
+        message = _unknown_plugin_message(name)
+        assert "moved out of core into the 'langfuse' plugin" in message
+        assert "hermes plugins install langfuse" in message
+    assert "moved out of core" not in _unknown_plugin_message("nonexistent")

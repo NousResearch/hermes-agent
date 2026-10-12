@@ -1,7 +1,7 @@
 """Move a home onto the catalog plugin of a feature that left core.
 
-A feature (gateway platform, toolset) that moves from core into a standalone catalog plugin keeps its
-names, config keys and env vars, so migrating is only "install the plugin". Each row of
+A feature (gateway platform, toolset, bundled plugin) that moves from core into a standalone catalog
+plugin keeps its names, config keys and env vars, so migrating is only "install the plugin". Each row of
 :data:`LEFT_CORE` names the catalog plugin and a read-only predicate "does this home use it". The
 contract is the one memory providers established (``memory_provider_migration``, whose helpers this
 reuses; memory is not a row because its plugin name comes from ``memory.provider``, not a table):
@@ -120,6 +120,19 @@ def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _toolset_listed(_read_config(home), frozenset({"spotify"}))
 
 
+def langfuse_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core trace to Langfuse for *home*: its bundled plugin selected in ``plugins.enabled``
+    under its key (``observability/langfuse``) or bare name (``langfuse``), and not vetoed by
+    ``plugins.disabled`` (which wins, as in the loader). The plugin was opt-in, so keys alone are not use."""
+    plugins = _read_config(home).get("plugins")
+    plugins = plugins if isinstance(plugins, dict) else {}
+
+    def listed(key: str) -> bool:
+        names = plugins.get(key)
+        return isinstance(names, list) and any(str(n) in {"observability/langfuse", "langfuse"} for n in names)
+    return listed("enabled") and not listed("disabled")
+
+
 @dataclass(frozen=True)
 class LeftCoreFeature:
     plugin: str                               # catalog entry name == installed plugin name
@@ -150,6 +163,9 @@ class LeftCoreFeature:
     # Top-level command the plugin registers in place of core's ``hermes auth <cli>`` login
     # (``hermes <cli> login|status|logout``); :func:`moved_command_hint` points the old spelling at it.
     cli: str = ""
+    # Key of the bundled plugin core shipped (``observability/langfuse``): `hermes plugins <verb>` on it
+    # names the catalog plugin instead (:func:`moved_plugin_hint`).
+    plugin_key: str = ""
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -165,6 +181,14 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         unchanged="your Spotify login, the spotify toolset and the spotify_* tools are unchanged; "
                   "`hermes auth spotify` is now `hermes spotify login`",
         cli="spotify",
+    ),
+    LeftCoreFeature(
+        plugin="langfuse", label="Langfuse", in_use=langfuse_in_use,
+        unchanged="your Langfuse keys and HERMES_LANGFUSE_* settings are unchanged; the plugin is now "
+                  "`langfuse` (was observability/langfuse)",
+        secret_env=("HERMES_LANGFUSE_SECRET_KEY",),
+        private_env=("HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_BASE_URL"),
+        plugin_key="observability/langfuse",
     ),
 )
 
@@ -198,6 +222,18 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
         return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: `{old}` is now "
                 f"`hermes {value} {action or 'login'}`.{get}")
     return f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
+
+
+def moved_plugin_hint(name: str) -> str:
+    """For a plugin name nothing resolves to: the bundled key of a plugin that left core
+    (``observability/langfuse``) or its catalog name, the line naming the install command for the
+    active home, else ``""``. Appended to "No plugin named ..." errors."""
+    from hermes_constants import get_hermes_home
+    feature = next((f for f in LEFT_CORE if f.plugin_key and name in (f.plugin_key, f.plugin)), None)
+    if feature is None:
+        return ""
+    return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: install it with "
+            f"`{_install_command(feature.plugin, Path(get_hermes_home()))}`.")
 
 
 _attempted: set[str] = set()

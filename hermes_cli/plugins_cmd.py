@@ -263,7 +263,7 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path, *, allow_subdir: bool = 
     """Validate a plugin name and return the safe target path inside *plugins_dir*.
 
     Raises ``ValueError`` on traversal or a target outside the plugins directory. ``allow_subdir``
-    permits forward slashes so category keys like ``observability/langfuse`` can be looked up
+    permits forward slashes so category keys like ``web/firecrawl`` can be looked up
     (``..`` and backslashes stay rejected); install paths keep ``False`` — a clone lands top-level.
     """
     if allow_subdir and name:
@@ -463,6 +463,9 @@ def _unknown_plugin_message(name: str, *, downloaded_only: bool = False) -> str:
     """``No plugin named ...`` with the exact-name rule and the two commands that resolve it."""
     scope = (" This command only works on downloaded plugins; bundled ones can only be enabled or disabled."
              if downloaded_only else " Bundled plugins can only be enabled or disabled.")
+    from hermes_cli.left_core_migration import moved_plugin_hint
+    if moved := moved_plugin_hint(name):
+        return f"[red]No plugin named '{name}'.[/red] {moved}"
     return (f"[red]No plugin named '{name}'.[/red] Run `hermes plugins list` to see the exact names "
             f"(nested plugins use their full key, e.g. web/firecrawl).{scope} "
             "To add one: `hermes plugins install <owner/repo>`.")
@@ -541,7 +544,7 @@ def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
 
 
 def _discard_key_and_leaf(names: set, key: str) -> None:
-    """Drop *key* and its bare leaf (``observability/langfuse`` -> ``langfuse``) from *names*, so a
+    """Drop *key* and its bare leaf (``web/exa`` -> ``exa``) from *names*, so a
     stale legacy bare-name entry can't keep vetoing the canonical key."""
     names.discard(key)
     names.discard(key.split("/")[-1])
@@ -665,8 +668,8 @@ def _catalog_installed_dir(name: str) -> Optional[Path]:
 def _find_plugin_entry(name: str) -> Optional[tuple]:
     """THE plugin name resolver for every verb (enable/disable/show/capabilities/remove/update, the
     dashboard and the Desktop hub): the discovered ``(name, version, description, source, dir_path, key)``
-    entry for a canonical key or manifest name; else a bare leaf (``langfuse`` ->
-    ``observability/langfuse``) only when unique; else the catalog name the plugin was installed under.
+    entry for a canonical key or manifest name; else a bare leaf (``exa`` ->
+    ``web/exa``) only when unique; else the catalog name the plugin was installed under.
     Never guesses between two candidates."""
     entries = _discover_all_plugins()
     exact = next((entry for entry in entries if name in (entry[0], entry[5])), None)

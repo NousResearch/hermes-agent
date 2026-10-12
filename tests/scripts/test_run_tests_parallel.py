@@ -447,6 +447,36 @@ def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
 
 
 
+def test_fail_on_skip_fails_a_run_with_any_skip_even_beside_an_xfail(tmp_path: Path) -> None:
+    """--fail-on-skip reads the parsed skip count, not the progress line.
+
+    The remote-backends lane once grepped the line for an ``<n>s,`` suffix,
+    which an xfail printed after the skip (``1✓ 1s 1xf, ...``) hid.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_skipprobe.py").write_text(
+        "import pytest\n\n"
+        "def test_runs():\n    assert True\n\n"
+        "def test_skips():\n    pytest.skip('host not wired')\n\n"
+        "@pytest.mark.xfail(strict=True)\ndef test_xfails():\n    assert False\n"
+    )
+    plain = _run_runner(probe_dir)
+    assert plain.returncode == 0, plain.stdout
+    assert "1s 1xf," in plain.stdout, plain.stdout
+
+    gated = _run_runner(probe_dir, "--fail-on-skip")
+    assert gated.returncode == 1, gated.stdout
+    assert "1 test SKIPPED under --fail-on-skip" in gated.stdout
+    assert "test_skipprobe.py  (1 skipped)" in gated.stdout
+
+
+def test_fail_on_skip_passes_a_run_without_skips(tmp_path: Path) -> None:
+    proc = _run_runner(_make_probe_dir(tmp_path), "--fail-on-skip")
+    assert proc.returncode == 0, proc.stdout
+    assert "SKIPPED" not in proc.stdout
+
+
 @pytest.mark.parametrize("form,expected", [
     ("positional", ["alpha", "beta"]), ("bare-k", ["alpha"]),
     ("node-id", ["alpha"]), ("explicit-k", ["beta"]),

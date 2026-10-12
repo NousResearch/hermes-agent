@@ -2,16 +2,20 @@ import { atom, computed } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { revealTreePane } from '@/components/pane-shell/tree/store'
-import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
+import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
+import type { HermesReviewFile, HermesReviewScope, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { modeBound } from '@/store/interface-mode'
 
-import { refreshRepoStatus } from './coding-status'
-import { $busy, $currentCwd } from './session'
+import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
+import { noteAreaClosed, recordFeatureUse } from './desktop-metrics'
+import { stampSessionPrBranch } from './pull-requests'
+import { $busy, $currentCwd, $selectedStoredSessionId, $sessions } from './session'
+import { $sessionStates } from './session-states'
 import { $workspaceChangeTick } from './workspace-events'
 
 // State for the review pane: the working-tree changed-file list, the selected
@@ -19,9 +23,10 @@ import { $workspaceChangeTick } from './workspace-events'
 // session's cwd is the repo; the pane reads git as the source of truth, the
 // same bounded "re-probe on structural edges" model as the coding rail.
 //
-// Scope is always "uncommitted" — Hermes' flow is agent edits you review BEFORE
-// committing, so branch/last-turn scopes are almost always empty here (unlike
-// Codex, which commits per turn). We show the one view that's always populated.
+// Diff scope is selectable: 'uncommitted' (the review-before-commit default),
+// 'branch' (committed work vs the trunk merge-base), and 'lastTurn' (everything
+// since the current turn began, driven by the $reviewTurnBase HEAD capture).
+// Mutations and the commit/PR ship bar are uncommitted-only.
 
 // Must match the review <Pane id> in desktop-controller (the forced-reveal
 // event is addressed by pane id).
@@ -30,12 +35,17 @@ export const REVIEW_PANE_ID = 'review'
 const OPEN_KEY = 'hermes.desktop.reviewOpen'
 const COMMIT_DEFAULT_KEY = 'hermes.desktop.reviewCommitDefault'
 const TREE_MODE_KEY = 'hermes.desktop.reviewTreeMode'
+const SCOPE_KEY = 'hermes.desktop.reviewScope'
 const SELECTED_KEY = 'hermes.desktop.reviewSelectedPath'
 const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
 // Persisted so the pane stays open across reloads (like the other rail panes).
-export const $reviewOpen = persistentAtom(OPEN_KEY, false, Codecs.bool)
+// Simple mode rests it closed without touching the preference; ⌘G still opens
+// it for the session.
+const $reviewOpenPref = persistentAtom(OPEN_KEY, false, Codecs.bool)
+
+export const $reviewOpen = modeBound('reviewOpen', $reviewOpenPref, open => $reviewOpenPref.set(open))
 
 // The split-button's remembered default action ('commit' | 'commitPush').
 export type CommitAction = 'commit' | 'commitPush'
@@ -55,6 +65,57 @@ export const $reviewTreeMode = persistentAtom<ReviewTreeMode>(TREE_MODE_KEY, 'tr
 
 export function toggleReviewTreeMode(): void {
   $reviewTreeMode.set($reviewTreeMode.get() === 'tree' ? 'list' : 'tree')
+}
+
+// Diff scope for the review pane. 'uncommitted' (staged+unstaged+untracked) is
+// the review-before-commit default; 'branch' shows committed work vs the trunk
+// merge-base; 'lastTurn' shows everything (committed + uncommitted) since the
+// most recent turn began. Persisted like the tree-mode toggle.
+export const $reviewScope = persistentAtom<HermesReviewScope>(SCOPE_KEY, 'uncommitted', {
+  decode: raw => (raw === 'branch' || raw === 'lastTurn' ? raw : 'uncommitted'),
+  encode: value => value
+})
+
+// HEAD sha per repo cwd, captured when the most recent turn started in that
+// repo — the baseRef for the 'lastTurn' scope. Keyed by cwd so a pinned tile
+// worktree or a background session gets its own baseline instead of inheriting
+// the foreground cwd's. Empty until a turn has been observed for a given cwd.
+//
+// Normalization contract: keys are written from `state.cwd.trim()` at capture
+// and read through `repoCwd()` (which trims too). Both sides ultimately carry
+// the same gateway-reported absolute path for a given repo, so they match
+// byte-for-byte; any other divergence (trailing slash, symlink, case) would
+// silently miss and degrade lastTurn to empty rather than mislead.
+//
+// Capture is best-effort and inherently racy: HEAD is resolved asynchronously
+// after `busy` flips, so a turn that commits immediately can beat the reply
+// and bake its own commits into the baseline (lastTurn then shows slightly
+// less than the turn changed). Accepted — the alternative is blocking turn
+// start on a git probe.
+export const $reviewTurnBase = atom<Record<string, string>>({})
+
+// Cap on tracked baselines. Bounded by repos-worked-in in practice, but a
+// long-lived session shouldn't hoard stale entries for abandoned worktrees:
+// beyond the cap, the least-recently-captured cwd is evicted.
+const MAX_TURN_BASES = 8
+
+function recordTurnBase(cwd: string, sha: string): void {
+  const prev = $reviewTurnBase.get()
+
+  if (prev[cwd] === sha) {
+    return
+  }
+
+  // Re-insert the cwd so object key order tracks recency (oldest first),
+  // then evict from the front beyond the cap.
+  const rest = Object.entries(prev).filter(([key]) => key !== cwd)
+
+  while (rest.length >= MAX_TURN_BASES) {
+    rest.shift()
+  }
+
+  rest.push([cwd, sha])
+  $reviewTurnBase.set(Object.fromEntries(rest))
 }
 
 export const $reviewFiles = atom<HermesReviewFile[]>([])
@@ -84,11 +145,26 @@ export const $reviewShipBusy = atom(false)
 // True while a commit message is being generated (drives the input's spinner).
 export const $reviewCommitMsgBusy = atom(false)
 
-const repoCwd = (): null | string => $currentCwd.get()?.trim() || null
+// The pane's repo scope. Null = follow the ACTIVE session's cwd (the classic
+// behavior). A tile's rail opens the pane pinned to ITS worktree instead —
+// tiles can sit in different worktrees than main, and reviewing "the diff I'm
+// looking at" must mean that tile's repo, not whatever main happens to be on.
+export const $reviewScopeCwd = atom<null | string>(null)
+// The composer target that opened the pane. The review pane is a shared
+// surface, but its "let the agent ship it" action must return to the session
+// whose worktree the user is reviewing, not broadcast to every mounted tile.
+export const $reviewScopeTarget = atom('main')
+
+/** The repo the pane is reading right now: its pinned scope, else the active
+ *  session's cwd. Exported for pane helpers that join repo-relative paths. */
+export const reviewRepoCwd = (): null | string => $reviewScopeCwd.get()?.trim() || $currentCwd.get()?.trim() || null
+
+const repoCwd = reviewRepoCwd
 
 type ReviewBridge = NonNullable<NonNullable<NonNullable<Window['hermesDesktop']>['git']>['review']>
 let reviewRefreshSeq = 0
 let reviewRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let reviewSelectionSeq = 0
 let shipInfoSeq = 0
 let shipInfoLastCheckedAt = 0
 
@@ -101,24 +177,50 @@ function reviewCtx(): { cwd: string; review: ReviewBridge } | null {
   return cwd && review ? { cwd, review } : null
 }
 
+// The scope + base ref for the current read. 'lastTurn' diffing is baseRef-
+// driven (Electron recomputes the merge-base itself for 'branch'), so only the
+// last-turn baseline — looked up for the pane's own repo cwd — is passed.
+function reviewReadParams(): { scope: HermesReviewScope; baseRef: null | string } {
+  const scope = $reviewScope.get()
+
+  if (scope !== 'lastTurn') {
+    return { scope, baseRef: null }
+  }
+
+  const cwd = repoCwd()
+
+  return { scope, baseRef: cwd ? ($reviewTurnBase.get()[cwd] ?? null) : null }
+}
+
 // ── Reads ────────────────────────────────────────────────────────────────────
 
-export async function refreshReview(): Promise<void> {
+export async function refreshReview(): Promise<boolean> {
+  // A direct refresh supersedes an already-queued debounce for the same live
+  // context. Without this, openReviewForPath() can start a list request only
+  // for the timer to overtake it before the requested file is selected.
+  if (reviewRefreshTimer) {
+    clearTimeout(reviewRefreshTimer)
+    reviewRefreshTimer = null
+  }
+
+  const intentCwd = repoCwd()
   const ctx = reviewCtx()
   const seq = (reviewRefreshSeq += 1)
+  const selectionSeq = reviewSelectionSeq
+  const ownsList = () => seq === reviewRefreshSeq && repoCwd() === intentCwd
 
   if (!$reviewOpen.get() || !ctx) {
-    $reviewFiles.set([])
-    $reviewIsRepo.set(Boolean(ctx))
+    if (ownsList()) {
+      $reviewFiles.set([])
+      $reviewIsRepo.set(Boolean(ctx))
 
-    // Critical: clear loading on the no-cwd / not-a-repo path too. It's set
-    // true (optimistically) before a refresh is scheduled, so skipping it here
-    // strands the pane on a forever-skeleton for a fresh, detached chat.
-    if (seq === reviewRefreshSeq) {
+      // Critical: clear loading on the no-cwd / not-a-repo path too. It's set
+      // true (optimistically) before a refresh is scheduled, so skipping it here
+      // strands the pane on a forever-skeleton for a fresh, detached chat.
       $reviewLoading.set(false)
     }
 
-    return
+    return ownsList()
   }
 
   const { cwd, review } = ctx
@@ -127,11 +229,12 @@ export async function refreshReview(): Promise<void> {
   $reviewLoading.set(true)
 
   try {
-    const result = await review.list(cwd, 'uncommitted', null)
+    const { scope, baseRef } = reviewReadParams()
+    const result = await review.list(cwd, scope, baseRef)
 
     // Ignore a result that resolved after the cwd moved on.
-    if (seq !== reviewRefreshSeq || repoCwd() !== cwd) {
-      return
+    if (!ownsList()) {
+      return false
     }
 
     // Hide dep/build/cache dirs and OS noise even when the repo tracks them —
@@ -143,20 +246,26 @@ export async function refreshReview(): Promise<void> {
     // Drop the selection if the file is gone (staged away, reverted) so the diff
     // pane doesn't strand on a ghost; otherwise lazily fetch its diff so a
     // restored (persisted) selection re-renders on boot.
-    const selected = $reviewSelectedPath.get()
-    const selectedFile = selected ? files.find(file => file.path === selected) : null
+    if (selectionSeq === reviewSelectionSeq) {
+      const selected = $reviewSelectedPath.get()
+      const selectedFile = selected ? files.find(file => file.path === selected) : null
 
-    if (selected && !selectedFile) {
-      clearReviewSelection()
-    } else if (selectedFile && $reviewDiff.get() === null) {
-      void selectReviewFile(selectedFile)
+      if (selected && !selectedFile) {
+        clearReviewSelection()
+      } else if (selectedFile && $reviewDiff.get() === null) {
+        void selectReviewFile(selectedFile)
+      }
     }
+
+    return true
   } catch {
-    if (seq === reviewRefreshSeq) {
+    if (ownsList()) {
       $reviewFiles.set([])
     }
+
+    return ownsList()
   } finally {
-    if (seq === reviewRefreshSeq) {
+    if (ownsList()) {
       $reviewLoading.set(false)
     }
   }
@@ -171,6 +280,11 @@ function scheduleReviewRefresh(): void {
     clearTimeout(reviewRefreshTimer)
   }
 
+  // Scheduling is itself a newer list intent. Invalidate in-flight work now,
+  // not when the debounce fires, so an older catch/finally cannot mutate the
+  // repository that is waiting for the timer.
+  reviewRefreshSeq += 1
+
   reviewRefreshTimer = setTimeout(() => {
     reviewRefreshTimer = null
     void refreshReview()
@@ -178,12 +292,19 @@ function scheduleReviewRefresh(): void {
 }
 
 export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
+  const seq = (reviewSelectionSeq += 1)
   $reviewSelectedPath.set(file.path)
 
+  const intentCwd = repoCwd()
   const ctx = reviewCtx()
 
+  const ownsSelection = () =>
+    seq === reviewSelectionSeq && $reviewSelectedPath.get() === file.path && repoCwd() === intentCwd
+
   if (!ctx) {
-    $reviewDiff.set(null)
+    if (ownsSelection()) {
+      $reviewDiff.set(null)
+    }
 
     return
   }
@@ -191,23 +312,25 @@ export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
   $reviewDiffLoading.set(true)
 
   try {
-    const diff = await ctx.review.diff(ctx.cwd, file.path, 'uncommitted', null, file.staged)
+    const { scope, baseRef } = reviewReadParams()
+    const diff = await ctx.review.diff(ctx.cwd, file.path, scope, baseRef, file.staged)
 
-    if ($reviewSelectedPath.get() === file.path) {
+    if (ownsSelection()) {
       $reviewDiff.set(diff || '')
     }
   } catch {
-    if ($reviewSelectedPath.get() === file.path) {
+    if (ownsSelection()) {
       $reviewDiff.set('')
     }
   } finally {
-    if ($reviewSelectedPath.get() === file.path) {
+    if (ownsSelection()) {
       $reviewDiffLoading.set(false)
     }
   }
 }
 
 export function clearReviewSelection(): void {
+  reviewSelectionSeq += 1
   $reviewSelectedPath.set(null)
   $reviewDiff.set(null)
   $reviewDiffLoading.set(false)
@@ -246,24 +369,38 @@ function refreshShipInfoIfStale(): void {
   }
 }
 
-export function openReview(): void {
+/** Open the pane scoped to `scopeCwd` (a tile's worktree), or to the active
+ *  session's cwd when null — see `$reviewScopeCwd`. Keep the originating
+ *  composer target alongside it for agent-ship actions. */
+export function openReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
+  $reviewScopeCwd.set(scopeCwd?.trim() || null)
+  $reviewScopeTarget.set(scopeTarget.trim() || 'main')
   $reviewOpen.set(true)
+  recordFeatureUse('review_pane')
   void refreshReview()
   void refreshShipInfo()
 }
 
 export function closeReview(): void {
+  noteAreaClosed('review_pane')
   $reviewOpen.set(false)
+  $reviewScopeCwd.set(null)
+  $reviewScopeTarget.set('main')
   clearReviewSelection()
 }
 
-export function toggleReview(): void {
+export function toggleReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
   // Narrow width: the pane is a collapsed overlay (like the sidebar under ⌘B).
   // Make sure its data is loaded, then slide it in/out via the forced-reveal pin
   // — never the docked open state, which a 0px track would render invisibly.
   if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
-    if (!$reviewOpen.get()) {
-      openReview()
+    const target = scopeTarget.trim() || 'main'
+
+    const originChanged =
+      ($reviewScopeCwd.get() ?? null) !== (scopeCwd?.trim() || null) || $reviewScopeTarget.get() !== target
+
+    if (!$reviewOpen.get() || originChanged) {
+      openReview(scopeCwd, target)
     }
 
     window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: REVIEW_PANE_ID } }))
@@ -271,11 +408,86 @@ export function toggleReview(): void {
     return
   }
 
-  if ($reviewOpen.get()) {
+  // Ask the TREE, not `$reviewOpen`. The store stays true while the pane sits
+  // behind a sibling tab in the right column or inside a minimized zone, so a
+  // boolean flip spent the press re-asserting a value it already held and ⌘G
+  // read as a dead key. `revealReview` fronts and un-minimizes; only close when
+  // the diff is genuinely the thing on screen.
+  if (isPaneVisible(REVIEW_PANE_ID)) {
     closeReview()
   } else {
-    openReview()
-    revealTreePane(REVIEW_PANE_ID)
+    revealReview(scopeCwd, scopeTarget)
+  }
+}
+
+/**
+ * Open the review pane and bring it into view. Unlike `toggleReview` this never
+ * closes an already-open pane — it's the "take me to the diff" entry point used
+ * by the transcript's changed-files card.
+ */
+export function revealReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
+  const wasOpen = $reviewOpen.get()
+  const target = scopeTarget.trim() || 'main'
+
+  if (!wasOpen) {
+    openReview(scopeCwd, target)
+  } else if (($reviewScopeCwd.get() ?? null) !== (scopeCwd?.trim() || null) || $reviewScopeTarget.get() !== target) {
+    // Already open but on another worktree's diff — re-home it. The scope
+    // subscription below clears the stale list and re-probes. Keep the
+    // originating composer target alongside the cwd for the agent-ship action.
+    $reviewScopeCwd.set(scopeCwd?.trim() || null)
+    $reviewScopeTarget.set(target)
+  }
+
+  if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
+    // The reveal pin is a toggle, so only fire it when the overlay isn't
+    // already slid in — otherwise "show me the diff" would hide the pane.
+    if (!wasOpen) {
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: REVIEW_PANE_ID } }))
+    }
+
+    return
+  }
+
+  revealTreePane(REVIEW_PANE_ID)
+}
+
+/** The changed file matching a tool-reported path (absolute or repo-relative). */
+function matchReviewFile(files: readonly HermesReviewFile[], path: string): HermesReviewFile | undefined {
+  const target = path.replace(/\\/g, '/').replace(/\/+$/, '')
+
+  if (!target) {
+    return undefined
+  }
+
+  return files.find(file => {
+    const candidate = file.path.replace(/\\/g, '/')
+
+    return candidate === target || target.endsWith(`/${candidate}`) || candidate.endsWith(`/${target}`)
+  })
+}
+
+/**
+ * Open the review pane on one file's diff. The path comes from a tool call, so
+ * it may be absolute while git reports repo-relative — match on the tail.
+ */
+export async function openReviewForPath(
+  path: string,
+  scopeCwd: null | string = null,
+  scopeTarget = 'main'
+): Promise<void> {
+  revealReview(scopeCwd, scopeTarget)
+  const cwd = repoCwd()
+  const refreshed = await refreshReview()
+
+  if (!refreshed || repoCwd() !== cwd) {
+    return
+  }
+
+  const file = matchReviewFile($reviewFiles.get(), path)
+
+  if (file) {
+    await selectReviewFile(file)
   }
 }
 
@@ -285,7 +497,7 @@ export function toggleReview(): void {
 // working tree changed). A failure is swallowed by the caller's notify wrapper.
 async function afterMutation(): Promise<void> {
   await refreshReview()
-  void refreshRepoStatus()
+  void refreshRepoStatus(repoCwd())
 
   const selected = $reviewSelectedPath.get()
   const file = selected ? $reviewFiles.get().find(f => f.path === selected) : null
@@ -297,16 +509,28 @@ async function afterMutation(): Promise<void> {
 }
 
 export async function stageReviewFile(path: null | string): Promise<void> {
+  if ($reviewScope.get() !== 'uncommitted') {
+    return
+  }
+
   await desktopGit()?.review?.stage(repoCwd() ?? '', path)
   await afterMutation()
 }
 
 export async function unstageReviewFile(path: null | string): Promise<void> {
+  if ($reviewScope.get() !== 'uncommitted') {
+    return
+  }
+
   await desktopGit()?.review?.unstage(repoCwd() ?? '', path)
   await afterMutation()
 }
 
 export async function revertReviewFile(path: null | string): Promise<void> {
+  if ($reviewScope.get() !== 'uncommitted') {
+    return
+  }
+
   await desktopGit()?.review?.revert(repoCwd() ?? '', path)
   await afterMutation()
 }
@@ -360,7 +584,7 @@ export async function commitChanges(message: string, opts: { push?: boolean } = 
   await runShip(async () => {
     await ctx.review.commit(ctx.cwd, message.trim(), Boolean(opts.push))
     await refreshReview()
-    void refreshRepoStatus()
+    void refreshRepoStatus(repoCwd())
     void refreshShipInfo()
   })
 }
@@ -450,6 +674,17 @@ export async function createOrOpenPr(): Promise<void> {
       void window.hermesDesktop?.openExternal?.(url)
     }
 
+    // The session recorded its branch when it started; the checkout may have
+    // moved since, so bind the conversation to the branch the PR actually came
+    // from — otherwise a session that began on trunk badges whatever else lives
+    // on trunk, or nothing.
+    const session = $sessions.get().find(s => s.id === $selectedStoredSessionId.get())
+    const branch = repoStatusForCwd(ctx.cwd).get()?.branch
+
+    if (session?.git_repo_root && branch) {
+      stampSessionPrBranch(session.id, session.git_repo_root, branch)
+    }
+
     void refreshShipInfo()
   })
 }
@@ -465,7 +700,8 @@ $workspaceChangeTick.subscribe(() => {
   }
 })
 
-// Turn settled: final list refresh + the slower gh/PR re-check.
+// Turn settled: final list refresh + the slower gh/PR re-check. `$busy` is the
+// ACTIVE session's flag, so this settle edge only fires for the foreground turn.
 let prevBusy = $busy.get()
 
 $busy.subscribe(busy => {
@@ -477,16 +713,70 @@ $busy.subscribe(busy => {
   prevBusy = busy
 })
 
-// The active session's cwd changed → the repo changed under the pane. Clear the
-// stale file list + selection up front so the pane drops straight to its loading
-// skeleton instead of blipping the previous repo's diff into the new one.
-$currentCwd.subscribe(() => {
+// Last-turn baseline capture: HEAD per repo cwd at the moment a turn started in
+// that repo. Driven off $sessionStates (every session — tiles and background
+// sessions included) rather than $busy, which only mirrors the foreground: a
+// pinned tile worktree or a background turn would otherwise inherit the wrong
+// (or no) baseline. Best-effort — a non-repo / remote backend resolves null and
+// lastTurn simply shows empty for that cwd.
+let prevBusyByRuntime: Record<string, boolean> = Object.fromEntries(
+  Object.entries($sessionStates.get()).map(([runtimeId, state]) => [runtimeId, state.busy])
+)
+
+$sessionStates.subscribe(states => {
+  const nextBusy: Record<string, boolean> = {}
+
+  for (const [runtimeId, state] of Object.entries(states)) {
+    nextBusy[runtimeId] = state.busy
+    const wasBusy = prevBusyByRuntime[runtimeId] ?? false
+
+    if (state.busy && !wasBusy) {
+      const cwd = state.cwd?.trim()
+
+      if (cwd) {
+        void desktopGit()
+          ?.review?.revParse(cwd, 'HEAD')
+          .then(sha => {
+            if (sha) {
+              recordTurnBase(cwd, sha)
+            }
+          })
+      }
+    }
+  }
+
+  prevBusyByRuntime = nextBusy
+})
+
+// The pane's repo moved under it. For the classic (unscoped) pane that's the
+// active session's cwd changing; for a scoped pane it's a re-home to another
+// tile's worktree — and a main-pane cwd change is deliberately IGNORED while
+// scoped, so switching sessions in main can't yank the diff you're reviewing.
+// Either way: clear the stale file list + selection up front so the pane drops
+// straight to its loading skeleton instead of blipping the previous repo's
+// diff into the new one.
+function onReviewRepoMoved(): void {
   if ($reviewOpen.get()) {
     clearReviewSelection()
     $reviewFiles.set([])
     $reviewLoading.set(true)
     scheduleReviewRefresh()
     void refreshShipInfo()
+  }
+}
+
+$currentCwd.subscribe(() => {
+  if (!$reviewScopeCwd.get()) {
+    onReviewRepoMoved()
+  }
+})
+
+let prevScopeCwd = $reviewScopeCwd.get()
+
+$reviewScopeCwd.subscribe(scope => {
+  if (scope !== prevScopeCwd) {
+    prevScopeCwd = scope
+    onReviewRepoMoved()
   }
 })
 

@@ -8,7 +8,7 @@ description: "将 Hermes Agent 设置为 Microsoft Teams 机器人"
 
 将 Hermes Agent 作为机器人接入 Microsoft Teams。与 Slack 的 Socket Mode 不同，Teams 通过调用**公开 HTTPS webhook**（钩子）来投递消息，因此你的实例需要一个可公开访问的端点——本地开发时使用开发隧道，生产环境使用真实域名。
 
-如果你需要的是来自 Microsoft Graph 事件的会议摘要，而非普通的机器人对话，请使用专用设置页面：[Teams 会议](/user-guide/messaging/teams-meetings)。
+如果你需要的是来自 Microsoft Graph 事件的会议摘要，而非普通的机器人对话，请使用专用设置页面：[Teams 会议](./teams-meetings.md)。
 
 ## 机器人的响应方式
 
@@ -46,7 +46,7 @@ Teams 无法向 `localhost` 投递消息。本地开发时，使用任意隧道�
 ```bash
 # devtunnel（Microsoft 官方）
 devtunnel create hermes-bot --allow-anonymous
-devtunnel port create hermes-bot -p 3978 --protocol https  # 如已修改 TEAMS_PORT，请替换 3978
+devtunnel port create hermes-bot -p 3978 --protocol http  # 如已修改 TEAMS_PORT，请替换 3978
 devtunnel host hermes-bot
 
 # ngrok
@@ -57,6 +57,8 @@ cloudflared tunnel --url http://localhost:3978  # 如已修改 TEAMS_PORT，请�
 ```
 
 从输出中复制 `https://` URL——下一步会用到。开发期间保持隧道运行。
+
+公开隧道 URL 使用 HTTPS，但 Hermes 的本地 webhook 监听器使用纯 HTTP。隧道会终止 TLS，并将 HTTP 转发到 `3978` 端口；不要将本地隧道端口配置为 HTTPS。
 
 生产环境请将机器人端点指向服务器的公开域名（参见[生产部署](#production-deployment)）。
 
@@ -168,7 +170,7 @@ platforms:
 
 ### 会议摘要投递（Teams 会议 Pipeline）
 
-当 [Teams 会议 pipeline 插件](/user-guide/messaging/msgraph-webhook)启用后，此适配器同时负责会议摘要的出站投递——一个 Teams 集成面，而非两个。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
+当 [Teams 会议 pipeline 插件](./msgraph-webhook.md)启用后，此适配器同时负责会议摘要的出站投递——一个 Teams 集成面，而非两个。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
 
 Pipeline 摘要投递在 `teams` 平台条目下与机器人配置并列配置：
 
@@ -193,7 +195,7 @@ platforms:
 | 模式 | 适用场景 | 权衡 |
 |------|----------|------|
 | `incoming_webhook` | 使用 Teams 生成的静态 URL，简单地将摘要发布到某个频道。 | 不支持回复线程和表情回应，显示为 webhook 配置的身份。 |
-| `graph` | 通过 Microsoft Graph 以机器人身份发布带线程的频道帖子或 1:1/群聊消息。 | 需要完成 [Graph 应用注册](/guides/microsoft-graph-app-registration)，并具备 `ChannelMessage.Send`（频道）或 `Chat.ReadWrite.All`（聊天）应用权限。 |
+| `graph` | 通过 Microsoft Graph 以机器人身份发布带线程的频道帖子或 1:1/群聊消息。 | 需要完成 [Graph 应用注册](../../guides/microsoft-graph-app-registration.md)，并具备 `ChannelMessage.Send`（频道）或 `Chat.ReadWrite.All`（聊天）应用权限。 |
 
 如果 `teams_pipeline` 插件**未启用**，这些设置不会生效——它们仅在 pipeline 运行时绑定到 Graph webhook 入口时才会激活。
 
@@ -201,7 +203,7 @@ platforms:
 
 ## 生产部署
 
-对于永久服务器，跳过 devtunnel，使用服务器的公开 HTTPS 端点注册机器人：
+对于永久服务器，请在反向代理处终止 TLS，并将请求转发到 Hermes 的纯 HTTP 监听器，通常为 `http://127.0.0.1:3978`。使用该代理的公开 HTTPS 端点注册机器人：
 
 ```bash
 teams app create \
@@ -215,7 +217,7 @@ teams app create \
 teams app update --id <teamsAppId> --endpoint "https://your-domain.com/api/messages"
 ```
 
-确保你配置的端口（`TEAMS_PORT`，默认 `3978`）可从互联网访问，且 TLS 证书有效——Teams 会拒绝自签名证书。
+确保公开 HTTPS 端点可从互联网访问并使用有效的 TLS 证书。Teams 会拒绝自签名证书。请将 Hermes 监听器置于代理后方；`3978` 端口本身不提供 HTTPS。
 
 ---
 
@@ -224,6 +226,7 @@ teams app update --id <teamsAppId> --endpoint "https://your-domain.com/api/messa
 | 问题 | 解决方案 |
 |------|----------|
 | `health` 端点正常但机器人不响应 | 检查隧道是否仍在运行，以及机器人的消息端点是否与隧道 URL 匹配 |
+| Teams 发送消息时日志显示 `"UNKNOWN / HTTP/1.0" 400` | 隧道或反向代理正在将 HTTPS 转发到 Hermes 的纯 HTTP 监听器。请在代理处终止 TLS，并将 HTTP 转发到 `3978` 端口 |
 | 日志中出现 `KeyError: 'teams'` | 重启容器——此问题已在当前版本中修复 |
 | 机器人响应时出现认证错误 | 验证 `TEAMS_CLIENT_ID`、`TEAMS_CLIENT_SECRET` 和 `TEAMS_TENANT_ID` 是否均已正确设置 |
 | `No inference provider configured` | 检查 `~/.hermes/.env` 中是否设置了 `ANTHROPIC_API_KEY`（或其他提供商密钥） |
@@ -248,5 +251,5 @@ teams app update --id <teamsAppId> --endpoint "https://your-domain.com/api/messa
 
 ## 相关文档
 
-- [Teams 会议](/user-guide/messaging/teams-meetings)
-- [运营 Teams 会议 Pipeline](/guides/operate-teams-meeting-pipeline)
+- [Teams 会议](./teams-meetings.md)
+- [运营 Teams 会议 Pipeline](../../guides/operate-teams-meeting-pipeline.md)

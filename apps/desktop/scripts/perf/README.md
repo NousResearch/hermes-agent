@@ -19,9 +19,35 @@ npm run perf                  # attaches, runs the CI suite, gates on baseline
 # One scenario, with a CPU profile:
 npm run perf -- stream --cpuprofile --tokens 800
 
+# Representative PRODUCTION numbers (minified React, not the ~3x-slower dev build):
+npm run perf -- cold-start stream keystroke transcript --spawn --prod
+
 # Re-capture the baseline on your reference device, then commit baseline.json:
-npm run perf -- --update-baseline
+npm run perf -- cold-start stream keystroke transcript --spawn --prod --update-baseline
 ```
+
+## Profiling an existing workspace
+
+```bash
+node scripts/perf/run.mjs live-window --seconds 15 --json ~/.hermes/cache/scratch/live-window.json
+# Attribution is a separate pass, not an FPS comparison:
+node scripts/perf/run.mjs live-window --seconds 10 --cpuprofile ~/.hermes/cache/scratch
+```
+
+`live-window` never opens/closes tabs, seeds messages, moves focus, or forces GC.
+It records frame intervals, long tasks, visible/mounted transcript counts, and
+heap/DOM counters. Keep the same panes and workload for before/after captures.
+Record restarts, HMR, and code updates separately: a fresh renderer is not a
+valid after measurement for a long-running renderer. Heap counters alone do not
+prove a leak. Heavy render/atom counters must be stopped before timing.
+
+## Dev vs prod
+
+By default the harness measures the **dev** renderer (fast to spin up, good for
+relative regression checks). Pass `--prod` (with `--spawn`) to build a
+production renderer *with the probe included* (`VITE_PERF_PROBE=1`) and measure
+minified React — the representative shipped numbers. The committed baseline is
+captured with `--prod`.
 
 ## Why isolation matters
 
@@ -40,13 +66,20 @@ directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 | `stream --real` | backend | same, from a real LLM stream | measure-real-stream, profile-real-stream |
 | `keystroke` | ci | composer keystroke → paint latency | measure-latency, profile-typing, leak-typing |
 | `transcript` | ci | large-transcript mount + paint cost | (new) |
+| `render-churn` | ci | per-component render attribution + store churn while N tabs stream | (new) |
+| `idle-cost` | report | busy-but-silent tiles: idle commit rate, + fps while resizing / typing | (new) |
+| `right-pane` | report | file tree + persistent xterm tabs under chat/terminal output and split dragging | (new) |
+| `cold-start` | cold | launch → CDP → driver → first paint (fresh spawn/run) | (new) |
+| `first-token` | backend | Enter → first assistant token painted (TTFT) | (new) |
 | `submit` | backend | Enter → cleared → user msg painted, scroll jump | measure-submit, measure-jump |
 | `session-switch` | backend | route → first-paint → settle | profile-session-switch |
+| `session-load` | backend | how far a session's transcript moves after first paint | (new) |
 | `profile-switch` | backend | rail click → sidebar settled | measure-profile-switch |
 
-`ci` scenarios need no backend/credits and are gated against `baseline.json`.
-`backend` scenarios need a live backend (and `--spawn` or a real session) and
-are report-only.
+`ci` + `cold` scenarios need no backend/credits and are gated against
+`baseline.json` (`cold-start` requires `--spawn` since it measures a fresh
+launch, and must be run in its own invocation). `backend` scenarios need a live
+backend (and `--spawn` or a real session/credits) and are report-only.
 
 CPU profiling is a cross-cutting `--cpuprofile` flag on any scenario (it wraps
 the run in `Profiler.start/stop` and prints a top-self-time table), replacing

@@ -17,17 +17,30 @@ export function TreeNode({
   parentAxis,
   railSide,
   root,
-  rootRow
+  rootRow,
+  topEdge = false,
+  leftEdge = false,
+  rightEdge = false
 }: {
   node: LayoutNode
   parentAxis?: 'column' | 'row'
   railSide?: 'left' | 'right'
   root?: boolean
   rootRow?: boolean
+  topEdge?: boolean
+  leftEdge?: boolean
+  rightEdge?: boolean
 }) {
   return node.type === 'split' ? (
-    <TreeSplit node={node} root={root} rootRow={rootRow} />
+    <TreeSplit leftEdge={leftEdge} node={node} rightEdge={rightEdge} root={root} rootRow={rootRow} topEdge={topEdge} />
   ) : (
-    <TreeGroup node={node} parentAxis={parentAxis} railSide={railSide} />
+    <TreeGroup
+      leftEdge={leftEdge}
+      node={node}
+      parentAxis={parentAxis}
+      railSide={railSide}
+      rightEdge={rightEdge}
+      topEdge={topEdge}
+    />
   )
 }

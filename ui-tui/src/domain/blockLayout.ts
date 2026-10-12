@@ -17,7 +17,7 @@ import { sectionMode } from './details.js'
  *   slash  — slash-command echoes (owns its margin)
  *   intro  — banner / panels (rendered out-of-band, never gapped here)
  */
-export type BlockGroup = 'diff' | 'intro' | 'model' | 'note' | 'slash' | 'trail' | 'user'
+export type BlockGroup = 'diff' | 'event' | 'intro' | 'model' | 'note' | 'slash' | 'trail' | 'user'
 
 export const messageGroup = (msg: Pick<Msg, 'kind' | 'role'>): BlockGroup => {
   switch (msg.kind) {
@@ -28,6 +28,9 @@ export const messageGroup = (msg: Pick<Msg, 'kind' | 'role'>): BlockGroup => {
 
     case 'slash':
       return 'slash'
+
+    case 'event':
+      return 'event'
 
     case 'diff':
       return 'diff'
@@ -51,12 +54,12 @@ export const messageGroup = (msg: Pick<Msg, 'kind' | 'role'>): BlockGroup => {
 // slash, the top+bottom margins for diff) or that are painted out-of-band
 // (intro). The grouping primitive only spaces the model working area —
 // model prose, reasoning/tool trails, and notes/errors.
-const SELF_SPACED: ReadonlySet<BlockGroup> = new Set(['diff', 'intro', 'slash', 'user'])
+const SELF_SPACED: ReadonlySet<BlockGroup> = new Set(['diff', 'event', 'intro', 'slash', 'user'])
 
 // Groups that already paint a trailing blank line beneath themselves
 // (marginBottom in MessageLine), so the block that follows must not add its
 // own leading gap or the single boundary would become a double gap.
-const PAINTS_TRAILING_GAP: ReadonlySet<BlockGroup> = new Set(['diff', 'user'])
+const PAINTS_TRAILING_GAP: ReadonlySet<BlockGroup> = new Set(['diff', 'event', 'user'])
 
 /**
  * Whether `cur` renders one blank line above it, given the block rendered

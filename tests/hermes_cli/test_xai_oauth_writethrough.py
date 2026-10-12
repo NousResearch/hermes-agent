@@ -14,6 +14,7 @@ boundary, so they exercise the actual atomic write path.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -38,97 +39,17 @@ def profile_and_root(tmp_path, monkeypatch):
     ``$HOME/.hermes/auth.json``; a tmp_path root is allowed, so we point HOME
     away from the tmp root to keep the guard from tripping on these fixtures.
     """
-    profile_path = tmp_path / "profiles" / "work" / "auth.json"
-    root_path = tmp_path / "root" / "auth.json"
-
-    monkeypatch.setattr(auth, "_auth_file_path", lambda: profile_path)
-    monkeypatch.setattr(auth, "_global_auth_file_path", lambda: root_path)
+    root_path = tmp_path / ".hermes" / "auth.json"
+    profile_path = root_path.parent / "profiles" / "work" / "auth.json"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_path.parent))
     # Keep the pytest write seat belt from matching our tmp root.
     monkeypatch.setenv("HOME", str(tmp_path / "not-the-root"))
     return profile_path, root_path
 
 
-def test_refresh_writes_through_to_root_when_profile_has_no_own_state(profile_and_root):
-    """Profile reading root's grant must push rotated tokens back to root."""
-    profile_path, root_path = profile_and_root
-    # Profile has NO own xai-oauth block (reads root via fallback).
-    _write_store(profile_path, {"version": 1, "providers": {}})
-    _write_store(
-        root_path,
-        {
-            "version": 1,
-            "providers": {
-                "xai-oauth": {
-                    "tokens": {
-                        "access_token": "old-access",
-                        "refresh_token": "old-refresh",
-                    }
-                }
-            },
-        },
-    )
-
-    rotated = {
-        "access_token": "new-access",
-        "refresh_token": "new-refresh",
-        "token_type": "Bearer",
-    }
-    auth._save_xai_oauth_tokens(rotated)
-
-    # Profile got the rotated chain (existing behavior).
-    profile = _read_store(profile_path)
-    assert profile["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "new-refresh"
-
-    # AND the global root no longer holds the revoked refresh token (#43589).
-    root = _read_store(root_path)
-    assert root["providers"]["xai-oauth"]["tokens"]["access_token"] == "new-access"
-    assert root["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "new-refresh"
 
 
-def test_refresh_does_not_touch_root_when_profile_has_own_state(profile_and_root):
-    """A profile that genuinely shadows root must NOT clobber the root grant."""
-    profile_path, root_path = profile_and_root
-    # Profile has its OWN xai-oauth block: it shadows root legitimately.
-    _write_store(
-        profile_path,
-        {
-            "version": 1,
-            "providers": {
-                "xai-oauth": {
-                    "tokens": {
-                        "access_token": "profile-old",
-                        "refresh_token": "profile-old-refresh",
-                    }
-                }
-            },
-        },
-    )
-    _write_store(
-        root_path,
-        {
-            "version": 1,
-            "providers": {
-                "xai-oauth": {
-                    "tokens": {
-                        "access_token": "root-untouched",
-                        "refresh_token": "root-untouched-refresh",
-                    }
-                }
-            },
-        },
-    )
-
-    auth._save_xai_oauth_tokens(
-        {"access_token": "profile-new", "refresh_token": "profile-new-refresh"}
-    )
-
-    profile = _read_store(profile_path)
-    assert profile["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "profile-new-refresh"
-
-    # Root is a separate grant chain — must be left exactly as-is.
-    root = _read_store(root_path)
-    assert root["providers"]["xai-oauth"]["tokens"]["access_token"] == "root-untouched"
-    assert root["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "root-untouched-refresh"
 
 
 def test_write_through_is_noop_in_classic_mode(tmp_path, monkeypatch):

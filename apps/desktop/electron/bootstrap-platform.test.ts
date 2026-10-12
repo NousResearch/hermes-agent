@@ -3,10 +3,10 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
-  bundledRuntimeImportCheck,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
-  isWslEnvironment
+  isWslEnvironment,
+  resolveLinuxPasswordStore
 } from './bootstrap-platform'
 
 test('isWslEnvironment detects WSL2 env vars on linux', () => {
@@ -24,12 +24,6 @@ test('isWindowsBinaryPathInWsl blocks Windows binary types on WSL', () => {
   assert.equal(isWindowsBinaryPathInWsl('/mnt/c/Tools/install.ps1', { isWsl: true }), true)
   assert.equal(isWindowsBinaryPathInWsl('/usr/local/bin/hermes', { isWsl: true }), false)
   assert.equal(isWindowsBinaryPathInWsl('/mnt/c/Tools/hermes.exe', { isWsl: false }), false)
-})
-
-test('bundledRuntimeImportCheck selects platform-specific import checks', () => {
-  assert.equal(bundledRuntimeImportCheck('win32'), 'import fastapi, uvicorn, winpty')
-  assert.equal(bundledRuntimeImportCheck('darwin'), 'import fastapi, uvicorn, ptyprocess')
-  assert.equal(bundledRuntimeImportCheck('linux'), 'import fastapi, uvicorn, ptyprocess')
 })
 
 test('detectRemoteDisplay keeps GPU on for local sessions', () => {
@@ -83,4 +77,42 @@ test('detectRemoteDisplay honors the HERMES_DESKTOP_DISABLE_GPU override both wa
     }),
     null
   )
+})
+
+test('resolveLinuxPasswordStore applies known backends on linux', () => {
+  for (const store of ['gnome-libsecret', 'kwallet', 'kwallet5', 'kwallet6', 'basic']) {
+    assert.deepEqual(resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: store }, platform: 'linux' }), {
+      store,
+      warning: null
+    })
+  }
+})
+
+test('resolveLinuxPasswordStore is a no-op when the env var is unset', () => {
+  assert.deepEqual(resolveLinuxPasswordStore({ env: {}, platform: 'linux' }), { store: null, warning: null })
+  assert.deepEqual(resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: '  ' }, platform: 'linux' }), {
+    store: null,
+    warning: null
+  })
+})
+
+test('resolveLinuxPasswordStore ignores the env var off linux', () => {
+  assert.deepEqual(
+    resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: 'gnome-libsecret' }, platform: 'darwin' }),
+    { store: null, warning: null }
+  )
+  assert.deepEqual(
+    resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: 'kwallet6' }, platform: 'win32' }),
+    { store: null, warning: null }
+  )
+})
+
+test('resolveLinuxPasswordStore warns on unknown values instead of applying them', () => {
+  const result = resolveLinuxPasswordStore({
+    env: { HERMES_DESKTOP_PASSWORD_STORE: 'keychain-of-wonders' },
+    platform: 'linux'
+  })
+
+  assert.equal(result.store, null)
+  assert.match(String(result.warning), /keychain-of-wonders/)
 })

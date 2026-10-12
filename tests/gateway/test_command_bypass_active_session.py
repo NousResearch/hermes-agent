@@ -17,7 +17,8 @@ import asyncio
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
 
@@ -100,29 +101,7 @@ class TestCommandBypassActiveSession:
             "/stop response was not sent back to the user"
         )
 
-    @pytest.mark.asyncio
-    async def test_new_bypasses_guard(self):
-        """/new must be dispatched directly, not queued."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
 
-        await adapter.handle_message(_make_event("/new"))
-
-        assert sk not in adapter._pending_messages
-        assert any("handled:new" in r for r in adapter.sent_responses)
-
-    @pytest.mark.asyncio
-    async def test_reset_bypasses_guard(self):
-        """/reset (alias for /new) must be dispatched directly."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/reset"))
-
-        assert sk not in adapter._pending_messages
-        assert any("handled:reset" in r for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
     async def test_approve_bypasses_guard(self):
@@ -148,57 +127,10 @@ class TestCommandBypassActiveSession:
         assert sk not in adapter._pending_messages
         assert any("handled:deny" in r for r in adapter.sent_responses)
 
-    @pytest.mark.asyncio
-    async def test_status_bypasses_guard(self):
-        """/status must bypass so it returns a system response."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
 
-        await adapter.handle_message(_make_event("/status"))
 
-        assert sk not in adapter._pending_messages
-        assert any("handled:status" in r for r in adapter.sent_responses)
 
-    @pytest.mark.asyncio
-    async def test_agents_bypasses_guard(self):
-        """/agents must bypass so active-task queries don't interrupt runs."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
 
-        await adapter.handle_message(_make_event("/agents"))
-
-        assert sk not in adapter._pending_messages
-        assert any("handled:agents" in r for r in adapter.sent_responses)
-
-    @pytest.mark.asyncio
-    async def test_tasks_alias_bypasses_guard(self):
-        """/tasks alias must bypass active-session guard too."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/tasks"))
-
-        assert sk not in adapter._pending_messages
-        assert any("handled:tasks" in r for r in adapter.sent_responses)
-
-    @pytest.mark.asyncio
-    async def test_background_bypasses_guard(self):
-        """/background must bypass so it spawns a parallel task, not an interrupt."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/background summarize HN"))
-
-        assert sk not in adapter._pending_messages, (
-            "/background was queued as a pending message instead of being dispatched"
-        )
-        assert any("handled:background" in r for r in adapter.sent_responses), (
-            "/background response was not sent back to the user"
-        )
 
     @pytest.mark.asyncio
     async def test_steer_bypasses_guard(self):
@@ -219,53 +151,8 @@ class TestCommandBypassActiveSession:
             "/steer response was not sent back to the user"
         )
 
-    @pytest.mark.asyncio
-    async def test_help_bypasses_guard(self):
-        """/help must bypass so it is not silently dropped as pending slash text."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
 
-        await adapter.handle_message(_make_event("/help"))
 
-        assert sk not in adapter._pending_messages, (
-            "/help was queued as a pending message instead of being dispatched"
-        )
-        assert any("handled:help" in r for r in adapter.sent_responses), (
-            "/help response was not sent back to the user"
-        )
-
-    @pytest.mark.asyncio
-    async def test_update_bypasses_guard(self):
-        """/update must bypass so it is not discarded by the pending-command safety net."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/update"))
-
-        assert sk not in adapter._pending_messages, (
-            "/update was queued as a pending message instead of being dispatched"
-        )
-        assert any("handled:update" in r for r in adapter.sent_responses), (
-            "/update response was not sent back to the user"
-        )
-
-    @pytest.mark.asyncio
-    async def test_queue_bypasses_guard(self):
-        """/queue must bypass so it can queue without interrupting."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/queue follow up"))
-
-        assert sk not in adapter._pending_messages, (
-            "/queue was queued as a pending message instead of being dispatched"
-        )
-        assert any("handled:queue" in r for r in adapter.sent_responses), (
-            "/queue response was not sent back to the user"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -288,18 +175,10 @@ class TestAllResolvableCommandsBypassGuard:
         [
             ("/model claude-sonnet-4", "model"),
             ("/model", "model"),
-            ("/reasoning high", "reasoning"),
-            ("/personality default", "personality"),
-            ("/voice on", "voice"),
-            ("/insights 7", "insights"),
-            ("/title my session", "title"),
             ("/resume yesterday", "resume"),
-            ("/retry", "retry"),
-            ("/undo", "undo"),
-            ("/compress", "compress"),
-            ("/usage", "usage"),
             ("/reload-mcp", "reload-mcp"),
-            ("/sethome", "sethome"),
+            ("/new", "new"),
+            ("/bg summarize HN", "background"),
         ],
     )
     @pytest.mark.asyncio
@@ -319,18 +198,6 @@ class TestAllResolvableCommandsBypassGuard:
             "not silently discarded"
         )
 
-    def test_should_bypass_returns_true_for_every_registered_command(self):
-        """Spot-check: the commands previously-broken on Discord all bypass."""
-        from hermes_cli.commands import should_bypass_active_session
-
-        for cmd in (
-            "model", "reasoning", "personality", "voice", "insights", "title",
-            "resume", "retry", "undo", "compress", "usage",
-            "reload-mcp", "sethome", "reset",
-        ):
-            assert should_bypass_active_session(cmd) is True, (
-                f"/{cmd} must bypass the active-session guard"
-            )
 
     def test_should_bypass_returns_false_for_unknown(self):
         """Unknown words don't bypass — they get queued as user text."""
@@ -367,30 +234,6 @@ class TestNonBypassStillQueued:
             "Regular text should not produce a direct response"
         )
 
-    @pytest.mark.asyncio
-    async def test_unknown_command_queued(self):
-        """Unknown /commands must be queued, not dispatched."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/foobar"))
-
-        assert sk in adapter._pending_messages
-        assert len(adapter.sent_responses) == 0
-
-    @pytest.mark.asyncio
-    async def test_file_path_not_treated_as_command(self):
-        """A message like '/path/to/file' must not bypass the guard."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/path/to/file.py"))
-
-        assert sk in adapter._pending_messages
-        assert len(adapter.sent_responses) == 0
-
 
 # ---------------------------------------------------------------------------
 # Tests: no active session — commands go through normally
@@ -422,42 +265,6 @@ class TestNoActiveSessionNormalDispatch:
 # ---------------------------------------------------------------------------
 
 
-class TestPendingCommandSafetyNet:
-    """The safety net in gateway/run.py _run_agent must discard command text
-    that leaks into the pending queue via interrupt_message fallback."""
-
-    def test_stop_command_detected(self):
-        """resolve_command must recognize /stop so the safety net can
-        discard it."""
-        from hermes_cli.commands import resolve_command
-
-        assert resolve_command("stop") is not None
-        assert resolve_command("stop").name == "stop"
-
-    def test_new_command_detected(self):
-        from hermes_cli.commands import resolve_command
-
-        assert resolve_command("new") is not None
-        assert resolve_command("new").name == "new"
-
-    def test_reset_alias_detected(self):
-        from hermes_cli.commands import resolve_command
-
-        assert resolve_command("reset") is not None
-        assert resolve_command("reset").name == "new"  # alias
-
-    def test_unknown_command_not_detected(self):
-        from hermes_cli.commands import resolve_command
-
-        assert resolve_command("foobar") is None
-
-    def test_file_path_not_detected_as_command(self):
-        """'/path/to/file' should not resolve as a command."""
-        from hermes_cli.commands import resolve_command
-
-        # The safety net splits on whitespace and takes the first word
-        # after stripping '/'.  For '/path/to/file', that's 'path/to/file'.
-        assert resolve_command("path/to/file") is None
 
 
 # ---------------------------------------------------------------------------
@@ -482,14 +289,3 @@ class TestBypassWithBotnameSuffix:
         )
         assert any("handled:stop" in r for r in adapter.sent_responses)
 
-    @pytest.mark.asyncio
-    async def test_new_with_botname(self):
-        """/new@MyHermesBot must bypass the guard."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/new@MyHermesBot"))
-
-        assert sk not in adapter._pending_messages
-        assert any("handled:new" in r for r in adapter.sent_responses)

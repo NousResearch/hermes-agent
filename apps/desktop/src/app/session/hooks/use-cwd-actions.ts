@@ -7,23 +7,18 @@ import {
   $newChatWorkspaceTargetGeneration,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentCwdExplicit,
   setNewChatWorkspaceTarget
 } from '@/store/session'
 import type { SessionRuntimeInfo } from '@/types/hermes'
 
 interface CwdActionsOptions {
-  activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
   onSessionRuntimeInfo?: (info: Pick<SessionRuntimeInfo, 'branch' | 'cwd'>) => void
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-export function useCwdActions({
-  activeSessionId,
-  activeSessionIdRef,
-  onSessionRuntimeInfo,
-  requestGateway
-}: CwdActionsOptions) {
+export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, requestGateway }: CwdActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
 
@@ -59,8 +54,17 @@ export function useCwdActions({
         return
       }
 
-      if (!activeSessionId) {
+      // Ref, not the closure-captured prop: this hook's consumers are memoized
+      // on a stable actions object, so the prop can still name the previously
+      // focused chat. Re-anchoring the wrong session's workspace would point
+      // that agent's terminal/file tools at another conversation's project.
+      const sessionId = activeSessionIdRef.current
+
+      if (!sessionId) {
         setCurrentCwd(trimmed)
+        // A folder chosen here is a deliberate workspace pick (#52589) — the
+        // gateway must let it beat a named profile's configured terminal.cwd.
+        setCurrentCwdExplicit(true)
         const workspaceGeneration = setNewChatWorkspaceTarget(trimmed)
 
         try {
@@ -92,7 +96,7 @@ export function useCwdActions({
 
       try {
         const info = await requestGateway<SessionRuntimeInfo>('session.cwd.set', {
-          session_id: activeSessionId,
+          session_id: sessionId,
           cwd: trimmed
         })
 
@@ -117,7 +121,7 @@ export function useCwdActions({
         })
       }
     },
-    [activeSessionId, activeSessionIdRef, copy, onSessionRuntimeInfo, requestGateway]
+    [activeSessionIdRef, copy, onSessionRuntimeInfo, requestGateway]
   )
 
   return { changeSessionCwd, refreshProjectBranch }

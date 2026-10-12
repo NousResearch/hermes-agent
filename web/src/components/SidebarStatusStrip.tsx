@@ -1,7 +1,8 @@
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import type { StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 /** Gateway + session summary for the System sidebar block (no separate strip chrome). */
 export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
@@ -57,8 +58,19 @@ export function gatewayLine(
     running: { label: g.running, tone: "text-success" },
     starting: { label: g.starting, tone: "text-warning" },
     startup_failed: { label: g.failed, tone: "text-destructive" },
+    // Live: some channels offline. Retained on a dead PID: a watchdog hard-exited a wedged
+    // process (gateway_exit_reason names it) — same verdict `hermes gateway status` prints.
+    degraded: {
+      label: g.degraded ?? en.app.gatewayStrip.degraded!,
+      tone: status.gateway_running ? "text-warning" : "text-destructive",
+    },
     stopped: { label: g.stopped, tone: "text-muted-foreground" },
   };
+  // Alive but housekeeping stopped stamping the heartbeat: 'Running' would be the lie the
+  // reporter saw (loop/housekeeping wedged while gateway_state.json still said running).
+  if (status.gateway_heartbeat_stale_s != null) {
+    return { label: g.heartbeatStale ?? en.app.gatewayStrip.heartbeatStale!, tone: "text-destructive" };
+  }
   if (status.gateway_state && byState[status.gateway_state]) {
     return byState[status.gateway_state];
   }

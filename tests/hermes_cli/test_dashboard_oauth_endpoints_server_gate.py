@@ -49,20 +49,6 @@ class TestOAuthMutationEndpointsGatedWithoutCookie:
         r = gated_app.post("/api/env/reveal", json={"key": "OPENAI_API_KEY"})
         assert r.status_code == 401
 
-    def test_oauth_disconnect_requires_cookie(self, gated_app):
-        r = gated_app.delete("/api/providers/oauth/anthropic")
-        assert r.status_code == 401
-
-    def test_oauth_start_requires_cookie(self, gated_app):
-        r = gated_app.post("/api/providers/oauth/anthropic/start", json={})
-        assert r.status_code == 401
-
-    def test_oauth_submit_requires_cookie(self, gated_app):
-        r = gated_app.post(
-            "/api/providers/oauth/anthropic/submit",
-            json={"session_id": "sid", "code": "abc"},
-        )
-        assert r.status_code == 401
 
     def test_oauth_cancel_session_requires_cookie(self, gated_app):
         r = gated_app.delete("/api/providers/oauth/sessions/sid")

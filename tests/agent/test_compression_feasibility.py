@@ -361,6 +361,24 @@ def test_warns_when_no_auxiliary_provider(mock_get_client):
     assert agent._compression_warning is not None
 
 
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_resolves_compression_route_with_live_runtime(mock_get_client):
+    """The warning's provider label must come from the same runtime-aware resolution as the
+    client on the next line — otherwise `auxiliary.compression.local_override` reports the base
+    provider while the override route is actually in use."""
+    agent = _make_agent()
+    mock_get_client.return_value = (None, None)
+
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("openrouter", "@preset/summarizer", None, None, None),
+    ) as mock_resolve:
+        agent._check_compression_model_feasibility()
+
+    mock_resolve.assert_called_once_with(
+        "compression", main_runtime=agent._current_main_runtime())
+
+
 def test_no_unavailable_warning_when_configured_fallback_chain_resolves():
     """Primary compression provider can be down if configured fallback works."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)

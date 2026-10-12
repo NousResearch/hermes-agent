@@ -1251,9 +1251,9 @@ agent:
   # Max app-level retry attempts for API errors (connection drops, provider
   # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
   # to 1 if you use fallback providers and want fast failover on flaky
-  # primaries (default 3). The OpenAI SDK does its own low-level retries
+  # primaries (default 8). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
-  # api_max_retries: 3
+  # api_max_retries: 8
 
   # Once api_max_retries AND the fallback chain are spent on a transient outage
   # (5xx, overloaded/529, connect/read timeouts) and nothing has been delivered

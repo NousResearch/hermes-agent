@@ -50,16 +50,35 @@ import {
   loadBotSections,
   moveBotsToSection,
   renameBotSection,
+  resetBotSectionDeletes,
   UNASSIGNED_SECTION_KEY
 } from './user-sections'
 
 const bot = (name: string) => ({ name }) as RosterRow
 const row = (name: string) => ({ bot: bot(name), kind: 'bot' as const })
 
+/** The next saveBotMeta applies locally at once (as the real one does) but
+ *  its server half stays in flight until the returned release is called. */
+function holdNextSave(): () => void {
+  let release = () => {}
+  const gate = new Promise<void>(resolve => (release = resolve))
+  const apply = saveBotMeta.getMockImplementation()!
+
+  saveBotMeta.mockImplementationOnce(async (owner, patch) => {
+    const result = await apply(owner, patch)
+    await gate
+
+    return result
+  })
+
+  return () => release()
+}
+
 beforeEach(() => {
   storage.clear()
   $botMeta.set({})
   $botSections.set([])
+  resetBotSectionDeletes()
   saveBotMeta.mockClear()
 })
 
@@ -122,6 +141,73 @@ describe('user sections', () => {
     undo()
     expect($botSections.get().map(s => s.name)).toEqual(['Clients', 'Team'])
     await vi.waitFor(() => expect($botMeta.get().nanox?.sectionId).toBe(section.id))
+  })
+
+  it('a delete still clearing its members does not bring the section back from a member not cleared yet', async () => {
+    const section = createBotSection('Clients', [bot('nanox'), bot('scout')])!
+    await vi.waitFor(() => expect($botMeta.get().scout?.sectionId).toBe(section.id))
+    const roster = [bot('nanox'), bot('scout')]
+    const release = holdNextSave()
+
+    // nanox's clear is stuck on a slow profile write, so scout still carries
+    // the section's id + name while the roster re-derives.
+    deleteBotSection(section.id, roster)
+    adoptBotSectionsFromMeta(roster, $botMeta.get())
+    expect($botSections.get()).toEqual([])
+
+    release()
+    await vi.waitFor(() => expect($botMeta.get().scout?.sectionId).toBeNull())
+  })
+
+  it('a section deleted while a rename is still re-stamping its members does not get them refiled', async () => {
+    const section = createBotSection('Clients', [bot('nanox'), bot('scout')])!
+    await vi.waitFor(() => expect($botMeta.get().scout?.sectionId).toBe(section.id))
+    const roster = [bot('nanox'), bot('scout')]
+    const release = holdNextSave()
+
+    renameBotSection(section.id, 'Customers', roster)
+    deleteBotSection(section.id, roster)
+    release()
+
+    await vi.waitFor(() => expect($botMeta.get().scout?.sectionId).toBeNull())
+    await vi.waitFor(() => expect($botMeta.get().nanox?.sectionId).toBeNull())
+    // Let the rename's loop finish walking: it must not refile anyone.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(Object.values($botMeta.get()).map(meta => meta.sectionId)).toEqual([null, null])
+    expect($botSections.get()).toEqual([])
+  })
+
+  it('the shield on a deleted section lasts exactly until its latest delete finishes clearing members', async () => {
+    const section = createBotSection('Clients', [bot('nanox')])!
+    await vi.waitFor(() => expect($botMeta.get().nanox?.sectionId).toBe(section.id))
+    const roster = [bot('nanox')]
+
+    // Another desktop that still has "Clients" files scout into it.
+    const adoptWithScout = () =>
+      adoptBotSectionsFromMeta([bot('nanox'), bot('scout')], {
+        ...$botMeta.get(),
+        scout: { sectionId: section.id, sectionName: 'Clients' }
+      })
+
+    const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+    // Delete, Undo, delete again: the first delete's clear finishing must not
+    // lift the shield while the second delete is still clearing.
+    const releaseFirst = holdNextSave()
+    deleteBotSection(section.id, roster).undo()
+    const releaseSecond = holdNextSave()
+    deleteBotSection(section.id, roster)
+    releaseFirst()
+    await flush()
+    adoptWithScout()
+    expect($botSections.get()).toEqual([])
+
+    // Once the clear is done, a member carrying the id was filed there again
+    // elsewhere, and the section is adopted like any other desktop's.
+    releaseSecond()
+    await flush()
+    adoptWithScout()
+    expect($botSections.get()).toEqual([{ id: section.id, name: 'Clients' }])
   })
 
   it('a second desktop rebuilds sections it never created from the id + name on each member', () => {

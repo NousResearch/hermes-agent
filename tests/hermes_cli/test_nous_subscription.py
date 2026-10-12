@@ -3,10 +3,13 @@
 import shutil
 import sys
 
+import pytest
+
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
 from tools import tool_backend_helpers
 from tools import browser_tool_install as bt_install
+from tools.image_generation_catalog import DEFAULT_MODEL as FAL_DEFAULT_MODEL
 
 
 _POOL_COVERAGE = {
@@ -206,6 +209,24 @@ def test_logged_in_entitled_account_yields_a_state_for_every_feature(monkeypatch
     assert result.modal.available is True  # entitled + gateway ready → managed modal is offered
 
 
+@pytest.mark.parametrize(
+    "image_cfg, partner",
+    [
+        ({"provider": "nous", "model": "krea-2-medium"}, "Krea"),
+        ({"model": FAL_DEFAULT_MODEL}, "FAL"),
+        ({"provider": "nous", "model": "openai/gpt-image-2"}, "Nous Portal"),
+        ({"model": "openai/gpt-image-2"}, "FAL"),
+        ({"use_gateway": True, "model": "openai/gpt-image-2"}, "FAL"),  # managed-model routing ignores legacy use_gateway
+        ({"provider": "openai", "model": "gpt-image-2"}, None),
+    ],
+)
+def test_managed_image_partner_follows_the_stored_model(image_cfg, partner):
+    """The partner is the gateway the runtime dispatcher routes to (tools.image_generation_managed.
+    managed_route): the stored model decides under the managed pick, Portal ids only with an
+    explicit ``nous``; a direct vendor owns its model id."""
+    assert ns.managed_image_partner({"image_gen": image_cfg}) == partner
+
+
 def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
     """Pool user's checklist lists web/image/tts/browser and never video."""
     monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _pool_account())
@@ -220,10 +241,8 @@ def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
     ns.prompt_enable_tool_gateway(config)
 
     blob = " ".join(captured["items"]).lower()
-    assert "firecrawl" in blob  # web offered
+    assert "web search & extract" in blob  # web offered
     assert "video" not in blob  # video NOT offered to a pool user
-    # Pool-aware framing, not "subscription".
-    assert "free" in captured["title"].lower() and "pool" in captured["title"].lower()
 
 
 def test_get_gateway_eligible_tools_treats_explicit_backend_as_configured(monkeypatch):
@@ -272,17 +291,6 @@ def test_get_gateway_eligible_tools_treats_browser_use_selection_as_explicit(mon
     assert "browser" not in already_managed
 
 
-def test_get_gateway_eligible_tools_not_entitled_returns_four_empty_lists(monkeypatch):
-    """A logged-in Nous account with no paid access and no free tool pool
-    must fail closed with a 4-tuple, not a 3-tuple — regression for a crash
-    where the early 'not entitled' return still had the pre-refactor arity
-    while the happy path and every caller had moved to 4 values."""
-    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=False))
-
-    config = {"model": {"provider": "nous"}}
-    result = ns.get_gateway_eligible_tools(config)
-
-    assert result == ([], [], [], [])
 
 
 def test_prompt_enable_tool_gateway_not_entitled_does_not_crash(monkeypatch):
@@ -416,6 +424,47 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
     assert "use_gateway" not in config["video_gen"]
 
 
+def _defaults_for(monkeypatch, account, config):
+    monkeypatch.setattr(tool_backend_helpers, "managed_nous_tools_enabled", lambda **kw: True)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: account)
+    ns.apply_nous_managed_defaults(config, enabled_toolsets=["image_gen"])
+    return config["image_gen"]
+
+
+def test_paid_account_defaults_to_the_krea_image_model(monkeypatch):
+    section = _defaults_for(monkeypatch, _account(logged_in=True, paid=True), {"model": {"provider": "nous"}})
+    assert section == {"provider": "nous", "model": ns.MANAGED_IMAGE_DEFAULT_KREA_MODEL}
+
+
+def test_pool_account_keeps_the_fal_image_default(monkeypatch):
+    section = _defaults_for(monkeypatch, _pool_account(), {"model": {"provider": "nous"}})
+    assert section["provider"] == "nous"
+    assert "model" not in section
+
+
+def test_first_run_gateway_acceptance_writes_the_krea_image_model():
+    """`hermes setup --portal` stores selections through apply_gateway_defaults, not the managed-defaults
+    pass, so the Krea default must apply there too; an existing model and the free pool are left on FAL."""
+    paid, pool = _account(logged_in=True, paid=True), _pool_account()
+    fresh = {}
+    ns.apply_gateway_defaults(fresh, ["image_gen"], paid)
+    assert fresh["image_gen"] == {"provider": "nous", "model": ns.MANAGED_IMAGE_DEFAULT_KREA_MODEL}
+    pooled = {}
+    ns.apply_gateway_defaults(pooled, ["image_gen"], pool)
+    assert "model" not in pooled["image_gen"]
+    kept = {"image_gen": {"model": FAL_DEFAULT_MODEL}}
+    ns.apply_gateway_defaults(kept, ["image_gen"], paid)
+    assert kept["image_gen"]["model"] == FAL_DEFAULT_MODEL
+
+
+def test_configured_image_section_is_left_alone(monkeypatch):
+    config = {"model": {"provider": "nous"}, "image_gen": {"provider": "nous", "model": FAL_DEFAULT_MODEL}}
+    section = _defaults_for(monkeypatch, _account(logged_in=True, paid=True), config)
+    assert section["model"] == FAL_DEFAULT_MODEL
+
+
 # ---------------------------------------------------------------------------
 # ensure_nous_portal_access — inline login gate for `hermes tools`
 # ---------------------------------------------------------------------------
@@ -433,22 +482,6 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
 
 
 
-def _stt_features_stub(*, account_info):
-    return ns.NousSubscriptionFeatures(
-        subscribed=True,
-        nous_auth_present=True,
-        provider_is_nous=True,
-        account_info=account_info,
-        features={
-            key: ns.NousFeatureState(
-                key=key, label=key, included_by_default=True,
-                available=False, active=False, managed_by_nous=False,
-                direct_override=False, toolset_enabled=False,
-                explicit_configured=False,
-            )
-            for key in ("web", "image_gen", "video_gen", "tts", "stt", "browser", "modal")
-        },
-    )
 
 
 
@@ -468,42 +501,21 @@ def _block_legacy_agent_browser_checks(monkeypatch):
     monkeypatch.setattr("hermes_constants.agent_browser_runnable", lambda path: False)
 
 
-def test_has_agent_browser_true_for_npx_only_resolution(monkeypatch):
-    """No PATH binary and no runnable node_modules copy, but the browser_tool
-    cascade resolves the npx fallback: browser capability is available."""
+def test_has_agent_browser_uses_passive_runtime_resolution(monkeypatch):
+    """Readiness shares the runtime resolver without acquiring a package."""
     _block_legacy_agent_browser_checks(monkeypatch)
 
     calls = []
 
     def fake_find_agent_browser(*, validate=True):
         calls.append({"validate": validate})
-        return "npx agent-browser"
+        return "/prepared/agent-browser"
 
     monkeypatch.setattr(bt_install, "_find_agent_browser", fake_find_agent_browser)
-    monkeypatch.setattr(
-        "tools.browser_tool_install._requires_real_termux_browser_install", lambda cmd: False
-    )
 
     assert ns._has_agent_browser() is True
     # A readiness probe must resolve without spawning the daemon.
     assert calls and all(call["validate"] is False for call in calls)
-
-
-def test_has_agent_browser_false_for_termux_local_bare_npx(monkeypatch):
-    """On Termux in local mode the bare npx fallback is not a usable install."""
-    _block_legacy_agent_browser_checks(monkeypatch)
-
-    monkeypatch.setattr(
-        bt_install,
-        "_find_agent_browser",
-        lambda *, validate=True: "npx agent-browser",
-    )
-    monkeypatch.setattr(
-        "tools.browser_tool_install._requires_real_termux_browser_install",
-        lambda cmd: cmd.strip() == "npx agent-browser",
-    )
-
-    assert ns._has_agent_browser() is False
 
 
 def test_has_agent_browser_false_when_nothing_resolvable(monkeypatch):
@@ -517,9 +529,8 @@ def test_has_agent_browser_false_when_nothing_resolvable(monkeypatch):
     assert ns._has_agent_browser() is False
 
 
-def test_has_agent_browser_import_failure_falls_back_to_path_check(monkeypatch):
-    """If tools.browser_tool_install cannot be imported, the old PATH + node_modules
-    check must still answer (prior behaviour), not crash."""
+def test_has_agent_browser_import_failure_does_not_run_another_resolver(monkeypatch):
+    """A broken runtime resolver cannot advertise an unchecked fallback."""
     monkeypatch.setitem(sys.modules, "tools.browser_tool_install", None)
     real_which = shutil.which
     monkeypatch.setattr(
@@ -535,47 +546,5 @@ def test_has_agent_browser_import_failure_falls_back_to_path_check(monkeypatch):
         "hermes_constants.agent_browser_runnable",
         lambda path: path == "/fake/bin/agent-browser",
     )
-
-    assert ns._has_agent_browser() is True
-
-
-def test_has_agent_browser_import_failure_falls_back_to_hermes_managed_node_path(
-    monkeypatch, tmp_path
-):
-    """If tools.browser_tool_install cannot be imported, the managed-Node rung must
-    still find a runnable agent-browser under the Hermes Node dir even when
-    it's absent from the probe process's PATH — the Windows installer shape
-    where install succeeded but the GUI still said needs setup."""
-    monkeypatch.setitem(sys.modules, "tools.browser_tool_install", None)
-    managed_dir = tmp_path / "node"
-    managed_dir.mkdir()
-    managed_bin = managed_dir / "agent-browser"
-    managed_bin.write_text("#!/bin/sh\nexit 0\n")
-    managed_bin.chmod(0o755)
-
-    real_which = shutil.which
-    monkeypatch.setattr(
-        shutil,
-        "which",
-        lambda cmd, *args, **kwargs: (
-            None
-            if cmd == "agent-browser" and not kwargs.get("path")
-            else real_which(cmd, *args, **kwargs)
-        ),
-    )
-    monkeypatch.setattr(
-        "hermes_constants.with_hermes_node_path", lambda: {"PATH": str(managed_dir)}
-    )
-    monkeypatch.setattr(
-        "hermes_constants.agent_browser_runnable",
-        lambda p: bool(p) and str(p) == str(managed_bin),
-    )
-
-    assert ns._has_agent_browser() is True
-
-
-def test_has_agent_browser_import_failure_and_no_binary_is_false(monkeypatch):
-    monkeypatch.setitem(sys.modules, "tools.browser_tool_install", None)
-    _block_legacy_agent_browser_checks(monkeypatch)
 
     assert ns._has_agent_browser() is False

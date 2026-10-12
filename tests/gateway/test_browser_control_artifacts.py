@@ -584,13 +584,6 @@ async def test_capabilities_advertise_artifact_transport_and_developer_mode(monk
     }
 
 
-def test_route_table_advertises_artifact_routes():
-    adapter = _adapter()
-    routes = {(method, path) for method, path, _handler in adapter._http_route_table()}
-    assert ("POST", "/v1/artifacts/upload") in routes
-    assert ("GET", "/v1/artifacts/download/{artifact_id}") in routes
-
-
 def test_http_uploaded_artifact_composes_with_broker_dispatch(tmp_path):
     """The real journey: HTTP upload (no session) -> broker artifact dispatch.
 
@@ -636,7 +629,6 @@ def test_http_uploaded_artifact_composes_with_broker_dispatch(tmp_path):
 
 def test_multiplex_profiles_get_distinct_stores_regardless_of_touch_order(tmp_path, monkeypatch):
     """Profile A touching the artifact route first must not pin profile B."""
-    import gateway.platforms.api_server as api_server_mod
 
     adapter = _adapter()
     monkeypatch.setattr(

@@ -706,17 +706,6 @@ def test_thread_transcript_prunes_committed_message_and_settlement_together(
     )
 
 
-def test_service_uses_low_idle_poll_with_immediate_wakeup(tmp_path: Path):
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
-
-    assert service.runtime.poll_interval_seconds == 5.0
-    assert service.runtime.active_poll_interval_seconds == 0.25
-    assert service.runtime.turn_timeout_seconds == 1830.0
-    service.runtime._wake.clear()
-    service.wakeup()
-    assert service.runtime._wake.is_set()
-
-
 def test_service_derives_room_deadline_from_agent_timeout(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "90")
 

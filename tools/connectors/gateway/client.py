@@ -246,8 +246,8 @@ class ConnectorClient:
             payload = _safe_json(response)
             request_id = response_request_id(response)
             if 200 <= status < 300:
-                log_connector_outcome(_EXECUTE_ROUTE, status, request_id=request_id, call=self._call)
-                parsed = self._parse(wire.ConnectorExecuteSingleResponse, payload, "connector execute result")
+                reply = _Reply(payload, status, request_id, _EXECUTE_ROUTE)
+                parsed = self._checked(wire.ConnectorExecuteSingleResponse, reply, "connector execute result")
                 entry = {"data": parsed.result.data, "error": None}
                 if parsed.result.account:
                     entry["account"] = parsed.result.account

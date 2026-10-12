@@ -236,6 +236,15 @@ def test_an_older_gateway_gets_the_array_form_once_and_is_remembered():
     assert second == [{"data": "c", "error": None}]
 
 
+
+def test_an_array_form_call_failure_logs_the_gateways_request_id(caplog):
+    caplog.set_level(logging.DEBUG)
+    blocked = envelope({"error": {"code": "TOOL_NOT_ALLOWED", "message": "blocked"}})
+    blocked.headers = {"x-request-id": "arr_7"}
+    make_client(FakeTransport(OLD_GATEWAY_400, blocked)).execute(planned())
+    lines = [(r.levelno, r.getMessage()) for r in caplog.records if r.getMessage().startswith("connector connectors.execute 200")]
+    assert lines == [(logging.WARNING, "connector connectors.execute 200 TOOL_NOT_ALLOWED request_id=arr_7 dispatch=-")]
+
 def test_a_new_gateways_own_validation_error_is_not_mistaken_for_an_old_gateway():
     body = {"code": "VALIDATION_ERROR", "message": "call.arguments must be an object"}
     transport = FakeTransport(FakeResponse(400, body))

@@ -186,19 +186,30 @@ def test_a_200_whose_body_failed_is_a_warning_with_the_request_id(caplog):
     from tools.connectors.gateway.errors import ToolGatewayError
     from tools.connectors.gateway.merge import PlannedCall
 
+    from tools.connectors.gateway import client as client_module
+
     failed_call = {"results": [{"error": {"code": "CONNECTION_REQUIRED", "message": "connect gmail"}}]}
     transport = _Transport(_Response(200, failed_call, request_id="exec-id"),
-                           _Response(200, ValueError("not json"), request_id="junk-id"))
+                           _Response(200, ValueError("not json"), request_id="junk-id"),
+                           _Response(200, {"unexpected": True}, request_id="one-id"))
     client = _client(transport, call=CallRef(tool_call_id="call-3"))
     plan = PlannedCall(position=0, name="gmail_send_email", connector="gmail", tool="GMAIL_SEND_EMAIL", arguments={})
     with caplog.at_level(logging.DEBUG, logger="tools.managed_gateway_identity"):
-        assert client.execute([plan])[0]["error"]["code"] == "CONNECTION_REQUIRED"
+        # An older gateway answers the array form: a 200 envelope with the call's failure inside.
+        client_module._LEGACY_EXECUTE_ORIGINS.add("https://gw.test")
+        try:
+            assert client.execute([plan])[0]["error"]["code"] == "CONNECTION_REQUIRED"
+        finally:
+            client_module._LEGACY_EXECUTE_ORIGINS.discard("https://gw.test")
         with pytest.raises(ToolGatewayError) as raised:
             client.schemas(["X"])
+        with pytest.raises(ToolGatewayError):
+            client.execute([plan])
     assert raised.value.request_id == "junk-id" and raised.value.code == "INVALID_RESPONSE"
     assert _outcomes(caplog) == [
         (logging.WARNING, "connector connectors.execute 200 CONNECTION_REQUIRED request_id=exec-id dispatch=call-3"),
         (logging.WARNING, "connector connectors.schemas 200 INVALID_RESPONSE request_id=junk-id dispatch=call-3"),
+        (logging.WARNING, "connector connectors.execute 200 INVALID_RESPONSE request_id=one-id dispatch=call-3"),
     ]
 
 

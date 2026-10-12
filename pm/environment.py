@@ -56,9 +56,9 @@ _BUILD_MARKERS = ("the build backend returned an error",)
 # and hints the version was filtered, so that case needs both lines.
 _UNDATED_PIN = "has no publish time"
 _UNDATED_FILE = ("is missing an upload date", "was filtered by `exclude-newer")
-UNDATED_INDEX_HINT = ("the package index did not report upload times, which Hermes needs to apply its "
-                      "14-day release-age check. Use https://pypi.org/simple or a mirror that serves "
-                      "upload times (pip.conf index-url / UV_INDEX_URL), then retry.")
+UNDATED_INDEX_HINT = ("the package index did not report upload times, which locking Hermes's "
+                      "dependencies needs for its 3-day release-age check. Use https://pypi.org/simple "
+                      "or a mirror that serves upload times (pip.conf index-url / UV_INDEX_URL), then retry.")
 
 
 class ResolutionConflict(InstallError):

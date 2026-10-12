@@ -60,37 +60,35 @@ def test_missing_explicit_seed_cannot_silently_resolve_new_versions(layout):
     assert not (tmp / "env").exists()
 
 
-def test_core_quarantine_covers_core_packages_and_not_plugin_ones(layout, locked_project):
-    """Regression for #120076: Hermes's 14-day cutoff must not filter a plugin's own deps.
+def test_plugin_workspace_trusts_core_lock_instead_of_rechecking_release_age(layout, locked_project):  # health: allow F811 -- pytest injects the imported locked_project fixture by parameter name
+    """Release age is checked when Hermes locks, never on the user's machine (#135589).
 
-    A global ``exclude-newer`` in the generated root made a catalog pin floored on a fresh
-    release unresolvable. The cutoff now travels per package: every registry package in
-    core's lock keeps it (or core's explicit exemption), plugin-only packages follow the
-    plugin's policy, and the rewritten root still locks and syncs.
+    The generated root carries no ``exclude-newer`` (a mirror without upload times makes
+    uv reject every file it cannot date) and instead holds each core-locked package at its
+    locked version, so a plugin cannot move one; plugin-only packages stay free (#120076).
     """
     import tomllib
 
     tmp, core, plug_a, _ = layout
     _, uv, env = locked_project
     manifest = core / "pyproject.toml"
-    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer="14 days"\n', 1)
+    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer="3 days"\n', 1)
                         + '[tool.uv.exclude-newer-package]\nBase_Dep = false\n')
     subprocess.run([str(uv), "lock", "--python", sys.executable], cwd=core, env=env, check=True,
                    capture_output=True)
-    core_packages = {p["name"] for p in tomllib.loads((core / "uv.lock").read_text())["package"]
-                     if "registry" in p.get("source", {})}
-    assert {"base-dep", "chosen-dep"} <= core_packages and "member-dep" not in core_packages
+    core_lock = tomllib.loads((core / "uv.lock").read_text())["package"]
+    core_packages = {p["name"]: p["version"] for p in core_lock if "registry" in p.get("source", {})}
+    assert {"base-dep", "chosen-dep"} <= set(core_packages) and "member-dep" not in core_packages
 
     root = tmp / "workspace"
     ws.lock_and_sync([plug_a], [], root=root, source=core, seed_lock=core / "uv.lock",
                      environment=managed_environment(tmp / "env"))
 
     policy = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]
-    assert "exclude-newer" not in policy
-    per_package = policy["exclude-newer-package"]
-    assert per_package == {name: False if name == "base-dep" else "14 days" for name in core_packages}
+    assert "exclude-newer" not in policy and "exclude-newer-package" not in policy
+    assert sorted(policy["constraint-dependencies"]) == sorted(f"{n}=={v}" for n, v in core_packages.items())
     locked = {p["name"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
-    assert "member-dep" in locked and "member-dep" not in per_package
+    assert "member-dep" in locked
 
 
 

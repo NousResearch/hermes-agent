@@ -5,15 +5,40 @@ import re
 
 logger = logging.getLogger("plugins.platforms.slack.adapter")
 
-# rename does not create a session. These are the codes Slack returns when the
-# thread has no agent session yet (a real thread, or a ts that is not one).
-_MISSING_SESSION = frozenset({"session_not_found", "not_authorized"})
+# rename does not create a session. session_not_found is the no-session code.
+# not_authorized means the app is not allowed to rename an existing session.
+_MISSING_SESSION = frozenset({"session_not_found"})
 
 
 def _slack_error_code(exc: BaseException) -> str:
+    """Structured Slack ``error`` field, including mapping-like SDK responses."""
     response = getattr(exc, "response", None)
-    if isinstance(response, dict):
-        return str(response.get("error") or "")
+    getter = getattr(response, "get", None)
+    if not callable(getter):
+        return ""
+    try:
+        code = getter("error")
+    except (AttributeError, TypeError, KeyError):
+        return ""
+    return str(code or "")
+
+
+def _response_title(response) -> str:
+    """Title echoed by a Slack response, including mapping-like SDK bodies."""
+    getter = getattr(response, "get", None)
+    title = None
+    if callable(getter):
+        try:
+            title = getter("title")
+        except (AttributeError, TypeError, KeyError):
+            title = None
+    if isinstance(title, str):
+        return title
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        nested = data.get("title")
+        if isinstance(nested, str):
+            return nested
     return ""
 
 
@@ -50,10 +75,9 @@ class AssistantThreadTitles:
         except Exception as exc:
             if not _agent_sessions_enabled() or _slack_error_code(exc) not in _MISSING_SESSION:
                 raise
-        # setStatus creates the session and applies the title only then. A later
-        # rename failure must not look like "untitled", or the next raw message
-        # replaces the title that create already wrote.
-        await self._session_status_method(client)(
+        # setStatus creates the session and applies the title only then. A failed
+        # follow-up rename keeps the guard only when Slack echoed that title.
+        created = await self._session_status_method(client)(
             channel_id=channel_id, thread_ts=thread_ts, status="active", title=title)
         try:
             await rename(channel_id=channel_id, thread_ts=thread_ts, title=title)
@@ -63,6 +87,10 @@ class AssistantThreadTitles:
                 _slack_error_code(exc) or type(exc).__name__,
                 exc_info=True,
             )
+            # setStatus applies title only on create. Keep the guard only when
+            # Slack echoed that title; otherwise a later message must be able to retry.
+            if _response_title(created) != title:
+                raise
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:

@@ -19,6 +19,22 @@ class _SlackApiError(Exception):
         self.response = {"error": error}
 
 
+class _MappingResponse:
+    """Mapping-like Slack body that is not a ``dict`` (``AsyncSlackResponse``)."""
+
+    def __init__(self, **fields):
+        self._fields = fields
+
+    def get(self, key, default=None):
+        return self._fields.get(key, default)
+
+
+class _MappingSlackError(Exception):
+    def __init__(self, error: str):
+        super().__init__(error)
+        self.response = _MappingResponse(error=error)
+
+
 class TestSemanticThreadTitles:
     _adapter = _AgentSessionsHelpers._adapter
 
@@ -90,7 +106,8 @@ class TestSemanticThreadTitles:
         rename = a._app.client.agents_sessions_rename = AsyncMock(
             side_effect=[_SlackApiError("session_not_found"), _SlackApiError("ratelimited")]
         )
-        a._app.client.agents_sessions_setStatus = AsyncMock()
+        a._app.client.agents_sessions_setStatus = AsyncMock(
+            return_value=_MappingResponse(ok=True, title="Generated title"))
 
         await a._set_assistant_thread_title(
             "D123", "171234.0001", "Generated title", team_id="T1", semantic=True)
@@ -98,6 +115,42 @@ class TestSemanticThreadTitles:
 
         assert rename.await_count == 2
         assert ("T1", "D123", "171234.0001") in a._semantically_titled_assistant_threads
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_create_does_not_block_a_later_title(self):
+        slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a.config.extra["assistant_thread_titles"] = True
+        rename = a._app.client.agents_sessions_rename = AsyncMock(
+            side_effect=[
+                _SlackApiError("session_not_found"),
+                _SlackApiError("ratelimited"),
+                None,
+            ])
+        a._app.client.agents_sessions_setStatus = AsyncMock(
+            return_value=_MappingResponse(ok=True, title="different"))
+
+        await a._set_assistant_thread_title(
+            "D123", "171234.0001", "Generated title", team_id="T1", semantic=True)
+        await a._set_assistant_thread_title(
+            "D123", "171234.0001", "Generated title", team_id="T1", semantic=True)
+
+        assert rename.await_count == 3
+        assert ("T1", "D123", "171234.0001") in a._semantically_titled_assistant_threads
+
+    @pytest.mark.asyncio
+    async def test_mapping_like_session_not_found_creates_the_session(self):
+        slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a.config.extra["assistant_thread_titles"] = True
+        a._app.client.agents_sessions_rename = AsyncMock(
+            side_effect=[_MappingSlackError("session_not_found"), None])
+        create = a._app.client.agents_sessions_setStatus = AsyncMock()
+
+        await a._set_assistant_thread_title(
+            "D123", "171234.0001", "Generated title", team_id="T1", semantic=True)
+
+        assert create.await_count == 1
 
     @pytest.mark.asyncio
     async def test_agent_session_typing_uses_the_status_enum(self):
@@ -113,19 +166,19 @@ class TestSemanticThreadTitles:
         a._app.client.assistant_threads_setStatus.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_not_authorized_rename_creates_the_session(self):
+    async def test_not_authorized_does_not_create_a_session(self):
         slack_mod._AGENT_SESSIONS_SUPPORTED = True
         a = self._adapter()
         a.config.extra["assistant_thread_titles"] = True
         a._app.client.agents_sessions_rename = AsyncMock(
-            side_effect=[_SlackApiError("not_authorized"), None])
+            side_effect=_MappingSlackError("not_authorized"))
         create = a._app.client.agents_sessions_setStatus = AsyncMock()
 
         await a._set_assistant_thread_title(
             "D123", "171234.0001", "Generated title", team_id="T1", semantic=True)
 
-        assert create.await_args.kwargs["status"] == "active"
-        assert create.await_args.kwargs["title"] == "Generated title"
+        assert create.await_count == 0
+        assert not a._semantically_titled_assistant_threads
 
     @pytest.mark.asyncio
     async def test_unrelated_title_error_is_warned_and_does_not_create(self, caplog):

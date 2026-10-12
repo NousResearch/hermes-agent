@@ -31,9 +31,10 @@ _post_tool_call_hook_suppressed: ContextVar[bool] = ContextVar("post_tool_call_h
 
 
 @contextmanager
-def suppress_post_tool_call_hook():
-    """Let an outer executor own the terminal post-tool event."""
-    token = _post_tool_call_hook_suppressed.set(True)
+def suppress_post_tool_call_hook(suppressed: bool = True):
+    """Let an outer executor own the terminal post-tool event. ``suppressed=False`` re-enables it
+    inside such a block, for calls that are their own (each entry of a connector batch)."""
+    token = _post_tool_call_hook_suppressed.set(suppressed)
     try:
         yield
     finally:
@@ -698,7 +699,8 @@ def _emit_post_tool_call_hook(
 
 
 def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
-                          enabled_toolsets: Optional[list[str]], disabled_toolsets: Optional[list[str]]):
+                          enabled_toolsets: Optional[list[str]], disabled_toolsets: Optional[list[str]],
+                          ids: Optional[_CallIds] = None):
     """Handle a Tool Search bridge call (tool_search / tool_describe / tool_call).
 
     None when *function_name* is not a bridge tool; ``(result, None)`` for a
@@ -719,10 +721,12 @@ def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
     except Exception:
         current_defs = []
     args = function_args or {}
+    from tools.managed_gateway_identity import CallRef
+    call = CallRef(turn_id=ids.turn_id, tool_call_id=ids.tool_call_id) if ids else None
     if function_name == ts.TOOL_SEARCH_NAME:
-        return ts.dispatch_tool_search(args, current_tool_defs=current_defs), None
+        return ts.dispatch_tool_search(args, current_tool_defs=current_defs, call=call), None
     if function_name == ts.TOOL_DESCRIBE_NAME:
-        return ts.dispatch_tool_describe(args, current_tool_defs=current_defs), None
+        return ts.dispatch_tool_describe(args, current_tool_defs=current_defs, call=call), None
     underlying_name, underlying_args, err = ts.resolve_underlying_call(args)
     if err or not underlying_name:
         return tool_error(err or "tool_call could not be resolved"), None
@@ -831,7 +835,7 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
     def _dispatch(next_args: dict[str, Any]) -> Any:
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
-            return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
+            return dispatch_connector_call(function_name, next_args, ids.tool_call_id, ids.turn_id)
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
     with _approval_observability(ids):
@@ -899,7 +903,7 @@ def handle_function_call(
     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
     # inline; tool_call is unwrapped so every downstream hook (pre/post, edit
     # approval, guardrails) sees the real tool name, never the bridge.
-    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets)
+    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets, ids)
     if bridged is not None:
         result, underlying = bridged
         if underlying is None:

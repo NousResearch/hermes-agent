@@ -88,3 +88,15 @@ export function withTimeout<T>(
     )
   })
 }
+
+/** A dial that stalled rather than failed: our own timeout fired, or the
+ *  backend timed out waiting for a free spawn slot. */
+export function isStalledDialError(error: unknown): boolean {
+  if (isTimeoutError(error)) {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return message.includes('timed out while waiting for a free slot')
+}

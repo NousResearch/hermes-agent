@@ -6,6 +6,7 @@ import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
 import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetDeadSessionPrune } from '@/store/dead-session-prune'
+import { isPooledRegistryRoute } from '@/store/gateway'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
@@ -32,7 +33,7 @@ import {
 } from '@/store/session'
 import { clearAllSessionControl } from '@/store/session-control'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
-import { clearAllSessionStates } from '@/store/session-states'
+import { $sessionStates, clearAllSessionStates, sessionEventScopeFor } from '@/store/session-states'
 import { clearAllSessionTodos } from '@/store/todos'
 import { clearTranscriptTailPaging } from '@/store/transcript-tail'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
@@ -228,7 +229,8 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // Runtime ids can be reused by the next backend. Retire both the live
   // checklist and its review snapshot before any new session is bound.
   clearAllSessionTodos()
-  clearAllSessionStates()
+  // ...except live turns on a route the switch leaves pooled (see below).
+  clearAllSessionStates(liveTurnsOnPooledRoutes())
   // Structured goal/loop/heartbeat entries are keyed by runtime id, which the
   // next backend re-mints, so a full wipe is exact (and stale-response-safe).
   clearAllSessionControl()
@@ -277,4 +279,35 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // Narrowed: account/marketplace/onboarding caches are global, not gateway-
   // scoped, so a mode swap must not refetch them.
   invalidateProfileScopedQueries()
+}
+
+/** Runtimes whose live turn must outlive a connection switch.
+ *
+ *  A switch moves which source the window shows; it does not end work running
+ *  on the source it leaves. A turn that arrived over a pooled registry route
+ *  keeps running there, and that route stays open only while live work claims
+ *  its scope (`liveSessionScopes` feeds the pruner's keep-set). Wiping the
+ *  claim with the rest of the outgoing source's state let the pruner close
+ *  the socket mid-turn: the backend detached the runtime, and the reply's
+ *  remaining deltas, its `message.complete`, the busy→idle settle and the
+ *  unread dot were all lost. Keeping the claim keeps the route until the turn
+ *  settles, and the settle lights the dot like any background completion.
+ *
+ *  Only provable survivors qualify: live (busy or blocked on input), bound to
+ *  a stored session (the only identity the window can resume or mark unread
+ *  under), and delivered by a socket that is still a pooled registry route.
+ *  The primary's and legacy sockets' runtimes do not survive the switch that
+ *  retires them, so they are wiped as before. */
+function liveTurnsOnPooledRoutes(): Set<string> {
+  const survivors = new Set<string>()
+
+  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+    const scope = sessionEventScopeFor(runtimeId)
+
+    if (state?.storedSessionId && (state.busy || state.needsInput) && scope && isPooledRegistryRoute(scope)) {
+      survivors.add(runtimeId)
+    }
+  }
+
+  return survivors
 }

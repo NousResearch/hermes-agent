@@ -320,7 +320,7 @@ def stage_tool_call_message(
     return assistant_msg, duplicate_previous_interim
 
 
-def mark_undelivered_interim(agent: Any, *, assistant_message: Any, assistant_msg: Dict[str, Any]) -> bool:
+def mark_undelivered_interim(agent: Any, *, assistant_message: Any, assistant_msg: dict[str, Any]) -> bool:
     """Stamp the marker onto the ``api_content`` sidecar of a tool-call row whose material
     text will not reach the user; returns whether it did.
 

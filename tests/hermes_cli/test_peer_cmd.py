@@ -401,6 +401,62 @@ def old_hidden_peer_server():
         thread.join(timeout=5)
 
 
+class _OldPaginatedPeer(_FakePeer):
+    """An OLD peer with a large session store: ignores title/include_hidden and
+    pages the visible listing with limit/offset/has_more, so its visible Bot
+    Chat sits past the first page."""
+
+    rows: list = []
+    get_queries: list = []
+
+    def do_GET(self):
+        type(self).auth_seen.append(self.headers.get("Authorization", ""))
+        if self.path.startswith("/api/sessions"):
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(self.path).query)
+            type(self).get_queries.append(query)
+            limit = min(int(query.get("limit", ["50"])[0]), 50)
+            offset = int(query.get("offset", ["0"])[0])
+            page = type(self).rows[offset:offset + limit]
+            return self._json({"object": "list", "data": page, "limit": limit, "offset": offset,
+                               "has_more": offset + limit < len(type(self).rows)})
+        return self._json({"error": {"message": "not found"}}, 404)
+
+
+@pytest.fixture()
+def old_paginated_peer_server():
+    rows = [{"id": f"s{i}", "title": f"work {i}"} for i in range(230)]
+    rows.insert(215, {"id": "bc_deep", "title": "Bot Chat"})
+    _OldPaginatedPeer.rows = rows
+    _OldPaginatedPeer.auth_seen = []
+    _OldPaginatedPeer.get_queries = []
+    server = HTTPServer(("127.0.0.1", 0), _OldPaginatedPeer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_find_bot_chat_pages_an_old_peers_listing(old_paginated_peer_server):
+    """#5069 (workspace): an old peer's visible Bot Chat past the first page is
+    found by paging, not missed (which led to a colliding create)."""
+    found = peer_cmd._find_bot_chat(old_paginated_peer_server, "secret-key-123456")
+    assert found == "bc_deep"
+    offsets = [q.get("offset") for q in _OldPaginatedPeer.get_queries]
+    assert offsets == [["0"], ["50"], ["100"], ["150"], ["200"]]
+    assert all(q.get("limit") == [str(peer_cmd._LIST_PAGE_SIZE)] for q in _OldPaginatedPeer.get_queries)
+
+
+def test_find_bot_chat_stops_when_an_old_peer_has_no_bot_chat(old_paginated_peer_server):
+    _OldPaginatedPeer.rows = [r for r in _OldPaginatedPeer.rows if r["id"] != "bc_deep"]
+    assert peer_cmd._find_bot_chat(old_paginated_peer_server, "secret-key-123456") is None
+    assert len(_OldPaginatedPeer.get_queries) == 5
+
+
 def test_find_bot_chat_sends_hidden_aware_lookup(hidden_peer_server):
     """The lookup carries title + include_hidden so a hidden canonical row resolves."""
     found = peer_cmd._find_bot_chat(hidden_peer_server, "secret-key-123456")

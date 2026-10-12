@@ -498,8 +498,10 @@ def _free_tier_nous_row(row: dict) -> dict | None:
     from hermes_cli import anon_auth
     if not anon_auth.has_guest():
         return row
-    if not anon_auth.guest_enabled():
+    if not anon_auth.guest_allowed():
         return None
+    if not anon_auth.guest_enabled():
+        return row  # a guest kept for connectors only: the row is whatever real Nous login exists
     out = dict(row)
     out["name"] = anon_auth.FREE_TIER_LABEL
     out["models"] = [anon_auth.GUEST_MODEL]

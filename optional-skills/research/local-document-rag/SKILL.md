@@ -44,7 +44,7 @@ python scripts/doc_rag.py query "warranty period for the servers" --db ./rag.db 
 | Command | Purpose |
 |---|---|
 | `ingest FILE... --db DB [--copy] [--project NAME]` | Index files; `--copy` also stores them in `<db dir>/assets/` |
-| `query "TEXT" --db DB [-k N] [--json]` | Hybrid search, top N fragments with file + page |
+| `query "TEXT" --db DB [-k N] [--json] [--project NAME]` | Hybrid search, top N fragments with file + page, optionally scoped to one project |
 | `list --db DB` | Indexed documents with page/chunk counts |
 | `stats --db DB` | Model, dimension, document and chunk totals |
 
@@ -52,7 +52,7 @@ Exit code of `ingest` is `1` when any file was skipped (missing, unsupported, no
 
 ## Procedure
 
-1. Pick the project directory; the DB is `<project>/rag.db`. One DB per project or client — never a shared index, so fragments of one client's documents cannot surface in another's conversation.
+1. Pick the project directory; the DB is `<project>/rag.db`. One DB per project or client — never a shared index, so fragments of one client's documents cannot surface in another's conversation. If a DB legitimately holds several projects, pass `--project NAME` on both `ingest` and `query`: `ingest` warns on stderr the first time it sees a project tag that doesn't match what's already in the DB, and `query --project NAME` filters to that project's chunks before ranking (not as a post-filter), so recall stays honest.
 2. On a new document run `ingest ... --copy`. Re-ingesting the same file is a no-op (SHA-256 dedup).
 3. Confirm to the user in one line: pages and chunks indexed, OCR pages if any.
 4. Before answering a question about the document, run `query`; quote the fragment and cite `file p.N`.
@@ -64,7 +64,8 @@ Exit code of `ingest` is `1` when any file was skipped (missing, unsupported, no
 - DOCX is indexed as a single "page" (python-docx has no pagination); cite the section heading instead.
 - A scanned PDF without Tesseract installed prints `[OCR unavailable]` and those pages are skipped; `ingest` exits 1 if the whole file yielded no text.
 - Prefix matching (first ~75% of each long token) approximates stemming for inflected languages; vector search covers paraphrases. Neither replaces reading the source for exact legal wording.
-- `--copy` keeps the file name; two different files with the same name keep the first copy.
+- Tokens of 2 characters or less are dropped from the FTS side entirely (not just treated as whole-word), so very short keywords/acronyms only surface via vector search.
+- `--copy` stores each file as `assets/<sha256-8>-<name>`, so two different files sharing a basename never collide; re-ingesting identical content reuses the same asset instead of duplicating it.
 
 ## Verification
 

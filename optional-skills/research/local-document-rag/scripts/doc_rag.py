@@ -10,7 +10,7 @@ languages (e.g. Polish, Czech, German).
 
 Usage:
   python doc_rag.py ingest FILE... --db ./rag.db [--copy] [--project NAME]
-  python doc_rag.py query "question" --db ./rag.db [-k 6] [--json]
+  python doc_rag.py query "question" --db ./rag.db [-k 6] [--json] [--project NAME]
   python doc_rag.py list  --db ./rag.db
   python doc_rag.py stats --db ./rag.db
 """
@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -131,6 +132,8 @@ def load_pages(path: Path) -> list[tuple[int, str]]:
 
 
 def chunk_page(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:
+    if overlap >= size:
+        raise ValueError(f"chunk overlap ({overlap}) must be smaller than chunk size ({size})")
     text = " ".join(text.split())
     out, i = [], 0
     while i < len(text):
@@ -178,6 +181,11 @@ def cmd_ingest(a) -> int:
     log_usage("ingest", a.via, a.db, {"files": [Path(x).name for x in a.files]})
     con = connect(a.db)
     assets = Path(a.db).resolve().parent / "assets"
+    existing_projects = {r[0] for r in con.execute("SELECT DISTINCT project FROM docs")}
+    if existing_projects and a.project not in existing_projects:
+        print(f"[WARN] db already has project(s) {sorted(p or '(none)' for p in existing_projects)}; "
+              f"adding documents tagged project={a.project!r}. A query without --project searches "
+              "across all projects in this db.", file=sys.stderr)
     failed = 0
     for f in map(Path, a.files):
         if not f.is_file():
@@ -202,7 +210,11 @@ def cmd_ingest(a) -> int:
         src = f
         if a.copy:
             assets.mkdir(parents=True, exist_ok=True)
-            src = assets / f.name
+            # Prefix with a content hash so two different files sharing a basename
+            # never collide on one asset (which would make the second doc's row
+            # point at the first doc's bytes). Re-ingesting identical content
+            # reuses the same prefixed name, so this stays idempotent.
+            src = assets / f"{digest[:8]}-{f.name}"
             if not src.exists():
                 shutil.copy2(f, src)
         vecs = embed([r[2] for r in rows])  # embed before any write: never a half-indexed doc
@@ -245,19 +257,56 @@ def rrf(*rankings: list[int], k: int = RRF_K) -> list[tuple[int, float]]:
 
 
 def cmd_query(a) -> int:
-    log_usage("query", a.via, a.db, {"text": a.text[:120]})
+    log_usage("query", a.via, a.db, {"text": a.text[:120], "project": a.project})
     con = connect(a.db)
     pool = max(a.k * 4, 20)
-    vec = [r[0] for r in con.execute(
-        "SELECT rowid FROM vec_chunks WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-        (pack(embed([a.text])[0]), pool))]
+    project_ids: list[int] | None = None
+    if a.project is not None:
+        project_ids = [r[0] for r in con.execute(
+            "SELECT c.id FROM chunks c JOIN docs d ON d.id = c.doc_id WHERE d.project = ?",
+            (a.project,))]
+        if not project_ids:
+            con.close()
+            print("(no hits)")
+            return 0
+    qvec = pack(embed([a.text])[0])
+    if project_ids is None:
+        vec = [r[0] for r in con.execute(
+            "SELECT rowid FROM vec_chunks WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+            (qvec, pool))]
+    else:
+        # vec0's KNN operator has no general row-predicate pre-filter, so sampling a
+        # global top-k pool and then discarding rows outside the project would risk
+        # silently dropping true nearest neighbours. Score the project's own chunks
+        # directly instead: correct, at the cost of being O(project size) rather than
+        # using the ANN index - acceptable for a per-project local document set.
+        placeholders = ",".join("?" * len(project_ids))
+        qf = struct.unpack("%sf" % DIM, qvec)
+        qnorm = math.sqrt(sum(x * x for x in qf)) or 1.0
+        scored = []
+        for rowid, emb in con.execute(
+                f"SELECT rowid, embedding FROM vec_chunks WHERE rowid IN ({placeholders})",
+                project_ids):
+            v = struct.unpack("%sf" % DIM, emb)
+            vnorm = math.sqrt(sum(x * x for x in v)) or 1.0
+            cos = sum(x * y for x, y in zip(qf, v)) / (qnorm * vnorm)
+            scored.append((rowid, 1.0 - cos))
+        scored.sort(key=lambda r: r[1])
+        vec = [rowid for rowid, _ in scored[:pool]]
     fts: list[int] = []
     q = fts_query(a.text)
     if q:
         try:
-            fts = [r[0] for r in con.execute(
-                "SELECT rowid FROM fts_chunks WHERE fts_chunks MATCH ? ORDER BY rank LIMIT ?",
-                (q, pool))]
+            if project_ids is None:
+                fts = [r[0] for r in con.execute(
+                    "SELECT rowid FROM fts_chunks WHERE fts_chunks MATCH ? ORDER BY rank LIMIT ?",
+                    (q, pool))]
+            else:
+                placeholders = ",".join("?" * len(project_ids))
+                fts = [r[0] for r in con.execute(
+                    f"SELECT rowid FROM fts_chunks WHERE fts_chunks MATCH ? "
+                    f"AND rowid IN ({placeholders}) ORDER BY rank LIMIT ?",
+                    (q, *project_ids, pool))]
         except sqlite3.OperationalError:
             fts = []
     top = rrf(vec, fts)[:a.k]
@@ -313,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--db", required=True)
     p.add_argument("-k", type=int, default=6)
     p.add_argument("--json", action="store_true")
+    p.add_argument("--project", help="restrict search to chunks tagged with this project")
     p.add_argument("--via", default="manual")
     p.set_defaults(fn=cmd_query)
     for name, fn in (("list", cmd_list), ("stats", cmd_stats)):

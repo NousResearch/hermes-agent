@@ -24,11 +24,11 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
     """ThreadPoolExecutor variant whose workers do not block process exit."""
 
     def submit(self, fn, /, *args, **kwargs):
-        """Submit a callable, propagating the caller's contextvars. Stdlib only does
-        this from 3.14; on 3.11-3.13 a bare worker starts with an EMPTY Context and
-        drops profile secret scope / HERMES_HOME override — under the multiplexed
-        gateway a credential read then fails closed with ``UnscopedSecretError``.
-        Unconditional: on 3.14+ ``ctx.run`` re-applies the same context (no-op)."""
+        """Keep each task in its caller's profile scope, even on a reused worker.
+
+        Thread-start context cannot track later submissions from other profiles
+        (#54937). The stdlib worker context manages initialization, not contextvars.
+        """
         ctx = copy_context()
 
         def _run_with_context(*call_args, **call_kwargs):
@@ -45,7 +45,7 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
             q.put(None)
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
-            thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            thread_name = f'{self._thread_name_prefix or self}_{num_threads:d}'
             executor_ref = weakref.ref(self, weakref_cb)
             if hasattr(self, "_create_worker_context"):
                 # Python 3.14 replaced _initializer/_initargs with a factory
@@ -62,8 +62,6 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
                     self._initializer,
                     self._initargs,
                 )
-            # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
-            # right profile (#54937).
             t = threading.Thread(
                 name=thread_name, target=_worker, daemon=True,
                 args=worker_args,

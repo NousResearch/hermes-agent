@@ -9,8 +9,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
+from agent.compression_marker import elide
+
 
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
+_MAX_STATUS_SUMMARY_CHARS = 1200
 
 # Prose/data extensions and extension-less prose filenames (case-insensitive) with
 # no verifiable runtime behavior: a turn touching ONLY these suppresses the nudge
@@ -149,8 +152,7 @@ def _status_detail(status: dict[str, Any]) -> str:
     if command:
         parts.append(f"last command `{command}`")
     if summary:
-        if len(summary) > 1200:
-            summary = summary[:1200].rstrip() + "\n... [truncated]"
+        summary = elide(summary, _MAX_STATUS_SUMMARY_CHARS)
         parts.append(f"last output:\n{summary}")
     return "\n".join(parts)
 

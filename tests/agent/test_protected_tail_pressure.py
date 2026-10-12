@@ -13,6 +13,7 @@ This is the core compressor contract — not Desktop/Windows-specific.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -21,8 +22,10 @@ from agent.context_compressor import (
     ContextCompressor,
     _MAX_TAIL_MESSAGE_FLOOR,
     _PRESSURE_KEEP_RECENT_MESSAGES,
+    _tool_content_has_images,
 )
 from agent.model_metadata import estimate_messages_tokens_rough
+from agent.prompt_builder import steer_user_row
 from agent.turn_context import compression_made_progress
 
 
@@ -204,3 +207,116 @@ class TestProtectedTailPressure61932:
         for cid in call_ids:
             assert cid in tool_result_ids, f"orphaned tool call {cid!r}"
 
+
+def _terminal_call(call_id: str, command: str) -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "terminal", "arguments": json.dumps({"command": command})},
+    }
+
+
+def _terminal_result(call_id: str, tag: str, lines: int) -> dict:
+    """A multi-line terminal result in the tool's own JSON shape (newlines escaped)."""
+    output = "\n".join(
+        f"node-{tag}-{i:03d} cpu={i % 97} lease={tag.upper()}{i:06X} zone=eu-west-2a status=HEALTHY "
+        f"mem=41% disk=73% uptime=31d kernel=6.8.0-45 owner=okafor rack=R-{i % 40:02d} note=nominal"
+        for i in range(lines)
+    )
+    return {"role": "tool", "tool_call_id": call_id, "content": json.dumps({"output": output, "exit_code": 0})}
+
+
+def _image_call(call_id: str) -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "vision_analyze", "arguments": json.dumps({"image_url": f"shot-{call_id}.png"})},
+    }
+
+
+def _image_result(call_id: str) -> dict:
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": [
+            {"type": "text", "text": f"Image {call_id}"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJDRA=="}},
+        ],
+    }
+
+
+@pytest.mark.parametrize("steers", [0, 1, 2], ids=["round_last", "steer_after_round", "two_steers_after_round"])
+def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
+    """Regression: compaction after a tool round stubbed the output the model had just asked for.
+
+    Lean mode's 10K tail budget puts pass 4's soft ceiling at 15K tokens. Long user messages (no pass
+    may shrink them) filled it, so the last resort stubbed the pending round. The model has not read
+    that round and would re-run the command or answer blind, so it must survive verbatim while older
+    rounds still give way to the budget. A /steer sent during the tools lands as a user row after the
+    round before preflight compaction runs; the round is still unread then. Two steers can land in one
+    iteration: one drained when the tool batch ends, another drained before the next request and
+    inserted right after the newest tool result, so the round is followed by two steer rows.
+    """
+    ctx = 272_000
+    with patch("agent.context_compressor.get_model_context_length", return_value=ctx):
+        c = ContextCompressor(
+            model="test/model", threshold_percent=0.50, protect_first_n=3, protect_last_n=8,
+            quiet_mode=True, config_context_length=ctx,
+        )
+    c._generate_summary = lambda *a, **k: "compact summary of earlier turns"
+    prose = ("the quarterly fleet review keeps drifting between regions and owners " * 360)[:24_000]
+    msgs: list[dict] = [{"role": "system", "content": "You are Hermes."}]
+    for t in range(13):
+        msgs += [
+            {"role": "user", "content": f"{prose}\nRun probe {t} and name the hottest node."},
+            {"role": "assistant", "content": None, "tool_calls": [_terminal_call(f"old_{t}", f"python3 probe.py c{t} 3")]},
+            _terminal_result(f"old_{t}", f"o{t}", 70),
+            {"role": "assistant", "content": f"node-o{t}-000 is the hottest."},
+        ]
+    # The pending call's own args (well over pass 3's 500-char floor) belong to the unread round too.
+    long_command = "python3 probe.py lyra 1 " + " ".join(f"--node node-nb-{i:03d}" for i in range(120))
+    pending_calls = [_terminal_call("new_a", "python3 probe.py indus 3"), _terminal_call("new_b", long_command)]
+    msgs += [
+        {"role": "user", "content": "Run both probes and compare them."},
+        {"role": "assistant", "content": None, "tool_calls": pending_calls},
+        _terminal_result("new_a", "na", 70),
+        # Last and bigger than the soft ceiling on its own, still well inside the hard window share.
+        _terminal_result("new_b", "nb", 420),
+    ]
+    pending = {m["tool_call_id"]: m["content"] for m in msgs[-2:]}
+    previous = msgs[-6]
+    for text in ["Also flag any node above 90% cpu.", "And list the racks they sit in."][:steers]:
+        msgs.append(steer_user_row(text))
+    assert previous["tool_call_id"] == "old_12"
+
+    out = c.compress(list(msgs), current_tokens=estimate_messages_tokens_rough(msgs))
+
+    by_id = {m.get("tool_call_id"): m.get("content") for m in out if m.get("role") == "tool"}
+    for call_id, content in pending.items():
+        assert by_id.get(call_id) == content, f"pending result {call_id} was not kept verbatim: {by_id.get(call_id)!r:.120}"
+    owning = [m for m in out if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert owning[-1]["tool_calls"] == pending_calls, "the pending round's tool-call args were truncated"
+    # The budget still binds older rounds: the previous turn's result does not survive verbatim.
+    assert by_id.get("old_12") != previous["content"]
+
+
+def test_compaction_keeps_four_images_in_a_spared_pending_round(compressor_128k):
+    pending_ids = [f"new_{i}" for i in range(4)]
+    msgs = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Inspect the first image."},
+        {"role": "assistant", "content": None, "tool_calls": [_image_call("old")]},
+        _image_result("old"),
+        {"role": "assistant", "content": "The first image is clear."},
+        {"role": "user", "content": "Inspect these four images."},
+        {"role": "assistant", "content": None, "tool_calls": [_image_call(call_id) for call_id in pending_ids]},
+        *[_image_result(call_id) for call_id in pending_ids],
+        steer_user_row("Compare their labels."),
+        steer_user_row("Check the colors too."),
+    ]
+
+    out = compressor_128k.compress(msgs, current_tokens=estimate_messages_tokens_rough(msgs))
+
+    results = {m["tool_call_id"]: m for m in out if m.get("role") == "tool"}
+    assert [_tool_content_has_images(results[call_id]["content"]) for call_id in pending_ids] == [True] * 4
+    assert not _tool_content_has_images(results["old"]["content"])

@@ -31,6 +31,55 @@ with third-party bridges. When this happens, Hermes will update the bridge depen
 bot stops working after a WhatsApp update, pull the latest Hermes version and re-pair.
 :::
 
+## Multiple profiles
+
+The host multiplexer can serve a separate paired WhatsApp session for each profile.
+Run `hermes -p work whatsapp` to pair a secondary profile, then enable WhatsApp
+for that profile. An enabled profile without `creds.json` is skipped with the
+`whatsapp_unpaired` status and its pairing command.
+
+An explicit `platforms.whatsapp.extra.bridge_port` takes precedence. Otherwise,
+a secondary selects the first free port in 3001 to 3999 that no other profile's
+record claims, and saves it in its own `platforms/whatsapp/bridge_port` file for
+subsequent starts. Operators can pre-create that file with a port number; delete
+it to have a new port allocated. The launch profile uses port 3000 unless it
+already has that file (from serving as a secondary), in which case its gateway
+and `hermes send --to whatsapp:<chat_id>` both keep using the recorded port.
+
+A secondary adopts a bridge already running on its port only when its own
+session pidfile identifies that process (pid, kernel start time, and the port it
+was started on), which is
+what a gateway crash leaves behind. An unhealthy one is reaped by that same
+identity and restarted. Any other process bound on the port is a fatal error
+for that profile only. Set `platforms.whatsapp.extra.bridge_port` to a
+distinct free port, or stop the process holding it. Other
+profiles continue running. `hermes gateway status --profile work` reports the
+profile's own WhatsApp adapter rather than shared ingress.
+
+Profiles that each run their own gateway, rather than one multiplexed gateway,
+all use port 3000 unless configured otherwise. Give each one a distinct port in
+that profile's `config.yaml`:
+
+```yaml
+platforms:
+  whatsapp:
+    extra:
+      bridge_port: 3001        # one distinct port per profile
+```
+
+A gateway identifies a running bridge by the session directory the bridge
+reports in `/health`. A bridge serving another profile's session is never
+adopted and never stopped: the second profile's WhatsApp fails to start with
+`whatsapp_bridge_foreign_session`, naming the port and the other session. A
+process that holds the port but does not answer `/health` in time is left
+running too, and WhatsApp fails with the retryable
+`whatsapp_bridge_unresponsive`. `hermes send --to whatsapp:<chat_id>` and cron
+delivery check the same field and send nothing through another profile's bridge
+or through one whose `/health` fails. If you
+override `session_path`, keep it distinct per profile, or the profiles share one
+WhatsApp login. Bridges started by an older Hermes report no session directory
+and are restarted once, as after a bridge update.
+
 ## Two Modes
 
 | Mode | How it works | Best for |

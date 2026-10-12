@@ -44,7 +44,7 @@ Easiest path — run the built-in installer:
 
 ```bash
 hermes plugins enable google_meet
-hermes meet install                 # pip deps + Chromium (transcribe only)
+hermes meet install                 # PM dependencies + Chromium (transcribe only)
 hermes meet install --realtime      # + pulseaudio-utils / brew blackhole+ffmpeg
 hermes meet auth                    # optional; skips guest-lobby wait
 hermes meet setup                   # preflight checks
@@ -55,11 +55,8 @@ or `brew install` (macOS). Pass `--yes` to skip the prompt. It will NOT touch
 your macOS default-input setting — you have to select BlackHole 2ch in
 System Settings yourself before starting a realtime meeting.
 
-Or do it manually:
+For manual realtime audio setup:
 ```bash
-pip install playwright websockets && python -m playwright install chromium
-
-# For realtime mode, additionally:
 #   Linux:  sudo apt install pulseaudio-utils
 #   macOS:  brew install blackhole-2ch ffmpeg
 #           → System Settings → Sound → Input → BlackHole 2ch
@@ -69,8 +66,8 @@ pip install playwright websockets && python -m playwright install chromium
 For a remote node:
 ```bash
 # on the user's Mac (where Chrome is signed in):
-pip install playwright websockets && python -m playwright install chromium
 hermes plugins enable google_meet
+hermes meet install
 hermes meet node run --display-name my-mac    # persistent server
 # copy the printed token
 

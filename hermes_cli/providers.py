@@ -20,12 +20,12 @@ class HermesOverlay:
     transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
-    extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
+    extra_env_vars: tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
 
 
-HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+HERMES_OVERLAYS: dict[str, HermesOverlay] = {
     "moa": HermesOverlay(auth_type="virtual", base_url_override="moa://local"),
     "openrouter": HermesOverlay(is_aggregator=True, base_url_env_var="OPENROUTER_BASE_URL"),
     "nous": HermesOverlay(auth_type="oauth_device_code", base_url_override="https://inference-api.nousresearch.com/v1"),
@@ -101,7 +101,7 @@ class ProviderDef:
     id: str
     name: str
     transport: str                        # openai_chat | anthropic_messages | codex_responses
-    api_key_env_vars: Tuple[str, ...]     # all env vars to check for API key
+    api_key_env_vars: tuple[str, ...]     # all env vars to check for API key
     base_url: str = ""
     base_url_env_var: str = ""
     is_aggregator: bool = False
@@ -112,7 +112,7 @@ class ProviderDef:
 
 # -- Aliases: human-friendly / legacy names grouped by canonical (models.dev where possible) id;
 # ``ALIASES`` is the inverted lookup table. ---------------------------------------------------
-_ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
+_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "openrouter": ("openai",), "zai": ("glm", "z-ai", "z.ai", "zhipu"), "xai": ("x-ai", "x.ai", "grok"),
     "xai-oauth": ("grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"),
     "nvidia": ("nim", "nvidia-nim", "build-nvidia", "nemotron"),
@@ -131,27 +131,29 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "gmi": ("gmi-cloud", "gmicloud"), "fireworks": ("fireworks-ai", "fw"), "upstage": ("solar",),
     "actual": ("actual-computer", "actualcomputer", "aci"),
     "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
-    "lmstudio": ("lmstudio", "lm-studio", "lm_studio"), "custom": ("ollama",),
-    "local": ("vllm", "llamacpp", "llama.cpp", "llama-cpp"),
+    "lmstudio": ("lmstudio", "lm-studio", "lm_studio"),
+    # Local OpenAI-compatible servers route through the generic "custom" provider,
+    # matching hermes_cli.auth and hermes_cli.models so every layer agrees. Issue #62213.
+    "custom": ("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
 }
-ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
+ALIASES: dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
 
 
 # -- Display labels for providers not in the models.dev catalog ---------------
 
-_LABEL_OVERRIDES: Dict[str, str] = {
+_LABEL_OVERRIDES: dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
     "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
-    "local": "Local endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
+    "custom": "Custom endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 
 
 # -- Transport → API mode mapping ---------------------------------------------
 
-TRANSPORT_TO_API_MODE: Dict[str, str] = {
+TRANSPORT_TO_API_MODE: dict[str, str] = {
     "openai_chat": "chat_completions", "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses", "bedrock_converse": "bedrock_converse",
 }
@@ -397,13 +399,23 @@ def _user_pdef(pid: str, name: str, base_url: str, key_env: str, transport: str 
                        base_url=base_url, is_aggregator=False, auth_type="api_key", source="user-config")
 
 
-def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[ProviderDef]:
-    """Resolve a provider from the user's config.yaml ``providers:`` section."""
+def resolve_user_provider(name: str, user_config: dict[str, Any]) -> Optional[ProviderDef]:
+    """Resolve a provider from the user's config.yaml ``providers:`` section.
+
+    A ``providers.<name>`` block that carries no endpoint (``api``/``url``/``base_url``) is not a
+    custom-endpoint definition — it is tuning for a BUILT-IN provider of the same name (e.g.
+    ``providers.bedrock: {stale_timeout_seconds: 600}``, the documented path in
+    ``agent/turn_recovery.py`` / ``thinking_timeout_guidance.py``). Resolving it here would shadow
+    the built-in's real transport/base_url/auth_type with an empty ``openai_chat``/``api_key``
+    stub, routing e.g. AWS Bedrock through the generic custom-endpoint ``/models`` probe (#110402).
+    """
     entry = user_config.get(name) if isinstance(user_config, dict) and user_config else None
     if not isinstance(entry, dict):
         return None
-    return _user_pdef(name, entry.get("name", "") or name,
-                      entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or "",
+    base_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
+    if not base_url:
+        return None
+    return _user_pdef(name, entry.get("name", "") or name, base_url,
                       entry.get("key_env") or entry.get("api_key_env") or "",
                       entry.get("transport", "openai_chat") or "openai_chat")
 
@@ -433,7 +445,7 @@ def custom_provider_aliases(display_name: str, provider_key: str = "") -> frozen
     return frozenset(aliases)
 
 
-def resolve_custom_provider(name: str, custom_providers: Optional[List[Dict[str, Any]]]) -> Optional[ProviderDef]:
+def resolve_custom_provider(name: str, custom_providers: Optional[list[dict[str, Any]]]) -> Optional[ProviderDef]:
     """Resolve a provider from the user's config.yaml ``custom_providers`` list. A stored bare
     ``"custom"`` (corrupt state from a prior model-switch bug) falls back to the first valid entry
     so existing configs self-heal."""
@@ -486,7 +498,7 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
 # below and the picker's Local row (``hermes_cli/inventory.py``) — the two drifting apart is what
 # made the row's own id unresolvable.
 LLAMACPP_PROVIDER_ID = "llamacpp"
-LLAMACPP_ALIASES: Tuple[str, ...] = (LLAMACPP_PROVIDER_ID, "llama.cpp", "llama-cpp")
+LLAMACPP_ALIASES: tuple[str, ...] = (LLAMACPP_PROVIDER_ID, "llama.cpp", "llama-cpp")
 
 
 def _has_staged_local_models() -> bool:
@@ -518,8 +530,8 @@ def _llamacpp_pdef() -> Optional[ProviderDef]:
                        base_url=(endpoint or {}).get("base_url", ""), source="local-runtime")
 
 
-def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = None,
-                          custom_providers: Optional[List[Dict[str, Any]]] = None) -> Optional[ProviderDef]:
+def resolve_provider_full(name: str, user_providers: Optional[dict[str, Any]] = None,
+                          custom_providers: Optional[list[dict[str, Any]]] = None) -> Optional[ProviderDef]:
     """Full resolution chain: user ``providers.<raw name>`` -> lossy-alias registry id -> built-in
     (models.dev + overlays) -> user providers (canonical, then raw) -> ``custom_providers`` ->
     managed llamacpp -> models.dev directly. User-defined ``providers.<name>`` is tried FIRST on

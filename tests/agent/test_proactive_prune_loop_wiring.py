@@ -154,6 +154,7 @@ class TestProactivePruneLoopWiring:
                 active_system_prompt="system", conversation_history=[],
                 compression_attempts=0, max_compression_attempts=3,
                 effective_task_id=None, final_response="", turn_exit_reason=None,
+                current_turn_user_idx=0,
             )
         assert verdict.messages is messages
         assert not verdict.end_turn

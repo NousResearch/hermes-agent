@@ -87,8 +87,8 @@ def adapter(monkeypatch):
     return adapter
 
 
-def _publish(facade, binding, outcome, *, version=FACADE_VERSION):
-    return asyncio.run(facade.publish_outcome(binding, outcome, facade_version=version))
+def _publish(facade, binding, outcome, *, version=FACADE_VERSION, label=None):
+    return asyncio.run(facade.publish_outcome(binding, outcome, facade_version=version, label=label))
 
 
 def _settled(facade, binding=None, update=None):
@@ -125,6 +125,25 @@ def test_settled_reply_is_published_once_to_the_bound_topic_and_writes_nothing(r
     assert _events(running_service) == before
 
 
+def test_verified_reply_accepts_a_bounded_display_label_without_changing_attribution(running_service, adapter):
+    facade, outcome = _ready(*BOTH)
+
+    result = _publish(facade, _binding(), outcome, label="🧪 Agent Tester")
+
+    assert result.status == "published"
+    assert adapter.calls[0]["content"] == "[🧪 Agent Tester] reply from agent-tester"
+
+
+@pytest.mark.parametrize("label", ["", " agent-tester", "agent-tester ", "bad[label]", "bad\nlabel", "x" * 65])
+def test_invalid_display_label_is_rejected_before_send(running_service, adapter, label):
+    facade, outcome = _ready(*BOTH)
+
+    result = _publish(facade, _binding(), outcome, label=label)
+
+    assert (result.status, result.reason) == ("rejected", "invalid_label")
+    assert adapter.calls == []
+
+
 def test_main_chat_binding_sends_without_topic_metadata(running_service, adapter):
     _grant(*BOTH)
     facade = HostedRoomFacade(PLUGIN_ID)
@@ -151,7 +170,8 @@ def test_republishing_is_a_duplicate_with_the_first_message_id(running_service, 
 
 def test_describe_reports_publication_only_with_both_grants(running_service):
     _grant(facade_mod.CAPABILITY_ID)
-    assert HostedRoomFacade(PLUGIN_ID).describe().publication is False
+    status = HostedRoomFacade(PLUGIN_ID).describe()
+    assert status.publication is False and status.publication_labels is True
     _grant(facade_mod.PUBLISH_CAPABILITY_ID)
     assert HostedRoomFacade(PLUGIN_ID).describe().publication is False
     _grant(*BOTH)

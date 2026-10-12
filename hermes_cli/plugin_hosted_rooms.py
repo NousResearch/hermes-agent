@@ -29,6 +29,7 @@ FACADE_VERSION = 1
 CAPABILITY_ID = "gateway.hosted_room_ingress"
 PUBLISH_CAPABILITY_ID = "gateway.hosted_room_publish"
 MAX_PUBLICATION_CHARS = 4000
+MAX_PUBLICATION_LABEL_CHARS = 64
 SUPPORTED_ROOM_PROTOCOLS = frozenset({2})
 _GROUP_CHAT_TYPES = frozenset({"group", "supergroup"})
 _OUTCOME_KINDS = {"turn.settled": "settled", "turn.failed": "failed",
@@ -39,6 +40,17 @@ IngressStatus = Literal["accepted", "duplicate", "disabled", "rejected", "failed
 
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _publication_label(label: Any, profile: str) -> Optional[str]:
+    """Return a safe caller-supplied display label, or the verified profile when omitted."""
+    if label is None:
+        return profile
+    if not isinstance(label, str) or label != label.strip() or not label \
+            or len(label) > MAX_PUBLICATION_LABEL_CHARS \
+            or any(ord(char) < 32 or char in "[]\x7f" for char in label):
+        return None
+    return label
 
 
 @dataclass(frozen=True)
@@ -82,6 +94,7 @@ class FacadeStatus:
     reason: str
     room_protocol: Optional[int]
     publication: bool = False
+    publication_labels: bool = False
 
 
 @dataclass(frozen=True)
@@ -392,7 +405,7 @@ class HostedRoomFacade:
         """Version + capability discovery; call before relying on any other verb."""
         _service, reason = self._gate()
         publication = not reason and self._granted(PUBLISH_CAPABILITY_ID)
-        return FacadeStatus(FACADE_VERSION, not reason, reason, _room_protocol(), publication)
+        return FacadeStatus(FACADE_VERSION, not reason, reason, _room_protocol(), publication, True)
 
     # -- ingress ------------------------------------------------------------------------------
 
@@ -500,7 +513,8 @@ class HostedRoomFacade:
             logger.debug("hosted_rooms adapter lookup failed for %s", self._plugin_id, exc_info=True)
             return None, None
 
-    async def _publish(self, binding: Any, outcome: Any, facade_version: Any) -> PublicationResult:
+    async def _publish(self, binding: Any, outcome: Any, facade_version: Any,
+                       label: Any = None) -> PublicationResult:
         if not (_is_int(facade_version) and facade_version == FACADE_VERSION):
             return PublicationResult("disabled", "incompatible_facade")
         service, reason = self._gate()
@@ -510,6 +524,9 @@ class HostedRoomFacade:
             return PublicationResult("disabled", "capability_not_granted")
         if reason := _claim_reason(binding, outcome):
             return PublicationResult("rejected", reason)
+        display_label = _publication_label(label, outcome.profile)
+        if display_label is None:
+            return PublicationResult("rejected", "invalid_label")
         runner, adapter = self._telegram_adapter()
         if adapter is None:
             return PublicationResult("disabled", "adapter_unavailable")
@@ -521,7 +538,7 @@ class HostedRoomFacade:
             if (code := _error_reason(exc)) is None:
                 raise
             return PublicationResult("rejected", code)
-        text = f"[{outcome.profile}] {member_text}"
+        text = f"[{display_label}] {member_text}"
         if len(text) > MAX_PUBLICATION_CHARS:
             return PublicationResult("rejected", "text_too_long")
         key = (str(service.db_path), binding.room_id, outcome.seq, binding.chat_id, binding.thread_id)
@@ -536,15 +553,19 @@ class HostedRoomFacade:
         return result
 
     async def publish_outcome(self, binding: TelegramRoomBinding, outcome: RoomOutcome, *,
-                              facade_version: int) -> PublicationResult:
-        """Post one settled reply as ``[profile] text`` to ``binding``'s chat/topic as the gateway bot.
+                              facade_version: int, label: Optional[str] = None) -> PublicationResult:
+        """Post one settled reply to ``binding``'s chat/topic as the gateway bot.
+
+        The default wire form is ``[profile] text``. ``label`` may replace only that bracketed display
+        label; it is bounded and control/bracket-free, while attribution is still re-derived from the
+        room log using ``outcome.profile``.
 
         ``outcome`` is only a claim: it is re-verified against this gateway's room log (this gateway
         must be the room's coordinator, the round must have been started by an allowlisted Telegram
         sender in this exact chat/topic). Writes nothing to any room store. Idempotent per
         (room, seq, target) within this gateway process; never raises."""
         try:
-            result = await self._publish(binding, outcome, facade_version)
+            result = await self._publish(binding, outcome, facade_version, label)
         except Exception:
             logger.warning("hosted_rooms publish failed for plugin %s", self._plugin_id, exc_info=True)
             result = PublicationResult("failed", "internal_error")

@@ -95,13 +95,21 @@ def _mcp_install_action_name(name: str) -> str:
 async def list_mcp_servers(profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers
 
-    # ``url`` may carry a ``${VAR}`` ref — expand it against the requested profile, not this process.
-    servers = await asyncio.to_thread(_secret_scoped(profile, _get_mcp_servers))
-    return {"servers": [_mcp_server_summary(name, cfg) for name, cfg in sorted(servers.items())]}
+    def _read():
+        config_servers = _get_mcp_servers()
+        from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+
+        return server_configs_with_sources(config_servers)
+
+    servers, plugins = await asyncio.to_thread(_secret_scoped(profile, _read))
+    return {"servers": [
+        _mcp_server_summary(name, cfg, plugins[name]) for name, cfg in sorted(servers.items())
+    ]}
 
 
 @router.post("/api/mcp/servers")
 async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
+    from hermes_cli.mcp_catalog import record_mcp_install
     from hermes_cli.mcp_config import _get_mcp_servers, _save_bearer_auth_token, _save_mcp_server
 
     try:
@@ -109,19 +117,35 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    def _run():
+    def _save() -> bool:
         # _save_mcp_server does its own load→mutate→save; the duplicate-name
         # check sits under the same lock span so a concurrent add can't slip
         # between check and save.
         with config_write_scope(body.profile or profile):
-            if name in _get_mcp_servers():
+            config_servers = _get_mcp_servers()
+            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+
+            servers, plugins = server_configs_with_sources(config_servers)
+            if plugin := plugins.get(name):
+                raise HTTPException(
+                    status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified",
+                )
+            if name in servers:
                 raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
             if bearer_token is not None:
                 server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
-            if not _save_mcp_server(name, server_config):
-                raise HTTPException(
-                    status_code=400, detail=f"Server '{name}' rejected: suspicious command/args configuration",
-                )
+            return _save_mcp_server(name, server_config)
+
+    def _run():
+        saved = _save()
+        # Outside the config mutation lock: a cold first metric call costs imports + catalog loads.
+        with _profile_scope(body.profile or profile):
+            record_mcp_install("url" if server_config.get("url") else "local", None,
+                               "success" if saved else "failed", failure_class=None if saved else "config_rejected")
+        if not saved:
+            raise HTTPException(
+                status_code=400, detail=f"Server '{name}' rejected: suspicious command/args configuration",
+            )
 
     try:
         await asyncio.to_thread(_run)
@@ -142,6 +166,12 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
 
     def _run():
         with config_write_scope(body.profile or profile):
+            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+
+            _servers, plugins = server_configs_with_sources({})
+            for name in body.servers:
+                if plugin := plugins.get(name):
+                    return False, [f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified"]
             return _replace_mcp_servers(body.servers)
 
     ok, issues = await asyncio.to_thread(_run)
@@ -152,10 +182,18 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
 
 @router.delete("/api/mcp/servers/{name}")
 async def remove_mcp_server(name: str, profile: Optional[str] = None):
-    from hermes_cli.mcp_config import _remove_mcp_server
+    from hermes_cli.mcp_config import _get_mcp_servers, _remove_mcp_server
 
     def _run():
         with config_write_scope(profile):
+            config_servers = _get_mcp_servers()
+            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+
+            _servers, plugins = server_configs_with_sources(config_servers)
+            if plugin := plugins.get(name):
+                raise HTTPException(
+                    status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified",
+                )
             return _remove_mcp_server(name)
 
     if not await asyncio.to_thread(_run):
@@ -168,11 +206,17 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     """Connect to the server, list its tools, disconnect."""
     from hermes_cli.mcp_config import _get_mcp_servers, _oauth_tokens_present, _probe_single_server
 
-    servers = await asyncio.to_thread(_secret_scoped(profile, _get_mcp_servers))
+    def _read():
+        config_servers = _get_mcp_servers()
+        from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+
+        return server_configs_with_sources(config_servers)[0]
+
+    servers = await asyncio.to_thread(_secret_scoped(profile, _read))
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
 
-    details: Dict[str, Any] = {}
+    details: dict[str, Any] = {}
     # An `auth: oauth` server that serves tools/list anonymously would probe OK
     # with no token — a false green. Require a token on disk, matching /auth.
     needs_oauth_token = servers[name].get("auth") == "oauth"
@@ -224,11 +268,17 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
 
     def _read():
         with _profile_secret_scope(profile):
-            return _get_mcp_servers(), _home()
+            config_servers = _get_mcp_servers()
+            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
-    servers, flow_home = await asyncio.to_thread(_read)
+            servers, plugins = server_configs_with_sources(config_servers)
+            return servers, plugins, _home()
+
+    servers, plugins, flow_home = await asyncio.to_thread(_read)
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+    if plugin := plugins.get(name):
+        raise HTTPException(status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified")
     cfg = dict(servers[name])
     if not cfg.get("url"):
         raise HTTPException(status_code=400, detail="stdio servers authenticate via env keys, not OAuth")
@@ -326,6 +376,13 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
     def _run():
         with config_write_scope(body.profile or profile):
             cfg = load_config()
+            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+
+            _servers, plugins = server_configs_with_sources(cfg.get("mcp_servers") or {})
+            if plugin := plugins.get(name):
+                raise HTTPException(
+                    status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified",
+                )
             servers = cfg.get("mcp_servers")
             if not isinstance(servers, dict) or name not in servers:
                 raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
@@ -338,13 +395,14 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
     return await asyncio.to_thread(_run)
 
 
-def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str, Any]:
+def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> dict[str, Any]:
     auth = entry.auth
     transport = entry.transport
     install = entry.install
     return {
         "name": entry.name,
         "description": entry.description,
+        "connector_slug": entry.connector_slug,
         "source": entry.source,
         "transport": transport.type,
         "auth_type": getattr(auth, "type", "none"),
@@ -379,10 +437,9 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
 
 
 @router.get("/api/mcp/catalog")
-async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = False):
+async def list_mcp_catalog(profile: Optional[str] = None):
     """Browse the Nous-approved MCP catalog (optional-mcps/ manifests), each
-    entry annotated with installed/enabled state for ``profile``. Opt-in app
-    signals describe this backend machine, never the client or terminal sandbox."""
+    entry annotated with installed/enabled state for ``profile``."""
     with http_failure("mcp_catalog import failed", 500, "Catalog unavailable"):
         from hermes_cli import mcp_catalog
 
@@ -408,36 +465,7 @@ async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = Fa
         diagnostics = [{"name": n, "kind": k, "message": m} for (n, k, m) in mcp_catalog.catalog_diagnostics()]
     except Exception:
         pass
-    result = {"entries": entries, "diagnostics": diagnostics}
-    if detect_apps:
-        import sys
-
-        try:
-            from hermes_cli.mcp_app_detection import discover_catalog_apps, validate_applications
-
-            applications = {}
-            for entry in entries:
-                labels = (entry["suggest"] or {}).get("applications") or [
-                    entry["name"].replace("-", " ").replace("_", " ")
-                ]
-                try:
-                    applications[entry["name"]] = validate_applications(labels)
-                except ValueError:
-                    # Catalog identifiers allow more than app labels; one unusable
-                    # inference must not suppress valid observations for other entries.
-                    applications[entry["name"]] = []
-
-            # Keep backend-local filesystem work off the event loop and profile lock.
-            detected = await asyncio.to_thread(discover_catalog_apps, applications)
-        except Exception:
-            _log.warning("Backend application discovery unavailable")
-            detected = {"matches": {}, "discovery": {
-                "scope": "backend", "status": "unavailable", "platform": sys.platform,
-            }}
-        for entry in entries:
-            entry["detected_apps"] = detected["matches"].get(entry["name"], [])
-        result["discovery"] = detected["discovery"]
-    return result
+    return {"entries": entries, "diagnostics": diagnostics}
 
 
 @router.post("/api/mcp/catalog/install")
@@ -508,11 +536,3 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
         _log.exception("install_mcp_catalog_entry failed")
         raise HTTPException(status_code=400, detail=str(exc))
     return {"ok": True, "name": name, "background": False}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import logging  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

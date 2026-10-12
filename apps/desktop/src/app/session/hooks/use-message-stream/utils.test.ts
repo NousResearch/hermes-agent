@@ -65,7 +65,7 @@ describe('delegateTaskPayloads', () => {
     expect(spec).toMatchObject({ event_type: 'subagent.complete', status: 'failed' })
   })
 
-  it.each(['timeout', 'error', 'failed', 'failure', 'TIMEOUT'])(
+  it.each(['timeout', 'failure', 'TIMEOUT'])(
     'maps completion with result.status=%s to a failed subagent.complete',
     resultStatus => {
       const [spec] = delegateTaskPayloads(

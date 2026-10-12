@@ -40,17 +40,6 @@ beforeEach(() => {
   }
 })
 
-describe('managedUpdatesSupported', () => {
-  it('is false on an older Electron main without the transactional bridge', () => {
-    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { connections: {} }
-    expect(managedUpdatesSupported()).toBe(false)
-  })
-
-  it('is true when the preload bridge exposes updateManaged', () => {
-    expect(managedUpdatesSupported()).toBe(true)
-  })
-})
-
 describe('runManagedUpdate', () => {
   it('routes through the managed drain/update/restore bridge and lands on updated with the receipt', async () => {
     const pending = runManagedUpdate('linux-ssh')

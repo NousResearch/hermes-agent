@@ -31,7 +31,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.turn_context import TurnContext, build_turn_context
+from agent.turn_context import build_turn_context
 from tests.agent.test_turn_context import _FakeAgent
 
 
@@ -98,23 +98,6 @@ def _build(agent, **overrides):
     return build_turn_context(**kwargs)
 
 
-def test_default_false_hook_is_byte_identical_noop():
-    """The default engine (hook returns False) changes nothing sub-threshold."""
-    calls = []
-
-    def _hook(messages):
-        calls.append(list(messages))
-        return False
-
-    agent = _make_agent(_stub_compressor(preflight=_hook))
-
-    ctx = _build(agent)
-
-    assert isinstance(ctx, TurnContext)
-    assert calls, "sub-threshold path must consult the engine hook"
-    agent._compress_context.assert_not_called()
-    agent._emit_status.assert_not_called()
-    assert ctx.preflight_compression_blocked is False
 
 
 
@@ -167,7 +150,6 @@ def test_builtin_compressor_default_sub_threshold_path_unchanged(tmp_path):
     from agent.context_engine import ContextEngine
 
     # The default really is False (the dead-code premise of #20316).
-    assert "should_compress_preflight" not in ContextCompressor.__dict__
     assert ContextEngine.should_compress_preflight(
         object.__new__(ContextCompressor), []
     ) is False

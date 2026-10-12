@@ -75,9 +75,14 @@ def _anydoc() -> Optional[Any]:
                 and time.monotonic() - _anydoc_failed_at < ANYDOC_RETRY_SECONDS):
             return None
         try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("tool.doc_extract", prompt=False)  # read_file must never block on a prompt
-            _anydoc_module = importlib.import_module("anydoc")
+            from pm import ensure_import
+
+            # read_file must never block on an install prompt.
+            ensure_import("doc-extract")
+        except Exception:
+            _anydoc_failed_at = time.monotonic()
+            return None
+        try:            _anydoc_module = importlib.import_module("anydoc")
         except Exception:  # install failure, ImportError or a broken native binding
             _anydoc_failed_at = time.monotonic()
             return None
@@ -139,8 +144,8 @@ def _anydoc_missing_error(path: str) -> str:
     return (
         f"Cannot convert {path!r}: this format needs the optional anydoc "
         "converter, which is not installed (install blocked or first "
-        "attempt failed; retried every 5 minutes). Fix: `pip install "
-        "firecrawl-anydoc` in Hermes's environment, or convert the file "
+        "attempt failed; retried every 5 minutes). Run `hermes pm repair` "
+        "to restore firecrawl-anydoc, or convert the file "
         "yourself via terminal (e.g. libreoffice --headless --convert-to "
         "txt).")
 
@@ -198,7 +203,7 @@ def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException) -> str:
         try:
             extra = {k: v for k, v in (("api_key", api_key), ("api_url", api_url)) if v}
             return mod.to_markdown(path, ocr="hosted", **extra).rstrip("\n") + "\n"
-        except Exception as hosted_exc:  # noqa: BLE001
+        except Exception as hosted_exc:
             hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
     return _needs_ocr_warning(path, pages, hosted_error)  # whole doc is scans: the warning IS it
 
@@ -251,7 +256,7 @@ def _pdf_page_texts(path: str) -> Optional[list[str]]:
         return None
     try:
         proc = subprocess.run(
-            ["pdftotext", path, "-"], capture_output=True, timeout=PDF_PAGE_SCAN_TIMEOUT)
+            ["pdftotext", path, "-"], stdin=subprocess.DEVNULL, capture_output=True, timeout=PDF_PAGE_SCAN_TIMEOUT, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     out = proc.stdout.decode("utf-8", errors="replace") if proc.returncode == 0 else ""
@@ -408,7 +413,7 @@ _CELL_LABELS = {"markdown": "Markdown", "code": "Code", "raw": "Raw"}
 
 def _extract_notebook(path: str, *, display_path: Optional[str] = None) -> str:
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
             nb = json.load(fh)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise ExtractionError(f"Not a valid notebook: {exc}") from exc
@@ -616,12 +621,3 @@ def _sqlite_cell(value: Any) -> str:
 _STDLIB_EXTRACTORS: dict[str, Callable[[str], str]] = {
     ".ipynb": _extract_notebook, ".docx": _extract_docx, ".xlsx": _extract_xlsx,
     ".db": _extract_sqlite, ".sqlite": _extract_sqlite, ".sqlite3": _extract_sqlite}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-MAX_XLSX_BYTES = 50 * 1024 * 1024
-# ---- END PLUGIN-COMPAT ----

@@ -1,6 +1,6 @@
 name: aside-browser
 repo: https://github.com/leonphull/hermes-aside-browser
-sha: 1379fdd1f96838947bc2b81962d24e6abb7bd8bf
+sha: ffd4e0e0de4b3a8624f3d83f98c378b88d6f9581
 description: Use the signed-in Aside browser as Hermes's browser when the Aside CLI is installed.
 maintainer: leonphull
 tier: community

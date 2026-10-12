@@ -24,6 +24,7 @@ import type { ReactNode } from 'react'
 import { capabilityScoped } from '@/api/client'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
+import { type CommandTerminalOptions, openCommandTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { syncWorkspaceRoute } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import {
@@ -1466,6 +1467,15 @@ export const host = {
    *  yours to wire to `ctx.onDispose` — or use `ctx.onEvent`, which is
    *  tracked wherever it is called. */
   onEvent: onGatewayEvent,
+
+  /** Open the terminal pane on a NEW interactive shell tab that runs
+   *  `command` once its PTY is live (the same shell the app's terminal starts:
+   *  local, or the remote host over SSH). Pass a `key` to make the call
+   *  idempotent: while a tab with that key is open, it is focused instead of
+   *  starting another shell. Command tabs are not restored after a relaunch.
+   *  Returns the tab id, or null for an empty command. Call it only from an
+   *  explicit user action: the command runs with the user's authority. */
+  openTerminal: (options: CommandTerminalOptions): null | string => openCommandTerminal(options),
 
   /** Restart the backend gateway (progress surfaces in the core statusbar). */
   restartGateway: async () => runGatewayRestart(),

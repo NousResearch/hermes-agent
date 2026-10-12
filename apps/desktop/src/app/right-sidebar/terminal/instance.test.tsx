@@ -11,14 +11,20 @@ vi.mock('./use-agent-terminal', () => ({
   useAgentTerminal: () => ({ hostRef: { current: null } })
 }))
 
+const sessionOptions = vi.hoisted(() => [] as Array<Record<string, unknown>>)
+
 vi.mock('./use-terminal-session', () => ({
-  useTerminalSession: () => ({
-    addSelectionToChat: vi.fn(),
-    hostRef: { current: null },
-    selection: '',
-    selectionStyle: null,
-    status: 'ready'
-  })
+  useTerminalSession: (options: Record<string, unknown>) => {
+    sessionOptions.push(options)
+
+    return {
+      addSelectionToChat: vi.fn(),
+      hostRef: { current: null },
+      selection: '',
+      selectionStyle: null,
+      status: 'ready'
+    }
+  }
 }))
 
 describe('background terminal input guidance (#108233)', () => {
@@ -81,5 +87,20 @@ describe('terminal close-chord markers', () => {
 
     expect(terminal?.hasAttribute('data-terminal')).toBe(true)
     expect(terminal?.hasAttribute('data-interactive-terminal')).toBe(false)
+  })
+})
+
+describe('command tabs', () => {
+  afterEach(cleanup)
+
+  it('hands the tab command to the PTY session, and none to a plain shell', () => {
+    sessionOptions.length = 0
+    render(
+      <TerminalInstance active command="tmux attach -t '=AI-1'" cwd="/tmp" id="cmd" onAddSelectionToChat={vi.fn()} />
+    )
+    render(<TerminalInstance active cwd="/tmp" id="plain" onAddSelectionToChat={vi.fn()} />)
+
+    expect(sessionOptions.find(o => o.id === 'cmd')?.command).toBe("tmux attach -t '=AI-1'")
+    expect(sessionOptions.find(o => o.id === 'plain')?.command).toBeUndefined()
   })
 })

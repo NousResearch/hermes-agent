@@ -1,7 +1,9 @@
-"""One backend-owned connection operation per ``manage_connections`` call. Pure data, no I/O."""
+"""One backend-owned connection operation per ``manage_connections`` call. Pure data; its only
+I/O is one local log line per state change and per settle."""
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -9,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 from tools.connectors.contract import Actor, SettleReason, TargetState, allowed, resolves
+
+logger = logging.getLogger(__name__)
 
 # Not a config key: a user-tunable wait with clamp rails was a foot-gun (PR1 shipped one, unmerged).
 OPERATION_DEADLINE_SECONDS = 300.0
@@ -135,6 +139,7 @@ class ConnectionOperation:
             if extra:
                 target.extra = dict(extra)
             snapshot = self._bump_locked()
+        logger.info("connection op %s: %s %s -> %s by %s", self.op_id, name, change["from"], to.value, actor.value)
         self.wake.set()
         self._changed(change, snapshot)
         return change
@@ -197,6 +202,8 @@ class ConnectionOperation:
                 if not target.resolved:
                     target.state = TargetState.not_connected
             self._settled_snapshot = self._bump_locked()
+            outcomes = ", ".join(f"{t.name}={t.state.value}" for t in self.targets)
+        logger.info("connection op %s settled by %s: %s", self.op_id, by.value, outcomes)
         self.wake.set()
         self._changed(None, self._settled_snapshot)
         return True

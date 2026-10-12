@@ -513,7 +513,7 @@ def _connectors_on(monkeypatch, client_factory):
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
-    monkeypatch.setattr(bridge, "_default_client_factory", client_factory)
+    monkeypatch.setattr(bridge, "_default_client_factory", lambda call=None: client_factory())
     invalidate_check_fn_cache()
 
 

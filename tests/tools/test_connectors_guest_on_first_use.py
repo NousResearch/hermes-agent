@@ -35,6 +35,9 @@ def test_first_hosted_action_creates_one_connectors_only_guest(nas, monkeypatch)
     class Gateway:
         """Reads the bearer the way the real gateway client does on every request."""
 
+        def __init__(self, **_):
+            pass
+
         def list_connectors(self, *, timeout=None):
             bearers.append(read_nous_access_token())
             return [{"connector": "gmail", "enabled": True, "connected": False}]
@@ -68,7 +71,7 @@ def test_tool_search_without_an_identity_sends_nothing(nas, monkeypatch):
     from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA
     from tools.tool_search import dispatch_tool_search
 
-    def no_client():
+    def no_client(**_):
         raise AssertionError("no gateway client may be built before an identity exists")
 
     monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", no_client)

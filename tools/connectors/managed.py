@@ -45,16 +45,22 @@ NOTE = (
 
 GUEST_SETUP_FAILED = "GUEST_SETUP_FAILED"
 
+# The connect request's ``initiator``: manage_connections, the Connectors page, the card's Try again.
+AGENT_TOOL = "agent_tool"
+DESKTOP_PAGE = "desktop_page"
+CARD_RETRY = "card_retry"
 
-def managed_client():
+
+def managed_client(*, initiator: Optional[str] = AGENT_TOOL, call: Optional[Any] = None):
     """The real gateway client for a user action. The first one creates the guest identity when the
-    user has none: every hosted action is a request for an app."""
+    user has none: every hosted action is a request for an app. ``initiator`` names who asked, so
+    every link the client mints is attributed."""
     from tools.connectors.gateway.client import ConnectorClient
     from tools.connectors.gateway.errors import ToolGatewayError
 
     if setup_error := ensure_guest_identity():
         raise ToolGatewayError(setup_error, code=GUEST_SETUP_FAILED, retryable=True)
-    return ConnectorClient()
+    return ConnectorClient(initiator=initiator, call=call)
 
 
 def managed_kind(client: Any, action: str, force: bool) -> Kind:
@@ -132,7 +138,7 @@ def _status_for(client: Any, target: Target, *, timeout: float) -> Optional[dict
     except RateLimited:
         raise
     except Exception as exc:
-        logger.debug("connector account read failed for %s: %s", target.name, exc)
+        logger.warning("connector account read failed for %s: %s", target.name, exc)
         return None
 
 
@@ -358,15 +364,19 @@ def run_managed_action(
     client_factory: Optional[Callable[[], Any]] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
     connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
 ) -> str:
+    from tools.managed_gateway_identity import CallRef
+
     if connectors_available is not None and not connectors_available():
         return tool_error("Connectors are not available in this session.")
     try:
         if action == "rename":
             return _rename_result(targets[0])
-        client = (client_factory or managed_client)()
+        call = CallRef(turn_id=turn_id, tool_call_id=tool_call_id)
+        client = client_factory() if client_factory else managed_client(call=call)
         if action == "status":
             return _status_result(client, [t.name for t in targets])
         if not targets:
@@ -385,7 +395,7 @@ def run_managed_action(
             connection_callback=connection_callback, with_urls_in_result=False,
         )
     except Exception as exc:
-        logger.debug("manage_connections %s failed: %s", action, exc)
+        logger.warning("manage_connections %s failed: %s", action, exc)
         if getattr(exc, "code", None) == GUEST_SETUP_FAILED:
             return tool_error(str(exc))
         return tool_error(

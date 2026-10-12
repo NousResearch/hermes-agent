@@ -1,3 +1,5 @@
+# health: allow FILE_LINES -- +5 lines wiring the runtime_override fallback handoff into the
+# existing fallback activation path; no new public surface.  File split is a standalone refactor.
 """API-call helpers extracted from :class:`AIAgent`: non-streaming and streaming
 request drivers, request kwargs builder, assistant-message materializer,
 provider-fallback activator, max-iterations handler, per-turn resource cleanup.
@@ -2136,6 +2138,11 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             from agent.native_compaction import resolve_native_compaction_capabilities
             agent.runtime_capabilities = resolve_native_compaction_capabilities(
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            # A proactive runtime_override owns only the primary attempt: once the
+            # fallback chain takes over the route, clear the turn-scoped override so
+            # retries stay on the fallback route (and supersede any open scope).
+            from agent.runtime_override import consume_runtime_override
+            consume_runtime_override(agent)
             return True
         except Exception as e:
             if fb_provider == "nous":

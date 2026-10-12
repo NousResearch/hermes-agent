@@ -217,3 +217,57 @@ def test_oversized_body_flagged_above_budget_and_not_below():
     found = [f for f in lint_content(over) if f.rule == "oversized-body"]
     assert found and found[0].severity == WARNING
     assert "oversized-body" not in _rules(lint_content(under))
+
+
+# --- declared trigger phrases: the shapes the extractor drops in silence ---------------------
+# Every one of these is a phrase the author believes is live and is not, so the linter is the only
+# place they can hear about it.
+
+def test_a_well_formed_trigger_list_is_clean():
+    content = CLEAN.replace("tags: [arxiv, research]", 'tags: [arxiv, research]\n    triggers: ["كشف حساب", "bank statement"]')
+    assert _rules(lint_content(content)) == set()
+
+
+def test_non_list_triggers_warn():
+    for bad in ("triggers: 7", "triggers: {a: b}"):
+        content = CLEAN.replace("tags: [arxiv, research]", f"tags: [arxiv, research]\n    {bad}")
+        assert "triggers-shape" in _rules(lint_content(content)), bad
+
+
+def test_non_string_entries_warn_and_suggest_quoting():
+    content = CLEAN.replace("tags: [arxiv, research]", "tags: [arxiv, research]\n    triggers: [2026, ok]")
+    findings = [f for f in lint_content(content) if f.rule == "triggers-shape"]
+    assert findings and "Quote them" in findings[0].message
+
+
+def test_more_than_the_cap_warns_and_names_the_cap():
+    from agent.skill_utils import MAX_TRIGGERS
+    phrases = ", ".join(f'"phrase {i}"' for i in range(MAX_TRIGGERS + 3))
+    content = CLEAN.replace("tags: [arxiv, research]", f"tags: [arxiv, research]\n    triggers: [{phrases}]")
+    findings = [f for f in lint_content(content) if f.rule == "triggers-cap"]
+    assert findings and str(MAX_TRIGGERS) in findings[0].message
+
+
+def test_a_slash_trigger_warns_because_it_is_unreliable():
+    # Measured, not assumed: stripSlashTokens removes a whitespace-PREFIXED "/token", so a phrase that
+    # starts with "/" still fires when the draft begins with it and never fires mid-sentence. Warn on
+    # the unreliability; "can never fire" would be a claim the code does not support.
+    content = CLEAN.replace("tags: [arxiv, research]", 'tags: [arxiv, research]\n    triggers: ["/pdf", "ok phrase"]')
+    findings = [f for f in lint_content(content) if f.rule == "triggers-slash"]
+    assert findings and "follows whitespace" in findings[0].message
+
+
+def test_top_level_triggers_are_linted_too():
+    # The loader mirrors top-level declarations, so the linter must read them from either location.
+    content = CLEAN.replace("version: 1.0.0", 'version: 1.0.0\ntriggers: ["/dead"]')
+    assert "triggers-slash" in _rules(lint_content(content))
+
+
+def test_metadata_triggers_take_precedence_when_both_are_declared():
+    # Same precedence as the extractor: the agentskills.io location wins, so a clean nested list is
+    # clean even when a sloppy top-level one sits beside it.
+    content = CLEAN.replace(
+        "tags: [arxiv, research]",
+        'tags: [arxiv, research]\n    triggers: ["fine"]',
+    ).replace("version: 1.0.0", 'version: 1.0.0\ntriggers: ["/ignored"]')
+    assert _rules(lint_content(content)) == set()

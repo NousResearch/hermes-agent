@@ -2,11 +2,26 @@ import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 
-import { collidesWithWorkspace, skillHit, skillPattern, skillTouchedInMessages, stripSlashTokens } from './skill'
+import {
+  collidesWithWorkspace,
+  skillHit,
+  skillPattern,
+  skillTouchedInMessages,
+  stripSlashTokens,
+  triggerPattern,
+  triggerPhrases
+} from './skill'
 
 // skillHit is the provider's real predicate: a whole-word match that the user
 // has finished typing (at least one character follows it).
 const hits = (name: string, draft: string) => skillHit(skillPattern(name), draft.toLowerCase())
+
+// The same predicate over a declared trigger phrase, which is what lets a skill be
+// offered to a user who types their own language instead of the skill's name. It runs on the
+// provider's REAL haystack (slash tokens stripped, then lowercased) — a helper that skipped the
+// sanitizer would pass a trigger the provider can never fire, e.g. one beginning with "/".
+const hitsTrigger = (phrase: string, draft: string) =>
+  skillHit(triggerPattern(phrase), stripSlashTokens(draft).toLowerCase())
 
 // Exercises the provider's real haystack sanitizer, not a copy of it.
 const hitsAfterSanitize = (name: string, draft: string) =>
@@ -149,5 +164,83 @@ describe('draft haystack sanitization (slash-prefixed skills, #91626)', () => {
     // Stripping the slash token must not blind the provider to a genuine
     // prose mention elsewhere in the draft.
     expect(hitsAfterSanitize('github-auth', '/github-auth loaded. Is github-auth any good? ')).toBe(true)
+  })
+})
+
+describe('triggerPattern — declared phrases reach a skill by the words the user types', () => {
+  it('matches a phrase in another language, which the name alone never could', () => {
+    // The case that motivated this: an English-named skill and a draft written in
+    // Arabic. `pdf-editing` cannot be typed as a name by a user who writes "أدمج ملفين".
+    expect(hitsTrigger('دمج ملفين', 'دمج ملفين pdf وأرسلهم للعميل')).toBe(true)
+    expect(hitsTrigger('ملف pdf', 'رتب لي ملف pdf هذا فضلاً')).toBe(true)
+    // The name still misses the same draft — that is the gap the triggers close.
+    expect(hits('pdf-editing', 'دمج ملفين pdf وأرسلهم للعميل')).toBe(false)
+  })
+
+  it('keeps the completed-word rule: a phrase still being typed does not fire', () => {
+    expect(hitsTrigger('دمج ملفين', 'دمج ملفين')).toBe(false)
+    expect(hitsTrigger('دمج ملفين', 'دمج ملفين ')).toBe(true)
+  })
+
+  it('requires a word boundary, so a phrase inside a longer word does not fire', () => {
+    expect(hitsTrigger('دمج', 'أدمج الملفين')).toBe(false) // "أدمج" is one word
+    expect(hitsTrigger('دمج', 'دمج الملفين')).toBe(true)
+    expect(hitsTrigger('ملفات', 'ملفاته كثيرة هنا')).toBe(false) // a letter follows
+    expect(hitsTrigger('ملفات', 'ملفات كثيرة هنا')).toBe(true)
+  })
+
+  it('treats whitespace inside a phrase as flexible', () => {
+    expect(hitsTrigger('دمج   ملفين', 'دمج ملفين pdf')).toBe(true)
+    expect(hitsTrigger('دمج ملفين', 'دمج    ملفين pdf')).toBe(true)
+  })
+
+  it('escapes the phrase, so punctuation is literal', () => {
+    expect(hitsTrigger('a+b', 'type a+b here')).toBe(true)
+    expect(hitsTrigger('a+b', 'type aab here')).toBe(false)
+    expect(hitsTrigger('c++', 'use c++ now')).toBe(true)
+  })
+
+  it('an empty or whitespace phrase never matches (a blank entry is not a wildcard)', () => {
+    expect(hitsTrigger('', 'anything at all')).toBe(false)
+    expect(hitsTrigger('   ', 'anything at all')).toBe(false)
+  })
+
+  it('is case-insensitive on the Latin part and caller-lowercased on the rest', () => {
+    expect(hitsTrigger('File PDF', 'send the file pdf now')).toBe(true)
+    expect(hitsTrigger('file pdf', 'SEND THE FILE PDF NOW')).toBe(true)
+  })
+
+  it('a slash-leading trigger fires only where the draft itself starts with it', () => {
+    // Measured, not assumed. stripSlashTokens removes whitespace-PREFIXED "/token" (which is why
+    // "/api/v1" survives mid-prose and "run /github-auth" does not), so a phrase starting with "/"
+    // has exactly one live position: the very start of the draft. It is unreliable rather than dead —
+    // it fires on "/pdf please" and not on "use /pdf now".
+    expect(hitsTrigger('/pdf', '/pdf please')).toBe(true)
+    expect(hitsTrigger('/pdf', 'use /pdf now')).toBe(false)
+  })
+})
+
+describe('triggerPhrases — the payload contract, defended', () => {
+  it('accepts a list, trims it, and drops blanks', () => {
+    expect(triggerPhrases(['  دمج ملفين  ', '', '   ', 'file pdf'])).toEqual(['دمج ملفين', 'file pdf'])
+  })
+
+  it('drops non-string entries instead of stringifying them', () => {
+    // `5` becoming the phrase "5" is a phrase nobody wrote — the backend refuses scalars for the
+    // same reason, and this is the second guard.
+    expect(triggerPhrases([5, null, undefined, true, { a: 1 }, ['x'], 'kept'])).toEqual(['kept'])
+  })
+
+  it('a non-array payload yields no phrases instead of throwing', () => {
+    // A string has `.length` (so it would pass a length gate) but no `.map`: this is the shape that
+    // would throw inside the composer's render path, from an older or malformed backend.
+    expect(triggerPhrases('short, phrases')).toEqual([])
+    expect(triggerPhrases(undefined)).toEqual([])
+    expect(triggerPhrases(null)).toEqual([])
+    expect(triggerPhrases(7)).toEqual([])
+  })
+
+  it('caps the list', () => {
+    expect(triggerPhrases(Array.from({ length: 40 }, (_, i) => `p${i}`))).toHaveLength(12)
   })
 })

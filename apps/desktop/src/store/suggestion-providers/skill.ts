@@ -21,10 +21,17 @@ import { $sessionStates } from '@/store/session-states'
 
 const SKILLS_TTL_MS = 5 * 60_000
 const MIN_NAME_LENGTH = 4
+/** Bound on declared trigger phrases honoured per skill (the backend caps its side too): each entry
+ *  becomes a regex tested against every draft sample, and the provider runs on each keystroke. */
+const MAX_TRIGGERS = 12
 
 interface SkillIndexEntry {
   name: string
-  pattern: RegExp
+  /** null when the name is below the pill's length floor — it never offers on its own. */
+  pattern: RegExp | null
+  /** Patterns for the frontmatter's declared triggers — the skill's reach in languages the user
+   *  actually types. Empty when a skill declares none. */
+  triggerPatterns: RegExp[]
 }
 
 let index: SkillIndexEntry[] | null = null
@@ -45,6 +52,56 @@ export function skillPattern(name: string): RegExp {
   const flexible = name.toLowerCase().split(/[-_]/).map(escape).join('[-_ ]')
 
   return new RegExp(`(?<![\\p{L}\\p{N}])${flexible}(?![\\p{L}\\p{N}-])`, 'gu')
+}
+
+/** A declared trigger phrase, matched by the same whole-word rule as a name.
+ *
+ *  Why this exists: the provider's only signal used to be the skill's NAME, so a skill whose name the
+ *  user never types — because they write in another language, or because the name is a common English
+ *  word that carries no intent — could never be offered. A declared phrase list is authored in the
+ *  user's own words, so `ملف pdf` or `دمج ملفين` reaches the skill that `pdf-editing` does not.
+ *
+ *  Whitespace inside a phrase is flexible (`دمج   ملفين` still matches) and the phrase is escaped, so
+ *  punctuation in a trigger is literal. An empty phrase yields a pattern that never matches rather
+ *  than one that matches everywhere.
+ *
+ *  Sibling matcher, and why this one is not it: `mcp.ts` has `keywordHit` for the MCP catalog's
+ *  `suggest.keywords`, the same whole-word job. The two differ deliberately in one place — the
+ *  whitespace between words. MCP keywords are declared in a reviewed catalog manifest, where exact
+ *  spacing is meaningful; skill triggers are hand-authored by whoever writes the skill, in their own
+ *  language, and a user who types two spaces means the same phrase. Unifying them would either
+ *  loosen the catalog's contract or break a real trigger, so the divergence is documented here and
+ *  a shared `wholeWordPattern(phrase, { flexibleWhitespace })` is the follow-up that would remove
+ *  the duplication without changing either caller's semantics. */
+export function triggerPattern(phrase: string): RegExp {
+  const parts = phrase.trim().toLowerCase().split(/\s+/).filter(Boolean).map(escape)
+
+  if (parts.length === 0) {
+    // A blank entry is not a wildcard. Built from a string, not written as a literal, because the
+    // `gu` flags must be explicit: skillHit runs matchAll, which throws "called with a non-global
+    // RegExp argument" without `g` — measured, not assumed.
+    return new RegExp('(?!)', 'gu')
+  }
+
+  return new RegExp(`(?<![\\p{L}\\p{N}])${parts.join('\\s+')}(?![\\p{L}\\p{N}-])`, 'gu')
+}
+
+/** Declared phrases as a clean string list, exported for tests.
+ *
+ *  Tolerates a malformed payload: a string where the type says array has a `.length` that passes the
+ *  length gate and then no `.map`, which would throw inside the composer's render path. Non-string
+ *  entries are dropped rather than stringified, for the same reason the backend refuses a scalar —
+ *  `5` becoming the phrase "5" is a phrase nobody wrote. */
+export function triggerPhrases(triggers: unknown): string[] {
+  if (!Array.isArray(triggers)) {
+    return []
+  }
+
+  return triggers
+    .filter((trigger): trigger is string => typeof trigger === 'string')
+    .map(trigger => trigger.trim())
+    .filter(Boolean)
+    .slice(0, MAX_TRIGGERS)
 }
 
 /** Completed whole-word hit, exported for tests: the match only counts once
@@ -91,10 +148,17 @@ async function loadIndex(): Promise<SkillIndexEntry[]> {
   const skills = await getSkills()
 
   index = skills
-    .filter(skill => skill.enabled && skill.name.length >= MIN_NAME_LENGTH)
+    // A short name is unofferable AS a name, but a declared trigger still reaches it — so the length
+    // floor applies to the name, not to the skill's presence in the index.
+    .filter(
+      skill => skill.enabled && (skill.name.length >= MIN_NAME_LENGTH || triggerPhrases(skill.triggers).length > 0)
+    )
     .map(skill => ({
       name: skill.name,
-      pattern: skillPattern(skill.name)
+      // null below the floor: a short name never offers on its own (unchanged behaviour), while a
+      // declared trigger still may. An explicit null beats a sentinel pattern that matches nothing.
+      pattern: skill.name.length >= MIN_NAME_LENGTH ? skillPattern(skill.name) : null,
+      triggerPatterns: triggerPhrases(skill.triggers).map(triggerPattern)
     }))
   indexAt = Date.now()
 
@@ -231,7 +295,13 @@ registerDraftProvider('skill', async ({ sessionId, text }) => {
   const haystack = stripSlashTokens(text).toLowerCase()
   const cwd = $currentCwd.get()
   const skills = await loadIndex()
-  const matched = skills.filter(skill => skillHit(skill.pattern, haystack) && !collidesWithWorkspace(skill.name, cwd))
+
+  const matched = skills.filter(
+    skill =>
+      ((skill.pattern !== null && skillHit(skill.pattern, haystack)) ||
+        skill.triggerPatterns.some(pattern => skillHit(pattern, haystack))) &&
+      !collidesWithWorkspace(skill.name, cwd)
+  )
 
   if (matched.length === 0) {
     return []

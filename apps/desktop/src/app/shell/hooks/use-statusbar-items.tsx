@@ -122,6 +122,62 @@ function versionItem(
   }
 }
 
+// Session activity label for the statusbar chip — user turns and assistant
+// steps from the focused session's transcript (tiles included, same source as
+// the other focused readouts). Kept out of the main hook so its size budget
+// stays flat. The selector's primitive "turns:steps" string keeps the
+// per-delta republish of `$sessionStates` from re-rendering until a count
+// actually changes; empty means there is no transcript to count yet.
+function useSessionActivityLabel(formatLabel: (turns: number, steps: number) => string): string {
+  const counts = useStoreSelector($focusedSessionState, state => {
+    const messages = state?.messages ?? []
+    let turns = 0
+    let steps = 0
+
+    for (const message of messages) {
+      if (message.role === 'user') {
+        turns += 1
+      } else if (message.role === 'assistant') {
+        steps += 1
+      }
+    }
+
+    return turns === 0 && steps === 0 ? '' : `${turns}:${steps}`
+  })
+
+  return useMemo(() => {
+    if (!counts) {
+      return '—'
+    }
+
+    const [turns, steps] = counts.split(':').map(Number)
+
+    return formatLabel(turns, steps)
+  }, [counts, formatLabel])
+}
+
+// The indicator must speak the same scope as the Spawn-tree panel it opens:
+// running/queued from every session (never background system actions), plus
+// terminal rows only for the session the user is in — the scope
+// `subagentsForPanel` derives, so the count and the tree can never disagree
+// and finished history from inactive sessions stops accumulating (#75505).
+// Only two COUNTS are read, so select scalars — a whole-map `useStore` re-ran
+// the main hook (rebuilding all ~9 statusbar items) on every subagent progress
+// tick in ANY session, including background ones.
+function useSubagentCounts(activeSessionId: string | null): [number, number] {
+  const running = useStoreSelector($subagentsBySession, bySession =>
+    Object.values(bySession).reduce((sum, items) => sum + activeSubagentCount(items), 0)
+  )
+
+  const failed = useStoreSelector($subagentsBySession, bySession =>
+    Object.entries(bySession)
+      .filter(([sid]) => sid === activeSessionId)
+      .reduce((sum, [, items]) => sum + failedSubagentCount(items), 0)
+  )
+
+  return [running, failed]
+}
+
 export function useStatusbarItems({
   agentsOpen,
   changeSessionCwd,
@@ -161,26 +217,7 @@ export function useStatusbarItems({
   const tileSessionFocusStartedAt = useStore($tileSessionFocusStartedAt)
   const primaryTurnStartedAt = useStore($turnStartedAt)
 
-  // The indicator must speak the same scope as the Spawn-tree panel it opens:
-  // running/queued from every session (never background system actions), plus
-  // terminal rows only for the session the user is in — the scope
-  // `subagentsForPanel` derives, so the count and the tree can never disagree
-  // and finished history from inactive sessions stops accumulating (#75505).
-  // Only two COUNTS are read, so select scalars — a whole-map `useStore` re-ran
-  // this hook (rebuilding all ~9 statusbar items) on every subagent progress
-  // tick in ANY session, including background ones.
-  const subagentsRunning = useStoreSelector($subagentsBySession, bySession =>
-    Object.values(bySession).reduce((sum, items) => sum + activeSubagentCount(items), 0)
-  )
-
-  // Terminal rows only from the session the user is in — the panel drops other
-  // sessions' finished history (#75505), so the count the indicator shows must
-  // not resurrect it. Live running/queued rows stay cross-session above.
-  const subagentsFailed = useStoreSelector($subagentsBySession, bySession =>
-    Object.entries(bySession)
-      .filter(([sid]) => sid === primaryActiveSessionId)
-      .reduce((sum, [, items]) => sum + failedSubagentCount(items), 0)
-  )
+  const [subagentsRunning, subagentsFailed] = useSubagentCounts(primaryActiveSessionId)
 
   // Backend truth for the free-tier chip. Refreshed on the ambient status
   // cadence (use-status-snapshot), never polled from here.
@@ -228,27 +265,6 @@ export function useStatusbarItems({
   // slice still describes the PREVIOUS chat. Gate live cwd on ownership so we
   // never paint session A's workspace while the tab already shows session B.
   const focusedStateStoredId = useStoreSelector($focusedSessionState, state => state?.storedSessionId?.trim() || null)
-
-  // Session activity counts for the statusbar chip: user turns and assistant
-  // steps from the focused session's transcript (tiles included — same source
-  // as the other focused readouts). The primitive "turns:steps" string keeps
-  // the per-delta republish of `$sessionStates` from re-rendering until a
-  // count actually changes; empty means there is no transcript to count yet.
-  const sessionActivityCounts = useStoreSelector($focusedSessionState, state => {
-    const messages = state?.messages ?? []
-    let turns = 0
-    let steps = 0
-
-    for (const message of messages) {
-      if (message.role === 'user') {
-        turns += 1
-      } else if (message.role === 'assistant') {
-        steps += 1
-      }
-    }
-
-    return turns === 0 && steps === 0 ? '' : `${turns}:${steps}`
-  })
 
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const primaryFocused = !focusedStoredSessionId || focusedStoredSessionId === selectedStoredSessionId
@@ -683,15 +699,7 @@ export function useStatusbarItems({
 
   // Opted-in readouts never vanish; until a transcript exists the activity
   // chip rests at the same em-dash placeholder as the meters above.
-  const sessionActivityLabel = useMemo(() => {
-    if (!sessionActivityCounts) {
-      return '—'
-    }
-
-    const [turns, steps] = sessionActivityCounts.split(':').map(Number)
-
-    return copy.sessionActivityLabel(turns, steps)
-  }, [copy, sessionActivityCounts])
+  const sessionActivityLabel = useSessionActivityLabel(copy.sessionActivityLabel)
 
   const coreRightStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [

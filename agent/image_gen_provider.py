@@ -8,7 +8,7 @@ route to the provider's edit endpoint, otherwise text-to-image. Mirrors
 ``agent/video_gen_provider.py``. Response dicts come from :func:`success_response`
 / :func:`error_response` (``success, image, model, prompt, aspect_ratio, modality,
 provider`` + ``error, error_type`` on failure). A multi-image result puts the rest
-of its saved paths in ``extra={"additional_images": [...]}``; the gateway delivers each.
+of its images in ``extra={"additional_images": [...]}`` (URLs or absolute paths, like ``image``).
 """
 
 from __future__ import annotations

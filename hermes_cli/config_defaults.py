@@ -1483,8 +1483,8 @@ DEFAULT_CONFIG = {
         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
-        # See #79686.
-        "ledger": True,
+        "ledger": True,  # See #79686.
+        "native_call_audit": False,  # Opt-in native-call journal, separate from the mutation ledger.
         # Size cap for that ledger: once the file grows past this, the next append rewrites it
         # through the unchanged-file dedup and, if still over, drops the oldest entries (0 = keep
         # the ledger append-only forever, the previous behaviour).

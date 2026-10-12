@@ -835,6 +835,10 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
+        if function_name == "skill_manage":
+            from tools.skill_native_audit import dispatch_skill_call
+            return dispatch_skill_call(next_args, asdict(ids),
+                                       lambda: registry.dispatch(function_name, next_args, **dispatch_kwargs))
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
     with _approval_observability(ids):

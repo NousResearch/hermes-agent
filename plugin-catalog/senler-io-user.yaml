@@ -2,9 +2,7 @@ name: senler-io-user
 title: Senler.io
 repo: https://github.com/SenlerBot/senler-io-user-hermes-plugin
 sha: d36f1bff7714549c8f388099ee96ecdbe7eff595
-description: >-
-  Connect your Senler.io account through MCP OAuth and automate selected
-  webhook events with an outbound Relay connection.
+description: "Connect your Senler.io account through MCP OAuth and automate selected webhook events with an outbound Relay connection. Disclosure — When you ask to connect, it adds a `senler-io-user` MCP server (mcp-senler-io-user.senler.io; OAuth handled by Hermes) to the profile's config.yaml, and Relay setup enables a `senler-io` gateway platform there. Once you enable automation, the gateway keeps an outbound WSS connection to a Senler-supplied Relay address and runs unattended agent turns on incoming Senler events (customer messages, leads, etc.); the platform is `trusted_inbound`, so these events bypass Hermes allowlists and pairing, and customer text reaches the model as untrusted data. During those runs a hook blocks every tool except the Senler MCP and pins replies to the event's dialog, but other Senler MCP writes run without a Hermes approval prompt, limited only by your saved instructions and your Senler account permissions. Relay credentials, instructions, event payloads and reports are stored unencrypted in `<HERMES_HOME>/senler-io-relay.sqlite3`; result reports (up to 16,000 characters) and this machine's hostname (as the Relay client name) are sent to Senler."
 maintainer: SenlerBot
 tier: community
 category: automation
@@ -23,3 +21,4 @@ capabilities:
     - on_session_end
   provides_middleware: []
   requires_env: []
+requires_hermes: ">=0.21.6"

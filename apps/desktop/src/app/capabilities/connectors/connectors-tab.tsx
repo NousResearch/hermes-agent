@@ -260,11 +260,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         notices={<HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />}
         onFilterChange={setFilter}
         onOpen={card => setOpenKey(cardKey(card))}
-        onPrefetch={card => {
-          if (card.ways.hosted) {
-            prefetchConnectorTools(profile, card.slug)
-          }
-        }}
+        onPrefetch={card => prefetchConnectorTools(profile, card)}
         onRetryHosted={hosted.refetch}
         onServerToggle={(card, next) => {
           if (card.plugin === undefined) {

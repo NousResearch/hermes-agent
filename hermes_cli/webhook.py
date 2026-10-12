@@ -47,7 +47,7 @@ def _subscriptions_lock():
             yield
 
 
-def _load_subscriptions_unlocked() -> Dict[str, dict]:
+def _load_subscriptions_unlocked() -> dict[str, dict]:
     """Read one complete store snapshot; unreadable or malformed files read as empty."""
     try:
         raw = _subscriptions_path().read_bytes()
@@ -60,19 +60,19 @@ def _load_subscriptions_unlocked() -> Dict[str, dict]:
     return data if isinstance(data, dict) else {}
 
 
-def _load_subscriptions() -> Dict[str, dict]:
+def _load_subscriptions() -> dict[str, dict]:
     """Lock-free read: writers publish by atomic rename, so a reader always sees one whole
     snapshot, and read-only homes (no lock file can be created) keep working."""
     return _load_subscriptions_unlocked()
 
 
-def _save_subscriptions_unlocked(subs: Dict[str, dict]) -> None:
+def _save_subscriptions_unlocked(subs: dict[str, dict]) -> None:
     # The file holds per-route HMAC secrets: atomic_json_write fchmods the temp file 0o600 BEFORE the
     # rename (no umask window) and re-asserts the mode on the destination afterwards.
     atomic_json_write(_subscriptions_path(), subs, mode=_SUBSCRIPTIONS_FILE_MODE)
 
 
-def _mutate_subscriptions(mutate: Callable[[Dict[str, dict]], Any]) -> Any:
+def _mutate_subscriptions(mutate: Callable[[dict[str, dict]], Any]) -> Any:
     """Lock, re-read, mutate and atomically publish one complete store snapshot."""
     with _subscriptions_lock():
         subscriptions = _load_subscriptions_unlocked()
@@ -88,7 +88,7 @@ def _replace_subscription(name: str, route: dict, expected: object) -> dict:
     replaced record survives (only the dashboard's dedicated enabled endpoint lifts it).
     Returns the route as published.
     """
-    def replace(subscriptions: Dict[str, dict]) -> dict:
+    def replace(subscriptions: dict[str, dict]) -> dict:
         current = subscriptions.get(name, _MISSING_SUBSCRIPTION)
         expected_missing = expected is _MISSING_SUBSCRIPTION
         if (current is _MISSING_SUBSCRIPTION) != expected_missing or (
@@ -314,7 +314,7 @@ def _cmd_list(args):
 def _cmd_remove(args):
     name = args.name.strip().lower()
 
-    def remove(subscriptions: Dict[str, dict]) -> None:
+    def remove(subscriptions: dict[str, dict]) -> None:
         if name not in subscriptions:
             raise KeyError(name)
         del subscriptions[name]

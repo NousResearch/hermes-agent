@@ -448,7 +448,7 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     assert "~/.hermes" not in help_text
 
     fake_gw_config = types.ModuleType("gateway.config")
-    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: [])
+    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=list)
     monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
     fake_dir = types.ModuleType("gateway.channel_directory")
     fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}

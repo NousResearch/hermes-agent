@@ -2279,6 +2279,7 @@ cli:
     failed: "Falha na conexão"
     authorized_no_tools: "Autorizado. Ferramentas indisponíveis."
     connected: "Conectado"
+    named_account: "O Hermes chamou esta conta de {name} de {alias}. Você pode renomeá-la a qualquer momento."
     waiting: "Aguardando…"
   editor:
     only_interactive: "O editor externo só está disponível dentro da CLI interativa."

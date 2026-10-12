@@ -1,0 +1,18 @@
+name: govee
+repo: https://github.com/promptclickrun/hermes-govee
+sha: 2d552cd1c67421cd5c9bbd8dd9b267f6dd5f0a0a
+description: "Discover and control Govee lights (power, brightness, color, white temperature, scenes) through Govee's developer API. Every command is checked against the model's advertised capabilities and ranges, then confirmed by a state read-back. Disclosure — sends device IDs and control commands to openapi.api.govee.com with your Govee API key; the model can change light state; stores nothing on disk."
+maintainer: promptclickrun
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.21.2"
+docs_url: https://github.com/promptclickrun/hermes-govee#readme
+platforms: []
+capabilities:
+  provides_tools:
+  - govee_lights
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - GOVEE_API_KEY

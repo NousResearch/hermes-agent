@@ -8,6 +8,7 @@ import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
+import { ruUpdateChannel } from './ru_update_channel'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
 // RU_NOUN: (count, one, few, many) — формы род. множественного
@@ -991,9 +992,7 @@ export const ruOverrides = {
           'Когда Hermes обновляет себя из приложения (без запроса в терминале), сохранять локальные правки исходников (stash) или выбрасывать (discard). Обновления из терминала всегда спрашивают.'
       }
     }),
-    about: {
-      updates: 'Обновления'
-    },
+    about: { updates: 'Обновления', channel: ruUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Сворачивать в трей',
       minimizeToTrayDesc:
@@ -2855,12 +2854,6 @@ export const ruOverrides = {
     editingQueuedInComposer: 'Редактирование хода в очереди в композере',
     restoredDraftNotice: 'Восстановлено ваше неотправленное сообщение',
     restoredDraftUndo: 'Отменить',
-    localSetup: {
-      title: 'Это может работать на вашем компьютере',
-      text: (model: string) =>
-        `${model} подходит для этого компьютера. Бесплатно, а чаты остаются на вашем компьютере.`,
-      action: 'Показать'
-    },
     queueEdit: 'Изменить',
     queueExpand: 'Раскрыть',
     queueCollapse: 'Свернуть',

@@ -15,8 +15,8 @@ import hermes_yaml
 import pytest
 
 from scripts.bundles.release_artifacts import materialize, record, stamp_matches
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
-from tests.scripts.test_stable_release import https_origin  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
+from tests.scripts.test_stable_release import https_origin
 from tests.scripts.test_release_darwin import _inputs
 from scripts.bundles import release_artifacts as artifacts
 
@@ -77,8 +77,9 @@ def staged_candidate(tmp_path, r2_server, https_origin):
     for platform, arches in [('windows', ('x64', 'arm64')), ('macos', ('x64', 'arm64')), ('termux', ('aarch64',))]:
         for arch in arches:
             row = {
+                # Exactly the keys record() writes: a row is metadata, not a stamp (no baseVersion).
                 'platform': platform, 'arch': arch, 'tag': tag, 'commit': commit,
-                'baseVersion': tag[1:], 'identity': 'Product',
+                'identity': 'Product',
             }
             if platform == 'windows':
                 row.update(version=WINDOWS_VERSION, executableVersion=WINDOWS_VERSION,
@@ -256,6 +257,23 @@ def test_promote_writes_the_stable_mac_feed_from_the_attempt_archive(tmp_path, m
     assert f"/releases/tag/{manifest['archive']}/HermesBundled-1.2.3-mac-arm64.zip" in urls
     assert f"/releases/tag/{manifest['archive']}/HermesBundled-1.2.3-mac-x64.zip" in urls
 
+    # A release that did not opt into macOS Intel or Termux promotes an
+    # arm64-only Mac feed and leaves the APT channel untouched.
+    default = copy.deepcopy(manifest)
+    default['packages'] = [row for row in default['packages']
+                           if (row['platform'], row['arch']) not in (('macos', 'x64'), ('termux', 'aarch64'))]
+    default['files'] = [f for f in default['files'] if '-mac-x64' not in f['path']
+                        and not f['path'].startswith('x64-') and not f['path'].startswith(('apt/', 'deb/'))]
+    default['smoke_results'] = {**default['smoke_results'], 'smoke-darwin-x64': {'result': 'skipped'}}
+    del r2_server.store['releases/darwin/stable/stable-mac.yml']
+    r2_server.requests.clear()
+    artifacts.promote(default, tmp_path / 'promote-default', base)
+    puts = [path for method, path, _ in r2_server.requests if method == 'PUT']
+    assert puts == ['/hermes-releases/releases/darwin/stable/stable-mac.yml',
+                    '/hermes-releases/releases/win32/stable/stable.appinstaller']
+    feed = hermes_yaml.safe_load(r2_server.store['releases/darwin/stable/stable-mac.yml'][0].decode())
+    assert [entry['url'].rsplit('/', 1)[1] for entry in feed['files']] == ['HermesBundled-1.2.3-mac-arm64.zip']
+
 
 def test_promote_refuses_when_one_macos_arch_is_missing(tmp_path, monkeypatch, r2_server, https_origin, staged_candidate):
     import urllib.request
@@ -351,7 +369,7 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
             env[key] = expressions.get(value, value)
             assert '${{' not in env[key], (key, value)
         return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']], cwd=tmp_path,
-                              env=env, capture_output=True, text=True, encoding='utf-8', timeout=60)
+                              env=env, capture_output=True, text=True, encoding='utf-8', timeout=60, check=False)
 
     return jobs, run, body_file
 

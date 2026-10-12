@@ -544,6 +544,34 @@ class TestBlueBubblesHelperRefresh:
         assert calls == 2
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [
+        httpx.ReadTimeout("unavailable"), TimeoutError(), ValueError("bad JSON"),
+        RuntimeError("client closed"), AssertionError("client disconnected"),
+    ])
+    async def test_failed_refresh_is_nonfatal_and_cooled_down(self, monkeypatch, error):
+        adapter = _make_adapter(monkeypatch)
+        self._enable_private_api(adapter)
+        refresh = AsyncMock(side_effect=error)
+        monkeypatch.setattr(adapter, "_api_get", refresh)
+
+        assert await adapter._helper_is_connected() is False
+        assert await adapter._helper_is_connected() is False
+        refresh.assert_awaited_once_with("/api/v1/server/info")
+        assert adapter._helper_refresh_after > asyncio.get_running_loop().time()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("info", [None, ["unexpected"], {"data": None}, {"data": ["unexpected"]}])
+    async def test_malformed_refresh_is_nonfatal(self, monkeypatch, info):
+        adapter = _make_adapter(monkeypatch)
+        self._enable_private_api(adapter)
+        refresh = AsyncMock(return_value=info)
+        monkeypatch.setattr(adapter, "_api_get", refresh)
+
+        assert await adapter._helper_is_connected() is False
+        assert await adapter._helper_is_connected() is False
+        refresh.assert_awaited_once_with("/api/v1/server/info")
+
+    @pytest.mark.asyncio
     async def test_cancelled_refresh_propagates_without_cooldown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         self._enable_private_api(adapter)

@@ -50,6 +50,12 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 
+# Replay carriers the preflight estimate prices at 0, exactly as the compaction tail walk does (opaque signatures,
+# duplicate reasoning copies, ordered sidecars); a mismatch between the two estimates loops compaction.
+UNPRICED_REPLAY_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
+                                    "reasoning_opaque", "reasoning_text", "bedrock_content_blocks"})
+
+
 def without_persistence_fields(msg: Mapping[str, Any]) -> Mapping[str, Any]:
     """*msg* itself when it carries no persistence-only field, else a shallow copy without them."""
     if PERSISTENCE_ONLY_MESSAGE_FIELDS.isdisjoint(msg):
@@ -62,7 +68,7 @@ def mint_uid() -> str:
     return uuid4().hex
 
 
-def uid_list(value: Any) -> List[str]:
+def uid_list(value: Any) -> list[str]:
     """The unique non-empty string uids of a live list, in order; anything else is ``[]``."""
     return list(dict.fromkeys(u for u in (value if isinstance(value, list) else ()) if isinstance(u, str) and u))
 
@@ -152,7 +158,7 @@ def _uid_occurrences(value: Any) -> list:
     return list(value) if isinstance(value, list) else [value]
 
 
-def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: List[Mapping[str, Any]]) -> dict:
+def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: list[Mapping[str, Any]]) -> dict:
     """*uids* with every provider id this row names more than once spelled out as one uid per occurrence. A
     single response that repeats an id shares ONE uid (its results carry it, so every call stays paired);
     before a fold appends another turn's occurrences, the shared uid must fill each of this row's slots or
@@ -209,7 +215,7 @@ def resolve_tool_call_uid(index: MutableMapping[str, str], tool_call_id: Any) ->
     return None
 
 
-def tool_call_uid_from_history(messages: List[dict], tool_index: int, owners: dict) -> Optional[str]:
+def tool_call_uid_from_history(messages: list[dict], tool_index: int, owners: dict) -> Optional[str]:
     """Resolve a tool-result dict's uid from the nearest preceding assistant dict in ``messages`` that
     named its ``tool_call_id`` (the cross-flush case: the assistant row landed in an earlier batch).
     ``owners`` memoizes each assistant's (named variants, uid index) across one flush's results, so K

@@ -149,7 +149,7 @@ _SCHEMA_DDL = (
 # (table, required columns) parsed from the DDL, in the order _schema_is_current probes them.
 _REQUIRED_COLUMNS = tuple(
     (re.search(r"EXISTS (\w+)", ddl).group(1),
-     frozenset(re.findall(r"^\s*(\w+) (?:TEXT|INTEGER|REAL)\b", ddl.split("(", 1)[1], re.M))) for ddl in _SCHEMA_DDL)
+     frozenset(re.findall(r"^\s*(\w+) (?:TEXT|INTEGER|REAL)\b", ddl.split("(", 1)[1], re.MULTILINE))) for ddl in _SCHEMA_DDL)
 _REMOTE_RUN_SCHEMA_COLUMNS = _REQUIRED_COLUMNS[4][1]
 
 # --- SQL fragments (statement text must stay byte-stable after whitespace normalisation) ---

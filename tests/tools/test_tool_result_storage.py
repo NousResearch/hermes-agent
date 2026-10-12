@@ -55,7 +55,7 @@ class TestWriteToSandbox:
             # pattern-matched.
             def _bash(cmd, timeout=None, stdin_data=None, **_kw):
                 r = subprocess.run(["bash", "-c", cmd], input=stdin_data or "",
-                                   capture_output=True, text=True, timeout=timeout)
+                                   capture_output=True, text=True, timeout=timeout, check=False)
                 return {"output": r.stdout + r.stderr, "returncode": r.returncode}
             env.execute.side_effect = _bash
         result = _write_to_sandbox("hello world", remote, env)
@@ -361,7 +361,7 @@ class TestPerToolThresholds:
         """read_file must keep a finite registry cap (Layer 2 safety net)."""
         from tools.registry import registry
         try:
-            import tools.file_tools  # noqa: F401
+            import tools.file_tools
             val = registry.get_max_result_size("read_file")
             # float('inf') disables the Layer 2 result-size guard.
             assert 0 < val < float("inf"), val
@@ -371,7 +371,7 @@ class TestPerToolThresholds:
     def test_search_files_threshold(self):
         from tools.registry import registry
         try:
-            import tools.file_tools  # noqa: F401
+            import tools.file_tools
             val = registry.get_max_result_size("search_files")
             assert 0 < val < float("inf"), val
         except ImportError:

@@ -65,7 +65,7 @@ def _child_env(home: Path) -> dict:
 def _hermes(home: Path, *argv: str, timeout: float = 180) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "hermes_cli.main", *argv], cwd=str(home),
                           env=_child_env(home), stdin=subprocess.DEVNULL, capture_output=True,
-                          encoding="utf-8", errors="replace", timeout=timeout)
+                          encoding="utf-8", errors="replace", timeout=timeout, check=False)
 
 
 def _wait(pred, timeout: float) -> bool:
@@ -98,7 +98,7 @@ def live_gateway(tmp_path_factory):
     (plugins / ".install-metadata.json").write_text(
         "{" + ", ".join(f'"{n}": {{"source": "local", "sha": "0"}}' for n in _HEADS) + "}", encoding="utf-8")
 
-    log = open(root / "gateway.log", "w", encoding="utf-8")  # noqa: SIM115 — handed to the child
+    log = open(root / "gateway.log", "w", encoding="utf-8")
     proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", "gateway", "run", "--force"],
                             cwd=str(home), env=_child_env(home), stdin=subprocess.DEVNULL, stdout=log,
                             stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
@@ -112,7 +112,7 @@ def live_gateway(tmp_path_factory):
         assert not missing, f"gateway did not load {missing}: {answer}"
         yield home, proc
     finally:
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30)
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30, check=False)
         proc.wait(timeout=30)
         log.close()
 

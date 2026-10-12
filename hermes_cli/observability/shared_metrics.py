@@ -10,7 +10,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any
 
@@ -156,11 +156,11 @@ logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _isoformat(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _compact_json(value: Any) -> str:
@@ -552,10 +552,10 @@ class SharedMetricsStore:
     @staticmethod
     def _parse_state_timestamp(value: Any) -> datetime | None:
         try:
-            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(str(value))
         except (TypeError, ValueError):
             return None
-        return None if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        return None if parsed.tzinfo is None else parsed.astimezone(UTC)
 
     def _create_pending_packages_if_due(self) -> None:
         now = _utc_now()
@@ -600,7 +600,7 @@ class SharedMetricsStore:
                 """,
             (period_value, *resource_values),
         ).fetchall()
-        period_start = datetime.fromisoformat(str(period_value)).replace(tzinfo=timezone.utc)
+        period_start = datetime.fromisoformat(str(period_value)).replace(tzinfo=UTC)
         if not client_resource_is_valid(resource):
             raise ValueError("Unsupported shared-metrics client resource")
         payload = {

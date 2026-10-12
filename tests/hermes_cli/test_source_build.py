@@ -69,7 +69,7 @@ def test_automatic_build_preserves_pm_admission_intent(monkeypatch):
     from hermes_cli.source_build import source_build_env
 
     intent = []
-    def acquire(name, *, base_env, explicit):
+    def acquire(name, *, base_env, explicit, verify=True):
         intent.append(explicit)
         return Runner(name, base_env)
     monkeypatch.setattr(pm, "ensure", acquire)
@@ -108,7 +108,7 @@ def source_checkout(tmp_path, monkeypatch):
     monkeypatch.delenv("NPM_CONFIG_USERCONFIG", raising=False)
     acquired = []
 
-    def acquire(name, *, base_env=None, explicit=False):
+    def acquire(name, *, base_env=None, explicit=False, verify=True):
         acquired.append(name)
         assert name == "npm"
 
@@ -351,6 +351,25 @@ def test_unbuilt_desktop_is_named_on_one_whole_line(source_products, monkeypatch
 
 
 @pytest.mark.platforms("linux")
+def test_desktop_dependency_failure_still_builds_the_tui_and_web_ui(source_products, capsys):
+    # A host whose compiler rejects a Desktop-only native addon (node-pty on g++ 9) used to lose
+    # every frontend with it: the union npm ci failed and nothing was built.
+    from hermes_cli.source_build import ProductBuildError, build_update_products
+
+    root, _ = source_products
+    manifest = root / "apps/desktop/package.json"
+    manifest.write_text(json.dumps({**json.loads(manifest.read_text()), "scripts": {"postinstall": "exit 1"}}))
+    with pytest.raises(ProductBuildError) as failure:
+        build_update_products(root, desktop=True)
+    assert [name for name, _ in failure.value.failures] == ["desktop dependencies"]
+    assert [event["step"] for event in _events(root)] == ["deps", "tui", "web"]
+    assert not (root / "node_modules/apps-desktop").exists()
+    out = capsys.readouterr().out
+    assert "Desktop app build owed: desktop dependencies failed" in out
+    assert "hermes uninstall --gui" in out
+
+
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("desktop", [False, True])
 def test_module_cli_builds_the_requested_products(source_products, desktop, monkeypatch):
     import runpy
@@ -369,7 +388,7 @@ def test_module_cli_builds_the_requested_products(source_products, desktop, monk
 def test_packaged_desktop_is_reused_only_while_it_names_head(tmp_path, monkeypatch):
     """The update skips the desktop build only when the shipped app's baked commit is HEAD
     and its receipt is current; a moved HEAD or an unreadable stamp means build."""
-    import hermes_cli.main_desktop as main_desktop
+    from hermes_cli import main_desktop
 
     root = tmp_path / "checkout"
     root.mkdir()

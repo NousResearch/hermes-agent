@@ -9,6 +9,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { Chip } from '@/components/onboarding-chat/chip'
 import { AccentSwatch, LayoutPreviewCard, LAYOUTS, NOUS_ACCENT } from '@/components/onboarding-chat/options'
 import { ConnectorLogo } from '@/components/ui/connector-logo'
+import { FadeScroll } from '@/components/ui/fade-scroll'
 import { SearchField } from '@/components/ui/search-field'
 import { useI18n } from '@/i18n'
 import { connectorIconUrl } from '@/lib/connector-tools'
@@ -159,21 +160,23 @@ function ChipPicker({
       {rows.length > SEARCH_THRESHOLD ? (
         <SearchField onChange={setQuery} placeholder={t.assistant.setupChoose.findApp} value={query} />
       ) : null}
-      <div className="grid max-h-72 grid-cols-3 gap-2 overflow-y-auto p-1" role="group">
-        {rows.map((row, index) =>
-          search && !row.label.toLowerCase().includes(search) ? null : (
-            <PickerItem active={cursor === index} className="rounded-[6px]" key={row.id}>
-              <Chip
-                className={cn('w-full', dim?.(row) && 'opacity-60')}
-                icon={icon(row)}
-                label={row.label}
-                on={picked.includes(row.id)}
-                onToggle={() => onPick(index)}
-                sub={row.detail ?? sub}
-              />
-            </PickerItem>
-          )
-        )}
+      <div role="group">
+        <FadeScroll className="grid grid-cols-3 gap-2 p-1" fade="1.5rem" maxHeight="18rem" pad="1.5rem">
+          {rows.map((row, index) =>
+            search && !row.label.toLowerCase().includes(search) ? null : (
+              <PickerItem active={cursor === index} className="rounded-[6px]" key={row.id}>
+                <Chip
+                  className={cn('w-full', dim?.(row) && 'opacity-60')}
+                  icon={icon(row)}
+                  label={row.label}
+                  on={picked.includes(row.id)}
+                  onToggle={() => onPick(index)}
+                  sub={row.detail ?? sub}
+                />
+              </PickerItem>
+            )
+          )}
+        </FadeScroll>
       </div>
       <p className="text-xs text-muted-foreground">{t.assistant.setupChoose.startsLater}</p>
     </div>

@@ -88,3 +88,9 @@ jobs:
       # nothing.
       - name: Run all workspace checks
         run: node .github/scripts/run-workspace-checks.mjs
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree

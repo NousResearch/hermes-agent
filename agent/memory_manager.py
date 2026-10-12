@@ -63,7 +63,7 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
 
 # -- Tool-schema plumbing -----------------------------------------------------
 
-def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
+def normalize_tool_schema(schema: Any) -> Optional[dict[str, Any]]:
     """Return a bare function-tool dict with a resolvable top-level ``name``, else None.
 
     Providers should return ``{"name", "description", "parameters"}`` but some return the
@@ -78,7 +78,7 @@ def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
     return schema if name and isinstance(name, str) else None
 
 
-def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]] = None,
+def memory_provider_tools_enabled(enabled_toolsets: Optional[list[str]], disabled_toolsets: Optional[list[str]] = None,
                                   *, memory_tool_present: bool = False) -> bool:
     """Return whether external memory-provider tools should be exposed."""
     if disabled_toolsets and "memory" in disabled_toolsets:
@@ -226,7 +226,7 @@ def _redact_for_provider(*values: Any) -> Any:
     return scrubbed[0] if len(scrubbed) == 1 else tuple(scrubbed)
 
 
-def _redact_messages_for_egress(messages: Optional[List[Any]]) -> Optional[List[Any]]:
+def _redact_messages_for_egress(messages: Optional[list[Any]]) -> Optional[list[Any]]:
     return None if messages is None else list(_redact_for_provider(messages))
 
 
@@ -309,7 +309,7 @@ class StreamingContextScrubber:
     def _ends_at_block_boundary(self, text: str) -> bool:
         """Whether emitting ``text`` leaves the stream at a line start (blank tail after the last newline;
         no newline at all -> only whitespace and already at a boundary)."""
-        head, sep, tail = text.rpartition("\n")
+        _head, sep, tail = text.rpartition("\n")
         return tail.strip() == "" and (bool(sep) or self._at_block_boundary)
 
     def _append_visible(self, out: list[str], text: str) -> None:
@@ -396,16 +396,16 @@ class MemoryManager:
     """
 
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
-        self._providers: List[MemoryProvider] = []
-        self._tool_to_provider: Dict[str, MemoryProvider] = {}
-        self._external_prefetch_spill_config: Optional[Dict[str, Any]] = None
+        self._providers: list[MemoryProvider] = []
+        self._tool_to_provider: dict[str, MemoryProvider] = {}
+        self._external_prefetch_spill_config: Optional[dict[str, Any]] = None
         self._has_external: bool = False
         timeout = external_prefetch_timeout
         timeout = _EXTERNAL_PREFETCH_TIMEOUT_S if timeout is None else float(timeout)
         if timeout <= 0:
             raise ValueError("external_prefetch_timeout must be positive")
         self._external_prefetch_timeout = timeout
-        self._external_prefetch_threads: Dict[str, threading.Thread] = {}
+        self._external_prefetch_threads: dict[str, threading.Thread] = {}
         self._external_prefetch_lock = threading.Lock()
         # Single-worker background executor for end-of-turn sync/prefetch, created lazily so
         # the builtin-only path spawns no threads; one worker serializes a provider's writes.
@@ -413,17 +413,17 @@ class MemoryManager:
         self._sync_executor_lock = threading.Lock()
         # Futures by durability class ("write" / "prefetch") so shutdown can drain FIFO
         # within a bound, then report exactly what it abandoned.
-        self._background_futures: Dict[Future, str] = {}
+        self._background_futures: dict[Future, str] = {}
         self._shutting_down = False
-        self._shutdown_drain_state: Dict[str, Any] = {
+        self._shutdown_drain_state: dict[str, Any] = {
             "status": "not_started", "abandoned_writes": 0, "abandoned_prefetches": 0, "active_tasks": 0,
         }
 
     def _each_provider(self, label: str, call: Callable[[MemoryProvider], Any], *, level: int = logging.DEBUG,
-                       providers: Optional[List[MemoryProvider]] = None, exc_info: bool = False) -> List[Any]:
+                       providers: Optional[list[MemoryProvider]] = None, exc_info: bool = False) -> list[Any]:
         """Call ``call(provider)`` per provider, logging+swallowing failures; returns successes in order.
         ``label`` completes the log line ``Memory provider '<name>' <label>: <exc>``."""
-        results: List[Any] = []
+        results: list[Any] = []
         for provider in self._providers if providers is None else providers:
             try:
                 results.append(call(provider))
@@ -449,8 +449,17 @@ class MemoryManager:
         schemas = list(provider.get_tool_schemas())
 
         if provider.name != "builtin":
+            from hermes_cli.config import load_config
+
+            # Recall is provider-ranked: keep it whole unless this profile opts in.
+            # Snapshot both gates at registration, never re-read them mid-conversation.
+            memory = load_config().get("memory", {})
+            spill_config = get_spill_config()
+            if not (isinstance(memory, dict) and memory.get("prefetch_spill_enabled", False) is True):
+                # Off by default, but keep a ceiling so a runaway provider can't overflow the context.
+                spill_config["max_chars"] = max(spill_config["max_chars"] * 10, 100_000)
+            self._external_prefetch_spill_config = spill_config
             self._has_external = True
-            self._external_prefetch_spill_config = get_spill_config()
 
         self._providers.append(provider)
 
@@ -483,7 +492,7 @@ class MemoryManager:
         logger.info("Memory provider '%s' registered (%d tools)", provider.name, len(schemas))
 
     @property
-    def providers(self) -> List[MemoryProvider]:
+    def providers(self) -> list[MemoryProvider]:
         return list(self._providers)
 
     def get_provider(self, name: str) -> Optional[MemoryProvider]:
@@ -516,7 +525,7 @@ class MemoryManager:
         if provider.name == "builtin":
             return provider.prefetch(query, session_id=session_id)
 
-        result_box: Dict[str, Any] = {}
+        result_box: dict[str, Any] = {}
 
         def _run() -> None:
             try:
@@ -548,8 +557,8 @@ class MemoryManager:
             raise result_box["error"]
         result = result_box.get("value", "")
         if result and result.strip():
-            # Prefetch is stamped into the user turn's api_content and replayed every later turn;
-            # spill oversized results like plugin hook output so one provider can't inflate the prefix.
+            # Opt-in spill limits recall replayed with the user turn's api_content;
+            # the registration snapshot leaves provider-ranked results intact by default.
             result = spill_if_oversized(
                 result, session_id=session_id, source=f"{provider.name} memory prefetch",
                 config=self._external_prefetch_spill_config,
@@ -559,7 +568,7 @@ class MemoryManager:
     def describe_recall(self) -> str:
         """Deterministic recall indicator line (e.g. ``"🧠 Provider — recalled 3 memories"``); ``""`` if none.
         Call right after :meth:`prefetch_all` so the user SEES memory was used even if the model is silent."""
-        segments: List[str] = []
+        segments: list[str] = []
         for status in self._each_provider("recall_status failed (non-fatal)", lambda p: p.recall_status()):
             if status is None:
                 continue
@@ -588,8 +597,8 @@ class MemoryManager:
         return params is None or _has_var_kwargs(params) or keyword in params
 
     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "",
-                 messages: Optional[List[Dict[str, Any]]] = None,
-                 turn_author: Optional[Dict[str, Any]] = None) -> None:
+                 messages: Optional[list[dict[str, Any]]] = None,
+                 turn_author: Optional[dict[str, Any]] = None) -> None:
         """Sync a completed turn to all providers on the background worker.
 
         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
@@ -609,7 +618,7 @@ class MemoryManager:
         optional_kwargs = {"messages": redacted_messages, "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
-            kwargs: Dict[str, Any] = {"session_id": session_id}
+            kwargs: dict[str, Any] = {"session_id": session_id}
             for keyword, value in optional_kwargs.items():
                 if value is not None and self._provider_sync_accepts(provider, keyword):
                     kwargs[keyword] = value
@@ -674,12 +683,12 @@ class MemoryManager:
             return isinstance(e, RuntimeError)  # executor already shut down — nothing pending
         return True
 
-    def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_all_tool_schemas(self) -> list[dict[str, Any]]:
         """Collect deduplicated tool schemas from all providers; reserved core tool names are
         skipped because :meth:`add_provider` refuses to route them."""
         from toolsets import _HERMES_CORE_TOOLS
 
-        schemas: List[Dict[str, Any]] = []
+        schemas: list[dict[str, Any]] = []
         seen = set()
 
         def _collect(provider: MemoryProvider) -> None:
@@ -703,7 +712,7 @@ class MemoryManager:
     def has_tool(self, tool_name: str) -> bool:
         return tool_name in self._tool_to_provider
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         """Route a tool call to its provider; returns a JSON string (tool_error on failure)."""
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
@@ -730,12 +739,12 @@ class MemoryManager:
 
         self._each_provider("on_turn_start failed", _tick)
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         messages = _redact_messages_for_egress(messages or [])
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
                             exc_info=True)
 
-    def commit_session_boundary_async(self, messages: List[Dict[str, Any]], *, new_session_id: str,
+    def commit_session_boundary_async(self, messages: list[dict[str, Any]], *, new_session_id: str,
                                       parent_session_id: str = "", reason: str = "new_session") -> None:
         """Queue old-session extraction + provider rebinding as ONE serialized task.
 
@@ -795,8 +804,8 @@ class MemoryManager:
         versions = (self._checkpoint_api_version(p) for p in self._providers)
         return any(v is not None and v >= api_version for v in versions)
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]], *,
-                        evidence_messages: Optional[List[Dict[str, Any]]] = None, require_checkpoint: bool = False,
+    def on_pre_compress(self, messages: list[dict[str, Any]], *,
+                        evidence_messages: Optional[list[dict[str, Any]]] = None, require_checkpoint: bool = False,
                         checkpoint_api_version: int = PRE_COMPRESS_CHECKPOINT_API_VERSION) -> str:
         """Notify providers before compression; return their combined summary-prompt text.
 
@@ -814,7 +823,7 @@ class MemoryManager:
             is_checkpoint_provider = version >= checkpoint_api_version
             use_evidence = is_checkpoint_provider and evidence_messages is not None
             provider_messages = evidence_messages if use_evidence else messages
-            kwargs: Dict[str, Any] = {}
+            kwargs: dict[str, Any] = {}
             # v1 providers and bare-shape v2 providers never see the signal.
             if is_checkpoint_provider and _accepts_require_checkpoint(provider.on_pre_compress):
                 kwargs["require_checkpoint"] = require_checkpoint
@@ -843,7 +852,7 @@ class MemoryManager:
         return "positional" if accepted >= 4 else "legacy"
 
     def on_memory_write(self, action: str, target: str, content: str,
-                        metadata: Optional[Dict[str, Any]] = None) -> None:
+                        metadata: Optional[dict[str, Any]] = None) -> None:
         """Notify external providers when the built-in memory tool writes (skips builtin, the source)."""
         content, metadata = _redact_for_provider(content, dict(metadata or {}))
 
@@ -874,8 +883,8 @@ class MemoryManager:
                 return False
         return isinstance(result, dict) and result.get("success") is True and result.get("staged") is not True
 
-    def notify_memory_tool_write(self, tool_result: Any, tool_args: Dict[str, Any], *,
-                                 build_metadata: Optional[Callable[[], Dict[str, Any]]] = None) -> None:
+    def notify_memory_tool_write(self, tool_result: Any, tool_args: dict[str, Any], *,
+                                 build_metadata: Optional[Callable[[], dict[str, Any]]] = None) -> None:
         """Mirror a built-in memory tool call to external providers.
 
         Gates on a committed write, expands single-op and batched ``operations`` shapes, keeps only
@@ -926,7 +935,7 @@ class MemoryManager:
                             providers=self._providers[::-1])
 
     @property
-    def shutdown_drain_state(self) -> Dict[str, Any]:
+    def shutdown_drain_state(self) -> dict[str, Any]:
         """Snapshot of the most recent bounded shutdown drain outcome."""
         with self._sync_executor_lock:
             return dict(self._shutdown_drain_state)

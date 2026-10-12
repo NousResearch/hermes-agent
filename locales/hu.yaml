@@ -2296,6 +2296,7 @@ cli:
     failed: "A kapcsolódás nem sikerült"
     authorized_no_tools: "Engedélyezve. Az eszközök nem érhetők el."
     connected: "Csatlakozva"
+    named_account: "A Hermes {alias} nevet adta ennek a(z) {name}-fióknak. Bármikor átnevezheted."
     waiting: "Várakozás…"
   editor:
     only_interactive: "A külső szerkesztő csak az interaktív CLI-ben érhető el."

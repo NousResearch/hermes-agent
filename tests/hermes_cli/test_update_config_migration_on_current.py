@@ -43,7 +43,7 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
 
     monkeypatch.setattr(config, 'check_config_version', version)
     monkeypatch.setattr(config, 'migrate_config', migrate)
-    monkeypatch.setattr(update_cmd, '_migrate_sibling_profile_configs', lambda: [])
+    monkeypatch.setattr(update_cmd, '_migrate_sibling_profile_configs', list)
     monkeypatch.setattr(sys.stdin, 'isatty', lambda: case != 'noninteractive')
     monkeypatch.setattr(sys.stdout, 'isatty', lambda: case != 'noninteractive')
     monkeypatch.setattr('builtins.input', prompt)

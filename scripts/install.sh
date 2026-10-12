@@ -524,6 +524,7 @@ stage_prerequisites() {
 }
 
 stage_repository() {
+    local pinned=false
     # An interrupted clone from an older installer can leave a .git with no
     # initial commit, where stash/checkout abort ("You do not have the
     # initial commit yet", #40998). Move it aside -- never delete it, it may
@@ -645,7 +646,7 @@ stage_repository() {
             fi
         fi
         mkdir -p "$(dirname "$INSTALL_DIR")"
-        local staged attempt label cloned=false progress=()
+        local staged attempt label cloned=false progress=() materialize=(reset --hard HEAD)
         # Phase lines ("Receiving objects: 42%") feed the status line; git
         # prints none to a pipe unless asked.
         if quiet_output; then progress=(--progress); fi
@@ -658,8 +659,10 @@ stage_repository() {
             # checkout and history walk (#129712).
             label="Cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
             [ "$attempt" = 1 ] || label="$label (attempt $attempt of 3)"
+            # A pinned install materializes only the pin (below): checking out the
+            # branch tip first fetches and rewrites every file the two differ in.
             if run_logged "$label" git clone ${progress[@]+"${progress[@]}"} \
-                --filter=blob:none --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+                --filter=blob:none ${INSTALL_COMMIT:+--no-checkout} --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 cloned=true
                 break
             fi
@@ -672,19 +675,37 @@ stage_repository() {
             log_warn "direct clone failed; trying deferred checkout"
             if run_logged "Cloning history" git clone ${progress[@]+"${progress[@]}"} \
                 --filter=blob:none --no-checkout --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
-                for attempt in 1 2; do
-                    if run_logged "Checking out files (attempt $attempt of 2)" \
-                        git -C "$staged/tree" reset --hard HEAD; then
-                        cloned=true
-                        break
-                    fi
-                    [ "$attempt" = 2 ] || sleep 5
-                done
+                cloned=deferred
             fi
         fi
         if [ "$cloned" = false ]; then
             rm -rf "$staged"
             fail "git clone failed; no checkout published" git_clone_failed
+        fi
+        if [ -n "$INSTALL_COMMIT" ]; then
+            # Pin before publishing: a pinned or deferred clone has no files yet,
+            # and an unpublished tree never leaves an empty checkout behind.
+            git -C "$staged/tree" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
+                || { rm -rf "$staged"; fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch; }
+        fi
+        if [ -n "$INSTALL_COMMIT" ] || [ "$cloned" = deferred ]; then
+            # The checkout step is where throttled downloads die: retry it alone.
+            # A pin detaches HEAD and leaves the branch at its tip, as the published pin did.
+            [ -z "$INSTALL_COMMIT" ] || materialize=(checkout --force --detach "$INSTALL_COMMIT")
+            cloned=false
+            for attempt in 1 2; do
+                if run_logged "Checking out ${INSTALL_COMMIT:-files} (attempt $attempt of 2)" \
+                    git -C "$staged/tree" "${materialize[@]}"; then
+                    cloned=true
+                    [ -z "$INSTALL_COMMIT" ] || pinned=true
+                    break
+                fi
+                [ "$attempt" = 2 ] || sleep 5
+            done
+            if [ "$cloned" = false ]; then
+                rm -rf "$staged"
+                fail "could not check out ${INSTALL_COMMIT:-the cloned tree}; no checkout published" git_checkout_failed
+            fi
         fi
         if ! mv "$staged/tree" "$INSTALL_DIR"; then
             rm -rf "$staged"
@@ -703,10 +724,11 @@ stage_repository() {
             || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         log_success "Hermes Agent cloned"
     fi
-    if [ -n "$INSTALL_COMMIT" ]; then
-        # A pin must come from the branch being installed: the complete
-        # marker records both, and a commit off that branch would make the
-        # next plain rerun "update" onto a different line.
+    if [ -n "$INSTALL_COMMIT" ] && [ "$pinned" = false ]; then
+        # A rerun over an existing checkout pins here (a fresh clone pinned
+        # before publishing). A pin must come from the branch being installed:
+        # the complete marker records both, and a commit off that branch would
+        # make the next plain rerun "update" onto a different line.
         git -C "$INSTALL_DIR" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
             || fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch
         run_logged "Pinning $INSTALL_COMMIT" git -C "$INSTALL_DIR" checkout "$INSTALL_COMMIT" \

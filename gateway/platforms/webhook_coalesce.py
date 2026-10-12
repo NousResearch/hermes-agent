@@ -53,7 +53,7 @@ class PendingEvent:
     delivery_id: str
     first_at: float
     count: int
-    dispatch_kwargs: Dict[str, Any]
+    dispatch_kwargs: dict[str, Any]
 
     def prompt_with_note(self) -> str:
         if self.count <= 1:
@@ -69,11 +69,11 @@ class WebhookCoalescer:
     def __init__(self, dispatch: Callable[..., Any], render: Callable[[str, dict, str, str], str]):
         self._dispatch = dispatch
         self._render = render
-        self._pending: Dict[str, PendingEvent] = {}
-        self._timers: Dict[str, asyncio.Task] = {}
+        self._pending: dict[str, PendingEvent] = {}
+        self._timers: dict[str, asyncio.Task] = {}
 
     @property
-    def pending(self) -> Dict[str, PendingEvent]:
+    def pending(self) -> dict[str, PendingEvent]:
         return self._pending
 
     def group_key(self, route_name: str, key_template: str, payload: dict, event_type: str) -> Optional[str]:

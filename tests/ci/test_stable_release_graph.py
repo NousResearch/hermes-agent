@@ -103,8 +103,11 @@ def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
     from scripts.releases.stable import SKIPPED_BY
 
     jobs = workflow("stable-release.yml")["jobs"]
-    outputs = {"skipTests": "needs.admit.outputs.skip-tests",
-               "skipBundles": "needs.admit.outputs.skip-bundles"}
+    # A skip flag removes a job when it is true; an opt-in flag when it is not.
+    outputs = {"skipTests": "needs.admit.outputs.skip-tests != 'true'",
+               "skipBundles": "needs.admit.outputs.skip-bundles != 'true'",
+               "excludeMacosIntel": "needs.admit.outputs.include-macos-intel == 'true'",
+               "excludeTermux": "needs.admit.outputs.include-termux == 'true'"}
 
     def needs_of(name):
         needs = jobs[name].get("needs", [])
@@ -112,7 +115,7 @@ def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
 
     def removed_by(name, flag):
         condition = str(jobs[name].get("if", ""))
-        if f"{outputs[flag]} != 'true'" in condition:
+        if outputs[flag] in condition:
             return True
         # Without a status function a job skips when any job it needs skipped.
         return ("always()" not in condition and "!cancelled()" not in condition
@@ -128,14 +131,32 @@ def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
     for name in ("docker", "candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
                  "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"):
         assert jobs[name]["with"]["skip-tests"] == "${{ needs.admit.outputs.skip-tests == 'true' }}"
-    assert {"skip-bundles", "skip-tests"} <= set(jobs["admit"]["outputs"])
+    assert {"skip-bundles", "skip-tests", "include-macos-intel", "include-termux"} <= \
+        set(jobs["admit"]["outputs"])
     for name in ("acceptance", "publication", "complete"):
         gate = next(step for step in jobs[name]["steps"]
                     if "scripts.releases.stable gate" in step.get("run", ""))
         assert gate["env"]["SKIP_BUNDLES"] == "${{ needs.admit.outputs.skip-bundles }}"
         assert gate["env"]["SKIP_TESTS"] == "${{ needs.admit.outputs.skip-tests }}"
+        assert gate["env"]["INCLUDE_MACOS_INTEL"] == "${{ needs.admit.outputs.include-macos-intel }}"
+        assert gate["env"]["INCLUDE_TERMUX"] == "${{ needs.admit.outputs.include-termux }}"
         gated = gate["run"].split(" gate ", 1)[1].split()
         assert set(gated) <= set(needs_of(name)), name
+
+
+def test_a_skipped_upgrade_arm_never_skips_a_gated_publish_job():
+    """The signed-package upgrade arms skip when there is no published baseline (the first bundled
+    release). A gated job downstream of one without a status function inherits that skip, and the
+    publication gate then refuses it: rc.11-v0.21.7 blocked on publish-bundles=skipped."""
+    from scripts.releases.stable import PACKAGED_BY
+
+    jobs = workflow("stable-release.yml")["jobs"]
+
+    for name, job in jobs.items():
+        if set(PACKAGED_BY) & ancestors(jobs, name):
+            condition = str(job.get("if", ""))
+            assert "always()" in condition or "!cancelled()" in condition, (
+                f"{name} skips whenever an upgrade arm skips")
 
 
 def test_all_applicable_ci_jobs_are_aggregated_and_desktop_e2e_stays_deferred():
@@ -247,6 +268,19 @@ def test_release_gates_extract_consumer_facing_versions():
     )
     assert '"$package/bin/hermes" --version' in nix_check
     assert "actual != expected" in nix_check
+    # A path: flake has no git metadata; without ?rev= the stamp has no commit
+    # and the packaged CLI reports "unknown".
+    assert 'release-source?rev=$GITHUB_SHA' in nix_check
+    flake_check = next(step["run"] for step in nix["flake-check"]["steps"] if step.get("name") == "nix flake check")
+    assert "release-source?rev={1}" in flake_check and "github.sha" in flake_check
+
+
+def test_versioned_docker_images_belong_to_one_attempt():
+    # The final vX.Y.Z does not exist until publish; a second attempt pushing
+    # under it collides with the first attempt's immutable manifest list.
+    jobs = workflow("stable-release.yml")["jobs"]
+    for name in ("docker", "publish-docker"):
+        assert jobs[name]["with"]["tag"] == "${{ needs.admit.outputs.claim-tag }}"
 
 
 def test_packaged_stamp_writers_receive_versions_without_rewriting_python_metadata():
@@ -323,6 +357,7 @@ def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
              "IMAGE_NAME": "owner/repo", "RELEASE_TAG": "0.21.5",
              "CREATE_MARKER": str(marker)},
         capture_output=True, text=True, encoding="utf-8",
+        check=False,
     )
     assert result.returncode != 0
     assert "versioned Docker manifest differs" in result.stderr

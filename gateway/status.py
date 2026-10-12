@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
@@ -208,7 +208,7 @@ def record_start_and_check_storm(
     try:
         path = get_hermes_home() / "gateway-starts.log"
         path.parent.mkdir(parents=True, exist_ok=True)
-        now = datetime.now(timezone.utc).timestamp()
+        now = datetime.now(UTC).timestamp()
         existing: list[float] = []
         if path.exists():
             for line in path.read_text(encoding="utf-8-sig").splitlines():
@@ -336,7 +336,7 @@ def _get_lock_dir() -> Path:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # Epochs before 2000-01-01 are corrupt/hand-edited state (e.g. an accidental 0).
@@ -357,14 +357,14 @@ def normalize_updated_at(value: Any) -> Optional[str]:
             parsed = datetime.fromisoformat(raw)
         except ValueError:
             return None
-        return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).isoformat()
+        return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).isoformat()
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         seconds = float(value)
-        now = datetime.now(timezone.utc).timestamp()
+        now = datetime.now(UTC).timestamp()
         if not math.isfinite(seconds) or seconds < _EPOCH_MIN_PLAUSIBLE or seconds > now + 86400:
             return None
         try:
-            return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+            return datetime.fromtimestamp(seconds, tz=UTC).isoformat()
         except (OverflowError, OSError, ValueError):
             return None
     return None
@@ -429,6 +429,7 @@ def terminate_pid(
         result = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=10, creationflags=windows_hide_flags(),
+            check=False,
         )
     except FileNotFoundError:
         os.kill(pid, signal.SIGTERM)
@@ -496,7 +497,7 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     # of the same process compare equal without float-precision fragility.
     try:
         import psutil  # type: ignore
-        return int(round(psutil.Process(pid).create_time() * 100))
+        return round(psutil.Process(pid).create_time() * 100)
     except Exception:
         return None
 
@@ -528,6 +529,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
             result = subprocess.run(
                 ["ps", "-p", str(pid), "-o", "command="],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                check=False,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
@@ -1240,7 +1242,7 @@ def runtime_status_heartbeat_age_s(record: Optional[dict[str, Any]]) -> Optional
     updated_at = normalize_updated_at(record.get("updated_at")) if isinstance(record, dict) else None
     if not updated_at:
         return None
-    return max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(updated_at)).total_seconds()))
+    return max(0, int((datetime.now(UTC) - datetime.fromisoformat(updated_at)).total_seconds()))
 
 
 def runtime_status_pid_is_live(record: Optional[dict[str, Any]]) -> bool:
@@ -1665,7 +1667,7 @@ def _get_planned_stop_marker_path() -> Path:
 
 def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
     try:
-        age = datetime.now(timezone.utc) - datetime.fromisoformat(written_at)
+        age = datetime.now(UTC) - datetime.fromisoformat(written_at)
         return age.total_seconds() > ttl_s
     except (TypeError, ValueError):
         return True
@@ -2116,7 +2118,7 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         exact_create_time = float(psutil.Process(pid).create_time())
     except Exception as exc:
         raise RuntimeError("exact gateway creation time is unavailable") from exc
-    if int(round(exact_create_time * 100)) != int(current):
+    if round(exact_create_time * 100) != int(current):
         raise RuntimeError("gateway process identity changed")
     return pid, exact_create_time
 

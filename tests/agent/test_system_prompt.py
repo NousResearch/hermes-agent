@@ -140,7 +140,7 @@ class TestContextFileCwd:
     def test_desktop_launch_artifact_does_not_load_bundled_agents_md(
         self, monkeypatch, tmp_path
     ):
-        import agent.runtime_cwd as runtime_cwd
+        from agent import runtime_cwd
 
         monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
         monkeypatch.chdir(tmp_path)
@@ -162,7 +162,7 @@ class TestContextFileCwd:
     def test_desktop_launch_artifact_uses_profile_configured_cwd(
         self, monkeypatch, tmp_path
     ):
-        import agent.runtime_cwd as runtime_cwd
+        from agent import runtime_cwd
 
         launch = tmp_path / "launch"
         workspace = tmp_path / "workspace"
@@ -194,7 +194,7 @@ class TestContextFileCwd:
     def test_desktop_explicit_install_tree_workspace_still_loads_agents_md(
         self, monkeypatch, tmp_path
     ):
-        import agent.runtime_cwd as runtime_cwd
+        from agent import runtime_cwd
 
         monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
         monkeypatch.chdir(tmp_path)
@@ -515,7 +515,7 @@ def test_build_system_prompt_records_stable_prefix():
 
 def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
     """Keep workspace guidance intact after the shared context."""
-    import agent.system_prompt as system_prompt
+    from agent import system_prompt
 
     agent = _make_agent(
         valid_tool_names=["read_file"],
@@ -905,7 +905,7 @@ def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
     """Regression: a session that started on Jan 1 must still read
     'Conversation started: Thursday, January 01' even when the prompt is
     rebuilt on Jan 2 (the rebuild-drift bug)."""
-    import agent.system_prompt as system_prompt
+    from agent import system_prompt
 
     agent = _make_agent(
         valid_tool_names=["read_file"],

@@ -470,12 +470,12 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 
 ### SSH Backend
 
-Runs commands on a remote server over SSH. Uses ControlMaster for connection reuse (5-minute idle keepalive). Persistent shell is enabled by default — state (cwd, env vars) survives across commands.
+Runs commands on a remote server over SSH. Uses ControlMaster for connection reuse (5-minute idle keepalive). Each command is a fresh `ssh … bash -c`; the working directory always carries over, and exported environment variables carry over while `persistent_shell` is on (the default). See [Persistent Shell](#persistent-shell).
 
 ```yaml
 terminal:
   backend: ssh
-  persistent_shell: true           # Keep a long-lived bash session (default: true)
+  persistent_shell: true           # Carry exported env vars between commands (default: true)
 ```
 
 **Required environment variables:**
@@ -491,9 +491,9 @@ TERMINAL_SSH_USER=ubuntu
 |----------|---------|-------------|
 | `TERMINAL_SSH_PORT` | `22` | SSH port |
 | `TERMINAL_SSH_KEY` | (system default) | Path to SSH private key |
-| `TERMINAL_SSH_PERSISTENT` | `true` | Enable persistent shell |
+| `TERMINAL_SSH_PERSISTENT` | follows `terminal.persistent_shell` (`true`) | Carry exported env vars between commands |
 
-**How it works:** Connects at init time with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`. Persistent shell keeps a single `bash -l` process alive on the remote host, communicating via temporary files. Commands that need `stdin_data` or `sudo` automatically fall back to one-shot mode.
+**How it works:** Connects at init time with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`, then captures the remote login shell's environment once into a snapshot file. Every command runs as a fresh `bash -c` that sources that snapshot, `cd`s to the tracked working directory, and runs your command.
 
 **Skill / config env passthrough:** variables a skill declares in `required_environment_variables`, or that you list under `terminal.env_passthrough`, are forwarded with OpenSSH `SendEnv` — the names go on the `ssh` command line and the values travel in the client's environment, never in the remote command text. The remote `sshd` must accept them; add to `/etc/ssh/sshd_config` on the server and reload sshd:
 
@@ -742,43 +742,34 @@ A host path in `terminal.cwd` (for example `C:\Users\me\project` on Windows, or 
 
 ### Persistent Shell
 
-By default, each terminal command runs in its own subprocess — working directory, environment variables, and shell variables reset between commands. When **persistent shell** is enabled, a single long-lived bash process is kept alive across `execute()` calls so that state survives between commands.
+Every terminal command on the **local** and **SSH** backends runs in a fresh `bash` process. Hermes captures your login shell's environment once (PATH, exports from your profile, functions, aliases) and starts the first command from that snapshot. With the setting off, every command starts from it. With the setting on, each command saves its exported variables for the next one, and that saved copy holds exported variables only, so profile functions and aliases are gone after the first command.
 
-This is most useful for the **SSH backend**, where it also eliminates per-command connection overhead. Persistent shell is **enabled by default for SSH** and disabled for the local backend.
+| What | Setting on (default) | Setting off |
+|------|----------------------|-------------|
+| Working directory (`cd ~/project`) | carries over | carries over |
+| Exported env vars (`export FOO=bar`) | carry over | reset to the login environment |
+| Plain shell vars (`MY_VAR=hello`) | do **not** carry over | do not carry over |
+| Functions / aliases defined mid-session | do **not** carry over | do not carry over |
+| Login environment (PATH, profile exports) | always present | always present |
+| Profile functions / aliases | first command only | always present |
 
-```yaml
-terminal:
-  persistent_shell: true   # default — enables persistent shell for SSH
-```
+The working directory always carries over because the file tools resolve relative paths against it. To make a variable stick in either mode, `export` it (setting on) or put it in your shell profile or `terminal.env_passthrough`.
 
-To disable:
+The SSH backend reads `terminal.persistent_shell`; the local backend has its own switch. Both default to on. To make each command start from the login environment:
 
 ```bash
-hermes config set terminal.persistent_shell false
+hermes config set terminal.persistent_shell false   # SSH
+export TERMINAL_LOCAL_PERSISTENT=false              # local
 ```
-
-**What persists across commands:**
-- Working directory (`cd ~/project` sticks for the next command)
-- Exported environment variables (`export FOO=bar`)
-- Shell variables (`MY_VAR=hello`)
 
 **Precedence:**
 
-| Level | Variable | Default |
-|-------|----------|---------|
-| Config | `terminal.persistent_shell` | `true` |
-| SSH override | `TERMINAL_SSH_PERSISTENT` | follows config |
-| Local override | `TERMINAL_LOCAL_PERSISTENT` | `false` |
+| Backend | Variable | Default |
+|---------|----------|---------|
+| SSH | `TERMINAL_SSH_PERSISTENT`, else `terminal.persistent_shell` (`TERMINAL_PERSISTENT_SHELL`) | `true` |
+| Local | `TERMINAL_LOCAL_PERSISTENT` | `true` |
 
-Per-backend environment variables take highest precedence. If you want persistent shell on the local backend too:
-
-```bash
-export TERMINAL_LOCAL_PERSISTENT=true
-```
-
-:::note
-Commands that require `stdin_data` or sudo automatically fall back to one-shot mode, since the persistent shell's stdin is already occupied by the IPC protocol.
-:::
+Docker, Singularity, Modal, Daytona, Vercel Sandbox and plugin backends ignore these settings.
 
 See [Code Execution](features/code-execution.md) and the [Terminal section of the README](features/tools.md) for details on each backend.
 

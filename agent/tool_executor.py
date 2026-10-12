@@ -709,7 +709,7 @@ def _dispatch_authorized_once(
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
-        resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
+        resolve = lambda: _pre_tool_block(agent, ref)
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
     block_body = None if block_message is None else {"error": block_message}
@@ -1936,6 +1936,6 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
 
 __all__ = [
     "execute_tool_calls_concurrent",
-    "execute_tool_calls_sequential",
     "execute_tool_calls_segmented",
+    "execute_tool_calls_sequential",
 ]

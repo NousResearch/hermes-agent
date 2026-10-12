@@ -2279,6 +2279,7 @@ cli:
     failed: "فشل الاتصال"
     authorized_no_tools: "تم التصريح. الأدوات غير متاحة."
     connected: "متصل"
+    named_account: "سمّى Hermes حساب {name} هذا {alias}. يمكنك إعادة تسميته في أي وقت."
     waiting: "في الانتظار…"
   editor:
     only_interactive: "المحرّر الخارجي متاح فقط داخل واجهة سطر الأوامر التفاعلية."

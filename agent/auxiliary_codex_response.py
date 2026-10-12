@@ -11,7 +11,7 @@ from typing import Any, List, Optional, Tuple
 
 def _parse_codex_final_response(
     final: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
-) -> Tuple[List[str], List[Any], Any, str]:
+) -> tuple[list[str], list[Any], Any, str]:
     """Normalize Responses output without losing phase or completion state for aux callers."""
     from agent.codex_responses_adapter import _lower_or_none, _normalize_codex_response
 

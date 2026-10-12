@@ -19,6 +19,7 @@ import {
   helper,
   helperCommand,
   powerShellCommand,
+  probeWindowsFiles,
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
@@ -137,7 +138,9 @@ function scriptFromInvocation(command: string, options: SshExecOptions = {}) {
   const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
 
   if (encoded) {
-    return Buffer.from(encoded, 'base64').toString('utf16le')
+    const script = Buffer.from(encoded, 'base64').toString('utf16le')
+
+    if (!script.includes('[Console]::In.ReadToEnd()') || options.stdinData == null) {return script}
   }
 
   return Buffer.from(String(options.stdinData || '').trim(), 'base64').toString('utf16le')
@@ -316,7 +319,7 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   )
 
   const explicitCheck = script.indexOf('if($explicit){Assert-NoReparse $explicit $false;')
-  const explicitPythonCheck = script.indexOf('Assert-NoReparse $explicitPython $false')
+  const explicitPythonCheck = script.indexOf('Assert-NoReparse $explicitPython $true')
   const envHome = script.indexOf('$hermesHome=$env:HERMES_HOME')
   // #118988: HERMES_HOME is trusted only when it is a directory on the remote; anything else
   // (stale User-scope value, client path leaked over SSH) falls back to the remote default.
@@ -482,8 +485,8 @@ test('Windows platform probe streams long PowerShell scripts over stdin', async 
   })
 
   assert.equal(result.os, 'Windows')
-  assert.match(command, /-Command \[ScriptBlock\]::Create/)
-  assert.doesNotMatch(command, /-EncodedCommand/)
+  assert.match(command, /-EncodedCommand [A-Za-z0-9+/=]+$/)
+  assert.doesNotMatch(command, /-Command /)
   assert.ok(command.length < 1024)
   assert.match(stdinData, /^[A-Za-z0-9+/=\r\n]+$/)
   const decodedScript = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
@@ -595,7 +598,7 @@ test.skipIf(process.platform !== 'win32')('Windows platform probe executes in re
     fs.writeFileSync(hermesPath, '')
     fs.writeFileSync(path.join(tempDir, 'python.exe'), '')
 
-    const result = await probeWindowsRemote(
+    const result = await probeWindowsFiles(
       {
         exec: (command: string, options: SshExecOptions = {}) => runLocalWindowsCommand(command, options.stdinData)
       },
@@ -633,7 +636,7 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   )
 
   assert.equal(result.os, 'Windows')
-  assert.match(calls[1], /-Command \[ScriptBlock\]::Create/)
+  assert.match(calls[1], /-EncodedCommand [A-Za-z0-9+/=]+$/)
 })
 
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {

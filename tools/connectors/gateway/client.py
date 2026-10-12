@@ -23,6 +23,7 @@ from tools.connectors.gateway.errors import (
 )
 
 from tools.connectors.gateway.merge import PlannedCall
+from tools.managed_gateway_identity import CallRef, connector_headers, log_connector_outcome, response_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +78,15 @@ class ConnectorClient:
         transport: Optional[Transport] = None,
         endpoint_resolver: Optional[Callable[[], Optional[str]]] = None,
         header_provider: Optional[Callable[[str], dict]] = None,
+        call: Optional[CallRef] = None,
+        initiator: Optional[str] = None,
     ) -> None:
         self._transport = transport or _default_transport()
         self._endpoint_resolver = endpoint_resolver or _default_endpoint_resolver
         self._header_provider = header_provider or _default_header_provider
+        # The model call this client serves, and who asked for a connect; both go on the wire.
+        self._call = call
+        self._initiator = initiator
 
     def search(self, queries: Sequence[dict[str, Any]]) -> dict[str, Any]:
         body = wire.ConnectorSearchRequest(
@@ -111,7 +117,7 @@ class ConnectorClient:
         existing account to repair, named or not."""
         body = wire.ConnectorConnectionsRequest(
             connectors=list(connectors), reinitiate=reinitiate, alias=alias, connection_id=connection_id,
-            return_to=return_to, op=op,
+            return_to=return_to, op=op, initiator=self._initiator,
         ).model_dump(by_alias=True, exclude_none=True)
         payload = self._post(wire.CONNECTOR_CONNECTIONS_PATH, body, retries=0)
         return wire.ConnectorConnectionsResponse.model_validate(payload).model_dump()
@@ -213,17 +219,10 @@ class ConnectorClient:
             )
         url = f"{origin.rstrip('/')}/{path}"
 
+        route = _route_key(path)
         last_error: Optional[ToolGatewayError] = None
         for attempt in range(1 + retries):
-            headers = dict(self._header_provider(url))
-            if not headers:
-                raise GatewayAuthError(
-                    "no portal access token available", code="NO_TOKEN", status=401
-                )
-            headers["Content-Type"] = "application/json"
-            if idempotency_key:
-                headers["x-idempotency-key"] = idempotency_key
-
+            headers = self._attempt_headers(url, idempotency_key)
             try:
                 response = self._transport.request(
                     method, url, headers=headers, json=body, timeout=timeout
@@ -232,16 +231,18 @@ class ConnectorClient:
                 last_error = ToolGatewayError(
                     f"transport failure: {exc}", code="TRANSPORT_ERROR", retryable=True
                 )
-                logger.debug(
-                    "Connector %s attempt %d transport failure: %s", path, attempt + 1, exc
-                )
+                log_connector_outcome(route, None, code="TRANSPORT_ERROR", call=self._call)
                 continue
 
             status = int(getattr(response, "status_code", 0))
+            request_id = response_request_id(response)
             if 200 <= status < 300:
+                log_connector_outcome(route, status, request_id=request_id, call=self._call)
                 return response.json()
 
             error = parse_gateway_error(status, _safe_json(response), getattr(response, "headers", None))
+            error.request_id = error.request_id or request_id
+            log_connector_outcome(route, status, code=error.code, request_id=error.request_id, call=self._call)
             if error.retryable and attempt < retries:
                 last_error = error
                 logger.debug(
@@ -256,6 +257,19 @@ class ConnectorClient:
         assert last_error is not None
         raise last_error
 
+    def _attempt_headers(self, url: str, idempotency_key: Optional[str]) -> dict[str, str]:
+        """Every header of one HTTP attempt: auth, caller identity, and the idempotency key."""
+        headers = dict(self._header_provider(url))
+        if not headers:
+            raise GatewayAuthError(
+                "no portal access token available", code="NO_TOKEN", status=401
+            )
+        headers.update(connector_headers(self._call))
+        headers["Content-Type"] = "application/json"
+        if idempotency_key:
+            headers["x-idempotency-key"] = idempotency_key
+        return headers
+
 
 def return_to_args(*, op: Optional[str] = None) -> dict[str, Any]:
     """The ``returnTo`` / ``op`` arguments a connect or execute call carries so the vendor's done page
@@ -268,6 +282,14 @@ def return_to_args(*, op: Optional[str] = None) -> dict[str, Any]:
         return {}
     target = "hermes-desktop-dev" if os.environ.get("HERMES_DESKTOP_DEV_SERVER") else "hermes-desktop"
     return {"return_to": target, "op": op} if op else {"return_to": target}
+
+
+def _route_key(path: str) -> str:
+    """``v1/connectors/accounts/<id>?x`` -> ``connectors.accounts``: the route without ids or query."""
+    parts = path.split("?", 1)[0].strip("/").split("/")[1:]
+    if len(parts) > 2:
+        parts = parts[:2]
+    return ".".join(parts) or path
 
 
 def _result_dict(result: wire.ConnectorExecuteResult) -> dict[str, Any]:

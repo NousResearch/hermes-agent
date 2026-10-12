@@ -22,6 +22,9 @@ CONNECTOR_ACCOUNTS_PATH = f"{CONNECTORS_PATH}/accounts"
 ConnectionStatus = Literal["pending", "active", "failed", "expired", "revoked", "inactive"]
 # Where the vendor's done page sends the browser after consent; the dev desktop registers hermes-dev://.
 ConnectorReturnTarget = Literal["hermes-desktop", "hermes-desktop-dev", "portal"]
+# Who asked for a connect, so the gateway can attribute each minted link. The gateway sets
+# ``execute_link`` and ``portal`` itself; an older gateway ignores the field.
+ConnectorInitiator = Literal["agent_tool", "desktop_page", "card_retry"]
 
 # Hermes dispatch caps batches lower, so client-side chunking is deliberately absent.
 WIRE_BATCH_MAX = 25
@@ -145,6 +148,7 @@ class ConnectorConnectionsRequest(_Wire):
     return_to: Optional[ConnectorReturnTarget] = Field(default=None, alias="returnTo")
     # The caller's operation id, echoed on the hermes://connections/done link.
     op: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    initiator: Optional[ConnectorInitiator] = None
 
 
 class ConnectorConnectionResult(_Wire):

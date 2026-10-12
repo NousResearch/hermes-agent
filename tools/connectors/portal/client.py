@@ -24,6 +24,7 @@ from tools.connectors.portal.wire import (
     ConnectorToolsListing,
 )
 from tools.managed_gateway_auth import read_nous_access_token
+from tools.managed_gateway_identity import connector_headers, log_connector_outcome, response_request_id
 
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -92,7 +93,7 @@ class PortalConnectorClient:
         return token.strip() if scheme.lower() == "bearer" and token.strip() else None
 
     def _authorized_headers(self, url: str, extra: dict[str, str] | None = None) -> dict[str, str]:
-        headers = {"Accept": "application/json", **(extra or {}), **self._header_provider(url)}
+        headers = {"Accept": "application/json", **(extra or {}), **connector_headers(), **self._header_provider(url)}
         if not isinstance(headers.get("Authorization"), str) or not headers["Authorization"].strip():
             raise GatewayAuthError("portal authorization required", code="NO_TOKEN", status=401)
         return headers
@@ -161,11 +162,16 @@ class PortalConnectorClient:
         try:
             response = self._transport.request(method, url, headers=headers, json=body, timeout=DEFAULT_TIMEOUT_SECONDS)
         except Exception as exc:
+            log_connector_outcome(_route_key(path), None, code="TRANSPORT_ERROR")
             raise PortalConnectorUnavailable("portal connector metadata unavailable", code="TRANSPORT_ERROR", retryable=True) from exc
         status = int(getattr(response, "status_code", 0))
+        request_id = response_request_id(response)
         if not 200 <= status < 300 and status != 304:
             error = parse_gateway_error(status, _safe_json(response), getattr(response, "headers", None))
+            error.request_id = error.request_id or request_id
+            log_connector_outcome(_route_key(path), status, code=error.code, request_id=error.request_id)
             raise error
+        log_connector_outcome(_route_key(path), status, request_id=request_id)
         return response, status
 
     @staticmethod
@@ -177,6 +183,16 @@ class PortalConnectorClient:
             return model.model_validate(payload)
         except (AttributeError, TypeError, ValueError, ValidationError) as exc:
             raise error_type(message, code="INVALID_RESPONSE", status=status) from exc
+
+
+def _route_key(path: str) -> str:
+    """``/api/v1/connectors/gmail/tools`` -> ``portal.connectors.tools``: no slugs or ids."""
+    parts = path.strip("/").split("/")[2:]
+    named = [part for part in parts if part in _PORTAL_ROUTE_WORDS]
+    return ".".join(["portal", *named]) or "portal"
+
+
+_PORTAL_ROUTE_WORDS = frozenset({"connectors", "tools", "catalog", "accounts", "policy"})
 
 
 def _safe_json(response: Any) -> Any:

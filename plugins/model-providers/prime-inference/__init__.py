@@ -1,9 +1,52 @@
 """Prime Inference provider profile."""
 
-from providers import register_provider
-from providers.base import ProviderProfile
+import json
+import logging
+import urllib.request
 
-prime = ProviderProfile(
+from providers import register_provider
+from providers.base import ProviderProfile, _profile_user_agent
+
+logger = logging.getLogger(__name__)
+
+
+class PrimeProfile(ProviderProfile):
+    """Prime's public catalog includes decision and non-agentic models."""
+
+    def fetch_models(
+        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
+    ) -> list[str] | None:
+        """Offer tool-capable text models; custom proxies keep generic discovery."""
+        caller_base = (base_url or "").strip().rstrip("/")
+        if caller_base and caller_base != self.base_url.rstrip("/"):
+            return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
+
+        from hermes_cli.urllib_security import open_credentialed_url
+
+        request = urllib.request.Request(
+            self.base_url.rstrip("/") + "/models",
+            headers={"Accept": "application/json", "User-Agent": _profile_user_agent()},
+        )
+        try:
+            with open_credentialed_url(request, timeout=timeout) as response:
+                data = json.loads(response.read().decode())
+            models = []
+            for model in data.get("data", []):
+                modalities = (model.get("specs") or {}).get("modalities") or {}
+                if (
+                    model.get("id")
+                    and "tools" in (model.get("supported_parameters") or ())
+                    and "text" in (modalities.get("input") or ())
+                    and "text" in (modalities.get("output") or ())
+                ):
+                    models.append(model["id"])
+            return models
+        except Exception as exc:
+            logger.debug("fetch_models(prime): %s", exc, exc_info=True)
+            return None
+
+
+prime = PrimeProfile(
     name="prime",
     aliases=("prime-inference", "primeintellect", "pinference"),
     display_name="Prime Inference",

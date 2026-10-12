@@ -1,6 +1,7 @@
 """Prime Inference uses the shared provider discovery and runtime paths."""
 
 import json
+from urllib.error import URLError
 from unittest.mock import MagicMock
 
 import pytest
@@ -45,10 +46,20 @@ def test_prime_appears_in_picker_and_setup_env_metadata():
 
 
 def test_prime_live_catalog_preserves_model_ids(monkeypatch):
+    from hermes_cli.models import provider_model_ids
+
     profile = get_provider_profile("prime")
+    modalities = {"input": ["text"], "output": ["text"]}
+    excluded = ("example/no-tools", "example/decision", "example/unknown")
     response = MagicMock()
     response.__enter__.return_value.read.return_value = json.dumps(
-        {"object": "list", "data": [{"id": "example/live-chat"}]}
+        {"object": "list", "data": [
+            {"id": "example/live-chat", "supported_parameters": ["tools"], "specs": {"modalities": modalities}},
+            {"id": excluded[0], "supported_parameters": [], "specs": {"modalities": modalities}},
+            {"id": excluded[1], "supported_parameters": ["tools"],
+             "specs": {"modalities": {"input": ["text"], "output": ["decisions"]}}},
+            {"id": excluded[2]},
+        ]}
     ).encode()
     opener = MagicMock(return_value=response)
     monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", opener)
@@ -58,12 +69,32 @@ def test_prime_live_catalog_preserves_model_ids(monkeypatch):
     assert request.full_url == profile.base_url + "/models"
     assert request.get_header("Authorization") is None
 
+    monkeypatch.setenv("PRIME_API_KEY", "prime-test-key")
+    offered = provider_model_ids(profile.name)
+    assert "example/live-chat" in offered
+    assert not set(excluded).intersection(offered)
+
+
+def test_prime_configured_proxy_preserves_generic_catalog(monkeypatch):
+    profile = get_provider_profile("prime")
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"data": [{"id": "proxy/chat"}]}'
+    opener = MagicMock(return_value=response)
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", opener)
+
+    assert profile.fetch_models(api_key="proxy-key", base_url="https://proxy.example/v1/") == ["proxy/chat"]
+    request = opener.call_args.args[0]
+    assert request.full_url == "https://proxy.example/v1/models"
+    assert request.get_header("Authorization") == "Bearer proxy-key"
+
 
 def test_prime_catalog_outage_uses_profile_fallback(monkeypatch):
     from hermes_cli.models import provider_model_ids
 
     profile = get_provider_profile("prime")
-    monkeypatch.setattr(profile, "fetch_models", lambda **kwargs: None)
+    monkeypatch.setenv("PRIME_API_KEY", "prime-test-key")
+    opener = MagicMock(side_effect=URLError("catalog unavailable"))
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", opener)
     assert profile.fallback_models
     assert provider_model_ids(profile.name) == list(profile.fallback_models)
 

@@ -627,7 +627,7 @@ model:
   default: "deepseek/deepseek-v4.1-flash"
 ```
 
-Aliases: `prime-inference`, `primeintellect`, `pinference`. Model IDs retain their vendor prefix, so `/model prime:deepseek/deepseek-v4.1-flash` selects the same route. Hermes discovers models from `/models` and keeps curated tool-calling models as an offline fallback. Auxiliary tasks default to `deepseek/deepseek-v4.1-flash`.
+Aliases: `prime-inference`, `primeintellect`, `pinference`. Model IDs retain their vendor prefix, so `/model prime:deepseek/deepseek-v4.1-flash` selects the same route. Hermes discovers models from `/models`, lists models with advertised tool calling and text input/output, and keeps curated tool-calling models as an offline fallback. Auxiliary tasks default to `deepseek/deepseek-v4.1-flash`.
 
 ### Actual Computer
 

@@ -103,12 +103,15 @@ class ConnectorClient:
         return wire.ConnectorSchemasResponse.model_validate(payload).model_dump()
 
     def connections(
-        self, connectors: Sequence[str], *, reinitiate: bool = False,
-        return_to: Optional[str] = None, op: Optional[str] = None,
+        self, connectors: Sequence[str], *, reinitiate: bool = False, alias: Optional[str] = None,
+        connection_id: Optional[str] = None, return_to: Optional[str] = None, op: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Never retry: the gateway cannot deduplicate authorization starts."""
+        """Never retry: the gateway cannot deduplicate authorization starts. ``alias`` names the one
+        account the request connects (or, with ``reinitiate``, repairs); ``connection_id`` names an
+        existing account to repair, named or not."""
         body = wire.ConnectorConnectionsRequest(
-            connectors=list(connectors), reinitiate=reinitiate, return_to=return_to, op=op,
+            connectors=list(connectors), reinitiate=reinitiate, alias=alias, connection_id=connection_id,
+            return_to=return_to, op=op,
         ).model_dump(by_alias=True, exclude_none=True)
         payload = self._post(wire.CONNECTOR_CONNECTIONS_PATH, body, retries=0)
         return wire.ConnectorConnectionsResponse.model_validate(payload).model_dump()
@@ -130,18 +133,6 @@ class ConnectorClient:
             if not cursor:
                 return items
         raise ToolGatewayError("connector list pagination incomplete", code="INVALID_RESPONSE")
-
-    def list_accounts(
-        self, *, connector: Optional[str] = None, status: Optional[Sequence[str]] = None
-    ) -> list[dict[str, Any]]:
-        query = []
-        if connector:
-            query.append(f"connector={connector}")
-        if status:
-            query.append(f"status={','.join(status)}")
-        path = wire.CONNECTOR_ACCOUNTS_PATH + (f"?{'&'.join(query)}" if query else "")
-        page = self._parse(wire.ConnectorAccountsResponse, self._request("GET", path, None), "connector accounts")
-        return [row.model_dump(by_alias=True) for row in page.accounts]
 
     def account_status(
         self, connection_id: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS
@@ -291,7 +282,10 @@ def _result_dict(result: wire.ConnectorExecuteResult) -> dict[str, Any]:
             error["connection_id"] = result.error.connection_id
         if result.error.hint:
             error["hint"] = result.error.hint
-    return {"data": result.data, "error": error}
+    entry = {"data": result.data, "error": error}
+    if result.account:
+        entry["account"] = result.account
+    return entry
 
 
 def _safe_json(response: Any) -> Any:

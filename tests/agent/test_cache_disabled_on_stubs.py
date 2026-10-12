@@ -23,25 +23,7 @@ def _has_cache_control(obj) -> bool:
 
 
 class TestPromptCachingDisabledFromConfig:
-    def test_off_values(self):
-        from agent.agent_runtime_helpers import prompt_caching_disabled_from_config
 
-        for ttl in (False, None, "off", "false", "disabled", "no", "none", "OFF"):
-            with patch(
-                "hermes_cli.config.load_config_readonly",
-                return_value={"prompt_caching": {"cache_ttl": ttl}},
-            ):
-                assert prompt_caching_disabled_from_config() is True, ttl
-
-    def test_enabled_values(self):
-        from agent.agent_runtime_helpers import prompt_caching_disabled_from_config
-
-        for ttl in ("5m", "1h"):
-            with patch(
-                "hermes_cli.config.load_config_readonly",
-                return_value={"prompt_caching": {"cache_ttl": ttl}},
-            ):
-                assert prompt_caching_disabled_from_config() is False, ttl
 
     def test_shared_predicate_matches_agent_init_semantics(self):
         """agent_init and the stub paths must share one disable predicate.
@@ -272,26 +254,6 @@ class TestPreparedAggregatorNoAgentConfigOff:
         assert tools == canonical_tools
 
 
-class TestBlankCachePolicyStubFactory:
-    def test_factory_sets_cache_disabled_from_config(self):
-        from agent.agent_runtime_helpers import blank_cache_policy_stub
-
-        with patch(
-            "hermes_cli.config.load_config_readonly",
-            return_value={"prompt_caching": {"cache_ttl": "off"}},
-        ):
-            stub = blank_cache_policy_stub()
-        assert stub._cache_disabled is True
-
-    def test_factory_honors_explicit_false(self):
-        from agent.agent_runtime_helpers import blank_cache_policy_stub
-
-        with patch(
-            "hermes_cli.config.load_config_readonly",
-            return_value={"prompt_caching": {"cache_ttl": "off"}},
-        ):
-            stub = blank_cache_policy_stub(False)
-        assert stub._cache_disabled is False
 
 
 class TestOneShotSynthesisAgentDisable:

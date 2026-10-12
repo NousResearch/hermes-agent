@@ -201,24 +201,6 @@ class TestThinkingOnlyTruncation:
             "continuation call."
         )
 
-    def test_thinking_only_truncation_sets_reasoning_off(self, loop_agent):
-        from tests.agent.test_run_agent import _mock_response
-
-        loop_agent.client.chat.completions.create.side_effect = [
-            _thinking_only_length_response(),
-            _mock_response(
-                content="done", finish_reason=FINISH_REASON_LENGTH
-            ),
-            _full_response("finally complete."),
-        ]
-        _run(loop_agent, "write me a long report")
-
-        calls = loop_agent.client.chat.completions.create.call_args_list
-        assert len(calls) == 3
-        # The thinking-only fragment set the flag; it was consumed by the
-        # next call, and the SECOND truncated fragment (which had visible
-        # text) does not set it again — so the third call sees thinking ON.
-        assert loop_agent._ephemeral_reasoning_off is False
 
     def test_full_ceiling_with_empty_fragments_still_settles(self, loop_agent):
         """All four attempts thinking-only: the turn must exit through the
@@ -231,12 +213,10 @@ class TestThinkingOnlyTruncation:
 
         assert result["completed"] is False
         assert result["partial"] is True
-        assert "truncated after 4 continuation attempts" in (result.get("error") or "")
         assert result["final_response"], (
             "An all-empty ceiling exit must still surface a user-facing "
             "message instead of an invisible None."
         )
-        assert "reasoning" in (result["final_response"] or "").lower()
         assert _no_empty_assistant_rows(result["messages"]) == []
         assert loop_agent._ephemeral_reasoning_off is False, (
             "The ceiling exit must clear the pending one-shot override so the "

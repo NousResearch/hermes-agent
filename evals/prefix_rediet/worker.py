@@ -240,7 +240,7 @@ try:
         convo = agent.run_conversation(REPLIES.pop(0))
 except SystemExit:
     raise
-except BaseException as e:
+except BaseException as e:  # health: allow BLE001 -- a crashed run is a scored data point; traceback printed
     error = f"{type(e).__name__}: {e}"
     traceback.print_exc()
 wall = time.time() - t0
@@ -249,6 +249,13 @@ if (error and any(s in error for s in ("Authentication", "No LLM provider", "401
         m.get("role") == "assistant" for m in messages):
     print(f"ABORT: no model turn (auth/provider failure): {error or (convo or {}).get('error')}", file=sys.stderr)
     sys.exit(3)
+def _loads(text):
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
 calls, bridge, turns = [], 0, 0
 for m in messages:
     if m.get("role") != "assistant":
@@ -257,15 +264,17 @@ for m in messages:
     for tc in m.get("tool_calls") or []:
         fn = tc.get("function", {})
         name = fn.get("name", "")
-        try:
-            fargs = json.loads(fn.get("arguments") or "{}")
-        except Exception:
-            fargs = {}
+        fargs = _loads(fn.get("arguments") or "{}")
+        fargs = fargs if isinstance(fargs, dict) else {}
         if name in ("tool_search", "tool_describe", "tool_call"):
             bridge += 1
             if name == "tool_call":
-                for entry in fargs.get("calls") or ([fargs] if fargs.get("name") else []):
-                    calls.append((str(entry.get("name") or ""), entry.get("arguments") or {}))
+                entries = fargs.get("calls") or ([fargs] if fargs.get("name") else [])
+                entries = _loads(entries) if isinstance(entries, str) else entries
+                for entry in entries if isinstance(entries, list) else []:
+                    entry = _loads(entry) if isinstance(entry, str) else entry
+                    if isinstance(entry, dict):
+                        calls.append((str(entry.get("name") or ""), entry.get("arguments") or {}))
             continue
         calls.append((name, fargs))
 final = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "assistant" and (m.get("content") or "").strip()), "")
@@ -288,7 +297,7 @@ def grade():
     if TASK_ID == "term_dev_server":
         try:
             body = urllib.request.urlopen(f"http://127.0.0.1:{PORT}/index.html", timeout=5).read().decode()
-        except Exception as e:
+        except OSError as e:
             notes.append(f"server not serving after the run: {e}")
             return 0.0, notes
         return (1.0 if "prefix-rediet fixture page" in body else 0.0), notes
@@ -326,8 +335,5 @@ with open(OUT + ".transcript.json", "w", encoding="utf-8") as f:
 with open(OUT, "w", encoding="utf-8") as f:
     json.dump(record, f, indent=1, default=str)
 print(json.dumps({k: record[k] for k in ("arm", "model", "task", "rep", "score", "api_turns", "total_tokens", "wall_s", "bridge_calls", "error")}))
-try:
-    agent.close()
-except Exception:
-    pass
+agent.close()
 shutil.rmtree(tmp_root, ignore_errors=True)

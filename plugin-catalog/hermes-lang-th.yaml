@@ -1,0 +1,28 @@
+name: hermes-lang-th
+repo: https://github.com/shoesroom13/hermes-lang-thai
+sha: eb2c5fe139c049b5fe900ad3cb8a277f7584adaf
+title: Thai (ภาษาไทย) Language Pack
+description: >-
+  Thai (ภาษาไทย) language pack covering all three Hermes UI surfaces — Desktop
+  (5,024/5,030), core CLI/gateway/platforms (3,437/3,437), and the Ink TUI
+  (1,259/1,259) — 9,720/9,726 keys total (99.9%). All three catalogs checked
+  against the English reference with `hermes plugins validate`. Manifest-only
+  plugin: flat nested YAML overlays under locales/, no code, no network, no
+  dependencies. Registering the pack never changes display.language — the user
+  opts in via `hermes config set display.language th`. Disclosure — text-only
+  catalogs; the 6 untranslated Desktop keys (array/conditional shapes the YAML
+  overlay cannot express) fall back to English, listed in the repo README.
+maintainer: shoesroom13
+tier: community
+category: general
+requires_hermes: '>=0.22'
+docs_url: https://github.com/shoesroom13/hermes-lang-thai#readme
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+screenshots:
+  - https://raw.githubusercontent.com/shoesroom13/hermes-lang-thai/main/screenshots/desktop-th.png

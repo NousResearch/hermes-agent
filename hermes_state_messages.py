@@ -965,6 +965,9 @@ class SessionMessagesMixin:
                 f"WHERE session_id = ? AND id IN ({placeholders})",
                 [session_id, *rewind_ids])
         conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
+        # A carried copy whose original stays display-visible is superseded by it: keep the copy
+        # out of display projections or the rewritten generation paints twice (#135655).
+        self._mark_superseded_display_copies(conn, session_id, compacted_messages)
         # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
         # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
         # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
@@ -1070,6 +1073,9 @@ class SessionMessagesMixin:
             conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
         else:
             conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
+        # A carried copy whose original stays display-visible is superseded by it: keep the copy
+        # out of display projections or the rewritten generation paints twice (#135655).
+        self._mark_superseded_display_copies(conn, session_id, compacted_messages)
         # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
         # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
         # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
@@ -1085,7 +1091,6 @@ class SessionMessagesMixin:
         conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
             (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
         return inserted
-
     def _message_column_names(self, conn) -> list[str]:
         """Column names of the messages table, cached per-connection era."""
         if not getattr(self, "_message_columns_cache", None):

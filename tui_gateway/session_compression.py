@@ -239,12 +239,15 @@ class CompressionBusy(Exception):
 
 
 @contextlib.contextmanager
-def _manual_compress_turn(sid: str, session: dict):
+def _manual_compress_turn(sid: str, session: dict, *, control_token=None):
     """Hold the session busy (``running``) for a whole manual compaction: snapshot, LLM summary, commit
     and session-key re-anchor. A prompt.submit arriving meanwhile takes the busy path (demoted to queue
     by ``_session_compression_in_flight``) instead of snapshotting a history version the compaction is
     about to bump, which dropped the turn's reply (#133504). The queued prompt drains on release."""
     with session["history_lock"]:
+        active_control = session.get("_session_control_inflight")
+        if active_control is not None and active_control is not control_token:
+            raise CompressionBusy(_PLUGIN_SESSION_CONTROL_BUSY_MESSAGE)
         if session.get("running"):
             raise CompressionBusy(busy_message("compress", bool(session.get("_manual_compress_active"))))
         session["running"] = session["_manual_compress_active"] = True
@@ -254,6 +257,8 @@ def _manual_compress_turn(sid: str, session: dict):
         with session["history_lock"]:
             session.pop("_manual_compress_active", None)
             session["running"] = False
+        if control_token is not None:
+            _release_session_control(session, control_token)
         # The compaction emitted session.info with running=true; close that edge or Desktop latches busy.
         _emit_session_info_for_session(sid, session)
         _drain_queued_prompt("__compress__", sid, session)
@@ -310,25 +315,59 @@ def _compress_session_history(
     return result.removed, _get_usage(agent)
 
 
-def _sync_session_key_after_compress(
-    sid: str, session: dict, *, clear_pending_title: bool = True, restart_slash_worker: bool = True
+@contextlib.contextmanager
+def _session_history_context(session: dict):
+    """Use a session history lock, or a lockless legacy test seam."""
+    history_lock = session.get("history_lock")
+    if history_lock is None:
+        yield
+        return
+    with history_lock:
+        yield
+
+
+def _sync_session_key_after_compress_legacy(
+    sid: str,
+    session: dict,
+    *,
+    clear_pending_title: bool = True,
+    restart_slash_worker: bool = True,
+    control_token=None,
 ) -> None:
-    """Re-anchor the gateway-side ``session_key`` when _compress_context rotates ``agent.session_id``;
-    otherwise approval routing, slash worker, DB lookups and yolo state keep targeting the ended parent.
-    ``clear_pending_title``: True for manual /compress (title belongs to the old session), False for
-    post-turn auto-compression. ``restart_slash_worker``: False only when the caller manages the worker."""
+    """Re-anchor session_key when AIAgent._compress_context rotates session_id."""
     agent = session.get("agent")
+    with _session_history_context(session):
+        active_control = session.get("_session_control_inflight")
+        if active_control is not None and active_control is not control_token:
+            logger.warning(
+                "Compression rotation skipped while session control is active: sid=%s",
+                sid,
+            )
+            return
     new_session_id = getattr(agent, "session_id", None) or ""
     old_key = session.get("session_key", "") or ""
     if not new_session_id or new_session_id == old_key:
         return
-    if not _transfer_active_session_slot(sid, session, new_session_id=new_session_id):
+
+    lease_reanchored = _transfer_active_session_slot(
+        sid,
+        session,
+        new_session_id=new_session_id,
+    )
+    if not lease_reanchored:
         logger.warning(
             "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
-            sid, old_key, new_session_id,
+            sid,
+            old_key,
+            new_session_id,
         )
-    # Even if the approval module fails to import, anchor session_key on the continuation id.
-    session["session_key"] = new_session_id
+    with _session_history_context(session):
+        active_control = session.get("_session_control_inflight")
+        if active_control is not None and active_control is not control_token:
+            logger.warning("Compression rotation skipped while session control is active: sid=%s", sid)
+            return
+        session["session_key"] = new_session_id
+        session["session_generation"] = int(session.get("session_generation", 0) or 0) + 1
     with contextlib.suppress(Exception):
         from tools import approval
         with contextlib.suppress(Exception):
@@ -337,14 +376,654 @@ def _sync_session_key_after_compress(
         transfer_session_yolo(old_key, new_session_id)
         with contextlib.suppress(Exception):
             approval.register_gateway_notify(new_session_id, lambda data: _emit_approval_request(sid, data))
-    # Invalidate any in-flight ``_drain_queued_prompt`` claim taken under the pre-rotation key: a raced
-    # drain must not dispatch on the continuation (its envelope is restored to the queue).
     session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
     if clear_pending_title:
         session["pending_title"] = None
     if restart_slash_worker:
-        with contextlib.suppress(Exception):
+        try:
             _restart_slash_worker(sid, session)
+        except Exception:
+            logger.debug('sync session key after compress legacy failed', exc_info=True)
+
+
+def _reanchor_registry_fields_match(
+    identity: _CompressionReanchorIdentity,
+    *,
+    require_marker: bool = True,
+) -> bool:
+    """Check canonical fields while ``_sessions_lock`` is held."""
+    session = identity.session
+    if session.get("_session_control_inflight") is not identity.control_token:
+        return False
+    if session.get("agent") is not identity.agent:
+        return False
+    if (
+        str(session.get("profile_home")) if session.get("profile_home") is not None else None
+    ) != identity.profile_home:
+        return False
+    current_key = str(session.get("session_key") or "")
+    current_generation = int(session.get("session_generation", 0) or 0)
+    if current_key not in {identity.old_session_key, identity.new_session_id}:
+        return False
+    if current_generation != identity.generation and not (
+        current_key == identity.new_session_id
+        and current_generation > identity.generation
+    ):
+        return False
+    if str(getattr(identity.agent, "session_id", "") or "") != identity.new_session_id:
+        return False
+    marker = session.get(_DEFERRED_COMPRESSION_ROTATION_KEY)
+    if require_marker:
+        if marker is not identity.marker or not isinstance(marker, dict):
+            return False
+        try:
+            marker_generation = int(marker.get("generation", -1))
+        except (TypeError, ValueError):
+            return False
+        if (
+            marker_generation != identity.generation
+            or str(marker.get("agent_session_id") or "") != identity.new_session_id
+        ):
+            return False
+    return True
+
+
+def _reanchor_identity_matches(identity: _CompressionReanchorIdentity) -> bool:
+    """Validate history identity, then registry identity, with no I/O."""
+    session = identity.session
+    history_lock = session.get("history_lock")
+    if history_lock is None:
+        return False
+    with history_lock:
+        if not _reanchor_registry_fields_match(identity):
+            return False
+    with _sessions_lock:
+        return _sessions.get(identity.sid) is session and _reanchor_registry_fields_match(
+            identity
+        )
+
+
+def _reanchor_apply_in_memory(
+    identity: _CompressionReanchorIdentity,
+    *,
+    clear_pending_title: bool,
+) -> bool:
+    """Atomically apply only pure canonical session fields under registry lock."""
+    with _sessions_lock:
+        if _sessions.get(identity.sid) is not identity.session:
+            return False
+        if not _reanchor_registry_fields_match(identity):
+            return False
+        current_key = str(identity.session.get("session_key") or "")
+        if current_key == identity.old_session_key:
+            identity.session["session_key"] = identity.new_session_id
+            identity.session["session_generation"] = int(
+                identity.session.get("session_generation", 0) or 0
+            ) + 1
+            identity.session["_queued_prompt_generation"] = int(
+                identity.session.get("_queued_prompt_generation", 0)
+            ) + 1
+        elif current_key != identity.new_session_id:
+            return False
+        if clear_pending_title:
+            identity.session["pending_title"] = None
+        return True
+
+
+def _reanchor_clear_marker(identity: _CompressionReanchorIdentity) -> bool:
+    """Clear a deferred marker only after the final exact identity check."""
+    with _sessions_lock:
+        if _sessions.get(identity.sid) is not identity.session:
+            return False
+        if not _reanchor_registry_fields_match(identity):
+            return False
+        identity.session.pop(_DEFERRED_COMPRESSION_ROTATION_KEY, None)
+        return True
+
+
+def _sync_unlocked_compression(sid, session, *, clear_pending_title, restart_slash_worker,
+                               control_token, expected_reanchor):
+    """Retain the legacy path only for records outside the live registry."""
+    pending_marker = session.get(_DEFERRED_COMPRESSION_ROTATION_KEY)
+    active_control_hint = session.get("_session_control_inflight")
+    if (
+        expected_reanchor is not None
+        or pending_marker is not None
+        or active_control_hint is not None
+        or control_token is not None
+    ):
+        logger.warning(
+            "Compression re-anchor requires history_lock; refusing deferred/controlled sync: sid=%s",
+            sid,
+        )
+        return _COMPRESSION_SYNC_FAILED
+    with _sessions_lock:
+        if any(candidate is session for candidate in _sessions.values()):
+            logger.warning(
+                "Compression re-anchor requires history_lock for a live registry session: sid=%s",
+                sid,
+            )
+            return _COMPRESSION_SYNC_FAILED
+    old_key = str(session.get("session_key", "") or "")
+    _sync_session_key_after_compress_legacy(
+        sid,
+        session,
+        clear_pending_title=clear_pending_title,
+        restart_slash_worker=restart_slash_worker,
+        control_token=None,
+    )
+    return (
+        _COMPRESSION_SYNC_APPLIED
+        if str(session.get("session_key", "") or "") != old_key
+        else _COMPRESSION_SYNC_UNCHANGED
+    )
+
+
+def _record_compression_rotation_marker(
+    session, *,
+    active_token,
+    new_session_id: str,
+    old_session_key: str,
+    generation: int,
+    clear_title: bool,
+    restart_worker: bool,
+) -> None:
+    existing = session.get(_DEFERRED_COMPRESSION_ROTATION_KEY)
+    existing_generation = (
+        int(existing.get("generation", -1))
+        if isinstance(existing, dict)
+        else -1
+    )
+    same_marker = bool(
+        isinstance(existing, dict)
+        and existing.get("control_token") is active_token
+        and existing_generation == generation
+    )
+    if not same_marker:
+        session[_DEFERRED_COMPRESSION_ROTATION_KEY] = {
+            "agent_session_id": str(new_session_id),
+            "old_session_key": str(old_session_key),
+            "generation": int(generation),
+            "control_token": active_token,
+            "clear_pending_title": bool(clear_title),
+            "restart_slash_worker": bool(restart_worker),
+        }
+        return
+    existing["agent_session_id"] = str(new_session_id)
+    existing["old_session_key"] = str(old_session_key)
+    existing["generation"] = int(generation)
+    existing["control_token"] = active_token
+    existing["clear_pending_title"] = bool(clear_title)
+    existing["restart_slash_worker"] = bool(restart_worker)
+
+
+def _capture_compression_reanchor(sid, session, agent, control_token, expected_reanchor):
+    """Read and validate the exact compression continuation while history is locked."""
+    if expected_reanchor is not None:
+        if (
+            expected_reanchor.session is not session
+            or expected_reanchor.sid != sid
+            or (
+                control_token is not None
+                and control_token is not expected_reanchor.control_token
+            )
+        ):
+            return None, _COMPRESSION_SYNC_IDENTITY_CHANGED
+        control_token = expected_reanchor.control_token
+    implicit_token = session.get(_MANUAL_COMPRESSION_CONTROL_KEY)
+    if control_token is None and implicit_token is not None:
+        control_token = implicit_token
+    active_control = session.get("_session_control_inflight")
+    live_session_id = str(getattr(agent, "session_id", "") or "")
+    old_key = str(session.get("session_key", "") or "")
+    generation = int(session.get("session_generation", 0) or 0)
+    pending = session.get(_DEFERRED_COMPRESSION_ROTATION_KEY)
+    pending_generation = (
+        int(pending.get("generation", -1))
+        if isinstance(pending, dict)
+        else -1
+    )
+    pending_matches = bool(
+        isinstance(pending, dict)
+        and pending.get("control_token") is not None
+        and pending_generation >= 0
+        and pending_generation <= generation
+        and str(pending.get("agent_session_id") or "") == live_session_id
+    )
+    if expected_reanchor is not None:
+        if pending is not expected_reanchor.marker or not pending_matches:
+            return None, _COMPRESSION_SYNC_IDENTITY_CHANGED
+        if active_control is not expected_reanchor.control_token:
+            return None, _COMPRESSION_SYNC_IDENTITY_CHANGED
+        if live_session_id != expected_reanchor.new_session_id:
+            return None, _COMPRESSION_SYNC_IDENTITY_CHANGED
+        new_session_id = expected_reanchor.new_session_id
+    else:
+        new_session_id = live_session_id
+    return {
+        "control_token": control_token,
+        "active_control": active_control,
+        "old_key": old_key,
+        "generation": generation,
+        "pending": pending,
+        "pending_generation": pending_generation,
+        "pending_matches": pending_matches,
+        "new_session_id": new_session_id,
+        "expected_reanchor": expected_reanchor,
+    }, None
+
+
+def _reserve_compression_reanchor(sid, session, agent, captured, *, clear_pending_title,
+                                  restart_slash_worker):
+    """Defer competing control or reserve one token for the prepared continuation."""
+    control_token = captured["control_token"]
+    active_control = captured["active_control"]
+    old_key = captured["old_key"]
+    generation = captured["generation"]
+    pending = captured["pending"]
+    pending_generation = captured["pending_generation"]
+    pending_matches = captured["pending_matches"]
+    new_session_id = captured["new_session_id"]
+    expected_reanchor = captured["expected_reanchor"]
+    rotation_needed = bool(new_session_id and new_session_id != old_key)
+    retry_pending = bool(pending_matches and new_session_id)
+
+    if expected_reanchor is None and active_control is not None and active_control is not control_token:
+        if rotation_needed:
+            _record_compression_rotation_marker(
+                session,
+                active_token=active_control,
+                new_session_id=new_session_id,
+                old_session_key=old_key,
+                generation=generation,
+                clear_title=clear_pending_title,
+                restart_worker=restart_slash_worker,
+            )
+            logger.warning(
+                "Compression rotation deferred while session control is active: sid=%s",
+                sid,
+            )
+            return None, _COMPRESSION_SYNC_DEFERRED
+        if retry_pending:
+            logger.warning(
+                "Deferred compression rotation still blocked by session control: sid=%s",
+                sid,
+            )
+            return None, _COMPRESSION_SYNC_DEFERRED
+        return None, _COMPRESSION_SYNC_UNCHANGED
+
+    if not rotation_needed and not retry_pending:
+        return None, (
+            _COMPRESSION_SYNC_IDENTITY_CHANGED
+            if expected_reanchor is not None
+            else _COMPRESSION_SYNC_UNCHANGED
+        )
+
+    owns_internal_token = False
+    operation_token = control_token
+    if expected_reanchor is not None:
+        operation_token = expected_reanchor.control_token
+        if active_control is not operation_token:
+            return None, _COMPRESSION_SYNC_IDENTITY_CHANGED
+    elif operation_token is None:
+        operation_token = object()
+        session["_session_control_inflight"] = operation_token
+        owns_internal_token = True
+    elif active_control is not operation_token:
+        return None, _COMPRESSION_SYNC_FAILED
+
+    old_key_for_updates = old_key
+    clear_title_for_updates = clear_pending_title
+    restart_worker_for_updates = restart_slash_worker
+    if retry_pending:
+        old_key_for_updates = str(pending.get("old_session_key") or old_key)
+        clear_title_for_updates = bool(
+            pending.get("clear_pending_title", clear_pending_title)
+        )
+        restart_worker_for_updates = bool(
+            pending.get("restart_slash_worker", restart_slash_worker)
+        )
+
+    if expected_reanchor is None and retry_pending:
+        expected_reanchor = _CompressionReanchorIdentity(
+            sid=sid,
+            session=session,
+            generation=pending_generation,
+            agent=agent,
+            new_session_id=new_session_id,
+            control_token=operation_token,
+            marker=pending,
+            old_session_key=old_key_for_updates,
+            profile_home=(
+                str(session.get("profile_home"))
+                if session.get("profile_home") is not None
+                else None
+            ),
+        )
+    return {
+        "new_session_id": new_session_id,
+        "old_key_for_updates": old_key_for_updates,
+        "clear_title_for_updates": clear_title_for_updates,
+        "restart_worker_for_updates": restart_worker_for_updates,
+        "expected_reanchor": expected_reanchor,
+        "operation_token": operation_token,
+        "owns_internal_token": owns_internal_token,
+    }, None
+
+
+def _apply_compression_reanchor(sid, session, state):
+    """Transfer the lease and approval ownership with identity checks between I/O."""
+    new_session_id = state["new_session_id"]
+    old_key_for_updates = state["old_key_for_updates"]
+    clear_title_for_updates = state["clear_title_for_updates"]
+    restart_worker_for_updates = state["restart_worker_for_updates"]
+    expected_reanchor = state["expected_reanchor"]
+    operation_token = state["operation_token"]
+    def guard():
+        return expected_reanchor is None or _reanchor_identity_matches(expected_reanchor)
+
+    if not guard():
+        return _COMPRESSION_SYNC_IDENTITY_CHANGED
+    lease_reanchored = _transfer_active_session_slot(
+        sid,
+        session,
+        new_session_id=new_session_id,
+    )
+    if not lease_reanchored:
+        raise RuntimeError(
+            "active session lease could not be transferred to the continuation"
+        )
+
+    from tools.approval import (
+        disable_session_yolo,
+        enable_session_yolo,
+        is_session_yolo_enabled,
+        register_gateway_notify,
+        unregister_gateway_notify,
+    )
+
+    if not guard():
+        return _COMPRESSION_SYNC_IDENTITY_CHANGED
+    unregister_gateway_notify(old_key_for_updates)
+    if not guard():
+        return _COMPRESSION_SYNC_IDENTITY_CHANGED
+    yolo_was_on = is_session_yolo_enabled(old_key_for_updates)
+    if yolo_was_on:
+        if not guard():
+            return _COMPRESSION_SYNC_IDENTITY_CHANGED
+        enable_session_yolo(new_session_id)
+        if not guard():
+            return _COMPRESSION_SYNC_IDENTITY_CHANGED
+        disable_session_yolo(old_key_for_updates)
+    if not guard():
+        return _COMPRESSION_SYNC_IDENTITY_CHANGED
+    register_gateway_notify(
+        new_session_id,
+        lambda data: _emit_approval_request(sid, data),
+    )
+
+    if expected_reanchor is not None:
+        if not _reanchor_apply_in_memory(
+            expected_reanchor,
+            clear_pending_title=clear_title_for_updates,
+        ):
+            return _COMPRESSION_SYNC_IDENTITY_CHANGED
+    else:
+        with _session_history_context(session):
+            if session.get("_session_control_inflight") is not operation_token:
+                return _COMPRESSION_SYNC_FAILED
+            current_key = str(session.get("session_key") or "")
+            if current_key != new_session_id:
+                session["session_key"] = new_session_id
+                session["session_generation"] = int(
+                    session.get("session_generation", 0) or 0
+                ) + 1
+                session["_queued_prompt_generation"] = int(
+                    session.get("_queued_prompt_generation", 0)
+                ) + 1
+            if clear_title_for_updates:
+                session["pending_title"] = None
+
+    if restart_worker_for_updates:
+        if not guard():
+            return _COMPRESSION_SYNC_IDENTITY_CHANGED
+        _restart_slash_worker(sid, session)
+
+    if expected_reanchor is not None:
+        if not _reanchor_clear_marker(expected_reanchor):
+            return _COMPRESSION_SYNC_IDENTITY_CHANGED
+    else:
+        with _session_history_context(session):
+            if session.get("_session_control_inflight") is not operation_token:
+                return _COMPRESSION_SYNC_FAILED
+            marker = session.get(_DEFERRED_COMPRESSION_ROTATION_KEY)
+            if isinstance(marker, dict) and str(
+                marker.get("agent_session_id") or ""
+            ) == new_session_id:
+                session.pop(_DEFERRED_COMPRESSION_ROTATION_KEY, None)
+    return _COMPRESSION_SYNC_APPLIED
+
+
+def _retain_failed_compression_reanchor(sid, session, state, exc):
+    """Retain the exact deferred marker after interrupted re-anchor I/O."""
+    new_session_id = state["new_session_id"]
+    old_key_for_updates = state["old_key_for_updates"]
+    clear_title_for_updates = state["clear_title_for_updates"]
+    restart_worker_for_updates = state["restart_worker_for_updates"]
+    expected_reanchor = state["expected_reanchor"]
+    operation_token = state["operation_token"]
+    if expected_reanchor is not None:
+        try:
+            if not _reanchor_identity_matches(expected_reanchor):
+                return _COMPRESSION_SYNC_IDENTITY_CHANGED
+        except BaseException:
+            logger.debug('retain failed compression reanchor failed', exc_info=True)
+            return _COMPRESSION_SYNC_IDENTITY_CHANGED
+    with _session_history_context(session):
+        marker = session.get(_DEFERRED_COMPRESSION_ROTATION_KEY)
+        current_generation = int(session.get("session_generation", 0) or 0)
+        if isinstance(marker, dict):
+            marker["agent_session_id"] = str(new_session_id)
+            marker["old_session_key"] = str(
+                marker.get("old_session_key") or old_key_for_updates
+            )
+            marker["generation"] = current_generation
+            marker["clear_pending_title"] = bool(clear_title_for_updates)
+            marker["restart_slash_worker"] = bool(restart_worker_for_updates)
+        else:
+            _record_compression_rotation_marker(
+                session,
+                active_token=operation_token,
+                new_session_id=new_session_id,
+                old_session_key=old_key_for_updates,
+                generation=current_generation,
+                clear_title=clear_title_for_updates,
+                restart_worker=restart_worker_for_updates,
+            )
+    logger.warning(
+        "Compression rotation re-anchor failed; deferred marker retained: sid=%s error=%s",
+        sid,
+        exc,
+    )
+    return _COMPRESSION_SYNC_FAILED
+
+
+def _sync_session_key_after_compress(
+    sid: str, session: dict, *, clear_pending_title: bool = True,
+    restart_slash_worker: bool = True, control_token=None,
+    expected_reanchor: _CompressionReanchorIdentity | None = None,
+) -> str:
+    """Re-anchor a compression continuation with an exact identity barrier."""
+    history_lock = session.get("history_lock")
+    if history_lock is None:
+        return _sync_unlocked_compression(
+            sid, session, clear_pending_title=clear_pending_title,
+            restart_slash_worker=restart_slash_worker, control_token=control_token,
+            expected_reanchor=expected_reanchor)
+    agent = session.get("agent")
+    if agent is None:
+        return (_COMPRESSION_SYNC_IDENTITY_CHANGED if expected_reanchor is not None
+                else _COMPRESSION_SYNC_UNCHANGED)
+    with history_lock:
+        captured, error = _capture_compression_reanchor(
+            sid, session, agent, control_token, expected_reanchor)
+        if error is not None:
+            return error
+        state, error = _reserve_compression_reanchor(
+            sid, session, agent, captured, clear_pending_title=clear_pending_title,
+            restart_slash_worker=restart_slash_worker)
+        if error is not None:
+            return error
+    try:
+        return _apply_compression_reanchor(sid, session, state)
+    except BaseException as exc:
+        logger.debug("Compression re-anchor failed", exc_info=True)
+        return _retain_failed_compression_reanchor(sid, session, state, exc)
+    finally:
+        if state["owns_internal_token"]:
+            with history_lock:
+                if session.get("_session_control_inflight") is state["operation_token"]:
+                    session.pop("_session_control_inflight", None)
+
+
+
+
+def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
+    """``session.compress`` for a turn-isolated session: forward ``/compress`` to the host."""
+    sid = str(params.get("session_id") or "")
+    focus_topic = _str_param(params, "focus_topic")
+
+    def _on_late_ack(late: dict, _sid=sid) -> None:
+        _adopt_late_compute_host_compress_ack(_sid, session, late, route_name="session.compress")
+    try:
+        ack = _send_compute_host_control(
+            sid, route_name="session.compress", command="/compress" + (f" {focus_topic}" if focus_topic else ""),
+            # compression.context_total_ceiling_seconds: the host legitimately runs that long.
+            wait=True, timeout=_compute_host_compress_wait_seconds(), on_late_ack=_on_late_ack)
+    except queue.Empty:
+        # Waiter gave up, host still compressing; the late-ack handler adopts the rotated session when it
+        # lands. Not an error (a 5019 here reported timeouts that later succeeded).
+        return _ok(rid, {"status": "pending", "turn_isolation": True,
+                         "message": ("compression still running in the background; "
+                                     "the transcript will refresh when it finishes")})
+    except Exception as exc:
+        return _err(rid, 5019, f"compute-host compress failed: {exc}")
+    if (resp := _compute_host_ack_error(rid, ack, 4009, "compute-host compress failed")) is not None:
+        return resp
+    _apply_compute_host_metadata_mirror(session, ack)
+    if isinstance(host_result := ack.get("result"), dict):
+        # Host-owned result verbatim (carries `status: aborted` / `summary.aborted`).
+        return _ok(rid, {**host_result, "turn_isolation": True})
+    host_info = ack.get("session_info") if isinstance(ack.get("session_info"), dict) else {}
+    return _ok(rid, {
+        "status": "compressed", "turn_isolation": True,
+        # `messages` goes top-level for the transcript replacement; don't duplicate it in the ack.
+        "host_ack": {key: value for key, value in ack.items() if key != "messages"}, "info": host_info,
+        "messages": _history_to_messages(ack.get("messages"), profile_home=session.get("profile_home")) if isinstance(ack.get("messages"), list) else [],
+        "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {}})
+
+def _compress_live(
+    rid,
+    sid: str,
+    session: dict,
+    focus_topic: str,
+    control_token=None,
+) -> dict:
+    """In-process ``session.compress``: status pinned "compressing", then the before/after summary + messages."""
+    from agent.conversation_compression import finalize_context_engine_compression_notification
+    from agent.manual_compression_feedback import summarize_manual_compression
+    from agent.model_metadata import estimate_request_tokens_rough
+    with session["history_lock"]:
+        before_messages = list(session.get("history", []))
+        history_version = int(session.get("history_version", 0))
+    before_count = len(before_messages)
+    _agent = session["agent"]
+    _sys_prompt = getattr(_agent, "_cached_system_prompt", "") or ""
+    _tools = getattr(_agent, "tools", None) or None
+
+    def _tokens(msgs) -> int:
+        # Re-reads prompt + tools each call: _compress_context may have rebuilt the system prompt.
+        sys_prompt = getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
+        tools = getattr(_agent, "tools", None) or _tools
+        return estimate_request_tokens_rough(msgs, system_prompt=sys_prompt, tools=tools) if msgs else 0
+    before_tokens = _tokens(before_messages)
+    if before_count >= 4:
+        focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ""
+        _status_update(sid, "compressing",
+                       f"⠋ compressing {before_count} messages (~{before_tokens:,} tok){focus_suffix}…")
+    try:
+        removed, usage = _compress_session_history(
+            session, focus_topic, approx_tokens=before_tokens, before_messages=before_messages,
+            history_version=history_version)
+        with session["history_lock"]:
+            messages = list(session.get("history", []))
+        after_tokens = _tokens(messages)
+        agent = session["agent"]
+        _sync_session_key_after_compress(
+            sid,
+            session,
+            control_token=control_token,
+        )
+        summary = summarize_manual_compression(before_messages, messages, before_tokens, after_tokens,
+                                               compression_state=getattr(agent, "context_compressor", None))
+        info = _session_info(agent, session)
+        _emit("session.info", sid, info)
+        finalize_context_engine_compression_notification(agent, committed=True)
+        return _ok(rid, {
+            "status": "aborted" if summary["aborted"] else "compressed", "removed": removed,
+            "before_messages": before_count, "after_messages": len(messages),
+            "before_tokens": before_tokens, "after_tokens": after_tokens, "summary": summary,
+            "usage": usage, "info": info, "messages": _history_to_messages(messages, profile_home=session.get("profile_home"))})
+    finally:
+        # Always clear the pinned compressing status (success, no-op, or raise).
+        _status_update(sid, "ready")
+
+def _run_session_compression(
+    rid,
+    params: dict,
+    session: dict,
+    control_token,
+) -> dict:
+    """Run session compression after its exact session-control lease is held."""
+    if _session_uses_compute_host(session):
+        return _compress_via_compute_host(rid, params, session)
+    if session.get("running"):
+        return _err(
+            rid,
+            4009,
+            "session busy — /interrupt the current turn before /compress",
+        )
+    from agent.conversation_compression import (
+        finalize_context_engine_compression_notification,
+    )
+
+    sid = params.get("session_id", "")
+    try:
+        with _manual_compress_turn(sid, session, control_token=control_token):
+            return _compress_live(
+                rid, sid, session, _str_param(params, "focus_topic"), control_token=control_token,
+            )
+    except CompressionBusy as exc:
+        return _err(rid, 4009, str(exc))
+    except CompressionLockHeld as exc:
+        _status_update(sid, "ready")
+        from agent.manual_compression_feedback import describe_compression_lock_skip
+
+        return _ok(
+            rid,
+            {
+                "compressed": False,
+                "lock_held": True,
+                "message": describe_compression_lock_skip(exc.holder),
+            },
+        )
+    except Exception as exc:
+        logger.debug('run session compression failed', exc_info=True)
+        finalize_context_engine_compression_notification(
+            session["agent"],
+            committed=False,
+        )
+        return _err(rid, 5005, str(exc))
 
 
 def register(server) -> None:

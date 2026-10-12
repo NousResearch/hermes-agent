@@ -49,7 +49,8 @@ def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> dict[
     return copy.deepcopy(raw) if raw is not None else {}
 
 
-def load_user_config_effective(config_path: Optional[Path] = None, *, fail_closed: bool = False) -> dict[str, Any]:
+def load_user_config_effective(config_path: Optional[Path] = None, *, fail_closed: bool = False,
+                               persist_backup: bool = True) -> dict[str, Any]:
     """User ``config.yaml`` → ``${VAR}`` expansion → managed overlay → model-key canonicalization.
     NO ``DEFAULT_CONFIG`` merge: a key absent from the file (and from the managed layer) is absent
     here, so ``{}`` sentinels and presence-sensitive bridges keep working. An absent file is an
@@ -59,7 +60,9 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     last-good state); otherwise the last successfully parsed user file — in-process first, then
     the newest ``backups/config/*.good.*`` copy — is served through the same pipeline, so a
     mid-edit torn write never silently drops user overrides (same contract as ``load_config``).
-    Cached on the user + managed file signatures and the values of every referenced env var."""
+    Cached on the user + managed file signatures and the values of every referenced env var.
+    ``persist_backup=False`` skips good-file backup creation; combine it with
+    ``fail_closed=True`` for readers that must never write recovery artifacts."""
     if config_path is None:
         config_path = _config.get_config_path()
     path_key = str(config_path)
@@ -91,7 +94,7 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                 # Same copy load_config keeps: a fresh process recovers from it (see _recover_user_raw).
                 # Only for the ACTIVE home — a read of another profile's file (doctor, TUI cwd lookup)
                 # must not create backups/ inside that profile.
-                if config_path == _config.get_config_path():
+                if persist_backup and config_path == _config.get_config_path():
                     from hermes_cli.config_backups import backup_config
                     backup_config(config_path, "good")
 

@@ -644,43 +644,34 @@ class PluginContext:
                                     "Plugin %s registered CLI command: %s", name)
 
     @_serialized_replacement
-    def register_command(
-        self, name: str, handler: Callable, description: str = "", args_hint: str = "",
-        argument_mode: str | None = None,
-    ) -> Optional[PluginRegistration]:
-        """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
-        clean = name.lower().strip().lstrip("/").replace(" ", "-")
-        if not clean:
-            logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
-            return
-        with suppress(Exception):  # reject if it conflicts with a built-in command
-            from hermes_cli.commands import resolve_command
-            if resolve_command(clean) is not None:
-                logger.warning("Plugin '%s' tried to register command '/%s' which conflicts "
-                               "with a built-in command. Skipping.", self.manifest.name, clean)
-                return
-        hint = (args_hint or "").strip()
-        entry = {
-            "handler": handler, "description": description or "Plugin command",
-            "plugin": self.manifest.name, "plugin_key": self.plugin_id, "args_hint": hint,
-            "argument_mode": argument_mode if argument_mode in {"options", "text", "mixed"}
-            else ("text" if hint else None),
-        }
-        return self._register_entry("command", clean, self._manager._plugin_commands, entry,
-                                    "Plugin %s registered command: /%s", clean)
+    def register_command(self, name: str, handler: Callable, description: str = "",
+                         args_hint: str = "", argument_mode: str | None = None) -> Optional[PluginRegistration]:
+        """Register a raw-argument slash command (sync or async); built-ins take precedence."""
+        from hermes_cli.plugins_session_commands import register_command
+        return register_command(self, name, handler, description, args_hint, argument_mode)
+
+    @_serialized_replacement
+    def register_session_command(self, name: str, handler: Callable, *, prepare: Callable,
+                                 description: str = "", args_hint: str = "", subcommands: tuple = (),
+                                 advertise_in_gateway_menu: bool = True) -> Optional[PluginRegistration]:
+        """Register a parsed host-authorized session command; see session_commands."""
+        from hermes_cli.plugins_session_commands import register_session_command
+        return register_session_command(self, name, handler, prepare=prepare, description=description,
+                                        args_hint=args_hint, subcommands=subcommands,
+                                        advertise_in_gateway_menu=advertise_in_gateway_menu)
+
+    @_serialized_replacement
+    def register_session_policy(self, key: str, *, config_path: str, apply: Callable,
+                                default: bool = False) -> PluginRegistration:
+        """Register a durable tri-state policy with a narrow engine callback."""
+        from hermes_cli.plugins_session_commands import register_session_policy
+        return register_session_policy(self, key, config_path=config_path, apply=apply, default=default)
 
     def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
         """Dispatch a tool call through the registry with the parent agent (when available)
         resolved automatically; returns the handler's JSON string. ``kwargs`` forward to dispatch."""
-        from tools.registry import registry
-        # In gateway mode _cli_ref is None — tools degrade gracefully (no spinner, TERMINAL_CWD).
-        if "parent_agent" not in kwargs:
-            agent = getattr(self._manager._cli_ref, "agent", None)
-            if agent is not None:
-                kwargs["parent_agent"] = agent
-        return registry.dispatch(tool_name, args, scope=self._manager.scope_key, **kwargs)
+        from hermes_cli.plugins_dispatch import dispatch_tool
+        return dispatch_tool(self, tool_name, args, **kwargs)
 
     @_serialized_replacement
     def register_context_engine(self, engine) -> Optional[PluginRegistration]:
@@ -1185,6 +1176,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._plugin_platform_names: set[str] = set()
         self._cli_commands: dict[str, dict] = {}
         self._plugin_commands: dict[str, dict] = {}
+        self._session_policies: dict[str, dict] = {}
         self._system_prompt_sections: dict[str, PluginSystemPromptSection] = {}
         self._plugin_skills: dict[str, dict[str, Any]] = {}
         self._automation_blueprints: dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint

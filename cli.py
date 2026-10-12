@@ -1281,7 +1281,13 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if not plugin_handler:
             return
         try:
-            result = resolve_plugin_command_result(plugin_handler(user_args))
+            from hermes_cli.session_commands import is_session_command
+            if is_session_command(plugin_handler):
+                from hermes_cli.cli_session_commands import run_cli_session_command
+                result = run_cli_session_command(self, plugin_handler, user_args)
+            else:
+                result = plugin_handler(user_args)
+            result = resolve_plugin_command_result(result)
             if result:
                 _cprint(str(result))
         except Exception as e:

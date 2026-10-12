@@ -304,7 +304,11 @@ class CLIInfoMixin:
         # Rows come straight from the registry so descriptions resolve through the localized
         # ``CommandDef.describe()`` accessor (names/aliases stay identifiers).
         by_category: dict[str, list[tuple[str, str]]] = {}
-        for cmd_def in COMMAND_REGISTRY:
+        from hermes_cli.commands import CommandDef
+        from hermes_cli.plugins import get_plugin_commands
+        plugin_defs = [CommandDef(name, entry["description"], "Plugins", args_hint=entry.get("args_hint", ""))
+                       for name, entry in get_plugin_commands().items()]
+        for cmd_def in [*COMMAND_REGISTRY, *plugin_defs]:
             if cmd_def.gateway_only:
                 continue
             desc = cmd_def.describe()

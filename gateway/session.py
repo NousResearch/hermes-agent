@@ -1323,11 +1323,13 @@ class SessionStore(
         with self._lock:
             return self._entry_locked(session_key)
 
-    def peek_session_id(self, session_key: str) -> Optional[str]:
+    def peek_session_id(self, session_key: str, *, peek_only: bool = False) -> Optional[str]:
         """Lock-held accessor for the key -> session_id mapping (None if unknown)."""
         if not session_key:
             return None
         with self._lock:
+            if peek_only:
+                return self._peek_session_id_readonly_locked(session_key)
             entry = self._entry_locked(session_key)
             return entry.session_id if entry else None
 

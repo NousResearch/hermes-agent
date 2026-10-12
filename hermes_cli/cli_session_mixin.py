@@ -500,7 +500,16 @@ class CLISessionMixin:
                     list(self.conversation_history), session_id=old_session_id)
             self._notify_session_boundary("on_session_finalize")
 
+        _preserve_old_policy_override = False
         if self._session_db and old_session_id:
+            # An otherwise-empty session with an explicit plugin policy is still
+            # resumable state; pruning it would lose the user's override.
+            with contextlib.suppress(Exception):
+                from agent.session_policies import session_has_policy_overrides
+
+                old_meta = self._session_db.get_session(old_session_id)
+                _preserve_old_policy_override = session_has_policy_overrides(old_meta)
+
             # /new can arrive mid-turn before _flush_messages_to_session_db() ran — flush
             # the current turn to the OLD session before rotating or it is silently lost.
             if self.agent:
@@ -515,7 +524,8 @@ class CLISessionMixin:
                         self.conversation_history, conversation_history=self.conversation_history)
             with contextlib.suppress(Exception):
                 self._session_db.end_session(old_session_id, "new_session")
-            self._discard_session_if_empty(old_session_id)
+            if not _preserve_old_policy_override:
+                self._discard_session_if_empty(old_session_id)
 
         self.session_start = datetime.now()
         self.session_id = new_session_id(self.session_start)
@@ -542,6 +552,11 @@ class CLISessionMixin:
             self.agent.session_start = self.session_start
             self.agent.reasoning_config = self.reasoning_config
             self.agent.reset_session_state()
+            # Reset live policy state without touching the old resumable row.
+            with contextlib.suppress(Exception):
+                from agent.session_policies import hydrate_session_policies
+
+                hydrate_session_policies(self.agent, reset=True)
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):

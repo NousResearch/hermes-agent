@@ -317,7 +317,14 @@ _LIVE_SLASH_OUTPUT = {
     "effort": (None, "Use /reasoning <effort> to change reasoning effort.")}
 
 
-def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg: str) -> Optional[str]:
+def _live_slash_command_output(
+    sid: str,
+    session: Optional[dict],
+    name: str,
+    arg: str,
+    *,
+    compression_control_token=None,
+) -> Optional[str]:
     """Answer a slash command from the live session instead of the slash worker; None = not ours."""
     name = (name or "").lstrip("/").lower()
     arg = arg or ""
@@ -331,6 +338,15 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
         return _format_live_context_output(sid, session, arg)
     if name in _ISOLATED_SESSION_READ_COMMANDS and not (session is not None and _session_uses_compute_host(session)):
         return None
+    if name in {"compress", "compact"}:
+        if session is None:
+            return "no active session for /compress"
+        return _mirror_slash_side_effects(
+            sid,
+            session,
+            f"/{name} {arg}".strip(),
+            compression_control_token=compression_control_token,
+        )
     entry = _LIVE_SLASH_OUTPUT.get(name)
     if entry is None:
         return None
@@ -348,7 +364,7 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
 _MUTATES_WHILE_RUNNING = frozenset({"model", "personality", "compress"})
 
 
-def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, snapshot_kwargs: bool) -> str:
+def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, snapshot_kwargs: bool, control_token=None) -> str:
     """Compress the live session; return the user-facing feedback text (shared by command.dispatch
     /compress and the slash mirror). ``snapshot_kwargs`` forwards the pre-read snapshot to
     ``_compress_session_history``; the raw arg goes through unparsed (the choke point parses
@@ -367,7 +383,7 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
             preview_messages = list(session.get("history", []))
         with _session_profile_runtime_scope(session):
             return "\n".join(render_compress_result(compress_now(agent, preview_messages, request)))
-    with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session):
+    with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session, control_token=control_token):
         with session["history_lock"]:
             before_messages = list(session.get("history", []))
             history_version = int(session.get("history_version", 0))
@@ -388,7 +404,7 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
                 _compress_session_history(session, arg)
         except CompressionLockHeld as e:
             return describe_compression_lock_skip(e.holder)
-        _sync_session_key_after_compress(sid, session)
+        _sync_session_key_after_compress(sid, session, control_token=control_token)
         with session["history_lock"]:
             after_messages = list(session.get("history", []))
         after_tokens = estimate(
@@ -474,7 +490,13 @@ def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tup
     return "ok", str(ack.get("output") or "")
 
 
-def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
+def _mirror_slash_side_effects(
+    sid: str,
+    session: dict,
+    command: str,
+    *,
+    compression_control_token=None,
+) -> str:
     """Apply side effects that must also hit the gateway's live agent."""
     parts = command.lstrip("/").split(None, 1)
     if not parts:
@@ -482,6 +504,19 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     name, arg, agent = parts[0], (parts[1].strip() if len(parts) > 1 else ""), session.get("agent")
     if name == "compact":  # /compact aliases /compress; the compute-host control forwards the raw alias
         name = "compress"
+    if name == "compress" and compression_control_token is None:
+        compression_control_token, claim_error = _claim_manual_compression_control(session)
+        if claim_error is not None:
+            return _manual_compression_busy_text(claim_error)
+        try:
+            return _mirror_slash_side_effects(
+                sid,
+                session,
+                command,
+                compression_control_token=compression_control_token,
+            )
+        finally:
+            _release_session_control(session, compression_control_token)
     if name in _MUTATES_WHILE_RUNNING:
         if _session_uses_compute_host(session):
             return _compute_host_slash(sid, session, name, command)[1]
@@ -493,6 +528,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         # Mirrors run OFF-turn (slash.exec RPC pool / compute-host control reader): bind the session's
         # profile scope or /model's credential read raises UnscopedSecretError under multiplex (#122655).
         with _session_profile_runtime_scope(session):
+            if name == "compress" and agent:
+                return _compress_live_with_feedback(
+                    sid, session, agent, arg, snapshot_kwargs=False,
+                    control_token=compression_control_token)
             return mirror(sid, session, agent, arg) or ""
     except CompressionBusy as e:  # a turn won the race after the unlocked running check above
         return str(e)

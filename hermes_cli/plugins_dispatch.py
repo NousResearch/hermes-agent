@@ -23,6 +23,17 @@ from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
 
 logger = logging.getLogger("hermes_cli.plugins")
 
+
+def dispatch_tool(ctx, tool_name: str, args: dict, **kwargs) -> str:
+    """Resolve the classic CLI parent and dispatch within the plugin's profile scope."""
+    from tools.registry import registry
+
+    if "parent_agent" not in kwargs:
+        agent = getattr(ctx._manager._cli_ref, "agent", None)
+        if agent is not None:
+            kwargs["parent_agent"] = agent
+    return registry.dispatch(tool_name, args, scope=ctx._manager.scope_key, **kwargs)
+
 # Allowlist of agent-turn hot-path hooks bounded by plugins.hook_callback_timeout (fail-open:
 # abandon without join — joining reintroduced a shutdown hang). Unlisted hooks run synchronously.
 # Intentionally unbounded: on_session_finalize/reset (last-chance flush — abandon can lose state);

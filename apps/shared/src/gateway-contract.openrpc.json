@@ -8347,6 +8347,37 @@
           "category": {
             "title": "Category",
             "type": "string"
+          },
+          "args_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Args Hint"
+          },
+          "subcommands": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Subcommands",
+            "type": "array"
+          },
+          "busy_policy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Busy Policy"
           }
         },
         "required": [

@@ -98,6 +98,27 @@ def _pool_key(provider: str, base_url: Optional[str]) -> str:
     return resolve_runtime_pool_key(provider, base_url) or provider
 
 
+def _billing_verdict(failure: str, code: Any, message: str, reset_at: Optional[float]) -> bool:
+    """True when this row's billing/quota verdict is corroborated by evidence on the same row.
+
+    ``failure_reason`` is the classifier's *verdict*, and a verdict can outlive the failure it
+    describes: the pool writer only drops it on the exhaustion path, so a row that later succeeded
+    keeps a stale ``billing`` flag next to ``last_status=ok`` and no error code, message or reset.
+    A model name that exists on two providers makes that reachable in practice — a fallback attempt
+    behind a same-named model has been seen to record the primary's billing refusal against the
+    *fallback's* pool entry, which then painted a working route red (upstream #104678, #93841,
+    #104738).  A bare verdict is therefore not evidence: a billing row must still carry at least
+    one of ``last_error_code`` / ``last_error_message`` / ``last_error_reset_at``.  Without it the
+    row falls through to its non-billing handling, so a healthy row reads AVAILABLE and an
+    exhausted one reads COOLING.  Nothing that actually just walled goes missing: the walled
+    primary of a live incident is reported by ``incident_rows`` from the incident itself, not from
+    its pool entry.
+    """
+    if failure not in _BILLING_REASONS and not (code in _BILLING_CODES and failure != "rate_limit"):
+        return False
+    return code is not None or bool(message) or reset_at is not None
+
+
 def _entry_status(entry: Any, now: float) -> tuple[str, str, Optional[float]]:
     """``(status, detail, reset_at)`` for one credential pool entry."""
     failure = str(getattr(entry, "failure_reason", "") or "").lower()
@@ -109,7 +130,7 @@ def _entry_status(entry: Any, now: float) -> tuple[str, str, Optional[float]]:
     except (TypeError, ValueError):
         reset_at = None
 
-    if failure in _BILLING_REASONS or (code in _BILLING_CODES and failure != "rate_limit"):
+    if _billing_verdict(failure, code, message, reset_at):
         return WALLED, _short(message) or "billing/quota refusal", reset_at
     if code == 429:
         if reset_at and reset_at - now > WALL_MIN_RESET_S:

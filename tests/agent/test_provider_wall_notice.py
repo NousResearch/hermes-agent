@@ -69,6 +69,38 @@ def test_billing_wall_row_reads_the_pool(monkeypatch):
     assert row.emoji == "🔴"
 
 
+def test_a_bare_billing_verdict_without_evidence_is_not_a_wall(monkeypatch):
+    """The stale flag: reason left over from another route's refusal, evidence long gone, row ok."""
+    _patch_pool(monkeypatch, {"deepseek": _Pool([_Entry(
+        last_status="ok", failure_reason="billing",
+    )])})
+
+    row = wall.row_for_route("deepseek", "deepseek-v4-flash")
+
+    assert row.status == wall.AVAILABLE
+    assert row.detail == ""
+
+
+def test_a_billing_row_still_walls_when_any_evidence_stands_on_it(monkeypatch):
+    """Each of code / message / reset alone corroborates the verdict — only none of them doesn't."""
+    for evidence in (
+        {"last_error_code": 402},
+        {"last_error_message": "Insufficient Balance"},
+        {"last_error_reset_at": time.time() + 6 * 3600},
+    ):
+        _patch_pool(monkeypatch, {"deepseek": _Pool([_Entry(failure_reason="billing", **evidence)])})
+
+        assert wall.row_for_route("deepseek", "deepseek-v4-flash").status == wall.WALLED
+
+
+def test_a_bare_billing_verdict_on_an_exhausted_row_cools_rather_than_walls(monkeypatch):
+    _patch_pool(monkeypatch, {"deepseek": _Pool([_Entry(
+        last_status="exhausted", failure_reason="billing",
+    )])})
+
+    assert wall.row_for_route("deepseek", "deepseek-v4-flash").status == wall.COOLING
+
+
 def test_long_rate_limit_reset_reads_as_a_wall_and_a_short_one_as_cooling(monkeypatch):
     now = time.time()
     _patch_pool(monkeypatch, {"custom": _Pool([_Entry(
@@ -126,6 +158,35 @@ def test_incident_rows_are_primary_plus_unusable_chain_entries(monkeypatch):
     assert [row.provider for row in rows] == ["custom", "deepseek"]  # the healthy one is not listed
     assert rows[0].status == wall.WALLED
     assert rows[1].detail == "Insufficient Balance"
+
+
+def test_a_modelark_billing_refusal_does_not_paint_the_deepseek_fallback(monkeypatch):
+    """The incident behind the false row: the primary (modelark-coding) refused for billing on a
+    model name that also exists on the deepseek fallback, so the verdict was recorded against the
+    *deepseek* pool entry — which then succeeded, leaving ``failure_reason=billing`` with no code,
+    message or reset beside ``last_status=ok``.  The notice must name the primary only and report
+    the fallback route as available."""
+    _patch_pool(monkeypatch, {
+        "modelark-coding": _Pool([_Entry(
+            last_status="exhausted", last_error_code=402, failure_reason="billing",
+            last_error_message="Insufficient Balance",
+        )]),
+        "deepseek": _Pool([_Entry(last_status="ok", failure_reason="billing")]),
+    })
+    agent = _Agent(
+        provider="modelark-coding", model="deepseek-v4-flash",
+        chain=[{"provider": "deepseek", "model": "deepseek-v4-flash"}],
+        ctx={"reset_at": time.time() + 6 * 3600},
+    )
+
+    rows = wall.incident_rows(agent, reason="billing")
+
+    assert [row.provider for row in rows] == ["modelark-coding"]
+    assert rows[0].detail == "billing/quota refusal"
+    assert wall.row_for_route("deepseek", "deepseek-v4-flash").status == wall.AVAILABLE
+    text = wall.build_message(rows, profile="default")
+    assert "modelark-coding · deepseek-v4-flash" in text
+    assert "deepseek · deepseek-v4-flash" not in text
 
 
 # ── message ──────────────────────────────────────────────────────────────

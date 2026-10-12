@@ -34,6 +34,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $sidebarAlphabetical, setSidebarAlphabetical } from '@/store/sidebar-alphabetical'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
@@ -87,6 +88,47 @@ import { ListRow, RowFootnoteAction, SectionHeading, SettingsContent, ToggleRow 
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useSettingDeepLink } from './use-setting-deep-link'
+
+// Sidebar list preferences: row density plus the opt-in A→Z ordering.
+function SidebarListSettings() {
+  const { t } = useI18n()
+  const a = t.settings.appearance
+  const sessionListDensity = useStore($sessionListDensity)
+  const sidebarAlphabetical = useStore($sidebarAlphabetical)
+
+  const sessionDensityOptions = [
+    { id: 'compact', label: a.sessionDensityCompact },
+    { id: 'comfortable', label: a.sessionDensityComfortable },
+    { id: 'detailed', label: a.sessionDensityDetailed }
+  ] as const satisfies readonly { id: SessionListDensity; label: string }[]
+
+  return (
+    <>
+      <ListRow
+        action={
+          <SegmentedControl
+            onChange={id => {
+              triggerHaptic('selection')
+              setSessionListDensity(id)
+            }}
+            options={sessionDensityOptions}
+            value={sessionListDensity}
+          />
+        }
+        description={a.sessionDensityDesc}
+        id={settingElementId(ids.sessionDensity)}
+        title={a.sessionDensityTitle}
+      />
+      <ToggleRow
+        checked={sidebarAlphabetical}
+        description={t.sidebar.projects.alphabeticalDesc}
+        id={settingElementId(ids.sidebarAlphabetical)}
+        label={t.sidebar.projects.alphabeticalTitle}
+        onChange={setSidebarAlphabetical}
+      />
+    </>
+  )
+}
 
 // display.resume_last_session lives in the backend config record (shared with
 // config.yaml and the cold-start restore in use-desktop-integrations), not a
@@ -421,7 +463,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
   const interfaceMode = useStore($interfaceMode)
-  const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
@@ -502,12 +543,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     { id: 'product', label: a.product },
     { id: 'technical', label: a.technical }
   ] as const
-
-  const sessionDensityOptions = [
-    { id: 'compact', label: a.sessionDensityCompact },
-    { id: 'comfortable', label: a.sessionDensityComfortable },
-    { id: 'detailed', label: a.sessionDensityDetailed }
-  ] as const satisfies readonly { id: SessionListDensity; label: string }[]
 
   const interfaceModeOptions = INTERFACE_MODES.map(id => ({
     id,
@@ -730,23 +765,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             />
           )}
 
-          {show('window-layout') && (
-            <ListRow
-              action={
-                <SegmentedControl
-                  onChange={id => {
-                    triggerHaptic('selection')
-                    setSessionListDensity(id)
-                  }}
-                  options={sessionDensityOptions}
-                  value={sessionListDensity}
-                />
-              }
-              description={a.sessionDensityDesc}
-              id={settingElementId(ids.sessionDensity)}
-              title={a.sessionDensityTitle}
-            />
-          )}
+          {show('window-layout') && <SidebarListSettings />}
 
           {show('window-layout') && (
             <ListRow

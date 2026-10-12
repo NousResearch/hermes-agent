@@ -8,6 +8,8 @@ import { mapPool } from '@/lib/pool'
 import { $sidebarWorkspaceNodeOpen, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { $worktreeRefreshToken } from '@/store/projects'
 
+import { sortByLabel } from '../alphabetical'
+
 import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
 
 // Page size when revealing more already-loaded rows within a workspace group.
@@ -112,6 +114,12 @@ export function sortProjectsForOverview(
 
   return homeFirst(sorted)
 }
+
+// The opt-in alphabetical overview ("Sort sidebar alphabetically"): Home first,
+// then every project A→Z by label. Activity, the active project and
+// explicit-vs-auto no longer move a project, and there is no manual order.
+export const sortProjectsAlphabetically = (projects: SidebarProjectTree[]): SidebarProjectTree[] =>
+  homeFirst(sortByLabel(projects))
 
 // Layer the user's manual drag-order over the deterministic sort.
 //

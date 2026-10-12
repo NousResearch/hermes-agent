@@ -832,6 +832,19 @@ def _final_metadata(tag: str, commit: str, claim: dict, candidate_manifest_sha25
     }
 
 
+def authenticated_push(ref: str, env: dict | None = None) -> list[str]:
+    """``git push origin <ref>`` that authenticates with GH_TOKEN when it is set.
+
+    The publication checkout runs with persist-credentials: false, so git has
+    no token of its own; gh hands GH_TOKEN to this one push as a credential
+    helper, keeping the token out of argv and out of .git/config.
+    """
+    env = os.environ if env is None else env
+    auth = (["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"]
+            if env.get("GH_TOKEN") else [])
+    return ["git", *auth, "push", "origin", ref]
+
+
 def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_sha256: str | None,
                      docker_manifest_digest: str, release_id: int, run=output) -> str:
     """Create or verify the immutable annotated final tag."""
@@ -856,7 +869,7 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_s
                     or run(["git", "rev-parse", f"{ref}^{{commit}}"]) != commit
                     or tag_record(run(["git", "tag", "-l", tag, "--format=%(contents)"])) != expected):
                 raise ValueError("Local final tag collision")
-        run(["git", "push", "origin", ref])
+        run(authenticated_push(ref))
         remote_raw = run(["git", "ls-remote", "origin", ref, f"{ref}^{{}}"])
     remote = dict(line.split()[::-1] for line in remote_raw.splitlines())
     tag_object, peeled = remote.get(ref), remote.get(f"{ref}^{{}}")
@@ -926,14 +939,15 @@ def publish_release_draft(repository: str, release_id: int, tag: str, *, run=out
         raise ValueError("Stable release publication did not persist")
 
 
-def publish_attempt(record: dict, *, repository: str, run=output, read_archive) -> str:
+def publish_attempt(record: dict, *, repository: str, run=output, read_archive) -> dict:
     """The one ordered publication pass, steps 1-4, each read back before the next.
 
     Explicit publish and autopublish converge here. The manifest digest is
     hashed from the attempt archive (nothing records it earlier), the receipt
     tag is written, the draft is retargeted and stripped while still a draft,
-    and only then does the final call make it public. Returns the Docker
-    manifest digest the receipt binds, for the alias move that follows.
+    and only then does the final call make it public. Returns the two digests
+    the receipt binds (candidate manifest and Docker manifest), so the head
+    advance that follows in the same pass checks the receipt it just wrote.
     """
     from scripts.releases import docker
 
@@ -950,7 +964,7 @@ def publish_attempt(record: dict, *, repository: str, run=output, read_archive) 
                      release_id=record["release_id"], run=run)
     edit_draft_release(repository, record["release_id"], record["tag"], record["commit"], run=run)
     publish_release_draft(repository, record["release_id"], record["tag"], run=run)
-    return docker_digest
+    return {"candidate_manifest_sha256": manifest_sha256, "docker_manifest_digest": docker_digest}
 
 
 def complete(env: dict) -> None:

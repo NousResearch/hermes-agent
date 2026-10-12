@@ -115,7 +115,7 @@ def registered_sandbox(monkeypatch, tmp_path):
     about. The registry key comes from the real resolver, so this asserts a relation between the
     turn's registration and the delivery lookup rather than a hardcoded ``session:`` spelling.
     """
-    import tools.terminal_tool as terminal_tool
+    from tools import terminal_tool
     from gateway.session_context import clear_session_vars, set_session_vars
 
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
@@ -142,7 +142,7 @@ def test_supplied_session_key_outranks_the_context_less_default_sandbox(monkeypa
     cached under the context-less ``"default"`` key -- a CLI or cron task's -- consulting that one
     first is worse than losing the file: it delivers a stranger's.
     """
-    import tools.terminal_tool as terminal_tool
+    from tools import terminal_tool
     env, register = registered_sandbox
     key = register(SESSION_ID)
     assert SESSION_KEY in key and SESSION_ID not in key  # ssh keys by session KEY, not session id
@@ -159,7 +159,7 @@ def test_supplied_session_key_outranks_the_context_less_default_sandbox(monkeypa
 
 def test_sandbox_keyed_by_session_id_is_found_without_a_session_key(monkeypatch, registered_sandbox):
     """Per-session-isolated docker keys by task id, so the session-id lookup must keep working."""
-    import tools.terminal_tool as terminal_tool
+    from tools import terminal_tool
     from gateway.session_context import scoped_current_session_id
     env, _ = registered_sandbox
     monkeypatch.setitem(terminal_tool._active_environments, SESSION_ID, env)

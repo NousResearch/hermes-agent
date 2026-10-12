@@ -1071,7 +1071,7 @@ def _(rid, params: dict) -> dict:
         if (resp := _resume_guard(ctx)) is not None:
             return resp
         ctx.profile_resume_cwd = (_resumable_stored_cwd(_str_param(ctx.found, "cwd"), ctx.profile_home)
-                                  or _profile_workspace_cwd(ctx.profile_home))
+                                  or _profile_default_cwd(ctx.profile_home))
         with _session_resume_lock:  # fast path: reuse a session live IN THIS PROFILE, never another's
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:

@@ -85,7 +85,7 @@ def _coerce_non_finite(value, _seen=None):
 
     ``json.dumps`` writes those as the bare tokens ``Infinity``/``NaN``, which no strict JSON parser
     accepts. Only ever called once ``allow_nan=False`` has already proved one is present, so normal
-    frames never pay for the walk. A container that contains itself is returned unchanged: recursing
+    frames never pay for the walk. A container that contains itself is returned unchanged (only ancestors count, so a shared sub-object is fine): recursing
     into one would hang, and the retry then raises so the caller's error frame reports it.
     """
     if isinstance(value, float):
@@ -94,10 +94,15 @@ def _coerce_non_finite(value, _seen=None):
         _seen = set() if _seen is None else _seen
         if id(value) in _seen:
             return value
+        # Path-scoped: only an ancestor of the node being rebuilt counts as a cycle. A YAML alias
+        # (``&b`` / ``*b``) loads as one shared object reached by two acyclic paths; both must be coerced.
         _seen.add(id(value))
-        if isinstance(value, dict):
-            return {k: _coerce_non_finite(v, _seen) for k, v in value.items()}
-        return [_coerce_non_finite(v, _seen) for v in value]
+        try:
+            if isinstance(value, dict):
+                return {k: _coerce_non_finite(v, _seen) for k, v in value.items()}
+            return [_coerce_non_finite(v, _seen) for v in value]
+        finally:
+            _seen.discard(id(value))
     return value
 
 

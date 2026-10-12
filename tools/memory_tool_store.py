@@ -129,7 +129,8 @@ def _pinned_index(entries: list[str], matched_entry: str) -> Optional[int]:
 
 def _stale_entry_message(entry: str) -> str:
     return (f"Entry changed since it was staged, so this write was not applied: '{entry}' is no longer "
-            f"in memory as reviewed. Recreate the change against the current entry or reject it; the "
+            f"in memory as reviewed. Use /memory refresh <id> to propose the change against its current "
+            f"unique anchor and review it again, or reject it; the "
             f"pending record has been preserved.")
 
 
@@ -178,6 +179,12 @@ class MemoryStore:
         self._consolidation_failures += 1
         if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
             return response
+        return self.consolidation_retry_stop()
+
+    def consolidation_retry_stop(self) -> Optional[dict[str, Any]]:
+        """After three failed attempts, tool calls do no more work until the next turn."""
+        if self._consolidation_failures < self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
+            return None
         FAILURE_CLASS.set("retry_cap")
         return {"success": False, "done": True, "error": (
             f"Memory consolidation failed {self._consolidation_failures} times this turn. Stop retrying "

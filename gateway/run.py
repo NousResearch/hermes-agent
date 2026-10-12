@@ -5557,10 +5557,6 @@ async def _start_gateway_start_control_socket(runner):
         from gateway.run_plugin_rewire import reload_plugins_verb
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
-        # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
-        # cleanly — releasing every venv file handle — instead of being tree-killed mid-turn. Same drain
-        # path as SIGUSR1/service restarts (request_restart(via_service=True)); the updater (or the service
-        # manager) relaunches after the code swap.
         _main_loop = asyncio.get_running_loop()
 
         def _pause_for_update_handler() -> dict:
@@ -5600,8 +5596,11 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
+        from gateway.run_send_relay import send_message_verb
         _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler,
+            verb_handlers={"send-capabilities": lambda: {"supported_verbs": ["send-message"]},
+                           "send-message": send_message_verb(runner),
+                           "pause-for-update": _pause_for_update_handler,
                            "rescan-profiles": _rescan_profiles_handler,
                            "unserve-profile": unserve_profile_verb(runner),
                            "serve-profile": serve_profile_verb(runner),

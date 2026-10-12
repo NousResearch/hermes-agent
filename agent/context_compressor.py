@@ -2401,10 +2401,22 @@ class ContextCompressor(
             previous_overload_aborts = _parent(
                 "get_compression_overload_streak", "compression parent overload streak", previous_overload_aborts,
             )
+            # commit_memory_session() ends the engine before this notification, clearing
+            # the in-memory probe. Recover the parent's durable deadline (also in-place)
+            # rather than deleting the wake-up that the benched compression just armed.
+            found, probe_at = self._durable_read(
+                "get_session_model_config_value", "compression parent summary-model probe deadline", float, 0.0,
+                "_fallback_probe_at", 0.0, session_db=session_db, session_id=old_session_id,
+            )
+            if found and probe_at is not None:
+                previous_probe_at = probe_at
         self.bind_session_state(session_db, session_id)
         if boundary_reason == "compression":
-            # Rotation creates a fresh child row first; carry the streak until boundary bookkeeping persists it.
-            self._fallback_compression_streak = previous_fallback_streak
+            # A deliberate pre-LLM skip is streak-neutral and will not persist it later.
+            # Carry the parent's failures onto a fresh child before boundary bookkeeping.
+            if self._fallback_compression_streak != previous_fallback_streak:
+                self._fallback_compression_streak = previous_fallback_streak
+                self._persist_fallback_compression_streak()
             # The bench probe deadline lives in the model-config blob, which the child row lacks.
             self._set_fallback_probe_at(previous_probe_at)
             # No later bookkeeping writes the strike counter, so persist it onto the child row now (#54923).

@@ -18,8 +18,9 @@ import {
   $selectedStoredSessionId,
   setModelPickerOpen
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { requestForSessionProfile } from '@/store/session-request-router'
-import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId, $sessionTiles } from '@/store/session-states'
+import { $focusedRuntimeId, $focusedSessionState, $sessionTiles } from '@/store/session-states'
 
 interface ModelPickerOverlayProps {
   gateway?: HermesGateway

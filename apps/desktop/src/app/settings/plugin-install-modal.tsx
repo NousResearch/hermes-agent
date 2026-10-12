@@ -18,12 +18,19 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { enablePackageDesktopHalf } from '@/contrib/plugins-store'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
-import { type AgentPluginLiveNow, COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import {
+  type AgentPluginInstallResult,
+  type AgentPluginLiveNow,
+  COMMIT_SHA_RE,
+  installAgentPlugin,
+  loadAgentPlugins
+} from '@/store/agent-plugins'
 import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
@@ -49,6 +56,16 @@ function installOutcome(m: InstallModalCopy, live: AgentPluginLiveNow, nextChat:
     ...(live.skills.length > 0 ? [m.skillsReady(live.skills)] : []),
     ...(nextChat ? [m.nextChat] : [])
   ]
+}
+
+/** One "Enable after install" covers both halves of a unified package: its
+ *  desktop half lands opt-in (it matches an inert agent half), so an install
+ *  that enabled the agent half turns the desktop half on too. Before, the
+ *  user had to find and flip the row's Desktop switch afterwards. */
+async function enableInstalledDesktopHalf(result?: AgentPluginInstallResult): Promise<void> {
+  if (result?.enabled && result.pluginName) {
+    await enablePackageDesktopHalf(result.pluginName)
+  }
 }
 
 export function PluginInstallModal() {
@@ -223,6 +240,7 @@ export function PluginInstallModal() {
     const errors: string[] = []
     const successes: string[] = []
     let agentInstalled = false
+    let agentResult: AgentPluginInstallResult | undefined
     let live: AgentPluginLiveNow = { mcpServers: [], skills: [] }
 
     try {
@@ -244,6 +262,7 @@ export function PluginInstallModal() {
             ].join(' · ')
           )
           agentInstalled = true
+          agentResult = result
           live = result.live
 
           if (result.missingEnv?.length) {
@@ -314,6 +333,8 @@ export function PluginInstallModal() {
             }
           }
         }
+
+        await enableInstalledDesktopHalf(agentResult)
       }
 
       await loadAgentPlugins(requestGateway, targetProfile)
@@ -331,8 +352,9 @@ export function PluginInstallModal() {
         }
 
         closePluginInstallRequest()
-        // Catalog picks come from Capabilities → Plugins; land back there.
-        navigate(request.catalogName ? '/capabilities?tab=plugins' : '/settings?tab=plugins')
+        // Land on the inventory (Capabilities → Plugins) — Git installs too;
+        // `/settings?tab=plugins` is the plugin settings pages now.
+        navigate('/capabilities?tab=plugins')
 
         return
       }

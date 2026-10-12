@@ -38,7 +38,8 @@ import {
   applyRenamedSessionTitle,
   moveSessionToProject,
   projectIdForCwd,
-  projectRootCwd
+  projectRootCwd,
+  refreshProjectTree
 } from '@/store/projects'
 import {
   $activeSessionId,
@@ -52,7 +53,7 @@ import {
   sessionPinId
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -74,13 +75,52 @@ import type { SessionTitleResponse } from '../../types'
 // background profile) keeps the REST path, which handles profile scoping and a
 // non-empty title is required by the RPC (it rejects clears), so clears stay on
 // REST too.
+/** Resolve a live runtime id for a stored session id, from any surface that
+ *  currently holds one — not just the selected-primary row.
+ *
+ *  A branched session opens as its own TAB and deliberately does NOT become the
+ *  selected primary row, so `$selectedStoredSessionId`/`$activeSessionId` do not
+ *  see it. Until its first turn it also has no persisted DB row, so a REST
+ *  rename 404s "session not found". But the branch flow binds a runtime and
+ *  stores it on the tile (`patchSessionTile(..., { runtimeId })`), and
+ *  `$sessionStates` is keyed by runtime id with `storedSessionId` on each state.
+ *  Consulting those lets the working `session.title` RPC path fire for a
+ *  just-branched draft instead of falling through to a 404. (#70317) */
+function resolveRuntimeIdForStored(storedSessionId: string): null | string {
+  if (storedSessionId === $selectedStoredSessionId.get()) {
+    const active = $activeSessionId.get()
+
+    if (active) {
+      return active
+    }
+  }
+
+  const tileRuntimeId = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+
+  if (tileRuntimeId) {
+    return tileRuntimeId
+  }
+
+  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+    if (state.storedSessionId === storedSessionId) {
+      return runtimeId
+    }
+  }
+
+  return null
+}
+
 export async function renameSessionPreferringRpc(
   storedSessionId: string,
   title: string,
   profile?: string
 ): Promise<{ title?: string }> {
-  const isActiveRow = storedSessionId === $selectedStoredSessionId.get()
-  const runtimeId = isActiveRow ? $activeSessionId.get() : null
+  const resolvedProfile =
+    (profile ?? '').trim() ||
+    $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
+    undefined
+
+  const runtimeId = resolveRuntimeIdForStored(storedSessionId)
   const gateway = activeGateway()
 
   if (title && runtimeId && gateway) {
@@ -100,7 +140,7 @@ export async function renameSessionPreferringRpc(
     }
   }
 
-  return renameSession(storedSessionId, title, profile)
+  return renameSession(storedSessionId, title, resolvedProfile)
 }
 
 interface SessionActions {
@@ -174,6 +214,16 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
   const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+
+  // The flat (non-grouped) sidebar view only warms $projectTree on a
+  // background timer (PROJECT_TREE_WARM_MS in sidebar/index.tsx), so opening
+  // this submenu before that timer fires — or before the grouped view has
+  // ever been visited this run — showed "No other projects" even when
+  // projects exist. Refresh on open so the list is authoritative regardless
+  // of sidebar grouping state or timing.
+  useEffect(() => {
+    void refreshProjectTree()
+  }, [])
 
   if (targets.length === 0) {
     return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
@@ -703,7 +753,10 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
     setSubmitting(true)
 
     try {
-      const result = await renameSessionPreferringRpc(sessionId, next, profile)
+      const targetProfile =
+        (profile ?? '').trim() || $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
+
+      const result = await renameSessionPreferringRpc(sessionId, next, targetProfile)
       const finalTitle = result.title || next || ''
       // One write, every list: patch the main store AND the project surfaces.
       // Bare-id patching only the recents slice left project-scoped rows

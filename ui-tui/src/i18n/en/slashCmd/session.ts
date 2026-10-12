@@ -30,7 +30,7 @@ export const slashCmdSessionEn = {
     },
     fast: {
       mode: (mode: string) => `fast mode: ${mode}`,
-      usage: 'usage: /fast [normal|fast|status|on|off|toggle]'
+      usage: 'usage: /fast [normal|fast|ultrafast|status|on|off|toggle]'
     },
     indicator: {
       current: (style: string) => `indicator: ${style}`,

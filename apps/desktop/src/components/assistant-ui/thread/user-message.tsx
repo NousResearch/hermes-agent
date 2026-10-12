@@ -8,7 +8,9 @@ import {
   messageContentText,
   PROCESS_NOTIFICATION_RE
 } from '@/components/assistant-ui/thread/content'
+import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
+import { SetupLearnedNote, splitSetupLearned } from '@/components/assistant-ui/thread/setup-learned'
 import { BackgroundResult } from '@/components/assistant-ui/thread/system-message'
 import { threadUserOrdinal } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
@@ -241,6 +243,75 @@ const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
   return <BackgroundResult process report={detail} text={headline} />
 }
 
+function isChipOnlyTurn(hasBody: boolean, attachmentRefs: readonly string[]): boolean {
+  return !hasBody && attachmentRefs.length > 0 && attachmentRefs.every(isAttachmentRef)
+}
+
+interface UserBubbleActionsProps {
+  fullText: string
+  messageId: string
+  onCancel?: () => Promise<void> | void
+  onRequestRestoreConfirm?: (messageId: string, target: RestoreMessageTarget) => void
+  runtimeUserOrdinal: RestoreMessageTarget['userOrdinal']
+  showRestore: boolean
+  showStop: boolean
+}
+
+const UserBubbleActions: FC<UserBubbleActionsProps> = ({
+  fullText,
+  messageId,
+  onCancel,
+  onRequestRestoreConfirm,
+  runtimeUserOrdinal,
+  showRestore,
+  showStop
+}) => {
+  const copy = useI18n().t.assistant.thread
+
+  return (
+    <>
+      <MessageHoverTime className={cn(!showStop && !showRestore && 'pr-0.5')} />
+      {showStop ? (
+        <button
+          aria-label={copy.stop}
+          className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
+          onClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            void onCancel?.()
+          }}
+          type="button"
+        >
+          {StopGlyph}
+        </button>
+      ) : showRestore ? (
+        <Tip label={copy.restoreFromHere}>
+          <button
+            aria-label={copy.restoreCheckpoint}
+            className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
+            onClick={event => {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              onRequestRestoreConfirm?.(messageId, {
+                text: fullText,
+                userOrdinal: runtimeUserOrdinal
+              })
+            }}
+            onPointerDown={event => {
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+            type="button"
+          >
+            <Codicon name="discard" size="0.875rem" />
+          </button>
+        </Tip>
+      ) : null}
+    </>
+  )
+}
+
 export const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
   onRequestRestoreConfirm?: (messageId: string, target: RestoreMessageTarget) => void
@@ -249,7 +320,8 @@ export const UserMessage: FC<{
   const copy = t.assistant.thread
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
-  const messageText = messageContentText(content)
+  const fullText = messageContentText(content)
+  const [messageText, setupLearned] = splitSetupLearned(fullText)
   const threadRunning = useAuiState(s => s.thread.isRunning)
 
   const latestUserId = useAuiState(s => {
@@ -362,7 +434,7 @@ export const UserMessage: FC<{
   }
 
   const hasBody = messageText.trim().length > 0
-  const chipOnlyTurn = !hasBody && attachmentRefs.length > 0 && attachmentRefs.every(isAttachmentRef)
+  const chipOnlyTurn = isChipOnlyTurn(hasBody, attachmentRefs)
   const isLatestUser = messageId === latestUserId
   const showStop = !readOnly && isLatestUser && threadRunning && Boolean(onCancel)
   // Restore (re-run this exact prompt) is available everywhere the Stop button
@@ -411,11 +483,14 @@ export const UserMessage: FC<{
           // it. No negative margin: -mt-* pulls the row up into the sticky box,
           // where the sticky-prompt clip hides its top even at rest. Image refs
           // render as thumbnails, file refs as chips; no border.
-          attachmentRefs.length > 0 && !chipOnlyTurn ? (
-            <div className="mb-2 flex flex-wrap gap-1">
-              <DirectiveContent text={attachmentRefs.join(' ')} />
-            </div>
-          ) : null
+          <>
+            {attachmentRefs.length > 0 && !chipOnlyTurn && (
+              <div className="mb-2 flex flex-wrap gap-1">
+                <DirectiveContent text={attachmentRefs.join(' ')} />
+              </div>
+            )}
+            {setupLearned && <SetupLearnedNote text={setupLearned} />}
+          </>
         }
         messageId={messageId}
       >
@@ -502,47 +577,19 @@ export const UserMessage: FC<{
                     </button>
                   </ActionBarPrimitive.Edit>
                 )}
-                {(showStop || showRestore) && (
-                  <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
-                    {showStop ? (
-                      <button
-                        aria-label={copy.stop}
-                        className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
-                        onClick={event => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          void onCancel?.()
-                        }}
-                        type="button"
-                      >
-                        {StopGlyph}
-                      </button>
-                    ) : (
-                      <Tip label={copy.restoreFromHere}>
-                        <button
-                          aria-label={copy.restoreCheckpoint}
-                          className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
-                          onClick={event => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                            triggerHaptic('selection')
-                            onRequestRestoreConfirm?.(messageId, {
-                              text: messageText,
-                              userOrdinal: runtimeUserOrdinal
-                            })
-                          }}
-                          onPointerDown={event => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                          }}
-                          type="button"
-                        >
-                          <Codicon name="discard" size="0.875rem" />
-                        </button>
-                      </Tip>
-                    )}
-                  </div>
-                )}
+                {/* Hover cluster, bottom-right: when it was sent, then Stop or
+                    Restore. Its fill masks the last line's tail while shown. */}
+                <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center gap-1 rounded-md bg-(--dt-user-bubble) pl-1 opacity-0 transition-opacity group-hover/user-message:opacity-100 group-hover/user-message:transition-none group-focus-within/user-message:opacity-100">
+                  <UserBubbleActions
+                    fullText={fullText}
+                    messageId={messageId}
+                    onCancel={onCancel}
+                    onRequestRestoreConfirm={onRequestRestoreConfirm}
+                    runtimeUserOrdinal={runtimeUserOrdinal}
+                    showRestore={showRestore}
+                    showStop={showStop}
+                  />
+                </div>
               </div>
             </ReactionPicker>
             {/* Below the bubble, same register as the assistant action row:

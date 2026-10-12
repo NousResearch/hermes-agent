@@ -26,6 +26,11 @@ const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\
 const REASONING_SESSION_FLAGS = new Set(['--session'])
 const REASONING_GLOBAL_FLAGS = new Set(['--global'])
 
+type FastModeWord = 'fast' | 'normal' | 'ultrafast'
+
+// `config.get/set fast` answer fast | ultrafast | normal (auto/cold windows read as normal here).
+const fastModeWord = (value: unknown): FastModeWord => (value === 'fast' || value === 'ultrafast' ? value : 'normal')
+
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
 
@@ -606,11 +611,11 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle fast mode [normal|fast|status|on|off|toggle]',
+    help: 'toggle fast mode [normal|fast|ultrafast|status|on|off|toggle]',
     name: 'fast',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
-      const valid = new Set(['', 'status', 'normal', 'fast', 'on', 'off', 'toggle'])
+      const valid = new Set(['', 'status', 'normal', 'fast', 'ultrafast', 'on', 'off', 'toggle'])
 
       if (!valid.has(mode)) {
         return ctx.transcript.sys(t('slashCmd.session.fast.usage'))
@@ -621,7 +626,7 @@ export const sessionCommands: SlashCommand[] = [
           .rpc<ConfigGetValueResponse>('config.get', { key: 'fast', session_id: ctx.sid })
           .then(
             ctx.guarded<ConfigGetValueResponse>(r =>
-              ctx.transcript.sys(t('slashCmd.session.fast.mode', r.value === 'fast' ? 'fast' : 'normal'))
+              ctx.transcript.sys(t('slashCmd.session.fast.mode', fastModeWord(r.value)))
             )
           )
           .catch(ctx.guardedErr)
@@ -631,15 +636,15 @@ export const sessionCommands: SlashCommand[] = [
         .rpc<ConfigSetResponse>('config.set', { key: 'fast', session_id: ctx.sid, value: mode })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
-            const next = r.value === 'fast' ? 'fast' : 'normal'
+            const next = fastModeWord(r.value)
             ctx.transcript.sys(t('slashCmd.session.fast.mode', next))
             patchUiState(state => ({
               ...state,
               info: state.info
                 ? {
                     ...state.info,
-                    fast: next === 'fast',
-                    service_tier: next === 'fast' ? 'priority' : ''
+                    fast: next !== 'normal',
+                    service_tier: { fast: 'priority', normal: '', ultrafast: 'ultrafast' }[next]
                   }
                 : state.info
             }))

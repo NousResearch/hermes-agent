@@ -37,7 +37,7 @@ class TurnContext:
     agent_holder: list = field(default_factory=lambda: [None])
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
-    _cleanup_msg_ids: List[str] = field(default_factory=list)
+    _cleanup_msg_ids: list[str] = field(default_factory=list)
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
     message: Optional[str] = None  # the only rebindable field
@@ -55,6 +55,7 @@ class TurnContext:
     # Raw inbound platform id (not the event_message_id reply anchor); stamped on the user turn.
     inbound_message_id: Optional[str] = None
     moa_config: Optional[dict] = None
+    title_user_message: Optional[str] = None
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None
     # display_kind of the persisted user row for a self-injected turn; DB-only, never sent.
@@ -63,6 +64,7 @@ class TurnContext:
     persist_user_display_metadata: Optional[dict] = None
     user_config: Any = None
     mute_notification_reply: bool = False
+    voice_turn: bool = False  # a voice-note turn: runs on auxiliary.voice_chat
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False

@@ -997,7 +997,7 @@ def _reclaim_orphan_install_states() -> None:
 def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.exists():
-        _prune_orphaned_branches(repo_root)
+        _prune_orphaned_branches(repo_root, max_age_hours=max_age_hours)
         return
 
     # Shallow clones make every aged tree read as unpushed forever; deepen once (fail-soft).
@@ -1007,7 +1007,7 @@ def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
     now = time.time()
     candidates = _prune_candidates(worktrees_dir, max_age_hours, now)
     if not candidates:
-        _prune_orphaned_branches(repo_root)
+        _prune_orphaned_branches(repo_root, max_age_hours=max_age_hours)
         return
 
     verdicts = _classify_prune_candidates(repo_root, candidates)
@@ -1018,7 +1018,7 @@ def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
                        "(run `hermes worktree prune` to review and reclaim): %s",
                        len(preserved_stale), ", ".join(sorted(preserved_stale)))
 
-    _prune_orphaned_branches(repo_root, protect=kept_branches)
+    _prune_orphaned_branches(repo_root, protect=kept_branches, max_age_hours=max_age_hours)
 
     # The conservative startup pass accumulates trees it can never reclaim; say so once per launch.
     try:
@@ -1033,8 +1033,15 @@ def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
         logger.debug("worktree summary failed", exc_info=True)
 
 
-def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None) -> None:
-    """Delete local ``hermes/hermes-*`` and ``pr-*`` branches with no worktree, except *protect*."""
+def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None,
+                             max_age_hours: int = 24) -> None:
+    """Delete local ``hermes/hermes-*`` and ``pr-*`` branches with no worktree, except *protect*.
+
+    Age-gated: only a branch whose tip commit is older than *max_age_hours* is reaped. A
+    branch is briefly worktree-less while its work is live (the ref is created before its
+    tree, and a tree can be reaped on an earlier pass), so reaping every orphan on sight
+    destroys work that was created seconds earlier. An undatable branch is kept.
+    """
     try:
         listing = _git_out(["branch", "--format=%(refname:short)"], repo_root)
         if listing is None:
@@ -1066,8 +1073,28 @@ def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None) -> N
 
     if not orphaned:
         return
-    for i in range(0, len(orphaned), 50):
-        _git_quiet(["branch", "-D"] + orphaned[i:i + 50], repo_root, timeout=30,
+
+    # One call resolves every tip date. If the refs cannot be dated, keep them all:
+    # an unreadable age is not evidence that the work is finished.
+    try:
+        refs = _git_out(["for-each-ref", "--format=%(refname:short)%09%(committerdate:unix)",
+                         "refs/heads"], repo_root)
+    except Exception:
+        return
+    if not refs:
+        return
+    ages = {}
+    for line in refs.split("\n"):
+        name, _, stamp = line.partition("\t")
+        if name.strip() and stamp.strip().isdigit():
+            ages[name.strip()] = int(stamp.strip())
+
+    cutoff = time.time() - (max_age_hours * 3600)
+    stale = [b for b in orphaned if ages.get(b, float("inf")) <= cutoff]
+    if not stale:
+        return
+    for i in range(0, len(stale), 50):
+        _git_quiet(["branch", "-D"] + stale[i:i + 50], repo_root, timeout=30,
                    log="Failed to prune orphaned branches",
                    stdin=subprocess.DEVNULL, env=noninteractive_git_env())
-    logger.debug("Pruned %d orphaned branches", len(orphaned))
+    logger.debug("Pruned %d orphaned branch(es) older than %dh", len(stale), max_age_hours)

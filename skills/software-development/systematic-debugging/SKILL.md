@@ -387,8 +387,7 @@ delegate_task(
     Error: [paste full error]
     File: [path to failing code]
     Test command: [exact command]
-    """,
-    toolsets=['terminal', 'file']
+    """
 )
 ```
 

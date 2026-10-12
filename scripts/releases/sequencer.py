@@ -238,7 +238,8 @@ def discover(repository: str, run=output) -> list[dict]:
         commit = claim_ref["commit"]
         claim = _tag_message(claim_tag, claim_ref["object"], run)
         try:
-            validate_claim(claim, version=version, attempt=attempt, commit=commit)
+            # Normalized: a claim cut before the opt-in platform flags reads them as false.
+            claim = validate_claim(claim, version=version, attempt=attempt, commit=commit)
         except ValueError as error:
             raise ValueError(f"{claim_tag} metadata is invalid") from error
         claim_epoch = claim["claimEpoch"]
@@ -388,8 +389,13 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
             if not record["skip_bundles"]:
                 # The Store check joins the pass here (after the feeds and aliases
                 # move). It never releases the held submission: the API cannot,
-                # so it prints the Publish now step. A failed submission is red.
-                store.check_from_env(env)
+                # so it prints the Publish now step. The Store never blocks a
+                # release: a failed or unreadable submission becomes a warning.
+                try:
+                    store.check_from_env(env)
+                except store.StoreError as error:
+                    print(f"::warning title=Microsoft Store::{error}. The release is published; "
+                          "upload the Store package from the release run's summary in Partner Center.")
         advance_head = production_advance
 
     for step in steps:

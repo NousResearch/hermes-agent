@@ -2337,7 +2337,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # the depleted key, and rotation never converges (~2.5 min hang).
             # Mark every entry sharing the failed key.
             failed_runtime_key = entry.runtime_api_key
-            siblings: List[PooledCredential] = []
+            siblings: list[PooledCredential] = []
             if identity_supplied and failed_runtime_key:
                 siblings = [
                     s for s in self._entries if s.id != entry.id and s.runtime_api_key == failed_runtime_key

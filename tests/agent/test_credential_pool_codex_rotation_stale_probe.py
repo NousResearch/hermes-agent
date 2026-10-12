@@ -18,7 +18,7 @@ import time
 import pytest
 
 import hermes_cli.auth as auth_mod
-import hermes_cli.auth_codex as auth_codex
+from hermes_cli import auth_codex
 
 
 @pytest.fixture(autouse=True)

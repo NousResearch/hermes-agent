@@ -1,6 +1,6 @@
 name: operations
 repo: https://github.com/c-pompa/operations-hermes-desktop-plugin
-sha: 2824d3b7c24fc5fcf8fc2a231c21a66dcc2cdeec
+sha: 61b5e241c7893df32c64426eb6d84e6bb4334620
 subdir: plugins/operations
 title: Operations
 description: A Hermes Desktop page for running a fleet - topology, model traffic, handoffs, traces, merge requests and conformance checks in one place.
@@ -10,11 +10,11 @@ category: desktop
 docs_url: https://github.com/c-pompa/operations-hermes-desktop-plugin#readme
 version: "0.1.0"
 requires_hermes: ">=0.21.5"
-image: https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/2824d3b7c24fc5fcf8fc2a231c21a66dcc2cdeec/screenshots/card.png
+image: https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/61b5e241c7893df32c64426eb6d84e6bb4334620/screenshots/card.png
 screenshots:
-  - https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/2824d3b7c24fc5fcf8fc2a231c21a66dcc2cdeec/screenshots/overview.png
-  - https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/2824d3b7c24fc5fcf8fc2a231c21a66dcc2cdeec/screenshots/topology.png
-  - https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/2824d3b7c24fc5fcf8fc2a231c21a66dcc2cdeec/screenshots/conformance.png
+  - https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/61b5e241c7893df32c64426eb6d84e6bb4334620/screenshots/overview.png
+  - https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/61b5e241c7893df32c64426eb6d84e6bb4334620/screenshots/topology.png
+  - https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/61b5e241c7893df32c64426eb6d84e6bb4334620/screenshots/conformance.png
 readme: true
 platforms: []
 known_issues:

@@ -368,7 +368,7 @@ def result_reference(agent: Any, binding: InvocationBinding, session_id: str) ->
     db = getattr(agent, "_session_db", None) if agent is not None else None
     try:
         record = db.get_invocation_binding(session_id) if db is not None and session_id else None
-    except Exception:
+    except Exception:  # health: allow BLE001 -- keep the fail-closed stub on store failures without logging DB exception data.
         record = None
     if not isinstance(record, dict) or record.get("invocation_id") != binding.invocation_id:
         return ref

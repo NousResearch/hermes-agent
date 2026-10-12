@@ -141,6 +141,7 @@ from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
+from gateway.platforms.api_server_middlewares import build_middlewares
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -693,66 +694,35 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def ensure_api_server_requirements() -> bool:
+    """ACTIVE lazy-installer (runs from gateway start, never from status/config probes): when
+    aiohttp is missing, try ``pm.ensure_import("messaging")`` and rebind the module-level symbols,
+    mirroring the plugin adapters' ``check_telegram_requirements`` (#79812's active/passive split
+    — ``check_api_server_requirements`` above stays a passive probe). Fixes #136990: a gateway
+    that boots onto a PM generation without the ``messaging`` extra previously disabled this
+    adapter permanently instead of self-healing like the plugin platforms do."""
+    global AIOHTTP_AVAILABLE, web
+    global cors_middleware, body_limit_middleware, security_headers_middleware
+    if AIOHTTP_AVAILABLE:
+        return True
+    try:
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("messaging")
+    except Exception:  # health: allow BLE001 -- install failure faces are unenumerable (InstallError, subprocess, network, platform gates); this is a gateway-start degrade boundary, any failure must land on "skip with warning", never crash startup
+        return False
+    try:
+        from aiohttp import web as _web
+    except ImportError:
+        return False
+    web, AIOHTTP_AVAILABLE = _web, True
+    cors_middleware, body_limit_middleware, security_headers_middleware = build_middlewares(
+        _error_response, MAX_REQUEST_BYTES)
+    return True
+
+
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id"}
-_SECURITY_HEADERS = {
-    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-    "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY",
-    "X-XSS-Protection": "0",
-    "Referrer-Policy": "no-referrer"}
-
-if AIOHTTP_AVAILABLE:
-    @web.middleware
-    async def cors_middleware(request, handler):
-        """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
-        adapter = request.app.get("api_server_adapter")
-        origin = request.headers.get("Origin", "")
-        cors_headers = None
-        if adapter is not None:
-            if not adapter._origin_allowed(origin):
-                return web.Response(status=403)
-            cors_headers = adapter._cors_headers_for_origin(origin)
-        if request.method == "OPTIONS":
-            if cors_headers is None:
-                return web.Response(status=403)
-            return web.Response(status=200, headers=cors_headers)
-        response = await handler(request)
-        if cors_headers is not None:
-            response.headers.update(cors_headers)
-        return response
-
-    @web.middleware
-    async def body_limit_middleware(request, handler):
-        """Reject overly large request bodies early based on Content-Length."""
-        if request.method in {"POST", "PUT", "PATCH"}:
-            cl = request.headers.get("Content-Length")
-            if cl is not None:
-                try:
-                    if int(cl) > MAX_REQUEST_BYTES:
-                        return _error_response("Request body too large.", 413, code="body_too_large")
-                except ValueError:
-                    return _error_response("Invalid Content-Length header.", 400, code="invalid_content_length")
-        try:
-            return await handler(request)
-        except web.HTTPRequestEntityTooLarge:
-            # client_max_size tripped mid-read (chunked bodies carry no Content-Length): a
-            # proper 413, not the handler's 400 "Invalid JSON".
-            return _error_response("Request body too large.", 413, code="body_too_large")
-
-    @web.middleware
-    async def security_headers_middleware(request, handler):
-        """Add security headers to all responses (including errors)."""
-        response = await handler(request)
-        for k, v in _SECURITY_HEADERS.items():
-            response.headers.setdefault(k, v)
-        return response
-else:
-    cors_middleware = body_limit_middleware = security_headers_middleware = None  # type: ignore
-
 _MEDIA_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                ".webp": "image/webp", ".bmp": "image/bmp"}
 _MEDIA_IMG_EXT = set(_MEDIA_MIME)
@@ -814,6 +784,12 @@ def _error_response(
 ) -> web.Response:
     """``web.json_response(_openai_error(...), status=...)`` in one call."""
     return web.json_response(_openai_error(message, err_type, param, code), status=status, headers=headers)
+
+
+# Bound after ``_error_response`` exists (the builder takes it as a parameter); ``ensure_api_server_
+# requirements`` re-runs the builder after a lazy aiohttp install heals a bare environment (#136990).
+cors_middleware, body_limit_middleware, security_headers_middleware = build_middlewares(
+    _error_response, MAX_REQUEST_BYTES)
 
 
 def _invalid_request(message: str) -> web.Response:

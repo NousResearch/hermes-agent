@@ -27,7 +27,7 @@ _GUARD_SCRIPTS = (
     "scripts/check_no_tmp_literals.py", "scripts/check_config_yaml_writers.py",
     "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
-    "scripts/ci/check_agents_md_size.py",
+    "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py",
 )
 _SUPPORT = ("scripts/ci/profile_scope_patterns.json", "agent/subdirectory_hints.py", *_GUARD_SCRIPTS)
 _LEGACY = "def legacy(x):\n" + "".join(f"    if x == {i}:\n        return {i}\n" for i in range(21))
@@ -382,6 +382,7 @@ def test_hooks_run_with_msys_path_conversion_disabled(tmp_path):
     ("case-collisions", {"pkg/Notes.md": "a\n", "pkg/NOTES.md": "b\n"}),
     ("lazy-deps", {"pkg/uses.py": "import tools.lazy_deps\n"}),
     ("profile-archives", {"pkg/export.tar.gz": "not really\n"}),
+    ("blob-size", {"pkg/shot.png": "\0" * (600 * 1024)}),
 ])
 def test_ci_only_guards_run_in_scripts_check(tmp_path, job, files):
     repo = _engine_repo(tmp_path)

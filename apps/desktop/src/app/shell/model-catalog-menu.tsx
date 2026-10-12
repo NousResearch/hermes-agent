@@ -1,5 +1,4 @@
 import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
-import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -1399,5 +1398,7 @@ function useStoreCollapsed(): string[] {
 }
 
 function useDefaultEffort(): string {
-  return useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
+  // '' is the true inherit state (profile config has no level): keep it, or
+  // the submenu materializes medium over the provider-decided default (#137378).
+  return useStore($defaultReasoningEffort)
 }

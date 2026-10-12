@@ -1,4 +1,3 @@
-import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
@@ -11,7 +10,7 @@ import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
-import { reasoningEffortClamp, reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { inheritsReasoningEffort, reasoningEffortClamp, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { $defaultReasoningEffort } from '@/store/session'
 
@@ -44,12 +43,16 @@ export function ReasoningPill({ disabled, model }: { disabled: boolean; model: C
     return null
   }
 
-  const effort = reasoningEffort || defaultEffort || DEFAULT_REASONING_EFFORT
+  // Neither the session nor the profile config pins a level: the request
+  // carries no `reasoning_effort` and the provider decides. Say so ("Auto")
+  // instead of painting the library default as if it were on the wire (#137378).
+  const inherit = inheritsReasoningEffort(reasoningEffort, defaultEffort)
+  const effort = reasoningEffort || defaultEffort
   // A clamped pick (`ultra` → `max`) keeps the pill compact ("Ultra→Max") and
   // spells out the CLI's wording in the tooltip, so Ultra is never shown as a
   // distinct wire level the route does not have (#61634).
   const clamp = reasoningEffortClamp(effort, reasoningEffortWire)
-  const label = reasoningEffortLabel(effort, reasoningEffortWire)
+  const label = inherit ? copy.auto : reasoningEffortLabel(effort, reasoningEffortWire)
 
   // Until the session reports its own effort, the profile default is a guess
   // about to be replaced (#79807). Show the model pill's quiet loader instead.

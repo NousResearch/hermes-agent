@@ -355,6 +355,30 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('switch')).toBeNull()
   })
 
+  it('shows Auto for an unset reasoning effort instead of the library default (#137378)', async () => {
+    getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: '', service_tier: 'normal' } })
+
+    await renderModelSettings()
+
+    // Inherit (provider decides) is its own choice, not "Medium".
+    const effortSelect = (await screen.findAllByRole('combobox')).find(el => el.textContent === 'Auto')
+    expect(effortSelect).toBeTruthy()
+  })
+
+  it('writes the empty inherit value back when Auto is picked (#137378)', async () => {
+    getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'high', service_tier: 'normal' } })
+
+    await renderModelSettings()
+
+    const effortSelect = (await screen.findAllByRole('combobox')).find(el => el.textContent === 'High')
+    expect(effortSelect).toBeTruthy()
+    fireEvent.click(effortSelect!)
+
+    fireEvent.click(await screen.findByRole('option', { name: 'Auto' }))
+
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { reasoning_effort: '' } }))
+  })
+
   it('renders plugin-registered auxiliary tasks after the built-ins with the server label (#40880)', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },

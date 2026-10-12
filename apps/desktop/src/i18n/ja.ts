@@ -3066,6 +3066,7 @@ export const jaOverrides = {
       ultrafast: 'Ultrafast',
       useStandardSpeed: '標準速度を使用',
       effort: '努力度',
+      auto: '自動',
       minimal: '最小',
       low: '低',
       medium: '中',

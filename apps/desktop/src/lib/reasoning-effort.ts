@@ -51,6 +51,13 @@ export function reasoningEffortLabel(effort: string, wire?: string): string {
   return key ? (SHORT_LABELS[key] ?? effort) : ''
 }
 
+/** True when neither the surface nor the profile config pins a level: the
+ *  request carries no `reasoning_effort`, so the provider decides the thinking
+ *  depth. Chrome should label this state ("Auto"), never render the library
+ *  default as if it were on the wire (#137378). */
+export const inheritsReasoningEffort = (effort: string, fallback: string): boolean =>
+  !normalize(effort) && !normalize(fallback)
+
 /** Thinking is on unless a level explicitly says otherwise; an empty value
  *  means "inherit", so it resolves through `fallback` first. */
 export const isThinkingEnabled = (effort: string, fallback: string = DEFAULT_REASONING_EFFORT): boolean =>

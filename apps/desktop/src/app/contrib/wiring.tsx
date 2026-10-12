@@ -414,19 +414,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
     useSessionListActions({ profileScope })
 
-  const updateSessionRuntimeInfo = useCallback(
-    (sessionId: string, info: { branch?: string; cwd?: string }) =>
-      updateSessionState(sessionId, state => ({
-        ...state,
-        branch: info.branch ?? state.branch,
-        cwd: info.cwd ?? state.cwd
-      })),
-    [updateSessionState]
-  )
-
   const { changeSessionCwd, refreshProjectBranch } = useCwdActions({
     activeSessionIdRef,
-    onSessionRuntimeInfo: updateSessionRuntimeInfo,
+    onSessionRuntimeInfo: useCallback(
+      (sessionId: string, { branch, cwd }: { branch?: string; cwd?: string }) =>
+        updateSessionState(sessionId, state => ({ ...state, branch: branch ?? state.branch, cwd: cwd ?? state.cwd })),
+      [updateSessionState]
+    ),
     requestGateway
   })
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 from hermes_state import SessionDB
 from tests.tui_gateway.test_tui_gateway_server import _write_profile_cfg
 

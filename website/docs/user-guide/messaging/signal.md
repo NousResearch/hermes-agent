@@ -108,6 +108,7 @@ SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers 
 
 # Optional
 SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
+SIGNAL_GROUP_ALLOWED_SENDERS=+1234567890         # Optional: restrict WHO may speak inside allowed groups (grants no DM access)
 SIGNAL_HOME_CHANNEL=+1234567890                  # Default delivery target for cron jobs
 ```
 
@@ -140,6 +141,12 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 | Not set (default) | All group messages are ignored. The bot only responds to DMs. |
 | Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
 | Set to `*` | The bot responds in any group it's a member of. |
+
+Inside allowed groups, `SIGNAL_GROUP_ALLOWED_SENDERS` optionally restricts which **senders** may
+talk to the bot (comma-separated E.164 numbers or UUIDs). A sender on this list is authorized for
+group messages only — their DMs to the linked account stay private and unauthorized. Use it to give
+someone group access without granting them DM access. Numbers already on `SIGNAL_ALLOWED_USERS`
+may speak inside allowed groups without being listed here.
 
 ---
 
@@ -258,5 +265,6 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | `SIGNAL_ACCOUNT` | Yes | — | Bot phone number (E.164) |
 | `SIGNAL_ALLOWED_USERS` | No | — | Comma-separated phone numbers/UUIDs |
 | `SIGNAL_GROUP_ALLOWED_USERS` | No | — | Group IDs to monitor, or `*` for all (omit to disable groups) |
+| `SIGNAL_GROUP_ALLOWED_SENDERS` | No | — | Senders allowed inside monitored groups (group-only, no DM access) |
 | `SIGNAL_ALLOW_ALL_USERS` | No | `false` | Allow any user to interact (skip allowlist) |
 | `SIGNAL_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |

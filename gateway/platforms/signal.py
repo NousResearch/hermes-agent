@@ -192,6 +192,10 @@ class SignalAdapter(BasePlatformAdapter):
         # presence. The DM allowlist mirrors run.py's SIGNAL_ALLOWED_USERS so reaction hooks (which
         # fire before run.py's auth gate) can skip unauthorized senders; "*" = open.
         self.group_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_GROUP_ALLOWED_USERS", "")))
+        # Group-scoped SENDER allowlist: when set, only these numbers may speak inside the allowed
+        # groups. Lets an operator admit a person to a group chat without granting them DM access
+        # to the linked account (SIGNAL_ALLOWED_USERS stays platform-wide otherwise).
+        self.group_sender_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_GROUP_ALLOWED_SENDERS", "")))
         _rm_cfg = extra.get("require_mention")
         self.require_mention = (bool(_rm_cfg) if _rm_cfg is not None
                                 else (_sig_secret("SIGNAL_REQUIRE_MENTION", "false") or "false").lower() in TRUTHY_STRINGS)
@@ -439,7 +443,7 @@ class SignalAdapter(BasePlatformAdapter):
         group_info = data_message.get("groupInfo")
         group_id = group_info.get("groupId") if group_info else None
         is_group = bool(group_id)
-        if is_group and not self._group_allowed(group_id):
+        if is_group and not self._group_allowed(group_id, sender):
             return
         chat_id = f"group:{group_id}" if is_group else sender
         text = data_message.get("message", "")
@@ -492,16 +496,37 @@ class SignalAdapter(BasePlatformAdapter):
         logger.debug("Signal: message from %s in %s: %s", redact_phone(sender), chat_id[:20], (text or "")[:50])
         await self.handle_message(event)
 
-    def _group_allowed(self, group_id: str) -> bool:
+    def _group_allowed(self, group_id: str, sender: Optional[str] = None) -> bool:
         """Group policy from SIGNAL_GROUP_ALLOWED_USERS: unset → groups disabled; IDs → only those
-        groups; "*" → all. DM auth is run.py's (_is_user_authorized)."""
+        groups; "*" → all. SIGNAL_GROUP_ALLOWED_SENDERS additionally restricts WHO may speak inside
+        the allowed groups (group-scoped, grants no DM access). DM auth is run.py's (_is_user_authorized)."""
         if not self.group_allow_from:
             logger.debug("Signal: ignoring group message (no SIGNAL_GROUP_ALLOWED_USERS)")
             return False
         if "*" not in self.group_allow_from and group_id not in self.group_allow_from:
             logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
             return False
+        if self.group_sender_allow_from and "*" not in self.group_sender_allow_from:
+            if sender and sender in self.group_sender_allow_from:
+                return True
+            # A DM-authorized principal is strictly more trusted than a group-sender entry:
+            # they may speak inside the allowed groups without being listed there. ("*" in
+            # dm_allow_from is the unset default — DM auth then lives at the gateway level,
+            # so it must not widen the group sender gate.)
+            if sender and sender in self.dm_allow_from:
+                return True
+            logger.debug("Signal: group sender %s not in SIGNAL_GROUP_ALLOWED_SENDERS",
+                         redact_phone(sender) if sender else "?")
+            return False
         return True
+
+    def resolved_allowlist_user_ids(self) -> set:
+        """Numbers this adapter's DM allowlist authorizes. Group-scoped senders
+        (SIGNAL_GROUP_ALLOWED_SENDERS) are deliberately EXCLUDED: the authz mixin unions these
+        ids into the platform-wide allowlist, so including them would silently grant DM access
+        to group-only senders. Group access is enforced by _group_allowed at intake and the
+        group-scoped rung in authz_mixin._principal_authorized."""
+        return {i for i in self.dm_allow_from if i and i != "*"}
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
         """Cache any number↔UUID mapping observed from Signal envelopes."""

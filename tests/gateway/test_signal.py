@@ -342,6 +342,110 @@ class TestSignalAuthorization:
             result = gw._is_user_authorized(source)
             assert result is False
 
+    def test_group_sender_allowlist_parsed(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "groupABC")
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_SENDERS", "+155****1111, +155****2222")
+        from gateway.platforms.signal import SignalAdapter
+        config = PlatformConfig()
+        config.enabled = True
+        config.extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
+        adapter = SignalAdapter(config)
+        assert adapter.group_sender_allow_from == {"+155****1111", "+155****2222"}
+
+    def test_group_sender_gate(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="groupABC")
+        adapter.group_sender_allow_from = {"+155****1111"}
+        assert adapter._group_allowed("groupABC", "+155****1111") is True
+        assert adapter._group_allowed("groupABC", "+155****9999") is False
+        # Unset sender allowlist → no sender restriction (previous behaviour preserved)
+        adapter.group_sender_allow_from = set()
+        assert adapter._group_allowed("groupABC", "+155****9999") is True
+        # Group-ID gate still wins regardless of sender
+        assert adapter._group_allowed("groupOTHER", "+155****1111") is False
+        # A DM-authorized sender speaks inside allowed groups without being listed as a
+        # group sender; the unset DM default "*" must not widen the gate for everyone.
+        adapter.group_sender_allow_from = {"+155****1111"}
+        adapter.dm_allow_from = {"+155****4567"}
+        assert adapter._group_allowed("groupABC", "+155****4567") is True
+        adapter.dm_allow_from = {"*"}
+        assert adapter._group_allowed("groupABC", "+155****9999") is False
+
+    def _authz_gw(self):
+        from gateway.run import GatewayRunner
+        from gateway.config import GatewayConfig
+        gw = GatewayRunner.__new__(GatewayRunner)
+        gw.config = GatewayConfig()
+        gw.pairing_store = MagicMock()
+        gw.pairing_store.is_approved.return_value = False
+        return gw
+
+    def test_group_sender_allowlist_admits_group_not_dm(self, monkeypatch):
+        """SIGNAL_GROUP_ALLOWED_SENDERS admits the sender for group messages only; DMs from the
+        same number stay unauthorized (the whole point of the feature)."""
+        from gateway.session import SessionSource
+        gw = self._authz_gw()
+        group_src = SessionSource(platform=Platform.SIGNAL, chat_id="group:groupABC",
+                                  chat_type="group", user_id="+155****1111")
+        dm_src = SessionSource(platform=Platform.SIGNAL, chat_id="+155****1111",
+                               chat_type="dm", user_id="+155****1111")
+        env = {
+            "SIGNAL_ALLOWED_USERS": "+155****4567",
+            "SIGNAL_GROUP_ALLOWED_USERS": "groupABC",
+            "SIGNAL_GROUP_ALLOWED_SENDERS": "+155****1111",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            assert gw._is_user_authorized(group_src) is True
+            assert gw._is_user_authorized(dm_src) is False
+            # A sender outside the group-sender list stays denied even in the allowed group
+            other = SessionSource(platform=Platform.SIGNAL, chat_id="group:groupABC",
+                                  chat_type="group", user_id="+155****9999")
+            assert gw._is_user_authorized(other) is False
+
+    def test_resolved_allowlist_ids_dm_only(self, monkeypatch):
+        """resolved_allowlist_user_ids() must return ONLY the DM allowlist. The authz mixin
+        unions these ids into the platform-wide allowlist; leaking group-scoped senders here
+        silently grants them DM access (the feature's whole point inverted)."""
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+155****4567")
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_SENDERS", "+155****1111")
+        from gateway.platforms.signal import SignalAdapter
+        config = PlatformConfig()
+        config.enabled = True
+        config.extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
+        adapter = SignalAdapter(config)
+        assert adapter.resolved_allowlist_user_ids() == {"+155****4567"}
+
+    def test_group_sender_no_dm_access_with_real_adapter(self, monkeypatch):
+        """Regression (live bug): with a REAL SignalAdapter wired into the gateway, the
+        resolved-ids union used to admit group-only senders into DM authz too. The adapter-less
+        gateway build left _adapter_resolved_allowlist_ids empty, so the suite missed it.
+        The adapter must be CONSTRUCTED inside the env patch — its allowlists are parsed at
+        __init__ from the ambient env; building it outside the patch leaves it with defaults
+        and the test passes vacuously. The gateway stub must be built OUTSIDE the patch:
+        GatewayConfig() re-loads ~/.hermes/.env, and with patch.dict(clear=True) emptying
+        os.environ it repopulates the REAL allowlists mid-test (live .env bleed)."""
+        from gateway.session import SessionSource
+        from gateway.platforms.signal import SignalAdapter
+        config = PlatformConfig()
+        config.enabled = True
+        config.extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
+        gw = self._authz_gw()
+        env = {
+            "SIGNAL_ALLOWED_USERS": "+155****4567",
+            "SIGNAL_GROUP_ALLOWED_USERS": "groupABC",
+            "SIGNAL_GROUP_ALLOWED_SENDERS": "+155****1111",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            adapter = SignalAdapter(config)
+            assert adapter.dm_allow_from == {"+155****4567"}
+            assert adapter.group_sender_allow_from == {"+155****1111"}
+            gw._delivery_adapter_for = lambda source: adapter
+            group_src = SessionSource(platform=Platform.SIGNAL, chat_id="group:groupABC",
+                                      chat_type="group", user_id="+155****1111")
+            dm_src = SessionSource(platform=Platform.SIGNAL, chat_id="+155****1111",
+                                   chat_type="dm", user_id="+155****1111")
+            assert gw._is_user_authorized(group_src) is True
+            assert gw._is_user_authorized(dm_src) is False
+
 
 # ---------------------------------------------------------------------------
 # Send Message Tool

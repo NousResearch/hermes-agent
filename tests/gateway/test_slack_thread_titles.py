@@ -83,6 +83,23 @@ class TestSemanticThreadTitles:
         a._app.client.assistant_threads_setTitle.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_created_title_survives_a_failed_follow_up_rename(self):
+        slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a.config.extra["assistant_thread_titles"] = True
+        rename = a._app.client.agents_sessions_rename = AsyncMock(
+            side_effect=[_SlackApiError("session_not_found"), _SlackApiError("ratelimited")]
+        )
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+
+        await a._set_assistant_thread_title(
+            "D123", "171234.0001", "Generated title", team_id="T1", semantic=True)
+        await a._set_assistant_thread_title("D123", "171234.0001", "later raw message", team_id="T1")
+
+        assert rename.await_count == 2
+        assert ("T1", "D123", "171234.0001") in a._semantically_titled_assistant_threads
+
+    @pytest.mark.asyncio
     async def test_agent_session_typing_uses_the_status_enum(self):
         slack_mod._AGENT_SESSIONS_SUPPORTED = True
         a = self._adapter()

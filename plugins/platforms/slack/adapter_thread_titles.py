@@ -50,11 +50,19 @@ class AssistantThreadTitles:
         except Exception as exc:
             if not _agent_sessions_enabled() or _slack_error_code(exc) not in _MISSING_SESSION:
                 raise
-        # setStatus creates the session. Its title applies only on create, so rename
-        # still runs for a session that appeared between the two calls.
+        # setStatus creates the session and applies the title only then. A later
+        # rename failure must not look like "untitled", or the next raw message
+        # replaces the title that create already wrote.
         await self._session_status_method(client)(
             channel_id=channel_id, thread_ts=thread_ts, status="active", title=title)
-        await rename(channel_id=channel_id, thread_ts=thread_ts, title=title)
+        try:
+            await rename(channel_id=channel_id, thread_ts=thread_ts, title=title)
+        except Exception as exc:
+            logger.warning(
+                "[Slack] session title follow-up rename failed: %s",
+                _slack_error_code(exc) or type(exc).__name__,
+                exc_info=True,
+            )
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:

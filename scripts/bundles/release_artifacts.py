@@ -243,7 +243,12 @@ def materialize(manifest: dict, root: Path, *, public_base: str, store_only: boo
     selected = [item for item in files if item["path"].startswith("Store-") and item["path"].endswith(".msixbundle")] if store_only else files
     if store_only and len(selected) != 1:
         raise ValueError("Expected one Store candidate")
-    for item in selected:
+    from scripts.releases.progress import log
+
+    total = sum(item.get("size", 0) for item in selected)
+    log(f"Materializing {len(selected)} candidate files ({total / 1e9:.1f} GB) into {root}")
+    for number, item in enumerate(selected, start=1):
+        log(f"  [{number}/{len(selected)}] {item['path']} ({item.get('size', 0) / 1e6:.0f} MB)")
         relative = Path(item["path"])
         if relative.is_absolute() or ".." in relative.parts or any(c in item["path"] for c in "\\:%?#") or item["path"].startswith("/") or "//" in item["path"]:
             raise ValueError("Invalid artifact path")

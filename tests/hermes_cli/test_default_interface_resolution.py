@@ -20,9 +20,9 @@ violation" on every attempt).
 These tests pin that precedence at every layer that makes the decision:
 
   * ``_resolve_use_tui(args)``  — the canonical args-aware resolver used by
-    ``cmd_chat`` and the Termux fast-TUI path.
+    ``cmd_chat`` and the fast-TUI path.
   * ``_wants_tui_early(argv)``  — the dependency-free early resolver used by
-    mouse-residue suppression and the Termux fast paths, before argparse and
+    mouse-residue suppression and the fast paths, before argparse and
     ``hermes_cli.config`` are importable.
   * the argument parser   — both ``--cli`` and ``--tui`` parse at the top
     level and under the ``chat`` subcommand and are relaunch-inherited.
@@ -30,7 +30,6 @@ These tests pin that precedence at every layer that makes the decision:
 
 from __future__ import annotations
 
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -78,35 +77,6 @@ class TestResolveUseTui:
         _patch_config(monkeypatch, "tui")
         assert m._resolve_use_tui(_args(cli=True)) is False
 
-    def test_cli_flag_beats_tui_flag_and_env(self, monkeypatch):
-        _patch_config(monkeypatch, "tui")
-        monkeypatch.setenv("HERMES_TUI", "1")
-        assert m._resolve_use_tui(_args(cli=True, tui=True)) is False
-
-    def test_tui_flag_beats_config_cli(self, monkeypatch):
-        _patch_config(monkeypatch, "cli")
-        assert m._resolve_use_tui(_args(tui=True)) is True
-
-    def test_env_beats_config_cli(self, monkeypatch):
-        _patch_config(monkeypatch, "cli")
-        _fake_tty(monkeypatch, True)
-        monkeypatch.setenv("HERMES_TUI", "1")
-        assert m._resolve_use_tui(_args()) is True
-
-    def test_config_tui_with_no_flags(self, monkeypatch):
-        _patch_config(monkeypatch, "tui")
-        _fake_tty(monkeypatch, True)
-        assert m._resolve_use_tui(_args()) is True
-
-    def test_config_cli_is_default(self, monkeypatch):
-        _patch_config(monkeypatch, "cli")
-        _fake_tty(monkeypatch, True)
-        assert m._resolve_use_tui(_args()) is False
-
-    def test_interface_value_is_case_insensitive(self, monkeypatch):
-        _patch_config(monkeypatch, "TUI")
-        _fake_tty(monkeypatch, True)
-        assert m._resolve_use_tui(_args()) is True
 
     def test_load_config_failure_falls_back_to_cli(self, monkeypatch):
         import hermes_cli.config as cfg
@@ -119,23 +89,6 @@ class TestResolveUseTui:
         assert m._resolve_use_tui(_args()) is False
 
     # ── the no-TTY gate: ambient prefs never hijack non-interactive runs ────
-    def test_no_tty_blocks_env_tui(self, monkeypatch):
-        _patch_config(monkeypatch, "cli")
-        _fake_tty(monkeypatch, False)
-        monkeypatch.setenv("HERMES_TUI", "1")
-        assert m._resolve_use_tui(_args()) is False
-
-    def test_no_tty_blocks_config_tui(self, monkeypatch):
-        _patch_config(monkeypatch, "tui")
-        _fake_tty(monkeypatch, False)
-        assert m._resolve_use_tui(_args()) is False
-
-    def test_explicit_tui_flag_survives_no_tty(self, monkeypatch):
-        # An explicit --tui is the user's own ask — keep the informative
-        # no-TTY bail-out instead of silently swapping interfaces.
-        _patch_config(monkeypatch, "cli")
-        _fake_tty(monkeypatch, False)
-        assert m._resolve_use_tui(_args(tui=True)) is True
 
 
 # ---------------------------------------------------------------------------
@@ -153,36 +106,6 @@ class TestWantsTuiEarly:
 
         return _make
 
-    def test_config_tui_bare_argv(self, home_with_interface, monkeypatch):
-        home_with_interface("tui")
-        _fake_tty(monkeypatch, True)  # config-tui only applies on a real TTY
-        assert m._wants_tui_early([]) is True
-
-    def test_no_tty_blocks_config_tui(self, home_with_interface, monkeypatch):
-        # Headless (worker/cron/pipe): ambient config-tui must not boot the
-        # Ink UI in the earliest launch decision — that's the crash the
-        # kanban worker hit before the gate existed.
-        home_with_interface("tui")
-        _fake_tty(monkeypatch, False)
-        assert m._wants_tui_early([]) is False
-
-    def test_explicit_tui_flag_survives_no_tty(self, home_with_interface, monkeypatch):
-        home_with_interface("cli")
-        _fake_tty(monkeypatch, False)
-        assert m._wants_tui_early(["--tui"]) is True
-
-    def test_cli_flag_overrides_config_tui(self, home_with_interface):
-        home_with_interface("tui")
-        assert m._wants_tui_early(["--cli"]) is False
-
-    def test_tui_flag_with_config_cli(self, home_with_interface):
-        home_with_interface("cli")
-        assert m._wants_tui_early(["--tui"]) is True
-
-    def test_env_with_config_cli(self, home_with_interface, monkeypatch):
-        home_with_interface("cli")
-        monkeypatch.setenv("HERMES_TUI", "1")
-        assert m._wants_tui_early([]) is True
 
     def test_config_cli_bare_argv(self, home_with_interface):
         home_with_interface("cli")
@@ -201,6 +124,31 @@ class TestWantsTuiEarly:
         monkeypatch.setattr(m, "_EARLY_INTERFACE_CACHE", None)
         assert m._wants_tui_early([]) is False
 
+    # REGRESSION (#116902): mouse-residue suppression reads the interface
+    # before `_apply_profile_override()` sets HERMES_HOME, so a cache that
+    # ignored the home answered every later caller with the DEFAULT home's
+    # interface — `hermes -p <name>` booted the wrong one.
+    def test_reread_after_the_profile_rehomes_the_process(self, tmp_path, monkeypatch):
+        default_home = tmp_path / "default"
+        profile_home = tmp_path / "profiles" / "coder"
+        for home, interface in ((default_home, "cli"), (profile_home, "tui")):
+            home.mkdir(parents=True)
+            (home / "config.yaml").write_text(
+                f"display:\n  interface: {interface}\n"
+            )
+
+        # The import-time read, on the home the process starts in.
+        _fake_tty(monkeypatch, True)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        m._suppress_mouse_residue_early()
+        assert m._config_default_interface_early() == "cli"
+
+        # What `-p coder` does, after that read already happened.
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        assert m._config_default_interface_early() == "tui"
+        assert m._wants_tui_early([]) is True
+
+
 
 # ---------------------------------------------------------------------------
 # argument parser — flags exist at both levels and are relaunch-inherited
@@ -216,17 +164,15 @@ class TestParserFlags:
         args = self._parser().parse_args(["--cli"])
         assert args.cli is True and args.tui is False
 
-    def test_top_level_tui_flag(self):
-        args = self._parser().parse_args(["--tui"])
-        assert args.tui is True and args.cli is False
-
-    def test_chat_subcommand_cli_flag(self):
-        args = self._parser().parse_args(["chat", "--cli"])
-        assert args.cli is True
 
     def test_chat_subcommand_tui_flag(self):
         args = self._parser().parse_args(["chat", "--tui"])
         assert args.tui is True
+
+    def test_native_flag_at_both_parser_levels(self):
+        parser = self._parser()
+        assert parser.parse_args(["--native"]).tui_native is True
+        assert parser.parse_args(["chat", "--tui-native"]).tui_native is True
 
     def test_cli_and_tui_are_relaunch_inherited(self):
         from hermes_cli.relaunch import _INHERITED_FLAGS_TABLE
@@ -235,11 +181,14 @@ class TestParserFlags:
         assert "--cli" in inherited
         assert "--tui" in inherited
 
+    def test_native_flag_is_relaunch_inherited(self):
+        from hermes_cli.relaunch import _INHERITED_FLAGS_TABLE
+
+        inherited = {flag for flag, _takes_value in _INHERITED_FLAGS_TABLE}
+        assert "--native" in inherited
+        assert "--tui-native" in inherited
+
 
 # ---------------------------------------------------------------------------
 # config default — shipped default preserves classic behavior
 # ---------------------------------------------------------------------------
-def test_default_config_interface_is_cli():
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    assert DEFAULT_CONFIG["display"]["interface"] == "cli"

@@ -1,0 +1,20 @@
+name: ard-kit
+repo: https://gitlab.com/ameobius-ai/ard-kit
+sha: 99796c7d776d89c8dcf99489b89a2b52831c4dc9
+description: Agentic Resource Discovery — search a local tool catalog by intent and inspect an entry to
+  get its invoke command. Ships the ard-registry skill plus an stdio MCP server (ard_search /
+  ard_inspect / ard_verify); stdlib only, the run stays local. Disclosure — no network egress, no API
+  keys and no environment variables read by the MCP front, which ranks a catalog JSON on disk; no
+  catalog ships in the repo, so the first call returns an explicit error naming the
+  `python -m ard_kit.catalogize` command that builds one.
+maintainer: ameobius-ai
+tier: community
+category: tools
+docs_url: https://gitlab.com/ameobius-ai/ard-kit#readme
+version: "0.20.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

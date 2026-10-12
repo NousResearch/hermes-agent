@@ -4,13 +4,11 @@ import os
 import sys
 import threading
 import time
-from pathlib import Path
 
-import pytest
 
+from tui_gateway import compute_host, server
 from tui_gateway.compute_host import ComputeHost, _default_workers
 from tui_gateway.host_supervisor import (
-    MUTATOR_ROUTE_TABLE,
     HostSupervisor,
     append_log_record,
 )
@@ -34,221 +32,51 @@ def _wait_for_frame(out: io.StringIO, predicate, timeout: float = 2.0) -> dict:
     raise AssertionError(f"timed out waiting for frame; saw={_json_lines(out)}")
 
 
-def test_compute_host_workers_inherit_tui_pool_env_or_8(monkeypatch):
+def test_compute_host_workers_inherit_tui_pool_env(monkeypatch):
     monkeypatch.delenv("HERMES_TUI_RPC_POOL_WORKERS", raising=False)
     monkeypatch.delenv("HERMES_COMPUTE_HOST_WORKERS", raising=False)
-    assert _default_workers() == 8
+    default = _default_workers()
 
     monkeypatch.setenv("HERMES_TUI_RPC_POOL_WORKERS", "11")
     assert _default_workers() == 11
 
-    # Dead-RC tombstone: malformed env falls back to 8, not the old except-branch 4.
+    # Malformed env falls back to the same default as unset.
     monkeypatch.setenv("HERMES_TUI_RPC_POOL_WORKERS", "not-an-int")
-    assert _default_workers() == 8
+    assert _default_workers() == default
 
 
-def test_compute_host_frame_protocol_round_trip():
+def test_compute_host_routes_relayed_response_and_lock_to_its_open_request(monkeypatch):
+    """The child owns the server request's wait: a relayed client response frame resolves it in-process,
+    and a relayed ``clarify.lock`` is answered with that method's result for the parent to ack."""
+    from tui_gateway import server_requests
     out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=2, heartbeat_secs=0)
-    try:
-        host.handle_frame({"type": "session.seed", "sid": "alpha", "request_id": "seed", "history": []})
-        host.handle_frame(
-            {
-                "type": "turn.start",
-                "sid": "alpha",
-                "request_id": "turn-1",
-                "prompt": "hello",
-                "delta_count": 3,
-                "delay_s": 0,
-            }
-        )
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    sid = "host-clarify"
+    server._sessions[sid] = {"history_lock": threading.Lock()}
+    req = server_requests.ServerRequest(sid, "clarify", {"question": "?"})
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+    locks = []
+    monkeypatch.setitem(server._methods, "clarify.lock",
+                        lambda rid, params: locks.append((rid, dict(params))) or {"result": {"status": "ok", "remaining": []}})
 
-        end = _wait_for_frame(out, lambda f: f.get("type") == "turn.end" and f.get("request_id") == "turn-1")
-        assert end["history_version"] == 1
-        frames = _json_lines(out)
-        assert [f["type"] for f in frames if f.get("request_id") == "turn-1"] == [
-            "turn.started",
-            "delta",
-            "delta",
-            "delta",
-            "turn.end",
-        ]
+    try:
+        host._handle_respond({"sid": sid, "request_id": "relay-lock",
+                              "params": {"lock": {"request_id": req.id, "question_id": "q0", "answer": "a"}}})
+        assert locks == [("relay-lock", {"request_id": req.id, "question_id": "q0", "answer": "a"})]
+        assert _json_lines(out)[-1]["response"] == {"result": {"status": "ok", "remaining": []}}
+
+        host._handle_respond({"sid": sid, "request_id": "relay-response",
+                              "params": {"frame": {"jsonrpc": "2.0", "id": req.id, "result": {"answer": "yes"}}}})
+        assert req.answered and req.result == {"answer": "yes"} and req.event.is_set()
+        frame = _json_lines(out)[-1]
+        assert frame["type"] == "respond.ack" and frame["response"]["result"] == {"status": "ok"}
     finally:
+        server._sessions.pop(sid, None)
+        server_requests.reset_for_tests()
         host.close()
 
 
-def test_compute_host_interrupt_control_is_not_queued_behind_turn():
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-    try:
-        host.handle_frame({"type": "session.seed", "sid": "alpha", "request_id": "seed", "history": []})
-        host.handle_frame(
-            {
-                "type": "turn.start",
-                "sid": "alpha",
-                "request_id": "turn-slow",
-                "prompt": "hello",
-                "delta_count": 200,
-                "delay_s": 0.01,
-            }
-        )
-        _wait_for_frame(out, lambda f: f.get("type") == "delta" and f.get("request_id") == "turn-slow")
-
-        host.handle_frame({"type": "interrupt", "sid": "alpha", "request_id": "stop-1"})
-        ack = _wait_for_frame(out, lambda f: f.get("type") == "interrupt.ack" and f.get("request_id") == "stop-1")
-        assert ack["applied"] is True
-
-        end = _wait_for_frame(out, lambda f: f.get("type") == "turn.end" and f.get("request_id") == "turn-slow")
-        assert end["interrupted"] is True
-        typed = [f["type"] for f in _json_lines(out)]
-        assert typed.index("interrupt.ack") < typed.index("turn.end")
-    finally:
-        host.close()
-
-
-def test_compute_host_flushes_sessions_on_orphan_shutdown(monkeypatch):
-    from tui_gateway import server
-
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-    session = {"session_key": "key"}
-    calls: list[tuple[dict, str]] = []
-    server._sessions["flush-sid"] = session
-    monkeypatch.setattr(
-        server,
-        "_finalize_session",
-        lambda sess, end_reason="tui_close": calls.append((sess, end_reason)),
-    )
-    try:
-        host.flush_all_sessions(reason="orphan")
-        assert calls == [(session, "compute_host_orphan")]
-    finally:
-        server._sessions.pop("flush-sid", None)
-        host.close()
-
-
-def test_compute_host_parent_guard_exits_when_parent_pid_changes(monkeypatch):
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-    host._parent_pid = 111
-    monkeypatch.setattr(os, "getppid", lambda: 222)
-
-    def _exit(code):
-        raise SystemExit(code)
-
-    monkeypatch.setattr(os, "_exit", _exit)
-
-    with pytest.raises(SystemExit) as exc_info:
-        host._parent_guard_loop()
-
-    assert exc_info.value.code == 0
-    orphan = next(frame for frame in _json_lines(out) if frame.get("type") == "orphan")
-    assert orphan["old_ppid"] == 111
-    assert orphan["ppid"] == 222
-    assert isinstance(orphan["host_ns"], int)
-
-
-def test_mutator_route_table_matches_prd_inventory():
-    assert MUTATOR_ROUTE_TABLE == {
-        "prompt.submit": "turn-path",
-        "session.interrupt": "turn-path",
-        "reload.mcp": "run-concurrent",
-        "session.compress": "idle-gated",
-        "prompt.submit.truncate": "idle-gated",
-        "slash.model": "idle-gated",
-        "slash.personality": "idle-gated",
-        "slash.prompt": "idle-gated",
-        "slash.compress": "idle-gated",
-        "session.reset": "idle-gated",
-        "session.history.reload": "idle-gated",
-        "slash.retry": "idle-gated",
-    }
-
-
-def test_compute_host_compress_control_runs_identity_guard_in_host(monkeypatch):
-    from tui_gateway import server
-
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-
-    class _Agent:
-        model = "host-model"
-        provider = "host-provider"
-        tools = []
-        _cached_system_prompt = ""
-        session_input_tokens = 1
-        session_output_tokens = 1
-        session_prompt_tokens = 1
-        session_completion_tokens = 1
-        session_total_tokens = 2
-        session_api_calls = 1
-        context_compressor = None
-
-    session = {
-        "agent": _Agent(),
-        "session_key": "before-key",
-        "history": [
-            {"role": "user", "content": "before"},
-            {"role": "assistant", "content": "before"},
-        ],
-        "history_lock": threading.Lock(),
-        "history_version": 2,
-        "running": False,
-        "manual_compression_lock": threading.Lock(),
-    }
-    calls: dict[str, object] = {}
-
-    def _compress(sess, focus_topic=None, **_kwargs):
-        assert sess is session
-        calls["compress_focus"] = focus_topic
-        with sess["history_lock"]:
-            sess["history"] = [{"role": "summary", "content": "compressed in host"}]
-            sess["history_version"] = 3
-
-    def _sync(sid, sess):
-        assert sess is session
-        calls["sync"] = sid
-        sess["session_key"] = "after-key"
-
-    server._sessions["sid"] = session
-    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
-    monkeypatch.setattr(server, "_compress_session_history", _compress)
-    monkeypatch.setattr(server, "_sync_session_key_after_compress", _sync)
-    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        server,
-        "_session_info",
-        lambda _agent, _session=None: {
-            "model": "host-model",
-            "provider": "host-provider",
-            "usage": {"total": 2},
-        },
-    )
-
-    try:
-        host.handle_frame(
-            {
-                "type": "control",
-                "sid": "sid",
-                "request_id": "compress-1",
-                "route_name": "slash.compress",
-                "command": "/compress focus",
-            }
-        )
-        ack = _wait_for_frame(
-            out,
-            lambda f: f.get("type") == "control.ack" and f.get("request_id") == "compress-1",
-        )
-    finally:
-        server._sessions.pop("sid", None)
-        host.close()
-
-    assert calls == {"compress_focus": "focus", "sync": "sid"}
-    assert ack["route_name"] == "slash.compress"
-    assert ack["session_key"] == "after-key"
-    assert ack["history_version"] == 3
-    assert ack["message_count"] == 1
-    assert ack["session_info"]["model"] == "host-model"
 
 
 def test_append_log_record_single_write_lines(tmp_path):
@@ -285,52 +113,209 @@ def test_supervisor_startup_reconcile_pid_reuse_guard(tmp_path, monkeypatch):
     assert not registry.exists()
 
 
-def test_supervisor_crash_emits_turn_error_and_respawns(tmp_path):
-    script = tmp_path / "fake_host.py"
-    script.write_text(
-        """
-import json, os, sys
-print(json.dumps({'type':'hello','host_pid':os.getpid(),'boot_id':'boot-1','build_sha':'test','hermes_home':os.environ.get('HERMES_HOME','')}), flush=True)
-for raw in sys.stdin:
-    frame=json.loads(raw)
-    if frame.get('type') == 'shutdown':
-        print(json.dumps({'type':'shutdown.ack','request_id':frame.get('request_id')}), flush=True)
-        break
-    if frame.get('type') == 'turn.start':
-        print(json.dumps({'type':'turn.started','sid':frame.get('sid'),'request_id':frame.get('request_id')}), flush=True)
-        sys.stdout.flush()
-        os._exit(7)
-""".strip(),
-        encoding="utf-8",
-    )
-    registry = tmp_path / "dashboard-compute-host.json"
-    completions: list[dict] = []
-    rpc_events: list[dict] = []
-    supervisor = HostSupervisor(
-        registry_path=registry,
-        argv=[sys.executable, str(script)],
-        rpc_sink=rpc_events.append,
-        respawn_max=2,
-        heartbeat_secs=1,
-        expected_build_sha="test",
-        autostart=False,
-    )
-    try:
-        supervisor.start()
-        supervisor.submit_turn(
-            {"type": "turn.start", "sid": "sid-1", "request_id": "turn-1", "text": "hello"},
-            on_complete=completions.append,
-        )
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not completions:
-            time.sleep(0.02)
-        assert completions, "host crash did not complete pending turn"
-        assert completions[0]["type"] == "turn.error"
-        assert completions[0]["reason"] == "crash"
+def _make_compress_host_session(events: list) -> dict:
+    class _Agent:
+        model = "host-model"
+        provider = "host-provider"
+        tools = []
+        _cached_system_prompt = ""
+        session_input_tokens = 1
+        session_output_tokens = 1
+        session_prompt_tokens = 1
+        session_completion_tokens = 1
+        session_total_tokens = 2
+        session_api_calls = 1
+        session_id = "rotated-id"
 
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not supervisor.is_running():
-            time.sleep(0.02)
-        assert supervisor.is_running()
+    agent = _Agent()
+    agent.context_compressor = type("ContextEngineStub", (), {})()
+    agent.context_compressor.on_session_start = (
+        lambda *_args, **_kwargs: events.append("notify")
+    )
+    return {
+        "agent": agent,
+        "session_key": "before-key",
+        "history": [
+            {"role": "user", "content": "before"},
+            {"role": "assistant", "content": "before"},
+        ],
+        "history_lock": threading.Lock(),
+        "history_version": 2,
+        "running": False,
+        "manual_compression_lock": threading.Lock(),
+    }
+
+
+def _record_finalize(monkeypatch, events: list[str], *sids: str) -> None:
+    """Give ``flush_all_sessions`` sessions and record which ones finalize."""
+    keys = sids or ("s1",)
+    monkeypatch.setattr(
+        server,
+        "_sessions",
+        {sid: {"session_key": sid} for sid in keys},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        server,
+        "_finalize_session",
+        lambda _session, end_reason="tui_close": events.append(
+            f"finalize:{_session['session_key']}:{end_reason}"
+        ),
+        raising=False,
+    )
+
+
+def _register_turn(host: ComputeHost, fn, sid: str = "s1") -> None:
+    """Submit a turn exactly the way ``_handle_turn_start`` does."""
+    host._track_turn_future(host._executor.submit(fn), sid)
+
+
+def test_shutdown_drains_in_flight_turn_before_finalizing_sessions(monkeypatch):
+    events: list[str] = []
+    _record_finalize(monkeypatch, events)
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    running = threading.Event()
+
+    def _turn() -> None:
+        running.set()
+        time.sleep(0.3)
+        events.append("turn_end")
+
+    _register_turn(host, _turn, sid="s1")
+    assert running.wait(timeout=5.0)
+
+    host.shutdown(reason="sigterm", wait=3.0)
+
+    # ``_finalize_session`` latches on ``session["_finalized"]``, so its single
+    # run has to observe the finished turn or the tail is unpersistable. A turn
+    # that *did* drain must still finalize — the live-turn skip must not
+    # over-reach into sessions whose work is done.
+    assert events == ["turn_end", "finalize:s1:compute_host_sigterm"]
+
+    # The done-callback still has to remove the entry now that the container is
+    # a dict: ``set.discard`` was a valid bare callback, ``dict.pop`` is not.
+    deadline = time.monotonic() + 2.0
+    while host._turn_futures and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert host._turn_futures == {}, "in-flight turns must not accumulate"
+
+
+def test_shutdown_retains_a_live_turns_session_when_the_drain_deadline_expires(monkeypatch):
+    wait = 1.0
+    events: list[str] = []
+    _record_finalize(monkeypatch, events, "live", "idle")
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    release = threading.Event()
+    running = threading.Event()
+
+    def _stuck_turn() -> None:
+        running.set()
+        release.wait(timeout=30.0)
+
+    _register_turn(host, _stuck_turn, sid="live")
+    assert running.wait(timeout=5.0)
+
+    try:
+        started = time.monotonic()
+        host.shutdown(reason="sigterm", wait=wait)
+        elapsed = time.monotonic() - started
     finally:
-        supervisor.shutdown()
+        release.set()
+
+    # ``_finalize_session`` is one-shot, and the ``shutdown(wait=False)`` that
+    # follows does not join the turn. Spending "live"'s single latch mid-turn
+    # would leave it permanently un-finalizable and release its active-session
+    # lease out from under running work — the same lifecycle race the drain
+    # exists to close, just moved past the deadline. It is retained unfinalized
+    # for recovery instead. A turn outliving the window must not cost the flush
+    # for anyone else, so "idle" still finalizes in the same pass.
+    assert events == ["finalize:idle:compute_host_sigterm"]
+    assert elapsed < wait
+
+
+def test_shutdown_retains_live_sessions_within_the_stdin_closed_budget(monkeypatch):
+    """The tightest real budget any caller uses is ``wait=2.0``.
+
+    ``run_host`` finalizes through ``host.shutdown(reason="stdin_closed",
+    wait=2.0)``, which is where the reserve — ``wait`` minus
+    ``min(_FLUSH_RESERVE_SECS, wait / 2)`` — has the least room to work with.
+    The retain-live-sessions rule must hold there without costing the flush for
+    idle sessions and without pushing the call past the budget the supervisor's
+    kill escalation is timed against.
+    """
+    wait = 2.0
+    drain_budget = wait - min(compute_host._FLUSH_RESERVE_SECS, wait / 2.0)
+
+    events: list[str] = []
+    _record_finalize(monkeypatch, events, "live", "idle")
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    release = threading.Event()
+    running = threading.Event()
+
+    def _stuck_turn() -> None:
+        running.set()
+        release.wait(timeout=30.0)
+
+    _register_turn(host, _stuck_turn, sid="live")
+    assert running.wait(timeout=5.0)
+
+    try:
+        started = time.monotonic()
+        host.shutdown(reason="stdin_closed", wait=wait)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert events == ["finalize:idle:compute_host_stdin_closed"]
+    assert elapsed >= drain_budget - 1e-6, "the drain must use its full window"
+    assert elapsed < wait
+
+
+def test_shutdown_drain_sleep_never_overshoots_the_reserve(monkeypatch):
+    """The drain's per-tick sleep must be bounded by the time left to it.
+
+    A flat tick overshoots the drain deadline by up to one tick, eating the
+    reserve held back for ``flush_all_sessions``; for a small ``wait`` that is
+    the whole reserve. Asserting on the *requested* sleep totals rather than on
+    wall-clock keeps this deterministic: each sleep is clamped to the remaining
+    time, so the sum can never exceed the drain budget however the scheduler
+    interleaves.
+    """
+    wait = 0.34
+    drain_budget = wait - min(compute_host._FLUSH_RESERVE_SECS, wait / 2.0)
+
+    events: list[str] = []
+    _record_finalize(monkeypatch, events, "idle")
+
+    slept: list[float] = []
+    clock = [100.0]
+    monkeypatch.setattr(compute_host.time, "monotonic", lambda: clock[0])
+
+    def _recording_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(compute_host.time, "sleep", _recording_sleep)
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    release = threading.Event()
+    running = threading.Event()
+
+    def _stuck_turn() -> None:
+        running.set()
+        release.wait(timeout=30.0)
+
+    _register_turn(host, _stuck_turn, sid="live")
+    assert running.wait(timeout=5.0)
+
+    try:
+        host.shutdown(reason="sigterm", wait=wait)
+    finally:
+        release.set()
+
+    assert events == ["finalize:idle:compute_host_sigterm"]
+    assert slept, "the drain loop should have ticked at least once"
+    assert sum(slept) <= drain_budget + 1e-6

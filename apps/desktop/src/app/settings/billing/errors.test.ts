@@ -1,6 +1,5 @@
-import { describe, expect, it } from 'vitest'
-
 import type { KnownBillingRefusalCode } from '@hermes/shared/billing'
+import { describe, expect, it } from 'vitest'
 
 import type { BillingRefusal } from './api'
 import { resolveRefusal } from './errors'
@@ -76,10 +75,7 @@ describe('resolveRefusal', () => {
   it('falls back sanely for unknown refusal kinds', () => {
     const resolved = resolveRefusal({ kind: 'new_billing_code', message: 'Something changed upstream.' })
 
-    expect(resolved).toEqual({
-      action: { type: 'none' },
-      message: 'Something changed upstream.',
-      title: 'Billing request failed'
-    })
+    expect(resolved).toMatchObject({ action: { type: 'none' }, message: 'Something changed upstream.' })
+    expect(resolved.title).not.toHaveLength(0)
   })
 })

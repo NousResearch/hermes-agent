@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { createElement, type ReactNode } from 'react'
 
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,16 @@ interface ContribBoundaryProps {
   id: string
   /** `chip` = inline bar item (tiny fallback); `pane` = zone body. */
   variant?: 'chip' | 'pane'
+}
+
+interface ContribRenderProps {
+  render: () => ReactNode
+}
+
+/** Mount a contribution callback as a component so its hooks and errors belong
+ * to the contribution, not to whichever host surface happened to call it. */
+export function ContribRender({ render }: ContribRenderProps) {
+  return createElement(render)
 }
 
 /**

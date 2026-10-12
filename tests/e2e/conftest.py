@@ -12,15 +12,22 @@ No LLM, no real platform connections.
 import asyncio
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent
+from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_cli.version_info import _reset_version_info_cache
+
+# E2E tests compare against real hermes processes, which resolve the checkout's real
+# identity; drop the root conftest's seeded version so in-process lookups agree.
+_reset_version_info_cache()
 
 E2E_MESSAGE_SETTLE_DELAY = 0.3
 
@@ -117,13 +124,13 @@ _ensure_telegram_mock()
 _ensure_discord_mock()
 _ensure_slack_mock()
 
-import discord  # noqa: E402 — mocked above
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+import discord
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.discord.adapter import DiscordAdapter
 
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 # Platform-generic factories
@@ -164,13 +171,11 @@ def make_event(
     )
 
 
-def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "GatewayRunner":
+def make_runner(platform: Platform, session_entry: SessionEntry = None) -> GatewayRunner:
     """Create a GatewayRunner with mocked internals for e2e testing.
 
     Skips __init__ to avoid filesystem/network side effects.
     """
-    from gateway.run import GatewayRunner
-
     if session_entry is None:
         session_entry = make_session_entry(platform)
 
@@ -234,6 +239,17 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     # send_and_capture's poll window on slow runners (flaked in run 28856659216,
     # telegram param only — first parametrization pays the cold-resolution cost).
     runner._reset_notice_session_info = lambda source: ""
+
+    # Keep the agent-turn path hermetic: _run_post_turn_hooks runs the /goal
+    # continuation, whose SessionDB warm-up constructs a REAL SessionDB on an
+    # executor thread at the turn boundary. On a cold/loaded CI runner that
+    # state.db init can exceed send_and_capture's 2s poll window, so the send
+    # lands after the assertion — the "Expected 'mock' to have been called
+    # once. Called 0 times." flake on
+    # test_plaintext_restart_gateway_in_group_stays_plain_text[telegram]
+    # (issue #92130; e.g. runs 32802504263 / 32799192528 / 32796821900).
+    # e2e tests exercise gateway command dispatch, not post-turn goal hooks.
+    runner._run_post_turn_hooks = AsyncMock()
 
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
@@ -373,7 +389,7 @@ def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", pare
 
 def make_discord_message(
     *, content: str = "hello", author=None, channel=None, mentions=None,
-    attachments=None, message_id: int = None,
+    attachments=None, message_id: int | None = None,
 ):
     if message_id is None:
         message_id = _next_message_id()
@@ -393,7 +409,7 @@ def make_discord_message(
         guild=getattr(channel, "guild", None),
         mentions=mentions, attachments=attachments,
         type=getattr(discord, "MessageType", SimpleNamespace()).default,
-        reference=None, created_at=datetime.now(timezone.utc),
+        reference=None, created_at=datetime.now(UTC),
         create_thread=AsyncMock(),
     )
 

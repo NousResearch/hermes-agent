@@ -7,7 +7,8 @@ import {
   isRemoteConfig,
   isRemoteReauthError,
   isRemoteReauthFailure,
-  signInLabel
+  shouldApplyPostBootProgressError,
+  sshFailureMessage
 } from './boot-failure-reauth'
 
 function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnectionConfig {
@@ -19,8 +20,16 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
     remoteOauthConnected: false,
     remoteTokenPreview: null,
     remoteTokenSet: false,
+    secureTokenStorage: true,
+    remoteTokenPlainText: false,
     remoteUrl: 'https://box:9119',
     cloudOrg: '',
+    sshHost: '',
+    sshUser: '',
+    sshPort: null,
+    sshKeyPath: '',
+    sshRemoteHermesPath: '',
+    sshRemoteProfile: '',
     ...overrides
   }
 }
@@ -31,8 +40,20 @@ describe('isRemoteConfig', () => {
     expect(isRemoteConfig(config({ mode: 'cloud', remoteOauthConnected: true }))).toBe(true)
   })
 
-  it('false for local, for a remote with no URL, and for nullish', () => {
+  it('recognizes SSH as remote recovery without treating it as OAuth reauth', () => {
+    const ssh = config({ mode: 'ssh' as never, remoteUrl: '', remoteAuthMode: 'token' }) as DesktopConnectionConfig & {
+      sshHost: string
+    }
+
+    ssh.sshHost = 'remote-box'
+
+    expect(isRemoteConfig(ssh)).toBe(true)
+    expect(isRemoteReauthFailure(ssh, 'SSH authentication failed.')).toBe(false)
+  })
+
+  it('false for local, incomplete SSH, a remote with no URL, and nullish', () => {
     expect(isRemoteConfig(config({ mode: 'local' }))).toBe(false)
+    expect(isRemoteConfig(config({ mode: 'ssh' as never, remoteUrl: '' }))).toBe(false)
     expect(isRemoteConfig(config({ remoteUrl: '' }))).toBe(false)
     expect(isRemoteConfig(null)).toBe(false)
   })
@@ -85,11 +106,35 @@ describe('isRemoteReauthError', () => {
   it('recognizes auth-shaped boot errors', () => {
     expect(isRemoteReauthError('Your remote gateway session has expired.')).toBe(true)
     expect(isRemoteReauthError('OAuth: please sign in')).toBe(true)
+    expect(isRemoteReauthError('Reached the gateway over HTTP, but the app token is invalid.')).toBe(true)
   })
 
   it('ignores non-auth boot errors and nullish', () => {
     expect(isRemoteReauthError('Hermes background process exited during startup.')).toBe(false)
     expect(isRemoteReauthError(null)).toBe(false)
+  })
+})
+
+describe('shouldApplyPostBootProgressError', () => {
+  it('applies only confirmed reauth after a healthy boot — not transient ticket blips', () => {
+    expect(shouldApplyPostBootProgressError('Your remote gateway session has expired.')).toBe(true)
+    expect(
+      shouldApplyPostBootProgressError(
+        'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+      )
+    ).toBe(false)
+    expect(shouldApplyPostBootProgressError('Lost connection to the gateway')).toBe(false)
+    expect(shouldApplyPostBootProgressError(null)).toBe(false)
+  })
+})
+
+describe('sshFailureMessage', () => {
+  it('localizes SSH failures without changing non-SSH errors', () => {
+    const copy = { sshErrAuth: 'localized auth', sshErrUnknown: 'localized unknown' }
+    const ssh = config({ mode: 'ssh', sshHost: 'box', remoteUrl: '' })
+    expect(sshFailureMessage(ssh, 'SSH authentication failed', copy)).toBe('localized auth')
+    expect(sshFailureMessage(ssh, 'unexpected failure', copy)).toBe('localized unknown')
+    expect(sshFailureMessage(config(), 'raw remote error', copy)).toBe('raw remote error')
   })
 })
 
@@ -126,23 +171,5 @@ describe('deriveProviderShape', () => {
     expect(deriveProviderShape([{ name: 'basic', displayName: '', supportsPassword: true }]).providerLabel).toBe(
       'basic'
     )
-  })
-})
-
-describe('signInLabel', () => {
-  it('password gateway gets the plain "Sign in to remote gateway" copy', () => {
-    expect(signInLabel({ url: 'x', isPassword: true, providerLabel: 'Username & Password' })).toBe(
-      'Sign in to remote gateway'
-    )
-  })
-
-  it('OAuth gateway names the provider', () => {
-    expect(signInLabel({ url: 'x', isPassword: false, providerLabel: 'Nous Research' })).toBe(
-      'Sign in with Nous Research'
-    )
-  })
-
-  it('null reauth falls back to the generic provider phrase', () => {
-    expect(signInLabel(null)).toBe('Sign in with your identity provider')
   })
 })

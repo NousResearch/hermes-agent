@@ -8,7 +8,8 @@ import {
   needsExecBit,
   spawnHelperCandidates,
   type SpawnHelperFs,
-  withExecBits
+  withExecBits,
+  writableNodePtyRoot
 } from './spawn-helper-perms'
 
 interface FakeFile {
@@ -55,6 +56,30 @@ function fakeFs(
     }
   }
 }
+
+test('rewrites an archived node-pty root to the matching unpacked tree exactly once', () => {
+  assert.equal(
+    writableNodePtyRoot('/Hermes.app/Contents/Resources/app.asar/dist/node_modules/node-pty'),
+    '/Hermes.app/Contents/Resources/app.asar.unpacked/dist/node_modules/node-pty'
+  )
+  assert.equal(
+    writableNodePtyRoot('/Hermes.app/Contents/Resources/app.asar.unpacked/dist/node_modules/node-pty'),
+    '/Hermes.app/Contents/Resources/app.asar.unpacked/dist/node_modules/node-pty'
+  )
+})
+
+test('uses the unpacked helper when resolution reports an app.asar node-pty root', () => {
+  const archivedRoot = '/Hermes.app/Contents/Resources/app.asar/dist/node_modules/node-pty'
+  const unpackedRoot = writableNodePtyRoot(archivedRoot)
+  const helper = join(unpackedRoot, 'prebuilds', 'darwin-arm64', 'spawn-helper')
+  const fs = fakeFs({ [helper]: { mode: 0o644 } }, { [join(unpackedRoot, 'prebuilds')]: ['darwin-arm64'] })
+
+  const result = ensureSpawnHelperExecutable(archivedRoot, fs)
+
+  assert.deepEqual(result.fixed, [helper])
+  assert.deepEqual(result.errors, [])
+  assert.deepEqual(fs.chmods, [{ path: helper, mode: 0o755 }])
+})
 
 test('needsExecBit / withExecBits treat any missing exec bit as non-executable', () => {
   assert.equal(needsExecBit(0o644), true)

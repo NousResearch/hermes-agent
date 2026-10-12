@@ -1,0 +1,5 @@
+name: nebius-token-factory-provider
+kind: model-provider
+version: 1.0.0
+description: Nebius Token Factory OpenAI-compatible inference
+author: Nous Research

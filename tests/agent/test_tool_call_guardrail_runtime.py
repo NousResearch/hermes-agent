@@ -510,3 +510,18 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_argument_marker_scan_handles_arbitrarily_deep_arguments():
+    """The pre-dispatch scan must cover any argument depth: iterative walk, no RecursionError, no scan gap."""
+    from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+    from agent.tool_dispatch_helpers import _context_pruned_argument_paths
+
+    def _deep(value, depth):
+        for _ in range(depth):
+            value = {"x": value}
+        return value
+
+    assert _context_pruned_argument_paths("write_file", _deep("plain", 1000)) == []
+    deep_marker = _deep(f"prefix {_COMPRESSION_MARKER_PREFIX} 1,800", 500)
+    assert _context_pruned_argument_paths("write_file", deep_marker) == ["$" + ".x" * 500]

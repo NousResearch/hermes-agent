@@ -11,6 +11,7 @@ import logging
 from typing import Any, Dict
 
 from tools.registry import registry
+from tools.schema_sanitizer import MAX_TOOL_ARG_DEPTH
 
 # Logger name kept as "model_tools": these messages were always emitted under
 # that name and log-based tooling filters on it.
@@ -91,16 +92,25 @@ def _schema_accepts_kind(schema: Any, kind: str) -> bool:
                for union_key in ("anyOf", "oneOf", "allOf"))
 
 
-def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
+def _normalize_json_strings_for_schema(value: Any, schema: Any, _depth: int = 0) -> Any:
     """Recursively parse JSON-encoded strings where the schema expects array/object.
 
     Schema-guided: a string is only parsed when its schema position expects a
     container, so legitimate JSON-looking ``type: string`` fields survive.
     Returns the same object when nothing changed (identity = cheap no-op check).
+    Past :data:`MAX_TOOL_ARG_DEPTH` the branch is left uncoerced (logged) instead
+    of overflowing the stack.
 
     Ported from cline/cline#11803, adapted to hermes-agent's coercion layer.
     """
     if not isinstance(schema, dict):
+        return value
+
+    if _depth >= MAX_TOOL_ARG_DEPTH:
+        logger.warning(
+            "tool arguments exceed the maximum nesting depth (%d); deeper levels left uncoerced",
+            MAX_TOOL_ARG_DEPTH,
+        )
         return value
 
     if isinstance(value, str):
@@ -121,7 +131,7 @@ def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
         items_schema = schema.get("items")
         if not isinstance(items_schema, dict):
             return value
-        out = [_normalize_json_strings_for_schema(item, items_schema) for item in value]
+        out = [_normalize_json_strings_for_schema(item, items_schema, _depth + 1) for item in value]
         return out if any(n is not o for n, o in zip(out, value)) else value
 
     if isinstance(value, dict):
@@ -131,7 +141,7 @@ def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
         out = dict(value)
         for k, prop_schema in props.items():
             if k in value and isinstance(prop_schema, dict):
-                out[k] = _normalize_json_strings_for_schema(value[k], prop_schema)
+                out[k] = _normalize_json_strings_for_schema(value[k], prop_schema, _depth + 1)
         return out if any(out[k] is not v for k, v in value.items()) else value
 
     return value

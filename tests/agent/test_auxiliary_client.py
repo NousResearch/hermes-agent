@@ -4675,7 +4675,7 @@ class TestCompressionFallbackContextFilter:
 
         with patch("agent.auxiliary_client._resolve_fallback_entry",
                    side_effect=fake_resolve), \
-             patch("agent.auxiliary_client.get_model_context_length",
+             patch("agent.auxiliary_fallback_screening.get_model_context_length",
                    side_effect=fake_ctx):
             client, model, label = _try_configured_fallback_chain(
                 task="compression", failed_provider="auto")

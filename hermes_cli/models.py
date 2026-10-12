@@ -1823,6 +1823,94 @@ def _static_catalog(normalized: str, fetcher: Any) -> list[str]:
     return _chat_catalog_rows(_xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged)
 
 
+def _declared_custom_endpoint_models(entry: dict) -> list[str]:
+    """Model ids an endpoint entry declares under ``models`` — the pinned catalog under an explicit
+    ``discover_models: false`` and the fallback when a live probe finds nothing. Accepts a mapping
+    and a list of ``{id|model|name}`` rows; the singular ``model`` field is sticky default
+    metadata, not catalog, so it is deliberately not included."""
+    raw = entry.get("models")
+    candidates = raw.keys() if isinstance(raw, dict) else raw if isinstance(raw, list) else ()
+    ids: list[str] = []
+    for item in candidates:
+        mid = (item.get("id") or item.get("model") or item.get("name")) if isinstance(item, dict) else item
+        mid = str(mid or "").strip()
+        if mid and mid not in ids:
+            ids.append(mid)
+    return ids
+
+
+def _custom_endpoint_entry_catalog(normalized: str, *, force_refresh: bool = False) -> Optional[list[str]]:
+    """Live ``/v1/models`` catalog of a user-configured named custom endpoint, or None when no
+    config entry matches ``normalized``.
+
+    Matches a ``providers.<key>`` block that carries an endpoint (``api``/``url``/``base_url``) or a
+    legacy ``custom_providers[]`` row by any identity it accepts (``custom:<key>``, the bare key,
+    the display name). Discovery is dynamic: the endpoint's answer is the catalog, so a model added
+    at a gateway shows up without a config edit. An explicit ``discover_models: false`` pins the
+    entry's declared ``models`` instead, and a failed/empty probe falls back to them — declared
+    models are a floor, never a freeze."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.model_switch import _extra_headers_from_config
+        from hermes_cli.model_switch_providers import _discover_flag
+        from hermes_cli.providers import custom_provider_aliases
+    except Exception:
+        return None
+    query = str(normalized or "").strip().lower()
+    if not query:
+        return None
+    try:
+        config = load_config()
+    except _CONFIG_ERRORS:
+        return None
+    entries: list[tuple[str, str, dict]] = []
+    providers_cfg = config.get("providers")
+    if isinstance(providers_cfg, dict):
+        entries.extend(
+            (str(key), str(key), entry) for key, entry in providers_cfg.items() if isinstance(entry, dict)
+        )
+    legacy = config.get("custom_providers")
+    if isinstance(legacy, list):
+        entries.extend(
+            ("", str(entry.get("provider_key") or ""), entry) for entry in legacy if isinstance(entry, dict)
+        )
+    for display_fallback, provider_key, entry in entries:
+        display_name = str(entry.get("name") or display_fallback).strip()
+        if query not in {alias.lower() for alias in custom_provider_aliases(display_name, provider_key)}:
+            continue
+        declared = _declared_custom_endpoint_models(entry)
+        if not _discover_flag(entry):
+            return declared or None
+        api_url = str(entry.get("base_url") or entry.get("url") or entry.get("api") or "").strip().rstrip("/")
+        if not api_url:  # endpoint-less `providers.<name>` blocks tune a built-in, not a route
+            return declared or None
+        inline_key = str(entry.get("api_key") or "").strip()
+        if inline_key.startswith("${") and inline_key.endswith("}") and len(inline_key) > 3:
+            inline_key = os.getenv(inline_key[2:-1], "").strip()
+        key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+        api_key = inline_key or (os.getenv(key_env, "").strip() if key_env else "")
+        api_mode = str(entry.get("api_mode") or entry.get("transport") or "").strip().lower() or None
+        try:
+            headers = _extra_headers_from_config(entry) or None
+        except Exception:
+            headers = None
+        live = cached_fetch_api_models(
+            api_key, api_url, api_mode=api_mode, headers=headers, force_refresh=force_refresh
+        )
+        return live or (declared or None)
+    return None
+
+
+def _static_or_custom_catalog(normalized: str, fetcher: Any, *, force_refresh: bool = False) -> list[str]:
+    """Curated static catalog when one exists, else the live catalog of a matching configured named
+    custom endpoint, else the empty static catalog."""
+    static = _static_catalog(normalized, fetcher)
+    if static:
+        return static
+    custom = _custom_endpoint_entry_catalog(normalized, force_refresh=force_refresh)
+    return custom if custom is not None else static
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
     fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers)."""
@@ -1841,7 +1929,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         relayed = _relay_model_catalog(normalized, relay)
         if relayed:
             return _chat_catalog_rows(relayed)
-        return _static_catalog(normalized, _PROVIDER_CATALOG_FETCHERS.get(normalized))
+        return _static_or_custom_catalog(
+            normalized, _PROVIDER_CATALOG_FETCHERS.get(normalized), force_refresh=force_refresh
+        )
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)
@@ -1854,7 +1944,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if models is not None:
         return _chat_catalog_rows(models)
 
-    return _static_catalog(normalized, fetcher)
+    return _static_or_custom_catalog(normalized, fetcher, force_refresh=force_refresh)
 
 
 # ---------------------------------------------------------------------------

@@ -62,7 +62,9 @@ def source_built_gui_artifacts(hermes_home: Path, project_root: Path | None = No
     had never removed.
 
     The workspace-root ``node_modules`` is shared with the TUI, dashboard and other workspaces, so only
-    the desktop workspace's own dependencies belong to GUI removal.
+    the desktop workspace's own dependencies belong to GUI removal — and only next to a build:
+    ``apps/desktop`` is an npm workspace, so a root ``npm install`` creates its ``node_modules`` on a
+    clone that never built the desktop app, and that alone must not read as an installed GUI.
     """
     roots = [hermes_home / "hermes-agent"]
     actual = _running_checkout_root() if project_root is None else Path(project_root)
@@ -70,8 +72,11 @@ def source_built_gui_artifacts(hermes_home: Path, project_root: Path | None = No
         roots.append(actual)
     artifacts: list[Path] = []
     for root in roots:
-        artifacts += [root / "apps" / "desktop" / "dist", root / "apps" / "desktop" / "release",
-                      root / "apps" / "desktop" / "node_modules"]
+        desktop = root / "apps" / "desktop"
+        built = [desktop / "dist", desktop / "release"]
+        artifacts += built
+        if any(p.exists() for p in built):
+            artifacts.append(desktop / "node_modules")
     artifacts.append(hermes_home / "desktop-build-stamp.json")
     return artifacts
 
@@ -134,7 +139,10 @@ def gui_install_summary(hermes_home: Path | None = None, project_root: Path | No
     # removed; sealed trees (nix / desktop-app / docker) get data-only.
     from hermes_cli import steward as steward_mod
 
-    steward, code_removal_allowed = steward_mod.classify_install(home / "hermes-agent")
+    # Classify the checkout the artifacts and the CLI uninstaller key off, not the install.sh path:
+    # on a custom-path git checkout the latter is absent and would read as a sealed "unknown" tree.
+    root = _running_checkout_root() if project_root is None else Path(project_root)
+    steward, code_removal_allowed = steward_mod.classify_install(root)
 
     return {
         "hermes_home": str(home),

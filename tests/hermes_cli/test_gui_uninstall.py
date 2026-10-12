@@ -135,7 +135,7 @@ def test_custom_path_checkout_artifacts_are_discovered_and_removed(tmp_path, mon
     _make_agent(hermes_home)
     checkout = tmp_path / "Hermes-Agent"  # `hermes --version`'s install directory
     desktop = _make_desktop_build(checkout)
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
 
     summary = gu.gui_install_summary(hermes_home, project_root=checkout)
@@ -154,6 +154,24 @@ def test_custom_path_checkout_artifacts_are_discovered_and_removed(tmp_path, mon
     assert desktop / "dist" in removed and desktop / "release" in removed
     # The agent beside the checkout is never part of a GUI uninstall.
     assert (hermes_home / "hermes-agent" / "hermes_cli").is_dir()
+
+
+def test_desktop_workspace_node_modules_alone_is_not_an_install(tmp_path, monkeypatch):
+    """A root `npm install` creates `apps/desktop/node_modules` (npm workspace) on a clone that never
+    built the desktop app; it must not report the GUI as installed nor be swept by `--gui`."""
+    hermes_home = tmp_path / ".hermes"
+    checkout = tmp_path / "Hermes-Agent"
+    deps = checkout / "apps" / "desktop" / "node_modules" / "electron"
+    deps.mkdir(parents=True)
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
+    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
+    monkeypatch.setattr(gu, "desktop_install_record", lambda: tmp_path / "no-record.json")
+
+    assert gu.gui_install_summary(hermes_home, project_root=checkout)["gui_installed"] is False
+
+    gu.uninstall_gui(hermes_home, project_root=checkout, remove_userdata=False)
+
+    assert deps.is_dir()
 
 
 def test_standard_layout_root_is_not_listed_twice(tmp_path):

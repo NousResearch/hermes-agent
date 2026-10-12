@@ -219,3 +219,27 @@ def test_portal_tools_304_is_a_success_and_a_bad_body_a_failure(caplog):
         (logging.WARNING, "connector portal.connectors.tools 200 INVALID_RESPONSE request_id=bad-id dispatch=-"),
     ]
 
+
+def test_try_again_keeps_the_opening_calls_ids(monkeypatch, caplog):
+    from tools.connectors import managed
+    from tools.connectors.contract import Actor, TargetState
+    from tools.connectors.operation import ConnectionOperation, Target
+    from tools.connectors.run import reissue
+
+    _consent(True)
+    transport = _Transport(_mint_ok(["gmail"]))
+    monkeypatch.setattr(managed, "ensure_guest_identity", lambda: None)
+    real = ConnectorClient
+    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", lambda **kw: real(
+        transport=transport, endpoint_resolver=lambda: "https://gw.test",
+        header_provider=lambda url: {"Authorization": "Bearer t"}, **kw))
+    operation = ConnectionOperation([Target("gmail", "connector", "connect")],
+                                    call=CallRef(turn_id="turn-7", tool_call_id="call-7"))
+    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
+    operation.transition("gmail", TargetState.failed, Actor.backend_watcher)
+
+    with caplog.at_level(logging.DEBUG, logger="tools.managed_gateway_identity"):
+        assert reissue(operation, ["gmail"]) is None
+    headers = transport.sent[0]["headers"]
+    assert headers["x-nous-hermes-turn"] == "turn-7" and headers["x-nous-hermes-tool-call"] == "call-7"
+    assert _outcomes(caplog)[-1][1].endswith("dispatch=call-7")

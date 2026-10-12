@@ -392,7 +392,7 @@ def run_managed_action(
             _targets(targets, action),
             managed_kind(client, action, force),
             session_key=session_key, tool_call_id=tool_call_id, tick_seconds=WATCH_TICK_SECONDS,
-            connection_callback=connection_callback, with_urls_in_result=False,
+            connection_callback=connection_callback, with_urls_in_result=False, call=call,
         )
     except Exception as exc:
         logger.warning("manage_connections %s failed: %s", action, exc)

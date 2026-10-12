@@ -90,6 +90,8 @@ class ConnectionOperation:
     profile_key: str = ""
     # The model's id for the call that opened the operation; the card binds to that tool row only.
     tool_call_id: Optional[str] = None
+    # The opening call's ids (a ``CallRef``) for the requests a Try again makes; unset for account ops.
+    call: Optional[Any] = None
     op_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: float = field(default_factory=time.time)
     deadline_at: float = 0.0

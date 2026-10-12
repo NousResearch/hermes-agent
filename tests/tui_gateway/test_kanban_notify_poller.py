@@ -271,7 +271,7 @@ class TestNotificationPollerLoopKanbanWiring:
         monkeypatch.setattr(
             server,
             "_run_prompt_submit",
-            lambda rid, sid, sess, text: submits.append(text),
+            lambda rid, sid, sess, text, **_kw: submits.append(text),
         )
         stop = threading.Event()
         thread = threading.Thread(

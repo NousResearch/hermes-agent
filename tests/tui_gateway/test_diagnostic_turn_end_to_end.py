@@ -31,7 +31,7 @@ def test_diagnostic_turn_runs_but_never_echoes_on_wire(turn_env, marker_home, mo
     session = _session(agent=agent, running=True)
     session["profile_home"] = str(owner)
     server._run_prompt_submit("request", "session", session, "engine failure",
-                              display_metadata={"notification_category": "diagnostic"})
+                              display_metadata={"notification_category": "diagnostic"}, turn_claim=server._claim_session_turn(session))
     assert work == ["engine failure"]
     assert controls == [("Recovery approval?", ["yes", "no"])]
     content_frames = [f for f in frames if (f.get("params") or {}).get("type") in {"message.delta", "message.interim", "message.complete", "error"}]
@@ -69,6 +69,6 @@ def test_next_human_followup_is_outside_diagnostic_presentation_scope(turn_env, 
         server._emit("message.complete", "session", {"text": "next requested result"})
     monkeypatch.setattr(server, "_run_post_turn_followups", followups)
     server._run_prompt_submit("request", "session", session, "engine failure",
-                              display_metadata={"notification_category": "diagnostic"})
+                              display_metadata={"notification_category": "diagnostic"}, turn_claim=server._claim_session_turn(session))
     finals = [f["params"]["payload"]["text"] for f in frames if f.get("params", {}).get("type") == "message.complete"]
     assert finals == ["next requested result"]

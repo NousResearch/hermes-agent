@@ -130,7 +130,7 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
     monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
     monkeypatch.setattr(server, "_sess", lambda _params, _rid: (session, None))
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
-    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid, **_kwargs: None)
     response = server._methods["session.interrupt"](
         "stop", {"session_id": "ui-session"}
     )

@@ -459,7 +459,7 @@ class TestUpdatePublication:
                       "agent": SimpleNamespace(session_id=key, clear_interrupt=lambda: None,
                                                run_conversation=lambda message, **kw: {"final_response": "done"})})
 
-        assert server._run_prompt_submit("rid", sid, entry, "work on it")
+        assert server._run_prompt_submit("rid", sid, entry, "work on it", turn_claim=server._claim_session_turn(entry))
 
         order = [e[0] for e in emitted]
         assert "message.complete" in order and "session.control.update" in order

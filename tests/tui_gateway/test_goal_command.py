@@ -329,7 +329,7 @@ def test_iteration_limit_fallback_is_judged_and_can_continue(
     )
     session = _turn_session(agent, session_key)
 
-    server._run_prompt_submit("rid", "sid", session, "initial work")
+    server._run_prompt_submit("rid", "sid", session, "initial work", turn_claim=server._claim_session_turn(session))
 
     assert seen_prompts == ["initial work", continuation]
     assert judged == ["fallback summary", "finished normally"]
@@ -370,7 +370,7 @@ def test_active_goal_retries_once_without_judging_failed_turn(
     )
     session = _turn_session(agent, session_key)
 
-    server._run_prompt_submit("rid", "sid", session, "initial work")
+    server._run_prompt_submit("rid", "sid", session, "initial work", turn_claim=server._claim_session_turn(session))
 
     assert seen_prompts == ["initial work", continuation]
     assert judged == ["recovered work"]
@@ -406,7 +406,7 @@ def test_second_consecutive_exhaustion_pauses_goal_instead_of_looping(
     )
     session = _turn_session(agent, session_key)
 
-    server._run_prompt_submit("rid", "sid", session, "initial work")
+    server._run_prompt_submit("rid", "sid", session, "initial work", turn_claim=server._claim_session_turn(session))
 
     assert len(seen_prompts) == 2
     assert judged == []
@@ -455,7 +455,7 @@ def test_real_queued_prompt_preempts_goal_compression_retry(
     session = _turn_session(agent, session_key)
     session_holder["session"] = session
 
-    server._run_prompt_submit("rid", "sid", session, "initial work")
+    server._run_prompt_submit("rid", "sid", session, "initial work", turn_claim=server._claim_session_turn(session))
 
     assert seen_prompts == ["initial work", "real user input"]
     assert continuation not in seen_prompts

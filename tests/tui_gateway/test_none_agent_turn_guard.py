@@ -60,7 +60,7 @@ def test_turn_without_agent_is_refused_with_retryable_frame(monkeypatch, tmp_pat
     emitted = _turn_env(monkeypatch, tmp_path)
     session = _session(None, agent_error=AGENT_BUILD_ABANDONED)
 
-    assert server._run_prompt_submit("rid", "ui-sid", session, "继续") is False
+    assert server._run_prompt_submit("rid", "ui-sid", session, "继续", turn_claim=server._claim_session_turn(session)) is False
 
     frames = [p for (t, _sid, p) in emitted if t == "message.complete"]
     assert len(frames) == 1
@@ -75,7 +75,8 @@ def test_turn_without_agent_is_refused_with_retryable_frame(monkeypatch, tmp_pat
         session_id="agent-sid-1", run_conversation=lambda *a, **k: {"final_response": "done"},
         clear_interrupt=lambda: None)
     emitted.clear()
-    server._run_prompt_submit("rid", "ui-sid", _session(agent), "go")
+    session = _session(agent)
+    server._run_prompt_submit("rid", "ui-sid", session, "go", turn_claim=server._claim_session_turn(session))
     assert [p["status"] for (t, _sid, p) in emitted if t == "message.complete"] == ["complete"]
     assert agent.interim_assistant_callback is None
 

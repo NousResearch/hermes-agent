@@ -167,6 +167,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: dict[str, str] = {}  # last inbound message ID per chat (send_typing)
         self._typing_sent_at: dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
+        self._typing_dead_msg_ids: dict[str, str] = {}  # chat_id → msg_id whose passive notify was rejected
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0.0
         self._token_lock = asyncio.Lock()
@@ -1618,25 +1619,34 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     # ── Typing indicator ──
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """C2C-only input notify, debounced to ~50s (API shows a 60s indicator);
-        needs the last inbound msg_id from ``_last_msg_id``."""
-        msg_id = self._last_msg_id.get(chat_id)
-        now = time.time()
-        if (
-            not self.is_connected or self._guess_chat_type(chat_id) != "c2c" or not msg_id
-            or now - self._typing_sent_at.get(chat_id, 0.0) < self._TYPING_DEBOUNCE_SECONDS
-        ):
+        """C2C-only input notify, debounced to ~50s (API shows a 60s indicator).
+        Prefers the passive reply form (last inbound msg_id); when that is rejected —
+        the msg_id window expires within minutes on long turns — fall back to the
+        active form (``msg_type`` 6 without ``msg_id``, accepted by the API). Without
+        the fallback the indicator lapses after the first 60s window mid-turn."""
+        if not self.is_connected or self._guess_chat_type(chat_id) != "c2c":
             return
-        try:
-            body = {
-                "msg_type": MSG_TYPE_INPUT_NOTIFY,
-                "msg_id": msg_id,
-                "input_notify": {"input_type": 1, "input_second": self._TYPING_INPUT_SECONDS},
-                "msg_seq": self._next_msg_seq(chat_id)}
-            await self._api_request("POST", f"/v2/users/{chat_id}/messages", body)
-            self._typing_sent_at[chat_id] = now
-        except Exception as exc:
-            logger.debug("[%s] send_typing failed: %s", self._log_tag, exc)
+        now = time.time()
+        if now - self._typing_sent_at.get(chat_id, 0.0) < self._TYPING_DEBOUNCE_SECONDS:
+            return
+        notify = {"input_notify": {"input_type": 1, "input_second": self._TYPING_INPUT_SECONDS}}
+        msg_id = self._last_msg_id.get(chat_id)
+        attempts: list[dict] = []
+        if msg_id and self._typing_dead_msg_ids.get(chat_id) != msg_id:
+            attempts.append({"msg_id": msg_id})
+        attempts.append({})  # active form — no msg_id
+        last_exc: Optional[Exception] = None
+        for extra in attempts:
+            body = {"msg_type": MSG_TYPE_INPUT_NOTIFY, "msg_seq": self._next_msg_seq(chat_id), **extra, **notify}
+            try:
+                await self._api_request("POST", f"/v2/users/{chat_id}/messages", body)
+                self._typing_sent_at[chat_id] = now
+                return
+            except Exception as exc:
+                last_exc = exc
+                if "msg_id" in extra:
+                    self._typing_dead_msg_ids[chat_id] = msg_id or ""
+        logger.debug("[%s] send_typing failed: %s", self._log_tag, last_exc)
 
     # ── Format / chat info / helpers ──
 

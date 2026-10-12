@@ -38,7 +38,7 @@ class ToolValidationVerdict:
     action: str
     result: Optional[dict[str, Any]]
     mixed_invalid_batch: bool
-    invalid_json_by_id: Dict[str, str] = field(default_factory=dict)
+    invalid_json_by_id: dict[str, str] = field(default_factory=dict)
 
 
 def invalid_json_error_content(error_msg: str) -> str:
@@ -174,7 +174,7 @@ def validate_tool_calls(
     # collide — name-keying made the valid sibling inherit the Invalid-JSON
     # error and never execute. Ids are unique here: _uniquify_tool_call_ids
     # ran above.
-    invalid_json_by_id: Dict[str, str] = {}
+    invalid_json_by_id: dict[str, str] = {}
     for tc in tool_calls:
         args = tc.function.arguments
         if isinstance(args, (dict, list)):

@@ -29,14 +29,13 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from agent.turn_failure_copy import site_copy  # noqa: E402
 
 
 class _MockHandler(BaseHTTPRequestHandler):
     captured_requests: list = []
     response_queue: list = []
 
-    def do_POST(self):  # noqa: N802 (http.server API)
+    def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(length).decode())
         type(self).captured_requests.append(req)
@@ -263,7 +262,7 @@ def test_truncation_scan_does_not_false_positive_on_same_name_valid_sibling(agen
     result = agent.run_conversation("track work", conversation_history=[], task_id="t")
 
     assert result.get("completed", False)
-    assert result.get("error") != site_copy("truncated")
+    assert result.get("failure_reason") != "truncated"
     msgs = result.get("messages")
     assert "Invalid JSON" in _tool_result_content(msgs, "call_0")
     assert dispatched == [("todo", "0")]
@@ -277,7 +276,7 @@ def test_genuinely_truncated_call_still_hard_stops_despite_valid_sibling(agent_e
 
     result = agent.run_conversation("track work", conversation_history=[], task_id="t")
 
-    assert result.get("error") == site_copy("truncated")
+    assert result.get("failure_reason") == "truncated"
     assert dispatched == []
     assert len(_chat_calls(handler)) == 1
 
@@ -303,3 +302,4 @@ def test_dedup_never_evicts_valid_sibling_or_orphans_a_result(agent_env, order):
     assert set(emitted.values()) == {1}
     assert _tool_result_ids(msgs) == emitted
     assert len(emitted) == 2  # one duplicate {bad} collapsed, the valid call survived
+

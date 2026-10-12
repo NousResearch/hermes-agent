@@ -324,6 +324,16 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return _env_int("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
 
 
+def _resolve_rate_limit_max_cooldown_seconds() -> int:
+    """``HERMES_KANBAN_RATE_LIMIT_MAX_COOLDOWN_SECONDS`` else default: the backoff cap."""
+    return _env_int("HERMES_KANBAN_RATE_LIMIT_MAX_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_MAX_COOLDOWN_SECONDS)
+
+
+def _resolve_rate_limit_max_consecutive() -> int:
+    """``HERMES_KANBAN_RATE_LIMIT_MAX_CONSECUTIVE`` else default: rate-limited runs before parking."""
+    return _env_int("HERMES_KANBAN_RATE_LIMIT_MAX_CONSECUTIVE", DEFAULT_RATE_LIMIT_MAX_CONSECUTIVE, minimum=1)
+
+
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
     """``just now`` / ``18h ago`` / ``3d ago``; "" for a missing/invalid ts. An LLM
     reads a bare absolute timestamp as current fact — the relative age is what
@@ -2097,18 +2107,18 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
                     )
                     if failures >= effective_limit:
                         continue
-                    conn.execute(
-                        "UPDATE tasks SET status = ? "
-                        "WHERE id = ? AND status = 'blocked'", (resume_status, task_id),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
-                        (resume_status, task_id),
-                    )
+                # Satisfied parents are a recovery point (like ``unblock_task``):
+                # failure text from a run before the wait must not re-trap the
+                # card in ``check_respawn_guard``. ``consecutive_failures`` is
+                # kept so the breaker still bounds retries across cycles.
+                conn.execute(
+                    "UPDATE tasks SET status = ?, last_failure_error = NULL "
+                    "WHERE id = ? AND status = ?", (resume_status, task_id, cur_status),
+                )
                 _append_event(
                     conn, task_id, "promoted",
-                    {"status": resume_status} if resume_status != "ready" else None,
+                    {"actor": "system", "reason": "parents_done",
+                     **({"status": resume_status} if resume_status != "ready" else {})},
                 )
                 promoted += 1
     return promoted
@@ -2180,21 +2190,34 @@ def _claim_and_open_run(
     )
     run_id = run_cur.lastrowid
     conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?", (run_id, task_id))
+    # A respawn names the run it retries, so a restart's reason is auditable.
+    prior = conn.execute(
+        "SELECT id, outcome FROM task_runs WHERE task_id = ? AND id != ? AND ended_at IS NOT NULL "
+        "ORDER BY ended_at DESC, id DESC LIMIT 1", (task_id, run_id),
+    ).fetchone()
+    retry_of = {"retry_of": {"run_id": prior["id"], "outcome": prior["outcome"]}} if prior else {}
     _append_event(
         conn, task_id, "claimed",
-        {"lock": lock, "expires": expires, "run_id": run_id, **(event_extra or {})}, run_id=run_id,
+        {"lock": lock, "expires": expires, "run_id": run_id, **retry_of, **(event_extra or {})}, run_id=run_id,
     )
     return run_id
 
 
+def _attribution(actor: Optional[str], source: str) -> dict:
+    """Who initiated a lifecycle transition and through which surface. An
+    unidentified caller is recorded as ``"unknown"``, never a guessed name."""
+    return {"actor": actor or "unknown", "source": source}
+
+
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, actor: Optional[str] = None, source: str = "api",
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not in ``ready`` status). ``actor``/``source`` land
+    on the ``claimed`` event; see ``_attribution``.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -2214,7 +2237,8 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now,
+                                     event_extra=_attribution(actor, source))
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2224,7 +2248,7 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, actor: Optional[str] = None, source: str = "api",
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2245,7 +2269,8 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={"source_status": "review", **_attribution(actor, source)},
         )
         if run_id is None:
             return None
@@ -3573,9 +3598,12 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection, task_id: str, *, actor: Optional[str] = None, source: str = "api",
+) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first. The
+    ``unblocked`` event records who released it (``_attribution``)."""
     now = int(time.time())
     with write_txn(conn):
         resume_status = (
@@ -3608,11 +3636,11 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             return False
         _append_event(
             conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
+            {
+                **_attribution(actor, source),
+                **({"status": new_status, "resume_status": resume_status}
+                   if new_status != "ready" or resume_status != "ready" else {}),
+            },
         )
         return True
 
@@ -4245,6 +4273,8 @@ from hermes_cli.kanban_db_workspace import (
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
+    DEFAULT_RATE_LIMIT_MAX_CONSECUTIVE,
+    DEFAULT_RATE_LIMIT_MAX_COOLDOWN_SECONDS,
     DispatchResult,
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,

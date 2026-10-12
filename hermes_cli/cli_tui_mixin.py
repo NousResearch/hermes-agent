@@ -84,6 +84,21 @@ def _term_rows() -> int:
     return shutil.get_terminal_size((100, 24)).lines
 
 
+def _term_cols() -> int:
+    """Live terminal width: prompt_toolkit's size follows resizes; shutil covers
+    callers outside a running app (tests, early startup)."""
+    try:
+        from prompt_toolkit.application import get_app
+        from prompt_toolkit.application.dummy import DummyApplication
+
+        app = get_app()
+        if not isinstance(app, DummyApplication):  # DummyOutput always reports 80x24
+            return app.output.get_size().columns
+    except Exception:
+        pass
+    return shutil.get_terminal_size((100, 24)).columns
+
+
 class _Panel:
     """Fragment accumulator for one bordered overlay panel (``(style, text)`` tuples)."""
 
@@ -535,8 +550,15 @@ class CLITuiMixin:
                 focus["end"] = len(rows)
             return rows, focus
 
-        preview_rows, _ = _status_rows(60)
-        box_width = _panel_box_width(title, [header] + [text for _, text in preview_rows])
+        # Preview wrap and box cap follow the live width — the shared helper's
+        # default max_width=76 caps panels at ~67 columns on wide terminals.
+        cols = _term_cols()
+        preview_rows, _ = _status_rows(max(24, cols - 10))
+        box_width = _panel_box_width(
+            title,
+            [header] + [text for _, text in preview_rows],
+            max_width=max(76, cols - 4),
+        )
         rows, focus = _status_rows(max(8, box_width - 2))
         # The panel is an unsized Window, so rows past the viewport are clipped from the
         # bottom, which is where the active question's choices sit. When the body does not

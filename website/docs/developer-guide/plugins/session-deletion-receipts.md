@@ -32,8 +32,10 @@ payloads. They describe local caller intent, **not external authorization**.
 Plugins are trusted code; the Python keyword is not an access-control boundary.
 An absent, unknown or unrecognized origin does not authorize external cleanup.
 Retention/prune, empty sweeps (including a sweep requested through REST), draft
-compensation and profile-move deletion do not prepare receipts. Other explicit
-user interfaces are not yet instrumented; do not infer intent from missing rows.
+compensation and profile-move deletion do not prepare receipts. The CLI's
+`hermes sessions delete`, interactive session browser deletion, and
+`/exit --delete` are not yet instrumented and produce no receipts. Do not infer
+intent from missing rows.
 
 The receipt contains:
 
@@ -69,6 +71,11 @@ with SessionDB(Path(profile_home) / "state.db", read_only=True) as db:
 `after_sequence` must be nonnegative; `limit` must be between 1 and 1000. The
 sequence belongs to one database; never share a cursor between profiles/stores.
 The read-only API requires a writer to have reconciled the current schema first.
+If the receipt table is absent, both `list_session_deletion_receipts` and
+`get_session_deletion_receipt` raise `sqlite3.OperationalError` with the message
+`no such table: session_deletion_receipts`. Treat this as schema not ready, not
+an empty receipt list or evidence that no deletion occurred. Have a writer
+reconcile the schema before retrying; the read-only consumer does not migrate it.
 A missing receipt is not proof of a successful deletion.
 
 ## Durable backend-to-gateway handoff

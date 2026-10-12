@@ -61,9 +61,8 @@ class SessionDeletionMixin:
         """Replay committed explicit-user receipts in this store; plugin owns its durable cursor."""
         if after_sequence < 0 or not 1 <= limit <= 1000:
             raise ValueError("after_sequence must be nonnegative and limit must be between 1 and 1000")
-        with self._read_ctx() as conn:
-            rows = conn.execute(
-                "SELECT sequence, deletion_json FROM session_deletion_receipts "
-                "WHERE sequence > ? ORDER BY sequence LIMIT ?", (after_sequence, limit),
-            ).fetchall()
+        rows = self._read_all(
+            "SELECT sequence, deletion_json FROM session_deletion_receipts "
+            "WHERE sequence > ? ORDER BY sequence LIMIT ?", (after_sequence, limit),
+        )
         return [{"sequence": row["sequence"], "deletion": json.loads(row["deletion_json"])} for row in rows]

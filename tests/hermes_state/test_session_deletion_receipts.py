@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+from contextlib import contextmanager
 
 import pytest
 
@@ -164,6 +165,62 @@ def test_receipt_reclamation_is_explicit_and_never_reuses_cursor_sequences(db):
     assert db.list_session_deletion_receipts(after_sequence=first["sequence"])[0]["sequence"] > first["sequence"]
     with pytest.raises(ValueError):
         db.forget_session_deletion_receipts(through_sequence=-1)
+
+
+@pytest.mark.parametrize("failure_stage", ["execute", "fetchall"])
+def test_read_only_receipt_replay_retries_transient_ioerr(db, monkeypatch, failure_stage):
+    db.create_session("replay", source="example")
+    assert db.delete_session("replay", deletion_origin="user_rpc")
+    expected = db.list_session_deletion_receipts()
+    with SessionDB(db.db_path, read_only=True) as reader:
+        read_ctx = reader._read_ctx
+        attempts = 0
+        connections = []
+
+        class TransientReader:
+            def __init__(self, conn):
+                self.conn = conn
+
+            def execute(self, sql, params):
+                nonlocal attempts
+                attempts += 1
+                if failure_stage == "execute" and attempts == 1:
+                    raise sqlite3.OperationalError("disk I/O error")
+                self.cursor = self.conn.execute(sql, params)
+                return self
+
+            def fetchall(self):
+                if failure_stage == "fetchall" and attempts == 1:
+                    raise sqlite3.OperationalError("disk I/O error")
+                return self.cursor.fetchall()
+
+        @contextmanager
+        def transient_read_ctx():
+            with read_ctx() as conn:
+                connections.append(conn)
+                yield TransientReader(conn)
+
+        monkeypatch.setattr(reader, "_read_ctx", transient_read_ctx)
+        assert reader.list_session_deletion_receipts(limit=1) == expected
+        assert attempts == 2
+        assert connections[0] is connections[1]
+        assert reader.list_session_deletion_receipts(after_sequence=expected[0]["sequence"]) == []
+
+
+@pytest.mark.parametrize("method", ["list", "get"])
+def test_unreconciled_read_only_receipt_schema_raises_operational_error(tmp_path, method):
+    path = tmp_path / "state.db"
+    with SessionDB(path) as database:
+        database.create_session("existing", source="example")
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE session_deletion_receipts")
+    with SessionDB(path, read_only=True) as reader:
+        with pytest.raises(sqlite3.OperationalError, match="^no such table: session_deletion_receipts$"):
+            if method == "list":
+                reader.list_session_deletion_receipts()
+            else:
+                reader.get_session_deletion_receipt("unknown")
+        assert reader.get_session("existing") is not None
 
 
 @pytest.mark.parametrize("kwargs", [{"limit": 0}, {"limit": 1001}, {"after_sequence": -1}])

@@ -125,10 +125,12 @@ the gallery. There is no separate listing to maintain.
    can break both. `hermes plugins validate` refuses these at admission (`no
    core override` check). If the hook you need does not exist, open an issue
    describing it: we would rather add the seam than list a patch.
-10. **Dependency security policy is the plugin's.** Hermes's 14-day
-   `exclude-newer` quarantine covers Hermes's own dependencies only; a plugin's
-   `python_dependencies` / `pyproject.toml` install under the plugin's policy
-   (no quarantine, still inside Hermes's core constraints). Reviewers read the
+10. **Dependency security policy is the plugin's.** Hermes's 3-day
+   `exclude-newer` release-age check covers Hermes's own dependencies only, at
+   the time Hermes locks them; a plugin's `python_dependencies` /
+   `pyproject.toml` install under the plugin's policy (no age check). Packages
+   Hermes itself locks stay at Hermes's locked versions, so a plugin cannot
+   require a different version of one. Reviewers read the
    dependency list at the pinned SHA: bare floors (`>=X` with no upper bound)
    and floors on the newest release get a request for the oldest
    API-compatible floor plus an upper bound, and authors are strongly

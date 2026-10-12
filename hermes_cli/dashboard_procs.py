@@ -692,12 +692,10 @@ def _kill_stale_dashboard_processes(
         for pid in pids:
             if job := _launchd_owner(pid, _dash._dashboard_cmdline_for_pid(pid)):
                 pid_launchd[pid] = job
-    spared: list[tuple[int, str]] = []
-    if restart_managed:
-        pids, spared = _spare_unrestartable_sibling_backends(pids, pid_service, pid_launchd, pid_home)
-        _report_spared_sibling_backends(spared)
-        if not pids:
-            return {**_empty_result(), "spared": [pid for pid, _home in spared]}
+    pids, spared = _spare_unrestartable_sibling_backends(
+        pids, pid_service, pid_launchd, pid_home, update_path=restart_managed)
+    if not pids:
+        return {**_empty_result(), "spared": [pid for pid, _home in spared]}
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
@@ -725,8 +723,10 @@ def _kill_stale_dashboard_processes(
 def _spare_unrestartable_sibling_backends(
     pids: list[int], pid_service: dict[int, str | None],
     pid_launchd: dict[int, tuple[str, str, int | None]], pid_home: dict[int, str | None],
+    *, update_path: bool,
 ) -> tuple[list[int], list[tuple[int, str]]]:
-    """Update path: split *pids* into ``(targets, spared)``; spared = ``(pid, home)``.
+    """Update path: split *pids* into ``(targets, spared)``; spared = ``(pid, home)``, reported.
+    Off the update path (``--stop``) nothing is spared.
 
     The update's scope covers every home it owns, but only a supervisor (systemd unit, launchd
     job) can bring a sibling home's backend back: the argv respawn replays under the invoking
@@ -734,6 +734,8 @@ def _spare_unrestartable_sibling_backends(
     a sibling profile's manual backend would leave it down with nothing reported. Such a backend
     is left running and named instead; the survivor probe still sees it on pre-update code.
     """
+    if not update_path:
+        return pids, []
     from hermes_constants import get_hermes_home
 
     own_key = _normalized_home_for_compare(str(get_hermes_home()))
@@ -748,6 +750,7 @@ def _spare_unrestartable_sibling_backends(
             spared.append((pid, home))
         else:
             targets.append(pid)
+    _report_spared_sibling_backends(spared)
     return targets, spared
 
 

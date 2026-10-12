@@ -158,6 +158,27 @@ def test_heartbeat_interval_claim_matches_shutdown_watchdog():
         assert float(interval.group(1)) == 30.0
 
 
+def test_section_order_matches_the_authoring_standard():
+    """AGENTS.md fixes the section order; reviewers check it, CI cannot."""
+    headings = [
+        line[3:].strip()
+        for line in _skill_text().splitlines()
+        if line.startswith("## ")
+    ]
+    expected_prefix = [
+        "When to Use", "Prerequisites", "How to Run", "Quick Reference",
+        "Procedure", "Pitfalls", "Verification",
+    ]
+    assert headings[: len(expected_prefix)] == expected_prefix, headings
+
+
+def test_author_credits_the_human_first():
+    author = _frontmatter()["author"]
+    assert "Hermes Agent" in author
+    assert author.index("Hermes Agent") > 0, "human goes first"
+    assert "@" in author, "the human's GitHub handle is expected upstream"
+
+
 def test_no_machine_local_paths_or_secrets():
     for path in (SKILL_MD, REFERENCE):
         text = path.read_text(encoding="utf-8-sig")

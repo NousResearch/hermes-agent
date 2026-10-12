@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.gateway.test_discord_platform_events import (  # noqa: F401  (shim + helpers)
+from tests.gateway.test_discord_platform_events import (  # discord shim + helpers
     _DiscordThread,
     _adapter,
     _capture,

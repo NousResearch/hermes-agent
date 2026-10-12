@@ -20,11 +20,15 @@ from pathlib import Path
 import sys
 
 # Explicit uv index / transport settings that survive into uv. UV_INDEX_<NAME>_
-# {USERNAME,PASSWORD} credentials match by prefix in is_forwarded().
+# {USERNAME,PASSWORD} credentials match by prefix in is_forwarded(). UV_LINK_MODE
+# rides with the transport knobs: on filesystems where reflink/hardlink fail
+# (ZFS or NAS bind mounts, EOPNOTSUPP) an operator's UV_LINK_MODE=copy is the
+# only way an install materializes at all (#137036); it steers neither project,
+# interpreter, cache nor index.
 FORWARDED_UV_SETTINGS = frozenset({
     "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX", "UV_NO_INDEX",
     "UV_FIND_LINKS", "UV_INDEX_STRATEGY", "UV_KEYRING_PROVIDER",
-    "UV_NATIVE_TLS", "UV_INSECURE_HOST", "UV_HTTP_TIMEOUT",
+    "UV_NATIVE_TLS", "UV_INSECURE_HOST", "UV_HTTP_TIMEOUT", "UV_LINK_MODE",
 })
 
 _UV_INDEX_KNOBS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")

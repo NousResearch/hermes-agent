@@ -10,6 +10,7 @@ from agent.title_generator import (
     build_title_input,
     derive_title,
     generate_title,
+    apply_instant_title,
     auto_title_session,
     is_titleable_user_message,
     maybe_auto_title,
@@ -801,6 +802,89 @@ class TestAutoTitleDuplicateHandling:
 
 
 
+
+
+class TestTransformSessionTitleHook:
+    """``transform_session_title``: a plugin rewrites an automatic title before it is stored."""
+
+    @staticmethod
+    def _hook(results, seen=None):
+        def invoke(name, **kwargs):
+            assert name == "transform_session_title"
+            if seen is not None:
+                seen.append(kwargs)
+            return results
+        return patch.multiple("hermes_cli.lifecycle", has_hook=lambda name: True, invoke_hook=invoke)
+
+    def test_hook_is_registered_and_bounded(self):
+        from hermes_cli.plugins import VALID_HOOKS
+        from hermes_cli.plugins_dispatch import _HOOK_TIMEOUT_BOUNDED_HOOKS
+
+        assert "transform_session_title" in VALID_HOOKS
+        assert "transform_session_title" in _HOOK_TIMEOUT_BOUNDED_HOOKS
+
+    def test_first_string_replaces_the_stored_title(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="s1", source="cli")
+        seen = []
+        with self._hook([None, "  AB: Fix login  ", "ignored"], seen):
+            assert apply_instant_title(db, "s1", "please fix the login bug") == "AB: Fix login"
+        assert db.get_session_title("s1") == "AB: Fix login"
+        assert seen[0]["session_id"] == "s1" and seen[0]["source"] == "derived"
+        assert seen[0]["cwd"] == ""
+        assert seen[0]["title"] != "AB: Fix login"
+
+    def test_hook_receives_the_session_cwd(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="s1", source="cli", cwd="/work/proj")
+        seen = []
+        with self._hook([None], seen):
+            apply_instant_title(db, "s1", "please fix the login bug")
+        assert seen[0]["cwd"] == "/work/proj"
+
+    def test_no_string_result_keeps_the_title(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="s1", source="cli")
+        with self._hook([None, "", 7, {"title": "x"}]):
+            stored = apply_instant_title(db, "s1", "please fix the login bug")
+        assert stored and stored == db.get_session_title("s1")
+        assert "login" in stored.lower()
+
+    def test_failing_hook_keeps_the_title(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="s1", source="cli")
+
+        def boom(name, **kwargs):
+            raise RuntimeError("plugin down")
+
+        with patch.multiple("hermes_cli.lifecycle", has_hook=lambda name: True, invoke_hook=boom):
+            stored = apply_instant_title(db, "s1", "please fix the login bug")
+        assert stored and "login" in db.get_session_title("s1").lower()
+
+    def test_rejected_replacement_falls_back_to_the_original(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="s1", source="cli")
+        with self._hook(["x" * 5000]):
+            stored = apply_instant_title(db, "s1", "please fix the login bug")
+        assert stored and len(stored) < 200
+        assert db.get_session_title("s1") == stored
+
+    def test_user_typed_titles_never_fire_the_hook(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="s1", source="cli")
+        seen = []
+        with self._hook(["Rewritten"], seen):
+            db.set_session_title("s1", "My own name")
+        assert seen == []
+        assert db.get_session_title("s1") == "My own name"
+
+    def test_model_title_goes_through_the_hook(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="s1", source="cli")
+        with patch("agent.title_generator.generate_title", return_value="Login bug"), \
+                self._hook(["AB: Login bug"]):
+            auto_title_session(db, "s1", "please fix the login bug")
+        assert db.get_session_title("s1") == "AB: Login bug"
 
 
 class TestRuntimeValidator:

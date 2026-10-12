@@ -519,13 +519,20 @@ def cmd_gc(args) -> int:
     from pm.environments import install_state_dir
     from pm.paths import repo_root
     from pm.runtime import collect_runtime_generations
-    generations = collect_generations(repo_root())
+    leased: list[Path] = []
+    generations = collect_generations(repo_root(), leased_generations=leased)
     runtimes = collect_runtime_generations(install_state_dir(repo_root()) / "pm-runtime")
     from pm.environments import installs_root
     from pm.install_states import collect_orphan_install_states
     orphans = collect_orphan_install_states(installs_root())
     print(f"gc: removed {removed}, kept {kept}; removed {len(generations)} dependency generations, "
           f"{len(runtimes)} PM runtime generations, {len(orphans)} install state dir(s) of deleted checkouts")
+    if leased:
+        # A live lease means a process still boots from that generation (a dashboard service
+        # started before the last rebuild, a TUI gateway it spawned, ...). Name the culprits:
+        # "removed 0" alone reads as "nothing to reclaim" while the volume fills (#137116).
+        pinned = ", ".join(sorted(f"{g.name[:8]}..." for g in leased))
+        print(f"gc: kept {len(leased)} leased generation(s) a running process still pins: {pinned}")
     return 0
 
 

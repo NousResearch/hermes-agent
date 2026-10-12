@@ -960,13 +960,27 @@ def describe_holder(holder: UpdateHolder | None) -> str:
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
     who = f", process {holder.pid}" if holder and holder.pid else ""
     if holder is not None and holder.held:
+        # The owner exited, so "close the Desktop/dashboard window that started it" would
+        # name a window that no longer exists (#137186): the recovery path is the orphaned
+        # child itself, and a later update resumes the work the interruption still owed.
         who = "; its owner exited but a process it started still holds the checkout"
+        advice = (
+            "  Running two at once would corrupt the install. Wait for the orphaned\n"
+            "  child the exited updater started (a dependency/PM sync) to finish\n"
+            "  (watch `hermes logs`), or end that child yourself — its owner is\n"
+            "  gone, so closing a window can no longer stop it — then run\n"
+            "  `hermes update` again; it resumes and completes the work still owed."
+        )
+    else:
+        advice = (
+            "  Running two at once would corrupt the install. Wait for it to finish\n"
+            "  (watch `hermes logs`), or close the Desktop/dashboard window that\n"
+            "  started it, then run `hermes update` again."
+        )
     return (
         f"✗ Another Hermes update is already running (started {elapsed} ago{who}).\n"
         "\n"
-        "  Running two at once would corrupt the install. Wait for it to finish\n"
-        "  (watch `hermes logs`), or close the Desktop/dashboard window that\n"
-        "  started it, then run `hermes update` again."
+        f"{advice}"
     )
 
 
